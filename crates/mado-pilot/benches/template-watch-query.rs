@@ -1,0 +1,1516 @@
+//! Exact-source deterministic replay/OpenCV and scheduler qualification profile.
+//!
+//! Smoke mode runs one warmup and three retained samples through every oracle.
+//! A qualification process passes `--bench` and retains the frozen three
+//! warmups and twenty samples without retry or exclusion.
+
+use std::collections::BTreeSet;
+use std::path::PathBuf;
+use std::sync::Arc;
+use std::time::{Duration, Instant};
+
+use mado_pilot::replay::{ReplayFrame, ReplaySource, ReplayTarget};
+use mado_pilot::{
+    ClipPolicy, ContentDigest, Continuity, DiagnosticDrain, DiagnosticOptions, DiagnosticPayload,
+    DiagnosticReader, FrameDescriptor, MatchOptions, MonotonicInstant, OpenRequest,
+    OperationContext, PackageSource, PixelFormat, PixelRect, PreparedTemplate, RegionSelection,
+    ReplayEngineRequest, Session, TemplateOverload, TemplateQuery, TemplateQueryId,
+    TemplateQueryOutcome, TemplateQueryProgress, TemplateStability, TemplateTerminalOutcome,
+    TemplateWatchDiagnosticOutcome, TemplateWatchRequest, TemplateWorkCounts,
+    TemplateWorkDisposition,
+};
+use mado_pilot_backend_opencv::OpenCvBackend;
+use mado_pilot_runtime::{
+    CaptureProvider, Engine, EngineOptions, EngineWiring, IdentityIssuer, Matcher, PackageLoader,
+};
+use mado_pilot_testkit::bench_harness::{
+    Accounting, Benchmark, Plan, Profile, QueryWorkMetrics, Sample, Workload, measure,
+};
+use mado_pilot_testkit::{
+    CompletionGate, ControlledCapture, ControlledMatcher, ManualClock, ScriptedMatchCall,
+    bench_harness, match_fixtures,
+};
+use mado_pilot_vision::{Candidate, MatchBackend};
+
+#[cfg(windows)]
+use std::mem::size_of;
+#[cfg(windows)]
+use windows::Win32::System::ProcessStatus::{GetProcessMemoryInfo, PROCESS_MEMORY_COUNTERS};
+#[cfg(windows)]
+use windows::Win32::System::Threading::GetCurrentProcess;
+
+#[global_allocator]
+static ALLOCATOR: Accounting = Accounting;
+
+const SOURCE_FORMAT: PixelFormat = PixelFormat::Rgba8;
+const WAIT: Duration = Duration::from_secs(5);
+const QUEUE_EXPIRY_ADVANCE: Duration = Duration::from_secs(31);
+const FULL_MAPPED_BYTES: u64 = 96 * 64 * 4;
+const CONTROLLED_MAPPED_BYTES: u64 = 32 * 24 * 4;
+const ROI: (i32, i32, i32, i32) = (16, 8, 48, 32);
+const ROI_MAPPED_BYTES: u64 = 32 * 24 * 4;
+const FULL_ORIGINS: [(i32, i32); 2] = [(20, 12), (60, 40)];
+const ROI_ORIGINS: [(i32, i32); 1] = [(20, 12)];
+
+fn main() {
+    let arguments: Vec<String> = std::env::args().skip(1).collect();
+    let qualification = arguments.iter().any(|argument| argument == "--bench");
+    let plan = if qualification {
+        Plan::new(3, 20)
+    } else {
+        Plan::new(3, 3)
+    };
+    let (hardware, os_version) = Profile::host(&arguments);
+
+    let workloads = [
+        measure(
+            "current_match",
+            "one current replay frame produces the exact planted match set and source stamp",
+            plan,
+            || {
+                ReplayFixture::new(
+                    vec![match_fixtures::scene_pixels(SOURCE_FORMAT)],
+                    TemplateStability::immediate(),
+                    None,
+                    0,
+                    1,
+                    1,
+                    &FULL_ORIGINS,
+                    FULL_MAPPED_BYTES,
+                )
+            },
+            replay_watch,
+        ),
+        measure(
+            "appearance_stable",
+            "background then two present frames confirms only the second stable presence",
+            plan,
+            || {
+                ReplayFixture::new(
+                    vec![
+                        match_fixtures::background_pixels(SOURCE_FORMAT),
+                        match_fixtures::scene_pixels(SOURCE_FORMAT),
+                        match_fixtures::scene_pixels(SOURCE_FORMAT),
+                    ],
+                    TemplateStability::consecutive(2).expect("valid stability"),
+                    None,
+                    2,
+                    2,
+                    3,
+                    &FULL_ORIGINS,
+                    FULL_MAPPED_BYTES,
+                )
+            },
+            replay_watch,
+        ),
+        measure(
+            "disappearance_reset",
+            "a confirmed absence resets stability before two later presence confirmations",
+            plan,
+            || {
+                ReplayFixture::new(
+                    vec![
+                        match_fixtures::scene_pixels(SOURCE_FORMAT),
+                        match_fixtures::background_pixels(SOURCE_FORMAT),
+                        match_fixtures::scene_pixels(SOURCE_FORMAT),
+                        match_fixtures::scene_pixels(SOURCE_FORMAT),
+                    ],
+                    TemplateStability::consecutive(2).expect("valid stability"),
+                    None,
+                    3,
+                    2,
+                    4,
+                    &FULL_ORIGINS,
+                    FULL_MAPPED_BYTES,
+                )
+            },
+            replay_watch,
+        ),
+        measure(
+            "roi_match",
+            "the exact capture-pixel ROI maps only itself and retains its source-qualified match",
+            plan,
+            || {
+                ReplayFixture::new(
+                    vec![match_fixtures::scene_pixels(SOURCE_FORMAT)],
+                    TemplateStability::immediate(),
+                    Some(
+                        RegionSelection::pixels(roi_rect(), ClipPolicy::Reject)
+                            .expect("representable qualification ROI"),
+                    ),
+                    0,
+                    1,
+                    1,
+                    &ROI_ORIGINS,
+                    ROI_MAPPED_BYTES,
+                )
+            },
+            replay_watch,
+        ),
+        measure(
+            "static_duration",
+            "three OpenCV confirmations advance duration only after the manual clock advances",
+            plan,
+            || (),
+            static_duration,
+        ),
+        measure(
+            "coalesced_pair",
+            "one gated immutable analysis completes two independently owned queries",
+            plan,
+            || (),
+            coalesced_pair,
+        ),
+        measure(
+            "saturation_latest_wins",
+            "finite saturation retains the query, replaces pending frames, expires visibly, and publishes",
+            plan,
+            || (),
+            saturation_latest_wins,
+        ),
+        measure(
+            "two_session_fairness",
+            "four eligible queries across two sessions enter in two bounded backend waves",
+            plan,
+            || (),
+            two_session_fairness,
+        ),
+        measure(
+            "cancel_in_flight",
+            "query cancellation wins before a gated backend completion and discards the late match",
+            plan,
+            || (),
+            cancel_in_flight,
+        ),
+        measure(
+            "close_and_retain",
+            "repeated close wakes pending work, retained results survive, and later publication progresses",
+            plan,
+            || (),
+            close_and_retain,
+        ),
+    ];
+
+    if qualification {
+        let source = required_identity(&arguments, "--source-revision", 40);
+        let tree = required_identity(&arguments, "--source-tree", 40);
+        let process = required_identity(&arguments, "--process-id", 1);
+        let executable = required_identity(&arguments, "--executable-sha256", 64);
+        bench_harness::report(
+            &Benchmark {
+                id: "phase-4-template-watch-query",
+                workload: "deterministic Rust replay/OpenCV watcher plus controlled scheduler oracles",
+                phase: "4",
+            },
+            &Profile {
+                fixture: "fixtures/assets/phase1-slice and mado-pilot-testkit deterministic scenes"
+                    .to_owned(),
+                fixture_sha256: fixture_digest().to_string(),
+                benchmark_executable_sha256: Some(executable),
+                hardware,
+                os_version,
+                deployment_target: Some(bench_harness::RELEASE_TARGET.to_owned()),
+                build_profile: format!(
+                    "cargo build --locked --release --package mado-pilot --bench template-watch-query; debug_assertions={}",
+                    cfg!(debug_assertions)
+                ),
+                correctness_oracle: "every retained sample checks exact source, match, state, work, lifecycle, privacy-safe diagnostics, ownership, and producer progress",
+                queue_policy: "fixed scheduler descriptor: 256 engine queries, 16 active sessions, 64 queries per session, two analyses, one latest pending frame per query",
+                notes: Some(format!(
+                    "source commit {source}; tree {tree}; process {process}; OpenCV 4.14.0; controlled-matcher rows are correctness/resource evidence only"
+                )),
+            },
+            plan,
+            &workloads,
+        );
+    } else {
+        bench_harness::summarize("template-watch-query", plan, &workloads);
+    }
+
+    bench_harness::enforce_hard_budgets(&workloads);
+    enforce_qualification_oracles(&workloads, plan);
+}
+
+#[derive(Debug)]
+struct ReplayFixture {
+    engine: Engine,
+    reader: DiagnosticReader,
+    target: mado_pilot::TargetId,
+    template: PreparedTemplate,
+    stability: TemplateStability,
+    region: Option<RegionSelection>,
+    expected_sequence: u64,
+    expected_observations: u32,
+    expected_backend_runs: u64,
+    expected_origins: &'static [(i32, i32)],
+    mapped_bytes: u64,
+    publications: u64,
+}
+
+impl ReplayFixture {
+    #[allow(clippy::too_many_arguments)]
+    fn new(
+        frames: Vec<Vec<u8>>,
+        stability: TemplateStability,
+        region: Option<RegionSelection>,
+        expected_sequence: u64,
+        expected_observations: u32,
+        expected_backend_runs: u64,
+        expected_origins: &'static [(i32, i32)],
+        mapped_bytes: u64,
+    ) -> Self {
+        let publications = u64::try_from(frames.len()).expect("small replay sequence");
+        let source = replay_source(frames);
+        let engine =
+            mado_pilot::replay_engine(ReplayEngineRequest::new(source).with_diagnostics(
+                DiagnosticOptions::normal(64).expect("valid diagnostic capacity"),
+            ))
+            .expect("OpenCV replay engine");
+        let reader = engine
+            .take_diagnostic_reader()
+            .expect("normal diagnostics enabled");
+        let operation = OperationContext::new();
+        let target = engine.discover(&operation).expect("discovered")[0].id();
+        let package = engine
+            .load_package(&PackageSource::directory(package_root()), &operation)
+            .expect("tracked package loads");
+        let template = engine
+            .prepare_from_package(&package, "panel.patch", &operation)
+            .expect("prepared template");
+        Self {
+            engine,
+            reader,
+            target,
+            template,
+            stability,
+            region,
+            expected_sequence,
+            expected_observations,
+            expected_backend_runs,
+            expected_origins,
+            mapped_bytes,
+            publications,
+        }
+    }
+}
+
+fn replay_watch(fixture: &ReplayFixture) -> Sample {
+    let operation = bounded_operation();
+    let session = fixture
+        .engine
+        .open(fixture.target, &OpenRequest::new(), &operation)
+        .expect("opened replay session");
+    let mut request = TemplateWatchRequest::new(
+        fixture.template.clone(),
+        MatchOptions::from_defaults(fixture.template.defaults()),
+        bounded_operation(),
+    )
+    .with_stability(fixture.stability);
+    if let Some(region) = fixture.region {
+        request = request.with_region(region);
+    }
+
+    let started = Instant::now();
+    let query = session
+        .start_template_watch(request)
+        .expect("started replay query");
+    let outcome = query
+        .wait(&bounded_operation())
+        .expect("replay query completed");
+    let elapsed = started.elapsed();
+    let matched = match outcome.as_ref() {
+        TemplateTerminalOutcome::Matched(result) => Some(result),
+        _ => None,
+    };
+    let result_correct = matched.is_some_and(|result| {
+        result.frame().stamp().sequence().value() == fixture.expected_sequence
+            && result.confirmed_observations() == fixture.expected_observations
+            && result.result().searched()
+                == fixture.region.map_or_else(full_scene_rect, |_| roi_rect())
+            && exact_origins(result.result(), fixture.expected_origins)
+    });
+    session.close(&operation).expect("closed replay session");
+    let (metrics, diagnostics_correct) =
+        terminal_metrics(&fixture.reader, &[query.id()], fixture.publications, None);
+    let work_correct = metrics.is_some_and(|work| {
+        work.backend_runs == fixture.expected_backend_runs
+            && work.admitted == fixture.expected_backend_runs
+            && work.completed == fixture.expected_backend_runs
+            && work.query_completions == 1
+            && work.query_failures == 0
+            && work.failed == 0
+            && work.rejected == 0
+            && work.queue_expired == 0
+            && work.coalesced == 0
+    });
+
+    finish_sample(
+        elapsed,
+        result_correct && diagnostics_correct && work_correct,
+        fixture.mapped_bytes,
+        metrics,
+    )
+}
+
+#[derive(Debug)]
+struct OpenCvControlledFixture {
+    core: ControlledCore,
+    template: PreparedTemplate,
+    options: MatchOptions,
+    scene: Vec<u8>,
+}
+
+impl OpenCvControlledFixture {
+    fn new() -> Self {
+        let core = ControlledCore::new(
+            Arc::new(OpenCvBackend::new().expect("OpenCV 4 development installation")),
+            match_fixtures::SCENE,
+        );
+        let operation = OperationContext::new();
+        let template = core
+            .engine
+            .prepare_template(&match_fixtures::planted_template("duration"), &operation)
+            .expect("prepared OpenCV template");
+        let options = MatchOptions::from_defaults(template.defaults());
+        Self {
+            core,
+            template,
+            options,
+            scene: match_fixtures::scene_pixels(SOURCE_FORMAT),
+        }
+    }
+}
+
+fn static_duration(_: &()) -> Sample {
+    let allocation_baseline = bench_harness::live_allocated_bytes();
+    let fixture = OpenCvControlledFixture::new();
+    let session = fixture.core.open();
+    let clock = Arc::new(ManualClock::new());
+    let request = TemplateWatchRequest::new(
+        fixture.template.clone(),
+        fixture.options,
+        OperationContext::new().with_clock(clock.clone()),
+    )
+    .with_stability(TemplateStability::duration(Duration::from_secs(1)).expect("valid duration"));
+
+    let started = Instant::now();
+    let query = session
+        .start_template_watch(request)
+        .expect("started duration query");
+    fixture
+        .core
+        .capture
+        .publish_pixels(&fixture.scene, Continuity::Continuous)
+        .expect("published first confirmation");
+    let first = wait_progress(&query, |progress| progress.confirmed_observations() == 1);
+    fixture
+        .core
+        .capture
+        .publish_pixels(&fixture.scene, Continuity::Continuous)
+        .expect("published same-time confirmation");
+    let second = wait_progress(&query, |progress| progress.confirmed_observations() == 2);
+    clock.advance(Duration::from_secs(1));
+    fixture
+        .core
+        .capture
+        .publish_pixels(&fixture.scene, Continuity::Continuous)
+        .expect("published duration confirmation");
+    let outcome = query
+        .wait(&bounded_operation())
+        .expect("duration query completed");
+    let elapsed = started.elapsed();
+    let result_correct = matches!(
+        outcome.as_ref(),
+        TemplateTerminalOutcome::Matched(result)
+            if result.frame().stamp().sequence().value() == 2
+                && result.confirmed_observations() == 3
+                && result.confirmed_duration() == Duration::from_secs(1)
+                && exact_origins(result.result(), &FULL_ORIGINS)
+    ) && first.confirmed_duration() == Duration::ZERO
+        && second.confirmed_duration() == Duration::ZERO;
+    session.close(&bounded_operation()).expect("closed session");
+    let (metrics, diagnostics_correct) =
+        terminal_metrics(&fixture.core.reader, &[query.id()], 3, None);
+    let work_correct = metrics.is_some_and(|work| {
+        work.backend_runs == 3
+            && work.admitted == 3
+            && work.completed == 3
+            && work.query_completions == 1
+            && work.query_failures == 0
+    });
+
+    drop(outcome);
+    drop(query);
+    drop(session);
+    drop(fixture);
+    drop(clock);
+    let cleanup_correct = wait_for_live_allocations(allocation_baseline.saturating_add(
+        usize::try_from(bench_harness::GROWTH_LIMIT_BYTES).expect("positive growth limit"),
+    ));
+
+    finish_sample(
+        elapsed,
+        result_correct && diagnostics_correct && work_correct && cleanup_correct,
+        FULL_MAPPED_BYTES,
+        metrics,
+    )
+}
+
+#[derive(Debug)]
+struct ControlledCore {
+    engine: Engine,
+    capture: Arc<ControlledCapture>,
+    reader: DiagnosticReader,
+    target: mado_pilot::TargetId,
+}
+
+impl ControlledCore {
+    fn new(backend: Arc<dyn MatchBackend>, extent: mado_pilot::PixelExtent) -> Self {
+        let issuer = Arc::new(IdentityIssuer::new());
+        let capture = Arc::new(
+            ControlledCapture::new(Arc::clone(&issuer), extent, SOURCE_FORMAT)
+                .expect("controlled capture"),
+        );
+        let engine = Engine::new_with_options(
+            EngineWiring {
+                engine: issuer.engine(),
+                capture: Arc::clone(&capture) as Arc<dyn CaptureProvider>,
+                matcher: Matcher::new(backend),
+                loader: PackageLoader::new(),
+                ocr: None,
+                input: None,
+                permission: None,
+            },
+            EngineOptions::new().with_diagnostics(
+                DiagnosticOptions::normal(64).expect("valid diagnostic capacity"),
+            ),
+        )
+        .expect("controlled engine");
+        let reader = engine
+            .take_diagnostic_reader()
+            .expect("normal diagnostics enabled");
+        let target = engine
+            .discover(&OperationContext::new())
+            .expect("discovered")[0]
+            .id();
+        Self {
+            engine,
+            capture,
+            reader,
+            target,
+        }
+    }
+
+    fn open(&self) -> Session {
+        self.engine
+            .open(self.target, &OpenRequest::new(), &bounded_operation())
+            .expect("opened controlled session")
+    }
+
+    fn prepare(&self, id: &str) -> PreparedTemplate {
+        self.engine
+            .prepare_template(
+                &match_fixtures::planted_template(id),
+                &OperationContext::new(),
+            )
+            .expect("prepared controlled template")
+    }
+}
+
+#[derive(Debug)]
+struct ControlledRun {
+    core: ControlledCore,
+    matcher: Arc<ControlledMatcher>,
+}
+
+impl ControlledRun {
+    fn new(matcher: ControlledMatcher) -> Self {
+        let matcher = Arc::new(matcher);
+        let core = ControlledCore::new(
+            Arc::clone(&matcher) as Arc<dyn MatchBackend>,
+            mado_pilot::PixelExtent::new(32, 24),
+        );
+        Self { core, matcher }
+    }
+}
+
+fn coalesced_pair(_: &()) -> Sample {
+    let allocation_baseline = bench_harness::live_allocated_bytes();
+    let gate = Arc::new(CompletionGate::new());
+    let run = ControlledRun::new(
+        ControlledMatcher::new(SOURCE_FORMAT)
+            .with_candidates(vec![Candidate::new(1, 1, 0.99)])
+            .with_completion_gate(Arc::clone(&gate)),
+    );
+    let session = run.core.open();
+    let template = run.core.prepare("coalesced");
+    let options = MatchOptions::from_defaults(template.defaults());
+
+    let started = Instant::now();
+    let first = start_query(&session, template.clone(), options, OperationContext::new());
+    let second = start_query(&session, template, options, OperationContext::new());
+    run.core
+        .capture
+        .publish(0x40, Continuity::Continuous)
+        .expect("published shared frame");
+    let entered = gate.wait_until_entered(WAIT);
+    gate.release();
+    let first_outcome = first.wait(&bounded_operation()).expect("first completed");
+    let second_outcome = second.wait(&bounded_operation()).expect("second completed");
+    let elapsed = started.elapsed();
+    session.close(&bounded_operation()).expect("closed session");
+    let (metrics, diagnostics_correct) = terminal_metrics(
+        &run.core.reader,
+        &[first.id(), second.id()],
+        1,
+        Some(u64::try_from(run.matcher.find_count()).expect("count fits")),
+    );
+    let work_correct = metrics.is_some_and(|work| {
+        work.backend_runs == 1
+            && work.admitted == 1
+            && work.coalesced == 1
+            && work.completed == 2
+            && work.query_completions == 2
+            && work.query_failures == 0
+    });
+    let outcomes_correct = first.id() != second.id()
+        && matches!(first_outcome.as_ref(), TemplateTerminalOutcome::Matched(_))
+        && matches!(second_outcome.as_ref(), TemplateTerminalOutcome::Matched(_));
+
+    drop(first_outcome);
+    drop(second_outcome);
+    drop(first);
+    drop(second);
+    drop(session);
+    drop(run);
+    drop(gate);
+    let cleanup_correct = wait_for_live_allocations(allocation_baseline.saturating_add(
+        usize::try_from(bench_harness::GROWTH_LIMIT_BYTES).expect("positive growth limit"),
+    ));
+
+    finish_sample(
+        elapsed,
+        entered && outcomes_correct && diagnostics_correct && work_correct && cleanup_correct,
+        CONTROLLED_MAPPED_BYTES,
+        metrics,
+    )
+}
+
+fn saturation_latest_wins(_: &()) -> Sample {
+    let allocation_baseline = bench_harness::live_allocated_bytes();
+    let started = Instant::now();
+
+    let latest_first_gate = Arc::new(CompletionGate::new());
+    let latest_second_gate = Arc::new(CompletionGate::new());
+    let latest_final_gate = Arc::new(CompletionGate::new());
+    let latest_run = ControlledRun::new(
+        ControlledMatcher::new(SOURCE_FORMAT).with_calls([
+            ScriptedMatchCall::new(Vec::new()).with_completion_gate(Arc::clone(&latest_first_gate)),
+            ScriptedMatchCall::new(Vec::new())
+                .with_completion_gate(Arc::clone(&latest_second_gate)),
+            ScriptedMatchCall::new(vec![Candidate::new(1, 1, 0.99)])
+                .with_completion_gate(Arc::clone(&latest_final_gate)),
+        ]),
+    );
+    let latest_session = latest_run.core.open();
+    let latest_template = latest_run.core.prepare("latest-wins");
+    let latest = start_query(
+        &latest_session,
+        latest_template.clone(),
+        MatchOptions::from_defaults(latest_template.defaults()),
+        OperationContext::new(),
+    );
+    latest_run
+        .core
+        .capture
+        .publish(0x40, Continuity::Continuous)
+        .expect("published first in-flight frame");
+    let latest_first_entered = latest_first_gate.wait_until_entered(WAIT);
+    latest_run
+        .core
+        .capture
+        .publish(0x41, Continuity::Continuous)
+        .expect("published second in-flight frame");
+    let latest_second_entered = latest_second_gate.wait_until_entered(WAIT);
+    latest_run
+        .core
+        .capture
+        .publish(0x42, Continuity::Continuous)
+        .expect("published pending frame");
+    let _ = wait_progress(&latest, |progress| progress.pending_count() == 1);
+    latest_run
+        .core
+        .capture
+        .publish(0x43, Continuity::Continuous)
+        .expect("published latest replacement");
+    let latest_replaced = wait_progress(&latest, |progress| {
+        progress.pending_count() == 1
+            && progress.work().get(TemplateWorkDisposition::Superseded) == 1
+    });
+    latest_first_gate.release();
+    let _ = wait_progress(&latest, |progress| {
+        progress.work().get(TemplateWorkDisposition::Superseded) == 2
+    });
+    let latest_final_entered = latest_final_gate.wait_until_entered(WAIT);
+    latest_second_gate.release();
+    let latest_ready = wait_progress(&latest, |progress| {
+        progress.pending_count() == 0
+            && progress.work().get(TemplateWorkDisposition::Admitted) == 3
+            && progress.work().get(TemplateWorkDisposition::Completed) == 0
+            && progress.work().get(TemplateWorkDisposition::Superseded) == 3
+    });
+    latest_final_gate.release();
+    let latest_outcome = latest
+        .wait(&bounded_operation())
+        .expect("latest frame completed");
+    latest_session
+        .close(&bounded_operation())
+        .expect("closed latest-wins session");
+    let (mut latest_metrics, latest_diagnostics) = terminal_metrics(
+        &latest_run.core.reader,
+        &[latest.id()],
+        4,
+        Some(u64::try_from(latest_run.matcher.find_count()).expect("count fits")),
+    );
+    if latest_first_entered
+        && latest_second_entered
+        && latest_final_entered
+        && let Some(metrics) = &mut latest_metrics
+    {
+        metrics.stale_discards = 2;
+    }
+    let latest_correct = latest_first_entered
+        && latest_second_entered
+        && latest_final_entered
+        && latest_replaced.pending_count() == 1
+        && latest_ready.work().get(TemplateWorkDisposition::Superseded) == 3
+        && matches!(
+            latest_outcome.as_ref(),
+            TemplateTerminalOutcome::Matched(result)
+                if result.frame().stamp().sequence().value() == 3
+        )
+        && latest_metrics.is_some_and(|work| {
+            work.backend_runs == 3
+                && work.admitted == 3
+                && work.completed == 1
+                && work.superseded == 3
+                && work.stale_discards == 2
+                && work.query_completions == 1
+        });
+
+    let first_gate = Arc::new(CompletionGate::new());
+    let second_gate = Arc::new(CompletionGate::new());
+    let found = vec![Candidate::new(1, 1, 0.99)];
+    let saturation_run = ControlledRun::new(ControlledMatcher::new(SOURCE_FORMAT).with_calls([
+        ScriptedMatchCall::new(found.clone()).with_completion_gate(Arc::clone(&first_gate)),
+        ScriptedMatchCall::new(found.clone()).with_completion_gate(Arc::clone(&second_gate)),
+        ScriptedMatchCall::new(found),
+    ]));
+    let saturation_session = saturation_run.core.open();
+    let first_template = saturation_run.core.prepare("saturation-first");
+    let second_template = saturation_run.core.prepare("saturation-second");
+    let first = start_query(
+        &saturation_session,
+        first_template.clone(),
+        MatchOptions::from_defaults(first_template.defaults()),
+        OperationContext::new(),
+    );
+    let second = start_query(
+        &saturation_session,
+        second_template.clone(),
+        MatchOptions::from_defaults(second_template.defaults()),
+        OperationContext::new(),
+    );
+    saturation_run
+        .core
+        .capture
+        .publish(0x40, Continuity::Continuous)
+        .expect("published blocker frame");
+    let blockers_entered =
+        first_gate.wait_until_entered(WAIT) && second_gate.wait_until_entered(WAIT);
+    let clock = Arc::new(ManualClock::new());
+    let expiring_template = saturation_run.core.prepare("saturation-expiring");
+    let expiring = start_query(
+        &saturation_session,
+        expiring_template.clone(),
+        MatchOptions::from_defaults(expiring_template.defaults()),
+        OperationContext::new().with_clock(clock.clone()),
+    );
+    let _ = wait_progress(&expiring, TemplateQueryProgress::is_pending);
+    clock.advance(QUEUE_EXPIRY_ADVANCE);
+    let expired = expiring
+        .wait(&bounded_operation())
+        .expect("expiry is a terminal outcome");
+    first_gate.release();
+    second_gate.release();
+    let first_outcome = first
+        .wait(&bounded_operation())
+        .expect("first blocker completed");
+    let second_outcome = second
+        .wait(&bounded_operation())
+        .expect("second blocker completed");
+    saturation_session
+        .close(&bounded_operation())
+        .expect("closed saturation session");
+    let (saturation_metrics, saturation_diagnostics) = terminal_metrics(
+        &saturation_run.core.reader,
+        &[first.id(), second.id(), expiring.id()],
+        1,
+        Some(u64::try_from(saturation_run.matcher.find_count()).expect("count fits")),
+    );
+    let saturation_correct = blockers_entered
+        && matches!(
+            expired.as_ref(),
+            TemplateTerminalOutcome::Overloaded(TemplateOverload::QueueExpired)
+        )
+        && matches!(first_outcome.as_ref(), TemplateTerminalOutcome::Matched(_))
+        && matches!(second_outcome.as_ref(), TemplateTerminalOutcome::Matched(_))
+        && saturation_metrics.is_some_and(|work| {
+            work.backend_runs == 2
+                && work.admitted == 2
+                && work.completed == 2
+                && work.queue_expired == 1
+                && work.query_completions == 3
+        });
+
+    let metrics = latest_metrics
+        .zip(saturation_metrics)
+        .map(|(latest, saturation)| latest.saturating_add(saturation));
+    let work_correct = metrics.is_some_and(|work| {
+        work.backend_runs == 5
+            && work.admitted == 5
+            && work.completed == 3
+            && work.queue_expired == 1
+            && work.superseded == 3
+            && work.stale_discards == 2
+            && work.query_completions == 4
+            && work.query_failures == 0
+            && work.producer_publications == 5
+    });
+
+    let elapsed = started.elapsed();
+    drop(latest_outcome);
+    drop(latest);
+    drop(latest_session);
+    drop(latest_run);
+    drop(latest_first_gate);
+    drop(latest_second_gate);
+    drop(latest_final_gate);
+    drop(expired);
+    drop(first_outcome);
+    drop(second_outcome);
+    drop(expiring);
+    drop(first);
+    drop(second);
+    drop(saturation_session);
+    drop(saturation_run);
+    drop(clock);
+    drop(first_gate);
+    drop(second_gate);
+    let cleanup_correct = wait_for_live_allocations(allocation_baseline.saturating_add(
+        usize::try_from(bench_harness::GROWTH_LIMIT_BYTES).expect("positive growth limit"),
+    ));
+
+    finish_sample(
+        elapsed,
+        latest_correct
+            && saturation_correct
+            && latest_diagnostics
+            && saturation_diagnostics
+            && work_correct
+            && cleanup_correct,
+        CONTROLLED_MAPPED_BYTES,
+        metrics,
+    )
+}
+
+fn two_session_fairness(_: &()) -> Sample {
+    let allocation_baseline = bench_harness::live_allocated_bytes();
+    let gates: Vec<_> = (0..4).map(|_| Arc::new(CompletionGate::new())).collect();
+    let calls: Vec<_> = gates
+        .iter()
+        .enumerate()
+        .map(|(index, gate)| {
+            ScriptedMatchCall::new(vec![Candidate::new(
+                i32::try_from(index + 1).expect("small candidate coordinate"),
+                1,
+                0.99,
+            )])
+            .with_completion_gate(Arc::clone(gate))
+        })
+        .collect();
+    let run = ControlledRun::new(ControlledMatcher::new(SOURCE_FORMAT).with_calls(calls));
+    let first_session = run.core.open();
+    let second_session = run.core.open();
+    let prepared: Vec<_> = (0..4)
+        .map(|index| run.core.prepare(&format!("fairness-{index}")))
+        .collect();
+
+    let started = Instant::now();
+    let queries = [
+        start_query(
+            &first_session,
+            prepared[0].clone(),
+            MatchOptions::from_defaults(prepared[0].defaults()),
+            OperationContext::new(),
+        ),
+        start_query(
+            &first_session,
+            prepared[1].clone(),
+            MatchOptions::from_defaults(prepared[1].defaults()),
+            OperationContext::new(),
+        ),
+        start_query(
+            &second_session,
+            prepared[2].clone(),
+            MatchOptions::from_defaults(prepared[2].defaults()),
+            OperationContext::new(),
+        ),
+        start_query(
+            &second_session,
+            prepared[3].clone(),
+            MatchOptions::from_defaults(prepared[3].defaults()),
+            OperationContext::new(),
+        ),
+    ];
+    run.core
+        .capture
+        .publish(0x40, Continuity::Continuous)
+        .expect("published to both sessions");
+    let first_wave = gates[0].wait_until_entered(WAIT)
+        && gates[1].wait_until_entered(WAIT)
+        && run.matcher.find_count() == 2;
+    gates[0].release();
+    let third_entered = gates[2].wait_until_entered(WAIT) && run.matcher.find_count() == 3;
+    gates[1].release();
+    let fourth_entered = gates[3].wait_until_entered(WAIT) && run.matcher.find_count() == 4;
+    gates[2].release();
+    gates[3].release();
+    let outcomes_correct = queries.iter().all(|query| {
+        query
+            .wait(&bounded_operation())
+            .is_ok_and(|outcome| matches!(outcome.as_ref(), TemplateTerminalOutcome::Matched(_)))
+    });
+    first_session
+        .close(&bounded_operation())
+        .expect("closed first session");
+    second_session
+        .close(&bounded_operation())
+        .expect("closed second session");
+    let ids: Vec<_> = queries.iter().map(TemplateQuery::id).collect();
+    let (fairness_metrics, fairness_diagnostics) = terminal_metrics(
+        &run.core.reader,
+        &ids,
+        1,
+        Some(u64::try_from(run.matcher.find_count()).expect("count fits")),
+    );
+    let fairness_work_correct = fairness_metrics.is_some_and(|work| {
+        work.backend_runs == 4
+            && work.admitted == 4
+            && work.completed == 4
+            && work.query_completions == 4
+            && work.query_failures == 0
+            && work.coalesced == 0
+    });
+
+    let older = Arc::new(CompletionGate::new());
+    let newer = Arc::new(CompletionGate::new());
+    let found = vec![Candidate::new(1, 1, 0.99)];
+    let stale_run = ControlledRun::new(ControlledMatcher::new(SOURCE_FORMAT).with_calls([
+        ScriptedMatchCall::new(found.clone()).with_completion_gate(Arc::clone(&older)),
+        ScriptedMatchCall::new(found).with_completion_gate(Arc::clone(&newer)),
+    ]));
+    let stale_session = stale_run.core.open();
+    let stale_template = stale_run.core.prepare("stale-generation");
+    let stale_query = start_query(
+        &stale_session,
+        stale_template.clone(),
+        MatchOptions::from_defaults(stale_template.defaults()),
+        OperationContext::new(),
+    );
+    stale_run
+        .core
+        .capture
+        .publish(0x40, Continuity::Continuous)
+        .expect("published older generation");
+    let older_entered = older.wait_until_entered(WAIT);
+    stale_run
+        .core
+        .capture
+        .publish(0x41, Continuity::Continuous)
+        .expect("published newer generation");
+    let newer_entered = newer.wait_until_entered(WAIT);
+    newer.release();
+    let newer_outcome = stale_query
+        .wait(&bounded_operation())
+        .expect("newer generation committed");
+    older.release();
+    let older_completed = older.wait_until_completed(WAIT);
+    let retained = match stale_query.poll() {
+        TemplateQueryOutcome::Terminal(outcome) => Some(outcome),
+        TemplateQueryOutcome::Pending(_) => None,
+    };
+    stale_session
+        .close(&bounded_operation())
+        .expect("closed stale session");
+    let (mut stale_metrics, stale_diagnostics) = terminal_metrics(
+        &stale_run.core.reader,
+        &[stale_query.id()],
+        2,
+        Some(u64::try_from(stale_run.matcher.find_count()).expect("count fits")),
+    );
+    if older_entered
+        && newer_entered
+        && older_completed
+        && let Some(metrics) = &mut stale_metrics
+    {
+        metrics.stale_discards = 1;
+    }
+    let stale_correct = matches!(
+        newer_outcome.as_ref(),
+        TemplateTerminalOutcome::Matched(result)
+            if result.frame().stamp().sequence().value() == 1
+    ) && retained
+        .as_ref()
+        .is_some_and(|retained| Arc::ptr_eq(&newer_outcome, retained))
+        && stale_metrics.is_some_and(|work| {
+            work.backend_runs == 2
+                && work.admitted == 2
+                && work.completed == 1
+                && work.stale_discards == 1
+                && work.query_completions == 1
+        });
+
+    let metrics = fairness_metrics
+        .zip(stale_metrics)
+        .map(|(fairness, stale)| fairness.saturating_add(stale));
+    let work_correct = metrics.is_some_and(|work| {
+        work.backend_runs == 6
+            && work.admitted == 6
+            && work.completed == 5
+            && work.stale_discards == 1
+            && work.query_completions == 5
+            && work.query_failures == 0
+            && work.producer_publications == 3
+    });
+
+    let elapsed = started.elapsed();
+    drop(retained);
+    drop(newer_outcome);
+    drop(stale_query);
+    drop(stale_session);
+    drop(stale_run);
+    drop(older);
+    drop(newer);
+    drop(queries);
+    drop(prepared);
+    drop(first_session);
+    drop(second_session);
+    drop(run);
+    drop(gates);
+    let cleanup_correct = wait_for_live_allocations(allocation_baseline.saturating_add(
+        usize::try_from(bench_harness::GROWTH_LIMIT_BYTES).expect("positive growth limit"),
+    ));
+
+    finish_sample(
+        elapsed,
+        first_wave
+            && third_entered
+            && fourth_entered
+            && outcomes_correct
+            && fairness_diagnostics
+            && fairness_work_correct
+            && stale_diagnostics
+            && stale_correct
+            && work_correct
+            && cleanup_correct,
+        CONTROLLED_MAPPED_BYTES,
+        metrics,
+    )
+}
+
+fn cancel_in_flight(_: &()) -> Sample {
+    let allocation_baseline = bench_harness::live_allocated_bytes();
+    let gate = Arc::new(CompletionGate::new());
+    let run = ControlledRun::new(
+        ControlledMatcher::new(SOURCE_FORMAT)
+            .with_candidates(vec![Candidate::new(1, 1, 0.99)])
+            .with_completion_gate(Arc::clone(&gate)),
+    );
+    let session = run.core.open();
+    let template = run.core.prepare("cancel");
+
+    let started = Instant::now();
+    let query = start_query(
+        &session,
+        template.clone(),
+        MatchOptions::from_defaults(template.defaults()),
+        OperationContext::new(),
+    );
+    run.core
+        .capture
+        .publish(0x40, Continuity::Continuous)
+        .expect("published cancel frame");
+    let entered = gate.wait_until_entered(WAIT);
+    let cancelled = query.cancel();
+    gate.release();
+    let completed = gate.wait_until_completed(WAIT);
+    let elapsed = started.elapsed();
+    session.close(&bounded_operation()).expect("closed session");
+    let (metrics, diagnostics_correct) = terminal_metrics(
+        &run.core.reader,
+        &[query.id()],
+        1,
+        Some(u64::try_from(run.matcher.find_count()).expect("count fits")),
+    );
+    let work_correct = metrics.is_some_and(|work| {
+        work.backend_runs == 1
+            && work.completed == 0
+            && work.query_completions == 1
+            && work.query_failures == 0
+    });
+
+    let outcome_correct = matches!(cancelled.as_ref(), TemplateTerminalOutcome::Cancelled)
+        && matches!(query.poll(), TemplateQueryOutcome::Terminal(outcome) if matches!(outcome.as_ref(), TemplateTerminalOutcome::Cancelled));
+    drop(cancelled);
+    drop(query);
+    drop(template);
+    drop(session);
+    drop(run);
+    drop(gate);
+    let cleanup_correct = wait_for_live_allocations(allocation_baseline.saturating_add(
+        usize::try_from(bench_harness::GROWTH_LIMIT_BYTES).expect("positive growth limit"),
+    ));
+
+    finish_sample(
+        elapsed,
+        entered
+            && completed
+            && outcome_correct
+            && diagnostics_correct
+            && work_correct
+            && cleanup_correct,
+        CONTROLLED_MAPPED_BYTES,
+        metrics,
+    )
+}
+
+fn close_and_retain(_: &()) -> Sample {
+    let allocation_baseline = bench_harness::live_allocated_bytes();
+    let run = ControlledRun::new(
+        ControlledMatcher::new(SOURCE_FORMAT).with_candidates(vec![Candidate::new(1, 1, 0.99)]),
+    );
+    let first_session = run.core.open();
+    let template = run.core.prepare("retain");
+    let options = MatchOptions::from_defaults(template.defaults());
+
+    let started = Instant::now();
+    let retained_query = start_query(
+        &first_session,
+        template.clone(),
+        options,
+        OperationContext::new(),
+    );
+    run.core
+        .capture
+        .publish(0x40, Continuity::Continuous)
+        .expect("published retained result");
+    let retained = retained_query
+        .wait(&bounded_operation())
+        .expect("retained query completed");
+    first_session
+        .close(&bounded_operation())
+        .expect("first close");
+    first_session
+        .close(&bounded_operation())
+        .expect("repeated close");
+
+    let pending_session = run.core.open();
+    let pending = start_query(
+        &pending_session,
+        template.clone(),
+        options,
+        OperationContext::new(),
+    );
+    pending_session
+        .close(&bounded_operation())
+        .expect("closed pending session");
+    let pending_outcome = pending
+        .wait(&bounded_operation())
+        .expect("pending query woke");
+
+    let progress_session = run.core.open();
+    let progressed = start_query(
+        &progress_session,
+        template,
+        options,
+        OperationContext::new(),
+    );
+    let publication_correct = run
+        .core
+        .capture
+        .publish(0x41, Continuity::Continuous)
+        .is_err_and(|error| error.status() == mado_pilot::Status::Closed);
+    let progressed_outcome = progressed
+        .wait(&bounded_operation())
+        .expect("later query completed");
+    let elapsed = started.elapsed();
+    progress_session
+        .close(&bounded_operation())
+        .expect("closed progress session");
+    let retained_still_owned = matches!(
+        retained.as_ref(),
+        TemplateTerminalOutcome::Matched(result)
+            if result.result().matches().len() == 1
+    );
+    let outcomes_correct = publication_correct
+        && retained_still_owned
+        && matches!(
+            pending_outcome.as_ref(),
+            TemplateTerminalOutcome::SessionClosed
+        )
+        && matches!(
+            progressed_outcome.as_ref(),
+            TemplateTerminalOutcome::Matched(_)
+        );
+    let (metrics, diagnostics_correct) = terminal_metrics(
+        &run.core.reader,
+        &[retained_query.id(), pending.id(), progressed.id()],
+        2,
+        Some(u64::try_from(run.matcher.find_count()).expect("count fits")),
+    );
+    let work_correct = metrics.is_some_and(|work| {
+        work.backend_runs == 2
+            && work.completed == 2
+            && work.query_completions == 3
+            && work.query_failures == 0
+            && work.producer_publications == 2
+    });
+
+    drop(retained);
+    drop(pending_outcome);
+    drop(progressed_outcome);
+    drop(retained_query);
+    drop(pending);
+    drop(progressed);
+    drop(first_session);
+    drop(pending_session);
+    drop(progress_session);
+    drop(run);
+    let cleanup_correct = wait_for_live_allocations(allocation_baseline.saturating_add(
+        usize::try_from(bench_harness::GROWTH_LIMIT_BYTES).expect("positive growth limit"),
+    ));
+
+    finish_sample(
+        elapsed,
+        outcomes_correct && diagnostics_correct && work_correct && cleanup_correct,
+        CONTROLLED_MAPPED_BYTES,
+        metrics,
+    )
+}
+
+fn start_query(
+    session: &Session,
+    template: PreparedTemplate,
+    options: MatchOptions,
+    operation: OperationContext,
+) -> TemplateQuery {
+    session
+        .start_template_watch(TemplateWatchRequest::new(template, options, operation))
+        .expect("started query")
+}
+
+fn wait_progress(
+    query: &TemplateQuery,
+    predicate: impl Fn(TemplateQueryProgress) -> bool,
+) -> TemplateQueryProgress {
+    let deadline = Instant::now() + WAIT;
+    loop {
+        match query.poll() {
+            TemplateQueryOutcome::Pending(progress) if predicate(progress) => return progress,
+            TemplateQueryOutcome::Pending(_) if Instant::now() < deadline => {
+                std::thread::yield_now();
+            }
+            TemplateQueryOutcome::Pending(progress) => {
+                panic!("query progress condition timed out: {progress:?}")
+            }
+            TemplateQueryOutcome::Terminal(outcome) => {
+                panic!("query became terminal before expected progress: {outcome:?}")
+            }
+        }
+    }
+}
+
+fn wait_for_live_allocations(limit: usize) -> bool {
+    let deadline = Instant::now() + WAIT;
+    while bench_harness::live_allocated_bytes() > limit && Instant::now() < deadline {
+        std::thread::yield_now();
+    }
+    bench_harness::live_allocated_bytes() <= limit
+}
+fn terminal_metrics(
+    reader: &DiagnosticReader,
+    expected: &[TemplateQueryId],
+    publications: u64,
+    backend_runs: Option<u64>,
+) -> (Option<QueryWorkMetrics>, bool) {
+    let deadline = Instant::now() + WAIT;
+    let mut losses_clear = true;
+    let mut seen = BTreeSet::new();
+    let mut metrics = QueryWorkMetrics {
+        producer_publications: publications,
+        ..QueryWorkMetrics::default()
+    };
+    while seen.len() < expected.len() && Instant::now() < deadline {
+        match reader.drain() {
+            DiagnosticDrain::Batch(batch) => {
+                losses_clear &= batch.losses().normal() == 0 && batch.losses().debug() == 0;
+                for record in batch.records() {
+                    let DiagnosticPayload::TemplateWatch(watch) = record.payload() else {
+                        continue;
+                    };
+                    if !expected.contains(&watch.query) || watch.outcome.is_none() {
+                        continue;
+                    }
+                    if !seen.insert(watch.query.get()) {
+                        return (None, false);
+                    }
+                    add_work(&mut metrics, watch.work);
+                    if matches!(
+                        watch.outcome,
+                        Some(TemplateWatchDiagnosticOutcome::Failed(_))
+                    ) {
+                        metrics.query_failures = metrics.query_failures.saturating_add(1);
+                    }
+                    metrics.query_completions = metrics.query_completions.saturating_add(1);
+                }
+            }
+            DiagnosticDrain::OpenEmpty => std::thread::yield_now(),
+            DiagnosticDrain::EndOfStream => break,
+            _ => return (None, false),
+        }
+    }
+    metrics.backend_runs = backend_runs.unwrap_or(metrics.admitted);
+    let complete = seen.len() == expected.len();
+    (complete.then_some(metrics), losses_clear && complete)
+}
+
+fn add_work(metrics: &mut QueryWorkMetrics, work: TemplateWorkCounts) {
+    metrics.admitted = metrics
+        .admitted
+        .saturating_add(work.get(TemplateWorkDisposition::Admitted));
+    metrics.skipped_change = metrics
+        .skipped_change
+        .saturating_add(work.get(TemplateWorkDisposition::SkippedChange));
+    metrics.deferred_rate = metrics
+        .deferred_rate
+        .saturating_add(work.get(TemplateWorkDisposition::DeferredRate));
+    metrics.coalesced = metrics
+        .coalesced
+        .saturating_add(work.get(TemplateWorkDisposition::Coalesced));
+    metrics.superseded = metrics
+        .superseded
+        .saturating_add(work.get(TemplateWorkDisposition::Superseded));
+    metrics.rejected = metrics
+        .rejected
+        .saturating_add(work.get(TemplateWorkDisposition::Rejected));
+    metrics.queue_expired = metrics
+        .queue_expired
+        .saturating_add(work.get(TemplateWorkDisposition::QueueExpired));
+    metrics.completed = metrics
+        .completed
+        .saturating_add(work.get(TemplateWorkDisposition::Completed));
+    metrics.failed = metrics
+        .failed
+        .saturating_add(work.get(TemplateWorkDisposition::Failed));
+}
+
+fn finish_sample(
+    elapsed: Duration,
+    correct: bool,
+    mapped: u64,
+    metrics: Option<QueryWorkMetrics>,
+) -> Sample {
+    let resident = peak_resident_bytes();
+    let supported_target = cfg!(any(windows, target_os = "macos"));
+    let mut sample = Sample::new(
+        elapsed,
+        correct && metrics.is_some() && (!supported_target || resident.is_some()),
+        mapped,
+    );
+    if let Some(metrics) = metrics {
+        sample = sample.with_query_work(metrics);
+    }
+    if let Some(bytes) = resident {
+        sample = sample.with_peak_resident_bytes(bytes);
+    }
+    sample
+}
+
+fn exact_origins(result: &mado_pilot::MatchResult, expected: &[(i32, i32)]) -> bool {
+    let mut observed: Vec<_> = result
+        .matches()
+        .iter()
+        .map(|found| (found.bounds().left(), found.bounds().top()))
+        .collect();
+    observed.sort_unstable();
+    let mut expected = expected.to_vec();
+    expected.sort_unstable();
+    observed == expected
+        && result
+            .matches()
+            .iter()
+            .all(|found| (found.score() - 1.0).abs() <= 1e-5)
+}
+
+fn replay_source(frames: Vec<Vec<u8>>) -> ReplaySource {
+    let descriptor = FrameDescriptor::packed(match_fixtures::SCENE, SOURCE_FORMAT)
+        .expect("valid replay descriptor");
+    let frames: Vec<_> = frames
+        .into_iter()
+        .enumerate()
+        .map(|(index, pixels)| {
+            ReplayFrame::new(
+                descriptor,
+                MonotonicInstant::from_origin(Duration::from_millis(
+                    u64::try_from(index).expect("small frame index") * 16,
+                )),
+                Continuity::Continuous,
+                None,
+                pixels.into_boxed_slice(),
+            )
+            .expect("valid replay frame")
+        })
+        .collect();
+    ReplaySource::from_targets(vec![
+        ReplayTarget::new("template-watch-qualification", frames).expect("valid replay target"),
+    ])
+    .expect("valid replay source")
+}
+
+fn full_scene_rect() -> PixelRect {
+    PixelRect::new(
+        0,
+        0,
+        i32::try_from(match_fixtures::SCENE.width()).expect("small scene width"),
+        i32::try_from(match_fixtures::SCENE.height()).expect("small scene height"),
+    )
+    .expect("non-empty scene")
+}
+
+fn roi_rect() -> PixelRect {
+    PixelRect::new(ROI.0, ROI.1, ROI.2, ROI.3).expect("valid qualification ROI")
+}
+
+fn bounded_operation() -> OperationContext {
+    OperationContext::new()
+        .with_timeout(WAIT)
+        .expect("representable qualification timeout")
+}
+
+fn package_root() -> PathBuf {
+    PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../../fixtures/assets/phase1-slice")
+}
+
+fn fixture_digest() -> ContentDigest {
+    let fixtures = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../../fixtures");
+    let mut combined = Vec::new();
+    for sums in [
+        fixtures.join("change-detection/g-005/SHA256SUMS"),
+        fixtures.join("assets/phase1-slice/SHA256SUMS"),
+    ] {
+        combined.extend_from_slice(
+            &std::fs::read(&sums)
+                .unwrap_or_else(|error| panic!("tracked checksum manifest failed: {error}")),
+        );
+    }
+    ContentDigest::of(&combined)
+}
+
+fn required_identity(arguments: &[String], name: &str, minimum_len: usize) -> String {
+    let value = bench_harness::argument(arguments, name)
+        .unwrap_or_else(|| panic!("qualification requires {name}"));
+    assert!(
+        value.len() >= minimum_len
+            && value
+                .bytes()
+                .all(|byte| byte.is_ascii_alphanumeric() || matches!(byte, b'-' | b'_' | b'.')),
+        "qualification identity is not allowlisted"
+    );
+    value
+}
+
+fn enforce_qualification_oracles(workloads: &[Workload], plan: Plan) {
+    for workload in workloads {
+        assert_eq!(
+            workload.incorrect(),
+            0,
+            "{} failed an oracle",
+            workload.name()
+        );
+        assert!(
+            workload.growth_bytes() <= bench_harness::GROWTH_LIMIT_BYTES,
+            "{} exceeded retained growth",
+            workload.name()
+        );
+        let work = workload
+            .query_work()
+            .unwrap_or_else(|| panic!("{} omitted query work", workload.name()));
+        assert_eq!(
+            work.producer_publications % u64::try_from(plan.samples()).expect("samples fit"),
+            0,
+            "{} lost producer accounting",
+            workload.name()
+        );
+        assert_eq!(
+            work.failed,
+            0,
+            "{} recorded backend failures",
+            workload.name()
+        );
+        assert_eq!(
+            work.query_failures,
+            0,
+            "{} recorded query failures",
+            workload.name()
+        );
+        assert!(
+            workload.peak_resident_bytes().is_some(),
+            "{} omitted target-native peak resident memory",
+            workload.name()
+        );
+    }
+}
+
+#[cfg(target_os = "macos")]
+fn peak_resident_bytes() -> Option<u64> {
+    let mut usage = std::mem::MaybeUninit::<libc::rusage>::uninit();
+    // SAFETY: `usage` points to writable storage for one complete `rusage`, and
+    // `RUSAGE_SELF` asks libc to initialize that storage for this process.
+    if unsafe { libc::getrusage(libc::RUSAGE_SELF, usage.as_mut_ptr()) } != 0 {
+        return None;
+    }
+    // SAFETY: successful `getrusage` initialized the complete `rusage` value.
+    let usage = unsafe { usage.assume_init() };
+    u64::try_from(usage.ru_maxrss)
+        .ok()
+        .filter(|bytes| *bytes > 0)
+}
+
+#[cfg(windows)]
+fn peak_resident_bytes() -> Option<u64> {
+    let mut counters = PROCESS_MEMORY_COUNTERS::default();
+    let bytes = u32::try_from(size_of::<PROCESS_MEMORY_COUNTERS>()).ok()?;
+    // SAFETY: `GetCurrentProcess` returns the documented pseudo-handle for this
+    // process, `counters` is writable for the complete structure declared by
+    // `bytes`, and the call does not retain either pointer.
+    unsafe { GetProcessMemoryInfo(GetCurrentProcess(), &raw mut counters, bytes) }.ok()?;
+    u64::try_from(counters.PeakWorkingSetSize)
+        .ok()
+        .filter(|bytes| *bytes > 0)
+}
+
+#[cfg(not(any(windows, target_os = "macos")))]
+fn peak_resident_bytes() -> Option<u64> {
+    None
+}

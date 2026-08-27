@@ -1024,6 +1024,15 @@ fn live() -> usize {
     LIVE.load(Ordering::Relaxed)
 }
 
+/// Returns the current live bytes counted by [`Accounting`].
+///
+/// Qualification harnesses use this to wait for explicitly closed worker
+/// threads to release their heap before committing a retained sample.
+#[must_use]
+pub fn live_allocated_bytes() -> usize {
+    live()
+}
+
 // --- Running -----------------------------------------------------------------
 
 /// How many iterations a run discards and how many it keeps.
@@ -1104,6 +1113,66 @@ pub struct CaptureResources {
     pub gpu_resources_peak: u64,
 }
 
+/// Query/scheduler work retained by one benchmark sample.
+#[derive(Debug, Default, Clone, Copy, PartialEq, Eq)]
+pub struct QueryWorkMetrics {
+    /// Backend calls that began.
+    pub backend_runs: u64,
+    /// Queries that committed their workload's expected terminal outcome.
+    pub query_completions: u64,
+    /// Queries that committed an unexpected terminal failure.
+    pub query_failures: u64,
+    /// Older backend generations discarded after losing authority.
+    pub stale_discards: u64,
+    /// Capture frames accepted while the sample exercised producer progress.
+    pub producer_publications: u64,
+    /// Work admitted to a backend slot.
+    pub admitted: u64,
+    /// Work skipped by the accepted change policy.
+    pub skipped_change: u64,
+    /// Work deferred by the query rate.
+    pub deferred_rate: u64,
+    /// Queries sharing one immutable analysis.
+    pub coalesced: u64,
+    /// Work displaced by newer work or authority.
+    pub superseded: u64,
+    /// Work refused before backend admission.
+    pub rejected: u64,
+    /// Eligible work that expired in the finite queue.
+    pub queue_expired: u64,
+    /// Backend work that completed successfully.
+    pub completed: u64,
+    /// Mapping or backend work that failed.
+    pub failed: u64,
+}
+
+impl QueryWorkMetrics {
+    /// Adds two independent workload observations without wrapping.
+    #[must_use]
+    pub fn saturating_add(self, other: Self) -> Self {
+        Self {
+            backend_runs: self.backend_runs.saturating_add(other.backend_runs),
+            query_completions: self
+                .query_completions
+                .saturating_add(other.query_completions),
+            query_failures: self.query_failures.saturating_add(other.query_failures),
+            stale_discards: self.stale_discards.saturating_add(other.stale_discards),
+            producer_publications: self
+                .producer_publications
+                .saturating_add(other.producer_publications),
+            admitted: self.admitted.saturating_add(other.admitted),
+            skipped_change: self.skipped_change.saturating_add(other.skipped_change),
+            deferred_rate: self.deferred_rate.saturating_add(other.deferred_rate),
+            coalesced: self.coalesced.saturating_add(other.coalesced),
+            superseded: self.superseded.saturating_add(other.superseded),
+            rejected: self.rejected.saturating_add(other.rejected),
+            queue_expired: self.queue_expired.saturating_add(other.queue_expired),
+            completed: self.completed.saturating_add(other.completed),
+            failed: self.failed.saturating_add(other.failed),
+        }
+    }
+}
+
 /// What one iteration of a workload reports.
 #[derive(Debug)]
 pub struct Sample {
@@ -1113,6 +1182,7 @@ pub struct Sample {
     peak_resident: Option<u64>,
     stale: Option<(u64, u64)>,
     capture_resources: Option<CaptureResources>,
+    query_work: Option<QueryWorkMetrics>,
 }
 
 impl Sample {
@@ -1126,6 +1196,7 @@ impl Sample {
             peak_resident: None,
             stale: None,
             capture_resources: None,
+            query_work: None,
         }
     }
 
@@ -1164,6 +1235,13 @@ impl Sample {
         self.capture_resources = Some(resources);
         self
     }
+
+    /// Associates exact query/scheduler work with this sample.
+    #[must_use]
+    pub const fn with_query_work(mut self, metrics: QueryWorkMetrics) -> Self {
+        self.query_work = Some(metrics);
+        self
+    }
 }
 
 /// One workload's samples, and what they cost besides time.
@@ -1186,6 +1264,7 @@ pub struct Workload {
     detached_textures_peak: Option<u64>,
     staging_textures_peak: Option<u64>,
     gpu_resources_peak: Option<u64>,
+    query_work: Option<QueryWorkMetrics>,
     growth_bytes: i64,
 }
 
@@ -1295,6 +1374,12 @@ impl Workload {
         self.gpu_resources_peak
     }
 
+    /// Exact query/scheduler work summed across retained samples.
+    #[must_use]
+    pub const fn query_work(&self) -> Option<QueryWorkMetrics> {
+        self.query_work
+    }
+
     /// Share of observed producer work skipped before a retained result.
     #[must_use]
     pub fn stale_work_ratio(&self) -> Option<f64> {
@@ -1321,6 +1406,7 @@ struct WorkloadAccumulator {
     gpu_resources_peak: Option<u64>,
     stale: u64,
     scheduled: u64,
+    query_work: Option<QueryWorkMetrics>,
 }
 
 impl WorkloadAccumulator {
@@ -1338,6 +1424,7 @@ impl WorkloadAccumulator {
             gpu_resources_peak: None,
             stale: 0,
             scheduled: 0,
+            query_work: None,
         }
     }
 
@@ -1379,6 +1466,9 @@ impl WorkloadAccumulator {
                     .max(resources.gpu_resources_peak),
             );
         }
+        if let Some(metrics) = sample.query_work {
+            self.query_work = Some(self.query_work.unwrap_or_default().saturating_add(metrics));
+        }
         self.elapsed.push(sample.elapsed);
     }
 
@@ -1406,6 +1496,7 @@ impl WorkloadAccumulator {
             detached_textures_peak: self.detached_textures_peak,
             staging_textures_peak: self.staging_textures_peak,
             gpu_resources_peak: self.gpu_resources_peak,
+            query_work: self.query_work,
             stale: self.stale,
             scheduled: self.scheduled,
             growth_bytes: i64::try_from(ending).unwrap_or(i64::MAX)
@@ -1681,6 +1772,22 @@ pub fn report(benchmark: &Benchmark, profile: &Profile, plan: Plan, workloads: &
         }
         if let Some(ratio) = workload.stale_work_ratio() {
             println!("stale_work_ratio = {ratio:.9}");
+        }
+        if let Some(metrics) = workload.query_work {
+            println!("backend_runs = {}", metrics.backend_runs);
+            println!("query_completions = {}", metrics.query_completions);
+            println!("query_failures = {}", metrics.query_failures);
+            println!("stale_discards = {}", metrics.stale_discards);
+            println!("producer_publications = {}", metrics.producer_publications);
+            println!("work_admitted = {}", metrics.admitted);
+            println!("work_skipped_change = {}", metrics.skipped_change);
+            println!("work_deferred_rate = {}", metrics.deferred_rate);
+            println!("work_coalesced = {}", metrics.coalesced);
+            println!("work_superseded = {}", metrics.superseded);
+            println!("work_rejected = {}", metrics.rejected);
+            println!("work_queue_expired = {}", metrics.queue_expired);
+            println!("work_completed = {}", metrics.completed);
+            println!("work_failed = {}", metrics.failed);
         }
         println!("peak_allocated_bytes = {}", workload.peak_bytes);
         println!("steady_allocated_bytes = {}", workload.steady_bytes);
@@ -2711,10 +2818,10 @@ fn escape(value: &str) -> String {
 mod tests {
     use super::{
         ChildContainment, ChildExitObservation, LatencyBudget, PipeReaderEvent, PipeStream, Plan,
-        PrefixedLineMatch, PrimaryChildCleanup, Sample, Workload, bounded_child_output,
-        bounded_child_output_checked, bounded_child_output_with, classify_prefixed_line,
-        enforce_latency_budgets, measure, measure_pair, nonzero_at_most, process_is_live,
-        wait_for_child_exit,
+        PrefixedLineMatch, PrimaryChildCleanup, QueryWorkMetrics, Sample, Workload,
+        bounded_child_output, bounded_child_output_checked, bounded_child_output_with,
+        classify_prefixed_line, enforce_latency_budgets, measure, measure_pair, nonzero_at_most,
+        process_is_live, wait_for_child_exit,
     };
     use std::cell::Cell;
     use std::fs::{self, OpenOptions};
@@ -3136,6 +3243,40 @@ mod tests {
         assert_eq!(workload.stale_work_ratio(), Some(0.25));
     }
 
+    fn query_work_sample(_: &()) -> Sample {
+        Sample::unmapped(Duration::from_micros(1), true).with_query_work(QueryWorkMetrics {
+            backend_runs: 1,
+            query_completions: 2,
+            admitted: 1,
+            coalesced: 1,
+            completed: 1,
+            ..QueryWorkMetrics::default()
+        })
+    }
+
+    #[test]
+    fn query_work_counts_sum_only_retained_samples() {
+        let workload = measure(
+            "query-work",
+            "one backend result completes two coalesced queries",
+            Plan::new(1, 2),
+            fixture,
+            query_work_sample,
+        );
+
+        assert_eq!(
+            workload.query_work(),
+            Some(QueryWorkMetrics {
+                backend_runs: 2,
+                query_completions: 4,
+                admitted: 2,
+                coalesced: 2,
+                completed: 2,
+                ..QueryWorkMetrics::default()
+            })
+        );
+    }
+
     struct PairedFixture {
         iterations: Cell<u64>,
     }
@@ -3191,6 +3332,7 @@ mod tests {
             detached_textures_peak: None,
             staging_textures_peak: None,
             gpu_resources_peak: None,
+            query_work: None,
             growth_bytes: 0,
         }
     }
@@ -3329,6 +3471,7 @@ mod tests {
             detached_textures_peak: None,
             staging_textures_peak: None,
             gpu_resources_peak: None,
+            query_work: None,
             growth_bytes: 0,
         };
 

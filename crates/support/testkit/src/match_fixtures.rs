@@ -111,6 +111,23 @@ pub fn scene_pixels(format: PixelFormat) -> Vec<u8> {
     to_four_channel(&scene_rgb(), format)
 }
 
+/// Returns the scene's deterministic background without planted template copies.
+///
+/// # Panics
+///
+/// Panics for a format that is not four bytes per pixel, which no supported
+/// format is.
+#[must_use]
+pub fn background_pixels(format: PixelFormat) -> Vec<u8> {
+    let mut rgb = Vec::with_capacity(pixels(SCENE) * 3);
+    for y in 0..SCENE.height() {
+        for x in 0..SCENE.width() {
+            rgb.extend_from_slice(&background(x, y));
+        }
+    }
+    to_four_channel(&rgb, format)
+}
+
 /// Builds the scene as an immutable frame in `format`.
 ///
 /// # Panics
@@ -286,8 +303,8 @@ mod tests {
     use mado_pilot_capture::PixelFormat;
 
     use super::{
-        DEGRADED, PATCH, PLANTED, SCENE, absent_rgb, patch_rgb, scene_frame, scene_rgb,
-        to_four_channel,
+        DEGRADED, PATCH, PLANTED, SCENE, absent_rgb, background_pixels, patch_rgb, scene_frame,
+        scene_rgb, to_four_channel,
     };
 
     #[test]
@@ -300,6 +317,18 @@ mod tests {
     #[test]
     fn the_scene_is_byte_identical_between_runs() {
         assert_eq!(scene_rgb(), scene_rgb());
+    }
+
+    #[test]
+    fn the_background_scene_is_deterministic_and_differs_from_the_planted_scene() {
+        let background = background_pixels(PixelFormat::Rgba8);
+
+        assert_eq!(background.len(), 96 * 64 * 4);
+        assert_eq!(background, background_pixels(PixelFormat::Rgba8));
+        assert_ne!(
+            background,
+            to_four_channel(&scene_rgb(), PixelFormat::Rgba8)
+        );
     }
 
     #[test]

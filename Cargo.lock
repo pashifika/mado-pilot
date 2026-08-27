@@ -221,6 +221,7 @@ dependencies = [
 name = "mado-pilot"
 version = "0.3.1"
 dependencies = [
+ "libc",
  "mado-pilot-adapter-replay",
  "mado-pilot-backend-onnx",
  "mado-pilot-backend-opencv",
@@ -228,6 +229,7 @@ dependencies = [
  "mado-pilot-platform-windows",
  "mado-pilot-runtime",
  "mado-pilot-testkit",
+ "mado-pilot-vision",
  "windows",
 ]
 
