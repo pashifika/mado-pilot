@@ -253,9 +253,9 @@ fn engine_session_startup(_: &()) -> Sample {
     let session = engine
         .open(target, &OpenRequest::new(), &operation)
         .expect("opened startup session");
-    let elapsed = started.elapsed();
     let opened_correct = session.target() == target && targets.len() == 1;
     session.close(&operation).expect("closed startup session");
+    let elapsed = started.elapsed();
     drop(session);
     drop(targets);
     drop(engine);
