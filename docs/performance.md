@@ -850,8 +850,9 @@ bytes are not applicable to immutable CPU replay inputs and have no ceiling.
 These are regression ceilings for the named hosts and fixture, not
 arbitrary-resolution, 4K, multi-region, real-time, renderer, application, or
 game guarantees. Phase 3 default-OCR `G-013` is complete on both release
-targets. Watcher scheduling remains open; the later provider section records the
-independent CoreML rejection and explicit CUDA qualification.
+targets. The Phase 4 sections below record the deterministic template-query
+qualification; the later provider section records the independent CoreML
+rejection and explicit CUDA qualification.
 
 ## Phase 4 change-detection correctness and cost boundary
 
@@ -875,6 +876,48 @@ scheduler budget. Both hosted targets must reproduce the same target-neutral
 report, but hosted timing would not qualify a watcher workload. Exact-source
 replay/OpenCV watcher correctness and target-specific latency/resource ceilings
 belong to `phase-4-template-watch-query-qualification`.
+
+## Phase 4 deterministic template-query performance
+
+[ADR 0051](adr/0051-template-watch-query-replay-budgets.md) accepts the fixed
+Rust replay/OpenCV profile on Apple M1 Pro/macOS 26.5.2 and Core
+i7-12700KF/Windows 11 25H2. Each target ran five fresh sequential optimized
+processes, three warmups, and 20 retained samples for each of ten workloads.
+Every retained sample first enforced exact source/match/state/work/lifecycle
+facts; incorrect output, silent loss, stale commit, starvation, unbounded work,
+or lifecycle failure fails qualification regardless of time.
+
+The accepted p95/maximum ceilings in milliseconds are:
+
+| Workload | Apple p95/max | Windows p95/max |
+|---|---:|---:|
+| Current-frame match | 0.743 / 0.933 | 0.896 / 1.006 |
+| Appearance stability | 2.135 / 2.270 | 2.509 / 2.606 |
+| Disappearance/reset | 2.652 / 2.994 | 3.387 / 3.446 |
+| ROI match | 0.313 / 0.370 | 0.331 / 0.348 |
+| Duration stability | 2.710 / 2.850 | 2.468 / 2.911 |
+| Exact coalescing | 0.266 / 0.309 | 0.550 / 0.715 |
+| Saturation/latest-wins | 60.634 / 86.239 | 94.648 / 123.699 |
+| Two-session fairness | 30.338 / 30.722 | 45.971 / 57.311 |
+| Cancel in flight | 0.254 / 0.271 | 2.458 / 2.749 |
+| Close and retained result | 0.437 / 0.467 | 0.992 / 1.317 |
+
+The corresponding p50 ceilings and complete workload budgets are
+revision-bound in
+`docs/benchmarks/phase-4-template-watch-query-aarch64-apple-darwin.toml` and
+`docs/benchmarks/phase-4-template-watch-query-x86_64-pc-windows-msvc.toml`.
+Apple/Windows peak RSS ceilings are 69,206,016/19,922,944 bytes; both targets
+cap live Rust heap at 245,760 bytes and post-warmup growth at 4,096 bytes.
+Mapped bytes and backend/query/publication/work counts are exact rather than
+upper bounds. Immutable replay and controlled CPU frames own no producer surface,
+so copied producer-surface bytes are not applicable.
+
+These are regression ceilings for the named hosts, fixtures, OpenCV 4.14.0,
+fixed scheduler descriptor, and exact workload semantics. They do not qualify
+arbitrary templates/ROIs, native capture or application timing, OCR predicates,
+callbacks, C/C++, automatic input, real-time behavior, packaging, or a release.
+Rejected apparatus and precursor cohorts remain historical evidence and
+contribute no samples or ceilings.
 
 ## v0.3.1 bounded-detector candidate performance
 

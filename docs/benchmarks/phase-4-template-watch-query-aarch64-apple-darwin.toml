@@ -26,6 +26,10 @@ queue_policy = "fixed scheduler descriptor: 256 engine queries, 16 active sessio
 producer_surface_copy = "not applicable: immutable replay and controlled CPU frames own no producer surface"
 notes = "precursor source bef47a647693d07c88ef52a55620fd55d7e50f12; tree 485b586d48d193c0c1974af89e84b73ebce88dab; executable sha256 a5f3c6fd64854873aac5a3032b95d2f6b6e5d8b47de19ae06722a6b3ff368cc5; OpenCV 4.14.0; direct gated progress/backend/publication/typed-outcome work observation; exact v1/v2 failures remain Change evidence; no retry or exclusion"
 benchmark_executable_sha256 = "a5f3c6fd64854873aac5a3032b95d2f6b6e5d8b47de19ae06722a6b3ff368cc5"
+final_enforcement_source = "9141c7cf77709a6cae39718d0fec721309324172"
+final_enforcement_tree = "5b102569c59240a060fccb314794dc5becd703ff"
+final_enforcement_executable_sha256 = "7f657114aadf1341d10eed48d3bbc6063ab2e4d9ccc936b05586eb5d9660845d"
+final_enforcement_process_count = 5
 peak_resident_bytes = 54804480
 
 [[budget]]

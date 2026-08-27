@@ -61,10 +61,11 @@ correctness, security/privacy, and specification re-review returned CLEAN.
 Every lower-admitted-work candidate is rejected by a false skip.
 
 The bounded template watcher runtime consumes that accepted policy through one
-Rust query handle and one fixed engine scheduler. It is implemented and
-deterministically verified over replay and OpenCV. OCR predicates, callbacks,
-C/C++, automatic input, native-application qualification, performance
-acceptance, and `v0.4.0` release remain deferred.
+Rust query handle and one fixed engine scheduler. ADR 0051 accepts the
+deterministic replay/OpenCV correctness, latency, RSS, live-heap, and growth
+profiles on both release targets. OCR predicates, callbacks, C/C++, automatic
+input, native-application qualification, arbitrary templates/ROIs, real-time
+guarantees, and the `v0.4.0` release remain deferred.
 See [Implementation status](#implementation-status).
 
 ## Product definition
@@ -891,7 +892,7 @@ responsibilities a later phase takes on.
 | Asset resolution into OCR model sources | Implemented in `mado-pilot-assets` with exact component length and SHA-256 validation and immutable shared ownership |
 | Deep search orchestration, result envelope, final operation commit | Implemented in `mado-pilot-runtime` |
 | Input composition: same-provider adapter pairing, required-versus-optional input admission with bounded release of committed capture, per-controller sequence serialization, the one-terminal-receipt rule, and two-sided close | Implemented in `mado-pilot-runtime`. Selecting a permitted route, arbitrating focus, resolving a coordinate against live geometry, revalidating before each irreversible event, and releasing what a stopped sequence pressed stay in `mado-pilot-input` and the Adapter implementing it |
-| Bounded template-presence query and scheduling | Implemented in `mado-pilot-runtime` for the Rust replay/OpenCV surface: current-once then strictly newer frame acquisition, finite latest-wins work, exact change/rate admission, confirmed-only stability, exact coalescing, two-worker fair progress, stale-generation rejection, and idempotent query/session/engine-scheduler close |
+| Bounded template-presence query and scheduling | Implemented in `mado-pilot-runtime` for the Rust replay/OpenCV surface: current-once then strictly newer frame acquisition, finite latest-wins work, exact change/rate admission, confirmed-only stability, exact coalescing, two-worker fair progress, stale-generation rejection, and idempotent query/session/engine-scheduler close. ADR 0051 accepts the fixed deterministic replay/OpenCV correctness, latency, RSS, live-heap, and growth profiles on both release targets; native application behavior and timing remain unqualified |
 | OCR coalescing and wait-for-text | Not implemented |
 | Public Rust operations for the deterministic replay workflow | Implemented in `mado-pilot`, including the blocking template watcher example with separate query/wait operation contexts |
 | Public Rust operations for native and replay workflows | Implemented in `mado-pilot`, including explicit optional backend wiring, accepted CPU default/profile constructors, owning provider-policy constructors, immutable provider descriptors, borrowed one-to-eight-zone scans, and the Rust template query types. Native watcher qualification is not claimed; no platform-native, `ort`, worker, channel, Tokio, or callback type crosses the facade |
@@ -2519,6 +2520,20 @@ Admission proceeds in this order:
    Cancellation, deadline, target loss, close, overload, or a newer generation
    prevents late output from mutating state or producing a success diagnostic.
 
+```mermaid
+flowchart LR
+    F[Maintained newest frame] --> A[Source and ROI authority]
+    A --> M[Map exact ROI once]
+    M --> C[Exact change gate]
+    C -->|eligible latest frame| R[Rate admission]
+    C -->|unchanged before stability| F
+    R --> Q[Finite fair scheduler]
+    Q --> B[Two OpenCV analysis slots]
+    B --> G[Authoritative generation commit]
+    G -->|confirmed but not stable| F
+    G --> T[One immutable terminal outcome]
+```
+
 Ready sessions rotate before queries. Inside the selected session, the smallest
 remaining query deadline wins with rotation as the deterministic tie-break.
 Remaining durations are read outside locks because operation contexts may use
@@ -2547,20 +2562,26 @@ payloads, or unrelated desktop metadata. `Off` constructs no watcher diagnostic
 queue or `DiagnosticOperationId`; public `TemplateQueryId` issuance is
 unaffected.
 
-Supported now: Rust replay capture with the required OpenCV backend, as shown by
-`crates/mado-pilot/examples/template-watch.rs`. Source exhaustion refuses later
-query starts but lets an already acquired pending or in-flight final frame drain.
-Successfully drained work that leaves stability unsatisfied and has no competing
-terminal authority reports `SessionClosed`; the same outcome reports explicit
-session close before stability completed.
+Supported and budget-qualified now: the fixed Rust replay/OpenCV profile shown by
+`crates/mado-pilot/examples/template-watch.rs`, including current match,
+appearance, disappearance/reset, ROI, duration stability, exact coalescing,
+saturation/latest-wins, two-session fairness, cancellation, and close/retained
+ownership. Source exhaustion refuses later query starts but lets an already
+acquired pending or in-flight final frame drain. Successfully drained work that
+leaves stability unsatisfied and has no competing terminal authority reports
+`SessionClosed`; the same outcome reports explicit session close before
+stability completed.
 `TemplateTerminalOutcome::Overloaded(TemplateOverload::QueueExpired)` means
 eligible work exceeded the fixed 30-second bound;
 `DeadlineExceeded`/`Cancelled` identify query authority, while the same statuses
 returned directly by `wait` identify only that caller wait. Callers repair the
 source, deadline, rate/stability policy, or backend failure; no retry, fallback,
-automatic input, or capacity tuning is implied. OCR predicates, callbacks,
-Tokio/futures, C/C++, native watcher support claims, and watcher performance
-budgets remain deferred.
+automatic input, or capacity tuning is implied. The accepted target profiles are
+regression ceilings for the repository fixtures and controlled scheduler
+boundary, not arbitrary templates/ROIs, native application behavior/timing, or
+real-time guarantees. OCR predicates, callbacks, Tokio/futures, C/C++,
+automatic input, native watcher support claims, packaging, and release remain
+deferred.
 
 The engine holds contracts only. It cannot observe which adapter is behind one,
 so no orchestration rule can come to depend on a concrete adapter, and there is

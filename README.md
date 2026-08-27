@@ -28,8 +28,10 @@ crates/bindings/capi/examples/cpp/deterministic-slice.cpp
 
 Rust replay/OpenCV also exposes one bounded template-presence query with
 non-blocking poll, a blocking wait under separate caller authority, explicit
-cancel, confirmed-only stability, and immutable exact-frame results. The example
-uses no caller frame-polling loop:
+cancel, confirmed-only stability, and immutable exact-frame results. Its
+deterministic replay/OpenCV correctness, latency, RSS, live-heap, and growth
+profiles are accepted on both release targets by ADR 0051. The example uses no
+caller frame-polling loop:
 
 ```text
 crates/mado-pilot/examples/template-watch.rs
@@ -125,11 +127,11 @@ failed inference, switch provider after publication, or trigger input.
 | Native input submission | Implemented in both adapters and exposed through Rust, C ABI, and C++; system input, Windows exact-window delivery, and macOS owning-process delivery are explicit, receipts state submission evidence rather than application consumption, and fixture-scoped automatic checks send no uncontrolled desktop input |
 | Bounded diagnostic observation | Implemented through Rust, C ABI, and C++ with allocation-free `Off`, finite `Normal`/`Debug` streams, exact loss counts, and content-redacted OCR records; Rust-only watcher records add bounded query/source/region/state/stability/disposition/queue/elapsed/outcome facts without changing the released C ABI |
 | One-shot OCR public contract | Implemented through Rust, C ABI 1.5, and C++ over explicit backends, accepted ONNX CPU profiles, and explicit initialization-time provider policy; singular and one-to-eight-zone operations remain separate, with no OCR watcher, OCR scheduling, per-inference retry, bundling, or download |
-| Bounded template-presence query | Implemented through the Rust replay/OpenCV facade with current-once/strictly-newer frames, fixed finite latest-wins scheduling, separate query/wait authority, exact change/rate admission, confirmed-only stability, exact coalescing, fair two-worker progress, stale-result rejection, and one immutable terminal outcome. Callbacks, Tokio/futures, C/C++, OCR predicates, automatic input, native qualification, and watcher performance acceptance are deferred |
+| Bounded template-presence query | Implemented and release-budget-qualified through the Rust replay/OpenCV facade with current-once/strictly-newer frames, fixed finite latest-wins scheduling, separate query/wait authority, exact change/rate admission, confirmed-only stability, exact coalescing, fair two-worker progress, stale-result rejection, and one immutable terminal outcome. Callbacks, Tokio/futures, C/C++, OCR predicates, automatic input, native application qualification, arbitrary templates/ROIs, and real-time guarantees are deferred |
 | C ABI, tracked C header, dynamic library | Implemented through ABI 1.5 while preserving complete ABI 1.0, 1.2, 1.3, and 1.4 prefixes at 424, 592, 648, and 720 bytes; provider construction and engine-owned provider descriptors extend the table to 736 bytes; the unreleased 1.1 draft is intentionally unsupported |
 | Header-only C++ RAII wrapper and CMake targets | Implemented through ABI 1.5, including owning profile/zone/provider projections, move-only grouped results, explicit clone, and lvalue-only borrowed OCR/provider descriptor views |
 | C ABI static library, ABI-major loader names, pkg-config, CMake install | Not implemented |
-| Numeric performance budgets | Phase 1 and affected Phase 2 ceilings remain revision-bound and enforced. ADR 0037 accepts default-OCR target profiles; ADR 0041 accepts explicit bounded singular budgets. ADR 0044 accepts target-specific grouped-zone latency, lifecycle, and resource budgets for fixed non-overlapping layouts; ADR 0045 corrects only the new Apple integrated cache-cold startup ceiling after a retained failed source. ADR 0048 accepts explicit Windows CUDA and mixed-provider fallback profiles after retaining two stopped tail observations; automatic preference remains CPU. Corrected Apple M1 Pro and Core i7-12700KF final enforcement passes; protected release delivery remains open |
+| Numeric performance budgets | Phase 1 and affected Phase 2 ceilings remain revision-bound and enforced. ADR 0037 accepts default-OCR target profiles; ADR 0041 accepts explicit bounded singular budgets. ADR 0044 accepts target-specific grouped-zone latency, lifecycle, and resource budgets for fixed non-overlapping layouts; ADR 0045 corrects only the new Apple integrated cache-cold startup ceiling after a retained failed source. ADR 0048 accepts explicit Windows CUDA and mixed-provider fallback profiles after retaining two stopped tail observations; automatic preference remains CPU. ADR 0051 accepts target-specific deterministic replay/OpenCV template-query latency, RSS, live-heap, and growth budgets. Corrected Apple M1 Pro and Core i7-12700KF final enforcement passes; protected release delivery remains open |
 | Release packaging | Not implemented |
 
 The public Rust names have been reviewed and settled
