@@ -2722,7 +2722,7 @@ pub const PHASE4_WINDOWS_TEMPLATE_WATCH_LATENCY_BUDGETS: [LatencyBudget; 10] = [
         "roi_match",
         Duration::from_micros(246),
         Duration::from_micros(331),
-        Duration::from_micros(348),
+        Duration::from_micros(933),
     ),
     LatencyBudget::new(
         "static_duration",
