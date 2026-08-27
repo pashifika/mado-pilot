@@ -229,7 +229,6 @@ dependencies = [
  "mado-pilot-platform-windows",
  "mado-pilot-runtime",
  "mado-pilot-testkit",
- "mado-pilot-vision",
  "windows",
 ]
 

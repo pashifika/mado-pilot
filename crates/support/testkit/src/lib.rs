@@ -61,4 +61,5 @@ pub use controlled_ocr::{
     ControlledOcr, OcrBehavior, ScriptedOcrCall, ScriptedOcrCandidate,
 };
 pub use controlled_storage::{ControlledProducer, Conversion};
+pub use mado_pilot_vision::{Candidate, MatchBackend};
 pub use scripted_permission::{Answer, ScriptedPermissionProbe};

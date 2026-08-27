@@ -27,10 +27,9 @@ use mado_pilot_testkit::bench_harness::{
     Accounting, Benchmark, Plan, Profile, QueryWorkMetrics, Sample, Workload, measure,
 };
 use mado_pilot_testkit::{
-    CompletionGate, ControlledCapture, ControlledMatcher, ManualClock, ScriptedMatchCall,
-    bench_harness, match_fixtures,
+    Candidate, CompletionGate, ControlledCapture, ControlledMatcher, ManualClock, MatchBackend,
+    ScriptedMatchCall, bench_harness, match_fixtures,
 };
-use mado_pilot_vision::{Candidate, MatchBackend};
 
 #[cfg(windows)]
 use std::mem::size_of;

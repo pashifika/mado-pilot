@@ -39,7 +39,6 @@ mado-pilot-platform-macos = { path = "../platform/macos", features = ["private-f
 libc.workspace = true
 
 [dev-dependencies]
-mado-pilot-vision = { path = "../automation/vision" }
 mado-pilot-testkit = { path = "../support/testkit" }
 
 [[bench]]
