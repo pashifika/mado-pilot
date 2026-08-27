@@ -1,5 +1,5 @@
 /*
- * MadoPilot C++ wrapper - ABI 1.3.
+ * MadoPilot C++ wrapper - ABI 1.4.
  *
  * A header-only RAII adapter over the released C ABI. It owns handles, turns
  * statuses into an exception-free `Result`, and marks every view by its
@@ -10,11 +10,11 @@
  * ============================================================================
  * This header declares no ABI of its own.
  *
- * The only ABI is the C one: ABI 1.0 and 1.2 are frozen complete prefixes;
- * ABI 1.3 appends one-shot OCR and immutable owned results. Nothing below
- * restates a numeric value from that contract: enumerated types alias the C
- * types, so a caller writes `MADOPILOT_STATUS_OK` and gets whatever the header
- * it compiled against says that is. A hand-written mirror fails silently when
+ * The only ABI is the C one: ABI 1.0, 1.2, and 1.3 are frozen complete
+ * prefixes; ABI 1.4 appends explicit profile construction and grouped OCR.
+ * Nothing below restates a numeric value from that contract: enumerated types
+ * alias the C types, so a caller gets whatever the header it compiled against
+ * declares. A hand-written mirror fails silently when
  * the C set grows - it compiles, one value short - and freezing the values does
  * not remove that risk.
  * ============================================================================
@@ -90,6 +90,11 @@ using InputFault = ::madopilot_input_fault_t;
 using DiagnosticLevel = ::madopilot_diagnostic_level_t;
 using DiagnosticDrainState = ::madopilot_diagnostic_drain_state_t;
 using OcrDiagnosticProfile = ::madopilot_ocr_diagnostic_profile_t;
+using OcrProfileKind = ::madopilot_ocr_profile_kind_t;
+using OcrProviderPolicy = ::madopilot_ocr_provider_policy_t;
+using OcrExecutionProvider = ::madopilot_ocr_execution_provider_t;
+using OcrProviderFallbackReason =
+    ::madopilot_ocr_provider_fallback_reason_t;
 using OcrDiagnosticOutcome = ::madopilot_ocr_diagnostic_outcome_t;
 using DiagnosticKind = ::madopilot_diagnostic_kind_t;
 using DiagnosticOperationKind = ::madopilot_diagnostic_operation_kind_t;
@@ -712,6 +717,178 @@ private:
     std::string runtime_path_;
 };
 
+/// Explicit product OCR profile with owned controlled prerequisite paths.
+class OcrProfileOptions {
+public:
+    class CView;
+
+    OcrProfileOptions(OcrProfileKind kind, std::string_view model_root,
+                      std::string_view runtime_path)
+        : kind_(kind), model_root_(model_root), runtime_path_(runtime_path) {}
+
+    OcrProfileKind kind() const noexcept { return kind_; }
+    CView to_c() const;
+
+private:
+    OcrProfileKind kind_ = MADOPILOT_OCR_PROFILE_BOUNDED_DETECTOR;
+    std::string model_root_;
+    std::string runtime_path_;
+};
+
+/// Call-local C projection that owns every path backing its interior views.
+class OcrProfileOptions::CView {
+public:
+    explicit CView(const OcrProfileOptions& options)
+        : kind_(options.kind_), model_root_(options.model_root_),
+          runtime_path_(options.runtime_path_) {
+        value_ = detail::sized<::madopilot_ocr_profile_options_t>();
+        value_.kind = kind_;
+        rebind();
+    }
+
+    CView(const CView& other)
+        : kind_(other.kind_), model_root_(other.model_root_),
+          runtime_path_(other.runtime_path_), value_(other.value_) {
+        rebind();
+    }
+
+    CView& operator=(const CView& other) {
+        if (this != &other) {
+            CView replacement(other);
+            *this = std::move(replacement);
+        }
+        return *this;
+    }
+
+    CView(CView&& other) noexcept
+        : kind_(other.kind_), model_root_(std::move(other.model_root_)),
+          runtime_path_(std::move(other.runtime_path_)), value_(other.value_) {
+        rebind();
+        other.rebind();
+    }
+
+    CView& operator=(CView&& other) noexcept {
+        if (this != &other) {
+            kind_ = other.kind_;
+            model_root_ = std::move(other.model_root_);
+            runtime_path_ = std::move(other.runtime_path_);
+            value_ = other.value_;
+            rebind();
+            other.rebind();
+        }
+        return *this;
+    }
+
+    const ::madopilot_ocr_profile_options_t& value() const& noexcept {
+        return value_;
+    }
+    const ::madopilot_ocr_profile_options_t& value() const&& = delete;
+    const ::madopilot_ocr_profile_options_t* get() const& noexcept {
+        return &value_;
+    }
+    const ::madopilot_ocr_profile_options_t* get() const&& = delete;
+
+private:
+    void rebind() noexcept {
+        value_.kind = kind_;
+        value_.model_root = detail::as_str(model_root_);
+        value_.runtime_path = detail::as_str(runtime_path_);
+    }
+
+    OcrProfileKind kind_ = MADOPILOT_OCR_PROFILE_BOUNDED_DETECTOR;
+    std::string model_root_;
+    std::string runtime_path_;
+    ::madopilot_ocr_profile_options_t value_{};
+};
+
+inline OcrProfileOptions::CView OcrProfileOptions::to_c() const {
+    return CView(*this);
+}
+
+/// Explicit OCR provider policy with owned controlled dependency-root storage.
+class OcrProviderOptions {
+public:
+    class CView;
+
+    explicit OcrProviderOptions(OcrProviderPolicy policy,
+                                std::string_view provider_root = {})
+        : policy_(policy), provider_root_(provider_root) {}
+
+    OcrProviderPolicy policy() const noexcept { return policy_; }
+    CView to_c() const;
+
+private:
+    OcrProviderPolicy policy_ = MADOPILOT_OCR_PROVIDER_POLICY_CPU;
+    std::string provider_root_;
+};
+
+/// Call-local C projection that repairs its provider-root view after every copy
+/// or move.
+class OcrProviderOptions::CView {
+public:
+    explicit CView(const OcrProviderOptions& options)
+        : policy_(options.policy_), provider_root_(options.provider_root_) {
+        value_ = detail::sized<::madopilot_ocr_provider_options_t>();
+        rebind();
+    }
+
+    CView(const CView& other)
+        : policy_(other.policy_), provider_root_(other.provider_root_),
+          value_(other.value_) {
+        rebind();
+    }
+
+    CView& operator=(const CView& other) {
+        if (this != &other) {
+            CView replacement(other);
+            *this = std::move(replacement);
+        }
+        return *this;
+    }
+
+    CView(CView&& other) noexcept
+        : policy_(other.policy_),
+          provider_root_(std::move(other.provider_root_)),
+          value_(other.value_) {
+        rebind();
+        other.rebind();
+    }
+
+    CView& operator=(CView&& other) noexcept {
+        if (this != &other) {
+            policy_ = other.policy_;
+            provider_root_ = std::move(other.provider_root_);
+            value_ = other.value_;
+            rebind();
+            other.rebind();
+        }
+        return *this;
+    }
+
+    const ::madopilot_ocr_provider_options_t& value() const& noexcept {
+        return value_;
+    }
+    const ::madopilot_ocr_provider_options_t& value() const&& = delete;
+    const ::madopilot_ocr_provider_options_t* get() const& noexcept {
+        return &value_;
+    }
+    const ::madopilot_ocr_provider_options_t* get() const&& = delete;
+
+private:
+    void rebind() noexcept {
+        value_.policy = policy_;
+        value_.provider_root = detail::as_str(provider_root_);
+    }
+
+    OcrProviderPolicy policy_ = MADOPILOT_OCR_PROVIDER_POLICY_CPU;
+    std::string provider_root_;
+    ::madopilot_ocr_provider_options_t value_{};
+};
+
+inline OcrProviderOptions::CView OcrProviderOptions::to_c() const {
+    return CView(*this);
+}
+
 /// One replay frame supplied as raw pixels.
 ///
 /// The pixels are borrowed until `Api::create_engine` returns, which copies
@@ -1175,6 +1352,26 @@ struct EngineCapabilities {
     }
 };
 
+/// Exact OCR identity selected by one engine. All views borrow from the engine.
+struct OcrEngineDescriptor {
+    BorrowedStr backend_id;
+    BorrowedStr backend_version;
+    BorrowedStr model_id;
+    BorrowedStr model_version;
+    BorrowedStr profile_id;
+};
+
+/// Immutable provider initialization facts. The runtime profile view borrows
+/// from the retained engine.
+struct OcrProviderDescriptor {
+    OcrProviderPolicy requested_policy = 0;
+    OcrExecutionProvider active_provider =
+        MADOPILOT_OCR_EXECUTION_PROVIDER_UNSPECIFIED;
+    bool initialization_fell_back = false;
+    std::optional<OcrProviderFallbackReason> fallback_reason;
+    BorrowedStr runtime_profile;
+};
+
 /// Redacted permission diagnostic. Both views borrow from the `Engine`.
 struct PermissionDiagnostic {
     DiagnosticCategory category = MADOPILOT_DIAGNOSTIC_UNSPECIFIED;
@@ -1400,6 +1597,15 @@ struct DiagnosticRecord {
         0.0, 0.0, 0.0, 0.0};
     std::uint64_t ocr_elapsed_nanos = 0;
     std::uint64_t ocr_source_pixels = 0;
+    Rect ocr_source_envelope{MADOPILOT_SPACE_CAPTURE_PIXELS, 0, 0, 0, 0};
+    std::uint64_t ocr_zone_count = 0;
+    std::uint64_t ocr_unique_candidate_count = 0;
+    std::uint64_t ocr_membership_count = 0;
+    std::uint64_t ocr_result_bytes = 0;
+    std::uint64_t ocr_detector_runs = 0;
+    std::uint64_t ocr_recognizer_runs = 0;
+    std::uint64_t ocr_detector_bytes = 0;
+    std::uint64_t ocr_recognizer_bytes = 0;
 
     bool has(std::uint32_t presence_flag) const noexcept {
         return (flags & presence_flag) != 0u;
@@ -1420,6 +1626,9 @@ struct BuildInfo {
     BorrowedStr default_ocr_model;
     BorrowedStr default_ocr_model_version;
     BorrowedStr default_ocr_profile;
+    BorrowedStr bounded_ocr_model;
+    BorrowedStr bounded_ocr_model_version;
+    BorrowedStr bounded_ocr_profile;
 };
 
 /// One discovered capture target. Both views borrow from the `TargetList`.
@@ -1525,6 +1734,29 @@ struct OcrResultInfo {
     BorrowedStr profile_id;
 };
 
+
+/// Fixed grouped OCR result description. Strings borrow from its owner.
+struct ZoneScanOcrResultInfo {
+    FrameStamp source{};
+    Rect source_envelope{MADOPILOT_SPACE_CAPTURE_PIXELS, 0, 0, 0, 0};
+    Space output_space = MADOPILOT_SPACE_CAPTURE_PIXELS;
+    std::uint64_t zone_count = 0;
+    std::uint64_t unique_candidate_count = 0;
+    std::uint64_t membership_count = 0;
+    BorrowedStr backend_id;
+    BorrowedStr backend_version;
+    BorrowedStr model_id;
+    BorrowedStr model_version;
+    BorrowedStr profile_id;
+};
+
+/// Effective geometry and candidate-membership count for one caller zone.
+struct OcrZoneResult {
+    Rect effective_zone{MADOPILOT_SPACE_CAPTURE_PIXELS, 0, 0, 0, 0};
+    std::uint64_t region_count = 0;
+
+    bool empty() const noexcept { return region_count == 0; }
+};
 /// Geometry and confidence of one recognized region.
 struct OcrRegion {
     double confidence = 0.0;
@@ -2225,11 +2457,8 @@ public:
 
     CView& operator=(const CView& other) {
         if (this != &other) {
-            model_id_ = other.model_id_;
-            backend_id_ = other.backend_id_;
-            backend_version_ = other.backend_version_;
-            value_ = other.value_;
-            rebind();
+            CView replacement(other);
+            *this = std::move(replacement);
         }
         return *this;
     }
@@ -2274,6 +2503,147 @@ private:
 };
 
 inline OcrRequest::CView OcrRequest::to_c() const { return CView(*this); }
+
+/// One exact-frame grouped OCR request with owned identities and zone storage.
+class ZoneScanOcrRequest {
+public:
+    class CView;
+
+    ZoneScanOcrRequest() = default;
+
+    ZoneScanOcrRequest& frame(const Frame& frame) noexcept {
+        frame_ = frame.get();
+        return *this;
+    }
+
+    ZoneScanOcrRequest& package(const Package& package) noexcept {
+        package_ = package.get();
+        return *this;
+    }
+
+    ZoneScanOcrRequest& model(std::string_view id) {
+        model_id_ = std::string(id);
+        return *this;
+    }
+
+    ZoneScanOcrRequest& backend(std::string_view id,
+                               std::string_view version) {
+        backend_id_ = std::string(id);
+        backend_version_ = std::string(version);
+        return *this;
+    }
+
+    ZoneScanOcrRequest& output_space(Space space) noexcept {
+        output_space_ = space;
+        return *this;
+    }
+
+    ZoneScanOcrRequest& zone(Rect region,
+                            ClipPolicy policy = MADOPILOT_CLIP_POLICY_REJECT) {
+        auto value = detail::sized<::madopilot_ocr_zone_t>();
+        value.region = region;
+        value.clip_policy = policy;
+        zones_.push_back(value);
+        return *this;
+    }
+
+    ZoneScanOcrRequest& clear_zones() noexcept {
+        zones_.clear();
+        return *this;
+    }
+
+    std::size_t zone_count() const noexcept { return zones_.size(); }
+    CView to_c() const;
+
+private:
+    const ::madopilot_frame_t* frame_ = nullptr;
+    const ::madopilot_package_t* package_ = nullptr;
+    std::string model_id_;
+    std::string backend_id_;
+    std::string backend_version_;
+    Space output_space_ = MADOPILOT_SPACE_CAPTURE_PIXELS;
+    std::vector<::madopilot_ocr_zone_t> zones_;
+};
+
+/// Call-local projection owning every string and zone backing its C record.
+class ZoneScanOcrRequest::CView {
+public:
+    explicit CView(const ZoneScanOcrRequest& request)
+        : model_id_(request.model_id_), backend_id_(request.backend_id_),
+          backend_version_(request.backend_version_), zones_(request.zones_) {
+        value_ = detail::sized<::madopilot_ocr_zone_scan_request_t>();
+        value_.frame = request.frame_;
+        value_.package = request.package_;
+        value_.output_space = request.output_space_;
+        rebind();
+    }
+
+    CView(const CView& other)
+        : model_id_(other.model_id_), backend_id_(other.backend_id_),
+          backend_version_(other.backend_version_), zones_(other.zones_),
+          value_(other.value_) {
+        rebind();
+    }
+
+    CView& operator=(const CView& other) {
+        if (this != &other) {
+            CView replacement(other);
+            *this = std::move(replacement);
+        }
+        return *this;
+    }
+
+    CView(CView&& other) noexcept
+        : model_id_(std::move(other.model_id_)),
+          backend_id_(std::move(other.backend_id_)),
+          backend_version_(std::move(other.backend_version_)),
+          zones_(std::move(other.zones_)), value_(other.value_) {
+        rebind();
+        other.rebind();
+    }
+
+    CView& operator=(CView&& other) noexcept {
+        if (this != &other) {
+            model_id_ = std::move(other.model_id_);
+            backend_id_ = std::move(other.backend_id_);
+            backend_version_ = std::move(other.backend_version_);
+            zones_ = std::move(other.zones_);
+            value_ = other.value_;
+            rebind();
+            other.rebind();
+        }
+        return *this;
+    }
+
+    const ::madopilot_ocr_zone_scan_request_t& value() const& noexcept {
+        return value_;
+    }
+    const ::madopilot_ocr_zone_scan_request_t& value() const&& = delete;
+    const ::madopilot_ocr_zone_scan_request_t* get() const& noexcept {
+        return &value_;
+    }
+    const ::madopilot_ocr_zone_scan_request_t* get() const&& = delete;
+
+private:
+    void rebind() noexcept {
+        value_.model_id = detail::as_str(model_id_);
+        value_.backend_id = detail::as_str(backend_id_);
+        value_.backend_version = detail::as_str(backend_version_);
+        value_.zones = zones_.empty() ? nullptr : zones_.data();
+        value_.zone_count = zones_.size();
+        value_.zone_stride = sizeof(::madopilot_ocr_zone_t);
+    }
+
+    std::string model_id_;
+    std::string backend_id_;
+    std::string backend_version_;
+    std::vector<::madopilot_ocr_zone_t> zones_;
+    ::madopilot_ocr_zone_scan_request_t value_{};
+};
+
+inline ZoneScanOcrRequest::CView ZoneScanOcrRequest::to_c() const {
+    return CView(*this);
+}
 
 /// An immutable completed search.
 ///
@@ -2517,6 +2887,134 @@ private:
     }
 };
 
+/// Move-only immutable grouped OCR result with explicit `clone()`.
+class ZoneScanOcrResult
+    : public detail::Owner<ZoneScanOcrResult,
+                           ::madopilot_ocr_zone_scan_result_t> {
+public:
+    ZoneScanOcrResult() noexcept = default;
+
+    Result<ZoneScanOcrResultInfo> describe() const& {
+        if (api_ == nullptr) {
+            return detail::no_table<ZoneScanOcrResultInfo>();
+        }
+        if (!detail::has_entry(
+                api_, extent_,
+                MADOPILOT_API_SIZE_OCR_ZONE_SCAN_RESULT_INFO)) {
+            return detail::unsupported<ZoneScanOcrResultInfo>();
+        }
+        auto info =
+            detail::sized<::madopilot_ocr_zone_scan_result_info_t>();
+        const Status status =
+            api_->ocr_zone_scan_result_info(handle_, &info);
+        if (!is_ok(status)) {
+            return Result<ZoneScanOcrResultInfo>::failure(
+                Error::from_status(status));
+        }
+
+        ZoneScanOcrResultInfo out;
+        out.source = info.source;
+        out.source_envelope = info.source_envelope;
+        out.output_space = info.output_space;
+        out.zone_count = info.zone_count;
+        out.unique_candidate_count = info.unique_candidate_count;
+        out.membership_count = info.membership_count;
+        out.backend_id = BorrowedStr(info.backend_id);
+        out.backend_version = BorrowedStr(info.backend_version);
+        out.model_id = BorrowedStr(info.model_id);
+        out.model_version = BorrowedStr(info.model_version);
+        out.profile_id = BorrowedStr(info.profile_id);
+        return Result<ZoneScanOcrResultInfo>::success(out);
+    }
+    Result<ZoneScanOcrResultInfo> describe() const&& = delete;
+
+    Result<OcrZoneResult> zone_at(std::size_t zone_index) const& {
+        if (api_ == nullptr) {
+            return detail::no_table<OcrZoneResult>();
+        }
+        if (!detail::has_entry(
+                api_, extent_,
+                MADOPILOT_API_SIZE_OCR_ZONE_SCAN_RESULT_ZONE_AT)) {
+            return detail::unsupported<OcrZoneResult>();
+        }
+        auto zone = detail::sized<::madopilot_ocr_zone_result_t>();
+        const Status status =
+            api_->ocr_zone_scan_result_zone_at(handle_, zone_index, &zone);
+        if (!is_ok(status)) {
+            return Result<OcrZoneResult>::failure(Error::from_status(status));
+        }
+        return Result<OcrZoneResult>::success(
+            OcrZoneResult{zone.effective_zone, zone.region_count});
+    }
+    Result<OcrZoneResult> zone_at(std::size_t) const&& = delete;
+
+    Result<OcrRegion> region_at(std::size_t zone_index,
+                                std::size_t region_index) const& {
+        if (api_ == nullptr) {
+            return detail::no_table<OcrRegion>();
+        }
+        if (!detail::has_entry(
+                api_, extent_,
+                MADOPILOT_API_SIZE_OCR_ZONE_SCAN_RESULT_REGION_AT)) {
+            return detail::unsupported<OcrRegion>();
+        }
+        auto region = detail::sized<::madopilot_ocr_region_t>();
+        const Status status = api_->ocr_zone_scan_result_region_at(
+            handle_, zone_index, region_index, &region);
+        if (!is_ok(status)) {
+            return Result<OcrRegion>::failure(Error::from_status(status));
+        }
+        OcrRegion out;
+        out.confidence = region.confidence;
+        for (std::size_t index = 0; index < out.points.size(); ++index) {
+            out.points[index] = region.points[index];
+        }
+        return Result<OcrRegion>::success(out);
+    }
+    Result<OcrRegion> region_at(std::size_t, std::size_t) const&& = delete;
+
+    Result<BorrowedStr> text_at(std::size_t zone_index,
+                                std::size_t region_index) const& {
+        if (api_ == nullptr) {
+            return detail::no_table<BorrowedStr>();
+        }
+        if (!detail::has_entry(
+                api_, extent_,
+                MADOPILOT_API_SIZE_OCR_ZONE_SCAN_RESULT_TEXT_AT)) {
+            return detail::unsupported<BorrowedStr>();
+        }
+        ::madopilot_str_t text{nullptr, 0};
+        const Status status = api_->ocr_zone_scan_result_text_at(
+            handle_, zone_index, region_index, &text);
+        return is_ok(status)
+                   ? Result<BorrowedStr>::success(BorrowedStr(text))
+                   : Result<BorrowedStr>::failure(
+                         Error::from_status(status));
+    }
+    Result<BorrowedStr> text_at(std::size_t, std::size_t) const&& = delete;
+
+private:
+    friend class Session;
+    friend class detail::Owner<ZoneScanOcrResult,
+                               ::madopilot_ocr_zone_scan_result_t>;
+
+    ZoneScanOcrResult(const ::madopilot_api_t* api, std::size_t extent,
+                      ::madopilot_ocr_zone_scan_result_t* handle) noexcept
+        : Owner(api, extent, handle) {}
+
+    static Status retain_handle(
+        const ::madopilot_api_t* api,
+        ::madopilot_ocr_zone_scan_result_t* handle) noexcept {
+        return api->ocr_zone_scan_result_retain(handle);
+    }
+
+    static void release_handle(
+        const ::madopilot_api_t* api,
+        ::madopilot_ocr_zone_scan_result_t* handle) noexcept {
+        api->ocr_zone_scan_result_release(handle);
+    }
+};
+
 /// An immutable terminal account of one admitted input sequence.
 class InputReceipt
     : public detail::Owner<InputReceipt, ::madopilot_input_receipt_t> {
@@ -2678,6 +3176,15 @@ public:
         out.ocr_requested_region = value.ocr_requested_region;
         out.ocr_elapsed_nanos = value.ocr_elapsed_nanos;
         out.ocr_source_pixels = value.ocr_source_pixels;
+        out.ocr_source_envelope = value.ocr_source_envelope;
+        out.ocr_zone_count = value.ocr_zone_count;
+        out.ocr_unique_candidate_count = value.ocr_unique_candidate_count;
+        out.ocr_membership_count = value.ocr_membership_count;
+        out.ocr_result_bytes = value.ocr_result_bytes;
+        out.ocr_detector_runs = value.ocr_detector_runs;
+        out.ocr_recognizer_runs = value.ocr_recognizer_runs;
+        out.ocr_detector_bytes = value.ocr_detector_bytes;
+        out.ocr_recognizer_bytes = value.ocr_recognizer_bytes;
         return Result<DiagnosticRecord>::success(out);
     }
 
@@ -2883,6 +3390,39 @@ public:
         return Result<OcrResult>::success(OcrResult(api_, extent_, result));
     }
 
+    /// Scans one caller-owned zone array and returns an independent grouped owner.
+    ///
+    /// The high-level operation requires the complete grouped-result lifecycle
+    /// and accessor suffix before it reads any ABI 1.4 function pointer.
+    Result<ZoneScanOcrResult> scan_ocr_zones(
+        const ZoneScanOcrRequest& request,
+        const Operation& operation) const {
+        if (api_ == nullptr) {
+            return detail::no_table<ZoneScanOcrResult>();
+        }
+        if (!detail::has_entry(
+                api_, extent_,
+                MADOPILOT_API_SIZE_OCR_ZONE_SCAN_RESULT_TEXT_AT)) {
+            return detail::unsupported<ZoneScanOcrResult>();
+        }
+        const auto request_c = request.to_c();
+        const auto operation_c = operation.to_c();
+        ::madopilot_ocr_zone_scan_result_t* result = nullptr;
+        ::madopilot_error_t* error = nullptr;
+        const Status status = api_->session_scan_ocr_zones(
+            handle_, request_c.get(), &operation_c, &result, &error);
+        if (!is_ok(status)) {
+            return Result<ZoneScanOcrResult>::failure(
+                detail::take_error(api_, status, error));
+        }
+        if (result == nullptr) {
+            return Result<ZoneScanOcrResult>::failure(
+                Error::from_status(MADOPILOT_STATUS_INTERNAL));
+        }
+        return Result<ZoneScanOcrResult>::success(
+            ZoneScanOcrResult(api_, extent_, result));
+    }
+
     /// The immutable input capability accepted when this session opened.
     Result<InputDescriptor> input_descriptor() const {
         if (api_ == nullptr) {
@@ -2977,6 +3517,73 @@ public:
                    : Result<EngineCapabilities>::failure(
                          Error::from_status(status));
     }
+
+    /// Reports the exact OCR identity selected by this engine.
+    ///
+    /// Every returned view borrows from the engine, so the accessor is
+    /// lvalue-only.
+    Result<OcrEngineDescriptor> ocr_descriptor() const& {
+        if (api_ == nullptr) {
+            return detail::no_table<OcrEngineDescriptor>();
+        }
+        if (!detail::has_entry(api_, extent_,
+                               MADOPILOT_API_SIZE_ENGINE_OCR_DESCRIPTOR)) {
+            return detail::unsupported<OcrEngineDescriptor>();
+        }
+
+        auto value = detail::sized<::madopilot_ocr_engine_descriptor_t>();
+        const Status status = api_->engine_ocr_descriptor(handle_, &value);
+        if (!is_ok(status)) {
+            return Result<OcrEngineDescriptor>::failure(
+                Error::from_status(status));
+        }
+        return Result<OcrEngineDescriptor>::success(OcrEngineDescriptor{
+            BorrowedStr(value.backend_id),
+            BorrowedStr(value.backend_version),
+            BorrowedStr(value.model_id),
+            BorrowedStr(value.model_version),
+            BorrowedStr(value.profile_id),
+        });
+    }
+    Result<OcrEngineDescriptor> ocr_descriptor() const&& = delete;
+
+    /// Reports immutable OCR provider initialization facts.
+    ///
+    /// The runtime-profile view borrows from the engine, so the accessor is
+    /// lvalue-only.
+    Result<OcrProviderDescriptor> ocr_provider_descriptor() const& {
+        if (api_ == nullptr) {
+            return detail::no_table<OcrProviderDescriptor>();
+        }
+        if (!detail::has_entry(
+                api_, extent_,
+                MADOPILOT_API_SIZE_ENGINE_OCR_PROVIDER_DESCRIPTOR)) {
+            return detail::unsupported<OcrProviderDescriptor>();
+        }
+
+        auto value =
+            detail::sized<::madopilot_ocr_provider_descriptor_t>();
+        const Status status =
+            api_->engine_ocr_provider_descriptor(handle_, &value);
+        if (!is_ok(status)) {
+            return Result<OcrProviderDescriptor>::failure(
+                Error::from_status(status));
+        }
+        std::optional<OcrProviderFallbackReason> fallback;
+        if ((value.flags &
+             MADOPILOT_OCR_PROVIDER_DESCRIPTOR_HAS_FALLBACK) != 0u) {
+            fallback = value.fallback_reason;
+        }
+        return Result<OcrProviderDescriptor>::success(
+            OcrProviderDescriptor{
+                value.requested_policy,
+                value.active_provider,
+                value.initialization_fell_back != 0u,
+                fallback,
+                BorrowedStr(value.runtime_profile),
+            });
+    }
+    Result<OcrProviderDescriptor> ocr_provider_descriptor() const&& = delete;
 
     /// Takes the engine's single diagnostic reader.
     ///
@@ -3260,6 +3867,10 @@ public:
         out.default_ocr_model_version =
             BorrowedStr(build.default_ocr_model_version);
         out.default_ocr_profile = BorrowedStr(build.default_ocr_profile);
+        out.bounded_ocr_model = BorrowedStr(build.bounded_ocr_model);
+        out.bounded_ocr_model_version =
+            BorrowedStr(build.bounded_ocr_model_version);
+        out.bounded_ocr_profile = BorrowedStr(build.bounded_ocr_profile);
 
         return Result<BuildInfo>::success(out);
     }
@@ -3372,6 +3983,74 @@ public:
         if (!is_ok(status)) {
             return Result<Engine>::failure(
                 detail::take_error(table_, status, error));
+        }
+        return Result<Engine>::success(Engine(table_, extent_, engine));
+    }
+
+    /// Builds an engine with one explicit accepted product OCR profile.
+    Result<Engine> create_engine_with_ocr_profile(
+        const Source& source, const EngineOptions& options,
+        const OcrProfileOptions& profile,
+        const Operation& operation) const {
+        if (table_ == nullptr) {
+            return detail::no_table<Engine>();
+        }
+        if (!detail::has_entry(
+                table_, extent_,
+                MADOPILOT_API_SIZE_ENGINE_CREATE_WITH_OCR_PROFILE)) {
+            return detail::unsupported<Engine>();
+        }
+        const auto source_c = source.to_c();
+        const auto options_c = options.to_c();
+        const auto profile_c = profile.to_c();
+        const auto operation_c = operation.to_c();
+        ::madopilot_engine_t* engine = nullptr;
+        ::madopilot_error_t* error = nullptr;
+        const Status status = table_->engine_create_with_ocr_profile(
+            &source_c, &options_c, profile_c.get(), &operation_c, &engine,
+            &error);
+        if (!is_ok(status)) {
+            return Result<Engine>::failure(
+                detail::take_error(table_, status, error));
+        }
+        if (engine == nullptr) {
+            return Result<Engine>::failure(
+                Error::from_status(MADOPILOT_STATUS_INTERNAL));
+        }
+        return Result<Engine>::success(Engine(table_, extent_, engine));
+    }
+
+    /// Builds an engine with one explicit OCR profile and provider policy.
+    Result<Engine> create_engine_with_ocr_provider(
+        const Source& source, const EngineOptions& options,
+        const OcrProfileOptions& profile,
+        const OcrProviderOptions& provider,
+        const Operation& operation) const {
+        if (table_ == nullptr) {
+            return detail::no_table<Engine>();
+        }
+        if (!detail::has_entry(
+                table_, extent_,
+                MADOPILOT_API_SIZE_ENGINE_CREATE_WITH_OCR_PROVIDER)) {
+            return detail::unsupported<Engine>();
+        }
+        const auto source_c = source.to_c();
+        const auto options_c = options.to_c();
+        const auto profile_c = profile.to_c();
+        const auto provider_c = provider.to_c();
+        const auto operation_c = operation.to_c();
+        ::madopilot_engine_t* engine = nullptr;
+        ::madopilot_error_t* error = nullptr;
+        const Status status = table_->engine_create_with_ocr_provider(
+            &source_c, &options_c, profile_c.get(), provider_c.get(),
+            &operation_c, &engine, &error);
+        if (!is_ok(status)) {
+            return Result<Engine>::failure(
+                detail::take_error(table_, status, error));
+        }
+        if (engine == nullptr) {
+            return Result<Engine>::failure(
+                Error::from_status(MADOPILOT_STATUS_INTERNAL));
         }
         return Result<Engine>::success(Engine(table_, extent_, engine));
     }

@@ -45,14 +45,14 @@ registry is itself a Phase 0 deliverable.
 | [`G-003`](#g-003) | macOS shim language | Before Phase 2 implementation | macOS shim implementation | Resolved by [ADR 0012](adr/0012-macos-shim-language-and-containment.md) |
 | [`G-004`](#g-004) | Default OCR model profile | Before Phase 3 implementation | Default OCR profile identity | Resolved by [ADR 0033](adr/0033-default-ocr-model-profile.md) |
 | [`G-005`](#g-005) | Default change-detection algorithm and threshold | Before Phase 4 implementation | Default watcher policy | Open |
-| [`G-006`](#g-006) | Acceleration candidates and provider ordering | Before Phase 5 implementation | Acceleration defaults | Open |
+| [`G-006`](#g-006) | Acceleration candidates and provider ordering | Before Phase 5 implementation | Acceleration defaults | Open per future accelerator; v0.3.1 OCR resolved by ADRs 0046–0048 |
 | [`G-007`](#g-007) | Native dependency bundling profiles | Before Phase 5 implementation | Release packaging | Open |
 | [`G-008`](#g-008) | Static-library feasibility | Before Phase 5 exit | Static artifact claim only | Open |
 | [`G-009`](#g-009) | Stable public Rust item names | Before Phase 1 exit | Rust stability promise | Resolved by [ADR 0006](adr/0006-public-rust-names-and-compatibility-policy.md) |
 | [`G-010`](#g-010) | Version-one C ABI status, prefix, and layout | Before Phase 1 exit | ABI compatibility baseline | Resolved by [ADR 0007](adr/0007-phase-1-c-abi-freeze.md) |
 | [`G-011`](#g-011) | Native-frame extension discovery | Future roadmap | Does not block version one | Deferred |
 | [`G-012`](#g-012) | Published Cargo and C build profiles | Before Phase 5 implementation | Release capability matrix | Open |
-| [`G-013`](#g-013) | Numeric benchmark budgets | Before each affected phase exits | That phase's exit | Open per workload; Phase 1, affected Phase 2 workloads, and Phase 3 default OCR on both release targets are resolved by ADRs 0008, 0024–0032, and 0037 |
+| [`G-013`](#g-013) | Numeric benchmark budgets | Before each affected phase exits | That phase's exit | Open per future workload; Phase 1, affected Phase 2 workloads, Phase 3 default OCR, and Phase 3.1 explicit bounded/grouped/provider OCR are resolved by ADRs 0008, 0024–0032, 0037, 0041, 0044, 0047–0049 |
 | [`G-014`](#g-014) | Archive safety ceilings | Before Phase 1 implementation | Version-one archive loading | Resolved by [ADR 0001](adr/0001-asset-archive-container-and-safety-ceilings.md) |
 
 ## G-001
@@ -250,21 +250,27 @@ recorded sequences kept as regression fixtures.
 
 ## G-006
 
-**Unresolved decision.** The Core ML and Windows acceleration candidates and the
-execution-provider ordering.
+**Version 0.3.1 OCR decision.** Provider selection is independent from model and
+preprocessing profile. Existing and automatic constructors use CPU on both
+release targets. Explicit Windows CUDA is accepted only for ADR 0049's exact
+successor source over the ADR 0048 target/runtime/dependency boundary. CoreML is
+release-rejected by ADR 0047. Preferred policy may construct one fresh CPU pair
+only before engine publication; required policy publishes no engine on failure.
+No inference, cancellation, deadline, device, or native error switches provider.
 
-**Required evidence.** Compatibility and correctness runs for each candidate
-provider on its release target, including the observable behavior when a provider
-is rejected during model loading.
+**Evidence.** ADR 0046 fixes the policy and controlled dependency contract. ADR
+0047 retains CoreML placement plus geometry/cancellation failures. ADR 0048
+remains historical Windows CUDA evidence. ADR 0049 retains its exact placement
+and loader policy, adds the internal 128 MiB adaptive recognizer bound, rejects
+arena/workspace/preload alternatives on measured gates, and passes the successor
+five-CUDA/five-fallback matrix.
 
-**Due.** Before Phase 5 implementation.
+**Status.** The v0.3.1 OCR provider row is resolved. G-006 remains open for
+future accelerator kinds, graphs, targets, automatic defaults, or Phase 5 work.
 
-**Blocks.** Acceleration defaults.
-
-**Status.** Open.
-
-**Resolution.** An ADR recording the candidate results and the provider ordering,
-plus the fallback policy that limits fallback to model loading.
+**Resolution.** Any later support or ordering claim needs its own target-native
+correctness, placement, performance, memory, cancellation, cleanup, and
+fallback evidence plus an ADR.
 
 ## G-007
 
@@ -593,8 +599,100 @@ cancellation/late-result, cleanup, and 4 KiB growth gates, but its
 timing/resident memory defines no release-host budget. Watcher scheduling and
 acceleration remain open for the later phases that introduce them.
 
-**Resolution.** Committed benchmark profiles and budgets plus an ADR for each
-budget that is set or relaxed, recording the evidence behind the number.
+**The v0.3.1 bounded-detector workloads remain open.** ADR 0038 records the
+rejected rectangular-only tuple, ADR 0040 fixes candidate v2, and ADR 0039 keeps
+target-independent smoke, exact-source precursor measurement, and final budget
+enforcement separate. Hosted timing/RSS establishes no release-host budget.
+
+The reviewed approved-host rectangular precursor used exact source `cff5338`.
+All five bounded processes passed on both Apple M1 Pro and Windows Core
+i7-12700KF hosts. All 3,200 retained native/bounded samples across both targets
+passed quality/source/resource/session/cancellation/growth oracles; ten native
+raw false verdicts remain retained because that precursor applied the
+bounded-only 20 MiB peak to arbitrary-4K native comparison work.
+
+ADR 0039's predeclared formula rejected the rectangular candidate on Windows.
+Margin-derived latency ceilings crossed fixed caps for 4K, reference, odd, and
+dense workloads; cold derived 275 ms above 250 ms. Observed RSS derived 384 MiB
+above 320 MiB, but the harness retained all source fixtures simultaneously, so
+that row is preserved and not reused as one-operation memory evidence. No fixed
+cap or expected result was changed.
+
+**The v0.3.1 explicit bounded-detector row is resolved.** ADR 0038 retains the
+rejected rectangular candidate. ADR 0040 accepts candidate v2, and ADR 0041
+accepts target budgets derived by the unchanged ADR 0039 formula.
+
+Exact schema-v3 source `ce658b3` passed five bounded and five native precursor
+processes on each approved host with zero oracle failure/growth and complete
+final/cumulative RSS fields. Strict final source `33cd36b` fails closed for
+missing prerequisites, rejects unknown/duplicate modes, preserves explicit
+smoke/debug inventory behavior, and passed independent fix review.
+
+Five fresh bounded final enforcement processes passed on each approved host.
+Final executable SHA-256 is
+`7e48921dfeaa7b0f3a4bb33b9e927eea9e50d75422c570adb6443fd4f32cf190`
+on Apple and
+`aefdfa9cd6a023049b532f650a5493191994b22b3c07b582097ca1146a58d5e4`
+on Windows. Every latency, heap, growth, final RSS, detector-fact, identity,
+cancellation, and cleanup row passed without retry or exclusion.
+
+The profile remains an explicit non-default Rust selection under the named
+runtime/model/fixture/target boundaries. Released Phase 3 default OCR evidence,
+budgets, and constructors remain unchanged.
+
+**Resolution.** Resolved by [ADR 0040](adr/0040-compound-bounded-detector-ceiling.md)
+and [ADR 0041](adr/0041-bounded-detector-target-budgets.md). Any future ceiling
+or budget change requires a new identity or ADR as applicable and fresh
+both-target evidence.
+
+**The `v0.3.1` integrated grouped-zone budget decision is resolved.** ADR 0042
+fixes the one-to-eight-zone semantics and safety-only overlap boundary; ADR 0043
+fixes the Rust/C ABI 1.4/C++ ownership surface. Exact source `180c1b1` then
+passed the immutable native/singular/one-/three-/eight-zone matrix and five fresh
+alternating 3+20 precursor processes on each approved host with no retry,
+exclusion, incorrect retained sample, call failure, post-warm growth, or
+deterministic resource-signature mismatch.
+
+[ADR 0044](adr/0044-integrated-zone-ocr-target-budgets.md) accepts separate
+Apple M1 Pro and Windows Core i7-12700KF grouped latency, process, cancellation,
+retained-result, mapping, detector/recognizer, candidate/membership/result,
+heap/growth, and cleanup ceilings. It leaves every ADR 0041 singular ceiling
+unchanged and limits the quality/performance claim to full-frame one-zone
+equivalence plus the fixed semantically distinct non-overlapping three/eight
+layouts. Duplicate, nearly equal, adjacent, slight-overlap, and complete-overlap
+arrays remain safety-only.
+
+The first post-budget Apple source `7835884` remains rejected: its complete
+process passed every non-startup gate but measured 149.832 ms cold open against
+the inherited 125 ms ceiling. A user-authorized macOS disk-cache purge then
+reproduced the same gate at 130.844 ms while warm-cache diagnostics measured
+84.408–91.766 ms. [ADR 0045](adr/0045-integrated-ocr-cache-cold-startup-budget.md)
+supersedes only the new Apple integrated startup row with a 200 ms cache-cold
+ceiling. It does not retry or relabel the failure, prime before timing, alter
+Windows, or edit historical ADR 0041 profiles.
+
+Corrected exact source `1ad2031`, tree `c06a969`, then passed five fresh
+integrated `--enforce-budgets` processes on each approved host with alternating
+workload order and no retry or exclusion. Apple executable
+`9d9941e3a14c7acdea71c8c28c4af215a77a7f143d4cc793a53ef2d1d4d3e1da`
+and Windows executable
+`cce21732cc7afb5b9c4903b95f732c42e725e7c92591845f6a39482be0ea5504`
+passed every singular/grouped latency, process, resource, lifecycle, ownership,
+cleanup, correctness, heap, and growth gate. Hosted checks passed both release
+targets on that source; their timing/RSS remains non-qualifying.
+
+**The `v0.3.1` OCR provider budget decision is resolved.** ADR 0047 assigns no
+CoreML budget because its correctness/cancellation smoke failed. ADR 0048's
+three Windows profiles remain immutable historical evidence. ADR 0049 adds
+three successor profiles for required CUDA singular/grouped work and the
+preferred-CUDA/missing-root fresh-CPU grouped fallback. Exact source tree
+`896e037d962610c4abd7a4a7b143d1ae9c90f549` passed five CUDA and five fallback
+processes with zero retry, exclusion, priming, overlap, incorrect result, growth
+failure, or unexpected stderr diagnostic. Minimum workload-median p95
+CPU-over-CUDA speedup was 3.995×. CUDA median RSS remained 4.881× fallback CPU,
+so automatic selection remains CPU. The retained predecessor tail advances only
+the successor CUDA `zone_empty_4k` maximum to 50 ms. Every historical profile
+and frozen ADR 0047/0048 section remains byte-identical.
 
 ## G-014
 

@@ -73,6 +73,10 @@ identifier!(
     "A stable OCR normalization and decoder profile identifier."
 );
 identifier!(
+    ProviderProfileId,
+    "A bounded OCR execution-provider runtime profile identifier."
+);
+identifier!(
     LanguageProfileId,
     "A bounded OCR language-profile identifier."
 );
@@ -101,6 +105,15 @@ pub const ACCEPTED_G004_DECODER_ID: &str = "rapidocr-ppocrv6-rec-small-greedy-ct
 pub const ACCEPTED_G004_NORMALIZATION_ID: &str = "nfc-trim-stable-detector-order-five-decimal-v1";
 /// Accepted G-004 embedded vocabulary entry count.
 pub const ACCEPTED_G004_VOCABULARY_ENTRIES: u32 = 18_708;
+/// Accepted bounded-detector model identity from ADR 0040.
+pub const ACCEPTED_BOUNDED_MODEL_ID: &str =
+    "phase-3-1-rapidocr-ppocrv4-det-v6-rec-small-bounded-v2";
+/// Accepted bounded-detector model revision, sharing the immutable RapidOCR source.
+pub const ACCEPTED_BOUNDED_MODEL_VERSION: &str = ACCEPTED_G004_MODEL_VERSION;
+/// Accepted bounded-detector profile identity from ADR 0040.
+pub const ACCEPTED_BOUNDED_PROFILE_ID: &str = ACCEPTED_BOUNDED_MODEL_ID;
+/// Accepted bounded-detector preprocessing identity from ADR 0040.
+pub const ACCEPTED_BOUNDED_PREPROCESSING_ID: &str = "rapidocr-ppocrv4-det-bgr-db736-fit-1312x736-then-tensor6291456b-linear-half-pixel-source-rec-v2";
 /// Maximum bytes accepted for either OCR model component (64 MiB).
 pub const MAX_MODEL_COMPONENT_BYTES: u64 = 64 * 1024 * 1024;
 
@@ -306,8 +319,8 @@ impl OcrModelIdentity {
     ///
     /// # Errors
     ///
-    /// Returns [`OcrFault::AcceptedProfileMismatch`] when a value claims the
-    /// accepted G-004 model or profile ID but any bound field differs from ADR 0033.
+    /// Returns [`OcrFault::AcceptedProfileMismatch`] when a value claims either
+    /// closed accepted model or profile ID but any field differs from ADR 0033 or 0040.
     pub fn new(
         model: ModelId,
         version: ModelVersion,
@@ -361,26 +374,65 @@ impl OcrModelIdentity {
         .expect("accepted G-004 constants are self-consistent")
     }
 
+    /// Builds the exact accepted bounded-detector identity from ADR 0040 constants.
+    #[must_use]
+    pub fn accepted_bounded_detector() -> Self {
+        Self::new(
+            ModelId::new(ACCEPTED_BOUNDED_MODEL_ID).expect("bounded model identity"),
+            ModelVersion::new(ACCEPTED_BOUNDED_MODEL_VERSION).expect("bounded model version"),
+            ProfileId::new(ACCEPTED_BOUNDED_PROFILE_ID).expect("bounded profile identity"),
+            ModelComponentIdentity::new(
+                ACCEPTED_G004_DETECTOR_BYTES,
+                ACCEPTED_G004_DETECTOR_SHA256,
+            )
+            .expect("bounded detector component identity"),
+            ModelComponentIdentity::new(
+                ACCEPTED_G004_RECOGNIZER_BYTES,
+                ACCEPTED_G004_RECOGNIZER_SHA256,
+            )
+            .expect("bounded recognizer component identity"),
+            OcrProfileMetadata::new(
+                LanguageProfileId::new(ACCEPTED_G004_LANGUAGE_PROFILE_ID)
+                    .expect("bounded language profile"),
+                PreprocessingId::new(ACCEPTED_BOUNDED_PREPROCESSING_ID)
+                    .expect("bounded preprocessing"),
+                DecoderId::new(ACCEPTED_G004_DECODER_ID).expect("bounded decoder"),
+                NormalizationId::new(ACCEPTED_G004_NORMALIZATION_ID)
+                    .expect("bounded normalization"),
+                ACCEPTED_G004_VOCABULARY_ENTRIES,
+                ACCEPTED_G004_VOCABULARY_SHA256,
+            )
+            .expect("bounded profile metadata"),
+        )
+        .expect("bounded profile constants are self-consistent")
+    }
+
     fn validate_profile_authority(&self) -> Result<(), OcrFault> {
-        if self.profile.as_str() != ACCEPTED_G004_PROFILE_ID
-            && self.model.as_str() != ACCEPTED_G004_MODEL_ID
-        {
+        let claims_closed_authority = self.profile.as_str() == ACCEPTED_G004_PROFILE_ID
+            || self.model.as_str() == ACCEPTED_G004_MODEL_ID
+            || self.profile.as_str() == ACCEPTED_BOUNDED_PROFILE_ID
+            || self.model.as_str() == ACCEPTED_BOUNDED_MODEL_ID;
+        if !claims_closed_authority {
             return Ok(());
         }
-        if self.model.as_str() != ACCEPTED_G004_MODEL_ID
-            || self.profile.as_str() != ACCEPTED_G004_PROFILE_ID
-            || self.version.as_str() != ACCEPTED_G004_MODEL_VERSION
-            || self.detector.byte_len() != ACCEPTED_G004_DETECTOR_BYTES
-            || self.detector.sha256() != ACCEPTED_G004_DETECTOR_SHA256
-            || self.recognizer.byte_len() != ACCEPTED_G004_RECOGNIZER_BYTES
-            || self.recognizer.sha256() != ACCEPTED_G004_RECOGNIZER_SHA256
-            || self.profile_metadata.language_profile.as_str() != ACCEPTED_G004_LANGUAGE_PROFILE_ID
-            || self.profile_metadata.preprocessing.as_str() != ACCEPTED_G004_PREPROCESSING_ID
-            || self.profile_metadata.decoder.as_str() != ACCEPTED_G004_DECODER_ID
-            || self.profile_metadata.normalization.as_str() != ACCEPTED_G004_NORMALIZATION_ID
-            || self.profile_metadata.vocabulary_entries != ACCEPTED_G004_VOCABULARY_ENTRIES
-            || self.profile_metadata.vocabulary_sha256 != ACCEPTED_G004_VOCABULARY_SHA256
-        {
+
+        let native_profile = self.model.as_str() == ACCEPTED_G004_MODEL_ID
+            && self.profile.as_str() == ACCEPTED_G004_PROFILE_ID
+            && self.profile_metadata.preprocessing.as_str() == ACCEPTED_G004_PREPROCESSING_ID;
+        let bounded_profile = self.model.as_str() == ACCEPTED_BOUNDED_MODEL_ID
+            && self.profile.as_str() == ACCEPTED_BOUNDED_PROFILE_ID
+            && self.profile_metadata.preprocessing.as_str() == ACCEPTED_BOUNDED_PREPROCESSING_ID;
+        let shared_fields_match = self.version.as_str() == ACCEPTED_G004_MODEL_VERSION
+            && self.detector.byte_len() == ACCEPTED_G004_DETECTOR_BYTES
+            && self.detector.sha256() == ACCEPTED_G004_DETECTOR_SHA256
+            && self.recognizer.byte_len() == ACCEPTED_G004_RECOGNIZER_BYTES
+            && self.recognizer.sha256() == ACCEPTED_G004_RECOGNIZER_SHA256
+            && self.profile_metadata.language_profile.as_str() == ACCEPTED_G004_LANGUAGE_PROFILE_ID
+            && self.profile_metadata.decoder.as_str() == ACCEPTED_G004_DECODER_ID
+            && self.profile_metadata.normalization.as_str() == ACCEPTED_G004_NORMALIZATION_ID
+            && self.profile_metadata.vocabulary_entries == ACCEPTED_G004_VOCABULARY_ENTRIES
+            && self.profile_metadata.vocabulary_sha256 == ACCEPTED_G004_VOCABULARY_SHA256;
+        if !shared_fields_match || !(native_profile || bounded_profile) {
             return Err(OcrFault::AcceptedProfileMismatch);
         }
         Ok(())
@@ -603,26 +655,54 @@ mod tests {
     }
 
     #[test]
-    fn accepted_profile_id_rejects_any_metadata_drift() {
-        let accepted = OcrModelIdentity::accepted_g004();
-        let drifted = OcrModelIdentity::new(
-            accepted.model().clone(),
-            accepted.version().clone(),
-            accepted.profile().clone(),
-            accepted.detector(),
-            accepted.recognizer(),
+    fn every_closed_profile_field_is_authoritative() {
+        for accepted in [
+            OcrModelIdentity::accepted_g004(),
+            OcrModelIdentity::accepted_bounded_detector(),
+        ] {
+            let drifted = OcrModelIdentity::new(
+                accepted.model().clone(),
+                accepted.version().clone(),
+                accepted.profile().clone(),
+                accepted.detector(),
+                accepted.recognizer(),
+                OcrProfileMetadata::new(
+                    accepted.profile_metadata().language_profile().clone(),
+                    accepted.profile_metadata().preprocessing().clone(),
+                    accepted.profile_metadata().decoder().clone(),
+                    accepted.profile_metadata().normalization().clone(),
+                    accepted.profile_metadata().vocabulary_entries(),
+                    [0; 32],
+                )
+                .unwrap(),
+            )
+            .unwrap_err();
+
+            assert_eq!(drifted, OcrFault::AcceptedProfileMismatch);
+        }
+    }
+
+    #[test]
+    fn cross_profile_preprocessing_is_rejected() {
+        let bounded = OcrModelIdentity::accepted_bounded_detector();
+        let mismatch = OcrModelIdentity::new(
+            bounded.model().clone(),
+            bounded.version().clone(),
+            bounded.profile().clone(),
+            bounded.detector(),
+            bounded.recognizer(),
             OcrProfileMetadata::new(
-                accepted.profile_metadata().language_profile().clone(),
-                accepted.profile_metadata().preprocessing().clone(),
-                accepted.profile_metadata().decoder().clone(),
-                accepted.profile_metadata().normalization().clone(),
-                accepted.profile_metadata().vocabulary_entries(),
-                [0; 32],
+                bounded.profile_metadata().language_profile().clone(),
+                PreprocessingId::new(super::ACCEPTED_G004_PREPROCESSING_ID).unwrap(),
+                bounded.profile_metadata().decoder().clone(),
+                bounded.profile_metadata().normalization().clone(),
+                bounded.profile_metadata().vocabulary_entries(),
+                bounded.profile_metadata().vocabulary_sha256(),
             )
             .unwrap(),
         )
         .unwrap_err();
 
-        assert_eq!(drifted, OcrFault::AcceptedProfileMismatch);
+        assert_eq!(mismatch, OcrFault::AcceptedProfileMismatch);
     }
 }

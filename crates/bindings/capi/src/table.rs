@@ -48,9 +48,9 @@ pub const MADOPILOT_ABI_MAJOR: u32 = 1;
 
 /// The ABI minor version this library implements.
 ///
-/// ABI 1.3 preserves the released ABI 1.0 and 1.2 prefixes and appends one-shot
-/// OCR execution plus immutable owned result access.
-pub const MADOPILOT_ABI_MINOR: u32 = 3;
+/// ABI 1.5 preserves the released ABI 1.0, 1.2, 1.3, and 1.4 prefixes and
+/// appends explicit OCR provider construction and immutable provider facts.
+pub const MADOPILOT_ABI_MINOR: u32 = 5;
 
 /// The library package version, for [`madopilot_build_info_t::library_version`].
 const LIBRARY_VERSION: &str = env!("CARGO_PKG_VERSION");
@@ -542,6 +542,76 @@ table! {
         out_engine: *mut *mut crate::engine::madopilot_engine_t,
         out_error: *mut *mut crate::error::madopilot_error_t,
     ) => crate::engine::create_with_default_ocr;
+    /// Builds an engine with one explicit accepted product OCR profile.
+    engine_create_with_ocr_profile(
+        source: *const crate::types::madopilot_source_t,
+        options: *const crate::types::madopilot_engine_options_t,
+        profile: *const crate::types::madopilot_ocr_profile_options_t,
+        operation: *const crate::types::madopilot_operation_t,
+        out_engine: *mut *mut crate::engine::madopilot_engine_t,
+        out_error: *mut *mut crate::error::madopilot_error_t,
+    ) => crate::engine::create_with_ocr_profile;
+    /// Scans one caller-order zone array on one exact retained frame.
+    session_scan_ocr_zones(
+        session: *const crate::capture::madopilot_session_t,
+        request: *const crate::types::madopilot_ocr_zone_scan_request_t,
+        operation: *const crate::types::madopilot_operation_t,
+        out_result: *mut *mut crate::ocr::madopilot_ocr_zone_scan_result_t,
+        out_error: *mut *mut crate::error::madopilot_error_t,
+    ) => crate::ocr::session_scan_ocr_zones;
+    /// Adds one owned grouped OCR result reference. Null is a no-op.
+    ocr_zone_scan_result_retain(
+        result: *const crate::ocr::madopilot_ocr_zone_scan_result_t,
+    ) => crate::ocr::zone_result_retain;
+    /// Drops one owned grouped OCR result reference. Null is a no-op.
+    ocr_zone_scan_result_release(
+        result: *mut crate::ocr::madopilot_ocr_zone_scan_result_t,
+    ) => crate::ocr::zone_result_release;
+    /// Reports the fixed description of one immutable grouped OCR result.
+    ocr_zone_scan_result_info(
+        result: *const crate::ocr::madopilot_ocr_zone_scan_result_t,
+        out_info: *mut crate::types::madopilot_ocr_zone_scan_result_info_t,
+    ) => crate::ocr::zone_result_info;
+    /// Reports effective geometry and count for one caller-order zone.
+    ocr_zone_scan_result_zone_at(
+        result: *const crate::ocr::madopilot_ocr_zone_scan_result_t,
+        zone_index: usize,
+        out_zone: *mut crate::types::madopilot_ocr_zone_result_t,
+    ) => crate::ocr::zone_result_zone_at;
+    /// Reports one group-relative region.
+    ocr_zone_scan_result_region_at(
+        result: *const crate::ocr::madopilot_ocr_zone_scan_result_t,
+        zone_index: usize,
+        region_index: usize,
+        out_region: *mut crate::types::madopilot_ocr_region_t,
+    ) => crate::ocr::zone_result_region_at;
+    /// Reports borrowed text for one group-relative region.
+    ocr_zone_scan_result_text_at(
+        result: *const crate::ocr::madopilot_ocr_zone_scan_result_t,
+        zone_index: usize,
+        region_index: usize,
+        out_text: *mut madopilot_str_t,
+    ) => crate::ocr::zone_result_text_at;
+    /// Reports the exact OCR descriptor selected by a retained engine.
+    engine_ocr_descriptor(
+        engine: *const crate::engine::madopilot_engine_t,
+        out_descriptor: *mut crate::types::madopilot_ocr_engine_descriptor_t,
+    ) => crate::ocr::engine_ocr_descriptor;
+    /// Builds an engine with one explicit OCR profile and provider policy.
+    engine_create_with_ocr_provider(
+        source: *const crate::types::madopilot_source_t,
+        options: *const crate::types::madopilot_engine_options_t,
+        profile: *const crate::types::madopilot_ocr_profile_options_t,
+        provider: *const crate::types::madopilot_ocr_provider_options_t,
+        operation: *const crate::types::madopilot_operation_t,
+        out_engine: *mut *mut crate::engine::madopilot_engine_t,
+        out_error: *mut *mut crate::error::madopilot_error_t,
+    ) => crate::engine::create_with_ocr_provider;
+    /// Reports immutable provider initialization facts owned by an engine.
+    engine_ocr_provider_descriptor(
+        engine: *const crate::engine::madopilot_engine_t,
+        out_descriptor: *mut crate::types::madopilot_ocr_provider_descriptor_t,
+    ) => crate::ocr::engine_ocr_provider_descriptor;
 }
 
 /// `sizeof` the complete frozen ABI 1.0 function-table prefix.
@@ -568,6 +638,34 @@ pub const MADOPILOT_API_SIZE_1_2: u32 = {
     assert!(
         size <= u32::MAX as usize,
         "the ABI 1.2 table prefix fits a u32 size"
+    );
+    size as u32
+};
+
+/// `sizeof` the complete frozen ABI 1.3 function-table prefix.
+#[expect(
+    clippy::cast_possible_truncation,
+    reason = "guarded against the only value that could truncate"
+)]
+pub const MADOPILOT_API_SIZE_1_3: u32 = {
+    let size = std::mem::offset_of!(madopilot_api_t, engine_create_with_ocr_profile);
+    assert!(
+        size <= u32::MAX as usize,
+        "the ABI 1.3 table prefix fits a u32 size"
+    );
+    size as u32
+};
+
+/// `sizeof` the complete frozen ABI 1.4 function-table prefix.
+#[expect(
+    clippy::cast_possible_truncation,
+    reason = "guarded against the only value that could truncate"
+)]
+pub const MADOPILOT_API_SIZE_1_4: u32 = {
+    let size = std::mem::offset_of!(madopilot_api_t, engine_create_with_ocr_provider);
+    assert!(
+        size <= u32::MAX as usize,
+        "the ABI 1.4 table prefix fits a u32 size"
     );
     size as u32
 };
@@ -693,6 +791,9 @@ impl Versioned for madopilot_build_info_t {
         default_ocr_model,
         default_ocr_model_version,
         default_ocr_profile,
+        bounded_ocr_model,
+        bounded_ocr_model_version,
+        bounded_ocr_profile,
     );
     const ZEROED_PADDING: &'static [(usize, usize)] = &[];
 
@@ -712,6 +813,9 @@ impl Versioned for madopilot_build_info_t {
             default_ocr_model: madopilot_str_t::empty(),
             default_ocr_model_version: madopilot_str_t::empty(),
             default_ocr_profile: madopilot_str_t::empty(),
+            bounded_ocr_model: madopilot_str_t::empty(),
+            bounded_ocr_model_version: madopilot_str_t::empty(),
+            bounded_ocr_profile: madopilot_str_t::empty(),
         }
     }
 }
@@ -749,6 +853,11 @@ fn describe_build_impl(out_info: *mut madopilot_build_info_t) -> madopilot_statu
                 mado_pilot::ACCEPTED_G004_MODEL_VERSION,
             ),
             default_ocr_profile: madopilot_str_t::borrowed(mado_pilot::ACCEPTED_G004_PROFILE_ID),
+            bounded_ocr_model: madopilot_str_t::borrowed(mado_pilot::ACCEPTED_BOUNDED_MODEL_ID),
+            bounded_ocr_model_version: madopilot_str_t::borrowed(
+                mado_pilot::ACCEPTED_BOUNDED_MODEL_VERSION,
+            ),
+            bounded_ocr_profile: madopilot_str_t::borrowed(mado_pilot::ACCEPTED_BOUNDED_PROFILE_ID),
         });
     }
 

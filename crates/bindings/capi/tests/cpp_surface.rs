@@ -1,4 +1,4 @@
-//! What the ABI 1.3 C++ header declares, and what it must not.
+//! What the ABI 1.5 C++ header declares, and what it must not.
 //!
 //! The wrapper's ownership shape is proved by the `static_assert`s in
 //! `tests/cpp/madopilot-cpp-ownership.cpp`, which need a C++ compiler. This
@@ -6,9 +6,9 @@
 //! inventory, so a plain `cargo test` notices a type that appeared or
 //! disappeared.
 //!
-//! ABI 1.3 ends at one-shot OCR and immutable owned OCR results. A `Watcher`,
-//! query, callback, acceleration, packaging, or native-frame type here would
-//! promise a deferred C entry that does not exist, and it would compile
+//! ABI 1.5 ends at explicit OCR provider construction and immutable provider
+//! facts. A watcher, query, callback, packaging, or native-frame type here
+//! would promise a deferred C entry that does not exist, and it would compile
 //! perfectly.
 //!
 //! The complete 1.0 and 1.2 prefixes are frozen by their accepted ADRs and
@@ -18,7 +18,7 @@
 
 use std::path::PathBuf;
 
-/// Every type the ABI 1.3 wrapper declares at namespace scope.
+/// Every type the ABI 1.5 wrapper declares at namespace scope.
 ///
 /// Written out rather than derived, because the point is to notice a change.
 const DECLARED: &[&str] = &[
@@ -36,6 +36,8 @@ const DECLARED: &[&str] = &[
     "PackageSource",
     "EngineOptions",
     "DefaultOcrOptions",
+    "OcrProfileOptions",
+    "OcrProviderOptions",
     "InputOpenRequest",
     "InputEvent",
     "InputRequest",
@@ -44,8 +46,11 @@ const DECLARED: &[&str] = &[
     "MatchOptions",
     "FindRequest",
     "OcrRequest",
+    "ZoneScanOcrRequest",
     // Fixed-width value projections.
     "EngineCapabilities",
+    "OcrEngineDescriptor",
+    "OcrProviderDescriptor",
     "PermissionDiagnostic",
     "Permission",
     "InputCapability",
@@ -64,6 +69,8 @@ const DECLARED: &[&str] = &[
     "Match",
     "OcrResultInfo",
     "OcrRegion",
+    "ZoneScanOcrResultInfo",
+    "OcrZoneResult",
     // Owners, one per reference-counted C handle.
     "Cancellation",
     "TargetList",
@@ -73,6 +80,7 @@ const DECLARED: &[&str] = &[
     "Frame",
     "MatchResult",
     "OcrResult",
+    "ZoneScanOcrResult",
     "InputReceipt",
     "DiagnosticReader",
     "DiagnosticBatch",
@@ -82,7 +90,7 @@ const DECLARED: &[&str] = &[
     "Api",
 ];
 
-/// The concepts the ABI 1.3 suffix still defers.
+/// The concepts the ABI 1.5 suffix still defers.
 ///
 /// Each is a word that would appear in a declared type name if a deferred
 /// surface leaked into this wrapper.
@@ -92,7 +100,6 @@ const EXCLUDED: &[&str] = &[
     "Query",
     "Callback",
     "Subscription",
-    "Acceleration",
     "Packaging",
     "NativeFrame",
     "Extension",
@@ -156,7 +163,7 @@ fn declared_types(header: &str) -> Vec<String> {
 }
 
 #[test]
-fn the_header_declares_exactly_the_abi_1_3_surface() {
+fn the_header_declares_exactly_the_abi_1_5_surface() {
     let header = header();
     let mut found = declared_types(&header);
     // `Result` is declared once as a template and once as its void
@@ -170,7 +177,7 @@ fn the_header_declares_exactly_the_abi_1_3_surface() {
     assert_eq!(
         found, expected,
         "the C++ header's declared types changed. Update `DECLARED` in the same \
-         change, after checking that every new type wraps something the ABI 1.3 C \
+         change, after checking that every new type wraps something the ABI 1.5 C \
          table actually has."
     );
 }
@@ -183,9 +190,9 @@ fn the_header_declares_no_deferred_surface() {
         for excluded in EXCLUDED {
             assert!(
                 !name.contains(excluded),
-                "`{name}` names `{excluded}`, which ABI 1.3 defers. Watchers, \
-                 queries, callbacks, acceleration, packaging, and native-frame \
-                 extensions must appear in C first."
+                "`{name}` names `{excluded}`, which ABI 1.5 defers. Watchers, \
+                 queries, callbacks, packaging, and native-frame extensions \
+                 must appear in C first."
             );
         }
     }

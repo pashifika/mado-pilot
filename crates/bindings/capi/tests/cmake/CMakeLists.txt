@@ -67,6 +67,25 @@ add_executable(
 )
 target_link_libraries(consumer-ocr-default-cpp PRIVATE MadoPilot::Cpp)
 
+# The explicit bounded-profile grouped examples exercise the ABI 1.4 C and C++
+# surfaces from an independent consumer project. They run only when the
+# controlled prerequisites are present in the environment.
+add_executable(
+  consumer-ocr-profile-c
+  "${MADOPILOT_SOURCE_DIR}/examples/c/ocr-profile-zones.c"
+)
+target_link_libraries(consumer-ocr-profile-c PRIVATE MadoPilot::C)
+set_target_properties(
+  consumer-ocr-profile-c
+  PROPERTIES C_STANDARD 11 C_STANDARD_REQUIRED ON
+)
+
+add_executable(
+  consumer-ocr-profile-cpp
+  "${MADOPILOT_SOURCE_DIR}/examples/cpp/ocr-profile-zones.cpp"
+)
+target_link_libraries(consumer-ocr-profile-cpp PRIVATE MadoPilot::Cpp)
+
 enable_testing()
 
 add_test(NAME consumer-c COMMAND consumer-c)
@@ -74,6 +93,12 @@ add_test(NAME consumer-cpp COMMAND consumer-cpp)
 add_test(NAME consumer-native-cpp COMMAND consumer-native-cpp --check)
 add_test(NAME consumer-ocr-default-cpp COMMAND consumer-ocr-default-cpp)
 set_tests_properties(consumer-ocr-default-cpp PROPERTIES SKIP_RETURN_CODE 77)
+add_test(NAME consumer-ocr-profile-c COMMAND consumer-ocr-profile-c)
+add_test(NAME consumer-ocr-profile-cpp COMMAND consumer-ocr-profile-cpp)
+set_tests_properties(
+  consumer-ocr-profile-c consumer-ocr-profile-cpp
+  PROPERTIES SKIP_RETURN_CODE 77
+)
 
 if(WIN32)
   # Windows has no run path: the loader searches the executable's directory and
@@ -82,6 +107,7 @@ if(WIN32)
   file(TO_NATIVE_PATH "${MADOPILOT_ARTIFACT_DIR}" _madopilot_native_artifacts)
   set_tests_properties(
     consumer-c consumer-cpp consumer-native-cpp consumer-ocr-default-cpp
+    consumer-ocr-profile-c consumer-ocr-profile-cpp
     PROPERTIES
       ENVIRONMENT_MODIFICATION "PATH=path_list_prepend:${_madopilot_native_artifacts}"
   )

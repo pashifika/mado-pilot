@@ -184,16 +184,20 @@ pub use mado_pilot_input::{
     PointerGeometry, PressedState, SequenceLimits, SequenceOutcome,
 };
 pub use mado_pilot_ocr::{
-    ACCEPTED_G004_DECODER_ID, ACCEPTED_G004_LANGUAGE_PROFILE_ID, ACCEPTED_G004_MODEL_ID,
-    ACCEPTED_G004_MODEL_VERSION, ACCEPTED_G004_NORMALIZATION_ID, ACCEPTED_G004_PREPROCESSING_ID,
-    ACCEPTED_G004_PROFILE_ID, ACCEPTED_G004_VOCABULARY_ENTRIES, BackendCandidate,
-    BackendId as OcrBackendId, BackendRequest as OcrBackendRequest,
+    ACCEPTED_BOUNDED_MODEL_ID, ACCEPTED_BOUNDED_MODEL_VERSION, ACCEPTED_BOUNDED_PREPROCESSING_ID,
+    ACCEPTED_BOUNDED_PROFILE_ID, ACCEPTED_G004_DECODER_ID, ACCEPTED_G004_LANGUAGE_PROFILE_ID,
+    ACCEPTED_G004_MODEL_ID, ACCEPTED_G004_MODEL_VERSION, ACCEPTED_G004_NORMALIZATION_ID,
+    ACCEPTED_G004_PREPROCESSING_ID, ACCEPTED_G004_PROFILE_ID, ACCEPTED_G004_VOCABULARY_ENTRIES,
+    BackendCandidate, BackendId as OcrBackendId, BackendRequest as OcrBackendRequest,
     BackendVersion as OcrBackendVersion, Confidence, DecoderId, LanguageProfileId,
     MAX_BACKEND_TEXT_BYTES, MAX_CANDIDATES as MAX_OCR_CANDIDATES, MAX_MODEL_COMPONENT_BYTES,
-    MAX_TEXT_BYTES, ModelComponentIdentity, ModelId, ModelVersion, NormalizationId, OcrBackend,
-    OcrBackendDescriptor, OcrBackendIdentity, OcrCandidateSink, OcrFault, OcrModelComponent,
-    OcrModelIdentity, OcrModelSource, OcrModelSourceRequest, OcrProfileMetadata, OcrQuadrilateral,
-    OcrRecognizer, OcrRegion, OcrRequest, OcrResult, PreprocessingId, ProfileId, RecognizedRegion,
+    MAX_OCR_ZONES, MAX_TEXT_BYTES, ModelComponentIdentity, ModelId, ModelVersion, NormalizationId,
+    OcrBackend, OcrBackendDescriptor, OcrBackendIdentity, OcrCandidateSink, OcrExecutionProvider,
+    OcrExecutionProviderPolicy, OcrFault, OcrModelComponent, OcrModelIdentity, OcrModelSource,
+    OcrModelSourceRequest, OcrProfileMetadata, OcrProviderDescriptor, OcrProviderFallbackReason,
+    OcrQuadrilateral, OcrRecognizer, OcrRegion, OcrRequest, OcrResult, OcrZone, OcrZoneGroup,
+    OcrZoneScanRequest, OcrZoneScanResult, PreprocessingId, ProfileId, ProviderProfileId,
+    RecognizedRegion,
 };
 pub use mado_pilot_vision::{
     BackendDescriptor, BackendId, Match, MatchDefaults, MatchOptions, MatchResult, Matcher,

@@ -4,6 +4,8 @@ use std::fmt;
 
 use mado_pilot_core::{Error, Interruption, Status};
 
+use crate::profile::PreprocessingDescriptor;
+
 /// One closed failure class owned by the ONNX OCR adapter.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 #[non_exhaustive]
@@ -28,9 +30,17 @@ pub enum OnnxBackendFault {
     RuntimeIncompatible,
     /// Another process-global ONNX API or environment was initialized first.
     RuntimeConflict,
-    /// The source did not carry the exact accepted G-004 identity.
+    /// The requested provider is unsupported by this target, build, or runtime.
+    ProviderUnavailable,
+    /// Target qualification rejected the requested provider for this release.
+    ProviderQualificationRejected,
+    /// A controlled accelerator dependency was absent or incompatible.
+    ProviderDependencyUnavailable,
+    /// Provider registration or accelerator session initialization failed.
+    ProviderInitializationFailed,
+    /// The source did not carry either exact accepted closed profile.
     ProfileMismatch,
-    /// The model graph or embedded vocabulary did not match the accepted profile.
+    /// The model graph or embedded vocabulary did not match the selected profile.
     GraphMismatch,
     /// A checked tensor, output, candidate, or text ceiling would be exceeded.
     ResourceLimit,
@@ -64,13 +74,17 @@ impl OnnxBackendFault {
             | Self::RecognizerUnavailable
             | Self::RuntimeUnavailable
             | Self::RuntimeIncompatible
-            | Self::RuntimeConflict => Status::Unsupported,
+            | Self::RuntimeConflict
+            | Self::ProviderUnavailable
+            | Self::ProviderDependencyUnavailable
+            | Self::ProviderQualificationRejected => Status::Unsupported,
             Self::DetectorMismatch | Self::RecognizerMismatch => Status::AssetInvalid,
             Self::ResourceLimit | Self::Busy => Status::LimitExceeded,
             Self::Closed => Status::Closed,
-            Self::InvalidPixels | Self::NativeFailure | Self::MalformedOutput => {
-                Status::VisionFailed
-            }
+            Self::InvalidPixels
+            | Self::NativeFailure
+            | Self::ProviderInitializationFailed
+            | Self::MalformedOutput => Status::VisionFailed,
             Self::Cancelled => Status::Cancelled,
             Self::DeadlineExceeded => Status::DeadlineExceeded,
         }
@@ -100,8 +114,16 @@ impl OnnxBackendFault {
             Self::RuntimeUnavailable => "controlled ONNX runtime is unavailable",
             Self::RuntimeIncompatible => "controlled ONNX runtime is incompatible",
             Self::RuntimeConflict => "a conflicting ONNX runtime is already initialized",
-            Self::ProfileMismatch => "OCR source does not match the accepted G-004 profile",
-            Self::GraphMismatch => "OCR graph metadata does not match the accepted profile",
+            Self::ProviderUnavailable => "requested ONNX execution provider is unavailable",
+            Self::ProviderDependencyUnavailable => {
+                "controlled ONNX provider dependency is unavailable"
+            }
+            Self::ProviderQualificationRejected => {
+                "requested ONNX execution provider failed release qualification"
+            }
+            Self::ProviderInitializationFailed => "ONNX execution provider initialization failed",
+            Self::ProfileMismatch => "OCR source does not match an accepted closed profile",
+            Self::GraphMismatch => "OCR graph metadata does not match the selected profile",
             Self::ResourceLimit => "ONNX backend resource ceiling would be exceeded",
             Self::Busy => "ONNX backend inference slot is occupied",
             Self::Closed => "ONNX backend is closed",
@@ -137,12 +159,204 @@ impl fmt::Display for OnnxBackendFault {
 
 impl std::error::Error for OnnxBackendFault {}
 
-/// The only execution provider this backend can select.
+/// One execution provider exposed by the ONNX OCR backend.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub enum OnnxExecutionProvider {
     /// ONNX Runtime's built-in CPU execution provider.
     Cpu,
+    /// ONNX Runtime's CUDA execution provider.
+    Cuda,
+    /// ONNX Runtime's CoreML execution provider.
+    CoreMl,
 }
+
+impl OnnxExecutionProvider {
+    /// Returns the closed runtime/provider profile identity.
+    #[must_use]
+    pub const fn runtime_profile_id(self) -> &'static str {
+        match self {
+            Self::Cpu => "onnxruntime-1.29.0-api17-cpu",
+            Self::Cuda => "onnxruntime-1.29.0-api17-cuda13-cudnn9",
+            Self::CoreMl => "onnxruntime-1.29.0-api17-coreml",
+        }
+    }
+}
+
+/// Closed caller policy for provider selection during backend initialization.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub enum OnnxExecutionProviderPolicy {
+    /// Preserve the released CPU-only behavior.
+    Cpu,
+    /// Prefer the release-qualified target accelerator, otherwise use CPU.
+    AutoPreferAccelerator,
+    /// Prefer CUDA and fall back to CPU before publication.
+    PreferCuda,
+    /// Require CUDA and publish nothing when it cannot initialize.
+    RequireCuda,
+    /// Prefer CoreML and fall back to CPU before publication.
+    PreferCoreMl,
+    /// Require CoreML and publish nothing when it cannot initialize.
+    RequireCoreMl,
+}
+
+impl OnnxExecutionProviderPolicy {
+    /// Returns whether initialization may fall back to a fresh CPU session pair.
+    #[must_use]
+    pub const fn permits_cpu_fallback(self) -> bool {
+        matches!(
+            self,
+            Self::AutoPreferAccelerator | Self::PreferCuda | Self::PreferCoreMl
+        )
+    }
+}
+
+/// Privacy-safe reason an accelerator initialization selected CPU instead.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub enum OnnxProviderFallbackReason {
+    /// The requested accelerator does not exist on this release target.
+    UnsupportedTarget,
+    /// The binary was built without the requested provider feature.
+    BuildCapabilityUnavailable,
+    /// ONNX Runtime did not make the provider available.
+    ProviderUnavailable,
+    /// A controlled provider dependency was absent or incompatible.
+    DependencyUnavailable,
+    /// Provider registration failed.
+    RegistrationFailed,
+    /// Detector or recognizer session construction failed.
+    SessionCreationFailed,
+    /// Model graph or profile validation rejected the provider session.
+    GraphRejected,
+    /// Target qualification rejected this provider for the release.
+    QualificationRejected,
+}
+
+impl OnnxProviderFallbackReason {
+    /// Returns the public status class used when fallback is not permitted.
+    #[must_use]
+    pub const fn status(self) -> Status {
+        match self {
+            Self::UnsupportedTarget
+            | Self::BuildCapabilityUnavailable
+            | Self::ProviderUnavailable
+            | Self::DependencyUnavailable
+            | Self::QualificationRejected => Status::Unsupported,
+            Self::RegistrationFailed | Self::SessionCreationFailed => Status::VisionFailed,
+            Self::GraphRejected => Status::InvalidArgument,
+        }
+    }
+}
+
+impl OnnxProviderFallbackReason {
+    /// Returns a static, privacy-safe provider failure detail.
+    #[must_use]
+    pub const fn detail(self) -> &'static str {
+        match self {
+            Self::UnsupportedTarget => "accelerator is unsupported on this target",
+            Self::BuildCapabilityUnavailable => "binary lacks the requested accelerator capability",
+            Self::ProviderUnavailable => "runtime does not expose the requested accelerator",
+            Self::DependencyUnavailable => "controlled accelerator dependency is unavailable",
+            Self::RegistrationFailed => "accelerator registration failed",
+            Self::SessionCreationFailed => "accelerator session creation failed",
+            Self::GraphRejected => "accelerator graph validation failed",
+            Self::QualificationRejected => "release qualification rejected the accelerator",
+        }
+    }
+}
+
+/// One provider-policy backend construction failure.
+///
+/// When a preferred accelerator fails and fresh CPU construction also fails,
+/// `provider_reason` retains the original closed accelerator context while
+/// `fault` remains the authoritative CPU failure.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub struct OnnxBackendOpenFault {
+    fault: OnnxBackendFault,
+    provider_reason: Option<OnnxProviderFallbackReason>,
+}
+
+impl OnnxBackendOpenFault {
+    pub(crate) const fn terminal(fault: OnnxBackendFault) -> Self {
+        Self {
+            fault,
+            provider_reason: None,
+        }
+    }
+
+    pub(crate) const fn provider(
+        provider: OnnxExecutionProvider,
+        fault: OnnxBackendFault,
+        reason: OnnxProviderFallbackReason,
+    ) -> Self {
+        Self {
+            fault,
+            provider_reason: if matches!(provider, OnnxExecutionProvider::Cpu) {
+                None
+            } else {
+                Some(reason)
+            },
+        }
+    }
+
+    pub(crate) const fn with_provider_reason(
+        self,
+        provider_reason: OnnxProviderFallbackReason,
+    ) -> Self {
+        Self {
+            fault: self.fault,
+            provider_reason: Some(provider_reason),
+        }
+    }
+
+    /// Returns the authoritative final construction fault.
+    #[must_use]
+    pub const fn fault(self) -> OnnxBackendFault {
+        self.fault
+    }
+
+    /// Returns bounded accelerator context retained with the final fault.
+    #[must_use]
+    pub const fn provider_reason(self) -> Option<OnnxProviderFallbackReason> {
+        self.provider_reason
+    }
+
+    /// Returns the public status of the authoritative final fault.
+    #[must_use]
+    pub const fn status(self) -> Status {
+        self.fault.status()
+    }
+}
+
+impl From<OnnxBackendFault> for OnnxBackendOpenFault {
+    fn from(fault: OnnxBackendFault) -> Self {
+        Self::terminal(fault)
+    }
+}
+
+impl From<OnnxBackendOpenFault> for Error {
+    fn from(fault: OnnxBackendOpenFault) -> Self {
+        match fault.provider_reason {
+            Some(_) => Error::new(fault.status(), fault.to_string()),
+            None => fault.fault.into(),
+        }
+    }
+}
+
+impl fmt::Display for OnnxBackendOpenFault {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self.provider_reason {
+            Some(reason) => write!(
+                formatter,
+                "{}; accelerator initialization failure: {}",
+                self.fault.detail(),
+                reason.detail()
+            ),
+            None => self.fault.fmt(formatter),
+        }
+    }
+}
+
+impl std::error::Error for OnnxBackendOpenFault {}
 
 /// The reviewed native compatibility boundary.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
@@ -151,30 +365,81 @@ pub enum OnnxRuntimeCompatibility {
     Version1_29Api17,
 }
 
+/// The closed OCR preprocessing profile selected for this backend.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub enum OnnxOcrProfile {
+    /// Released native G-004 DB736 preprocessing without a final dimension ceiling.
+    NativeG004,
+    /// ADR 0040 compound bounded-detector sampling with original-source recognition.
+    BoundedDetector,
+}
+
 /// Privacy-safe, closed observations about one opened backend.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub struct OnnxBackendFacts {
+    requested_provider_policy: OnnxExecutionProviderPolicy,
     provider: OnnxExecutionProvider,
+    fallback_reason: Option<OnnxProviderFallbackReason>,
     runtime: OnnxRuntimeCompatibility,
     max_concurrent_inferences: u32,
+    profile: OnnxOcrProfile,
     max_tensor_bytes: u64,
+    max_detector_width: Option<u32>,
+    max_detector_height: Option<u32>,
+    max_detector_tensor_bytes: u64,
     max_output_bytes: u64,
     max_detector_candidates: u32,
     recognition_batch: u32,
 }
 
 impl OnnxBackendFacts {
-    pub(crate) const fn accepted(
+    #[cfg(test)]
+    pub(crate) fn accepted(
+        preprocessing: PreprocessingDescriptor,
         max_tensor_bytes: u64,
         max_output_bytes: u64,
         max_detector_candidates: u32,
         recognition_batch: u32,
     ) -> Self {
+        Self::accepted_with_provider(
+            preprocessing,
+            max_tensor_bytes,
+            max_output_bytes,
+            max_detector_candidates,
+            recognition_batch,
+            OnnxExecutionProviderPolicy::Cpu,
+            OnnxExecutionProvider::Cpu,
+            None,
+        )
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    pub(crate) fn accepted_with_provider(
+        preprocessing: PreprocessingDescriptor,
+        max_tensor_bytes: u64,
+        max_output_bytes: u64,
+        max_detector_candidates: u32,
+        recognition_batch: u32,
+        requested_provider_policy: OnnxExecutionProviderPolicy,
+        provider: OnnxExecutionProvider,
+        fallback_reason: Option<OnnxProviderFallbackReason>,
+    ) -> Self {
         Self {
-            provider: OnnxExecutionProvider::Cpu,
+            requested_provider_policy,
+            provider,
+            fallback_reason,
             runtime: OnnxRuntimeCompatibility::Version1_29Api17,
+            profile: preprocessing.selected().public(),
             max_concurrent_inferences: 1,
             max_tensor_bytes,
+            max_detector_width: preprocessing.max_width(),
+            max_detector_height: preprocessing.max_height(),
+            max_detector_tensor_bytes: match (preprocessing.max_width(), preprocessing.max_height())
+            {
+                (Some(width), Some(height)) => u64::from(width) * u64::from(height) * 3 * 4,
+                (None, None) => max_tensor_bytes,
+                _ => 0,
+            },
             max_output_bytes,
             max_detector_candidates,
             recognition_batch,
@@ -187,12 +452,41 @@ impl OnnxBackendFacts {
         self.provider
     }
 
+    /// Returns the caller's initialization-time provider policy.
+    #[must_use]
+    pub const fn requested_provider_policy(self) -> OnnxExecutionProviderPolicy {
+        self.requested_provider_policy
+    }
+
+    /// Returns whether initialization fell back to CPU.
+    #[must_use]
+    pub const fn initialization_fell_back(self) -> bool {
+        self.fallback_reason.is_some()
+    }
+
+    /// Returns the bounded initialization fallback reason, when one occurred.
+    #[must_use]
+    pub const fn fallback_reason(self) -> Option<OnnxProviderFallbackReason> {
+        self.fallback_reason
+    }
+
+    /// Returns the active runtime/provider profile identity.
+    #[must_use]
+    pub const fn runtime_profile_id(self) -> &'static str {
+        self.provider.runtime_profile_id()
+    }
+
     /// Returns the reviewed runtime compatibility boundary.
     #[must_use]
     pub const fn runtime(self) -> OnnxRuntimeCompatibility {
         self.runtime
     }
 
+    /// Returns the selected closed OCR profile.
+    #[must_use]
+    pub const fn profile(self) -> OnnxOcrProfile {
+        self.profile
+    }
     /// Returns the number of calls admitted concurrently.
     #[must_use]
     pub const fn max_concurrent_inferences(self) -> u32 {
@@ -205,6 +499,23 @@ impl OnnxBackendFacts {
         self.max_tensor_bytes
     }
 
+    /// Returns the selected profile's final detector-width ceiling, if fixed.
+    #[must_use]
+    pub const fn max_detector_width(self) -> Option<u32> {
+        self.max_detector_width
+    }
+
+    /// Returns the selected profile's final detector-height ceiling, if fixed.
+    #[must_use]
+    pub const fn max_detector_height(self) -> Option<u32> {
+        self.max_detector_height
+    }
+
+    /// Returns the selected profile's detector tensor byte ceiling.
+    #[must_use]
+    pub const fn max_detector_tensor_bytes(self) -> u64 {
+        self.max_detector_tensor_bytes
+    }
     /// Returns the per-native-output byte ceiling.
     #[must_use]
     pub const fn max_output_bytes(self) -> u64 {
@@ -228,8 +539,20 @@ impl OnnxBackendFacts {
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Hash)]
 pub struct OnnxBackendObservations {
     mapped_bytes: u64,
+    mapping_calls: u64,
+    latest_mapping_width: Option<u32>,
+    latest_mapping_height: Option<u32>,
+    latest_detector_width: Option<u32>,
+    latest_detector_height: Option<u32>,
+    detector_tensor_bytes: u64,
+    detector_resizes: u64,
     detector_runs: u64,
     recognizer_runs: u64,
+    selected_candidates: u64,
+    ignored_candidates: u64,
+    unique_candidates: u64,
+    memberships: u64,
+    cleanup_completions: u64,
     session_pairs: u32,
     sessions: u32,
 }
@@ -238,17 +561,41 @@ impl OnnxBackendObservations {
     pub(crate) const fn opened() -> Self {
         Self {
             mapped_bytes: 0,
+            mapping_calls: 0,
+            latest_mapping_width: None,
+            latest_mapping_height: None,
+            latest_detector_width: None,
+            latest_detector_height: None,
+            detector_tensor_bytes: 0,
+            detector_resizes: 0,
             detector_runs: 0,
             recognizer_runs: 0,
+            selected_candidates: 0,
+            ignored_candidates: 0,
+            unique_candidates: 0,
+            memberships: 0,
+            cleanup_completions: 0,
             session_pairs: 1,
             sessions: 2,
         }
     }
 
-    pub(crate) fn record_mapping(&mut self, bytes: usize) {
+    pub(crate) fn record_mapping(&mut self, width: u32, height: u32, bytes: usize) {
+        self.mapping_calls = self.mapping_calls.saturating_add(1);
+        self.latest_mapping_width = Some(width);
+        self.latest_mapping_height = Some(height);
         self.mapped_bytes = self
             .mapped_bytes
             .saturating_add(u64::try_from(bytes).unwrap_or(u64::MAX));
+    }
+
+    pub(crate) fn record_detector_input(&mut self, width: u32, height: u32, bytes: usize) {
+        self.latest_detector_width = Some(width);
+        self.latest_detector_height = Some(height);
+        self.detector_tensor_bytes = self
+            .detector_tensor_bytes
+            .saturating_add(u64::try_from(bytes).unwrap_or(u64::MAX));
+        self.detector_resizes = self.detector_resizes.saturating_add(1);
     }
 
     pub(crate) fn record_detector_run(&mut self) {
@@ -259,10 +606,78 @@ impl OnnxBackendObservations {
         self.recognizer_runs = self.recognizer_runs.saturating_add(1);
     }
 
+    pub(crate) fn record_interest_filter(
+        &mut self,
+        selected: usize,
+        ignored: usize,
+        memberships: usize,
+    ) {
+        let selected = u64::try_from(selected).unwrap_or(u64::MAX);
+        self.selected_candidates = self.selected_candidates.saturating_add(selected);
+        self.ignored_candidates = self
+            .ignored_candidates
+            .saturating_add(u64::try_from(ignored).unwrap_or(u64::MAX));
+        self.memberships = self
+            .memberships
+            .saturating_add(u64::try_from(memberships).unwrap_or(u64::MAX));
+    }
+
+    pub(crate) fn record_unique_candidates(&mut self, candidates: usize) {
+        self.unique_candidates = self
+            .unique_candidates
+            .saturating_add(u64::try_from(candidates).unwrap_or(u64::MAX));
+    }
+
+    pub(crate) fn record_cleanup(&mut self) {
+        self.cleanup_completions = self.cleanup_completions.saturating_add(1);
+    }
+
     /// Returns cumulative mapped pixels presented to native inference.
     #[must_use]
     pub const fn mapped_bytes(self) -> u64 {
         self.mapped_bytes
+    }
+
+    /// Returns cumulative backend calls presented with one source-envelope mapping.
+    #[must_use]
+    pub const fn mapping_calls(self) -> u64 {
+        self.mapping_calls
+    }
+
+    /// Returns the most recently mapped source-envelope width.
+    #[must_use]
+    pub const fn latest_mapping_width(self) -> Option<u32> {
+        self.latest_mapping_width
+    }
+
+    /// Returns the most recently mapped source-envelope height.
+    #[must_use]
+    pub const fn latest_mapping_height(self) -> Option<u32> {
+        self.latest_mapping_height
+    }
+
+    /// Returns the most recently prepared final detector width.
+    #[must_use]
+    pub const fn latest_detector_width(self) -> Option<u32> {
+        self.latest_detector_width
+    }
+
+    /// Returns the most recently prepared final detector height.
+    #[must_use]
+    pub const fn latest_detector_height(self) -> Option<u32> {
+        self.latest_detector_height
+    }
+
+    /// Returns cumulative bytes in prepared detector tensors.
+    #[must_use]
+    pub const fn detector_tensor_bytes(self) -> u64 {
+        self.detector_tensor_bytes
+    }
+
+    /// Returns cumulative direct source-to-detector resizes.
+    #[must_use]
+    pub const fn detector_resizes(self) -> u64 {
+        self.detector_resizes
     }
 
     /// Returns cumulative detector tensor runs.
@@ -275,6 +690,38 @@ impl OnnxBackendObservations {
     #[must_use]
     pub const fn recognizer_runs(self) -> u64 {
         self.recognizer_runs
+    }
+
+    /// Returns cumulative candidates selected for recognition.
+    #[must_use]
+    pub const fn selected_candidates(self) -> u64 {
+        self.selected_candidates
+    }
+
+    /// Returns cumulative detector candidates ignored by grouped interests.
+    #[must_use]
+    pub const fn ignored_candidates(self) -> u64 {
+        self.ignored_candidates
+    }
+
+    /// Returns cumulative unique candidates produced by successful recognition.
+    #[must_use]
+    pub const fn unique_candidates(self) -> u64 {
+        self.unique_candidates
+    }
+
+    /// Returns cumulative candidate-to-zone memberships selected by interests.
+    #[must_use]
+    pub const fn memberships(self) -> u64 {
+        self.memberships
+    }
+
+    /// Returns calls whose native inference scope exited and released image/tensor temporaries.
+    ///
+    /// The caller-owned mapping and returned candidate staging are outside this count.
+    #[must_use]
+    pub const fn cleanup_completions(self) -> u64 {
+        self.cleanup_completions
     }
 
     /// Returns the number of opened detector/recognizer pairs.

@@ -112,6 +112,12 @@ A budget names one measure. The version-one vocabulary is:
 | `stale_work_ratio` | ratio | Share of scheduled work that was dropped, coalesced, superseded, rejected, queue-expired, or discarded as stale. |
 | `model_load_time` | milliseconds | Time to load and initialize an OCR model, including provider selection. |
 | `startup_time` | milliseconds | Time from process start to a usable session. |
+| `cold_load_p95` | milliseconds | Worst accepted first backend open across the fresh qualification processes; recorded as a target-specific startup regression gate. |
+| `first_close_max` | milliseconds | Slowest first close after the complete workload set in a fresh process. |
+| `reopen_close_max` | milliseconds | Slowest accepted-model reopen-and-close cycle in a fresh process. |
+| `active_cancellation_max` | milliseconds | Longest interval from cancellation after observed native-run start to the cancelled call returning. |
+| `retained_result_max` | milliseconds | Longest separately measured grouped operation whose immutable result is then checked after parent teardown. |
+| `max_detector_tensor_bytes` | bytes | Largest detector input tensor admitted by the selected profile across the run. |
 | `result_correctness` | count | Retained samples whose output disagreed with the correctness oracle. A hard gate, never a tuned ceiling. |
 | `memory_growth` | bytes | Signed change in resident memory across the sampled run, so a decrease is negative. A hard gate: unbounded growth is a defect, not a slow result, and its predicate bounds growth rather than demanding an exact zero. |
 | `latency_p50` | milliseconds | Median of the per-iteration samples for one workload. |
@@ -138,7 +144,7 @@ one, `peak_allocated_bytes` counts bytes and `_bytes` separates it from a byte
 *rate* — and omits it when the `Unit` column above is the only answer the measure
 can have. `latency_p95` is milliseconds because every latency here is.
 
-Four vocabulary names differ from the key a profile records the value under,
+Nine vocabulary names differ from the key a profile records the value under,
 which is the one place a reader can be caught out:
 
 | Vocabulary name | Recorded as |
@@ -147,6 +153,11 @@ which is the one place a reader can be caught out:
 | `latency_p95` | `latency_p95_ms` |
 | `latency_max` | `latency_max_ms` |
 | `memory_growth` | `allocated_growth_bytes`, when the measure is live heap rather than resident memory |
+| `cold_load_p95` | `cold_load_p95_ms` |
+| `first_close_max` | `first_close_max_ms` |
+| `reopen_close_max` | `reopen_close_max_ms` |
+| `active_cancellation_max` | `active_cancellation_max_ms` |
+| `retained_result_max` | `retained_result_max_ms` |
 
 A budget's `measure` may name either form; committed profiles use the recorded
 key everywhere except `latency_p50`, `latency_p95`, and `latency_max`, where
@@ -839,5 +850,309 @@ bytes are not applicable to immutable CPU replay inputs and have no ceiling.
 These are regression ceilings for the named hosts and fixture, not
 arbitrary-resolution, 4K, multi-region, real-time, renderer, application, or
 game guarantees. Phase 3 default-OCR `G-013` is complete on both release
-targets; watcher scheduling and acceleration remain open until later phases
-introduce those workloads.
+targets. Watcher scheduling remains open; the later provider section records the
+independent CoreML rejection and explicit CUDA qualification.
+
+## v0.3.1 bounded-detector candidate performance
+
+`crates/backend/onnx/benches/bounded-detector.rs` compares released native G-004
+and the explicit bounded candidate on identical 4K, wide, extreme-wide,
+960×540, odd, dense, boundary-region, and 4K blank inputs. Every iteration
+checks text/count/order, fixture geometry, same-host confidence, complete source
+and profile identity, final detector dimensions/bytes, one direct resize,
+detector/recognizer runs, mapped bytes, one-pair/two-session topology,
+cancellation, and at most 4,096 post-warm live Rust growth. The bounded
+candidate additionally enforces at most 20 MiB attributable live Rust heap.
+Native arbitrary-4K peak is recorded as comparator work under its released
+256 MiB tensor ceiling; it is not judged by the new profile's peak limit.
+
+ADR 0039 separates three phases. `smoke` is the target-independent hosted gate.
+`precursor` runs three warmups and 20 retained samples in five fresh processes,
+enforces all hard correctness/resource rules, and records timing/RSS without a
+numeric verdict. The current executable refuses `--qualify`;
+`enforce-budgets` is added to a fresh executable only after both approved
+targets have precursor evidence and a final budget ADR. Result count does not
+select a cost class: the 3840×2160 blank workload maps and detects 4K input
+despite returning no regions.
+
+The first Apple run at source `2782564`, executable SHA-256
+`3a4bb04477b14092c9b3b34153275819684790d072aa1659e44183bafbd1f8b4`,
+remains rejected. All correctness/resource rows passed, but the procedure
+incorrectly applied the released 64×64 empty-result latency row to the 4K blank
+workload, and one 2.697 ms close exceeded the earlier revision's 2 ms final
+budget. No failed process was removed or relabeled.
+
+Reviewed rectangular-candidate precursor source `cff5338`, executable SHA-256
+`c28257dea60a86fe58d9fe9549670f6615004d3553c2f0bbe0a996a40ef9575d`,
+ran five fresh processes per profile on the approved Apple M1 Pro. Every
+bounded process passed. The native comparator preserved five false executable
+verdicts because the precursor still evaluated its arbitrary-4K peak against
+the bounded-only 20 MiB ceiling. Those false verdicts are retained rather than
+relabeled. All 1,600 retained native/bounded samples otherwise passed with zero
+oracle failures and zero live Rust growth. Worst per-process observations were:
+
+| Workload | Bounded detector | Native detector | Bounded p95 | Native p95 |
+|---|---:|---:|---:|---:|
+| 4K HUD | 1312×736 / 11,587,584 bytes | 3840×2176 / 100,270,080 bytes | 490.454 ms | 2,347.264 ms |
+| Wide menu | 1312×320 / 5,038,080 bytes | 2944×736 / 26,001,408 bytes | 339.375 ms | 787.027 ms |
+| Extreme-wide status | 1312×160 / 2,519,040 bytes | 5888×736 / 52,002,816 bytes | 230.009 ms | 1,282.602 ms |
+| 960×540 HUD | 1312×736 / 11,587,584 bytes | 1312×736 / 11,587,584 bytes | 479.206 ms | 480.257 ms |
+| Dense tooltip | 1312×640 / 10,076,160 bytes | 1472×736 / 13,000,704 bytes | 599.615 ms | 673.754 ms |
+| 4K blank | 1312×736 / 11,587,584 bytes | 3840×2176 / 100,270,080 bytes | 242.689 ms | 2,102.128 ms |
+
+Bounded attributable live Rust peak was 12,695,400 bytes and bounded peak RSS
+was 586,645,504 bytes. The native comparator's attributable peak reached
+108,627,472 bytes under its released 256 MiB tensor ceiling, and its peak RSS
+was 2,454,126,592 bytes. Reference-size work is intentionally unchanged. One
+odd-size bounded process retained a slower p95 despite equal detector
+dimensions, so no general speedup is inferred from the profile name.
+
+The exact Apple process rows and retained native false verdicts are Change
+evidence. The matching approved Windows `cff5338` matrix also passed all five
+bounded correctness/resource verdicts, but ADR 0039's unchanged formula rejected
+the rectangular candidate. Margin-derived p50/p95 ceilings exceeded fixed caps
+for 4K HUD, 960×540 HUD, odd HUD, and dense tooltip; dense maximum also exceeded
+its cap. Cold derived 275 ms above 250 ms. Observed RSS derived 384 MiB above
+320 MiB, although that harness retained all eight source frames and the row is
+not reused as one-operation memory evidence. No cap or expected result was
+relaxed.
+
+ADR 0040 replaces the unreleased `bounded-v1` tuple. Candidate v2 preserves
+1312×736 reference/odd detector pixels, but after an oversized desired detector
+first fits the 1312×736 rectangle, it applies a second 6 MiB aspect-preserving
+tensor fit when needed. Fixed workload dimensions become 960×512 for 4K,
+1024×480 for dense tooltip, and remain 1312×320, 1312×160, 1312×736, and
+576×736 for the other declared shapes. The benchmark constructs and drops one
+source fixture per workload so those frames are not simultaneously live. OS RSS
+is process-lifetime high-water: schema-v3 workload fields are explicitly named
+`process_peak_resident_bytes_after_workload`, and only final report-level RSS
+sets the process budget.
+
+Exact candidate-v2 source `ce658b3`, executable SHA-256
+`dea9cdfbbb66ba75cb490fc3359efa6ca599786726157a520544cf39b38f81eb`,
+ran five fresh bounded and five fresh native schema-v3 processes on the approved
+Apple M1 Pro with alternating pair order. All ten raw verdicts and all 1,600
+retained samples passed with zero oracle failure/growth and complete RSS rows.
+Bounded worst p95 was 372.100 ms for 4K HUD, 476.275 ms for reference HUD,
+474.544 ms for dense tooltip, and 122.430 ms for 4K blank; peak heap was
+12,695,336 bytes and final process RSS was 464,519,168 bytes. Every
+formula-derived Apple candidate fits the unchanged caps.
+
+Exact Windows executable
+`54a10f73970e24e126b4863853c0949610206bb7135579477883ec669ea0b5ed`
+ran the same alternating five bounded/five native schema-v3 matrix on the
+approved Core i7-12700KF. All ten raw verdicts and all 1,600 retained samples
+passed. Bounded worst p95 was 530.211 ms for 4K HUD, 718.100 ms for reference
+HUD, 591.838 ms for dense tooltip, and 244.941 ms for 4K blank; peak heap was
+12,695,272 bytes and final process RSS was 228,741,120 bytes. Every
+formula-derived Windows candidate fits the unchanged caps.
+
+ADR 0041 accepts the exact target budgets in
+`phase-3-1-bounded-ocr-aarch64-apple-darwin.toml` and
+`phase-3-1-bounded-ocr-x86_64-pc-windows-msvc.toml`. Strict final source
+`33cd36b` rejects missing prerequisites, unknown/duplicate modes, and ambiguous
+profiles before work; independent fix review returned no findings.
+
+Apple executable
+`7e48921dfeaa7b0f3a4bb33b9e927eea9e50d75422c570adb6443fd4f32cf190`
+and Windows executable
+`aefdfa9cd6a023049b532f650a5493191994b22b3c07b582097ca1146a58d5e4`
+each passed five fresh bounded `--enforce-budgets` processes without retry or
+exclusion. Worst final process RSS was 464,666,624 bytes on Apple and
+229,089,280 bytes on Windows; all workload latency/heap/growth rows passed.
+The explicit profile is qualified for the named target/runtime/model/fixture
+boundaries. It remains non-default and is not a real-time or arbitrary-workload
+guarantee.
+
+## v0.3.1 integrated grouped-zone qualification
+
+The accepted bounded-v2 singular profiles above remain revision-bound regression
+gates. Integrated exact source `180c1b1`, tree `479e410`, added the fixed
+one-/three-/eight-zone, dense, and empty rows without changing those profiles.
+The approved Apple M1 Pro executable
+`6ce1df5bba8bc555fa961af366b0386333e6baeebd7c9483b1be9da39f16c792`
+and Windows Core i7-12700KF executable
+`b34b99eb7dcb3870edbd768055428be655e1e45ad125400d3b999bfb4da23398`
+each ran one native comparator and five fresh alternating 3+20 integrated
+processes without retry or exclusion.
+
+Every row passed exact text/count/order/geometry/source/profile,
+source-envelope/zones/memberships, detector/recognizer work, mapping, heap,
+growth, cancellation, retained-result independence, startup, close, and cleanup
+oracles. Both targets reported zero incorrect retained samples, zero call
+failures, zero post-warm growth, and identical deterministic resource signatures.
+Duplicate, one-pixel-different, adjacent, slight-overlap, and complete-overlap
+layouts remain bounded safety cases with no quality or latency support claim.
+
+[ADR 0044](adr/0044-integrated-zone-ocr-target-budgets.md) accepts the
+predeclared 1.25-times/25-ms formula results:
+
+| Workload | Apple p50 / p95 / maximum | Windows p50 / p95 / maximum |
+|---|---:|---:|
+| full-frame one zone | 600 / 600 / 625 ms | 900 / 900 / 900 ms |
+| three sparse zones | 375 / 375 / 375 ms | 525 / 525 / 525 ms |
+| eight distinct zones | 450 / 450 / 475 ms | 600 / 600 / 600 ms |
+| dense unique candidates | 600 / 675 / 700 ms | 725 / 750 / 750 ms |
+| empty 4K result | 175 / 175 / 175 ms | 300 / 325 / 325 ms |
+
+ADR 0041 close, 20 MiB attributable live Rust peak, 4 KiB growth,
+11,587,584-byte detector tensor, and target final-RSS ceilings remain unchanged.
+Active native cancellation-to-return is capped at 25 ms on each target.
+Retained one-zone result completion is capped at 625 ms on Apple and 900 ms on
+Windows. Each fixed grouped row additionally requires one mapping/resize/detector
+run, exact mapped and detector bytes, expected zero/one/two recognizer runs,
+exact selected/ignored/unique/membership/result accounting, one cleanup, and no
+retained parent resource.
+
+The first post-budget Apple process at exact source `7835884` is rejected and
+retained. Every workload/lifecycle/resource row passed, but its 149.832 ms first
+backend open exceeded the inherited 125 ms startup ceiling. The same executable
+then measured 84.408–91.766 ms in six explicitly non-qualification warm-cache
+diagnostics. After an authorized macOS disk-buffer-cache purge, the next
+diagnostic reproduced the failure at 130.844 ms. This proves the historical
+process-cold ADR 0041 profile did not control cache state.
+
+[ADR 0045](adr/0045-integrated-ocr-cache-cold-startup-budget.md) therefore sets
+only the new Apple integrated startup ceiling to 200 ms: 1.25 times the retained
+149.832 ms observation, rounded upward to 25 ms. Windows stays at 250 ms.
+Historical ADR 0041 constants and profiles remain unchanged, and the benchmark
+does not prime the runtime/model before timing.
+
+The new
+`phase-3-1-integrated-zone-ocr-aarch64-apple-darwin.toml` and
+`phase-3-1-integrated-zone-ocr-x86_64-pc-windows-msvc.toml` profiles record this
+separate lineage rather than editing either ADR 0041 profile. Corrected exact
+source `1ad2031`, tree `c06a969`, produced Apple executable
+`9d9941e3a14c7acdea71c8c28c4af215a77a7f143d4cc793a53ef2d1d4d3e1da`
+and Windows executable
+`cce21732cc7afb5b9c4903b95f732c42e725e7c92591845f6a39482be0ea5504`.
+Each passed five fresh alternating integrated `--enforce-budgets` processes
+without retry or exclusion.
+
+Apple worst final cold/close/reopen/RSS/cancellation/retained-result observations
+were 86.591 ms, 1.043 ms, 62.963 ms, 469,565,440 bytes, 6.516 ms, and
+479.335 ms. Windows observed 193.091 ms, 5.341 ms, 152.954 ms, 231,067,648
+bytes, 4.664 ms, and 711.576 ms. Every singular/grouped latency, exact resource,
+ownership, cancellation, cleanup, heap, and growth gate passed. Hosted CI also
+passed both release targets on that exact source; hosted timing and RSS remain
+non-qualifying.
+
+## v0.3.1 ONNX execution-provider qualification
+
+ADR 0046 fixes provider selection and measurement independently from the
+native/bounded preprocessing profile. The schema-v5
+`bounded-detector` benchmark records requested/active provider, initialization
+fallback, runtime profile, startup/lifecycle/RSS, and the unchanged eight
+singular plus five grouped quality/resource rows. Provider registration is not
+accepted as placement: qualification-only ORT profiles are finalized on session
+drop and retained privately, while tracked evidence contains only redacted
+unique CUDA/CoreML/CPU node counts.
+
+CoreML registration and placement succeeded on the approved Apple M1 Pro:
+detector assignment was 6 CoreML / 8 CPU unique nodes and recognizer assignment
+was 27 CoreML / 44 CPU. The fixed smoke gate nevertheless failed every warmup
+and retained `bounded_menu_wide` and `bounded_status_extreme_wide` row on
+geometry, then exceeded the 250 ms active-cancellation return bound. The
+identical CPU smoke passed all thirteen workloads and cancellation gates.
+[ADR 0047](adr/0047-coreml-ocr-provider-qualification.md) therefore rejects
+CoreML support and assigns no CoreML performance budget. No failed row is
+discarded or converted into a latency result.
+
+The approved Windows CUDA precursor used exact base `83ce7e3` plus patch
+SHA-256 `90e9d2ab4fd3b151d56cc1a9ddc08ecfd76120f667e5e41b57e23e5fa24a6135`
+and executable SHA-256
+`29b5be55a43d6eb958ff3932dd320782296041847c4748e86d90efb7c31c4d8a`.
+The controlled ORT 1.29/CUDA 13/cuDNN 9/NVRTC root produced empty provider
+stderr. Placement was 328 CUDA / 0 CPU detector nodes and 181 CUDA / 2 CPU
+recognizer nodes.
+
+Five fresh CPU and five fresh CUDA precursor processes, each with three warmups
+and 20 retained samples, passed in the fixed alternating order. Same-index
+CPU-over-CUDA speedup ranges were 4.326–21.048× p50, 4.115–19.662× p95, and
+4.053–19.279× maximum. Exact final enforcement retained two stopped sequences
+rather than excluding their tails: one CUDA dense-group p95/maximum and one
+interleaved fresh-CPU fallback eight/dense-group p95/maximum. Their
+approximately 1.25× rounded corrections change only the new provider profiles;
+all historical standalone CPU profile bytes and budgets remain unchanged.
+
+The terminal patch
+`40e5ec9f1720fbfa5ab0943a3738ccc4a719c68d96532201c6740cca41c6152b`
+built executable
+`25a0ce6e51bfad48110e118807491d82b3870ac608491f25e86f207244f1c1c7`.
+All five required-CUDA and five preferred-CUDA/missing-root CPU-fallback
+processes passed 249/249 checks in the fixed order with zero retry, exclusion,
+priming, overlap, incorrect retained sample, growth failure, or NVRTC
+diagnostic.
+
+| Measure | Fallback CPU median | CUDA median | CUDA final worst | CUDA ceiling |
+|---|---:|---:|---:|---:|
+| Cold open | 179.724 ms | 323.479 ms | 339.682 ms | 425 ms |
+| First close | 4.908 ms | 15.701 ms | 17.774 ms | 25 ms |
+| Reopen-close | 149.894 ms | 132.928 ms | 134.340 ms | 175 ms |
+| Active cancellation | 4.441 ms | 1.683 ms | 2.133 ms | 25 ms |
+| Retained result | 712.658 ms | 128.416 ms | 147.014 ms | 175 ms |
+| Process peak RSS | 230,543,360 B | 1,121,656,832 B | 1,140,326,400 B | 1,426,063,360 B |
+
+Representative CUDA p50/p95/maximum ceilings are 150/150/175 ms for 4K HUD,
+150/175/175 ms for dense tooltip, 175/200/200 ms for one full-frame group, and
+150/525/1,100 ms for dense grouped work. The separate mixed-provider fallback
+profile keeps the standalone CPU p50 limits and records the retained grouped
+tail ceilings. The three exact schema-v5 profiles and testkit registries enforce
+every workload and scalar ceiling.
+
+Across precursor and terminal evidence, host-wide VRAM was 1,811–1,899 MiB
+during fallback CPU processes and 2,432–2,700 MiB during CUDA processes. The
+conservative cross-process maximum difference was 889 MiB under the configured
+1 GiB provider-arena cap. These host totals are not process attribution.
+
+[ADR 0048](adr/0048-cuda-ocr-provider-qualification.md) accepts explicit CUDA
+and rejects automatic preference: median CUDA process RSS is about 4.9 times
+CPU, above the predeclared 1.5× automatic-selection bound. The latency benefit
+does not relax that memory rule. `AutoPreferAccelerator` therefore remains CPU
+on both release targets.
+
+### ADR 0049 successor CUDA remediation
+
+ADR 0049 preserves the ADR 0048 rows above as revision-bound history and adds
+three `phase-3-1-cuda-remediated-*` profiles from exact successor tree
+`896e037d962610c4abd7a4a7b143d1ae9c90f549`. The internal CUDA recognizer output
+limit is 128 MiB. Ordinary accepted widths retain batches of six; six
+4096-pixel candidates form `[3, 3]`, with maximum estimated output 114,954,240
+bytes and actual extracted output checked against the same 134,217,728-byte
+limit.
+
+Adaptive batching passed its five-baseline/five-candidate/five-CPU comparison:
+maximum workload-median `B/A` was 1.004, geometric mean was 0.972, and minimum
+workload-median CPU-over-candidate speedup was 4.288×. This accepts a
+memory-safety bound, not an ordinary RSS reduction. `SameAsRequested` arena
+extension reduced median RSS only 0.016% and worst RSS 0.106%; restricted cuDNN
+workspace stopped on an absolute CPU-reference latency failure. Both were
+removed. Memory-stage attribution opened loader investigation at median
+211,193,856 bytes, but PE imports proved incomplete for known dynamic NVRTC
+requirements, so no preload was removed.
+
+The final five required-CUDA and five preferred-CUDA/missing-root fallback
+processes passed all eight singular and five grouped workloads with three
+warmups and 20 retained samples:
+
+| Measure | Fallback CPU median | CUDA median | CUDA worst | Ceiling |
+|---|---:|---:|---:|---:|
+| Cold open | 181.636 ms | 335.084 ms | 347.779 ms | 425 ms |
+| First close | 4.618 ms | 15.745 ms | 16.472 ms | 25 ms |
+| Reopen-close | 146.005 ms | 133.675 ms | 134.299 ms | 175 ms |
+| Active cancellation | 4.290 ms | 3.729 ms | 4.112 ms | 25 ms |
+| Retained result | 692.142 ms | 135.861 ms | 137.496 ms | 175 ms |
+| Process peak RSS | 229,404,672 B | 1,119,711,232 B | 1,120,923,648 B | 1,426,063,360 B |
+
+Minimum workload-median p95 CPU-over-CUDA speedup was 3.995×. Host-wide
+CUDA-minus-fallback VRAM maxima were 663–671 MiB; these remain temporal host
+observations. CUDA median RSS was 4.881× fallback CPU, so automatic selection
+remains CPU. One retained predecessor process disproved only the inherited
+`zone_empty_4k` 25 ms maximum; its successor p50/p95/maximum ceilings are
+25/25/50 ms under the existing 1.25-times/next-25-ms rule.
+
+Placement remains 328 CUDA / 0 CPU detector nodes and 181 CUDA / 2 CPU
+recognizer nodes. One pre-runtime canonical-path apparatus stop is retained; its
+authorized canonical-spelling replacement changed no source, executable,
+directory contents, workload arguments, or product environment and reproduced
+the exact counts.

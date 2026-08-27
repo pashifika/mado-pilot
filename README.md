@@ -3,14 +3,14 @@
 A headless visual automation runtime for applications and agents.
 
 MadoPilot discovers windows and displays, captures frame streams, maps coordinate
-spaces, matches templates, performs one-shot OCR through an explicit backend or
-the accepted default CPU profile, and injects input through explicit platform
-capabilities while reporting
+spaces, matches templates, performs one-shot OCR through an explicit backend,
+the accepted CPU profiles, or an explicit initialization-time provider policy,
+and injects input through explicit platform capabilities while reporting
 structured outcomes. Visual-condition watchers and their scheduling remain
 future work. The runtime owns no GUI, tray, overlay, editor, updater, workflow
 catalog, scheduler, or scripting language.
 
-## Status: deterministic, native, and default OCR workflows from Rust, C, and C++
+## Status: deterministic, native, and OCR workflows from Rust, C, and C++
 
 **MadoPilot is a developer-facing source runtime, not a packaged automation
 product.** One complete deterministic workflow runs over replayed frames:
@@ -77,19 +77,27 @@ remains attributed to `d8336be` and applies by reviewed complete diff;
 exact-candidate hosted checks bind both release targets. Historical profiles and
 hosted CI never substitute for interactive native rows.
 
-The v0.3.0 source candidate has approved Windows 11 and Apple Silicon integrated
-42-region quality plus separate target-native numeric OCR performance profiles.
-Hosted Windows Server tests enforce hard correctness and bounded growth, but
-never substitute for those release-host rows or the protected release flow.
+Released `v0.3.0` carries approved Windows 11 and Apple Silicon integrated
+42-region default-OCR quality plus separate target-native numeric profiles.
+The `v0.3.1` candidate adds an explicit non-default bounded profile,
+one-to-eight caller-owned grouped zones, initialization-time OCR provider policy,
+C ABI 1.5, and matching Rust/C++ ownership surfaces. CoreML qualification is
+rejected; explicit Windows CUDA and its fresh-CPU initialization fallback pass
+terminal provider enforcement, while automatic selection remains CPU on both
+targets because CUDA exceeded the fixed RSS ratio. Protected release delivery
+remains open.
 
 macOS capture needs Screen Recording and input needs event-post access;
 MadoPilot probes both without prompting. Windows has no permission probe and
 reports integrity/UIPI outcomes without elevation. A green run that skipped a
 permissioned or interactive native scenario is not evidence that scenario ran.
 
-The public workflow recognizes one retained frame through either explicit
-caller-selected OCR wiring or a `*_engine_with_default_ocr` constructor. It does
-not watch for text, schedule work, retry, fall back, or trigger input.
+The public workflow recognizes one retained frame through explicit
+caller-selected OCR wiring, a CPU default/profile constructor, or the provider
+constructor. It can scan one to eight caller-owned zones through one shared
+detector pass. Preferred provider fallback is restricted to initialization
+before engine publication. It does not watch for text, schedule work, retry a
+failed inference, switch provider after publication, or trigger input.
 
 | Area | Status |
 |---|---|
@@ -105,12 +113,12 @@ not watch for text, schedule work, retry, fall back, or trigger input.
 | Native capture | Implemented in both adapters and exposed through Rust, C ABI, and C++; ADR 0030 accepts macOS production capture/transitions, ADR 0031 accepts Windows 1280×720 production capture/transitions, and ADR 0032 accepts Windows mixed-DPI dual-4K production capture |
 | Native input submission | Implemented in both adapters and exposed through Rust, C ABI, and C++; system input, Windows exact-window delivery, and macOS owning-process delivery are explicit, receipts state submission evidence rather than application consumption, and fixture-scoped automatic checks send no uncontrolled desktop input |
 | Bounded diagnostic observation | Implemented through Rust, C ABI, and C++ with allocation-free `Off`, finite `Normal`/`Debug` streams, exact loss counts, and content-redacted OCR records |
-| One-shot OCR public contract | Implemented through Rust, C ABI 1.3, and C++ over explicit backends and the accepted default ONNX CPU profile; support is limited to the documented model/runtime/target boundary, with no watcher, scheduling, fallback, bundling, or download |
+| One-shot OCR public contract | Implemented through Rust, C ABI 1.5, and C++ over explicit backends, accepted ONNX CPU profiles, and explicit initialization-time provider policy; singular and one-to-eight-zone operations remain separate, with no watcher, scheduling, per-inference retry, bundling, or download |
 | Visual-condition watchers and OCR scheduling | Not implemented |
-| C ABI, tracked C header, dynamic library | Implemented through ABI 1.3 while preserving complete ABI 1.0 and 1.2 prefixes; the OCR owner suffix ends at 640 bytes and the complete default-constructor table at 648 bytes; the unreleased 1.1 draft is intentionally unsupported |
-| Header-only C++ RAII wrapper and CMake targets | Implemented through ABI 1.3, including `DefaultOcrOptions` and production default composition |
+| C ABI, tracked C header, dynamic library | Implemented through ABI 1.5 while preserving complete ABI 1.0, 1.2, 1.3, and 1.4 prefixes at 424, 592, 648, and 720 bytes; provider construction and engine-owned provider descriptors extend the table to 736 bytes; the unreleased 1.1 draft is intentionally unsupported |
+| Header-only C++ RAII wrapper and CMake targets | Implemented through ABI 1.5, including owning profile/zone/provider projections, move-only grouped results, explicit clone, and lvalue-only borrowed OCR/provider descriptor views |
 | C ABI static library, ABI-major loader names, pkg-config, CMake install | Not implemented |
-| Numeric performance budgets | Phase 1 and affected Phase 2 ceilings remain revision-bound and enforced. ADR 0037 accepts separate Apple M1 Pro and Core i7-12700KF default-OCR profiles with hard correctness/growth/resource gates and executable latency/heap/mapping/cleanup/target-native-resident ceilings |
+| Numeric performance budgets | Phase 1 and affected Phase 2 ceilings remain revision-bound and enforced. ADR 0037 accepts default-OCR target profiles; ADR 0041 accepts explicit bounded singular budgets. ADR 0044 accepts target-specific grouped-zone latency, lifecycle, and resource budgets for fixed non-overlapping layouts; ADR 0045 corrects only the new Apple integrated cache-cold startup ceiling after a retained failed source. ADR 0048 accepts explicit Windows CUDA and mixed-provider fallback profiles after retaining two stopped tail observations; automatic preference remains CPU. Corrected Apple M1 Pro and Core i7-12700KF final enforcement passes; protected release delivery remains open |
 | Release packaging | Not implemented |
 
 The public Rust names have been reviewed and settled
@@ -118,13 +126,15 @@ The public Rust names have been reviewed and settled
 [ADR 0006](docs/adr/0006-public-rust-names-and-compatibility-policy.md)), but
 they are not yet a stability promise: that begins at 1.0, and until then a
 rename costs an ADR and a version bump rather than being impossible. The C ABI
-is separately versioned and **is** frozen: ABI 1.0 and ABI 1.2 are permanent
-complete prefixes; ABI 1.3 appends one-shot OCR, immutable owned results, and the
-default constructor without moving either prefix
+is separately versioned and **is** frozen: ABI 1.0, ABI 1.2, ABI 1.3, and ABI
+1.4 are permanent complete prefixes. ABI 1.5 appends provider-policy
+construction and engine-owned provider descriptors without moving them
 ([ADR 0007](docs/adr/0007-phase-1-c-abi-freeze.md),
 [ADR 0023](docs/adr/0023-input-submission-observation-and-abi-1-2.md),
 [ADR 0035](docs/adr/0035-ocr-public-surfaces-and-private-fixture-boundary.md),
-[ADR 0036](docs/adr/0036-default-ocr-composition-and-abi-prefix.md)).
+[ADR 0036](docs/adr/0036-default-ocr-composition-and-abi-prefix.md),
+[ADR 0043](docs/adr/0043-ocr-profile-and-zone-public-surfaces.md), and
+[ADR 0046](docs/adr/0046-onnx-accelerator-provider-policy.md)).
 Within ABI major 1, no released value, field, or function-table entry moves. The
 C++ wrapper declares no ABI of its own and inherits the C one.
 
@@ -136,12 +146,12 @@ the full status table, the package inventory, and the dependency rules.
 [`v0.1.0`](docs/releases/v0.1.0.md) is the published deterministic-workflow
 baseline. [`v0.2.1`](docs/releases/v0.2.1.md) is the published native
 capture/input/observation source release. [`v0.3.0`](docs/releases/v0.3.0.md) is
-the current OCR integration candidate; its approved native evidence is complete,
-but it remains unpublished until the protected release flow finishes. None
-publishes crates to crates.io or provides prebuilt libraries,
-installers, CMake install/export metadata, pkg-config metadata, or bundled
-OpenCV, ONNX Runtime, or model files. A tracked release-note file is the
-canonical release body.
+the published default-OCR source release. [`v0.3.1`](docs/releases/v0.3.1.md) is
+the bounded-profile/grouped-zone release candidate and remains unpublished until
+its protected exact-source qualification and release flow complete. None
+publishes crates to crates.io or provides prebuilt libraries, installers, CMake
+install/export metadata, pkg-config metadata, or bundled OpenCV, ONNX Runtime,
+or model files. A tracked release-note file is the canonical release body.
 
 ## Release targets
 
@@ -206,10 +216,11 @@ release ships; the exact versions, the Windows discovery variables, and the fail
 modes are in
 [docs/third-party-dependencies.md](docs/third-party-dependencies.md#opencv).
 
-Running the production default OCR path additionally requires the two accepted
-model files under one caller-selected root and one canonical absolute ONNX
-Runtime 1.29.0 path. MadoPilot never bundles, downloads, or searches for them;
-see
+Running integrated OCR requires the accepted model files under one
+caller-selected root and one canonical absolute ONNX Runtime 1.29.0 path.
+Explicit Windows CUDA additionally requires the exact controlled
+ORT/CUDA/cuBLAS/cuDNN/NVRTC root described by ADR 0048. MadoPilot never bundles,
+downloads, installs, or searches for these files; see
 [docs/third-party-dependencies.md](docs/third-party-dependencies.md#implemented-onnx-runtime-prerequisite).
 
 ```sh
@@ -260,7 +271,7 @@ cargo run --locked --package mado-pilot-capi --features private-fixture \
 | Document | Contents |
 |---|---|
 | [docs/architecture.md](docs/architecture.md) | Workspace, package responsibilities, dependency allowlist, naming, scope, status |
-| [docs/c-abi.md](docs/c-abi.md) | The C boundary contract: handles, structure prefixes, ABI 1.3 negotiation, OCR ownership, submission evidence, diagnostics, and panic containment |
+| [docs/c-abi.md](docs/c-abi.md) | The C boundary contract: handles, structure prefixes, ABI 1.5 negotiation, OCR/provider ownership, submission evidence, diagnostics, and panic containment |
 | [docs/cpp-wrapper.md](docs/cpp-wrapper.md) | The C++ adapter contract: move-only owners, `Result`, OCR/receipt/diagnostic owners, borrowed views, and CMake targets |
 | [docs/validation-gates.md](docs/validation-gates.md) | The `G-001`–`G-014` registry of unresolved version-one decisions |
 | [docs/performance.md](docs/performance.md) | Benchmark format, historical/applicable Phase 1 and Phase 2 profiles, and the partial Phase 3 OCR budget status |

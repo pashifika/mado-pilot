@@ -273,7 +273,7 @@ jobs:
         shell: bash
         run: cargo test --locked --package mado-pilot-backend-onnx --lib -- --ignored --nocapture
 
-      - name: Test the integrated default OCR facade
+      - name: Test the integrated default and bounded OCR facade
         shell: bash
         run: cargo test --locked --package mado-pilot --test ocr_public_surface default_ocr_profile_runs_full_and_bounded_replay_regions -- --ignored --nocapture
 
@@ -281,12 +281,26 @@ jobs:
         shell: bash
         run: cargo run --locked --package mado-pilot --example ocr-default
 
+      - name: Run the explicit bounded-profile zone OCR Rust example
+        shell: bash
+        run: cargo run --locked --package mado-pilot --example ocr-profile-zones
+
       # Hosted CI enforces only host-independent correctness and bounded-growth
       # predicates. It never substitutes runner timing for a named hardware
       # profile.
       - name: Run the OCR benchmark smoke gate
         shell: bash
         run: cargo bench --locked --package mado-pilot-backend-onnx --bench onnx-cpu -- --smoke
+
+      - name: Run the bounded detector and grouped-zone smoke gates
+        shell: bash
+        run: |
+          export MADO_PILOT_BOUNDED_SOURCE_REVISION="$(git rev-parse HEAD)"
+          export MADO_PILOT_BOUNDED_SOURCE_TREE="$(git rev-parse 'HEAD^{tree}')"
+          export MADO_PILOT_BOUNDED_HOST_ID="hosted-ci"
+          export MADO_PILOT_BOUNDED_PROCESS_INDEX="smoke"
+          cargo bench --locked --package mado-pilot-backend-onnx --features benchmark-instrumentation --bench bounded-detector -- --smoke --profile=native
+          cargo bench --locked --package mado-pilot-backend-onnx --features benchmark-instrumentation --bench bounded-detector -- --smoke --profile=bounded --integrated
 
       - name: Run the diagnostic benchmark smoke gate
         shell: bash
@@ -327,6 +341,7 @@ jobs:
           )
           call "%VSROOT%\VC\Auxiliary\Build\vcvars64.bat" || exit /b 1
           cl 2>&1 | findstr /i "Microsoft" || exit /b 1
+          cargo check --locked --package mado-pilot-capi --all-targets --features cuda-provider || exit /b 1
           cargo build --locked --package mado-pilot-capi || exit /b 1
           cargo build --locked --package mado-pilot-platform-windows --bin mado-pilot-windows-input-fixture --bin mado-pilot-windows-window-message-fixture || exit /b 1
           cargo run --locked --package mado-pilot-capi --example c-abi-check -- --label "CI ${{ runner.os }} ${{ runner.arch }}" --windows-native-fixture || exit /b 1
@@ -468,7 +483,7 @@ jobs:
         shell: bash
         run: cargo test --locked --package mado-pilot-backend-onnx --lib -- --ignored --nocapture
 
-      - name: Test the integrated default OCR facade
+      - name: Test the integrated default and bounded OCR facade
         shell: bash
         run: cargo test --locked --package mado-pilot --test ocr_public_surface default_ocr_profile_runs_full_and_bounded_replay_regions -- --ignored --nocapture
 
@@ -476,12 +491,26 @@ jobs:
         shell: bash
         run: cargo run --locked --package mado-pilot --example ocr-default
 
+      - name: Run the explicit bounded-profile zone OCR Rust example
+        shell: bash
+        run: cargo run --locked --package mado-pilot --example ocr-profile-zones
+
       # Hosted CI enforces only host-independent correctness and bounded-growth
       # predicates. It never substitutes runner timing for a named hardware
       # profile.
       - name: Run the OCR benchmark smoke gate
         shell: bash
         run: cargo bench --locked --package mado-pilot-backend-onnx --bench onnx-cpu -- --smoke
+
+      - name: Run the bounded detector and grouped-zone smoke gates
+        shell: bash
+        run: |
+          export MADO_PILOT_BOUNDED_SOURCE_REVISION="$(git rev-parse HEAD)"
+          export MADO_PILOT_BOUNDED_SOURCE_TREE="$(git rev-parse 'HEAD^{tree}')"
+          export MADO_PILOT_BOUNDED_HOST_ID="hosted-ci"
+          export MADO_PILOT_BOUNDED_PROCESS_INDEX="smoke"
+          cargo bench --locked --package mado-pilot-backend-onnx --features benchmark-instrumentation --bench bounded-detector -- --smoke --profile=native
+          cargo bench --locked --package mado-pilot-backend-onnx --features benchmark-instrumentation --bench bounded-detector -- --smoke --profile=bounded --integrated
 
       - name: Run the diagnostic benchmark smoke gate
         shell: bash
@@ -509,6 +538,7 @@ jobs:
       - name: Check the C ABI and the C++ wrapper
         shell: bash
         run: |
+          cargo check --locked --package mado-pilot-capi --all-targets --features coreml-provider
           cargo build --locked --package mado-pilot-capi
           cargo run --locked --package mado-pilot-capi --example c-abi-check -- \
             --label "CI ${{ runner.os }} ${{ runner.arch }}"

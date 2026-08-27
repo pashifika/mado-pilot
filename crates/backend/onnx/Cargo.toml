@@ -1,12 +1,17 @@
 [package]
 name = "mado-pilot-backend-onnx"
-description = "MadoPilot bounded ONNX Runtime CPU OCR adapter."
+description = "Bounded ONNX Runtime OCR adapter with explicit provider policy."
 version.workspace = true
 edition.workspace = true
 rust-version.workspace = true
 license.workspace = true
 repository.workspace = true
 publish = false
+
+[features]
+benchmark-instrumentation = []
+coreml-provider = ["ort/coreml"]
+cuda-provider = ["ort/cuda"]
 
 [dependencies]
 libloading = { workspace = true }
@@ -19,6 +24,8 @@ sha2 = { workspace = true }
 
 [dev-dependencies]
 mado-pilot-testkit = { path = "../../support/testkit" }
+serde = { workspace = true }
+serde_json = { workspace = true }
 
 [target.'cfg(target_os = "macos")'.dev-dependencies]
 libc = { workspace = true }
@@ -29,6 +36,11 @@ windows.workspace = true
 [[bench]]
 name = "onnx-cpu"
 harness = false
+
+[[bench]]
+name = "bounded-detector"
+harness = false
+required-features = ["benchmark-instrumentation"]
 
 [lints]
 workspace = true

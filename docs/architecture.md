@@ -10,11 +10,12 @@ Detailed frame, capture, OCR, input, runtime scheduling, callback, platform
 behavior, and C ABI contracts are added here by the changes that implement and
 test them, so that this document never describes behavior a reader cannot use.
 
-**Status: Phase 1, Phase 2 native capture/input/observation, and Phase 3 one-shot
-OCR/default composition reach Rust, C, and C++.** Platform-neutral contracts,
-deterministic replay, asset loading, OpenCV matching, bounded ONNX CPU OCR,
-runtime orchestration, engine-scoped diagnostics, the Rust facade, C ABI 1.3,
-and the header-only C++ wrapper are implemented.
+**Status: Phase 1, Phase 2 native capture/input/observation, and Phase 3
+singular/grouped OCR composition reach Rust, C, and C++.** Platform-neutral
+contracts, deterministic replay, asset loading, OpenCV matching, bounded ONNX
+OCR with explicit initialization-time provider policy, runtime orchestration,
+engine-scoped diagnostics, the Rust facade, C ABI 1.5, and the header-only C++
+wrapper are implemented.
 The picker-free Windows Adapter implements window/display discovery, WGC/D3D11 capture, system input,
 and explicit exact-window `WindowMessage` submission. The macOS Adapter
 implements discovery, ScreenCaptureKit capture, `CGEvent` system input, and
@@ -23,14 +24,33 @@ owning-process-scoped `ProcessDirected` input.
 The qualified Windows floor, both Phase 2 platform native/public-language
 matrices, macOS production capture/transitions, Windows 1280×720 production
 capture/transitions, and corrected Windows mixed-DPI dual-4K production capture
-have accepted revision-bound evidence and target-specific budgets. Phase 3 adds
-the exact accepted G-004 default from caller-supplied canonical model/runtime
-paths plus separate Apple M1 Pro and Core i7-12700KF regression profiles.
-Approved Apple Silicon and Windows 11 Pro hosts reproduce the same integrated
-42-region quality boundary. It does not add bundling, download, ambient search,
-provider fallback, scheduling, or automatic input. The v0.3.0 source candidate
-still requires protected release delivery; hosted Windows Server hard-gate
-smoke is supporting evidence rather than a release-host substitute. Watchers,
+have accepted revision-bound evidence and target-specific budgets. Released
+`v0.3.0` includes the exact accepted native G-004 default from caller-supplied
+canonical model/runtime paths plus separate Apple M1 Pro and Core i7-12700KF
+regression profiles. Approved Apple Silicon and Windows 11 Pro hosts reproduce
+the same integrated 42-region quality boundary.
+
+The `v0.3.1` candidate adds a second closed, explicit, non-default profile over
+the same immutable model components plus one-to-eight caller-owned OCR zones
+that share one mapped source envelope and detector scan. ADR 0040 replaces the
+rejected ADR 0038 tuple with bounded candidate v2; exact-source Apple and Windows
+precursors and strict final enforcement pass under ADR 0041. ADRs 0042 and 0043
+fix grouped semantics, Rust projection, C ABI 1.4, and C++ ownership. ADR 0044
+accepts exact-candidate cross-target quality and target-specific grouped budgets
+for the fixed non-overlapping layouts. ADR 0045 corrects only the new Apple
+integrated cache-cold startup ceiling after a retained failed source; the later
+exact Apple and Windows final executables pass five fresh enforcement processes
+each. The provider-policy extension preserves those CPU profiles and adds
+initialization-only fallback plus Rust/C/C++ observation. ADR 0047 rejects
+CoreML promotion after retained geometry and cancellation failures. ADR 0048
+remains the historical explicit Windows CUDA acceptance. ADR 0049 bounds each
+CUDA recognizer submission to 128 MiB, retains the original arena/workspace and
+controlled preload configuration after measured alternatives fail, and passes
+the exact successor CUDA/fallback matrix. Automatic selection remains CPU
+because CUDA still fails the fixed RSS-ratio rule. Protected release acceptance
+remains open.
+The extension adds no bundling, download, ambient search, per-inference
+fallback, scheduling, or automatic input. Watchers,
 scheduling, and release packaging remain future work.
 See [Implementation status](#implementation-status).
 
@@ -279,7 +299,7 @@ prefix.
 | `crates/platform/windows` | `mado-pilot-platform-windows` | Picker-free Windows window/display discovery, WGC/D3D11 capture, system input, ordinary exact-window queue submission with unknown compatibility, and fixture-acknowledged exact-window submission, wired into the runtime and facade by `mado_pilot::windows_engine`; Windows exposes no separate capture/input authorization state, and receipts report integrity/UIPI failures without elevation |
 | `crates/platform/macos` | `mado-pilot-platform-macos` | Non-prompting macOS target discovery, permission probes, ScreenCaptureKit capture, `CGEvent` system input, and gated process-directed input to the retained window's owning process, wired into the runtime and the facade by `mado_pilot::macos_engine` |
 | `crates/backend/opencv` | `mado-pilot-backend-opencv` | OpenCV CPU template matching |
-| `crates/backend/onnx` | `mado-pilot-backend-onnx` | Bounded ONNX Runtime 1.29 CPU OCR for the exact accepted G-004 profile |
+| `crates/backend/onnx` | `mado-pilot-backend-onnx` | Bounded ONNX Runtime 1.29 OCR for the exact accepted native G-004 and explicit bounded-detector profiles, with CPU defaults and target-gated explicit provider policy |
 | `crates/bindings/capi` | `mado-pilot-capi` | Separately versioned C ABI and ownership boundary, and the header-only C++ wrapper and CMake targets over it |
 | `crates/support/testkit` | `mado-pilot-testkit` | Controlled capture, storage, permission, backend, and input doubles, synthetic clock, and contract-fixture support |
 | `tools/dependency-check` | `mado-pilot-dependency-check` | Repository maintenance: workspace inventory and dependency-direction checking |
@@ -533,7 +553,7 @@ document together, with an architecture decision record.
 | Cargo resolver | `3` |
 | Rust edition | `2024` |
 | Pinned toolchain and minimum supported Rust version | `1.97.1` |
-| Package version | `0.3.0` |
+| Package version | `0.3.1` |
 | Package license | `Apache-2.0` |
 | Repository | `https://github.com/pashifika/mado-pilot` |
 
@@ -845,11 +865,10 @@ responsibilities a later phase takes on.
 | Template matching against a real image | Implemented in `mado-pilot-backend-opencv` for the Phase 1 profile |
 | OpenCV matching profile, public score mapping, candidate extraction | Implemented; decided in [ADR 0003](adr/0003-opencv-matching-profile-and-public-score.md) |
 | Template scaling, rotation, masked matching, GPU execution | Not implemented |
-| OCR model/profile decision and platform-neutral contracts | Implemented in `mado-pilot-ocr`: ADR 0033 fixes the accepted G-004 profile; bounded model/backend/profile identities, immutable model sources, exact-frame requests, normalized source-correlated results, typed failures, and deadline/cancellation-aware commit are implemented |
-| Exact G-004 CPU preprocessing, ONNX inference, and decoding | Implemented in `mado-pilot-backend-onnx`. ADR 0034 fixes controlled host-provided ONNX Runtime 1.29.0 loading through API 17 with one session pair, one admitted inference, CPU-only provider, no download/search/fallback, and process-lifetime runtime ownership |
-| OCR runtime/facade/ABI one-shot operation and immutable results | Implemented through `mado-pilot-runtime`, the facade, C ABI 1.3, and C++; backend/model/context/frame/region/output space remain explicit, and close/deadline/cancellation arbitrate before publication |
-| Accepted default OCR composition | Implemented by ADR 0036 as separate Rust/C/C++ constructors over caller-supplied canonical model-root/runtime paths. Existing constructors still omit OCR, explicit package/backends remain available, and missing prerequisites fail construction without fallback or a half-configured engine |
-| Bounded engine-scoped diagnostic observation | Implemented through Rust, C ABI 1.3, and C++ with allocation-free `Off`, finite `Normal`/`Debug`, strict order, exact level losses, independent readers/batches, and content-redacted OCR admission/terminal records |
+| OCR model/profile decision and platform-neutral contracts | Implemented in `mado-pilot-ocr`: ADR 0033 fixes released native G-004; ADR 0038 records the rejected rectangular bounded candidate; ADR 0040 adds the accepted candidate-v2 closed identity over the same component bytes; ADR 0041 accepts singular target budgets; ADR 0044 accepts fixed non-overlapping grouped quality and budgets. Immutable model sources, exact-frame requests, normalized source-correlated results, typed failures, and deadline/cancellation-aware commit are implemented |
+| Exact accepted OCR preprocessing, ONNX inference, decoding, and provider policy | Implemented in `mado-pilot-backend-onnx`. ADR 0034 fixes controlled host-provided ONNX Runtime 1.29.0 loading through API 17 with one session pair and process-lifetime runtime ownership. Native G-004 keeps released DB736 behavior; explicit ADR 0040 selection keeps its bounded tensor/profile rules and ADR 0041/0044 budgets. ADR 0046 adds target-gated CUDA/CoreML initialization with one same-provider detector/recognizer pair, explicit dependency roots, atomic pre-publication preferred fallback, required-provider failure, immutable provider facts, and no inference retry/provider switching. ADR 0047 rejects CoreML release qualification. ADR 0048 remains historical explicit Windows CUDA evidence; ADR 0049 adds deterministic provider-specific output-bounded batches and requalifies the unchanged CUDA provider/loader policy. Automatic selection remains CPU on both release targets |
+| Accepted OCR composition | Existing constructors still omit OCR or select the released CPU native/bounded profiles with no fallback. New replay/Windows/macOS provider constructors own caller configuration, select model profile independently from provider policy, and publish provider descriptors only with a complete engine. Preferred initialization may build a fresh CPU pair; required policy publishes no engine on failure |
+| Bounded engine-scoped diagnostic and provider observation | The released allocation-free `Off` and finite `Normal`/`Debug` diagnostic stream remains unchanged through ABI 1.5, with strict order, exact losses, independent readers/batches, and content-redacted singular/grouped OCR aggregates. Provider-policy construction is observed separately through engine-owned Rust/C/C++ descriptors; required failure is a typed construction error because it publishes no engine/reader |
 | Input request, route capability, submission receipt, cleanup bounds, provider, and controller contracts | Implemented in `mado-pilot-input` |
 | Input injection | Implemented in `mado-pilot-platform-windows` for system pointer/keyboard/text, ordinary exact-window `WindowMessage` submission with unknown compatibility and target-queue evidence, and fixture-class acknowledged `WindowMessage` submission. Implemented in `mado-pilot-platform-macos` for `CGEvent` system pointer/keyboard/text and process-directed pointer/keyboard/text with owning-process scope, unknown compatibility, and invocation-only evidence; final candidate `dec43d7` passed the controlled profiles, and independent `single`, exact two-display non-mirrored `same-scale`, and `mixed-scale` matrices passed for all fourteen controlled pairs. No macOS window-message route exists. Both implementations are reached through `mado-pilot-runtime`, the Rust facade, C ABI 1.2/1.3, and C++ |
 | Asset manifests and directory, memory, and archive loading | Implemented in `mado-pilot-assets`; strict schema versions 1 and 2 are readable, with version 2 adding OCR model declarations |
@@ -859,16 +878,16 @@ responsibilities a later phase takes on.
 | Input composition: same-provider adapter pairing, required-versus-optional input admission with bounded release of committed capture, per-controller sequence serialization, the one-terminal-receipt rule, and two-sided close | Implemented in `mado-pilot-runtime`. Selecting a permitted route, arbitrating focus, resolving a coordinate against live geometry, revalidating before each irreversible event, and releasing what a stopped sequence pressed stay in `mado-pilot-input` and the Adapter implementing it |
 | Watcher queues, OCR coalescing, wait-for-text, and scheduling | Not implemented |
 | Public Rust operations for the deterministic replay workflow | Implemented in `mado-pilot` |
-| Public Rust operations for native and replay workflows | Implemented in `mado-pilot`, including explicit optional OCR backend wiring and separate accepted-default constructors; no platform-native type crosses the facade |
-| Default adapter wiring and backend rules | OpenCV matching remains required. Existing engine constructors omit OCR; `*_engine_with_default_ocr` selects only the accepted ONNX CPU profile from explicit controlled paths and never falls back |
-| C ABI functions, C header, dynamic library | Implemented through ABI 1.3. ABI 1.0 and 1.2 remain frozen complete 424-byte and 592-byte prefixes; ABI 1.3's six-entry OCR owner/accessor suffix ends at 640 bytes and `engine_create_with_default_ocr` extends the complete table to 648 bytes under ADR 0036 |
+| Public Rust operations for native and replay workflows | Implemented in `mado-pilot`, including explicit optional backend wiring, accepted CPU default/profile constructors, owning provider-policy constructors, immutable provider descriptors, and borrowed one-to-eight-zone scans; no platform-native or `ort` type crosses the facade |
+| Default adapter wiring and backend rules | OpenCV matching remains required. Every pre-provider constructor preserves CPU behavior. `*_engine_with_ocr_provider` is the only integrated provider-policy path; automatic selection uses only a release-qualified target accelerator, preferred fallback is initialization-only, and required/provider inference failure never falls back |
+| C ABI functions, C header, dynamic library | Implemented through ABI 1.5. ABI 1.0, 1.2, 1.3, and 1.4 remain frozen complete 424-, 592-, 648-, and 720-byte prefixes. ABI 1.5 appends provider construction at offset 720 and engine-owned provider descriptor access at offset 728 for a complete 736-byte table under ADR 0046 |
 | C ABI static library and ABI-major release loader names | Not implemented; see [c-abi.md](c-abi.md) |
-| C++ RAII wrapper, `MadoPilot::C` and `MadoPilot::Cpp` CMake targets | Implemented through ABI 1.3 as a header-only adapter, including move-only OCR results, `DefaultOcrOptions`, production default construction, explicit clone, lvalue-only borrowed views, repaired request projections, typed native/input/diagnostic values, and negotiated-prefix refusal |
+| C++ RAII wrapper, `MadoPilot::C` and `MadoPilot::Cpp` CMake targets | Implemented through ABI 1.5 as a header-only adapter, including owning profile/zone/provider options with repaired projections, move-only grouped results, explicit clone, lvalue-only borrowed OCR/provider descriptor views, typed empty groups, and complete negotiated-suffix refusal |
 | CMake install and export set, pkg-config file | Not implemented; consumption is from the development tree |
-| Numeric performance budgets | Phase 1 and the accepted Phase 2 profiles remain revision-bound under ADRs 0008 and 0024–0032. ADR 0037 accepts target-specific Apple M1 Pro and Core i7-12700KF default-OCR profiles with hard correctness/growth gates plus executable inference/startup/heap/mapping/cleanup limits and target-native RSS; Phase 3 default-OCR `G-013` is complete on both release targets |
+| Numeric performance budgets | Phase 1 and the accepted Phase 2 profiles remain revision-bound under ADRs 0008 and 0024–0032. ADR 0037 accepts target-specific Apple M1 Pro and Core i7-12700KF default-OCR profiles; Phase 3 default-OCR `G-013` is complete on both release targets. ADRs 0039–0041 accept separate exact-source bounded-v2 singular workload budgets. ADR 0044 accepts integrated grouped latency/resource/lifecycle ceilings; ADR 0045 corrects only the new Apple integrated startup value to 200 ms while preserving historical ADR 0041 profiles. ADR 0048 remains historical provider evidence; ADR 0049 adds the exact successor Windows CUDA/fallback profiles, retaining every prior ceiling except the formula-derived 50 ms CUDA empty-zone maximum |
 | Native permission behavior | Implemented on macOS as non-prompting probes. Windows has no permission probe; its input path performs non-prompting integrity comparison and reports proven UIPI without elevation |
 | Release packaging | Not implemented |
-| ABI compatibility testing | Implemented for frozen ABI 1.0 and 1.2 headers plus current ABI 1.3. Both historical callers compile against immutable headers, negotiate only their extents, and run against the current library; current C++ tests refuse complete 1.2 and partial 1.3 OCR access before missing entries are read |
+| ABI compatibility testing | Implemented for frozen ABI 1.0, 1.2, 1.3, and 1.4 headers against current ABI 1.5. Historical callers compile only against immutable headers, negotiate their exact extents, and execute against the current library; current C++ tests refuse partial 1.3, 1.4, and 1.5 operations before reading missing entries |
 
 The existence of a package is not evidence that its behavior exists. Each product
 package documents its own planned responsibility, allowed seam, and implementation
@@ -1098,11 +1117,15 @@ successful public operation.
 The payload vocabulary is closed and privacy-reviewed. It may carry public
 target/frame identities, coordinate spaces, the exact coordinate-qualified
 `PixelRect` a search covered after clipping, statuses, permission states,
-route and submission evidence, result counts, cleanup counts, and opaque
-engine-local identities. It carries no pixels, OCR text, input event values,
-window titles, platform namespaces, backend names, paths, signing identifiers,
-or free-form native messages. Diagnostics observe independent capture, search,
-and input facts; they do not merge them into an action result.
+route and submission evidence, result/cleanup counts, and opaque engine-local
+identities. Grouped OCR may additionally carry one shared source envelope,
+bounded zone/unique-candidate/membership counts, timing/resource totals, and
+exact request-scoped detector/recognizer work only when the backend supplies
+authoritative evidence. It carries no zone array or individual zone geometry,
+pixels, OCR text, caller paths/hashes/labels, input event values, window titles,
+platform namespaces, backend names, signing identifiers, or free-form native
+messages. Diagnostics observe independent capture, search, OCR, and input facts;
+they do not merge them into an action result.
 
 Facade mapping is the observation seam: `Session::map_frame` emits the copied
 mapping fact, and public native workflows use it instead of calling `Frame::map`
@@ -1973,15 +1996,20 @@ package-relative path, exact byte length, and SHA-256 digest. A missing field,
 empty or over-limit component, malformed identity, path alias, unsupported hash,
 or malformed digest refuses the manifest before any model bytes are read.
 
-Claiming the accepted model or profile ID
-`g-004-rapidocr-ppocrv4-det-v6-rec-small-v1` additionally binds every one
-of those values to ADR 0033: model revision, both component lengths and digests,
-language, preprocessing, decoder, normalization, vocabulary count, and
-vocabulary digest must all match the trusted in-crate descriptor. Self-consistent
-manifest hashes are not authority for that profile. Other explicit profile IDs
-remain caller-provided assets, but a result-normalization identity this contract
-does not implement fails at manifest parsing with typed
-`UnsupportedOcrProfile`; it never reaches component expansion or backend work.
+Claiming either accepted model or profile ID additionally binds every field to
+one complete closed tuple. Native
+`g-004-rapidocr-ppocrv4-det-v6-rec-small-v1` is fixed by ADR 0033. Explicit
+candidate `phase-3-1-rapidocr-ppocrv4-det-v6-rec-small-bounded-v2` is fixed by
+ADR 0040 and uses preprocessing
+`rapidocr-ppocrv4-det-bgr-db736-fit-1312x736-then-tensor6291456b-linear-half-pixel-source-rec-v2`.
+The rejected ADR 0038 `bounded-v1` tuple is not an alias. The accepted tuples
+share model revision, component lengths/digests, language, decoder,
+normalization, vocabulary count, and vocabulary digest; their model, profile,
+and preprocessing IDs are not interchangeable. Self-consistent manifest hashes
+are not authority for either tuple. Other explicit profile IDs remain
+caller-provided assets, but a result-normalization identity this contract does
+not implement fails at manifest parsing with typed `UnsupportedOcrProfile`; it
+never reaches component expansion or backend work.
 The complete validated identity travels with `OcrModelSource` to the backend.
 
 The default composition path does not synthesize a schema-v2 package. It reads
@@ -2218,51 +2246,74 @@ stated gap rather than a satisfied contract.
 ### OCR recognition
 
 `mado-pilot-ocr` owns the rules between a borrowed backend candidate stream and
-one observable OCR result. It depends on the platform-neutral core and capture
-contracts only. ONNX Runtime, platform adapters, executors, queues, facade types,
-and ABI types remain outside this package.
+one observable singular or grouped OCR result. It depends on the
+platform-neutral core and capture contracts only. ONNX Runtime, platform
+adapters, executors, queues, facade types, and ABI types remain outside this
+package.
 
-One `OcrRequest` borrows one immutable `Frame`, one exact `OcrBackendIdentity`
-(stable ID plus implementation version), one complete `OcrModelIdentity`, and one
-`OperationContext`, then explicitly names the optional source region and clip
-policy and output coordinate space. The model
-identity includes model revision, detector and recognizer byte identities, profile
-and language/preprocessing/decoder/normalization identities, and vocabulary count
-and digest. A committed result carries that identity through its backend
-descriptor and copies the frame's complete stream, epoch, sequence, and geometry
-identity, transform snapshot, and effective clipped region.
+One `OcrRequest` borrows one immutable `Frame`, one exact
+`OcrBackendIdentity` (stable ID plus implementation version), one complete
+`OcrModelIdentity`, and one `OperationContext`, then explicitly names the
+optional source region and clip policy and output coordinate space. The separate
+`OcrZoneScanRequest` borrows the same exact identities plus one through eight
+caller-order `OcrZone` entries. It resolves and clips every zone before mapping,
+rejects the whole request if any effective zone is empty, and maps the smallest
+capture-pixel envelope containing them once.
 
-The result owns all normalized text and converted geometry, so retaining it does
-not retain a frame, backend candidate buffer, model bytes, or capture storage
-slot. Manual `Debug` implementations report only reviewed identities, geometry,
-counts, and byte lengths; they never print recognized text or model bytes.
+The model identity includes model revision, detector and recognizer byte
+identities, profile and language/preprocessing/decoder/normalization identities,
+and vocabulary count and digest. Both result forms copy the frame's complete
+stream, epoch, sequence, and geometry identity, transform snapshot, output
+space, and backend/model/profile descriptor. `OcrResult` repeats one effective
+region. `OcrZoneScanResult` repeats the source envelope and every effective zone
+in caller order.
+
+Results own all normalized text and converted geometry, so retaining one does
+not retain a frame, backend candidate buffer, model bytes, mapping, tensor,
+session lock, or capture storage slot. A grouped result owns each unique
+candidate once and stores group membership as checked `u16` indexes with nine
+offsets; empty groups have equal adjacent offsets. Manual `Debug`
+implementations report only reviewed identities, geometry, counts, and byte
+lengths; they never print recognized text or model bytes.
 
 Every backend is normalized through the same boundary:
 
 | Rule | Applied by |
 |---|---|
 | Equality of exact backend ID/version and complete model/profile identity, plus supported normalization identity | `mado-pilot-ocr`, before mapping or backend work |
-| Region resolution and non-empty clipping against the source frame snapshot | `mado-pilot-ocr` |
-| One mapped `FrameView` in the backend's declared pixel format | `mado-pilot-capture`, under the request's operation context |
-| Candidate and raw-text ceilings communicated before backend collection/allocation | `BackendRequest`; the backend must enforce them, and the contract revalidates each borrowed candidate through its bounded sink |
-| Recognition over the effective region and bounded internal tensor/session/decoder work | the backend, under the same operation context and its own measured budgets |
-| UTF-8, geometry, confidence, and detector-order validation | `mado-pilot-ocr` as each borrowed candidate is submitted |
-| NFC normalization, Unicode edge trim, empty-text omission, five-decimal confidence, and stable detector ordering | `mado-pilot-ocr` |
-| Output-space conversion and immutable result commit | `mado-pilot-ocr`, through the source frame transform and `Operation` authority |
+| Singular-region or all-zone resolution and non-empty clipping against the source frame snapshot | `mado-pilot-ocr` |
+| One mapped `FrameView` for the singular region or smallest grouped source envelope, in the backend's declared pixel format | `mado-pilot-capture`, under the request's operation context |
+| Candidate and raw-text ceilings plus optional borrowed relative interests communicated before backend collection/allocation | `BackendRequest`; a backend may ignore interests, while the contract revalidates each borrowed candidate and final membership |
+| Recognition over the effective region/envelope and bounded internal tensor/session/decoder work | the backend, under the same operation context and its own measured budgets |
+| UTF-8, geometry, confidence, global detector order, and exact half-open centroid membership validation | `mado-pilot-ocr` as candidates are submitted and before grouped commit |
+| NFC normalization, Unicode edge trim, empty-text omission, five-decimal confidence, stable detector ordering, and explicit empty groups | `mado-pilot-ocr` |
+| Output-space conversion and immutable flat/grouped result commit | `mado-pilot-ocr`, through the source frame transform and `Operation` authority |
 
-The supported normalization profile permits at most 1,000 backend candidates and
-at most 16 KiB of raw UTF-8 per submitted candidate. A committed text region is
-at most 4 KiB. A backend lends candidate text to an `OcrCandidateSink` rather than
-returning an owned `Vec<Arc<[u8]>>`; the sink refuses the 1,001st candidate before
-collection and bounds normalization before copying retained text.
-`mado-pilot-backend-onnx` additionally caps one detector/recognizer session pair,
-one admitted inference, 256 MiB per input tensor, 256 MiB per native output,
-2 MiB of native contour storage including conservative vector growth, a 16 MiB
-scanline component queue, 1,000 detector candidates, and six recognition crops
-per batch. Boundary-edge and foreground/background component preflights reject a
-probability map before OpenCV can materialize contour storage beyond those
-ceilings. Public results copy bounded text and geometry and retain no native
-tensor, model, or session buffer.
+The supported normalization profile permits at most 1,000 backend candidates
+and at most 16 KiB of raw UTF-8 per submitted candidate. A committed text region
+is at most 4 KiB. A backend lends candidate text to an `OcrCandidateSink` rather
+than returning an owned `Vec<Arc<[u8]>>`; the sink refuses the 1,001st candidate
+before collection and bounds normalization before copying retained text.
+
+A grouped operation additionally permits one through eight zones, at most 8,000
+logical memberships, a 256 MiB mapping, 262,144 temporary semantic bytes,
+16,000 membership-index bytes, and 5,242,880 immutable-result semantic bytes.
+Candidate/zone and per-candidate text limits entail the aggregate raw,
+normalized, membership, temporary, index, and result ceilings; compile-time
+layout assertions prove those products. A putative 8,001st membership requires
+candidate 1,001 and therefore fails the earlier candidate gate. Mapping size
+remains input-dependent: the complete source descriptor is checked because a
+native conversion may materialize the full source before cropping, and the
+returned mapping is checked again.
+
+`mado-pilot-backend-onnx` additionally caps one detector/recognizer session
+pair, one admitted inference, 256 MiB per input tensor, 256 MiB per native
+output, 2 MiB of native contour storage including conservative vector growth, a
+16 MiB scanline component queue, 1,000 raw detector candidates, and six
+recognition crops per batch. Boundary-edge and foreground/background component
+preflights reject a probability map before OpenCV can materialize contour
+storage beyond those ceilings. Public results copy bounded text and geometry
+and retain no native tensor, model, or session buffer.
 
 Candidate quadrilaterals are relative to the effective region and must be finite,
 strictly convex, and inside it. Confidence must be finite in `0.0..=1.0` and is
@@ -2273,15 +2324,25 @@ result commits. Text is normalized to NFC, then trimmed with Unicode whitespace
 rules; empty normalized text is omitted. A source region that clips to no pixels
 is invalid because no pixels remain to recognize.
 
+Grouped membership uses the finite arithmetic centroid of each
+source-envelope-relative quadrilateral before output conversion. A candidate is
+referenced by every relative zone satisfying `left <= x < right` and
+`top <= y < bottom`, with no epsilon, intersection, proximity, priority, or
+nearest-zone rule. Global detector order is preserved within every group.
+Duplicate, one-pixel-different, adjacent, and overlapping zone entries consume
+ordinary list positions and remain bounded and deterministic, but callers own
+deduplication and semantic reconciliation; no OCR quality, latency, or
+independence claim applies to those layouts.
+
 The one operation context is checked before admission, after mapping, after the
-backend returns, after final bounded normalization/order work, and at commit.
-Cancellation or deadline therefore wins over a simultaneous backend,
+backend returns, during/following bounded normalization and grouping, and at
+commit. Cancellation or deadline therefore wins over a simultaneous backend,
 malformed-output, or close failure. The synchronous call is also the caller's
-only wait: there is no hidden query wait or executor-specific future. As the core
-operation contract states, a backend call that cannot be interrupted may return
-after the deadline; its late value is discarded and the call reports the
-authoritative interruption when control returns. This contract promises terminal
-authority, not thread preemption.
+only wait: there is no hidden query wait or executor-specific future. As the
+core operation contract states, a backend call that cannot be interrupted may
+return after the deadline; its late flat or grouped value is discarded and the
+call reports the authoritative interruption when control returns. This contract
+promises terminal authority, not thread preemption.
 
 `OcrRecognizer` stores no per-request or latest-result state, so an older
 out-of-order completion has nothing it can replace. Backend close is explicit and
@@ -2303,29 +2364,68 @@ nanoseconds, source pixels, typed outcome, and existing exact loss accounting.
 They contain no backend/runtime name, caller asset/model identity, model
 digest/path/bytes, vocabulary, pixels/hash, recognized text, credential, or
 free-form backend output.
-`mado-pilot-testkit` supplies a FIFO-scripted controlled backend and common suite:
-two gated calls through clones of one recognizer prove same-stream out-of-order
-isolation, while separate cases cover non-empty clipping, hard request ceilings,
-profile refusal, malformed output, interruption precedence, redacted diagnostics,
-and independence from backend buffers, frame storage, and model allocations.
+`mado-pilot-testkit` supplies a FIFO-scripted controlled backend and common
+suite: gated calls through recognizer clones prove out-of-order isolation and
+terminal authority, while grouped cases cover one/three/eight zones, caller
+reordering, clipping, exact half-open edges, empty groups, ignored versus
+honored interests, hard derived bounds, malformed output, final-commit races,
+redacted observations, overlap safety, and independence from backend buffers,
+frame storage, mappings, and model allocations.
 
-`mado-pilot-backend-onnx` is the concrete CPU implementation for only the exact
-ADR 0033 G-004 profile. It requires a caller-supplied canonical absolute path to
-ONNX Runtime 1.29.0 (`libonnxruntime.1.29.0.dylib` on Apple Silicon or
-`onnxruntime.dll` on Windows), verifies exact runtime/API and graph/vocabulary
-metadata before admission, and never searches ambient locations, downloads,
-bundles, or falls back to another provider. [ADR 0034](adr/0034-onnx-runtime-cpu-loading-boundary.md)
+`mado-pilot-backend-onnx` is the concrete CPU implementation for the two exact
+closed profiles from ADRs 0033 and 0040. It requires a caller-supplied canonical
+absolute path to ONNX Runtime 1.29.0
+(`libonnxruntime.1.29.0.dylib` on Apple Silicon or `onnxruntime.dll` on Windows),
+verifies exact runtime/API and graph/vocabulary metadata before admission, and
+never searches ambient locations, downloads, bundles, or falls back to another
+profile/provider. [ADR 0034](adr/0034-onnx-runtime-cpu-loading-boundary.md)
 records the native loading boundary. The backend owns one mutable session pair,
 uses checked BGRA preprocessing and borrowed tensor views, applies joinable
 best-effort native termination, and rejects concurrent calls instead of queueing
 or invoking `Session::run` concurrently.
 
-The facade depends on this backend only for separate
-`replay_engine_with_default_ocr`, `windows_engine_with_default_ocr`, and
-`macos_engine_with_default_ocr` constructors. `DefaultOcrConfig` carries a
-caller-selected model root and canonical absolute runtime path. Existing
-constructors continue to omit OCR unless a caller supplies an explicit backend;
-there is no ambient search, download, fallback, or support-table inference.
+`OnnxOcrBackend::open_accepted` retains released native G-004 preprocessing.
+`OnnxOcrBackend::open_bounded_detector` is the only fixed-path bounded
+constructor. It computes source/final dimensions, forward/inverse scale, tensor
+elements, and bytes before allocation. Candidate v2 first fits oversized desired
+work within `1312x736`; only after that fit, tensors above 6,291,456 bytes receive
+one second aspect-preserving floor-to-32 fit. Desired work that already fits the
+rectangle, including 960×540 and odd HUD inputs, retains the 11,587,584-byte
+reference detector and exact geometry. The backend resizes directly once, maps
+detector output back to the original source view, and perspective-crops that
+original source for recognition. For a grouped request it applies the shared
+centroid helper after detector postprocessing and before perspective crops,
+recognizes every unique relevant detection once in batches of at most six, and
+submits each candidate once with its global detector order. Raw detector
+candidates remain bounded before filtering.
+
+Facts report the absolute rectangle. Path-free cumulative observations report
+source-envelope mapping count/dimensions/bytes, actual detector dimensions and
+runs, selected/ignored/unique candidates, memberships, recognizer batch runs,
+native inference-scope cleanup completions, and the one-pair/two-session
+topology. They contain no pixels, recognized text, paths, hashes, model bytes,
+or raw native identifiers.
+
+The facade depends on this backend through separate default and explicit-profile
+construction. `replay_engine_with_default_ocr`,
+`windows_engine_with_default_ocr`, and `macos_engine_with_default_ocr` retain
+released native G-004 meaning through `DefaultOcrConfig`.
+`replay_engine_with_ocr_profile`, `windows_engine_with_ocr_profile`, and
+`macos_engine_with_ocr_profile` accept `OcrProfileConfig` with the closed
+`OcrProfile::BoundedDetector` selection. Both carry caller-selected controlled
+model-root/runtime paths; ordinary constructors continue to omit OCR unless a
+caller supplies a backend. No constructor performs ambient search, download,
+retry, fallback, or support-table inference.
+
+For troubleshooting, `ProfileMismatch` means the source is not one complete
+accepted tuple; changing only a profile or preprocessing string is never
+accepted. `DetectorMismatch`/`RecognizerMismatch` means the fixed relative file
+failed exact length or digest validation. `RuntimeIncompatible` means the
+canonical target library did not report exact 1.29.0/API 17. Callers must repair
+the controlled prerequisite or selection; the backend does not retry, search, or
+substitute the other profile. Bounded construction success reports availability,
+not release-target support, until both target qualification and final budgets
+pass.
 
 ### The public Rust workflow
 
@@ -2346,9 +2446,9 @@ decides where each rule lives:
 | Selecting a permitted mechanism, arbitrating focus, resolving a coordinate, revalidating before each irreversible event, and releasing what a stopped sequence pressed | `mado-pilot-input` and the Adapter implementing it |
 | Which capture adapter, input adapter, permission probe, matching backend, and accepted default OCR backend exist at all | `mado-pilot` |
 | The curated public surface, and which contract types reach a caller | `mado-pilot` |
-| Exact-frame OCR admission and final deadline/cancellation/close publication | `mado-pilot-runtime` |
-| Explicit OCR backend selection | the facade composition request supplied by the caller |
-| Accepted default OCR selection and prerequisite validation | `mado-pilot` plus `mado-pilot-backend-onnx`, under ADRs 0034 and 0036 |
+| Exact-frame singular/grouped OCR admission and final deadline/cancellation/close publication | `mado-pilot-runtime` |
+| Explicit injected OCR backend selection | the facade composition request supplied by the caller |
+| Accepted default and explicit bounded-profile prerequisite validation | `mado-pilot` plus `mado-pilot-backend-onnx`, under ADRs 0034, 0036, and 0043 |
 
 A deep search is one operation from admission to envelope, so the frame it
 acquired, the search it ran, and the answer it commits cannot belong to three
@@ -2392,13 +2492,15 @@ changing an existing one. The backend is initialized before anything else is
 wired, so an unusable OpenCV fails engine construction rather than the first
 search, and leaves no half-configured engine behind.
 
-Default OCR follows the same fail-before-engine rule. The separate constructor
-initializes the controlled runtime, reads/hashes only the two accepted fixed
-model paths into one immutable source, validates graph/vocabulary metadata, and
-opens one session pair before any capture adapter is returned. A failed runtime
-or model prerequisite therefore leaves no engine. The ordinary constructors do
-not silently acquire this dependency, and an explicit backend and the default
-cannot be supplied together.
+Integrated OCR follows the same fail-before-engine rule. Separate constructors
+initialize the controlled runtime, read/hash only the two accepted fixed model
+paths into one immutable source, validate graph/vocabulary metadata, and open one
+session pair before any capture adapter is returned. Default construction fixes
+native G-004; explicit `OcrProfile::BoundedDetector` construction fixes the ADR
+0040/0041 profile. A failed runtime, model prerequisite, cancellation, or
+deadline leaves no engine. Ordinary constructors acquire neither dependency, an
+injected backend and integrated selection are mutually exclusive, and neither
+integrated constructor substitutes the other profile.
 
 Native construction is target-specific and is one constructor per release
 target, present only in a build for that target. Which platform is therefore not
@@ -2422,7 +2524,7 @@ inside the two target-gated constructors. The native workflow is therefore
 written once in platform-neutral vocabulary, and a host that compiles for both
 targets writes it once too.
 
-### The ABI 1.2 input/diagnostic and ABI 1.3 OCR slices
+### The ABI 1.2 input/diagnostic, ABI 1.3 singular OCR, ABI 1.4 grouped OCR, and ABI 1.5 provider slices
 
 Production `mado-pilot-capi` depends only on the public facade and translates no
 platform type. Engine capability and non-prompting permission reads, route-pair
@@ -2441,12 +2543,24 @@ within the engine that issued it.
 
 Input-aware open remains a separate entry rather than a field inserted into the
 frozen `madopilot_open_request_t`. ABI 1.0 remains a 424-byte table; ABI 1.2
-appends 21 entries and ends at 592 bytes. ABI 1.3 appends six OCR
-execution/retain/release/description/region/text entries through 640 bytes, then
-`engine_create_with_default_ocr` at offset 640 for a complete 648-byte table on
-both release targets. The standalone size-versioned
-`madopilot_default_ocr_options_t` leaves the frozen 16-byte/alignment-4
-`madopilot_engine_options_t` unchanged. Minimum minor 1 remains unsupported.
+appends 21 entries and ends at 592 bytes. ABI 1.3 appends singular OCR and
+default construction through the complete 648-byte prefix. ABI 1.4 appends
+`engine_create_with_ocr_profile`, `session_scan_ocr_zones`, atomic grouped-result
+retain/release, info, zone, region, and text accessors at offsets 648 through
+704, then `engine_ocr_descriptor` at offset 712, ending at 720 bytes on both
+release targets. The descriptor writes one complete 88-byte/alignment-8 record
+whose strings borrow from a descriptor retained by the engine handle. A separate
+entry preserves the released 8-byte/alignment-4
+`madopilot_engine_capabilities_t`; standalone default/profile options likewise
+leave the frozen 16-byte/alignment-4 `madopilot_engine_options_t` unchanged.
+ABI 1.5 leaves every one of those declarations fixed. It adds a 32-byte provider
+options record, a 40-byte provider descriptor, provider construction at table
+offset 720, and descriptor access at offset 728, ending at 736 bytes. Options
+borrow only for synchronous construction; the engine owns later descriptor
+values. Requested/active provider, initialization fallback, bounded reason, and
+runtime-profile identity cross as fixed-width enums/views. The released
+diagnostic record does not grow.
+Minimum minor 1 remains unsupported.
 
 The C boundary initializes every output before reading inputs. Refusal before
 input admission returns an owned error and no receipt. An admission that returns
@@ -2457,11 +2571,16 @@ leaves outputs in their documented failure states and does not prove no native
 input took effect.
 
 Every C entry contains Rust panic unwinding. The C++ header owns and copies only
-according to C lifetimes, requires the complete 648-byte prefix before default
-construction, rejects incomplete negotiated OCR owner prefixes before reading a
-missing entry, and adds no normalization, scheduling, retry, or fallback policy.
-ADR 0035 records OCR ownership/private-fixture isolation; ADR 0036 records the
-default constructor and preserved prefixes.
+according to C lifetimes, requires the complete entry extent before profile or
+provider construction, requires 712 bytes before creating a high-level grouped
+owner, 720 bytes before returning the frozen OCR descriptor, and all 736 bytes
+before returning provider descriptor views. Centralized projections rebind every
+owned string, provider root, and zone pointer after copy, move, assignment, or
+container relocation. No C++ path adds normalization, scheduling,
+per-inference retry, or provider switching. ADRs 0035/0036 record singular
+ownership/default construction; ADR 0043 records ABI 1.4 layout/grouped
+ownership; ADR 0046 records ABI 1.5 provider construction, descriptor ownership,
+and frozen-prefix obligations.
 
 The source-defined diagnostic benchmark measures capture/mapping, input
 submission, and explicit close/drain with diagnostics `Off`, `Normal`, `Debug`,

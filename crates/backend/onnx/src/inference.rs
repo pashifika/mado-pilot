@@ -1,6 +1,5 @@
 //! Synchronous native runs with joinable deadline/cancellation termination.
 
-use std::mem::size_of;
 use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::thread::{self, JoinHandle};
@@ -13,27 +12,25 @@ use ort::value::TensorRef;
 use crate::decode::{self, DecodedText};
 use crate::detect::{self, Detection};
 use crate::fault::OnnxBackendFault;
-use crate::image::TensorInput;
+use crate::image::{DetectorInput, TensorInput};
 use crate::vocabulary::Vocabulary;
 
 const MONITOR_INTERVAL: Duration = Duration::from_millis(1);
 
 pub(crate) fn detector(
     session: &mut Session,
-    input: &TensorInput,
-    source_width: u32,
-    source_height: u32,
+    input: &DetectorInput,
     max_candidates: usize,
     operation: &OperationContext,
 ) -> Result<Vec<Detection>, OnnxBackendFault> {
     checkpoint(operation)?;
-    let tensor = TensorRef::from_array_view((input.shape, input.data.as_slice()))
+    let tensor = TensorRef::from_array_view((input.tensor.shape, input.tensor.data.as_slice()))
         .map_err(|_| OnnxBackendFault::ResourceLimit)?;
     let options = Arc::new(RunOptions::new().map_err(|_| OnnxBackendFault::NativeFailure)?);
     let mut monitor = TerminationMonitor::start(Arc::clone(&options), operation.clone())?;
-    #[cfg(test)]
+    #[cfg(any(test, feature = "benchmark-instrumentation"))]
     test_hook::at_run_admission();
-    #[cfg(test)]
+    #[cfg(any(test, feature = "benchmark-instrumentation"))]
     test_hook::mark_run_started();
     let run = session.run_with_options(ort::inputs![tensor], options.as_ref());
     if let Some(interruption) = operation.interruption() {
@@ -48,8 +45,7 @@ pub(crate) fn detector(
     let (shape, values) = output
         .try_extract_tensor::<f32>()
         .map_err(|_| OnnxBackendFault::MalformedOutput)?;
-    let detections =
-        detect::postprocess(shape, values, source_width, source_height, max_candidates)?;
+    let detections = detect::postprocess(shape, values, input.plan, max_candidates)?;
     drop(outputs);
     monitor.finish()?;
     checkpoint(operation)?;
@@ -61,29 +57,20 @@ pub(crate) fn recognizer(
     vocabulary: &Vocabulary,
     input: &TensorInput,
     max_text_bytes: usize,
+    max_output_bytes: usize,
     operation: &OperationContext,
 ) -> Result<Vec<DecodedText>, OnnxBackendFault> {
     checkpoint(operation)?;
+    preflight_recognizer_output(input, max_output_bytes)?;
     let batch = input.shape[0];
-    let width = input.shape[3];
-    let maximum_output_elements = batch
-        .checked_mul(width.div_ceil(8))
-        .and_then(|value| value.checked_mul(Vocabulary::classes()))
-        .ok_or(OnnxBackendFault::ResourceLimit)?;
-    if maximum_output_elements
-        .checked_mul(size_of::<f32>())
-        .is_none_or(|bytes| bytes > crate::MAX_OUTPUT_BYTES)
-    {
-        return Err(OnnxBackendFault::ResourceLimit);
-    }
 
     let tensor = TensorRef::from_array_view((input.shape, input.data.as_slice()))
         .map_err(|_| OnnxBackendFault::ResourceLimit)?;
     let options = Arc::new(RunOptions::new().map_err(|_| OnnxBackendFault::NativeFailure)?);
     let mut monitor = TerminationMonitor::start(Arc::clone(&options), operation.clone())?;
-    #[cfg(test)]
+    #[cfg(any(test, feature = "benchmark-instrumentation"))]
     test_hook::at_run_admission();
-    #[cfg(test)]
+    #[cfg(any(test, feature = "benchmark-instrumentation"))]
     test_hook::mark_run_started();
     let run = session.run_with_options(ort::inputs![tensor], options.as_ref());
     if let Some(interruption) = operation.interruption() {
@@ -98,11 +85,29 @@ pub(crate) fn recognizer(
     let (shape, values) = output
         .try_extract_tensor::<f32>()
         .map_err(|_| OnnxBackendFault::MalformedOutput)?;
-    let decoded = decode::decode(shape, values, vocabulary, batch, max_text_bytes)?;
+    let decoded = decode::decode(
+        shape,
+        values,
+        vocabulary,
+        batch,
+        max_text_bytes,
+        max_output_bytes,
+    )?;
     drop(outputs);
     monitor.finish()?;
     checkpoint(operation)?;
     Ok(decoded)
+}
+
+fn preflight_recognizer_output(
+    input: &TensorInput,
+    max_output_bytes: usize,
+) -> Result<(), OnnxBackendFault> {
+    let output_bytes = decode::estimated_recognizer_output_bytes(input.shape[0], input.shape[3])?;
+    if output_bytes > max_output_bytes {
+        return Err(OnnxBackendFault::ResourceLimit);
+    }
+    Ok(())
 }
 
 #[derive(Debug)]
@@ -127,7 +132,7 @@ impl TerminationMonitor {
                 while !monitor_done.load(Ordering::Acquire) {
                     if operation.interruption().is_some() {
                         let _ = options.terminate();
-                        #[cfg(test)]
+                        #[cfg(any(test, feature = "benchmark-instrumentation"))]
                         test_hook::mark_termination_issued();
                         break;
                     }
@@ -176,7 +181,7 @@ fn checkpoint(operation: &OperationContext) -> Result<(), OnnxBackendFault> {
         .map_or(Ok(()), |interruption| Err(interruption.into()))
 }
 
-#[cfg(test)]
+#[cfg(any(test, feature = "benchmark-instrumentation"))]
 pub(crate) mod test_hook {
     use std::ops::Deref;
     use std::sync::{Arc, Condvar, Mutex};
@@ -206,9 +211,14 @@ pub(crate) mod test_hook {
             state: Mutex::new(GateState::default()),
             changed: Condvar::new(),
         });
-        *ACTIVE
+        let mut active = ACTIVE
             .lock()
-            .unwrap_or_else(|poisoned| poisoned.into_inner()) = Some(Arc::clone(&gate));
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
+        assert!(
+            active.is_none(),
+            "only one native-run qualification gate may be active"
+        );
+        *active = Some(Arc::clone(&gate));
         RunGateGuard { gate }
     }
 
@@ -312,5 +322,40 @@ pub(crate) mod test_hook {
                 *active = None;
             }
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::preflight_recognizer_output;
+    use crate::fault::OnnxBackendFault;
+    use crate::image::TensorInput;
+    use crate::provider::CUDA_RECOGNIZER_OUTPUT_BYTES;
+
+    fn input(batch: usize, width: usize) -> TensorInput {
+        TensorInput {
+            data: Vec::new(),
+            shape: [batch, 3, 48, width],
+        }
+    }
+
+    #[test]
+    fn cuda_preflight_rejects_an_oversized_run_before_tensor_construction() {
+        assert_eq!(
+            preflight_recognizer_output(&input(4, 4_096), CUDA_RECOGNIZER_OUTPUT_BYTES),
+            Err(OnnxBackendFault::ResourceLimit)
+        );
+        assert_eq!(
+            preflight_recognizer_output(&input(3, 4_096), CUDA_RECOGNIZER_OUTPUT_BYTES),
+            Ok(())
+        );
+    }
+
+    #[test]
+    fn cpu_preflight_retains_the_existing_256_mib_boundary() {
+        assert_eq!(
+            preflight_recognizer_output(&input(6, 4_096), crate::MAX_OUTPUT_BYTES),
+            Ok(())
+        );
     }
 }

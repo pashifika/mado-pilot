@@ -38,6 +38,45 @@ int main()
                 build.value().table_size,
                 build.value().library_version.to_string().c_str());
 
+
+    if (api.extent() < MADOPILOT_API_SIZE_ENGINE_OCR_PROVIDER_DESCRIPTOR ||
+        build.value().bounded_ocr_model.empty() ||
+        build.value().bounded_ocr_profile.empty()) {
+        std::fprintf(stderr, "ABI 1.5 OCR provider surface is incomplete\n");
+        return 1;
+    }
+    madopilot::OcrProfileOptions profile(
+        MADOPILOT_OCR_PROFILE_BOUNDED_DETECTOR, "/controlled/model",
+        "/controlled/runtime");
+    auto profile_projection = profile.to_c();
+    madopilot::ZoneScanOcrRequest zones;
+    zones.model(build.value().bounded_ocr_model.view())
+        .backend(build.value().default_ocr_backend.view(),
+                 build.value().default_ocr_backend_version.view())
+        .zone({MADOPILOT_SPACE_CAPTURE_PIXELS, 0, 0, 8, 8})
+        .zone({MADOPILOT_SPACE_CAPTURE_PIXELS, 16, 0, 24, 8})
+        .zone({MADOPILOT_SPACE_CAPTURE_PIXELS, 0, 16, 8, 24});
+    auto first_projection = zones.to_c();
+    auto second_projection = first_projection;
+    if (profile_projection.value().kind !=
+            MADOPILOT_OCR_PROFILE_BOUNDED_DETECTOR ||
+        first_projection.value().zone_count != 3 ||
+        first_projection.value().zones == second_projection.value().zones) {
+        std::fprintf(stderr, "ABI 1.4 projection ownership is incomplete\n");
+        return 1;
+    }
+    madopilot::OcrProviderOptions provider(
+        MADOPILOT_OCR_PROVIDER_POLICY_REQUIRE_CUDA,
+        "/controlled/cuda");
+    auto provider_projection = provider.to_c();
+    auto provider_copy = provider_projection;
+    if (provider_projection.value().policy !=
+            MADOPILOT_OCR_PROVIDER_POLICY_REQUIRE_CUDA ||
+        provider_projection.value().provider_root.data ==
+            provider_copy.value().provider_root.data) {
+        std::fprintf(stderr, "ABI 1.5 provider projection ownership is incomplete\n");
+        return 1;
+    }
     // One RAII owner, taken and released without a single explicit release call.
     auto cancellation = api.create_cancellation();
     if (!cancellation) {

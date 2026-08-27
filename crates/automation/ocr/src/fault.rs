@@ -30,6 +30,12 @@ pub enum OcrFault {
     ModelMismatch,
     /// The requested profile identity differs from the selected backend's profile.
     ProfileMismatch,
+    /// A grouped request did not contain one through eight zones.
+    ZoneCountOutOfRange,
+    /// Candidate-to-zone memberships exceeded the grouped operation ceiling.
+    ZoneMembershipCountAboveCeiling,
+    /// A source-envelope mapping exceeded the grouped operation byte ceiling.
+    MappingAboveCeiling,
     /// The backend could not be initialized or is not available.
     BackendUnavailable,
     /// The backend failed after accepting OCR work.
@@ -62,7 +68,11 @@ impl OcrFault {
             | Self::ModelDigestMismatch
             | Self::BackendMismatch
             | Self::ModelMismatch
-            | Self::ProfileMismatch => Status::InvalidArgument,
+            | Self::ProfileMismatch
+            | Self::ZoneCountOutOfRange => Status::InvalidArgument,
+            Self::ZoneMembershipCountAboveCeiling | Self::MappingAboveCeiling => {
+                Status::LimitExceeded
+            }
             Self::UnsupportedProfile => Status::Unsupported,
             Self::BackendUnavailable
             | Self::BackendFailed
@@ -91,7 +101,12 @@ impl OcrFault {
             Self::ModelDigestMismatch => "OCR model component digest does not match its identity",
             Self::BackendMismatch => "OCR request selected a different backend",
             Self::ModelMismatch => "OCR request selected a different model",
+            Self::ZoneMembershipCountAboveCeiling => {
+                "OCR zone memberships exceed the operation ceiling"
+            }
+            Self::MappingAboveCeiling => "OCR source mapping exceeds the operation byte ceiling",
             Self::ProfileMismatch => "OCR request selected a different profile",
+            Self::ZoneCountOutOfRange => "OCR zone scan requires one through eight zones",
             Self::BackendUnavailable => "OCR backend is not available",
             Self::BackendFailed => "OCR backend failed",
             Self::BackendCandidateCountAboveCeiling => "OCR backend emitted too many candidates",

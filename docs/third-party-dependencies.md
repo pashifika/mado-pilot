@@ -111,9 +111,9 @@ dependency surface over a framework that pulls in unrelated features.
 | `flate2` 1.1 | `mado-pilot-assets` | Selects the DEFLATE backend `zip` decompresses with. Not called directly | MIT OR Apache-2.0 |
 | `sha2` 0.11 | `mado-pilot-assets`, `mado-pilot-ocr`, `mado-pilot-backend-onnx` | Verifies package entry digests, immutable OCR model component identities, and the recognizer graph's embedded vocabulary before session admission | MIT OR Apache-2.0 |
 | `unicode-normalization` 0.1.25 | `mado-pilot-ocr` | Applies the accepted G-004 NFC rule once at the platform-neutral OCR commit boundary. Its only dependency is the small `tinyvec`/`tinyvec_macros` pair already pinned in `Cargo.lock` | MIT OR Apache-2.0 |
-| `opencv` 0.99 | `mado-pilot-backend-opencv`, `mado-pilot-backend-onnx` | Binds the OpenCV C++ image-processing API used by the CPU matching profile and the accepted OCR resize, contour, dilation, and perspective-crop profile. Default features **off**; `imgcodecs`, `imgproc`, and `clang-runtime` only | MIT |
-| `ort` 2.0.0-rc.13 | `mado-pilot-backend-onnx` | Exact-pinned safe session/tensor/metadata/run-options wrapper. Default features **off**; only `std`, `alternative-backend`, and `api-17`. No downloader, dynamic-search helper, telemetry feature, GPU provider, or model fetcher is enabled | MIT OR Apache-2.0 |
-| `libloading` 0.8.9 | `mado-pilot-backend-onnx` | Opens one caller-supplied canonical ONNX Runtime file with target-specific restricted flags and retains it for the process-global API lifetime. The version was already resolved by the OpenCV binding generator | ISC |
+| `opencv` 0.99 | `mado-pilot-backend-opencv`, `mado-pilot-backend-onnx` | Binds the OpenCV C++ image-processing API used by the CPU matching profile and the accepted OCR profiles' direct resize, contour, dilation, and original-source perspective-crop rules. Default features **off**; `imgcodecs`, `imgproc`, and `clang-runtime` only | MIT |
+| `ort` 2.0.0-rc.13 | `mado-pilot-backend-onnx` | Exact-pinned safe session/tensor/metadata/run-options wrapper. Default features remain **off** with `std`, `alternative-backend`, and `api-17`; target-gated `coreml-provider` and `cuda-provider` features additionally enable only the corresponding registration module. No downloader, dynamic-search helper, telemetry feature, or model fetcher is enabled | MIT OR Apache-2.0 |
+| `libloading` 0.8.9 | `mado-pilot-backend-onnx` | Opens the caller-supplied canonical ONNX Runtime and the fixed Windows CUDA/cuBLAS/cuDNN/NVRTC dependency set with target-specific restricted flags. The runtime and a successful provider set remain live for their process-global API/provider lifetime; failed candidates release their explicit dependency references before fresh CPU construction. It never searches `PATH` | ISC |
 | `libc` 0.2.189 | `mado-pilot-backend-onnx` (macOS benchmark dev-only) | Supplies the target `rusage` layout and `getrusage` declaration used to enforce the Apple OCR process peak-RSS ceiling. The target-gated direct edge adds no crate to the lockfile and is absent from product dependencies | MIT OR Apache-2.0 |
 | `windows` 0.62.2 | `mado-pilot-platform-windows` | Supplies Microsoft-maintained Rust bindings for the picker-free Win32 target inventory, WGC/WinRT interop, D3D11/DXGI ownership, DPI, system input, window messaging, and token-integrity APIs. Default features **off**; only the reviewed namespaces listed in the workspace manifest are enabled, and the dependency is `cfg(windows)`-gated | MIT OR Apache-2.0 |
 | `cc` 1.4 | `mado-pilot-platform-macos` (build) | Compiles the Objective-C shim that owns the macOS native boundary. The package declares the build dependency unconditionally, so Cargo resolves the edge on every host; `build.rs` gates Objective-C compilation and Apple framework link directives on a macOS target. It was already an indirect build dependency through the OpenCV binding generator, so the graph gains an edge rather than a crate | MIT OR Apache-2.0 |
@@ -243,10 +243,11 @@ actual native and Rust closure against the then-current advisory database.
 
 ### Implemented ONNX Runtime prerequisite
 
-`mado-pilot-backend-onnx` implements only the accepted G-004 detector,
-recognizer, vocabulary, preprocessing, and decoder through ONNX Runtime 1.29.0's
-CPU provider and C API 17. [ADR 0034](adr/0034-onnx-runtime-cpu-loading-boundary.md)
-fixes the loading boundary:
+`mado-pilot-backend-onnx` implements the two exact closed profiles from ADRs
+0033 and 0038 over the accepted G-004 detector, recognizer, vocabulary, and
+decoder through ONNX Runtime 1.29.0's CPU provider and C API 17. Native G-004
+keeps released preprocessing; bounded preprocessing is explicit and non-default.
+[ADR 0034](adr/0034-onnx-runtime-cpu-loading-boundary.md) fixes the loading boundary:
 
 - the host supplies one regular file at a caller-selected canonical absolute
   path: `libonnxruntime.1.29.0.dylib` on `aarch64-apple-darwin` or
@@ -260,33 +261,81 @@ fixes the loading boundary:
 - the runtime handle remains loaded for process life because the installed API
   table contains pointers into it.
 
-The reviewed Apple runtime is 33,332,888 bytes, declares minimum macOS 14.0, and
-depends only on system libraries. It is MIT-licensed and is not redistributed.
+The Phase 3 reviewed Apple runtime observation remains 33,332,888 bytes at its
+original revision. It declares minimum macOS 14.0 and depends only on system
+libraries/frameworks. The current CI-pinned official 1.29.0 archive used by the
+bounded Change is independently bound by archive SHA-256 `d0706f…`; its selected
+versioned dylib is 43,184,400 bytes with SHA-256 `68f6e5…`, minimum macOS 14.0,
+SDK 26.2, and only system framework/library load commands. These are distinct
+revision-bound observations, not interchangeable hashes. ONNX Runtime is
+MIT-licensed and is not redistributed.
+
+Provider-policy construction under ADR 0046 does not change redistribution:
+
+- CoreML registration uses the explicit ONNX Runtime dylib and macOS system
+  CoreML/Metal frameworks. No framework or provider asset is bundled.
+- CUDA qualification uses the official version-matched ORT 1.29.0 CUDA 13
+  archive plus caller-provided CUDA 13, cuBLAS, cuDNN 9, and NVRTC DLLs in one
+  canonical controlled root. The accepted root is flat, regular-file-only, and
+  includes `onnxruntime.dll`, `onnxruntime_providers_shared.dll`,
+  `onnxruntime_providers_cuda.dll`, CUDA runtime/math DLLs, cuDNN component
+  DLLs, `nvrtc64_130_0.dll`, and `nvrtc-builtins64_130.dll`.
+- ADR 0049 revalidates the exact 18-DLL projection. Product loading still
+  validates every member, eagerly retains the existing 16 dependency handles,
+  and defers `onnxruntime_providers_cuda.dll` until ONNX Runtime initializes.
+  Offline PE imports contained no external name but omitted known dynamic NVRTC
+  requirements, so no strict preload subset is claimed or adopted.
+- ONNX Runtime remains MIT-licensed. CUDA Toolkit/cuBLAS/NVRTC and cuDNN remain
+  subject to NVIDIA's supplied licenses. Qualification retains their source,
+  version, length, SHA-256, signature, and license identity privately.
+- Source releases bundle none of these native files. Product code performs no
+  download, installation, license acceptance, registry mutation, privilege
+  change, or ambient/Python/PyTorch provider preload.
+
+Qualification does not turn every compiled provider feature into support.
+[ADR 0047](adr/0047-coreml-ocr-provider-qualification.md) rejects CoreML after
+geometry and cancellation hard-gate failures. ADR 0048 remains historical CUDA
+evidence; [ADR 0049](adr/0049-cuda-ocr-memory-remediation.md) accepts only the
+exact successor explicit Windows CUDA source over the same controlled
+dependency set. Automatic selection remains CPU because CUDA still exceeds the
+fixed RSS ratio.
+
 The accepted detector and recognizer remain caller-supplied Apache-2.0 model
-bytes. `OnnxOcrBackend::open_accepted` reads only
+bytes. Both `OnnxOcrBackend::open_accepted` and explicit
+`OnnxOcrBackend::open_bounded_detector` read only
 `rapidocr-v3.9.2/ch_PP-OCRv4_det_mobile.onnx` and
-`rapidocr-v3.9.2/PP-OCRv6_rec_small.onnx` beneath the selected root, validates
-exact length/SHA-256 before graph/session admission, and commits directly into
-immutable shared storage. Explicit schema-v2 packages validate the same
-`OcrModelSource` contract; default composition does not create a duplicate
-25,979,900-byte package allocation.
+`rapidocr-v3.9.2/PP-OCRv6_rec_small.onnx` beneath the selected root, validate
+exact length/SHA-256 before graph/session admission, and commit directly into
+one immutable shared source. Explicit schema-v2 packages validate the same
+`OcrModelSource` contract for either complete accepted tuple; default
+composition does not create a duplicate 25,979,900-byte package allocation.
 
 The two native CI jobs provision these inputs only inside an ephemeral runner.
 They download the official ONNX Runtime 1.29.0 target archive and the two
 tag-pinned ModelScope files, verify reviewed archive/model SHA-256 values before
 extraction/session creation, and pass canonical paths to native tests. Both jobs
-run the backend contract, Rust default facade, production C/C++/CMake default
-flows, frozen C headers, and the target-independent OCR performance smoke gate.
-This is verification-fixture provisioning, not a product download path, release
-bundle, shipped cache, ambient discovery mechanism, or approved-host quality/
-numeric-performance evidence.
+run the backend contract for native and bounded profiles, Rust default facade,
+production C/C++/CMake default flows, frozen C headers, the released
+default-profile benchmark smoke, and the new identical-input native/bounded
+smoke matrix.
 
-ADR 0036 makes the default an explicit composition choice: ordinary engine
-constructors remain unchanged, while `*_engine_with_default_ocr`,
+This is verification-fixture provisioning, not a product download path, release
+bundle, shipped cache, ambient discovery mechanism, or approved-host
+quality/numeric-performance evidence. The bounded benchmark adds only existing
+workspace `serde`/`serde_json` development edges for a tracked fixture/report
+schema; no production dependency, model/runtime byte, or license family changes.
+
+ADR 0036 keeps the default an explicit native G-004 composition choice: ordinary
+engine constructors remain unchanged, while `*_engine_with_default_ocr`,
 `engine_create_with_default_ocr`, and C++ `DefaultOcrOptions` require the caller
-to supply the two controlled paths. ADR 0037 accepts separate Apple M1 Pro and
-Core i7-12700KF numeric profiles after approved-host precursor and final runs.
-Hosted Windows Server smoke remains supporting hard-contract evidence only.
+to supply the two controlled paths. ADR 0040 adds only the explicit Rust
+candidate-v2 backend selection; no dependency changes. ADR 0037's native G-004
+budgets remain accepted, and ADRs 0039/0041 fix the bounded procedure and target
+budgets. The rejected rectangular and accepted candidate-v2 precursors remain
+separate evidence. Both approved-host precursors and strict final enforcement
+pass; the explicit profile is qualified without changing dependency,
+provisioning, bundling, or default-selection policy. Hosted Windows Server smoke
+remains supporting hard-contract evidence only.
 
 ### G-003 macOS shim boundary
 

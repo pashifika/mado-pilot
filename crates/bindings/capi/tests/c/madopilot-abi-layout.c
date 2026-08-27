@@ -64,6 +64,37 @@ MADOPILOT_FIELD_HAS_TYPE(madopilot_input_attempt_t, submitted, uint64_t*);
 MADOPILOT_FIELD_HAS_TYPE(madopilot_input_attempt_t, last_submitted, uint64_t*);
 MADOPILOT_FIELD_HAS_TYPE(madopilot_diagnostic_record_t, region,
                          madopilot_pixel_rect_t*);
+#if MADOPILOT_ABI_MINOR >= 4
+MADOPILOT_FIELD_HAS_TYPE(madopilot_ocr_profile_options_t, kind, int32_t*);
+MADOPILOT_FIELD_HAS_TYPE(madopilot_ocr_zone_scan_request_t, zones,
+                         const madopilot_ocr_zone_t**);
+MADOPILOT_FIELD_HAS_TYPE(madopilot_ocr_zone_scan_request_t, zone_count, size_t*);
+MADOPILOT_FIELD_HAS_TYPE(madopilot_ocr_zone_scan_request_t, zone_stride, size_t*);
+MADOPILOT_FIELD_HAS_TYPE(madopilot_ocr_zone_scan_result_info_t, zone_count,
+                         uint64_t*);
+MADOPILOT_FIELD_HAS_TYPE(madopilot_ocr_zone_scan_result_info_t,
+                         unique_candidate_count, uint64_t*);
+MADOPILOT_FIELD_HAS_TYPE(madopilot_ocr_zone_scan_result_info_t,
+                         membership_count, uint64_t*);
+MADOPILOT_FIELD_HAS_TYPE(madopilot_ocr_zone_result_t, region_count, uint64_t*);
+MADOPILOT_FIELD_HAS_TYPE(madopilot_diagnostic_record_t, ocr_source_envelope,
+                         madopilot_pixel_rect_t*);
+MADOPILOT_FIELD_HAS_TYPE(madopilot_diagnostic_record_t, ocr_zone_count,
+                         uint64_t*);
+MADOPILOT_FIELD_HAS_TYPE(madopilot_diagnostic_record_t,
+                         ocr_unique_candidate_count, uint64_t*);
+MADOPILOT_FIELD_HAS_TYPE(madopilot_diagnostic_record_t, ocr_membership_count,
+                         uint64_t*);
+MADOPILOT_FIELD_HAS_TYPE(madopilot_diagnostic_record_t, ocr_result_bytes,
+                         uint64_t*);
+#endif
+#if MADOPILOT_ABI_MINOR >= 5
+MADOPILOT_FIELD_HAS_TYPE(madopilot_ocr_provider_options_t, policy, int32_t*);
+MADOPILOT_FIELD_HAS_TYPE(madopilot_ocr_provider_descriptor_t, requested_policy, int32_t*);
+MADOPILOT_FIELD_HAS_TYPE(madopilot_ocr_provider_descriptor_t, active_provider, int32_t*);
+MADOPILOT_FIELD_HAS_TYPE(madopilot_ocr_provider_descriptor_t, initialization_fell_back, uint32_t*);
+MADOPILOT_FIELD_HAS_TYPE(madopilot_ocr_provider_descriptor_t, fallback_reason, int32_t*);
+#endif
 #undef MADOPILOT_FIELD_HAS_TYPE
 #endif
 
@@ -85,6 +116,17 @@ FIRST_FIELD_IS_STRUCT_SIZE(madopilot_default_ocr_options_t);
 FIRST_FIELD_IS_STRUCT_SIZE(madopilot_ocr_request_t);
 FIRST_FIELD_IS_STRUCT_SIZE(madopilot_ocr_result_info_t);
 FIRST_FIELD_IS_STRUCT_SIZE(madopilot_ocr_region_t);
+#endif
+#if MADOPILOT_ABI_MINOR >= 4
+FIRST_FIELD_IS_STRUCT_SIZE(madopilot_ocr_profile_options_t);
+FIRST_FIELD_IS_STRUCT_SIZE(madopilot_ocr_zone_t);
+FIRST_FIELD_IS_STRUCT_SIZE(madopilot_ocr_zone_scan_request_t);
+FIRST_FIELD_IS_STRUCT_SIZE(madopilot_ocr_zone_scan_result_info_t);
+FIRST_FIELD_IS_STRUCT_SIZE(madopilot_ocr_zone_result_t);
+#endif
+#if MADOPILOT_ABI_MINOR >= 5
+FIRST_FIELD_IS_STRUCT_SIZE(madopilot_ocr_provider_options_t);
+FIRST_FIELD_IS_STRUCT_SIZE(madopilot_ocr_provider_descriptor_t);
 #endif
 FIRST_FIELD_IS_STRUCT_SIZE(madopilot_package_info_t);
 FIRST_FIELD_IS_STRUCT_SIZE(madopilot_template_info_t);
@@ -145,6 +187,41 @@ int main(void)
     FIELD(madopilot_default_ocr_options_t, flags);
     FIELD(madopilot_default_ocr_options_t, model_root);
     FIELD(madopilot_default_ocr_options_t, runtime_path);
+#endif
+#if MADOPILOT_ABI_MINOR >= 4
+    TYPE(madopilot_ocr_profile_options_t);
+    FIELD(madopilot_ocr_profile_options_t, struct_size);
+    FIELD(madopilot_ocr_profile_options_t, flags);
+    FIELD(madopilot_ocr_profile_options_t, kind);
+    FIELD(madopilot_ocr_profile_options_t, reserved);
+    FIELD(madopilot_ocr_profile_options_t, model_root);
+    FIELD(madopilot_ocr_profile_options_t, runtime_path);
+#if MADOPILOT_ABI_MINOR >= 5
+    TYPE(madopilot_ocr_provider_options_t);
+    FIELD(madopilot_ocr_provider_options_t, struct_size);
+    FIELD(madopilot_ocr_provider_options_t, flags);
+    FIELD(madopilot_ocr_provider_options_t, policy);
+    FIELD(madopilot_ocr_provider_options_t, reserved);
+    FIELD(madopilot_ocr_provider_options_t, provider_root);
+
+    TYPE(madopilot_ocr_provider_descriptor_t);
+    FIELD(madopilot_ocr_provider_descriptor_t, struct_size);
+    FIELD(madopilot_ocr_provider_descriptor_t, flags);
+    FIELD(madopilot_ocr_provider_descriptor_t, requested_policy);
+    FIELD(madopilot_ocr_provider_descriptor_t, active_provider);
+    FIELD(madopilot_ocr_provider_descriptor_t, initialization_fell_back);
+    FIELD(madopilot_ocr_provider_descriptor_t, fallback_reason);
+    FIELD(madopilot_ocr_provider_descriptor_t, runtime_profile);
+#endif
+
+    TYPE(madopilot_ocr_engine_descriptor_t);
+    FIELD(madopilot_ocr_engine_descriptor_t, struct_size);
+    FIELD(madopilot_ocr_engine_descriptor_t, flags);
+    FIELD(madopilot_ocr_engine_descriptor_t, backend_id);
+    FIELD(madopilot_ocr_engine_descriptor_t, backend_version);
+    FIELD(madopilot_ocr_engine_descriptor_t, model_id);
+    FIELD(madopilot_ocr_engine_descriptor_t, model_version);
+    FIELD(madopilot_ocr_engine_descriptor_t, profile_id);
 #endif
 
     TYPE(madopilot_diagnostic_batch_info_t);
@@ -207,6 +284,18 @@ int main(void)
     FIELD(madopilot_diagnostic_record_t, ocr_requested_region);
     FIELD(madopilot_diagnostic_record_t, ocr_elapsed_nanos);
     FIELD(madopilot_diagnostic_record_t, ocr_source_pixels);
+#if MADOPILOT_ABI_MINOR >= 4
+    FIELD(madopilot_diagnostic_record_t, ocr_source_envelope);
+    FIELD(madopilot_diagnostic_record_t, ocr_grouped_reserved);
+    FIELD(madopilot_diagnostic_record_t, ocr_zone_count);
+    FIELD(madopilot_diagnostic_record_t, ocr_unique_candidate_count);
+    FIELD(madopilot_diagnostic_record_t, ocr_membership_count);
+    FIELD(madopilot_diagnostic_record_t, ocr_result_bytes);
+    FIELD(madopilot_diagnostic_record_t, ocr_detector_runs);
+    FIELD(madopilot_diagnostic_record_t, ocr_recognizer_runs);
+    FIELD(madopilot_diagnostic_record_t, ocr_detector_bytes);
+    FIELD(madopilot_diagnostic_record_t, ocr_recognizer_bytes);
+#endif
 #endif
 
     TYPE(madopilot_permission_t);
@@ -326,6 +415,11 @@ int main(void)
     FIELD(madopilot_build_info_t, default_ocr_model);
     FIELD(madopilot_build_info_t, default_ocr_model_version);
     FIELD(madopilot_build_info_t, default_ocr_profile);
+#endif
+#if MADOPILOT_ABI_MINOR >= 4
+    FIELD(madopilot_build_info_t, bounded_ocr_model);
+    FIELD(madopilot_build_info_t, bounded_ocr_model_version);
+    FIELD(madopilot_build_info_t, bounded_ocr_profile);
 #endif
 
     TYPE(madopilot_operation_t);
@@ -452,6 +546,27 @@ int main(void)
     FIELD(madopilot_ocr_request_t, output_space);
     FIELD(madopilot_ocr_request_t, clip_policy);
     FIELD(madopilot_ocr_request_t, region);
+#if MADOPILOT_ABI_MINOR >= 4
+    TYPE(madopilot_ocr_zone_t);
+    FIELD(madopilot_ocr_zone_t, struct_size);
+    FIELD(madopilot_ocr_zone_t, flags);
+    FIELD(madopilot_ocr_zone_t, region);
+    FIELD(madopilot_ocr_zone_t, clip_policy);
+
+    TYPE(madopilot_ocr_zone_scan_request_t);
+    FIELD(madopilot_ocr_zone_scan_request_t, struct_size);
+    FIELD(madopilot_ocr_zone_scan_request_t, flags);
+    FIELD(madopilot_ocr_zone_scan_request_t, frame);
+    FIELD(madopilot_ocr_zone_scan_request_t, package);
+    FIELD(madopilot_ocr_zone_scan_request_t, model_id);
+    FIELD(madopilot_ocr_zone_scan_request_t, backend_id);
+    FIELD(madopilot_ocr_zone_scan_request_t, backend_version);
+    FIELD(madopilot_ocr_zone_scan_request_t, output_space);
+    FIELD(madopilot_ocr_zone_scan_request_t, reserved);
+    FIELD(madopilot_ocr_zone_scan_request_t, zones);
+    FIELD(madopilot_ocr_zone_scan_request_t, zone_count);
+    FIELD(madopilot_ocr_zone_scan_request_t, zone_stride);
+#endif
 
     TYPE(madopilot_ocr_result_info_t);
     FIELD(madopilot_ocr_result_info_t, struct_size);
@@ -466,6 +581,29 @@ int main(void)
     FIELD(madopilot_ocr_result_info_t, model_id);
     FIELD(madopilot_ocr_result_info_t, model_version);
     FIELD(madopilot_ocr_result_info_t, profile_id);
+#if MADOPILOT_ABI_MINOR >= 4
+    TYPE(madopilot_ocr_zone_scan_result_info_t);
+    FIELD(madopilot_ocr_zone_scan_result_info_t, struct_size);
+    FIELD(madopilot_ocr_zone_scan_result_info_t, flags);
+    FIELD(madopilot_ocr_zone_scan_result_info_t, source);
+    FIELD(madopilot_ocr_zone_scan_result_info_t, source_envelope);
+    FIELD(madopilot_ocr_zone_scan_result_info_t, output_space);
+    FIELD(madopilot_ocr_zone_scan_result_info_t, zone_count);
+    FIELD(madopilot_ocr_zone_scan_result_info_t, unique_candidate_count);
+    FIELD(madopilot_ocr_zone_scan_result_info_t, membership_count);
+    FIELD(madopilot_ocr_zone_scan_result_info_t, backend_id);
+    FIELD(madopilot_ocr_zone_scan_result_info_t, backend_version);
+    FIELD(madopilot_ocr_zone_scan_result_info_t, model_id);
+    FIELD(madopilot_ocr_zone_scan_result_info_t, model_version);
+    FIELD(madopilot_ocr_zone_scan_result_info_t, profile_id);
+
+    TYPE(madopilot_ocr_zone_result_t);
+    FIELD(madopilot_ocr_zone_result_t, struct_size);
+    FIELD(madopilot_ocr_zone_result_t, flags);
+    FIELD(madopilot_ocr_zone_result_t, effective_zone);
+    FIELD(madopilot_ocr_zone_result_t, reserved);
+    FIELD(madopilot_ocr_zone_result_t, region_count);
+#endif
 
     TYPE(madopilot_ocr_region_t);
     FIELD(madopilot_ocr_region_t, struct_size);
@@ -618,6 +756,21 @@ int main(void)
     FIELD(madopilot_api_t, ocr_result_text_at);
     FIELD(madopilot_api_t, engine_create_with_default_ocr);
 #endif
+#if MADOPILOT_ABI_MINOR >= 4
+    FIELD(madopilot_api_t, engine_create_with_ocr_profile);
+    FIELD(madopilot_api_t, session_scan_ocr_zones);
+    FIELD(madopilot_api_t, ocr_zone_scan_result_retain);
+    FIELD(madopilot_api_t, ocr_zone_scan_result_release);
+    FIELD(madopilot_api_t, ocr_zone_scan_result_info);
+    FIELD(madopilot_api_t, ocr_zone_scan_result_zone_at);
+    FIELD(madopilot_api_t, ocr_zone_scan_result_region_at);
+    FIELD(madopilot_api_t, ocr_zone_scan_result_text_at);
+    FIELD(madopilot_api_t, engine_ocr_descriptor);
+#endif
+#if MADOPILOT_ABI_MINOR >= 5
+    FIELD(madopilot_api_t, engine_create_with_ocr_provider);
+    FIELD(madopilot_api_t, engine_ocr_provider_descriptor);
+#endif
 
     HANDLE(madopilot_cancellation_t);
     HANDLE(madopilot_error_t);
@@ -631,6 +784,9 @@ int main(void)
     HANDLE(madopilot_result_t);
 #if MADOPILOT_ABI_MINOR >= 3
     HANDLE(madopilot_ocr_result_t);
+#endif
+#if MADOPILOT_ABI_MINOR >= 4
+    HANDLE(madopilot_ocr_zone_scan_result_t);
 #endif
 #if MADOPILOT_ABI_MINOR >= 2
     HANDLE(madopilot_input_receipt_t);

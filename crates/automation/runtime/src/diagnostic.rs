@@ -19,7 +19,8 @@ use mado_pilot_input::{
     CleanupState, InputAttempt, InputFault, InputReceipt, InputRequest, SequenceOutcome,
 };
 use mado_pilot_ocr::{
-    ACCEPTED_G004_PROFILE_ID, OcrBackendDescriptor, OcrRegion as RequestedOcrRegion,
+    ACCEPTED_BOUNDED_PROFILE_ID, ACCEPTED_G004_PROFILE_ID, OcrBackendDescriptor,
+    OcrRegion as RequestedOcrRegion,
 };
 use mado_pilot_vision::prepared::{PreparedTemplate, PreparedTemplateInstance};
 
@@ -458,6 +459,8 @@ pub struct PermissionDiagnostic {
 pub enum OcrDiagnosticProfile {
     /// Accepted G-004 RapidOCR PP-OCRv4 detector / PP-OCRv6 small recognizer profile.
     AcceptedG004,
+    /// Accepted ADR 0040/0041 bounded-detector profile.
+    BoundedDetector,
     /// No accepted public profile claim is made, as for a deterministic test double.
     Unspecified,
 }
@@ -545,12 +548,31 @@ pub struct OcrDiagnostic {
     pub requested_region: Option<OcrRequestedRegionDiagnostic>,
     /// Effective clipped source region, when geometry resolution completed.
     pub effective_region: Option<PixelRect>,
+    /// Shared grouped source envelope, absent for singular recognition or
+    /// before grouped geometry resolution.
+    pub source_envelope: Option<PixelRect>,
     /// Coordinate space of returned quadrilaterals.
     pub output_space: CoordinateSpace,
     /// Typed terminal outcome.
     pub outcome: OcrDiagnosticOutcome,
     /// Semantic committed result count, zero on failure.
     pub result_count: u64,
+    /// Bounded caller zone count for grouped recognition.
+    pub zone_count: Option<u64>,
+    /// Unique immutable candidate count for grouped recognition.
+    pub unique_candidate_count: Option<u64>,
+    /// Caller-group candidate membership count for grouped recognition.
+    pub membership_count: Option<u64>,
+    /// Exact immutable result semantic bytes when the operation owns that evidence.
+    pub result_bytes: Option<u64>,
+    /// Exact detector runs for this request when the backend reports them.
+    pub detector_runs: Option<u64>,
+    /// Exact detector bytes for this request when the backend reports them.
+    pub detector_bytes: Option<u64>,
+    /// Exact recognizer runs for this request when the backend reports them.
+    pub recognizer_runs: Option<u64>,
+    /// Exact recognizer bytes for this request when the backend reports them.
+    pub recognizer_bytes: Option<u64>,
     /// Caller-clock elapsed duration from runtime admission through final arbitration.
     pub elapsed_nanos: u64,
     /// Number of source pixels in the effective region, zero before resolution.
@@ -1052,6 +1074,8 @@ impl DiagnosticSink {
         self.stream.issue_ocr_model().map(|model_instance| {
             let profile = if descriptor.profile().as_str() == ACCEPTED_G004_PROFILE_ID {
                 OcrDiagnosticProfile::AcceptedG004
+            } else if descriptor.profile().as_str() == ACCEPTED_BOUNDED_PROFILE_ID {
+                OcrDiagnosticProfile::BoundedDetector
             } else {
                 OcrDiagnosticProfile::Unspecified
             };
@@ -1229,9 +1253,18 @@ mod tests {
             source,
             requested_region: None,
             effective_region: Some(PixelRect::new(0, 0, 8, 8).expect("valid")),
+            source_envelope: None,
             output_space: CoordinateSpace::CapturePixels,
             outcome: OcrDiagnosticOutcome::Recognized,
             result_count: 1,
+            zone_count: None,
+            unique_candidate_count: None,
+            membership_count: None,
+            result_bytes: None,
+            detector_runs: None,
+            detector_bytes: None,
+            recognizer_runs: None,
+            recognizer_bytes: None,
             elapsed_nanos: 4,
             source_pixels: 64,
         })
@@ -1487,9 +1520,18 @@ mod tests {
                     format!("{:?}", value.source),
                     format!("{:?}", value.requested_region),
                     format!("{:?}", value.effective_region),
+                    format!("{:?}", value.source_envelope),
                     format!("{:?}", value.output_space),
                     format!("{:?}", value.outcome),
                     format!("{:?}", value.result_count),
+                    format!("{:?}", value.zone_count),
+                    format!("{:?}", value.unique_candidate_count),
+                    format!("{:?}", value.membership_count),
+                    format!("{:?}", value.result_bytes),
+                    format!("{:?}", value.detector_runs),
+                    format!("{:?}", value.detector_bytes),
+                    format!("{:?}", value.recognizer_runs),
+                    format!("{:?}", value.recognizer_bytes),
                     format!("{:?}", value.elapsed_nanos),
                     format!("{:?}", value.source_pixels),
                 ],
@@ -1642,9 +1684,18 @@ mod tests {
                     source: frame,
                     requested_region: None,
                     effective_region: Some(region),
+                    source_envelope: None,
                     output_space: CoordinateSpace::CapturePixels,
                     outcome: OcrDiagnosticOutcome::Recognized,
                     result_count: 1,
+                    zone_count: None,
+                    unique_candidate_count: None,
+                    membership_count: None,
+                    result_bytes: None,
+                    detector_runs: None,
+                    detector_bytes: None,
+                    recognizer_runs: None,
+                    recognizer_bytes: None,
                     elapsed_nanos: 9,
                     source_pixels: 64,
                 }),

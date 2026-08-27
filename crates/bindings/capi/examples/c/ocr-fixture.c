@@ -1,4 +1,4 @@
-/* Deterministic one-shot OCR through the released C ABI 1.3 surface. */
+/* Deterministic singular and grouped OCR through the ABI 1.4 C surface. */
 
 #include <stdio.h>
 #include <stdlib.h>
@@ -41,7 +41,7 @@ int main(int argc, char** argv)
                               sizeof(madopilot_api_t), &api),
             "madopilot_get_api") ||
         api == NULL ||
-        api->struct_size < MADOPILOT_API_SIZE_OCR_RESULT_TEXT_AT) {
+        api->struct_size < MADOPILOT_API_SIZE_OCR_ZONE_SCAN_RESULT_TEXT_AT) {
         return 1;
     }
 
@@ -73,6 +73,7 @@ int main(int argc, char** argv)
     madopilot_frame_t* frame = NULL;
     madopilot_package_t* package = NULL;
     madopilot_ocr_result_t* result = NULL;
+    madopilot_ocr_zone_scan_result_t* grouped_result = NULL;
     madopilot_diagnostic_reader_t* reader = NULL;
     madopilot_diagnostic_batch_t* batch = NULL;
     madopilot_engine_options_t options = {0};
@@ -130,6 +131,35 @@ int main(int argc, char** argv)
         goto fail;
     }
 
+    madopilot_ocr_zone_t zones[3] = {0};
+    const int32_t edges[3][4] = {
+        {0, 0, 16, 12}, {24, 0, 32, 12}, {8, 0, 24, 12}};
+    for (size_t index = 0; index < 3; ++index) {
+        zones[index].struct_size = (uint32_t)sizeof(zones[index]);
+        zones[index].region.space = MADOPILOT_SPACE_CAPTURE_PIXELS;
+        zones[index].region.left = edges[index][0];
+        zones[index].region.top = edges[index][1];
+        zones[index].region.right = edges[index][2];
+        zones[index].region.bottom = edges[index][3];
+        zones[index].clip_policy = MADOPILOT_CLIP_POLICY_REJECT;
+    }
+    madopilot_ocr_zone_scan_request_t grouped_request = {0};
+    grouped_request.struct_size = (uint32_t)sizeof(grouped_request);
+    grouped_request.frame = frame;
+    grouped_request.package = package;
+    grouped_request.model_id = request.model_id;
+    grouped_request.backend_id = request.backend_id;
+    grouped_request.backend_version = request.backend_version;
+    grouped_request.output_space = MADOPILOT_SPACE_CAPTURE_PIXELS;
+    grouped_request.zones = zones;
+    grouped_request.zone_count = 3;
+    grouped_request.zone_stride = sizeof(zones[0]);
+    if (!ok(api->session_scan_ocr_zones(
+                session, &grouped_request, &operation, &grouped_result, &error),
+            "session_scan_ocr_zones")) {
+        goto fail;
+    }
+
     if (!ok(api->session_close(session, &operation, &error), "session_close")) {
         goto fail;
     }
@@ -154,6 +184,54 @@ int main(int argc, char** argv)
         goto fail;
     }
 
+    madopilot_ocr_zone_scan_result_info_t grouped_info = {0};
+    grouped_info.struct_size = (uint32_t)sizeof(grouped_info);
+    madopilot_ocr_zone_result_t grouped_first = {0};
+    madopilot_ocr_zone_result_t grouped_empty = {0};
+    madopilot_ocr_zone_result_t grouped_overlap = {0};
+    grouped_first.struct_size = (uint32_t)sizeof(grouped_first);
+    grouped_empty.struct_size = (uint32_t)sizeof(grouped_empty);
+    grouped_overlap.struct_size = (uint32_t)sizeof(grouped_overlap);
+    madopilot_ocr_region_t grouped_region = {0};
+    grouped_region.struct_size = (uint32_t)sizeof(grouped_region);
+    madopilot_str_t grouped_text = {0};
+    madopilot_str_t overlap_text = {0};
+    if (!ok(api->ocr_zone_scan_result_info(grouped_result, &grouped_info),
+            "ocr_zone_scan_result_info") ||
+        grouped_info.zone_count != 3 ||
+        grouped_info.unique_candidate_count != 1 ||
+        grouped_info.membership_count != 2 ||
+        grouped_info.source.sequence != info.source.sequence ||
+        !ok(api->ocr_zone_scan_result_zone_at(
+                grouped_result, 0, &grouped_first),
+            "ocr_zone_scan_result_zone_at first") ||
+        !ok(api->ocr_zone_scan_result_zone_at(
+                grouped_result, 1, &grouped_empty),
+            "ocr_zone_scan_result_zone_at empty") ||
+        !ok(api->ocr_zone_scan_result_zone_at(
+                grouped_result, 2, &grouped_overlap),
+            "ocr_zone_scan_result_zone_at overlap") ||
+        grouped_first.region_count != 1 || grouped_empty.region_count != 0 ||
+        grouped_overlap.region_count != 1 ||
+        !ok(api->ocr_zone_scan_result_region_at(
+                grouped_result, 0, 0, &grouped_region),
+            "ocr_zone_scan_result_region_at") ||
+        grouped_region.confidence != region.confidence ||
+        grouped_region.points[0].x != region.points[0].x ||
+        grouped_region.points[0].y != region.points[0].y ||
+        !ok(api->ocr_zone_scan_result_text_at(
+                grouped_result, 0, 0, &grouped_text),
+            "ocr_zone_scan_result_text_at first") ||
+        !ok(api->ocr_zone_scan_result_text_at(
+                grouped_result, 2, 0, &overlap_text),
+            "ocr_zone_scan_result_text_at overlap") ||
+        grouped_text.len != text.len ||
+        memcmp(grouped_text.data, text.data, text.len) != 0 ||
+        grouped_text.data != overlap_text.data ||
+        grouped_text.len != overlap_text.len) {
+        goto fail;
+    }
+
     madopilot_diagnostic_drain_state_t drain_state =
         MADOPILOT_DIAGNOSTIC_DRAIN_OPEN_EMPTY;
     if (!ok(api->diagnostic_reader_drain(reader, &drain_state, &batch),
@@ -168,7 +246,8 @@ int main(int argc, char** argv)
         goto fail;
     }
     int saw_admission = 0;
-    int saw_terminal = 0;
+    int saw_singular_terminal = 0;
+    int saw_grouped_terminal = 0;
     for (size_t index = 0; index < (size_t)batch_info.record_count; ++index) {
         madopilot_diagnostic_record_t record = {0};
         record.struct_size = (uint32_t)sizeof(record);
@@ -180,7 +259,8 @@ int main(int argc, char** argv)
             record.operation == MADOPILOT_DIAGNOSTIC_OPERATION_OCR_RECOGNITION) {
             saw_admission = 1;
         }
-        if (record.kind == MADOPILOT_DIAGNOSTIC_KIND_OCR) {
+        if (record.kind == MADOPILOT_DIAGNOSTIC_KIND_OCR &&
+            record.result_count == 1) {
             const uint32_t required =
                 MADOPILOT_DIAGNOSTIC_RECORD_HAS_FRAME |
                 MADOPILOT_DIAGNOSTIC_RECORD_HAS_SOURCE_SPACE |
@@ -189,16 +269,39 @@ int main(int argc, char** argv)
                 MADOPILOT_DIAGNOSTIC_RECORD_HAS_OCR_MODEL_INSTANCE |
                 MADOPILOT_DIAGNOSTIC_RECORD_HAS_OCR_TIMING |
                 MADOPILOT_DIAGNOSTIC_RECORD_HAS_OCR_RESOURCES;
-            saw_terminal =
+            saw_singular_terminal =
                 (record.flags & required) == required &&
                 (record.flags & MADOPILOT_DIAGNOSTIC_RECORD_HAS_OCR_PROFILE) == 0u &&
+                (record.flags & MADOPILOT_DIAGNOSTIC_RECORD_HAS_OCR_ZONE_COUNT) == 0u &&
                 record.ocr_profile == MADOPILOT_OCR_DIAGNOSTIC_PROFILE_UNSPECIFIED &&
                 record.ocr_outcome == MADOPILOT_OCR_DIAGNOSTIC_OUTCOME_RECOGNIZED &&
-                record.ocr_model_instance != 0 && record.result_count == 1 &&
+                record.ocr_model_instance != 0 &&
                 record.frame.sequence == info.source.sequence;
+        } else if (record.kind == MADOPILOT_DIAGNOSTIC_KIND_OCR &&
+                   record.result_count == 2) {
+            const uint32_t required =
+                MADOPILOT_DIAGNOSTIC_RECORD_HAS_FRAME |
+                MADOPILOT_DIAGNOSTIC_RECORD_HAS_OCR_SOURCE_ENVELOPE |
+                MADOPILOT_DIAGNOSTIC_RECORD_HAS_OCR_ZONE_COUNT |
+                MADOPILOT_DIAGNOSTIC_RECORD_HAS_OCR_RESULT_COUNTS;
+            const uint32_t forbidden =
+                MADOPILOT_DIAGNOSTIC_RECORD_HAS_REGION |
+                MADOPILOT_DIAGNOSTIC_RECORD_HAS_OCR_REQUESTED_REGION |
+                MADOPILOT_DIAGNOSTIC_RECORD_HAS_OCR_RESULT_BYTES |
+                MADOPILOT_DIAGNOSTIC_RECORD_HAS_OCR_BACKEND_WORK;
+            saw_grouped_terminal =
+                (record.flags & required) == required &&
+                (record.flags & forbidden) == 0u &&
+                record.ocr_zone_count == 3 &&
+                record.ocr_unique_candidate_count == 1 &&
+                record.ocr_membership_count == 2 &&
+                record.ocr_source_envelope.left == 0 &&
+                record.ocr_source_envelope.top == 0 &&
+                record.ocr_source_envelope.right == 32 &&
+                record.ocr_source_envelope.bottom == 12;
         }
     }
-    if (!saw_admission || !saw_terminal) {
+    if (!saw_admission || !saw_singular_terminal || !saw_grouped_terminal) {
         fprintf(stderr, "OCR diagnostics were incomplete\n");
         goto fail;
     }
@@ -212,11 +315,14 @@ int main(int argc, char** argv)
     printf(" confidence=%.5f\n", region.confidence);
     api->ocr_result_release(result);
     result = NULL;
+    api->ocr_zone_scan_result_release(grouped_result);
+    grouped_result = NULL;
     return 0;
 
 fail:
     if (error != NULL) api->error_release(error);
     if (result != NULL) api->ocr_result_release(result);
+    if (grouped_result != NULL) api->ocr_zone_scan_result_release(grouped_result);
     if (batch != NULL) api->diagnostic_batch_release(batch);
     if (reader != NULL) api->diagnostic_reader_release(reader);
     if (frame != NULL) api->frame_release(frame);
