@@ -630,7 +630,7 @@ impl ControlledCore {
                 permission: None,
             },
             EngineOptions::new().with_diagnostics(
-                DiagnosticOptions::normal(64).expect("valid diagnostic capacity"),
+                DiagnosticOptions::normal(256).expect("valid diagnostic capacity"),
             ),
         )
         .expect("controlled engine");
