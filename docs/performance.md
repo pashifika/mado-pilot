@@ -853,6 +853,29 @@ game guarantees. Phase 3 default-OCR `G-013` is complete on both release
 targets. Watcher scheduling remains open; the later provider section records the
 independent CoreML rejection and explicit CUDA qualification.
 
+## Phase 4 change-detection correctness and cost boundary
+
+Proposed [ADR 0050](adr/0050-change-detection-default.md) resolves correctness
+before watcher timing. The frozen `G-005` matrix has nine transitions: six
+must-detect and three compatible unchanged rows. `exact-rgba-v1` produces zero
+false skips, admits six analyses, skips three, and inspects 72 pixels. Every
+predeclared changed-pixel threshold or fixed-grid candidate admits less work only
+by skipping at least one mandatory change and is rejected.
+
+The product detector is stateless and allocation-free per comparison. It reads
+already mapped RGBA8 rows, ignores non-pixel row padding, stops at the first
+difference, and fails safe to analysis across unsupported format, identity,
+epoch, geometry, region, transform, descriptor, ordering, byte-extent, or
+arithmetic incompatibility. The offline evaluator may allocate bounded report
+data because it is test/evidence support and is never called from capture or
+watcher runtime paths.
+
+This gate establishes no wall-clock, heap/RSS, native-capture, backend, or
+scheduler budget. Both hosted targets must reproduce the same target-neutral
+report, but hosted timing would not qualify a watcher workload. Exact-source
+replay/OpenCV watcher correctness and target-specific latency/resource ceilings
+belong to `phase-4-template-watch-query-qualification`.
+
 ## v0.3.1 bounded-detector candidate performance
 
 `crates/backend/onnx/benches/bounded-detector.rs` compares released native G-004

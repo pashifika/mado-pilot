@@ -1,0 +1,347 @@
+{
+  "schema": "mado-pilot-change-sequence-manifest-v1",
+  "fixture_set": "g-005-v1",
+  "license": "Apache-2.0",
+  "component_lengths": {
+    "frames": 16,
+    "sequences": 7,
+    "transitions": 9
+  },
+  "frames": [
+    {
+      "id": "no-change-0",
+      "path": "fixtures/change-detection/g-005/frames/no-change-0.rgba",
+      "width": 8,
+      "height": 8,
+      "row_stride": 32,
+      "byte_len": 256,
+      "sha256": "5260af2a28a3aec06313aa9dfe32a11a1bab6171c217c2b3b6d71df2571f4a2c",
+      "stream": 1,
+      "epoch": 1,
+      "sequence": 0,
+      "geometry_revision": 1,
+      "pixel_width": 8,
+      "pixel_height": 8
+    },
+    {
+      "id": "no-change-1",
+      "path": "fixtures/change-detection/g-005/frames/no-change-1.rgba",
+      "width": 8,
+      "height": 8,
+      "row_stride": 32,
+      "byte_len": 256,
+      "sha256": "5260af2a28a3aec06313aa9dfe32a11a1bab6171c217c2b3b6d71df2571f4a2c",
+      "stream": 1,
+      "epoch": 1,
+      "sequence": 1,
+      "geometry_revision": 1,
+      "pixel_width": 8,
+      "pixel_height": 8
+    },
+    {
+      "id": "outside-roi-0",
+      "path": "fixtures/change-detection/g-005/frames/outside-roi-0.rgba",
+      "width": 8,
+      "height": 8,
+      "row_stride": 32,
+      "byte_len": 256,
+      "sha256": "5260af2a28a3aec06313aa9dfe32a11a1bab6171c217c2b3b6d71df2571f4a2c",
+      "stream": 2,
+      "epoch": 1,
+      "sequence": 0,
+      "geometry_revision": 1,
+      "pixel_width": 8,
+      "pixel_height": 8
+    },
+    {
+      "id": "outside-roi-1",
+      "path": "fixtures/change-detection/g-005/frames/outside-roi-1.rgba",
+      "width": 8,
+      "height": 8,
+      "row_stride": 32,
+      "byte_len": 256,
+      "sha256": "b172d8187977558faa407958a903b2c600ad885aa82e271f3ddf33f6a07ceb32",
+      "stream": 2,
+      "epoch": 1,
+      "sequence": 1,
+      "geometry_revision": 1,
+      "pixel_width": 8,
+      "pixel_height": 8
+    },
+    {
+      "id": "low-area-0",
+      "path": "fixtures/change-detection/g-005/frames/low-area-0.rgba",
+      "width": 8,
+      "height": 8,
+      "row_stride": 32,
+      "byte_len": 256,
+      "sha256": "5260af2a28a3aec06313aa9dfe32a11a1bab6171c217c2b3b6d71df2571f4a2c",
+      "stream": 3,
+      "epoch": 1,
+      "sequence": 0,
+      "geometry_revision": 1,
+      "pixel_width": 8,
+      "pixel_height": 8
+    },
+    {
+      "id": "low-area-1",
+      "path": "fixtures/change-detection/g-005/frames/low-area-1.rgba",
+      "width": 8,
+      "height": 8,
+      "row_stride": 32,
+      "byte_len": 256,
+      "sha256": "d8d4dce5762ed57817a5a7ce58ac1d58dbd5139d1e7d3c045a10a93d8ff0fdb9",
+      "stream": 3,
+      "epoch": 1,
+      "sequence": 1,
+      "geometry_revision": 1,
+      "pixel_width": 8,
+      "pixel_height": 8
+    },
+    {
+      "id": "transient-0",
+      "path": "fixtures/change-detection/g-005/frames/transient-0.rgba",
+      "width": 8,
+      "height": 8,
+      "row_stride": 32,
+      "byte_len": 256,
+      "sha256": "5260af2a28a3aec06313aa9dfe32a11a1bab6171c217c2b3b6d71df2571f4a2c",
+      "stream": 4,
+      "epoch": 1,
+      "sequence": 0,
+      "geometry_revision": 1,
+      "pixel_width": 8,
+      "pixel_height": 8
+    },
+    {
+      "id": "transient-1",
+      "path": "fixtures/change-detection/g-005/frames/transient-1.rgba",
+      "width": 8,
+      "height": 8,
+      "row_stride": 32,
+      "byte_len": 256,
+      "sha256": "263e762598e46d7ad2f651e48f695fb70e2839634965281afaf2e0efb7a8d10b",
+      "stream": 4,
+      "epoch": 1,
+      "sequence": 1,
+      "geometry_revision": 1,
+      "pixel_width": 8,
+      "pixel_height": 8
+    },
+    {
+      "id": "transient-2",
+      "path": "fixtures/change-detection/g-005/frames/transient-2.rgba",
+      "width": 8,
+      "height": 8,
+      "row_stride": 32,
+      "byte_len": 256,
+      "sha256": "5260af2a28a3aec06313aa9dfe32a11a1bab6171c217c2b3b6d71df2571f4a2c",
+      "stream": 4,
+      "epoch": 1,
+      "sequence": 2,
+      "geometry_revision": 1,
+      "pixel_width": 8,
+      "pixel_height": 8
+    },
+    {
+      "id": "persistent-0",
+      "path": "fixtures/change-detection/g-005/frames/persistent-0.rgba",
+      "width": 8,
+      "height": 8,
+      "row_stride": 32,
+      "byte_len": 256,
+      "sha256": "5260af2a28a3aec06313aa9dfe32a11a1bab6171c217c2b3b6d71df2571f4a2c",
+      "stream": 5,
+      "epoch": 1,
+      "sequence": 0,
+      "geometry_revision": 1,
+      "pixel_width": 8,
+      "pixel_height": 8
+    },
+    {
+      "id": "persistent-1",
+      "path": "fixtures/change-detection/g-005/frames/persistent-1.rgba",
+      "width": 8,
+      "height": 8,
+      "row_stride": 32,
+      "byte_len": 256,
+      "sha256": "263e762598e46d7ad2f651e48f695fb70e2839634965281afaf2e0efb7a8d10b",
+      "stream": 5,
+      "epoch": 1,
+      "sequence": 1,
+      "geometry_revision": 1,
+      "pixel_width": 8,
+      "pixel_height": 8
+    },
+    {
+      "id": "persistent-2",
+      "path": "fixtures/change-detection/g-005/frames/persistent-2.rgba",
+      "width": 8,
+      "height": 8,
+      "row_stride": 32,
+      "byte_len": 256,
+      "sha256": "263e762598e46d7ad2f651e48f695fb70e2839634965281afaf2e0efb7a8d10b",
+      "stream": 5,
+      "epoch": 1,
+      "sequence": 3,
+      "geometry_revision": 1,
+      "pixel_width": 8,
+      "pixel_height": 8
+    },
+    {
+      "id": "geometry-0",
+      "path": "fixtures/change-detection/g-005/frames/geometry-0.rgba",
+      "width": 8,
+      "height": 8,
+      "row_stride": 32,
+      "byte_len": 256,
+      "sha256": "5260af2a28a3aec06313aa9dfe32a11a1bab6171c217c2b3b6d71df2571f4a2c",
+      "stream": 6,
+      "epoch": 1,
+      "sequence": 0,
+      "geometry_revision": 1,
+      "pixel_width": 8,
+      "pixel_height": 8
+    },
+    {
+      "id": "geometry-1",
+      "path": "fixtures/change-detection/g-005/frames/geometry-1.rgba",
+      "width": 10,
+      "height": 8,
+      "row_stride": 40,
+      "byte_len": 320,
+      "sha256": "54ca541689cfa201dcd51147e6144913e381a5a3a640df245e522c874d66d9de",
+      "stream": 6,
+      "epoch": 1,
+      "sequence": 1,
+      "geometry_revision": 2,
+      "pixel_width": 10,
+      "pixel_height": 8
+    },
+    {
+      "id": "discontinuity-0",
+      "path": "fixtures/change-detection/g-005/frames/discontinuity-0.rgba",
+      "width": 8,
+      "height": 8,
+      "row_stride": 32,
+      "byte_len": 256,
+      "sha256": "5260af2a28a3aec06313aa9dfe32a11a1bab6171c217c2b3b6d71df2571f4a2c",
+      "stream": 7,
+      "epoch": 1,
+      "sequence": 0,
+      "geometry_revision": 1,
+      "pixel_width": 8,
+      "pixel_height": 8
+    },
+    {
+      "id": "discontinuity-1",
+      "path": "fixtures/change-detection/g-005/frames/discontinuity-1.rgba",
+      "width": 8,
+      "height": 8,
+      "row_stride": 32,
+      "byte_len": 256,
+      "sha256": "5260af2a28a3aec06313aa9dfe32a11a1bab6171c217c2b3b6d71df2571f4a2c",
+      "stream": 7,
+      "epoch": 2,
+      "sequence": 0,
+      "geometry_revision": 1,
+      "pixel_width": 8,
+      "pixel_height": 8
+    }
+  ],
+  "sequences": [
+    {
+      "id": "no-change",
+      "frame_ids": [
+        "no-change-0",
+        "no-change-1"
+      ],
+      "roi": {
+        "x": 2,
+        "y": 2,
+        "width": 4,
+        "height": 4
+      }
+    },
+    {
+      "id": "outside-roi",
+      "frame_ids": [
+        "outside-roi-0",
+        "outside-roi-1"
+      ],
+      "roi": {
+        "x": 2,
+        "y": 2,
+        "width": 4,
+        "height": 4
+      }
+    },
+    {
+      "id": "low-area",
+      "frame_ids": [
+        "low-area-0",
+        "low-area-1"
+      ],
+      "roi": {
+        "x": 2,
+        "y": 2,
+        "width": 4,
+        "height": 4
+      }
+    },
+    {
+      "id": "transient-appearance",
+      "frame_ids": [
+        "transient-0",
+        "transient-1",
+        "transient-2"
+      ],
+      "roi": {
+        "x": 2,
+        "y": 2,
+        "width": 4,
+        "height": 4
+      }
+    },
+    {
+      "id": "persistent-appearance",
+      "frame_ids": [
+        "persistent-0",
+        "persistent-1",
+        "persistent-2"
+      ],
+      "roi": {
+        "x": 2,
+        "y": 2,
+        "width": 4,
+        "height": 4
+      }
+    },
+    {
+      "id": "geometry-change",
+      "frame_ids": [
+        "geometry-0",
+        "geometry-1"
+      ],
+      "roi": {
+        "x": 2,
+        "y": 2,
+        "width": 4,
+        "height": 4
+      }
+    },
+    {
+      "id": "stream-discontinuity",
+      "frame_ids": [
+        "discontinuity-0",
+        "discontinuity-1"
+      ],
+      "roi": {
+        "x": 2,
+        "y": 2,
+        "width": 4,
+        "height": 4
+      }
+    }
+  ]
+}

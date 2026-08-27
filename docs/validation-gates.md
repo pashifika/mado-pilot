@@ -44,7 +44,7 @@ registry is itself a Phase 0 deliverable.
 | [`G-002`](#g-002) | Windows capture producer-pool and frame-detachment strategy | Before Phase 2 implementation | Windows capture ownership | Resolved by [ADR 0013](adr/0013-windows-capture-frame-detachment.md) |
 | [`G-003`](#g-003) | macOS shim language | Before Phase 2 implementation | macOS shim implementation | Resolved by [ADR 0012](adr/0012-macos-shim-language-and-containment.md) |
 | [`G-004`](#g-004) | Default OCR model profile | Before Phase 3 implementation | Default OCR profile identity | Resolved by [ADR 0033](adr/0033-default-ocr-model-profile.md) |
-| [`G-005`](#g-005) | Default change-detection algorithm and threshold | Before Phase 4 implementation | Default watcher policy | Open |
+| [`G-005`](#g-005) | Default change-detection algorithm and threshold | Before Phase 4 watcher implementation | Default watcher policy | Pending identical hosted reports and independent review under [ADR 0050](adr/0050-change-detection-default.md) |
 | [`G-006`](#g-006) | Acceleration candidates and provider ordering | Before Phase 5 implementation | Acceleration defaults | Open per future accelerator; v0.3.1 OCR resolved by ADRs 0046–0048 |
 | [`G-007`](#g-007) | Native dependency bundling profiles | Before Phase 5 implementation | Release packaging | Open |
 | [`G-008`](#g-008) | Static-library feasibility | Before Phase 5 exit | Static artifact claim only | Open |
@@ -233,20 +233,36 @@ approved Windows desktop row.
 
 ## G-005
 
-**Unresolved decision.** The default change-detection algorithm and its threshold
-for watcher scheduling.
+**Candidate decision.** [ADR 0050](adr/0050-change-detection-default.md)
+proposes `exact-rgba-v1` for compatible already-mapped RGBA8 regions and keeps
+`analysis-always-v1` as the explicit fail-safe. Evaluation-only changed-pixel
+thresholds and fixed-grid sampling are not runtime options.
 
-**Required evidence.** A false-skip evaluation over recorded frame sequences,
-showing how often a real change would be skipped at the chosen threshold.
+**Required evidence.** Repository-owned Apache-2.0 sequences freeze nine ordered
+transitions: no change, outside-ROI change, one-pixel must-detect change,
+transient and persistent appearance, disappearance, repeated pixels, geometry
+change, and stream discontinuity. The pre-observation contract fixes seven
+candidate/threshold rows, false-skip and admitted-work metrics, comparison order,
+privacy, and no-post-observation rewrite. The canonical report selects exact RGBA
+with zero false skips, six admitted analyses, and three compatible skips. Every
+lower-admitted-work candidate is rejected by at least one false skip.
 
-**Due.** Before Phase 4 implementation.
+**Due.** Before Phase 4 watcher implementation.
 
-**Blocks.** The default watcher policy.
+**Blocks.** The default watcher policy, not the offline evaluator or closed
+platform-neutral descriptor seam.
 
-**Status.** Open.
+**Status.** Pending. Local deterministic, privacy, descriptor-parity, and drift
+gates pass. The protected Windows `x86_64-pc-windows-msvc` and macOS
+`aarch64-apple-darwin` jobs must reproduce
+`docs/evidence/g-005/accepted-report.json` byte for byte on one exact topic
+revision, followed by independent review, before ADR 0050 becomes Accepted and
+the dependent watcher Change is unblocked.
 
-**Resolution.** An ADR recording the evaluation and the chosen default, plus the
-recorded sequences kept as regression fixtures.
+**Resolution.** Accept ADR 0050 only after both named hosted rows pass without
+retry, mismatch, oracle change, or borrowed target result. Any false skip or
+fixture/report/policy drift restores analysis-always until a new additive
+fixture set, full comparison, and reviewed ADR pass.
 
 ## G-006
 
