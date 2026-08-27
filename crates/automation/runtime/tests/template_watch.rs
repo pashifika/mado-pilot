@@ -789,7 +789,7 @@ fn separately_prepared_instances_with_one_public_id_do_not_coalesce() {
 }
 
 #[test]
-fn equal_effective_regions_coalesce_but_unequal_regions_do_not() {
+fn equal_effective_regions_coalesce() {
     let harness = Harness::new(
         ControlledMatcher::new(mado_pilot_runtime::PixelFormat::Rgba8)
             .with_candidates(vec![Candidate::new(1, 1, 0.99)]),
@@ -801,6 +801,41 @@ fn equal_effective_regions_coalesce_but_unequal_regions_do_not() {
         ClipPolicy::Reject,
     )
     .expect("representable full-frame ROI");
+    let implicit = session
+        .start_template_watch(TemplateWatchRequest::new(
+            template.clone(),
+            options,
+            OperationContext::new(),
+        ))
+        .expect("started implicit full-frame query");
+    let explicit = session
+        .start_template_watch(
+            TemplateWatchRequest::new(template, options, OperationContext::new())
+                .with_region(full_pixels),
+        )
+        .expect("started explicit full-frame query");
+    harness
+        .capture
+        .publish(0x40, Continuity::Continuous)
+        .expect("published frame");
+
+    implicit
+        .wait(&wait_context())
+        .expect("implicit query completed");
+    explicit
+        .wait(&wait_context())
+        .expect("explicit query completed");
+    assert_eq!(harness.matcher.find_count(), 1);
+}
+
+#[test]
+fn unequal_effective_regions_do_not_coalesce() {
+    let harness = Harness::new(
+        ControlledMatcher::new(mado_pilot_runtime::PixelFormat::Rgba8)
+            .with_candidates(vec![Candidate::new(1, 1, 0.99)]),
+    );
+    let session = open_unpublished(&harness);
+    let (template, options) = request(&harness);
     let half_pixels = RegionSelection::pixels(
         PixelRect::new(0, 0, 16, 24).expect("valid half-frame ROI"),
         ClipPolicy::Reject,
@@ -813,30 +848,19 @@ fn equal_effective_regions_coalesce_but_unequal_regions_do_not() {
             OperationContext::new(),
         ))
         .expect("started full-frame query");
-    let equivalent = session
-        .start_template_watch(
-            TemplateWatchRequest::new(template.clone(), options, OperationContext::new())
-                .with_region(full_pixels),
-        )
-        .expect("started equivalent-region query");
-    let unequal = session
+    let half = session
         .start_template_watch(
             TemplateWatchRequest::new(template, options, OperationContext::new())
                 .with_region(half_pixels),
         )
-        .expect("started unequal-region query");
+        .expect("started half-frame query");
     harness
         .capture
         .publish(0x40, Continuity::Continuous)
         .expect("published frame");
 
     full.wait(&wait_context()).expect("full query completed");
-    equivalent
-        .wait(&wait_context())
-        .expect("equivalent query completed");
-    unequal
-        .wait(&wait_context())
-        .expect("unequal query completed");
+    half.wait(&wait_context()).expect("half query completed");
     assert_eq!(harness.matcher.find_count(), 2);
 }
 
@@ -931,19 +955,57 @@ fn two_sessions_reach_backend_admission_with_bounded_fair_progress() {
 }
 
 #[test]
-fn four_queries_across_two_sessions_advance_in_bounded_rounds() {
-    let gates: Vec<_> = (0..4).map(|_| Arc::new(CompletionGate::new())).collect();
-    let calls = gates.iter().enumerate().map(|(index, gate)| {
+fn four_eligible_queries_across_two_sessions_advance_in_bounded_rounds() {
+    let blocker_gates: Vec<_> = (0..2).map(|_| Arc::new(CompletionGate::new())).collect();
+    let fairness_gates: Vec<_> = (0..4).map(|_| Arc::new(CompletionGate::new())).collect();
+    let blocker_calls = blocker_gates.iter().enumerate().map(|(index, gate)| {
         ScriptedMatchCall::new(vec![Candidate::new(
-            i32::try_from(index + 1).expect("small candidate coordinate"),
+            i32::try_from(index + 10).expect("small blocker coordinate"),
+            1,
+            0.99,
+        )])
+        .with_completion_gate(Arc::clone(gate))
+    });
+    let fairness_calls = fairness_gates.iter().enumerate().map(|(index, gate)| {
+        ScriptedMatchCall::new(vec![Candidate::new(
+            i32::try_from(index + 1).expect("small fairness coordinate"),
             1,
             0.99,
         )])
         .with_completion_gate(Arc::clone(gate))
     });
     let harness = Harness::new(
-        ControlledMatcher::new(mado_pilot_runtime::PixelFormat::Rgba8).with_calls(calls),
+        ControlledMatcher::new(mado_pilot_runtime::PixelFormat::Rgba8)
+            .with_calls(blocker_calls.chain(fairness_calls)),
     );
+
+    let blocker_session = open_unpublished(&harness);
+    let blockers: Vec<_> = (0..2)
+        .map(|_| {
+            let (template, options) = request(&harness);
+            blocker_session
+                .start_template_watch(TemplateWatchRequest::new(
+                    template,
+                    options,
+                    OperationContext::new(),
+                ))
+                .expect("started blocker query")
+        })
+        .collect();
+    harness
+        .capture
+        .publish(0x30, Continuity::Continuous)
+        .expect("published blocker frame");
+    for gate in &blocker_gates {
+        assert!(gate.wait_until_entered(Duration::from_secs(2)));
+    }
+    for query in &blockers {
+        assert!(matches!(
+            query.cancel().as_ref(),
+            TemplateTerminalOutcome::Cancelled
+        ));
+    }
+
     let first_session = open_unpublished(&harness);
     let second_session = open_unpublished(&harness);
     let prepared: Vec<_> = (0..4).map(|_| request(&harness)).collect();
@@ -974,30 +1036,56 @@ fn four_queries_across_two_sessions_advance_in_bounded_rounds() {
     harness
         .capture
         .publish(0x40, Continuity::Continuous)
-        .expect("published to both sessions");
-
-    assert!(gates[0].wait_until_entered(Duration::from_secs(2)));
-    assert!(gates[1].wait_until_entered(Duration::from_secs(2)));
-    assert_eq!(harness.matcher.find_count(), 2);
-    gates[0].release();
-    assert!(gates[2].wait_until_entered(Duration::from_secs(2)));
-    assert_eq!(harness.matcher.find_count(), 3);
-    gates[1].release();
-    assert!(gates[3].wait_until_entered(Duration::from_secs(2)));
-    assert_eq!(harness.matcher.find_count(), 4);
-    gates[2].release();
-    gates[3].release();
-
+        .expect("published to both fairness sessions");
     for query in first_queries.iter().chain(&second_queries) {
-        assert!(matches!(
-            query
-                .wait(&wait_context())
-                .expect("query completed")
-                .as_ref(),
-            TemplateTerminalOutcome::Matched(_)
-        ));
+        let _ = wait_progress(query, |progress| progress.pending_count() == 1);
     }
-    assert_eq!(harness.matcher.completion_count(), 4);
+
+    for gate in &blocker_gates {
+        gate.release();
+    }
+    assert!(fairness_gates[0].wait_until_entered(Duration::from_secs(2)));
+    assert!(fairness_gates[1].wait_until_entered(Duration::from_secs(2)));
+    assert_eq!(harness.matcher.find_count(), 4);
+    fairness_gates[0].release();
+    assert!(fairness_gates[2].wait_until_entered(Duration::from_secs(2)));
+    assert_eq!(harness.matcher.find_count(), 5);
+    fairness_gates[1].release();
+    assert!(fairness_gates[3].wait_until_entered(Duration::from_secs(2)));
+    assert_eq!(harness.matcher.find_count(), 6);
+    fairness_gates[2].release();
+    fairness_gates[3].release();
+
+    for gate in &blocker_gates {
+        assert!(gate.wait_until_completed(Duration::from_secs(2)));
+    }
+    let mut origins = Vec::with_capacity(4);
+    for query in first_queries.iter().chain(&second_queries) {
+        let outcome = query.wait(&wait_context()).expect("query completed");
+        let TemplateTerminalOutcome::Matched(result) = outcome.as_ref() else {
+            panic!("expected matched fairness outcome, got {outcome:?}");
+        };
+        origins.push(result.result().matches()[0].bounds().left());
+    }
+    assert_eq!(
+        origins[..2]
+            .iter()
+            .filter(|left| matches!(**left, 1 | 2))
+            .count(),
+        1,
+        "the first backend wave must contain one first-session query"
+    );
+    assert_eq!(
+        origins[2..]
+            .iter()
+            .filter(|left| matches!(**left, 1 | 2))
+            .count(),
+        1,
+        "the first backend wave must contain one second-session query"
+    );
+    origins.sort_unstable();
+    assert_eq!(origins, [1, 2, 3, 4]);
+    assert_eq!(harness.matcher.completion_count(), 6);
 }
 
 #[test]

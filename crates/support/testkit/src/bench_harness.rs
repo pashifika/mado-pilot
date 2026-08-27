@@ -1865,6 +1865,33 @@ impl LatencyBudget {
     }
 }
 
+/// One exact mapped-byte gate for a named workload.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct MappedBytesBudget {
+    workload: &'static str,
+    bytes: u64,
+}
+
+impl MappedBytesBudget {
+    /// Builds one exact mapped-byte gate.
+    #[must_use]
+    pub const fn new(workload: &'static str, bytes: u64) -> Self {
+        Self { workload, bytes }
+    }
+
+    /// Returns the workload name this gate applies to.
+    #[must_use]
+    pub const fn workload(self) -> &'static str {
+        self.workload
+    }
+
+    /// Returns the exact mapped-byte value.
+    #[must_use]
+    pub const fn bytes(self) -> u64 {
+        self.bytes
+    }
+}
+
 /// Phase 2.2 controlled-capture latency ceilings frozen before qualification.
 pub const PHASE2_2_CAPTURE_LATENCY_BUDGETS: [LatencyBudget; 2] = [
     LatencyBudget::new(
@@ -2747,6 +2774,21 @@ pub const PHASE4_APPLE_TEMPLATE_WATCH_RESIDENT_LIMIT_BYTES: u64 = 69_206_016;
 /// Phase 4 Windows deterministic template-watch process peak-RSS ceiling.
 pub const PHASE4_WINDOWS_TEMPLATE_WATCH_RESIDENT_LIMIT_BYTES: u64 = 19_922_944;
 
+/// Phase 4 deterministic template-watch exact mapped-byte gates.
+pub const PHASE4_TEMPLATE_WATCH_MAPPED_BYTES_BUDGETS: [MappedBytesBudget; 11] = [
+    MappedBytesBudget::new("engine_session_startup", 0),
+    MappedBytesBudget::new("current_match", 24_576),
+    MappedBytesBudget::new("appearance_stable", 24_576),
+    MappedBytesBudget::new("disappearance_reset", 24_576),
+    MappedBytesBudget::new("roi_match", 3_072),
+    MappedBytesBudget::new("static_duration", 24_576),
+    MappedBytesBudget::new("coalesced_pair", 3_072),
+    MappedBytesBudget::new("saturation_latest_wins", 3_072),
+    MappedBytesBudget::new("two_session_fairness", 3_072),
+    MappedBytesBudget::new("cancel_in_flight", 3_072),
+    MappedBytesBudget::new("close_and_retain", 3_072),
+];
+
 /// Enforces frozen p50, p95, and per-scenario latency ceilings.
 ///
 /// A missing or duplicated workload is a harness error rather than a skipped
@@ -2807,6 +2849,44 @@ pub fn enforce_latency_budgets(workloads: &[Workload], budgets: &[LatencyBudget]
             budget.workload,
             hard_max.as_secs_f64() * 1_000.0,
             budget.hard_max.as_secs_f64() * 1_000.0
+        );
+    }
+}
+
+/// Enforces exact per-workload mapped-byte gates.
+///
+/// # Panics
+///
+/// Panics when a gate is duplicated, names no unique workload, or differs from
+/// the retained measurement.
+pub fn enforce_mapped_bytes(workloads: &[Workload], budgets: &[MappedBytesBudget]) {
+    for (index, budget) in budgets.iter().enumerate() {
+        assert!(
+            budgets[..index]
+                .iter()
+                .all(|earlier| earlier.workload != budget.workload),
+            "mapped-byte budget for {} is duplicated",
+            budget.workload
+        );
+        let mut matching = workloads
+            .iter()
+            .filter(|workload| workload.name() == budget.workload);
+        let workload = matching.next().unwrap_or_else(|| {
+            panic!(
+                "mapped-byte budget names unmeasured workload {}",
+                budget.workload
+            )
+        });
+        assert!(
+            matching.next().is_none(),
+            "measured workload {} is duplicated",
+            budget.workload
+        );
+        assert_eq!(
+            workload.mapped_bytes_per_result(),
+            budget.bytes,
+            "{} mapped bytes drifted",
+            budget.workload
         );
     }
 }

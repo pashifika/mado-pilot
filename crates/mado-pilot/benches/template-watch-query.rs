@@ -10,12 +10,14 @@ use std::time::{Duration, Instant};
 
 use mado_pilot::replay::{ReplayFrame, ReplaySource, ReplayTarget};
 use mado_pilot::{
-    ClipPolicy, ContentDigest, Continuity, FrameDescriptor, MatchOptions, MonotonicInstant,
-    OpenRequest, OperationContext, PackageSource, PixelFormat, PixelRect, PreparedTemplate,
-    RegionSelection, Session, TemplateOverload, TemplateQuery, TemplateQueryOutcome,
-    TemplateQueryProgress, TemplateStability, TemplateTerminalOutcome, TemplateWatchRequest,
-    TemplateWorkDisposition,
+    ClipPolicy, ContentDigest, Continuity, DiagnosticDrain, DiagnosticOptions, DiagnosticPayload,
+    DiagnosticReader, FrameDescriptor, MatchOptions, MonotonicInstant, OpenRequest,
+    OperationContext, PackageSource, PixelFormat, PixelRect, PreparedTemplate, RegionSelection,
+    Session, TemplateOverload, TemplateQuery, TemplateQueryOutcome, TemplateQueryProgress,
+    TemplateStability, TemplateTerminalOutcome, TemplateWatchDiagnosticOutcome,
+    TemplateWatchRequest, TemplateWorkDisposition,
 };
+use mado_pilot_adapter_replay::ReplayProvider;
 use mado_pilot_backend_opencv::OpenCvBackend;
 use mado_pilot_runtime::{
     CaptureProvider, Engine, EngineWiring, IdentityIssuer, Matcher, PackageLoader,
@@ -25,14 +27,13 @@ use mado_pilot_testkit::bench_harness::{
 };
 use mado_pilot_testkit::{
     Candidate, CompletionGate, ControlledCapture, ControlledMatcher, ManualClock, MatchBackend,
-    ScriptedMatchCall, bench_harness, match_fixtures,
+    ObservedMatcher, ScriptedMatchCall, bench_harness, match_fixtures,
 };
-
-#[cfg(windows)]
+#[cfg(all(target_arch = "x86_64", target_os = "windows", target_env = "msvc"))]
 use std::mem::size_of;
-#[cfg(windows)]
+#[cfg(all(target_arch = "x86_64", target_os = "windows", target_env = "msvc"))]
 use windows::Win32::System::ProcessStatus::{GetProcessMemoryInfo, PROCESS_MEMORY_COUNTERS};
-#[cfg(windows)]
+#[cfg(all(target_arch = "x86_64", target_os = "windows", target_env = "msvc"))]
 use windows::Win32::System::Threading::GetCurrentProcess;
 
 #[global_allocator]
@@ -59,6 +60,13 @@ fn main() {
     let (hardware, os_version) = Profile::host(&arguments);
 
     let workloads = [
+        measure(
+            "engine_session_startup",
+            "one fixed replay source constructs the OpenCV engine and opens then closes one session",
+            plan,
+            || (),
+            engine_session_startup,
+        ),
         measure(
             "current_match",
             "one current replay frame produces the exact planted match set and source stamp",
@@ -156,6 +164,16 @@ fn main() {
         ),
     ];
 
+    let opencv_runtime_version = OpenCvBackend::new()
+        .expect("OpenCV development installation")
+        .descriptor()
+        .version()
+        .to_owned();
+    assert_eq!(
+        opencv_runtime_version, "4.14.0",
+        "qualification requires the frozen native OpenCV runtime"
+    );
+
     if qualification {
         let source = required_identity(&arguments, "--source-revision", 40);
         let tree = required_identity(&arguments, "--source-tree", 40);
@@ -182,7 +200,7 @@ fn main() {
                 correctness_oracle: "every retained sample checks exact source, match, state, observed work/lifecycle outcomes, ownership, and producer progress",
                 queue_policy: "fixed scheduler descriptor: 256 engine queries, 16 active sessions, 64 queries per session, two analyses, one latest pending frame per query",
                 notes: Some(format!(
-                    "source commit {source}; tree {tree}; process {process}; OpenCV 4.14.0; controlled-matcher rows are correctness/resource evidence only"
+                    "source commit {source}; tree {tree}; process {process}; OpenCV {opencv_runtime_version}; controlled-matcher rows are correctness/resource evidence only; startup latency has no numeric ceiling"
                 )),
             },
             plan,
@@ -193,6 +211,10 @@ fn main() {
     }
 
     bench_harness::enforce_hard_budgets(&workloads);
+    bench_harness::enforce_mapped_bytes(
+        &workloads,
+        &bench_harness::PHASE4_TEMPLATE_WATCH_MAPPED_BYTES_BUDGETS,
+    );
     enforce_qualification_oracles(&workloads, plan);
     if arguments
         .iter()
@@ -202,9 +224,44 @@ fn main() {
     }
 }
 
+fn engine_session_startup(_: &()) -> Sample {
+    let allocation_baseline = bench_harness::live_allocated_bytes();
+    let started = Instant::now();
+    let engine = mado_pilot::replay_engine(replay_source(vec![match_fixtures::scene_pixels(
+        SOURCE_FORMAT,
+    )]))
+    .expect("constructed OpenCV replay engine");
+    let operation = bounded_operation();
+    let targets = engine
+        .discover(&operation)
+        .expect("discovered startup target");
+    let target = targets[0].id();
+    let session = engine
+        .open(target, &OpenRequest::new(), &operation)
+        .expect("opened startup session");
+    let elapsed = started.elapsed();
+    let opened_correct = session.target() == target && targets.len() == 1;
+    session.close(&operation).expect("closed startup session");
+    drop(session);
+    drop(targets);
+    drop(engine);
+    let cleanup_correct = wait_for_live_allocations(allocation_baseline.saturating_add(
+        usize::try_from(bench_harness::GROWTH_LIMIT_BYTES).expect("positive growth limit"),
+    ));
+
+    finish_sample(
+        elapsed,
+        opened_correct && cleanup_correct,
+        0,
+        Some(QueryWorkMetrics::default()),
+    )
+}
+
 #[derive(Debug)]
 struct ReplayFixture {
     engine: Engine,
+    diagnostics: DiagnosticReader,
+    observed: Arc<ObservedMatcher>,
     target: mado_pilot::TargetId,
     template: PreparedTemplate,
     stability: TemplateStability,
@@ -231,7 +288,30 @@ impl ReplayFixture {
     ) -> Self {
         let publications = u64::try_from(frames.len()).expect("small replay sequence");
         let source = replay_source(frames);
-        let engine = mado_pilot::replay_engine(source).expect("OpenCV replay engine");
+        let issuer = Arc::new(IdentityIssuer::new());
+        let engine_id = issuer.engine();
+        let capture = ReplayProvider::new(issuer, source).expect("replay provider");
+        let observed = Arc::new(ObservedMatcher::new(Arc::new(
+            OpenCvBackend::new().expect("OpenCV replay backend"),
+        )));
+        let engine = Engine::new_with_options(
+            EngineWiring {
+                engine: engine_id,
+                capture: Arc::new(capture),
+                matcher: Matcher::new(Arc::clone(&observed) as Arc<dyn MatchBackend>),
+                loader: PackageLoader::new(),
+                ocr: None,
+                input: None,
+                permission: None,
+            },
+            mado_pilot_runtime::EngineOptions::new().with_diagnostics(
+                DiagnosticOptions::normal(64).expect("bounded qualification diagnostics"),
+            ),
+        )
+        .expect("observed OpenCV replay engine");
+        let diagnostics = engine
+            .take_diagnostic_reader()
+            .expect("normal diagnostics enabled");
         let operation = OperationContext::new();
         let target = engine.discover(&operation).expect("discovered")[0].id();
         let package = engine
@@ -242,6 +322,8 @@ impl ReplayFixture {
             .expect("prepared template");
         Self {
             engine,
+            diagnostics,
+            observed,
             target,
             template,
             stability,
@@ -273,6 +355,8 @@ fn replay_watch(fixture: &ReplayFixture) -> Sample {
         request = request.with_region(region);
     }
 
+    let backend_runs_before = fixture.observed.find_count();
+    let backend_completions_before = fixture.observed.completion_count();
     let started = Instant::now();
     let query = session
         .start_template_watch(request)
@@ -292,22 +376,46 @@ fn replay_watch(fixture: &ReplayFixture) -> Sample {
                 == fixture.region.map_or_else(full_scene_rect, |_| roi_rect())
             && exact_origins(result.result(), fixture.expected_origins)
     });
-    let terminal_matches = u64::from(matched.is_some());
-    let metrics = Some(QueryWorkMetrics {
-        backend_runs: fixture
-            .expected_backend_runs
-            .saturating_mul(terminal_matches),
-        query_completions: terminal_matches,
-        producer_publications: fixture.publications,
-        admitted: fixture
-            .expected_backend_runs
-            .saturating_mul(terminal_matches),
-        completed: fixture
-            .expected_backend_runs
-            .saturating_mul(terminal_matches),
-        ..QueryWorkMetrics::default()
+    let result_mapped_bytes = matched.and_then(|result| mapped_bytes(result.result().searched()));
+    let observed_mapped_bytes =
+        u64::try_from(fixture.observed.consistent_mapped_bytes().unwrap_or(0))
+            .expect("mapped bytes fit");
+    let observed_backend_runs = u64::try_from(
+        fixture
+            .observed
+            .find_count()
+            .checked_sub(backend_runs_before)
+            .expect("backend run counter is monotonic"),
+    )
+    .expect("backend count fits");
+    let observed_backend_completions = u64::try_from(
+        fixture
+            .observed
+            .completion_count()
+            .checked_sub(backend_completions_before)
+            .expect("backend completion counter is monotonic"),
+    )
+    .expect("backend count fits");
+    let metrics = terminal_query_metrics(&fixture.diagnostics, &query, fixture.publications);
+    let work_correct = metrics.is_some_and(|work| {
+        observed_backend_runs == fixture.expected_backend_runs
+            && observed_backend_completions == fixture.expected_backend_runs
+            && work.backend_runs == observed_backend_runs
+            && work.query_completions == 1
+            && work.query_failures == 0
+            && work.producer_publications == fixture.publications
+            && work.admitted == observed_backend_runs
+            && work.skipped_change == 0
+            && work.deferred_rate == 0
+            && work.coalesced == 0
+            && work.superseded == 0
+            && work.rejected == 0
+            && work.queue_expired == 0
+            && work.completed == observed_backend_completions
+            && work.failed == 0
     });
-    let work_correct = terminal_matches == 1;
+    let mapped_correct = result_mapped_bytes == Some(fixture.mapped_bytes)
+        && observed_mapped_bytes == fixture.mapped_bytes;
     session.close(&operation).expect("closed replay session");
     drop(outcome);
     drop(query);
@@ -318,8 +426,8 @@ fn replay_watch(fixture: &ReplayFixture) -> Sample {
 
     finish_sample(
         elapsed,
-        result_correct && work_correct && cleanup_correct,
-        fixture.mapped_bytes,
+        result_correct && work_correct && mapped_correct && cleanup_correct,
+        observed_mapped_bytes,
         metrics,
     )
 }
@@ -327,6 +435,8 @@ fn replay_watch(fixture: &ReplayFixture) -> Sample {
 #[derive(Debug)]
 struct OpenCvControlledFixture {
     core: ControlledCore,
+    diagnostics: DiagnosticReader,
+    observed: Arc<ObservedMatcher>,
     template: PreparedTemplate,
     options: MatchOptions,
     scene: Vec<u8>,
@@ -335,8 +445,11 @@ struct OpenCvControlledFixture {
 
 impl OpenCvControlledFixture {
     fn new() -> Self {
-        let core = ControlledCore::new(
-            Arc::new(OpenCvBackend::new().expect("OpenCV 4 development installation")),
+        let observed = Arc::new(ObservedMatcher::new(Arc::new(
+            OpenCvBackend::new().expect("OpenCV 4 development installation"),
+        )));
+        let (core, diagnostics) = ControlledCore::new_with_diagnostics(
+            Arc::clone(&observed) as Arc<dyn MatchBackend>,
             match_fixtures::SCENE,
         );
         let operation = OperationContext::new();
@@ -347,6 +460,8 @@ impl OpenCvControlledFixture {
         let options = MatchOptions::from_defaults(template.defaults());
         Self {
             core,
+            diagnostics,
+            observed,
             template,
             options,
             scene: match_fixtures::scene_pixels(SOURCE_FORMAT),
@@ -408,30 +523,22 @@ fn appearance_stable(_: &()) -> Sample {
             TemplateTerminalOutcome::Matched(result)
                 if result.frame().stamp().sequence().value() == 2
                     && result.confirmed_observations() == 2
+                    && result.result().searched() == full_scene_rect()
                     && exact_origins(result.result(), &FULL_ORIGINS)
         );
-    let terminal_matches = u64::from(matches!(
-        outcome.as_ref(),
-        TemplateTerminalOutcome::Matched(_)
-    ));
-    let prior = first_presence.work();
-    let admitted = prior
-        .get(TemplateWorkDisposition::Admitted)
-        .saturating_add(terminal_matches);
-    let completed = prior
-        .get(TemplateWorkDisposition::Completed)
-        .saturating_add(terminal_matches);
-    let metrics = Some(QueryWorkMetrics {
-        backend_runs: admitted,
-        query_completions: terminal_matches,
-        producer_publications: 3,
-        admitted,
-        superseded: prior.get(TemplateWorkDisposition::Superseded),
-        completed,
-        ..QueryWorkMetrics::default()
-    });
-    let work_correct =
-        admitted == 3 && completed == 3 && metrics.is_some_and(|work| work.superseded == 0);
+    let result_mapped_bytes = match outcome.as_ref() {
+        TemplateTerminalOutcome::Matched(result) => mapped_bytes(result.result().searched()),
+        _ => None,
+    };
+    let observed_mapped_bytes =
+        u64::try_from(fixture.observed.consistent_mapped_bytes().unwrap_or(0))
+            .expect("mapped bytes fit");
+    let metrics = terminal_query_metrics(&fixture.diagnostics, &query, 3);
+    let work_correct = fixture.observed.find_count() == 3
+        && fixture.observed.completion_count() == 3
+        && metrics == Some(completed_query_metrics(3, 3));
+    let mapped_correct = result_mapped_bytes == Some(FULL_MAPPED_BYTES)
+        && observed_mapped_bytes == FULL_MAPPED_BYTES;
     session.close(&bounded_operation()).expect("closed session");
 
     drop(outcome);
@@ -444,8 +551,8 @@ fn appearance_stable(_: &()) -> Sample {
 
     finish_sample(
         elapsed,
-        result_correct && work_correct && cleanup_correct,
-        FULL_MAPPED_BYTES,
+        result_correct && work_correct && mapped_correct && cleanup_correct,
+        observed_mapped_bytes,
         metrics,
     )
 }
@@ -515,30 +622,22 @@ fn disappearance_reset(_: &()) -> Sample {
             TemplateTerminalOutcome::Matched(result)
                 if result.frame().stamp().sequence().value() == 3
                     && result.confirmed_observations() == 2
+                    && result.result().searched() == full_scene_rect()
                     && exact_origins(result.result(), &FULL_ORIGINS)
         );
-    let terminal_matches = u64::from(matches!(
-        outcome.as_ref(),
-        TemplateTerminalOutcome::Matched(_)
-    ));
-    let prior = first_reappearance.work();
-    let admitted = prior
-        .get(TemplateWorkDisposition::Admitted)
-        .saturating_add(terminal_matches);
-    let completed = prior
-        .get(TemplateWorkDisposition::Completed)
-        .saturating_add(terminal_matches);
-    let metrics = Some(QueryWorkMetrics {
-        backend_runs: admitted,
-        query_completions: terminal_matches,
-        producer_publications: 4,
-        admitted,
-        superseded: prior.get(TemplateWorkDisposition::Superseded),
-        completed,
-        ..QueryWorkMetrics::default()
-    });
-    let work_correct =
-        admitted == 4 && completed == 4 && metrics.is_some_and(|work| work.superseded == 0);
+    let result_mapped_bytes = match outcome.as_ref() {
+        TemplateTerminalOutcome::Matched(result) => mapped_bytes(result.result().searched()),
+        _ => None,
+    };
+    let observed_mapped_bytes =
+        u64::try_from(fixture.observed.consistent_mapped_bytes().unwrap_or(0))
+            .expect("mapped bytes fit");
+    let metrics = terminal_query_metrics(&fixture.diagnostics, &query, 4);
+    let work_correct = fixture.observed.find_count() == 4
+        && fixture.observed.completion_count() == 4
+        && metrics == Some(completed_query_metrics(4, 4));
+    let mapped_correct = result_mapped_bytes == Some(FULL_MAPPED_BYTES)
+        && observed_mapped_bytes == FULL_MAPPED_BYTES;
     session.close(&bounded_operation()).expect("closed session");
 
     drop(outcome);
@@ -551,8 +650,8 @@ fn disappearance_reset(_: &()) -> Sample {
 
     finish_sample(
         elapsed,
-        result_correct && work_correct && cleanup_correct,
-        FULL_MAPPED_BYTES,
+        result_correct && work_correct && mapped_correct && cleanup_correct,
+        observed_mapped_bytes,
         metrics,
     )
 }
@@ -601,30 +700,23 @@ fn static_duration(_: &()) -> Sample {
             if result.frame().stamp().sequence().value() == 2
                 && result.confirmed_observations() == 3
                 && result.confirmed_duration() == Duration::from_secs(1)
+                && result.result().searched() == full_scene_rect()
                 && exact_origins(result.result(), &FULL_ORIGINS)
     ) && first.confirmed_duration() == Duration::ZERO
         && second.confirmed_duration() == Duration::ZERO;
-    let terminal_matches = u64::from(matches!(
-        outcome.as_ref(),
-        TemplateTerminalOutcome::Matched(_)
-    ));
-    let prior = second.work();
-    let admitted = prior
-        .get(TemplateWorkDisposition::Admitted)
-        .saturating_add(terminal_matches);
-    let completed = prior
-        .get(TemplateWorkDisposition::Completed)
-        .saturating_add(terminal_matches);
-    let metrics = Some(QueryWorkMetrics {
-        backend_runs: admitted,
-        query_completions: terminal_matches,
-        producer_publications: 3,
-        admitted,
-        superseded: prior.get(TemplateWorkDisposition::Superseded),
-        completed,
-        ..QueryWorkMetrics::default()
-    });
-    let work_correct = admitted == 3 && completed == 3;
+    let result_mapped_bytes = match outcome.as_ref() {
+        TemplateTerminalOutcome::Matched(result) => mapped_bytes(result.result().searched()),
+        _ => None,
+    };
+    let observed_mapped_bytes =
+        u64::try_from(fixture.observed.consistent_mapped_bytes().unwrap_or(0))
+            .expect("mapped bytes fit");
+    let metrics = terminal_query_metrics(&fixture.diagnostics, &query, 3);
+    let work_correct = fixture.observed.find_count() == 3
+        && fixture.observed.completion_count() == 3
+        && metrics == Some(completed_query_metrics(3, 3));
+    let mapped_correct = result_mapped_bytes == Some(FULL_MAPPED_BYTES)
+        && observed_mapped_bytes == FULL_MAPPED_BYTES;
     session.close(&bounded_operation()).expect("closed session");
 
     drop(outcome);
@@ -638,8 +730,8 @@ fn static_duration(_: &()) -> Sample {
 
     finish_sample(
         elapsed,
-        result_correct && work_correct && cleanup_correct,
-        FULL_MAPPED_BYTES,
+        result_correct && work_correct && mapped_correct && cleanup_correct,
+        observed_mapped_bytes,
         metrics,
     )
 }
@@ -653,20 +745,49 @@ struct ControlledCore {
 
 impl ControlledCore {
     fn new(backend: Arc<dyn MatchBackend>, extent: mado_pilot::PixelExtent) -> Self {
+        Self::new_with_options(backend, extent, mado_pilot_runtime::EngineOptions::new())
+    }
+
+    fn new_with_diagnostics(
+        backend: Arc<dyn MatchBackend>,
+        extent: mado_pilot::PixelExtent,
+    ) -> (Self, DiagnosticReader) {
+        let core = Self::new_with_options(
+            backend,
+            extent,
+            mado_pilot_runtime::EngineOptions::new().with_diagnostics(
+                DiagnosticOptions::normal(64).expect("bounded qualification diagnostics"),
+            ),
+        );
+        let diagnostics = core
+            .engine
+            .take_diagnostic_reader()
+            .expect("normal diagnostics enabled");
+        (core, diagnostics)
+    }
+
+    fn new_with_options(
+        backend: Arc<dyn MatchBackend>,
+        extent: mado_pilot::PixelExtent,
+        options: mado_pilot_runtime::EngineOptions,
+    ) -> Self {
         let issuer = Arc::new(IdentityIssuer::new());
         let capture = Arc::new(
             ControlledCapture::new(Arc::clone(&issuer), extent, SOURCE_FORMAT)
                 .expect("controlled capture"),
         );
-        let engine = Engine::new(EngineWiring {
-            engine: issuer.engine(),
-            capture: Arc::clone(&capture) as Arc<dyn CaptureProvider>,
-            matcher: Matcher::new(backend),
-            loader: PackageLoader::new(),
-            ocr: None,
-            input: None,
-            permission: None,
-        })
+        let engine = Engine::new_with_options(
+            EngineWiring {
+                engine: issuer.engine(),
+                capture: Arc::clone(&capture) as Arc<dyn CaptureProvider>,
+                matcher: Matcher::new(backend),
+                loader: PackageLoader::new(),
+                ocr: None,
+                input: None,
+                permission: None,
+            },
+            options,
+        )
         .expect("controlled engine");
         let target = engine
             .discover(&OperationContext::new())
@@ -755,6 +876,9 @@ fn coalesced_pair(_: &()) -> Sample {
         ..QueryWorkMetrics::default()
     });
     let work_correct = backend_runs == 1 && query_completions == 2;
+    let observed_mapped_bytes =
+        u64::try_from(run.matcher.consistent_mapped_bytes().unwrap_or(0)).expect("bytes fit");
+    let mapped_correct = observed_mapped_bytes == CONTROLLED_MAPPED_BYTES;
     let outcomes_correct = first.id() != second.id()
         && matches!(first_outcome.as_ref(), TemplateTerminalOutcome::Matched(_))
         && matches!(second_outcome.as_ref(), TemplateTerminalOutcome::Matched(_));
@@ -773,8 +897,8 @@ fn coalesced_pair(_: &()) -> Sample {
 
     finish_sample(
         elapsed,
-        entered && outcomes_correct && work_correct && cleanup_correct,
-        CONTROLLED_MAPPED_BYTES,
+        entered && outcomes_correct && work_correct && mapped_correct && cleanup_correct,
+        observed_mapped_bytes,
         metrics,
     )
 }
@@ -984,6 +1108,17 @@ fn saturation_latest_wins(_: &()) -> Sample {
             && work.query_failures == 0
             && work.producer_publications == 5
     });
+    let latest_mapped = u64::try_from(latest_run.matcher.consistent_mapped_bytes().unwrap_or(0))
+        .expect("bytes fit");
+    let saturation_mapped = u64::try_from(
+        saturation_run
+            .matcher
+            .consistent_mapped_bytes()
+            .unwrap_or(0),
+    )
+    .expect("bytes fit");
+    let mapped_correct =
+        latest_mapped == CONTROLLED_MAPPED_BYTES && saturation_mapped == CONTROLLED_MAPPED_BYTES;
 
     let elapsed = started.elapsed();
     drop(latest_outcome);
@@ -1010,34 +1145,66 @@ fn saturation_latest_wins(_: &()) -> Sample {
 
     finish_sample(
         elapsed,
-        latest_correct && saturation_correct && work_correct && cleanup_correct,
-        CONTROLLED_MAPPED_BYTES,
+        latest_correct && saturation_correct && work_correct && mapped_correct && cleanup_correct,
+        latest_mapped,
         metrics,
     )
 }
 
 fn two_session_fairness(_: &()) -> Sample {
     let allocation_baseline = bench_harness::live_allocated_bytes();
-    let gates: Vec<_> = (0..4).map(|_| Arc::new(CompletionGate::new())).collect();
-    let calls: Vec<_> = gates
-        .iter()
-        .enumerate()
-        .map(|(index, gate)| {
-            ScriptedMatchCall::new(vec![Candidate::new(
-                i32::try_from(index + 1).expect("small candidate coordinate"),
-                1,
-                0.99,
-            )])
-            .with_completion_gate(Arc::clone(gate))
+    let blocker_gates: Vec<_> = (0..2).map(|_| Arc::new(CompletionGate::new())).collect();
+    let fairness_gates: Vec<_> = (0..4).map(|_| Arc::new(CompletionGate::new())).collect();
+    let blocker_calls = blocker_gates.iter().enumerate().map(|(index, gate)| {
+        ScriptedMatchCall::new(vec![Candidate::new(
+            i32::try_from(index + 10).expect("small blocker coordinate"),
+            1,
+            0.99,
+        )])
+        .with_completion_gate(Arc::clone(gate))
+    });
+    let fairness_calls = fairness_gates.iter().enumerate().map(|(index, gate)| {
+        ScriptedMatchCall::new(vec![Candidate::new(
+            i32::try_from(index + 1).expect("small fairness coordinate"),
+            1,
+            0.99,
+        )])
+        .with_completion_gate(Arc::clone(gate))
+    });
+    let run = ControlledRun::new(
+        ControlledMatcher::new(SOURCE_FORMAT).with_calls(blocker_calls.chain(fairness_calls)),
+    );
+
+    let blocker_session = run.core.open();
+    let blockers: Vec<_> = (0..2)
+        .map(|index| {
+            let template = run.core.prepare(&format!("fairness-blocker-{index}"));
+            start_query(
+                &blocker_session,
+                template.clone(),
+                MatchOptions::from_defaults(template.defaults()),
+                OperationContext::new(),
+            )
         })
         .collect();
-    let run = ControlledRun::new(ControlledMatcher::new(SOURCE_FORMAT).with_calls(calls));
+    run.core
+        .capture
+        .publish(0x30, Continuity::Continuous)
+        .expect("published blocker frame");
+    let blockers_entered = blocker_gates
+        .iter()
+        .all(|gate| gate.wait_until_entered(WAIT));
+    let blocker_outcomes: [Arc<TemplateTerminalOutcome>; 2] =
+        std::array::from_fn(|index| blockers[index].cancel());
+    let blockers_cancelled = blocker_outcomes
+        .iter()
+        .all(|outcome| matches!(outcome.as_ref(), TemplateTerminalOutcome::Cancelled));
+
     let first_session = run.core.open();
     let second_session = run.core.open();
     let prepared: Vec<_> = (0..4)
         .map(|index| run.core.prepare(&format!("fairness-{index}")))
         .collect();
-
     let started = Instant::now();
     let queries = [
         start_query(
@@ -1068,32 +1235,74 @@ fn two_session_fairness(_: &()) -> Sample {
     run.core
         .capture
         .publish(0x40, Continuity::Continuous)
-        .expect("published to both sessions");
-    let first_wave = gates[0].wait_until_entered(WAIT)
-        && gates[1].wait_until_entered(WAIT)
-        && run.matcher.find_count() == 2;
-    gates[0].release();
-    let third_entered = gates[2].wait_until_entered(WAIT) && run.matcher.find_count() == 3;
-    gates[1].release();
-    let fourth_entered = gates[3].wait_until_entered(WAIT) && run.matcher.find_count() == 4;
-    gates[2].release();
-    gates[3].release();
-    let fairness_completions = queries.iter().fold(0_u64, |completed, query| {
-        completed.saturating_add(u64::from(query.wait(&bounded_operation()).is_ok_and(
-            |outcome| matches!(outcome.as_ref(), TemplateTerminalOutcome::Matched(_)),
-        )))
+        .expect("published to both fairness sessions");
+    let all_eligible = queries.iter().all(|query| {
+        wait_progress(query, |progress| progress.pending_count() == 1).pending_count() == 1
     });
+
+    for gate in &blocker_gates {
+        gate.release();
+    }
+    let first_wave = fairness_gates[0].wait_until_entered(WAIT)
+        && fairness_gates[1].wait_until_entered(WAIT)
+        && run.matcher.find_count() == 4;
+    fairness_gates[0].release();
+    let third_entered = fairness_gates[2].wait_until_entered(WAIT) && run.matcher.find_count() == 5;
+    fairness_gates[1].release();
+    let fourth_entered =
+        fairness_gates[3].wait_until_entered(WAIT) && run.matcher.find_count() == 6;
+    fairness_gates[2].release();
+    fairness_gates[3].release();
+
+    let blockers_completed = blocker_gates
+        .iter()
+        .all(|gate| gate.wait_until_completed(WAIT));
+    let fairness_outcomes = std::array::from_fn(|index| {
+        queries[index]
+            .wait(&bounded_operation())
+            .expect("fairness query completed")
+    });
+    let mut fairness_origins = fairness_outcomes.each_ref().map(|outcome| {
+        let TemplateTerminalOutcome::Matched(result) = outcome.as_ref() else {
+            return -1;
+        };
+        result.result().matches()[0].bounds().left()
+    });
+    let first_wave_identity = fairness_origins[..2]
+        .iter()
+        .filter(|left| matches!(**left, 1 | 2))
+        .count()
+        == 1
+        && fairness_origins[2..]
+            .iter()
+            .filter(|left| matches!(**left, 1 | 2))
+            .count()
+            == 1;
+    fairness_origins.sort_unstable();
+    let outcomes_correct = blockers_cancelled && fairness_origins == [1, 2, 3, 4];
+    let fairness_query_completions = u64::try_from(
+        blocker_outcomes.len() + fairness_origins.iter().filter(|left| **left > 0).count(),
+    )
+    .expect("query count fits");
     let fairness_backend_runs = u64::try_from(run.matcher.find_count()).expect("count fits");
+    let fairness_backend_completions =
+        u64::try_from(run.matcher.completion_count()).expect("count fits");
     let fairness_metrics = Some(QueryWorkMetrics {
         backend_runs: fairness_backend_runs,
-        query_completions: fairness_completions,
-        producer_publications: 1,
+        query_completions: fairness_query_completions,
+        producer_publications: 2,
         admitted: fairness_backend_runs,
-        completed: fairness_completions,
+        superseded: 2,
+        completed: 4,
         ..QueryWorkMetrics::default()
     });
-    let outcomes_correct = fairness_completions == 4;
-    let fairness_work_correct = fairness_backend_runs == 4;
+    let fairness_work_correct = blockers_completed
+        && fairness_backend_runs == 6
+        && fairness_backend_completions == 6
+        && fairness_query_completions == 6;
+    blocker_session
+        .close(&bounded_operation())
+        .expect("closed blocker session");
     first_session
         .close(&bounded_operation())
         .expect("closed first session");
@@ -1170,44 +1379,60 @@ fn two_session_fairness(_: &()) -> Sample {
         .zip(stale_metrics)
         .map(|(fairness, stale)| fairness.saturating_add(stale));
     let work_correct = metrics.is_some_and(|work| {
-        work.backend_runs == 6
-            && work.admitted == 6
+        work.backend_runs == 8
+            && work.admitted == 8
             && work.completed == 5
             && work.stale_discards == 1
-            && work.query_completions == 5
+            && work.superseded == 3
+            && work.query_completions == 7
             && work.query_failures == 0
-            && work.producer_publications == 3
+            && work.producer_publications == 4
     });
+    let fairness_mapped =
+        u64::try_from(run.matcher.consistent_mapped_bytes().unwrap_or(0)).expect("bytes fit");
+    let stale_mapped =
+        u64::try_from(stale_run.matcher.consistent_mapped_bytes().unwrap_or(0)).expect("bytes fit");
+    let mapped_correct =
+        fairness_mapped == CONTROLLED_MAPPED_BYTES && stale_mapped == CONTROLLED_MAPPED_BYTES;
 
     let elapsed = started.elapsed();
     drop(retained);
     drop(newer_outcome);
+    drop(fairness_outcomes);
+    drop(blocker_outcomes);
     drop(stale_query);
     drop(stale_session);
     drop(stale_run);
     drop(older);
     drop(newer);
     drop(queries);
+    drop(blockers);
     drop(prepared);
+    drop(blocker_session);
     drop(first_session);
     drop(second_session);
     drop(run);
-    drop(gates);
+    drop(blocker_gates);
+    drop(fairness_gates);
     let cleanup_correct = wait_for_live_allocations(allocation_baseline.saturating_add(
         usize::try_from(bench_harness::GROWTH_LIMIT_BYTES).expect("positive growth limit"),
     ));
 
     finish_sample(
         elapsed,
-        first_wave
+        blockers_entered
+            && all_eligible
+            && first_wave
+            && first_wave_identity
             && third_entered
             && fourth_entered
             && outcomes_correct
             && fairness_work_correct
             && stale_correct
             && work_correct
+            && mapped_correct
             && cleanup_correct,
-        CONTROLLED_MAPPED_BYTES,
+        fairness_mapped,
         metrics,
     )
 }
@@ -1253,6 +1478,9 @@ fn cancel_in_flight(_: &()) -> Sample {
         ..QueryWorkMetrics::default()
     });
     let work_correct = backend_runs == 1 && cancelled_count == 1;
+    let observed_mapped_bytes =
+        u64::try_from(run.matcher.consistent_mapped_bytes().unwrap_or(0)).expect("bytes fit");
+    let mapped_correct = observed_mapped_bytes == CONTROLLED_MAPPED_BYTES;
 
     let outcome_correct = matches!(cancelled.as_ref(), TemplateTerminalOutcome::Cancelled)
         && matches!(query.poll(), TemplateQueryOutcome::Terminal(outcome) if matches!(outcome.as_ref(), TemplateTerminalOutcome::Cancelled));
@@ -1269,8 +1497,13 @@ fn cancel_in_flight(_: &()) -> Sample {
 
     finish_sample(
         elapsed,
-        entered && completed && outcome_correct && work_correct && cleanup_correct,
-        CONTROLLED_MAPPED_BYTES,
+        entered
+            && completed
+            && outcome_correct
+            && work_correct
+            && mapped_correct
+            && cleanup_correct,
+        observed_mapped_bytes,
         metrics,
     )
 }
@@ -1372,6 +1605,9 @@ fn close_and_retain(_: &()) -> Sample {
         ..QueryWorkMetrics::default()
     });
     let work_correct = backend_runs == 2 && query_completions == 3;
+    let observed_mapped_bytes =
+        u64::try_from(run.matcher.consistent_mapped_bytes().unwrap_or(0)).expect("bytes fit");
+    let mapped_correct = observed_mapped_bytes == CONTROLLED_MAPPED_BYTES;
 
     drop(retained);
     drop(pending_outcome);
@@ -1389,8 +1625,8 @@ fn close_and_retain(_: &()) -> Sample {
 
     finish_sample(
         elapsed,
-        outcomes_correct && work_correct && cleanup_correct,
-        CONTROLLED_MAPPED_BYTES,
+        outcomes_correct && work_correct && mapped_correct && cleanup_correct,
+        observed_mapped_bytes,
         metrics,
     )
 }
@@ -1442,7 +1678,7 @@ fn finish_sample(
     metrics: Option<QueryWorkMetrics>,
 ) -> Sample {
     let resident = peak_resident_bytes();
-    let supported_target = cfg!(any(windows, target_os = "macos"));
+    let supported_target = bench_harness::RELEASE_TARGET != "not a declared release target";
     let mut sample = Sample::new(
         elapsed,
         correct && metrics.is_some() && (!supported_target || resident.is_some()),
@@ -1455,6 +1691,65 @@ fn finish_sample(
         sample = sample.with_peak_resident_bytes(bytes);
     }
     sample
+}
+
+fn terminal_query_metrics(
+    reader: &DiagnosticReader,
+    query: &TemplateQuery,
+    producer_publications: u64,
+) -> Option<QueryWorkMetrics> {
+    let DiagnosticDrain::Batch(batch) = reader.drain() else {
+        return None;
+    };
+    if batch.losses().normal() != 0 || batch.losses().debug() != 0 {
+        return None;
+    }
+    let mut matching = batch.records().iter().filter_map(|record| {
+        let DiagnosticPayload::TemplateWatch(diagnostic) = record.payload() else {
+            return None;
+        };
+        (diagnostic.query == query.id()
+            && diagnostic.disposition.is_none()
+            && diagnostic.outcome == Some(TemplateWatchDiagnosticOutcome::Matched))
+        .then_some(diagnostic)
+    });
+    let terminal = matching.next()?;
+    if matching.next().is_some() {
+        return None;
+    }
+    let work = terminal.work;
+    Some(QueryWorkMetrics {
+        backend_runs: work.get(TemplateWorkDisposition::Admitted),
+        query_completions: 1,
+        query_failures: 0,
+        stale_discards: 0,
+        producer_publications,
+        admitted: work.get(TemplateWorkDisposition::Admitted),
+        skipped_change: work.get(TemplateWorkDisposition::SkippedChange),
+        deferred_rate: work.get(TemplateWorkDisposition::DeferredRate),
+        coalesced: work.get(TemplateWorkDisposition::Coalesced),
+        superseded: work.get(TemplateWorkDisposition::Superseded),
+        rejected: work.get(TemplateWorkDisposition::Rejected),
+        queue_expired: work.get(TemplateWorkDisposition::QueueExpired),
+        completed: work.get(TemplateWorkDisposition::Completed),
+        failed: work.get(TemplateWorkDisposition::Failed),
+    })
+}
+fn completed_query_metrics(backend_runs: u64, producer_publications: u64) -> QueryWorkMetrics {
+    QueryWorkMetrics {
+        backend_runs,
+        query_completions: 1,
+        producer_publications,
+        admitted: backend_runs,
+        completed: backend_runs,
+        ..QueryWorkMetrics::default()
+    }
+}
+
+fn mapped_bytes(region: PixelRect) -> Option<u64> {
+    u64::from(region.width())
+        .checked_mul(u64::from(region.height()))?
+        .checked_mul(u64::from(SOURCE_FORMAT.bytes_per_pixel()))
 }
 
 fn exact_origins(result: &mado_pilot::MatchResult, expected: &[(i32, i32)]) -> bool {
@@ -1611,7 +1906,7 @@ fn enforce_resource_budgets(workloads: &[Workload], heap_limit: usize, resident_
     }
 }
 
-#[cfg(target_os = "macos")]
+#[cfg(all(target_arch = "aarch64", target_os = "macos"))]
 fn enforce_target_budgets(workloads: &[Workload]) {
     bench_harness::enforce_latency_budgets(
         workloads,
@@ -1624,7 +1919,7 @@ fn enforce_target_budgets(workloads: &[Workload]) {
     );
 }
 
-#[cfg(windows)]
+#[cfg(all(target_arch = "x86_64", target_os = "windows", target_env = "msvc"))]
 fn enforce_target_budgets(workloads: &[Workload]) {
     bench_harness::enforce_latency_budgets(
         workloads,
@@ -1637,12 +1932,15 @@ fn enforce_target_budgets(workloads: &[Workload]) {
     );
 }
 
-#[cfg(not(any(windows, target_os = "macos")))]
+#[cfg(not(any(
+    all(target_arch = "aarch64", target_os = "macos"),
+    all(target_arch = "x86_64", target_os = "windows", target_env = "msvc")
+)))]
 fn enforce_target_budgets(_workloads: &[Workload]) {
     panic!("template-watch qualification budgets exist only for release targets");
 }
 
-#[cfg(target_os = "macos")]
+#[cfg(all(target_arch = "aarch64", target_os = "macos"))]
 fn peak_resident_bytes() -> Option<u64> {
     let mut usage = std::mem::MaybeUninit::<libc::rusage>::uninit();
     // SAFETY: `usage` points to writable storage for one complete `rusage`, and
@@ -1657,7 +1955,7 @@ fn peak_resident_bytes() -> Option<u64> {
         .filter(|bytes| *bytes > 0)
 }
 
-#[cfg(windows)]
+#[cfg(all(target_arch = "x86_64", target_os = "windows", target_env = "msvc"))]
 fn peak_resident_bytes() -> Option<u64> {
     let mut counters = PROCESS_MEMORY_COUNTERS::default();
     let bytes = u32::try_from(size_of::<PROCESS_MEMORY_COUNTERS>()).ok()?;
@@ -1670,7 +1968,10 @@ fn peak_resident_bytes() -> Option<u64> {
         .filter(|bytes| *bytes > 0)
 }
 
-#[cfg(not(any(windows, target_os = "macos")))]
+#[cfg(not(any(
+    all(target_arch = "aarch64", target_os = "macos"),
+    all(target_arch = "x86_64", target_os = "windows", target_env = "msvc")
+)))]
 fn peak_resident_bytes() -> Option<u64> {
     None
 }

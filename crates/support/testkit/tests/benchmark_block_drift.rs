@@ -17,7 +17,7 @@
 //! renamed or removed fails the build rather than the assertion.
 
 use mado_pilot_testkit::bench_harness::{
-    Benchmark, LatencyBudget, PHASE2_2_CAPTURE_LATENCY_BUDGETS,
+    Benchmark, LatencyBudget, MappedBytesBudget, PHASE2_2_CAPTURE_LATENCY_BUDGETS,
     PHASE2_2_PROCESS_APPKIT_LATENCY_BUDGETS, PHASE2_2_PROCESS_DIAGNOSTIC_LATENCY_BUDGETS,
     PHASE2_2_PROCESS_GAME_LIKE_LATENCY_BUDGETS, PHASE2_2_PROCESS_HEAP_LIMIT_BYTES,
     PHASE2_2_TRANSITION_LATENCY_BUDGETS, PHASE2_PRODUCTION_CAPTURE_HEAP_LIMIT_BYTES,
@@ -68,7 +68,8 @@ use mado_pilot_testkit::bench_harness::{
     PHASE3_WINDOWS_OCR_LATENCY_BUDGETS, PHASE3_WINDOWS_OCR_REOPEN_CLOSE_LIMIT,
     PHASE3_WINDOWS_OCR_RESIDENT_LIMIT_BYTES, PHASE4_APPLE_TEMPLATE_WATCH_HEAP_LIMIT_BYTES,
     PHASE4_APPLE_TEMPLATE_WATCH_LATENCY_BUDGETS, PHASE4_APPLE_TEMPLATE_WATCH_RESIDENT_LIMIT_BYTES,
-    PHASE4_WINDOWS_TEMPLATE_WATCH_HEAP_LIMIT_BYTES, PHASE4_WINDOWS_TEMPLATE_WATCH_LATENCY_BUDGETS,
+    PHASE4_TEMPLATE_WATCH_MAPPED_BYTES_BUDGETS, PHASE4_WINDOWS_TEMPLATE_WATCH_HEAP_LIMIT_BYTES,
+    PHASE4_WINDOWS_TEMPLATE_WATCH_LATENCY_BUDGETS,
     PHASE4_WINDOWS_TEMPLATE_WATCH_RESIDENT_LIMIT_BYTES, benchmark_block,
 };
 
@@ -684,6 +685,20 @@ fn expected_latency_blocks(budgets: &[LatencyBudget]) -> Vec<BudgetBlock<'static
         .collect()
 }
 
+fn expected_mapped_blocks(budgets: &[MappedBytesBudget]) -> Vec<BudgetBlock<'static>> {
+    budgets
+        .iter()
+        .map(|budget| {
+            absolute_budget(
+                Some(budget.workload()),
+                "mapped_bytes_per_result",
+                "bytes",
+                exact_limit(budget.bytes()),
+            )
+        })
+        .collect()
+}
+
 /// A benchmark identity, so the block can be built. Its values are not read.
 fn benchmark() -> Benchmark {
     Benchmark {
@@ -773,6 +788,34 @@ fn template_watch_profiles_state_exactly_the_resource_budgets_the_benchmark_enfo
                 ),
             ],
             "{target} watcher profile and benchmark resource ceilings drifted"
+        );
+    }
+}
+
+#[test]
+fn template_watch_profiles_state_exactly_the_mapped_byte_budgets_the_benchmark_enforces() {
+    for (target, profile) in [
+        (
+            "Apple",
+            include_str!(
+                "../../../../docs/benchmarks/phase-4-template-watch-query-aarch64-apple-darwin.toml"
+            ),
+        ),
+        (
+            "Windows",
+            include_str!(
+                "../../../../docs/benchmarks/phase-4-template-watch-query-x86_64-pc-windows-msvc.toml"
+            ),
+        ),
+    ] {
+        let recorded: Vec<BudgetBlock<'_>> = budget_blocks(profile)
+            .into_iter()
+            .filter(|budget| budget.measure == Some("mapped_bytes_per_result"))
+            .collect();
+        assert_eq!(
+            recorded,
+            expected_mapped_blocks(&PHASE4_TEMPLATE_WATCH_MAPPED_BYTES_BUDGETS),
+            "{target} watcher profile and benchmark mapped-byte gates drifted"
         );
     }
 }

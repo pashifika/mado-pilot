@@ -55,7 +55,7 @@ pub mod vision_contract;
 pub use clock::ManualClock;
 pub use controlled_capture::ControlledCapture;
 pub use controlled_input::ControlledInput;
-pub use controlled_matcher::{Behavior, ControlledMatcher, ScriptedMatchCall};
+pub use controlled_matcher::{Behavior, ControlledMatcher, ObservedMatcher, ScriptedMatchCall};
 pub use controlled_ocr::{
     CONTROLLED_OCR_BACKEND, CONTROLLED_OCR_MODEL, CONTROLLED_OCR_PROFILE, CompletionGate,
     ControlledOcr, OcrBehavior, ScriptedOcrCall, ScriptedOcrCandidate,
