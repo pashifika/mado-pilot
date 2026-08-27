@@ -7,8 +7,8 @@
 //! session's, and whether the whole sequence still wins its race against the
 //! deadline by the time an answer exists.
 
-use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::{Arc, OnceLock};
 
 use mado_pilot_capture::{
     CaptureFault, CaptureSession, CpuMapping, Frame, FrameRequest, FrameView, PixelFormat,
@@ -33,6 +33,9 @@ use crate::diagnostic::{
     RouteAttemptDiagnostic, SearchDiagnostic, SearchDiagnosticOutcome, requested_ocr_region,
 };
 use crate::find::{FindOutcome, FindRequest, SearchFrame};
+use crate::watch::{
+    TemplateQuery, TemplateTerminalOutcome, TemplateWatchRequest, WatchScheduler, WatchSession,
+};
 
 /// A non-owning diagnostic projection copied into retained frame handles.
 ///
@@ -149,6 +152,8 @@ pub struct Session {
     input_descriptor: InputDescriptor,
     diagnostics: Option<DiagnosticSink>,
     closing: AtomicBool,
+    watch_scheduler: Arc<WatchScheduler>,
+    watcher: OnceLock<Arc<WatchSession>>,
 }
 
 impl Session {
@@ -159,6 +164,7 @@ impl Session {
         ocr_diagnostic: Option<OcrDiagnosticContext>,
         input: Option<Arc<dyn InputController>>,
         diagnostics: Option<DiagnosticSink>,
+        watch_scheduler: Arc<WatchScheduler>,
     ) -> Self {
         // Read once, for the reason the capture description is: an accepted
         // descriptor cannot change, and re-reading it would report the adapter's
@@ -182,6 +188,8 @@ impl Session {
             input_descriptor,
             diagnostics,
             closing: AtomicBool::new(false),
+            watch_scheduler,
+            watcher: OnceLock::new(),
         }
     }
 
@@ -545,6 +553,31 @@ impl Session {
         result
     }
 
+    /// Starts one bounded template-presence query over maintained frames.
+    ///
+    /// The request owns query-lifetime deadline and cancellation authority.
+    /// Polling and caller waits are performed through the returned owning handle.
+    ///
+    /// # Errors
+    ///
+    /// Returns a closed outcome once session close begins, an invalid request
+    /// outcome for a foreign prepared template, an operation interruption before
+    /// publication, or a fixed scheduler capacity refusal.
+    pub fn start_template_watch(&self, request: TemplateWatchRequest) -> Result<TemplateQuery> {
+        if !self.accepts_work() {
+            return Err(CaptureFault::SessionClosed.into());
+        }
+        let watcher = self.watcher.get_or_init(|| {
+            self.watch_scheduler
+                .register_session(Arc::clone(&self.capture))
+        });
+        if !self.accepts_work() {
+            watcher.close(TemplateTerminalOutcome::SessionClosed);
+            return Err(CaptureFault::SessionClosed.into());
+        }
+        watcher.start_query(request)
+    }
+
     /// Searches one of this session's frames for one prepared template.
     ///
     /// The whole sequence runs under one operation: the frame is acquired, the
@@ -778,6 +811,9 @@ impl Session {
     /// rather than two that diverged.
     pub fn close(&self, operation: &OperationContext) -> Result<()> {
         self.closing.swap(true, Ordering::AcqRel);
+        if let Some(watcher) = self.watcher.get() {
+            watcher.close(TemplateTerminalOutcome::SessionClosed);
+        }
         let observed = self.observe(operation, DiagnosticOperationKind::SessionClose)?;
         let input = match self.input.as_ref() {
             Some(controller) => controller.close(operation),
@@ -837,6 +873,7 @@ mod tests {
         DiagnosticReader, DiagnosticSink, SearchDiagnosticOutcome,
     };
     use crate::find::FindRequest;
+    use crate::watch::WatchScheduler;
 
     use super::Session;
 
@@ -890,7 +927,15 @@ mod tests {
                 capture,
                 backend,
                 matcher: matcher.clone(),
-                session: Session::new(opened, matcher, None, None, None, diagnostics),
+                session: Session::new(
+                    Arc::clone(&opened),
+                    matcher.clone(),
+                    None,
+                    None,
+                    None,
+                    diagnostics.clone(),
+                    WatchScheduler::new(matcher, diagnostics),
+                ),
                 reader,
             }
         }

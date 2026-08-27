@@ -148,6 +148,10 @@ impl fmt::Display for BackendDescriptor {
 /// and the OpenCV adapter produces real ones.
 pub trait MatchBackend: fmt::Debug + Send + Sync {
     /// Returns the backend's public identity and required pixel format.
+    ///
+    /// The descriptor must remain unchanged for the backend's lifetime. A
+    /// [`crate::Matcher`] snapshots it during construction so scheduling and
+    /// request-equivalence checks never invoke adapter code under runtime locks.
     fn descriptor(&self) -> BackendDescriptor;
 
     /// Compiles `source` into backend-private state.

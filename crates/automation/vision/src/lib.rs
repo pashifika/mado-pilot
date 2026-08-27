@@ -96,7 +96,7 @@ pub use change::{
     UnsupportedChangeDetectionPolicy,
 };
 pub use fault::VisionFault;
-pub use matcher::Matcher;
+pub use matcher::{MappedMatch, Matcher};
 pub use prepared::{BackendId, PreparedTemplate};
 pub use request::{MatchOptions, MatchRequest, RegionSelection, Suppression};
 pub use result::{Match, MatchResult};

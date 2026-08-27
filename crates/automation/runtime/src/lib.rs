@@ -48,17 +48,19 @@
 //!
 //! # Implementation status
 //!
-//! Phase 1 capture/matching, Phase 2 input, and Phase 3 one-shot OCR composition
-//! are implemented. OCR runs over one exact retained frame through an explicitly
-//! configured platform-neutral recognizer, uses the caller operation context,
-//! and arbitrates deadline, cancellation, and session close before publication.
-//! Immutable results retain no frame or backend storage. Optional finite
-//! diagnostics include content-redacted OCR admission and terminal records.
+//! Phase 1 capture/matching, Phase 2 input, Phase 3 one-shot OCR composition,
+//! and the Phase 4 bounded Rust template watcher are implemented. OCR runs over
+//! one exact retained frame through an explicitly configured platform-neutral
+//! recognizer, uses the caller operation context, and arbitrates deadline,
+//! cancellation, and session close before publication. Immutable results retain
+//! no backend storage. Optional finite diagnostics include content-redacted OCR
+//! and template-query records.
 //!
-//! There is no watcher, scheduling queue, coalescing policy, retry, automatic
-//! input, or default OCR backend. ADR 0050 selects the closed exact-RGBA
-//! change-detection default in `mado-pilot-vision`; this runtime has no watcher
-//! consumer for it yet.
+//! The watcher consumes ADR 0050's closed exact-RGBA default through one owning
+//! poll/wait/cancel handle, fixed latest-wins queues, confirmed-only stability,
+//! exact coalescing, fair two-worker progress, and stale-generation rejection.
+//! It adds no OCR predicate, callback, Tokio/future, C/C++, automatic input,
+//! arbitrary capacity, or native watcher support claim.
 //!
 //! **The public names here are reviewed, not yet stable.**
 //! `docs/adr/0006-public-rust-names-and-compatibility-policy.md` records the
@@ -143,6 +145,7 @@ pub mod diagnostic;
 pub mod engine;
 pub mod find;
 pub mod session;
+pub mod watch;
 
 pub use diagnostic::{
     DiagnosticBatch, DiagnosticDrain, DiagnosticKind, DiagnosticLevel, DiagnosticLosses,
@@ -152,11 +155,17 @@ pub use diagnostic::{
     InputOperationSet, LifecycleDiagnostic, MAX_DIAGNOSTIC_CAPACITY, MappingDiagnostic,
     OcrDiagnostic, OcrDiagnosticOutcome, OcrDiagnosticProfile, OcrRequestedRegionDiagnostic,
     OperationStartedDiagnostic, PermissionDiagnostic, RouteAttemptDiagnostic, SearchDiagnostic,
-    SearchDiagnosticOutcome,
+    SearchDiagnosticOutcome, TemplateWatchDiagnostic, TemplateWatchDiagnosticOutcome,
 };
 pub use engine::{Engine, EngineOptions, EngineWiring, SessionRequest};
 pub use find::{FindOutcome, FindRequest, SearchFrame};
 pub use session::{MappingObserver, Session};
+pub use watch::{
+    TemplateAnalysisRate, TemplateOverload, TemplateQuery, TemplateQueryId, TemplateQueryOutcome,
+    TemplateQueryProgress, TemplateQueryState, TemplateSchedulerDescriptor, TemplateStability,
+    TemplateStabilityKind, TemplateTerminalOutcome, TemplateWatchRequest, TemplateWatchResult,
+    TemplateWorkCounts, TemplateWorkDisposition,
+};
 
 pub use mado_pilot_assets::{
     AssetFault, AssetFaultKind, AssetLimits, AssetPackage, ContentDigest, HASH_ALGORITHM,
@@ -201,7 +210,9 @@ pub use mado_pilot_ocr::{
     RecognizedRegion,
 };
 pub use mado_pilot_vision::{
-    BackendDescriptor, BackendId, Match, MatchDefaults, MatchOptions, MatchResult, Matcher,
-    PreparedTemplate, RegionSelection, Suppression, TemplateEncoding, TemplateId, TemplateSource,
-    TemplateSourceRequest, VisionFault,
+    ANALYSIS_ALWAYS_POLICY_CODE, BackendDescriptor, BackendId, ChangeDetectionDescriptor,
+    ChangeDetectionPolicy, DEFAULT_CHANGE_DETECTION_DESCRIPTOR, EXACT_RGBA_POLICY_CODE, Match,
+    MatchDefaults, MatchOptions, MatchResult, Matcher, PreparedTemplate, RegionSelection,
+    Suppression, TemplateEncoding, TemplateId, TemplateSource, TemplateSourceRequest,
+    UnsupportedChangeDetectionPolicy, VisionFault,
 };

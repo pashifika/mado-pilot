@@ -51,6 +51,7 @@ impl OcrBehavior {
 struct GateState {
     entered: bool,
     released: bool,
+    completed: bool,
 }
 
 /// A one-call completion gate for deterministic late and out-of-order tests.
@@ -83,6 +84,22 @@ impl CompletionGate {
         state.entered
     }
 
+    /// Waits until the released backend call reports completion.
+    ///
+    /// Returns `false` on timeout so a broken test fails instead of hanging.
+    #[must_use]
+    pub fn wait_until_completed(&self, timeout: Duration) -> bool {
+        let state = self
+            .state
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        let (state, _) = self
+            .changed
+            .wait_timeout_while(state, timeout, |state| !state.completed)
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        state.completed
+    }
+
     /// Releases the blocked backend call. Idempotent.
     pub fn release(&self) {
         let mut state = self
@@ -93,7 +110,7 @@ impl CompletionGate {
         self.changed.notify_all();
     }
 
-    fn enter_and_wait(&self) {
+    pub(crate) fn enter_and_wait(&self) {
         let mut state = self
             .state
             .lock()
@@ -105,6 +122,24 @@ impl CompletionGate {
                 .changed
                 .wait(state)
                 .unwrap_or_else(std::sync::PoisonError::into_inner);
+        }
+    }
+    pub(crate) fn complete(&self) {
+        let mut state = self
+            .state
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        state.completed = true;
+        self.changed.notify_all();
+    }
+}
+
+struct GateCompletion<'gate>(Option<&'gate CompletionGate>);
+
+impl Drop for GateCompletion<'_> {
+    fn drop(&mut self) {
+        if let Some(gate) = self.0 {
+            gate.complete();
         }
     }
 }
@@ -556,6 +591,7 @@ impl OcrBackend for ControlledOcr {
         if let Some(gate) = &call.gate {
             gate.enter_and_wait();
         }
+        let _completion = GateCompletion(call.gate.as_deref());
         if let Some(clock) = &self.clock {
             clock.advance(call.latency);
         }

@@ -11,11 +11,12 @@ behavior, and C ABI contracts are added here by the changes that implement and
 test them, so that this document never describes behavior a reader cannot use.
 
 **Status: Phase 1, Phase 2 native capture/input/observation, and Phase 3
-singular/grouped OCR composition reach Rust, C, and C++.** Platform-neutral
+singular/grouped OCR composition reach Rust, C, and C++. Phase 4 bounded
+template-presence queries reach the Rust replay/OpenCV facade.** Platform-neutral
 contracts, deterministic replay, asset loading, OpenCV matching, bounded ONNX
-OCR with explicit initialization-time provider policy, runtime orchestration,
-engine-scoped diagnostics, the Rust facade, C ABI 1.5, and the header-only C++
-wrapper are implemented.
+OCR with explicit initialization-time provider policy, finite template watcher
+scheduling, runtime orchestration, engine-scoped diagnostics, the Rust facade,
+C ABI 1.5, and the header-only C++ wrapper are implemented.
 The picker-free Windows Adapter implements window/display discovery, WGC/D3D11 capture, system input,
 and explicit exact-window `WindowMessage` submission. The macOS Adapter
 implements discovery, ScreenCaptureKit capture, `CGEvent` system input, and
@@ -49,29 +50,34 @@ controlled preload configuration after measured alternatives fail, and passes
 the exact successor CUDA/fallback matrix. Automatic selection remains CPU
 because CUDA still fails the fixed RSS-ratio rule. Protected release acceptance
 remains open.
-The extension adds no bundling, download, ambient search, per-inference
-fallback, scheduling, or automatic input. Watchers,
-scheduling, and release packaging remain future work.
+The OCR extension adds no bundling, download, ambient search, per-inference
+fallback, OCR scheduling, or automatic input.
 
 The Phase 4 change-detection Change adds a closed platform-neutral exact-RGBA
 policy seam and deterministic offline `G-005` evaluator over repository-owned
 recorded sequences. ADR 0050 accepts exact RGBA with zero false skips after both
 hosted release targets reproduced canonical report v2 and independent
 correctness, security/privacy, and specification re-review returned CLEAN.
-Every lower-admitted-work candidate is rejected by a false skip. No watcher,
-query, scheduler, callback, facade, C, or C++ surface exists.
+Every lower-admitted-work candidate is rejected by a false skip.
+
+The bounded template watcher runtime consumes that accepted policy through one
+Rust query handle and one fixed engine scheduler. It is implemented and
+deterministically verified over replay and OpenCV. OCR predicates, callbacks,
+C/C++, automatic input, native-application qualification, performance
+acceptance, and `v0.4.0` release remain deferred.
 See [Implementation status](#implementation-status).
 
 ## Product definition
 
 MadoPilot is a headless visual automation runtime for applications and agents.
 It discovers windows and displays, captures frame streams, maps coordinate
-spaces, performs template matching and one-shot OCR, injects input through
-explicit platform capabilities, and reports structured outcomes. Visual-condition
-watchers remain future work.
+spaces, performs template matching and one-shot OCR, waits for stable template
+presence through a bounded Rust query, injects input through explicit platform
+capabilities, and reports structured outcomes. OCR watchers and native template
+watcher qualification remain future work.
 
 MadoPilot does not own a GUI, tray, editor, overlay, updater, workflow catalog,
-time-based scheduler, or general scripting DSL.
+general workflow/cron scheduler, or general scripting DSL.
 
 ## Release targets
 
@@ -301,7 +307,7 @@ prefix.
 | `crates/automation/input` | `mado-pilot-input` | Input operation, route capability, focus, submission receipt, and error contracts |
 | `crates/automation/vision` | `mado-pilot-vision` | Template source, preprocessing, matching request/result, and closed change-detection policy contracts |
 | `crates/automation/ocr` | `mado-pilot-ocr` | OCR source, model, request, result, and text-normalization contracts |
-| `crates/automation/runtime` | `mado-pilot-runtime` | Session orchestration, cancellation, input-result arbitration, and bounded engine-scoped diagnostics |
+| `crates/automation/runtime` | `mado-pilot-runtime` | Session orchestration, finite template watcher scheduling, cancellation, input-result arbitration, and bounded engine-scoped diagnostics |
 | `crates/automation/assets` | `mado-pilot-assets` | Versioned manifest, validation, deterministic loading, and source-resolution contracts |
 | `crates/adapter/replay` | `mado-pilot-adapter-replay` | Deterministic replay capture from file and memory sources |
 | `crates/platform/windows` | `mado-pilot-platform-windows` | Picker-free Windows window/display discovery, WGC/D3D11 capture, system input, ordinary exact-window queue submission with unknown compatibility, and fixture-acknowledged exact-window submission, wired into the runtime and facade by `mado_pilot::windows_engine`; Windows exposes no separate capture/input authorization state, and receipts report integrity/UIPI failures without elevation |
@@ -309,7 +315,7 @@ prefix.
 | `crates/backend/opencv` | `mado-pilot-backend-opencv` | OpenCV CPU template matching |
 | `crates/backend/onnx` | `mado-pilot-backend-onnx` | Bounded ONNX Runtime 1.29 OCR for the exact accepted native G-004 and explicit bounded-detector profiles, with CPU defaults and target-gated explicit provider policy |
 | `crates/bindings/capi` | `mado-pilot-capi` | Separately versioned C ABI and ownership boundary, and the header-only C++ wrapper and CMake targets over it |
-| `crates/support/testkit` | `mado-pilot-testkit` | Controlled capture, storage, permission, backend, and input doubles, synthetic clock, contract-fixture support, and the deterministic offline `G-005` evaluator |
+| `crates/support/testkit` | `mado-pilot-testkit` | Controlled capture, storage, permission, matching/OCR backend, and input doubles, synthetic clocks, gated completion scripts, allocation accounting, contract-fixture support, and the deterministic offline `G-005` evaluator |
 | `tools/dependency-check` | `mado-pilot-dependency-check` | Repository maintenance: workspace inventory and dependency-direction checking |
 
 Every package in this table is `publish = false`. Publication is enabled for an
@@ -771,8 +777,8 @@ Version one implements, in later phases:
 ### Non-goals
 
 Version one does not include a GUI, tray, editor, overlay, updater, workflow
-catalog, time-based scheduler, or general scripting DSL. It does not add implicit
-network access, automatic privilege escalation, or hidden permission behavior.
+catalog, general workflow/cron scheduler, or general scripting DSL. It does not
+add implicit network access, automatic privilege escalation, or hidden permission behavior.
 
 ### Future work
 
@@ -869,7 +875,7 @@ responsibilities a later phase takes on.
 | Native window and display capture | Implemented on both targets, and reachable from the public composition root through the target-specific facade constructors |
 | Template sources, prepared templates, requests, results, backend contract | Implemented in `mado-pilot-vision` |
 | Deterministic result ordering, suppression, and limiting | Implemented in `mado-pilot-vision` |
-| Closed change-detection policy and recorded-sequence evaluator | Implemented in `mado-pilot-vision` and `mado-pilot-testkit`. ADR 0050 selects exact RGBA for compatible mapped regions, keeps analysis-always as fail-safe, and limits unchanged authority to routine-analysis admission. Both hosted release targets reproduced canonical report v2 and independent review is clean; no watcher or public facade operation exists |
+| Closed change-detection policy and recorded-sequence evaluator | Implemented in `mado-pilot-vision` and `mado-pilot-testkit`. ADR 0050 selects exact RGBA for compatible mapped regions, keeps analysis-always as fail-safe, and limits unchanged authority to routine-analysis admission. Both hosted release targets reproduced canonical report v2 and independent review is clean; the Rust template watcher consumes this descriptor without giving unchanged transitions stability authority |
 | Template preprocessing descriptors | Not implemented |
 | Template matching against a real image | Implemented in `mado-pilot-backend-opencv` for the Phase 1 profile |
 | OpenCV matching profile, public score mapping, candidate extraction | Implemented; decided in [ADR 0003](adr/0003-opencv-matching-profile-and-public-score.md) |
@@ -877,7 +883,7 @@ responsibilities a later phase takes on.
 | OCR model/profile decision and platform-neutral contracts | Implemented in `mado-pilot-ocr`: ADR 0033 fixes released native G-004; ADR 0038 records the rejected rectangular bounded candidate; ADR 0040 adds the accepted candidate-v2 closed identity over the same component bytes; ADR 0041 accepts singular target budgets; ADR 0044 accepts fixed non-overlapping grouped quality and budgets. Immutable model sources, exact-frame requests, normalized source-correlated results, typed failures, and deadline/cancellation-aware commit are implemented |
 | Exact accepted OCR preprocessing, ONNX inference, decoding, and provider policy | Implemented in `mado-pilot-backend-onnx`. ADR 0034 fixes controlled host-provided ONNX Runtime 1.29.0 loading through API 17 with one session pair and process-lifetime runtime ownership. Native G-004 keeps released DB736 behavior; explicit ADR 0040 selection keeps its bounded tensor/profile rules and ADR 0041/0044 budgets. ADR 0046 adds target-gated CUDA/CoreML initialization with one same-provider detector/recognizer pair, explicit dependency roots, atomic pre-publication preferred fallback, required-provider failure, immutable provider facts, and no inference retry/provider switching. ADR 0047 rejects CoreML release qualification. ADR 0048 remains historical explicit Windows CUDA evidence; ADR 0049 adds deterministic provider-specific output-bounded batches and requalifies the unchanged CUDA provider/loader policy. Automatic selection remains CPU on both release targets |
 | Accepted OCR composition | Existing constructors still omit OCR or select the released CPU native/bounded profiles with no fallback. New replay/Windows/macOS provider constructors own caller configuration, select model profile independently from provider policy, and publish provider descriptors only with a complete engine. Preferred initialization may build a fresh CPU pair; required policy publishes no engine on failure |
-| Bounded engine-scoped diagnostic and provider observation | The released allocation-free `Off` and finite `Normal`/`Debug` diagnostic stream remains unchanged through ABI 1.5, with strict order, exact losses, independent readers/batches, and content-redacted singular/grouped OCR aggregates. Provider-policy construction is observed separately through engine-owned Rust/C/C++ descriptors; required failure is a typed construction error because it publishes no engine/reader |
+| Bounded engine-scoped diagnostic and provider observation | The released allocation-free `Off` and finite `Normal`/`Debug` diagnostic stream retains strict order, exact losses, independent readers/batches, and content redaction. Rust watcher records add bounded query/source/region/state/stability/disposition/queue/elapsed/typed-outcome facts without template names, pixels, hashes, or backend payloads. The released C ABI has no watcher start surface and its diagnostic structures/function table remain unchanged |
 | Input request, route capability, submission receipt, cleanup bounds, provider, and controller contracts | Implemented in `mado-pilot-input` |
 | Input injection | Implemented in `mado-pilot-platform-windows` for system pointer/keyboard/text, ordinary exact-window `WindowMessage` submission with unknown compatibility and target-queue evidence, and fixture-class acknowledged `WindowMessage` submission. Implemented in `mado-pilot-platform-macos` for `CGEvent` system pointer/keyboard/text and process-directed pointer/keyboard/text with owning-process scope, unknown compatibility, and invocation-only evidence; final candidate `dec43d7` passed the controlled profiles, and independent `single`, exact two-display non-mirrored `same-scale`, and `mixed-scale` matrices passed for all fourteen controlled pairs. No macOS window-message route exists. Both implementations are reached through `mado-pilot-runtime`, the Rust facade, C ABI 1.2/1.3, and C++ |
 | Asset manifests and directory, memory, and archive loading | Implemented in `mado-pilot-assets`; strict schema versions 1 and 2 are readable, with version 2 adding OCR model declarations |
@@ -885,9 +891,10 @@ responsibilities a later phase takes on.
 | Asset resolution into OCR model sources | Implemented in `mado-pilot-assets` with exact component length and SHA-256 validation and immutable shared ownership |
 | Deep search orchestration, result envelope, final operation commit | Implemented in `mado-pilot-runtime` |
 | Input composition: same-provider adapter pairing, required-versus-optional input admission with bounded release of committed capture, per-controller sequence serialization, the one-terminal-receipt rule, and two-sided close | Implemented in `mado-pilot-runtime`. Selecting a permitted route, arbitrating focus, resolving a coordinate against live geometry, revalidating before each irreversible event, and releasing what a stopped sequence pressed stay in `mado-pilot-input` and the Adapter implementing it |
-| Watcher queues, OCR coalescing, wait-for-text, and scheduling | Not implemented |
-| Public Rust operations for the deterministic replay workflow | Implemented in `mado-pilot` |
-| Public Rust operations for native and replay workflows | Implemented in `mado-pilot`, including explicit optional backend wiring, accepted CPU default/profile constructors, owning provider-policy constructors, immutable provider descriptors, and borrowed one-to-eight-zone scans; no platform-native or `ort` type crosses the facade |
+| Bounded template-presence query and scheduling | Implemented in `mado-pilot-runtime` for the Rust replay/OpenCV surface: current-once then strictly newer frame acquisition, finite latest-wins work, exact change/rate admission, confirmed-only stability, exact coalescing, two-worker fair progress, stale-generation rejection, and idempotent query/session/engine-scheduler close |
+| OCR coalescing and wait-for-text | Not implemented |
+| Public Rust operations for the deterministic replay workflow | Implemented in `mado-pilot`, including the blocking template watcher example with separate query/wait operation contexts |
+| Public Rust operations for native and replay workflows | Implemented in `mado-pilot`, including explicit optional backend wiring, accepted CPU default/profile constructors, owning provider-policy constructors, immutable provider descriptors, borrowed one-to-eight-zone scans, and the Rust template query types. Native watcher qualification is not claimed; no platform-native, `ort`, worker, channel, Tokio, or callback type crosses the facade |
 | Default adapter wiring and backend rules | OpenCV matching remains required. Every pre-provider constructor preserves CPU behavior. `*_engine_with_ocr_provider` is the only integrated provider-policy path; automatic selection uses only a release-qualified target accelerator, preferred fallback is initialization-only, and required/provider inference failure never falls back |
 | C ABI functions, C header, dynamic library | Implemented through ABI 1.5. ABI 1.0, 1.2, 1.3, and 1.4 remain frozen complete 424-, 592-, 648-, and 720-byte prefixes. ABI 1.5 appends provider construction at offset 720 and engine-owned provider descriptor access at offset 728 for a complete 736-byte table under ADR 0046 |
 | C ABI static library and ABI-major release loader names | Not implemented; see [c-abi.md](c-abi.md) |
@@ -2466,6 +2473,95 @@ outcome, which makes the engine's final commit the last guard rather than the
 only one — deliberately, because the alternative is an orchestration layer that
 trusts its dependencies to have checked.
 
+### Bounded template-presence queries
+
+`Session::start_template_watch` accepts one owned `TemplateWatchRequest`: prepared
+template, coordinate-qualified `RegionSelection`, validated `MatchOptions`,
+`TemplateAnalysisRate`, `TemplateStability`, the closed
+`ChangeDetectionPolicy`, and one query-lifetime `OperationContext`. It returns
+one owning `TemplateQuery`. `poll` is non-blocking; `wait` takes a separate
+caller-wait context, so one wait timeout or cancellation cannot shorten, extend,
+or cancel the query; `cancel` races every other terminal event once and is
+idempotent. Dropping the sole handle performs that same explicit cancellation.
+Completed `TemplateWatchResult` values retain the target, exact source frame and
+transform, effective region, template/backend/options/match facts, and confirmed
+stability independently of session and scheduler lifetime.
+
+The selected `TemplateSchedulerDescriptor` is immutable: 256 live queries per
+engine, 16 sessions holding live watcher-work reservations, 64 live queries per
+session, two engine-wide in-flight analyses, one latest pending frame per query,
+and a shared mapped-region cache bounded by both 64 MiB of pixel bytes and 256
+retained entries. Eligible
+queue residence is bounded to 30 seconds. The engine owns two lazy analysis
+workers and one lazy control supervisor that only sweeps query
+deadline/cancellation, rate eligibility, and queue expiry; each active watcher
+session owns at most one lazy frame-acquisition worker. Capture publication
+never waits for matching. Pull
+adapters are paced only until the current observed frame is admitted or
+considered; external producers may continue publishing, and the next maintained
+read obtains their newest frame.
+
+Admission proceeds in this order:
+
+1. Verify query/source authority and retain only the newest compatible pending
+   frame.
+2. Resolve and map the exact ROI once. A fixed-byte cache holds shared mappings;
+   queries retain weak previous-mapping references, so 256 queries cannot pin
+   256 full ROIs.
+3. Apply exact change detection. `Unchanged` may skip routine analysis only
+   before stability begins; it never confirms presence or advances stability.
+4. Apply the query-clock rate interval. Deferred work remains one latest frame.
+5. Increment the query generation and admit backend work. Equivalent requests
+   coalesce only when backend/format, prepared-template instance, complete frame
+   stamp, clipped ROI, options, preprocessing facts, and next generation match.
+6. Commit only the authoritative generation. A no-match resets stability; only
+   confirmed matches increment consecutive observations or extend duration.
+   Cancellation, deadline, target loss, close, overload, or a newer generation
+   prevents late output from mutating state or producing a success diagnostic.
+
+Ready sessions rotate before queries. Inside the selected session, the smallest
+remaining query deadline wins with rotation as the deterministic tie-break.
+Remaining durations are read outside locks because operation contexts may use
+different clock domains. Two sessions can therefore reach the two backend slots
+without one expensive continuously-ready query starving the other.
+
+When locks are held together, scheduler admission precedes session activation;
+session activation precedes terminal authority, acquisition state, or registry
+mutation; and terminal authority precedes one query state. Registry and session
+snapshots release before acquiring activation or query state. A per-query
+diagnostic-emission lock precedes query state only while copying a payload;
+state-mutation paths never acquire it. Mapping-cache and worker-wake locks are
+independent. Capture waits, pixel mapping, exact byte comparison, backend work,
+caller clocks, diagnostic queue emission, waiter notification, and thread
+teardown run with no state guard held. Close refuses
+new queries, cancels pull acquisition, wakes waits, prevents later admission,
+and leaves in-flight resources owned until their late call returns; it never
+waits indefinitely for an uninterruptible backend. Query, session, and
+engine-scheduler close are idempotent.
+Normal watcher diagnostics retain terminal state, final work counters, and exact
+loss accounting. Debug additionally retains nonterminal per-transition
+dispositions and intermediate counters; terminal-state dispositions remain
+observable only through final aggregate work counters. Neither mode
+contains template names, bytes, paths, pixel/hash content, OCR/input text, native
+payloads, or unrelated desktop metadata. `Off` constructs no watcher diagnostic
+queue or `DiagnosticOperationId`; public `TemplateQueryId` issuance is
+unaffected.
+
+Supported now: Rust replay capture with the required OpenCV backend, as shown by
+`crates/mado-pilot/examples/template-watch.rs`. Source exhaustion refuses later
+query starts but lets an already acquired pending or in-flight final frame drain.
+Successfully drained work that leaves stability unsatisfied and has no competing
+terminal authority reports `SessionClosed`; the same outcome reports explicit
+session close before stability completed.
+`TemplateTerminalOutcome::Overloaded(TemplateOverload::QueueExpired)` means
+eligible work exceeded the fixed 30-second bound;
+`DeadlineExceeded`/`Cancelled` identify query authority, while the same statuses
+returned directly by `wait` identify only that caller wait. Callers repair the
+source, deadline, rate/stability policy, or backend failure; no retry, fallback,
+automatic input, or capacity tuning is implied. OCR predicates, callbacks,
+Tokio/futures, C/C++, native watcher support claims, and watcher performance
+budgets remain deferred.
+
 The engine holds contracts only. It cannot observe which adapter is behind one,
 so no orchestration rule can come to depend on a concrete adapter, and there is
 no plugin registry or public adapter injection: `EngineWiring` exists for the
@@ -2654,7 +2750,7 @@ against.
 | ABI layout and old-header compatibility | Implemented. The cross-language layout probe compares `rustc` against the platform C compiler field by field; immutable ABI 1.0 and 1.2 callers negotiate only their 424-byte and 592-byte extents and run against ABI 1.3. The OCR owner/accessor suffix ends at 640 bytes; the default constructor completes ABI 1.3 at 648 bytes while frozen `madopilot_engine_options_t` remains 16-byte/alignment-4. Partial-prefix C++ tests refuse before reading missing entries. The unreleased 1.1 draft remains unsupported |
 | Capture, mapping, and matching contract suites | Implemented for the contracts Phase 1 has. Both capture adapters pass the shared capture contract suite, and the vision contract suite covers the matching backend | Not applicable; no contract was implemented |
 | Change-detection policy and recorded-sequence contracts | The frozen `G-005` loader/evaluator tests cover strict manifests, exact fixture digests, ROI clipping, repeated pixels, geometry/epoch discontinuity, malformed/duplicate/reordered inputs, overflow, bounded content-redacted transition ids, candidate failure, deterministic aggregate output, privacy, report/runtime descriptor parity, and accepted ADR 0050 drift. The closed runtime policy tests cover exact pixels, sequence gaps, fail-safe identity/geometry/ROI/format boundaries, unsupported policy codes, stable defaults, thread safety, and absence of worker state. Both hosted release targets reproduced canonical report v2 and independent correctness, security/privacy, and specification review is clean | Not applicable |
-| OCR, watcher, input, and diagnostic contract suites | OCR contract/backend/runtime/facade/C/C++ tests cover accepted default and explicit composition, identity, clipping, normalization, malformed output, deadline/cancellation, out-of-order completion, close, immutable ownership, initialized ABI outputs, frozen-prefix negotiation, request projection rebinding, repeated cleanup, and content-redacted diagnostics. Both hosted native jobs run default Rust/C/C++/CMake smoke and hard OCR benchmark gates. Approved Windows 11 and Apple Silicon quality/performance rows pass at their recorded revisions. Watcher suites remain not applicable | Not applicable |
+| OCR, watcher, input, and diagnostic contract suites | OCR contract/backend/runtime/facade/C/C++ tests cover accepted default and explicit composition, identity, clipping, normalization, malformed output, deadline/cancellation, out-of-order completion, close, immutable ownership, initialized ABI outputs, frozen-prefix negotiation, request projection rebinding, repeated cleanup, and content-redacted diagnostics. Rust watcher/runtime/facade suites cover current/newer frames, repeated pixels, appearance/disappearance, ROI, rate deferral, exact coalescing equality/inequality, saturation/expiry, two-session fairness, stale generations, target loss, geometry/epoch reset, terminal interleavings, retained results, diagnostic loss/redaction, and replay/OpenCV execution. Both hosted native jobs run default Rust/C/C++/CMake smoke and hard OCR benchmark gates. Approved Windows 11 and Apple Silicon OCR quality/performance rows pass at their recorded revisions; native watcher and watcher performance rows remain not applicable | Not applicable |
 | Native permission behavior and permission probes | Implemented on macOS and enforceable: Screen Recording and event-post access are read separately through non-prompting checks, discovery and open preflight capture authorization, macOS input re-reads the public `CGPreflightPostEventAccess` decision before every irreversible event on both routes and treats an unavailable or unreadable state as unauthorized, the legacy Accessibility observation is retained only as a paired qualification fact, and no permission-request API is called. The facade, C ABI, and C++ wrapper expose the same non-prompting states. Windows advertises no permission-probe capability; its input path compares integrity non-promptingly, proves the same-integrity dedicated fixture path and higher-integrity ordinary refusal path natively, and retains controlled-driver coverage for receipt edge cases | Not applicable; no permission was requested or probed |
 | Windows capture ownership and native resource lifetime | Implemented and enforceable in `mado-pilot-platform-windows` for staged current/previous discovery generations, two-frame WGC detachment, an extent-derived process-shared retained maximum capped at 40, checked 128 MiB surfaces and 2 GiB session / 4 GiB process retained-byte ceilings, deterministic multi-session contention/release behavior, producer leases bound to queued/quarantined native ownership, lock-free drop debt, lazy mapping, resize generations, callback admission fencing, apartment-safe asynchronous native teardown, typed terminal loss, runtime-resolved optional exports, and retryable close. Controlled common and Windows-native tests are linked from [windows-capture-contract-tests.md](windows-capture-contract-tests.md). ADR 0031 accepts the revision-bound 1280×720 production matrix and ADR 0032 accepts the exact two-display mixed-DPI dual-4K matrix, including callback-copy/staging/resident observations and lifecycle/resource budgets | Not applicable; no native capture existed |
 | Windows input submission and cleanup | Implemented and enforceable in `mado-pilot-platform-windows` for separate `System` and explicit exact-window `WindowMessage` routes, ordinary `Unknown` compatibility with target-queue evidence, fixture `Supported` compatibility with protocol acknowledgement, retained-authority pre/post fences, conservative message translation, focus and signed-coordinate policies, system native-record accounting, integrity/UIPI classification, non-fallback after native submission begins, bounded sequence-owned same-route cleanup, target loss, cancellation/deadline races, and close. [ADR 0027](adr/0027-windows-window-message-queue-submission.md) supersedes ADR 0022's ordinary system-only consequence without claiming application consumption or generation-atomic `HWND` safety. Native ordinary/fixture, negative-consumer, queue-pressure, lifecycle, single-display, same-DPI and mixed-DPI topology, unrelated-foreground, visual/no-visual, and higher-integrity/UIPI refusal rows are recorded; same-value recurrence remains an explicit unproved row |
