@@ -84,46 +84,15 @@ fn main() {
             "appearance_stable",
             "background then two present frames confirms only the second stable presence",
             plan,
-            || {
-                ReplayFixture::new(
-                    vec![
-                        match_fixtures::background_pixels(SOURCE_FORMAT),
-                        match_fixtures::scene_pixels(SOURCE_FORMAT),
-                        match_fixtures::scene_pixels(SOURCE_FORMAT),
-                    ],
-                    TemplateStability::consecutive(2).expect("valid stability"),
-                    None,
-                    2,
-                    2,
-                    3,
-                    &FULL_ORIGINS,
-                    FULL_MAPPED_BYTES,
-                )
-            },
-            replay_watch,
+            || (),
+            appearance_stable,
         ),
         measure(
             "disappearance_reset",
             "a confirmed absence resets stability before two later presence confirmations",
             plan,
-            || {
-                ReplayFixture::new(
-                    vec![
-                        match_fixtures::scene_pixels(SOURCE_FORMAT),
-                        match_fixtures::background_pixels(SOURCE_FORMAT),
-                        match_fixtures::scene_pixels(SOURCE_FORMAT),
-                        match_fixtures::scene_pixels(SOURCE_FORMAT),
-                    ],
-                    TemplateStability::consecutive(2).expect("valid stability"),
-                    None,
-                    3,
-                    2,
-                    4,
-                    &FULL_ORIGINS,
-                    FULL_MAPPED_BYTES,
-                )
-            },
-            replay_watch,
+            || (),
+            disappearance_reset,
         ),
         measure(
             "roi_match",
@@ -357,6 +326,7 @@ struct OpenCvControlledFixture {
     template: PreparedTemplate,
     options: MatchOptions,
     scene: Vec<u8>,
+    background: Vec<u8>,
 }
 
 impl OpenCvControlledFixture {
@@ -376,8 +346,187 @@ impl OpenCvControlledFixture {
             template,
             options,
             scene: match_fixtures::scene_pixels(SOURCE_FORMAT),
+            background: match_fixtures::background_pixels(SOURCE_FORMAT),
         }
     }
+}
+
+fn appearance_stable(_: &()) -> Sample {
+    let allocation_baseline = bench_harness::live_allocated_bytes();
+    let fixture = OpenCvControlledFixture::new();
+    let session = fixture.core.open();
+    let request = TemplateWatchRequest::new(
+        fixture.template.clone(),
+        fixture.options,
+        OperationContext::new(),
+    )
+    .with_stability(TemplateStability::consecutive(2).expect("valid stability"));
+
+    let started = Instant::now();
+    let query = session
+        .start_template_watch(request)
+        .expect("started appearance query");
+    fixture
+        .core
+        .capture
+        .publish_pixels(&fixture.background, Continuity::Continuous)
+        .expect("published absent frame");
+    let absent = wait_progress(&query, |progress| {
+        progress.confirmed_observations() == 0
+            && progress.work().get(TemplateWorkDisposition::Completed) == 1
+    });
+    fixture
+        .core
+        .capture
+        .publish_pixels(&fixture.scene, Continuity::Continuous)
+        .expect("published first presence");
+    let first_presence = wait_progress(&query, |progress| {
+        progress.confirmed_observations() == 1
+            && progress.work().get(TemplateWorkDisposition::Completed) == 2
+    });
+    fixture
+        .core
+        .capture
+        .publish_pixels(&fixture.scene, Continuity::Continuous)
+        .expect("published second presence");
+    let outcome = query
+        .wait(&bounded_operation())
+        .expect("appearance query completed");
+    let elapsed = started.elapsed();
+    let result_correct = absent
+        .last_frame()
+        .is_some_and(|stamp| stamp.sequence().value() == 0)
+        && first_presence
+            .last_frame()
+            .is_some_and(|stamp| stamp.sequence().value() == 1)
+        && matches!(
+            outcome.as_ref(),
+            TemplateTerminalOutcome::Matched(result)
+                if result.frame().stamp().sequence().value() == 2
+                    && result.confirmed_observations() == 2
+                    && exact_origins(result.result(), &FULL_ORIGINS)
+        );
+    session.close(&bounded_operation()).expect("closed session");
+    let (metrics, diagnostics_correct) =
+        terminal_metrics(&fixture.core.reader, &[query.id()], 3, None);
+    let work_correct = metrics.is_some_and(|work| {
+        work.backend_runs == 3
+            && work.admitted == 3
+            && work.completed == 3
+            && work.superseded == 0
+            && work.query_completions == 1
+            && work.query_failures == 0
+    });
+
+    drop(outcome);
+    drop(query);
+    drop(session);
+    drop(fixture);
+    let cleanup_correct = wait_for_live_allocations(allocation_baseline.saturating_add(
+        usize::try_from(bench_harness::GROWTH_LIMIT_BYTES).expect("positive growth limit"),
+    ));
+
+    finish_sample(
+        elapsed,
+        result_correct && diagnostics_correct && work_correct && cleanup_correct,
+        FULL_MAPPED_BYTES,
+        metrics,
+    )
+}
+
+fn disappearance_reset(_: &()) -> Sample {
+    let allocation_baseline = bench_harness::live_allocated_bytes();
+    let fixture = OpenCvControlledFixture::new();
+    let session = fixture.core.open();
+    let request = TemplateWatchRequest::new(
+        fixture.template.clone(),
+        fixture.options,
+        OperationContext::new(),
+    )
+    .with_stability(TemplateStability::consecutive(2).expect("valid stability"));
+
+    let started = Instant::now();
+    let query = session
+        .start_template_watch(request)
+        .expect("started disappearance query");
+    fixture
+        .core
+        .capture
+        .publish_pixels(&fixture.scene, Continuity::Continuous)
+        .expect("published initial presence");
+    let initial_presence = wait_progress(&query, |progress| {
+        progress.confirmed_observations() == 1
+            && progress.work().get(TemplateWorkDisposition::Completed) == 1
+    });
+    fixture
+        .core
+        .capture
+        .publish_pixels(&fixture.background, Continuity::Continuous)
+        .expect("published disappearance");
+    let disappeared = wait_progress(&query, |progress| {
+        progress.confirmed_observations() == 0
+            && progress.work().get(TemplateWorkDisposition::Completed) == 2
+    });
+    fixture
+        .core
+        .capture
+        .publish_pixels(&fixture.scene, Continuity::Continuous)
+        .expect("published first reappearance");
+    let first_reappearance = wait_progress(&query, |progress| {
+        progress.confirmed_observations() == 1
+            && progress.work().get(TemplateWorkDisposition::Completed) == 3
+    });
+    fixture
+        .core
+        .capture
+        .publish_pixels(&fixture.scene, Continuity::Continuous)
+        .expect("published second reappearance");
+    let outcome = query
+        .wait(&bounded_operation())
+        .expect("disappearance query completed");
+    let elapsed = started.elapsed();
+    let result_correct = initial_presence
+        .last_frame()
+        .is_some_and(|stamp| stamp.sequence().value() == 0)
+        && disappeared
+            .last_frame()
+            .is_some_and(|stamp| stamp.sequence().value() == 1)
+        && first_reappearance
+            .last_frame()
+            .is_some_and(|stamp| stamp.sequence().value() == 2)
+        && matches!(
+            outcome.as_ref(),
+            TemplateTerminalOutcome::Matched(result)
+                if result.frame().stamp().sequence().value() == 3
+                    && result.confirmed_observations() == 2
+                    && exact_origins(result.result(), &FULL_ORIGINS)
+        );
+    session.close(&bounded_operation()).expect("closed session");
+    let (metrics, diagnostics_correct) =
+        terminal_metrics(&fixture.core.reader, &[query.id()], 4, None);
+    let work_correct = metrics.is_some_and(|work| {
+        work.backend_runs == 4
+            && work.admitted == 4
+            && work.completed == 4
+            && work.superseded == 0
+            && work.query_completions == 1
+            && work.query_failures == 0
+    });
+
+    drop(outcome);
+    drop(query);
+    drop(session);
+    drop(fixture);
+    let cleanup_correct = wait_for_live_allocations(allocation_baseline.saturating_add(
+        usize::try_from(bench_harness::GROWTH_LIMIT_BYTES).expect("positive growth limit"),
+    ));
+
+    finish_sample(
+        elapsed,
+        result_correct && diagnostics_correct && work_correct && cleanup_correct,
+        FULL_MAPPED_BYTES,
+        metrics,
+    )
 }
 
 fn static_duration(_: &()) -> Sample {
