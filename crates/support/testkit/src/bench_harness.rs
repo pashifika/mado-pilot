@@ -2607,6 +2607,146 @@ pub const PHASE3_1_WINDOWS_BOUNDED_OCR_REOPEN_CLOSE_LIMIT: Duration = Duration::
 /// Phase 3.1 bounded profile's absolute rectangular detector tensor fact.
 pub const PHASE3_1_BOUNDED_OCR_MAX_DETECTOR_TENSOR_BYTES: u64 = 11_587_584;
 
+/// Phase 4 Apple deterministic template-watch latency ceilings from ADR 0051.
+pub const PHASE4_APPLE_TEMPLATE_WATCH_LATENCY_BUDGETS: [LatencyBudget; 10] = [
+    LatencyBudget::new(
+        "current_match",
+        Duration::from_micros(673),
+        Duration::from_micros(743),
+        Duration::from_micros(933),
+    ),
+    LatencyBudget::new(
+        "appearance_stable",
+        Duration::from_micros(1_920),
+        Duration::from_micros(2_135),
+        Duration::from_micros(2_270),
+    ),
+    LatencyBudget::new(
+        "disappearance_reset",
+        Duration::from_micros(2_530),
+        Duration::from_micros(2_652),
+        Duration::from_micros(2_994),
+    ),
+    LatencyBudget::new(
+        "roi_match",
+        Duration::from_micros(231),
+        Duration::from_micros(313),
+        Duration::from_micros(370),
+    ),
+    LatencyBudget::new(
+        "static_duration",
+        Duration::from_micros(1_951),
+        Duration::from_micros(2_710),
+        Duration::from_micros(2_850),
+    ),
+    LatencyBudget::new(
+        "coalesced_pair",
+        Duration::from_micros(214),
+        Duration::from_micros(266),
+        Duration::from_micros(309),
+    ),
+    LatencyBudget::new(
+        "saturation_latest_wins",
+        Duration::from_micros(30_526),
+        Duration::from_micros(60_634),
+        Duration::from_micros(86_239),
+    ),
+    LatencyBudget::new(
+        "two_session_fairness",
+        Duration::from_micros(729),
+        Duration::from_micros(30_338),
+        Duration::from_micros(30_722),
+    ),
+    LatencyBudget::new(
+        "cancel_in_flight",
+        Duration::from_micros(203),
+        Duration::from_micros(254),
+        Duration::from_micros(271),
+    ),
+    LatencyBudget::new(
+        "close_and_retain",
+        Duration::from_micros(360),
+        Duration::from_micros(437),
+        Duration::from_micros(467),
+    ),
+];
+
+/// Phase 4 Windows deterministic template-watch latency ceilings from ADR 0051.
+pub const PHASE4_WINDOWS_TEMPLATE_WATCH_LATENCY_BUDGETS: [LatencyBudget; 10] = [
+    LatencyBudget::new(
+        "current_match",
+        Duration::from_micros(756),
+        Duration::from_micros(896),
+        Duration::from_micros(1_006),
+    ),
+    LatencyBudget::new(
+        "appearance_stable",
+        Duration::from_micros(2_213),
+        Duration::from_micros(2_509),
+        Duration::from_micros(2_606),
+    ),
+    LatencyBudget::new(
+        "disappearance_reset",
+        Duration::from_micros(2_867),
+        Duration::from_micros(3_387),
+        Duration::from_micros(3_446),
+    ),
+    LatencyBudget::new(
+        "roi_match",
+        Duration::from_micros(246),
+        Duration::from_micros(331),
+        Duration::from_micros(348),
+    ),
+    LatencyBudget::new(
+        "static_duration",
+        Duration::from_micros(2_118),
+        Duration::from_micros(2_468),
+        Duration::from_micros(2_911),
+    ),
+    LatencyBudget::new(
+        "coalesced_pair",
+        Duration::from_micros(312),
+        Duration::from_micros(550),
+        Duration::from_micros(715),
+    ),
+    LatencyBudget::new(
+        "saturation_latest_wins",
+        Duration::from_micros(61_980),
+        Duration::from_micros(94_648),
+        Duration::from_micros(123_699),
+    ),
+    LatencyBudget::new(
+        "two_session_fairness",
+        Duration::from_micros(30_820),
+        Duration::from_micros(45_971),
+        Duration::from_micros(57_311),
+    ),
+    LatencyBudget::new(
+        "cancel_in_flight",
+        Duration::from_micros(1_544),
+        Duration::from_micros(2_458),
+        Duration::from_micros(2_749),
+    ),
+    LatencyBudget::new(
+        "close_and_retain",
+        Duration::from_micros(487),
+        Duration::from_micros(992),
+        Duration::from_micros(1_317),
+    ),
+];
+
+/// Phase 4 Apple deterministic template-watch live-Rust-heap ceiling.
+pub const PHASE4_APPLE_TEMPLATE_WATCH_HEAP_LIMIT_BYTES: usize = 245_760;
+
+/// Phase 4 Windows deterministic template-watch live-Rust-heap ceiling.
+pub const PHASE4_WINDOWS_TEMPLATE_WATCH_HEAP_LIMIT_BYTES: usize = 245_760;
+
+/// Phase 4 Apple deterministic template-watch process peak-RSS ceiling.
+pub const PHASE4_APPLE_TEMPLATE_WATCH_RESIDENT_LIMIT_BYTES: u64 = 69_206_016;
+
+/// Phase 4 Windows deterministic template-watch process peak-RSS ceiling.
+pub const PHASE4_WINDOWS_TEMPLATE_WATCH_RESIDENT_LIMIT_BYTES: u64 = 19_922_944;
+
 /// Enforces frozen p50, p95, and per-scenario latency ceilings.
 ///
 /// A missing or duplicated workload is a harness error rather than a skipped

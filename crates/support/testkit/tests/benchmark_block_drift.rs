@@ -66,14 +66,17 @@ use mado_pilot_testkit::bench_harness::{
     PHASE3_OCR_REGION_MAPPED_BYTES, PHASE3_WINDOWS_OCR_CLOSE_LIMIT,
     PHASE3_WINDOWS_OCR_COLD_LOAD_LIMIT, PHASE3_WINDOWS_OCR_HEAP_LIMIT_BYTES,
     PHASE3_WINDOWS_OCR_LATENCY_BUDGETS, PHASE3_WINDOWS_OCR_REOPEN_CLOSE_LIMIT,
-    PHASE3_WINDOWS_OCR_RESIDENT_LIMIT_BYTES, benchmark_block,
+    PHASE3_WINDOWS_OCR_RESIDENT_LIMIT_BYTES, PHASE4_APPLE_TEMPLATE_WATCH_HEAP_LIMIT_BYTES,
+    PHASE4_APPLE_TEMPLATE_WATCH_LATENCY_BUDGETS, PHASE4_APPLE_TEMPLATE_WATCH_RESIDENT_LIMIT_BYTES,
+    PHASE4_WINDOWS_TEMPLATE_WATCH_HEAP_LIMIT_BYTES, PHASE4_WINDOWS_TEMPLATE_WATCH_LATENCY_BUDGETS,
+    PHASE4_WINDOWS_TEMPLATE_WATCH_RESIDENT_LIMIT_BYTES, benchmark_block,
 };
 
 /// Every committed benchmark profile, by repository path and content.
 ///
 /// `example-synthetic.toml` is deliberately absent because it documents the
 /// format with invented numbers rather than recording a measurement.
-const PROFILES: [(&str, &str); 34] = [
+const PROFILES: [(&str, &str); 36] = [
     (
         "docs/benchmarks/phase-1-deterministic-slice-aarch64-apple-darwin.toml",
         include_str!(
@@ -266,10 +269,22 @@ const PROFILES: [(&str, &str); 34] = [
             "../../../../docs/benchmarks/phase-3-1-cuda-remediated-fallback-integrated-zone-ocr-x86_64-pc-windows-msvc.toml"
         ),
     ),
+    (
+        "docs/benchmarks/phase-4-template-watch-query-aarch64-apple-darwin.toml",
+        include_str!(
+            "../../../../docs/benchmarks/phase-4-template-watch-query-aarch64-apple-darwin.toml"
+        ),
+    ),
+    (
+        "docs/benchmarks/phase-4-template-watch-query-x86_64-pc-windows-msvc.toml",
+        include_str!(
+            "../../../../docs/benchmarks/phase-4-template-watch-query-x86_64-pc-windows-msvc.toml"
+        ),
+    ),
 ];
 
 /// Native profiles and the latency ceilings enforced by their benchmark.
-const NATIVE_LATENCY_PROFILES: [(&str, &str, &[LatencyBudget]); 19] = [
+const NATIVE_LATENCY_PROFILES: [(&str, &str, &[LatencyBudget]); 21] = [
     (
         "docs/benchmarks/phase-2-2-controlled-capture-aarch64-apple-darwin.toml",
         include_str!(
@@ -396,6 +411,20 @@ const NATIVE_LATENCY_PROFILES: [(&str, &str, &[LatencyBudget]); 19] = [
             "../../../../docs/benchmarks/phase-3-1-cuda-remediated-fallback-integrated-zone-ocr-x86_64-pc-windows-msvc.toml"
         ),
         &PHASE3_1_WINDOWS_CUDA_FALLBACK_GROUPED_OCR_LATENCY_BUDGETS,
+    ),
+    (
+        "docs/benchmarks/phase-4-template-watch-query-aarch64-apple-darwin.toml",
+        include_str!(
+            "../../../../docs/benchmarks/phase-4-template-watch-query-aarch64-apple-darwin.toml"
+        ),
+        &PHASE4_APPLE_TEMPLATE_WATCH_LATENCY_BUDGETS,
+    ),
+    (
+        "docs/benchmarks/phase-4-template-watch-query-x86_64-pc-windows-msvc.toml",
+        include_str!(
+            "../../../../docs/benchmarks/phase-4-template-watch-query-x86_64-pc-windows-msvc.toml"
+        ),
+        &PHASE4_WINDOWS_TEMPLATE_WATCH_LATENCY_BUDGETS,
     ),
 ];
 
@@ -697,6 +726,53 @@ fn native_profiles_state_exactly_the_latency_budgets_the_harness_enforces() {
             expected_latency_blocks(enforced),
             "{path} must record every frozen p50, p95, and maximum latency \
              ceiling enforced by its native benchmark, with no stale extra ceiling"
+        );
+    }
+}
+
+#[test]
+fn template_watch_profiles_state_exactly_the_resource_budgets_the_benchmark_enforces() {
+    let profiles = [
+        (
+            "Apple",
+            include_str!(
+                "../../../../docs/benchmarks/phase-4-template-watch-query-aarch64-apple-darwin.toml"
+            ),
+            PHASE4_APPLE_TEMPLATE_WATCH_HEAP_LIMIT_BYTES,
+            PHASE4_APPLE_TEMPLATE_WATCH_RESIDENT_LIMIT_BYTES,
+        ),
+        (
+            "Windows",
+            include_str!(
+                "../../../../docs/benchmarks/phase-4-template-watch-query-x86_64-pc-windows-msvc.toml"
+            ),
+            PHASE4_WINDOWS_TEMPLATE_WATCH_HEAP_LIMIT_BYTES,
+            PHASE4_WINDOWS_TEMPLATE_WATCH_RESIDENT_LIMIT_BYTES,
+        ),
+    ];
+
+    for (target, profile, heap_limit, resident_limit) in profiles {
+        let recorded: Vec<BudgetBlock<'_>> = budget_blocks(profile)
+            .into_iter()
+            .filter(|budget| budget.workload.is_none() && budget.kind == Some("absolute"))
+            .collect();
+        assert_eq!(
+            recorded,
+            vec![
+                absolute_budget(
+                    None,
+                    "peak_allocated_bytes",
+                    "bytes",
+                    exact_limit(u64::try_from(heap_limit).expect("watcher heap limit fits u64")),
+                ),
+                absolute_budget(
+                    None,
+                    "peak_resident_bytes",
+                    "bytes",
+                    exact_limit(resident_limit),
+                ),
+            ],
+            "{target} watcher profile and benchmark resource ceilings drifted"
         );
     }
 }

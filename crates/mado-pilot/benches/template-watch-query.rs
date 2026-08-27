@@ -194,6 +194,12 @@ fn main() {
 
     bench_harness::enforce_hard_budgets(&workloads);
     enforce_qualification_oracles(&workloads, plan);
+    if arguments
+        .iter()
+        .any(|argument| argument == "--enforce-budgets")
+    {
+        enforce_target_budgets(&workloads);
+    }
 }
 
 #[derive(Debug)]
@@ -1584,6 +1590,56 @@ fn enforce_qualification_oracles(workloads: &[Workload], plan: Plan) {
             workload.name()
         );
     }
+}
+
+fn enforce_resource_budgets(workloads: &[Workload], heap_limit: usize, resident_limit: u64) {
+    for workload in workloads {
+        assert!(
+            workload.peak_allocated_bytes() <= heap_limit,
+            "{} exceeded the accepted live-Rust-heap ceiling: {} > {heap_limit}",
+            workload.name(),
+            workload.peak_allocated_bytes()
+        );
+        let resident = workload
+            .peak_resident_bytes()
+            .unwrap_or_else(|| panic!("{} omitted peak resident memory", workload.name()));
+        assert!(
+            resident <= resident_limit,
+            "{} exceeded the accepted process peak-RSS ceiling: {resident} > {resident_limit}",
+            workload.name()
+        );
+    }
+}
+
+#[cfg(target_os = "macos")]
+fn enforce_target_budgets(workloads: &[Workload]) {
+    bench_harness::enforce_latency_budgets(
+        workloads,
+        &bench_harness::PHASE4_APPLE_TEMPLATE_WATCH_LATENCY_BUDGETS,
+    );
+    enforce_resource_budgets(
+        workloads,
+        bench_harness::PHASE4_APPLE_TEMPLATE_WATCH_HEAP_LIMIT_BYTES,
+        bench_harness::PHASE4_APPLE_TEMPLATE_WATCH_RESIDENT_LIMIT_BYTES,
+    );
+}
+
+#[cfg(windows)]
+fn enforce_target_budgets(workloads: &[Workload]) {
+    bench_harness::enforce_latency_budgets(
+        workloads,
+        &bench_harness::PHASE4_WINDOWS_TEMPLATE_WATCH_LATENCY_BUDGETS,
+    );
+    enforce_resource_budgets(
+        workloads,
+        bench_harness::PHASE4_WINDOWS_TEMPLATE_WATCH_HEAP_LIMIT_BYTES,
+        bench_harness::PHASE4_WINDOWS_TEMPLATE_WATCH_RESIDENT_LIMIT_BYTES,
+    );
+}
+
+#[cfg(not(any(windows, target_os = "macos")))]
+fn enforce_target_budgets(_workloads: &[Workload]) {
+    panic!("template-watch qualification budgets exist only for release targets");
 }
 
 #[cfg(target_os = "macos")]
