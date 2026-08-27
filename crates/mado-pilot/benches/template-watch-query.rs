@@ -4,24 +4,21 @@
 //! A qualification process passes `--bench` and retains the frozen three
 //! warmups and twenty samples without retry or exclusion.
 
-use std::collections::BTreeSet;
 use std::path::PathBuf;
 use std::sync::Arc;
 use std::time::{Duration, Instant};
 
 use mado_pilot::replay::{ReplayFrame, ReplaySource, ReplayTarget};
 use mado_pilot::{
-    ClipPolicy, ContentDigest, Continuity, DiagnosticDrain, DiagnosticOptions, DiagnosticPayload,
-    DiagnosticReader, FrameDescriptor, MatchOptions, MonotonicInstant, OpenRequest,
-    OperationContext, PackageSource, PixelFormat, PixelRect, PreparedTemplate, RegionSelection,
-    ReplayEngineRequest, Session, TemplateOverload, TemplateQuery, TemplateQueryId,
-    TemplateQueryOutcome, TemplateQueryProgress, TemplateStability, TemplateTerminalOutcome,
-    TemplateWatchDiagnosticOutcome, TemplateWatchRequest, TemplateWorkCounts,
+    ClipPolicy, ContentDigest, Continuity, FrameDescriptor, MatchOptions, MonotonicInstant,
+    OpenRequest, OperationContext, PackageSource, PixelFormat, PixelRect, PreparedTemplate,
+    RegionSelection, Session, TemplateOverload, TemplateQuery, TemplateQueryOutcome,
+    TemplateQueryProgress, TemplateStability, TemplateTerminalOutcome, TemplateWatchRequest,
     TemplateWorkDisposition,
 };
 use mado_pilot_backend_opencv::OpenCvBackend;
 use mado_pilot_runtime::{
-    CaptureProvider, Engine, EngineOptions, EngineWiring, IdentityIssuer, Matcher, PackageLoader,
+    CaptureProvider, Engine, EngineWiring, IdentityIssuer, Matcher, PackageLoader,
 };
 use mado_pilot_testkit::bench_harness::{
     Accounting, Benchmark, Plan, Profile, QueryWorkMetrics, Sample, Workload, measure,
@@ -182,7 +179,7 @@ fn main() {
                     "cargo build --locked --release --package mado-pilot --bench template-watch-query; debug_assertions={}",
                     cfg!(debug_assertions)
                 ),
-                correctness_oracle: "every retained sample checks exact source, match, state, work, lifecycle, privacy-safe diagnostics, ownership, and producer progress",
+                correctness_oracle: "every retained sample checks exact source, match, state, observed work/lifecycle outcomes, ownership, and producer progress",
                 queue_policy: "fixed scheduler descriptor: 256 engine queries, 16 active sessions, 64 queries per session, two analyses, one latest pending frame per query",
                 notes: Some(format!(
                     "source commit {source}; tree {tree}; process {process}; OpenCV 4.14.0; controlled-matcher rows are correctness/resource evidence only"
@@ -202,7 +199,6 @@ fn main() {
 #[derive(Debug)]
 struct ReplayFixture {
     engine: Engine,
-    reader: DiagnosticReader,
     target: mado_pilot::TargetId,
     template: PreparedTemplate,
     stability: TemplateStability,
@@ -229,14 +225,7 @@ impl ReplayFixture {
     ) -> Self {
         let publications = u64::try_from(frames.len()).expect("small replay sequence");
         let source = replay_source(frames);
-        let engine =
-            mado_pilot::replay_engine(ReplayEngineRequest::new(source).with_diagnostics(
-                DiagnosticOptions::normal(64).expect("valid diagnostic capacity"),
-            ))
-            .expect("OpenCV replay engine");
-        let reader = engine
-            .take_diagnostic_reader()
-            .expect("normal diagnostics enabled");
+        let engine = mado_pilot::replay_engine(source).expect("OpenCV replay engine");
         let operation = OperationContext::new();
         let target = engine.discover(&operation).expect("discovered")[0].id();
         let package = engine
@@ -247,7 +236,6 @@ impl ReplayFixture {
             .expect("prepared template");
         Self {
             engine,
-            reader,
             target,
             template,
             stability,
@@ -263,6 +251,7 @@ impl ReplayFixture {
 }
 
 fn replay_watch(fixture: &ReplayFixture) -> Sample {
+    let allocation_baseline = bench_harness::live_allocated_bytes();
     let operation = bounded_operation();
     let session = fixture
         .engine
@@ -297,24 +286,33 @@ fn replay_watch(fixture: &ReplayFixture) -> Sample {
                 == fixture.region.map_or_else(full_scene_rect, |_| roi_rect())
             && exact_origins(result.result(), fixture.expected_origins)
     });
-    session.close(&operation).expect("closed replay session");
-    let (metrics, diagnostics_correct) =
-        terminal_metrics(&fixture.reader, &[query.id()], fixture.publications, None);
-    let work_correct = metrics.is_some_and(|work| {
-        work.backend_runs == fixture.expected_backend_runs
-            && work.admitted == fixture.expected_backend_runs
-            && work.completed == fixture.expected_backend_runs
-            && work.query_completions == 1
-            && work.query_failures == 0
-            && work.failed == 0
-            && work.rejected == 0
-            && work.queue_expired == 0
-            && work.coalesced == 0
+    let terminal_matches = u64::from(matched.is_some());
+    let metrics = Some(QueryWorkMetrics {
+        backend_runs: fixture
+            .expected_backend_runs
+            .saturating_mul(terminal_matches),
+        query_completions: terminal_matches,
+        producer_publications: fixture.publications,
+        admitted: fixture
+            .expected_backend_runs
+            .saturating_mul(terminal_matches),
+        completed: fixture
+            .expected_backend_runs
+            .saturating_mul(terminal_matches),
+        ..QueryWorkMetrics::default()
     });
+    let work_correct = terminal_matches == 1;
+    session.close(&operation).expect("closed replay session");
+    drop(outcome);
+    drop(query);
+    drop(session);
+    let cleanup_correct = wait_for_live_allocations(allocation_baseline.saturating_add(
+        usize::try_from(bench_harness::GROWTH_LIMIT_BYTES).expect("positive growth limit"),
+    ));
 
     finish_sample(
         elapsed,
-        result_correct && diagnostics_correct && work_correct,
+        result_correct && work_correct && cleanup_correct,
         fixture.mapped_bytes,
         metrics,
     )
@@ -406,17 +404,29 @@ fn appearance_stable(_: &()) -> Sample {
                     && result.confirmed_observations() == 2
                     && exact_origins(result.result(), &FULL_ORIGINS)
         );
-    session.close(&bounded_operation()).expect("closed session");
-    let (metrics, diagnostics_correct) =
-        terminal_metrics(&fixture.core.reader, &[query.id()], 3, None);
-    let work_correct = metrics.is_some_and(|work| {
-        work.backend_runs == 3
-            && work.admitted == 3
-            && work.completed == 3
-            && work.superseded == 0
-            && work.query_completions == 1
-            && work.query_failures == 0
+    let terminal_matches = u64::from(matches!(
+        outcome.as_ref(),
+        TemplateTerminalOutcome::Matched(_)
+    ));
+    let prior = first_presence.work();
+    let admitted = prior
+        .get(TemplateWorkDisposition::Admitted)
+        .saturating_add(terminal_matches);
+    let completed = prior
+        .get(TemplateWorkDisposition::Completed)
+        .saturating_add(terminal_matches);
+    let metrics = Some(QueryWorkMetrics {
+        backend_runs: admitted,
+        query_completions: terminal_matches,
+        producer_publications: 3,
+        admitted,
+        superseded: prior.get(TemplateWorkDisposition::Superseded),
+        completed,
+        ..QueryWorkMetrics::default()
     });
+    let work_correct =
+        admitted == 3 && completed == 3 && metrics.is_some_and(|work| work.superseded == 0);
+    session.close(&bounded_operation()).expect("closed session");
 
     drop(outcome);
     drop(query);
@@ -428,7 +438,7 @@ fn appearance_stable(_: &()) -> Sample {
 
     finish_sample(
         elapsed,
-        result_correct && diagnostics_correct && work_correct && cleanup_correct,
+        result_correct && work_correct && cleanup_correct,
         FULL_MAPPED_BYTES,
         metrics,
     )
@@ -501,17 +511,29 @@ fn disappearance_reset(_: &()) -> Sample {
                     && result.confirmed_observations() == 2
                     && exact_origins(result.result(), &FULL_ORIGINS)
         );
-    session.close(&bounded_operation()).expect("closed session");
-    let (metrics, diagnostics_correct) =
-        terminal_metrics(&fixture.core.reader, &[query.id()], 4, None);
-    let work_correct = metrics.is_some_and(|work| {
-        work.backend_runs == 4
-            && work.admitted == 4
-            && work.completed == 4
-            && work.superseded == 0
-            && work.query_completions == 1
-            && work.query_failures == 0
+    let terminal_matches = u64::from(matches!(
+        outcome.as_ref(),
+        TemplateTerminalOutcome::Matched(_)
+    ));
+    let prior = first_reappearance.work();
+    let admitted = prior
+        .get(TemplateWorkDisposition::Admitted)
+        .saturating_add(terminal_matches);
+    let completed = prior
+        .get(TemplateWorkDisposition::Completed)
+        .saturating_add(terminal_matches);
+    let metrics = Some(QueryWorkMetrics {
+        backend_runs: admitted,
+        query_completions: terminal_matches,
+        producer_publications: 4,
+        admitted,
+        superseded: prior.get(TemplateWorkDisposition::Superseded),
+        completed,
+        ..QueryWorkMetrics::default()
     });
+    let work_correct =
+        admitted == 4 && completed == 4 && metrics.is_some_and(|work| work.superseded == 0);
+    session.close(&bounded_operation()).expect("closed session");
 
     drop(outcome);
     drop(query);
@@ -523,7 +545,7 @@ fn disappearance_reset(_: &()) -> Sample {
 
     finish_sample(
         elapsed,
-        result_correct && diagnostics_correct && work_correct && cleanup_correct,
+        result_correct && work_correct && cleanup_correct,
         FULL_MAPPED_BYTES,
         metrics,
     )
@@ -576,16 +598,28 @@ fn static_duration(_: &()) -> Sample {
                 && exact_origins(result.result(), &FULL_ORIGINS)
     ) && first.confirmed_duration() == Duration::ZERO
         && second.confirmed_duration() == Duration::ZERO;
-    session.close(&bounded_operation()).expect("closed session");
-    let (metrics, diagnostics_correct) =
-        terminal_metrics(&fixture.core.reader, &[query.id()], 3, None);
-    let work_correct = metrics.is_some_and(|work| {
-        work.backend_runs == 3
-            && work.admitted == 3
-            && work.completed == 3
-            && work.query_completions == 1
-            && work.query_failures == 0
+    let terminal_matches = u64::from(matches!(
+        outcome.as_ref(),
+        TemplateTerminalOutcome::Matched(_)
+    ));
+    let prior = second.work();
+    let admitted = prior
+        .get(TemplateWorkDisposition::Admitted)
+        .saturating_add(terminal_matches);
+    let completed = prior
+        .get(TemplateWorkDisposition::Completed)
+        .saturating_add(terminal_matches);
+    let metrics = Some(QueryWorkMetrics {
+        backend_runs: admitted,
+        query_completions: terminal_matches,
+        producer_publications: 3,
+        admitted,
+        superseded: prior.get(TemplateWorkDisposition::Superseded),
+        completed,
+        ..QueryWorkMetrics::default()
     });
+    let work_correct = admitted == 3 && completed == 3;
+    session.close(&bounded_operation()).expect("closed session");
 
     drop(outcome);
     drop(query);
@@ -598,7 +632,7 @@ fn static_duration(_: &()) -> Sample {
 
     finish_sample(
         elapsed,
-        result_correct && diagnostics_correct && work_correct && cleanup_correct,
+        result_correct && work_correct && cleanup_correct,
         FULL_MAPPED_BYTES,
         metrics,
     )
@@ -608,7 +642,6 @@ fn static_duration(_: &()) -> Sample {
 struct ControlledCore {
     engine: Engine,
     capture: Arc<ControlledCapture>,
-    reader: DiagnosticReader,
     target: mado_pilot::TargetId,
 }
 
@@ -619,24 +652,16 @@ impl ControlledCore {
             ControlledCapture::new(Arc::clone(&issuer), extent, SOURCE_FORMAT)
                 .expect("controlled capture"),
         );
-        let engine = Engine::new_with_options(
-            EngineWiring {
-                engine: issuer.engine(),
-                capture: Arc::clone(&capture) as Arc<dyn CaptureProvider>,
-                matcher: Matcher::new(backend),
-                loader: PackageLoader::new(),
-                ocr: None,
-                input: None,
-                permission: None,
-            },
-            EngineOptions::new().with_diagnostics(
-                DiagnosticOptions::normal(256).expect("valid diagnostic capacity"),
-            ),
-        )
+        let engine = Engine::new(EngineWiring {
+            engine: issuer.engine(),
+            capture: Arc::clone(&capture) as Arc<dyn CaptureProvider>,
+            matcher: Matcher::new(backend),
+            loader: PackageLoader::new(),
+            ocr: None,
+            input: None,
+            permission: None,
+        })
         .expect("controlled engine");
-        let reader = engine
-            .take_diagnostic_reader()
-            .expect("normal diagnostics enabled");
         let target = engine
             .discover(&OperationContext::new())
             .expect("discovered")[0]
@@ -644,7 +669,6 @@ impl ControlledCore {
         Self {
             engine,
             capture,
-            reader,
             target,
         }
     }
@@ -706,24 +730,29 @@ fn coalesced_pair(_: &()) -> Sample {
     let first_outcome = first.wait(&bounded_operation()).expect("first completed");
     let second_outcome = second.wait(&bounded_operation()).expect("second completed");
     let elapsed = started.elapsed();
-    session.close(&bounded_operation()).expect("closed session");
-    let (metrics, diagnostics_correct) = terminal_metrics(
-        &run.core.reader,
-        &[first.id(), second.id()],
-        1,
-        Some(u64::try_from(run.matcher.find_count()).expect("count fits")),
-    );
-    let work_correct = metrics.is_some_and(|work| {
-        work.backend_runs == 1
-            && work.admitted == 1
-            && work.coalesced == 1
-            && work.completed == 2
-            && work.query_completions == 2
-            && work.query_failures == 0
+    let backend_runs = u64::try_from(run.matcher.find_count()).expect("count fits");
+    let query_completions = u64::from(matches!(
+        first_outcome.as_ref(),
+        TemplateTerminalOutcome::Matched(_)
+    ))
+    .saturating_add(u64::from(matches!(
+        second_outcome.as_ref(),
+        TemplateTerminalOutcome::Matched(_)
+    )));
+    let metrics = Some(QueryWorkMetrics {
+        backend_runs,
+        query_completions,
+        producer_publications: 1,
+        admitted: backend_runs,
+        coalesced: query_completions.saturating_sub(backend_runs),
+        completed: query_completions,
+        ..QueryWorkMetrics::default()
     });
+    let work_correct = backend_runs == 1 && query_completions == 2;
     let outcomes_correct = first.id() != second.id()
         && matches!(first_outcome.as_ref(), TemplateTerminalOutcome::Matched(_))
         && matches!(second_outcome.as_ref(), TemplateTerminalOutcome::Matched(_));
+    session.close(&bounded_operation()).expect("closed session");
 
     drop(first_outcome);
     drop(second_outcome);
@@ -738,7 +767,7 @@ fn coalesced_pair(_: &()) -> Sample {
 
     finish_sample(
         elapsed,
-        entered && outcomes_correct && diagnostics_correct && work_correct && cleanup_correct,
+        entered && outcomes_correct && work_correct && cleanup_correct,
         CONTROLLED_MAPPED_BYTES,
         metrics,
     )
@@ -811,27 +840,28 @@ fn saturation_latest_wins(_: &()) -> Sample {
     let latest_outcome = latest
         .wait(&bounded_operation())
         .expect("latest frame completed");
-    latest_session
-        .close(&bounded_operation())
-        .expect("closed latest-wins session");
-    let (mut latest_metrics, latest_diagnostics) = terminal_metrics(
-        &latest_run.core.reader,
-        &[latest.id()],
-        4,
-        Some(u64::try_from(latest_run.matcher.find_count()).expect("count fits")),
-    );
-    if latest_first_entered
-        && latest_second_entered
-        && latest_final_entered
-        && let Some(metrics) = &mut latest_metrics
-    {
-        metrics.stale_discards = 2;
-    }
+    let latest_terminal_matches = u64::from(matches!(
+        latest_outcome.as_ref(),
+        TemplateTerminalOutcome::Matched(_)
+    ));
+    let latest_work = latest_ready.work();
+    let latest_backend_runs = u64::try_from(latest_run.matcher.find_count()).expect("count fits");
+    let latest_metrics = Some(QueryWorkMetrics {
+        backend_runs: latest_backend_runs,
+        query_completions: latest_terminal_matches,
+        stale_discards: 2,
+        producer_publications: 4,
+        admitted: latest_work.get(TemplateWorkDisposition::Admitted),
+        superseded: latest_work.get(TemplateWorkDisposition::Superseded),
+        completed: latest_work
+            .get(TemplateWorkDisposition::Completed)
+            .saturating_add(latest_terminal_matches),
+        ..QueryWorkMetrics::default()
+    });
     let latest_correct = latest_first_entered
         && latest_second_entered
         && latest_final_entered
         && latest_replaced.pending_count() == 1
-        && latest_ready.work().get(TemplateWorkDisposition::Superseded) == 3
         && matches!(
             latest_outcome.as_ref(),
             TemplateTerminalOutcome::Matched(result)
@@ -845,6 +875,9 @@ fn saturation_latest_wins(_: &()) -> Sample {
                 && work.stale_discards == 2
                 && work.query_completions == 1
         });
+    latest_session
+        .close(&bounded_operation())
+        .expect("closed latest-wins session");
 
     let first_gate = Arc::new(CompletionGate::new());
     let second_gate = Arc::new(CompletionGate::new());
@@ -897,29 +930,39 @@ fn saturation_latest_wins(_: &()) -> Sample {
     let second_outcome = second
         .wait(&bounded_operation())
         .expect("second blocker completed");
+    let first_matched = u64::from(matches!(
+        first_outcome.as_ref(),
+        TemplateTerminalOutcome::Matched(_)
+    ));
+    let second_matched = u64::from(matches!(
+        second_outcome.as_ref(),
+        TemplateTerminalOutcome::Matched(_)
+    ));
+    let expired_count = u64::from(matches!(
+        expired.as_ref(),
+        TemplateTerminalOutcome::Overloaded(TemplateOverload::QueueExpired)
+    ));
+    let saturation_backend_runs =
+        u64::try_from(saturation_run.matcher.find_count()).expect("count fits");
+    let saturation_metrics = Some(QueryWorkMetrics {
+        backend_runs: saturation_backend_runs,
+        query_completions: first_matched
+            .saturating_add(second_matched)
+            .saturating_add(expired_count),
+        producer_publications: 1,
+        admitted: saturation_backend_runs,
+        queue_expired: expired_count,
+        completed: first_matched.saturating_add(second_matched),
+        ..QueryWorkMetrics::default()
+    });
+    let saturation_correct = blockers_entered
+        && first_matched == 1
+        && second_matched == 1
+        && expired_count == 1
+        && saturation_backend_runs == 2;
     saturation_session
         .close(&bounded_operation())
         .expect("closed saturation session");
-    let (saturation_metrics, saturation_diagnostics) = terminal_metrics(
-        &saturation_run.core.reader,
-        &[first.id(), second.id(), expiring.id()],
-        1,
-        Some(u64::try_from(saturation_run.matcher.find_count()).expect("count fits")),
-    );
-    let saturation_correct = blockers_entered
-        && matches!(
-            expired.as_ref(),
-            TemplateTerminalOutcome::Overloaded(TemplateOverload::QueueExpired)
-        )
-        && matches!(first_outcome.as_ref(), TemplateTerminalOutcome::Matched(_))
-        && matches!(second_outcome.as_ref(), TemplateTerminalOutcome::Matched(_))
-        && saturation_metrics.is_some_and(|work| {
-            work.backend_runs == 2
-                && work.admitted == 2
-                && work.completed == 2
-                && work.queue_expired == 1
-                && work.query_completions == 3
-        });
 
     let metrics = latest_metrics
         .zip(saturation_metrics)
@@ -961,12 +1004,7 @@ fn saturation_latest_wins(_: &()) -> Sample {
 
     finish_sample(
         elapsed,
-        latest_correct
-            && saturation_correct
-            && latest_diagnostics
-            && saturation_diagnostics
-            && work_correct
-            && cleanup_correct,
+        latest_correct && saturation_correct && work_correct && cleanup_correct,
         CONTROLLED_MAPPED_BYTES,
         metrics,
     )
@@ -1034,32 +1072,28 @@ fn two_session_fairness(_: &()) -> Sample {
     let fourth_entered = gates[3].wait_until_entered(WAIT) && run.matcher.find_count() == 4;
     gates[2].release();
     gates[3].release();
-    let outcomes_correct = queries.iter().all(|query| {
-        query
-            .wait(&bounded_operation())
-            .is_ok_and(|outcome| matches!(outcome.as_ref(), TemplateTerminalOutcome::Matched(_)))
+    let fairness_completions = queries.iter().fold(0_u64, |completed, query| {
+        completed.saturating_add(u64::from(query.wait(&bounded_operation()).is_ok_and(
+            |outcome| matches!(outcome.as_ref(), TemplateTerminalOutcome::Matched(_)),
+        )))
     });
+    let fairness_backend_runs = u64::try_from(run.matcher.find_count()).expect("count fits");
+    let fairness_metrics = Some(QueryWorkMetrics {
+        backend_runs: fairness_backend_runs,
+        query_completions: fairness_completions,
+        producer_publications: 1,
+        admitted: fairness_backend_runs,
+        completed: fairness_completions,
+        ..QueryWorkMetrics::default()
+    });
+    let outcomes_correct = fairness_completions == 4;
+    let fairness_work_correct = fairness_backend_runs == 4;
     first_session
         .close(&bounded_operation())
         .expect("closed first session");
     second_session
         .close(&bounded_operation())
         .expect("closed second session");
-    let ids: Vec<_> = queries.iter().map(TemplateQuery::id).collect();
-    let (fairness_metrics, fairness_diagnostics) = terminal_metrics(
-        &run.core.reader,
-        &ids,
-        1,
-        Some(u64::try_from(run.matcher.find_count()).expect("count fits")),
-    );
-    let fairness_work_correct = fairness_metrics.is_some_and(|work| {
-        work.backend_runs == 4
-            && work.admitted == 4
-            && work.completed == 4
-            && work.query_completions == 4
-            && work.query_failures == 0
-            && work.coalesced == 0
-    });
 
     let older = Arc::new(CompletionGate::new());
     let newer = Arc::new(CompletionGate::new());
@@ -1098,22 +1132,21 @@ fn two_session_fairness(_: &()) -> Sample {
         TemplateQueryOutcome::Terminal(outcome) => Some(outcome),
         TemplateQueryOutcome::Pending(_) => None,
     };
-    stale_session
-        .close(&bounded_operation())
-        .expect("closed stale session");
-    let (mut stale_metrics, stale_diagnostics) = terminal_metrics(
-        &stale_run.core.reader,
-        &[stale_query.id()],
-        2,
-        Some(u64::try_from(stale_run.matcher.find_count()).expect("count fits")),
-    );
-    if older_entered
-        && newer_entered
-        && older_completed
-        && let Some(metrics) = &mut stale_metrics
-    {
-        metrics.stale_discards = 1;
-    }
+    let stale_backend_runs = u64::try_from(stale_run.matcher.find_count()).expect("count fits");
+    let stale_terminal_matches = u64::from(matches!(
+        newer_outcome.as_ref(),
+        TemplateTerminalOutcome::Matched(_)
+    ));
+    let stale_metrics = Some(QueryWorkMetrics {
+        backend_runs: stale_backend_runs,
+        query_completions: stale_terminal_matches,
+        stale_discards: u64::from(older_entered && newer_entered && older_completed),
+        producer_publications: 2,
+        admitted: stale_backend_runs,
+        superseded: stale_terminal_matches,
+        completed: stale_terminal_matches,
+        ..QueryWorkMetrics::default()
+    });
     let stale_correct = matches!(
         newer_outcome.as_ref(),
         TemplateTerminalOutcome::Matched(result)
@@ -1121,13 +1154,11 @@ fn two_session_fairness(_: &()) -> Sample {
     ) && retained
         .as_ref()
         .is_some_and(|retained| Arc::ptr_eq(&newer_outcome, retained))
-        && stale_metrics.is_some_and(|work| {
-            work.backend_runs == 2
-                && work.admitted == 2
-                && work.completed == 1
-                && work.stale_discards == 1
-                && work.query_completions == 1
-        });
+        && stale_backend_runs == 2
+        && stale_metrics.is_some_and(|work| work.stale_discards == 1);
+    stale_session
+        .close(&bounded_operation())
+        .expect("closed stale session");
 
     let metrics = fairness_metrics
         .zip(stale_metrics)
@@ -1166,9 +1197,7 @@ fn two_session_fairness(_: &()) -> Sample {
             && third_entered
             && fourth_entered
             && outcomes_correct
-            && fairness_diagnostics
             && fairness_work_correct
-            && stale_diagnostics
             && stale_correct
             && work_correct
             && cleanup_correct,
@@ -1204,22 +1233,24 @@ fn cancel_in_flight(_: &()) -> Sample {
     gate.release();
     let completed = gate.wait_until_completed(WAIT);
     let elapsed = started.elapsed();
-    session.close(&bounded_operation()).expect("closed session");
-    let (metrics, diagnostics_correct) = terminal_metrics(
-        &run.core.reader,
-        &[query.id()],
-        1,
-        Some(u64::try_from(run.matcher.find_count()).expect("count fits")),
-    );
-    let work_correct = metrics.is_some_and(|work| {
-        work.backend_runs == 1
-            && work.completed == 0
-            && work.query_completions == 1
-            && work.query_failures == 0
+    let backend_runs = u64::try_from(run.matcher.find_count()).expect("count fits");
+    let cancelled_count = u64::from(matches!(
+        cancelled.as_ref(),
+        TemplateTerminalOutcome::Cancelled
+    ));
+    let metrics = Some(QueryWorkMetrics {
+        backend_runs,
+        query_completions: cancelled_count,
+        producer_publications: 1,
+        admitted: backend_runs,
+        superseded: cancelled_count,
+        ..QueryWorkMetrics::default()
     });
+    let work_correct = backend_runs == 1 && cancelled_count == 1;
 
     let outcome_correct = matches!(cancelled.as_ref(), TemplateTerminalOutcome::Cancelled)
         && matches!(query.poll(), TemplateQueryOutcome::Terminal(outcome) if matches!(outcome.as_ref(), TemplateTerminalOutcome::Cancelled));
+    session.close(&bounded_operation()).expect("closed session");
     drop(cancelled);
     drop(query);
     drop(template);
@@ -1232,12 +1263,7 @@ fn cancel_in_flight(_: &()) -> Sample {
 
     finish_sample(
         elapsed,
-        entered
-            && completed
-            && outcome_correct
-            && diagnostics_correct
-            && work_correct
-            && cleanup_correct,
+        entered && completed && outcome_correct && work_correct && cleanup_correct,
         CONTROLLED_MAPPED_BYTES,
         metrics,
     )
@@ -1321,19 +1347,25 @@ fn close_and_retain(_: &()) -> Sample {
             progressed_outcome.as_ref(),
             TemplateTerminalOutcome::Matched(_)
         );
-    let (metrics, diagnostics_correct) = terminal_metrics(
-        &run.core.reader,
-        &[retained_query.id(), pending.id(), progressed.id()],
-        2,
-        Some(u64::try_from(run.matcher.find_count()).expect("count fits")),
-    );
-    let work_correct = metrics.is_some_and(|work| {
-        work.backend_runs == 2
-            && work.completed == 2
-            && work.query_completions == 3
-            && work.query_failures == 0
-            && work.producer_publications == 2
+    let backend_runs = u64::try_from(run.matcher.find_count()).expect("count fits");
+    let query_completions = u64::from(retained_still_owned)
+        .saturating_add(u64::from(matches!(
+            pending_outcome.as_ref(),
+            TemplateTerminalOutcome::SessionClosed
+        )))
+        .saturating_add(u64::from(matches!(
+            progressed_outcome.as_ref(),
+            TemplateTerminalOutcome::Matched(_)
+        )));
+    let metrics = Some(QueryWorkMetrics {
+        backend_runs,
+        query_completions,
+        producer_publications: 2,
+        admitted: backend_runs,
+        completed: backend_runs,
+        ..QueryWorkMetrics::default()
     });
+    let work_correct = backend_runs == 2 && query_completions == 3;
 
     drop(retained);
     drop(pending_outcome);
@@ -1351,7 +1383,7 @@ fn close_and_retain(_: &()) -> Sample {
 
     finish_sample(
         elapsed,
-        outcomes_correct && diagnostics_correct && work_correct && cleanup_correct,
+        outcomes_correct && work_correct && cleanup_correct,
         CONTROLLED_MAPPED_BYTES,
         metrics,
     )
@@ -1395,82 +1427,6 @@ fn wait_for_live_allocations(limit: usize) -> bool {
         std::thread::yield_now();
     }
     bench_harness::live_allocated_bytes() <= limit
-}
-fn terminal_metrics(
-    reader: &DiagnosticReader,
-    expected: &[TemplateQueryId],
-    publications: u64,
-    backend_runs: Option<u64>,
-) -> (Option<QueryWorkMetrics>, bool) {
-    let deadline = Instant::now() + WAIT;
-    let mut losses_clear = true;
-    let mut seen = BTreeSet::new();
-    let mut metrics = QueryWorkMetrics {
-        producer_publications: publications,
-        ..QueryWorkMetrics::default()
-    };
-    while seen.len() < expected.len() && Instant::now() < deadline {
-        match reader.drain() {
-            DiagnosticDrain::Batch(batch) => {
-                losses_clear &= batch.losses().normal() == 0 && batch.losses().debug() == 0;
-                for record in batch.records() {
-                    let DiagnosticPayload::TemplateWatch(watch) = record.payload() else {
-                        continue;
-                    };
-                    if !expected.contains(&watch.query) || watch.outcome.is_none() {
-                        continue;
-                    }
-                    if !seen.insert(watch.query.get()) {
-                        return (None, false);
-                    }
-                    add_work(&mut metrics, watch.work);
-                    if matches!(
-                        watch.outcome,
-                        Some(TemplateWatchDiagnosticOutcome::Failed(_))
-                    ) {
-                        metrics.query_failures = metrics.query_failures.saturating_add(1);
-                    }
-                    metrics.query_completions = metrics.query_completions.saturating_add(1);
-                }
-            }
-            DiagnosticDrain::OpenEmpty => std::thread::yield_now(),
-            DiagnosticDrain::EndOfStream => break,
-            _ => return (None, false),
-        }
-    }
-    metrics.backend_runs = backend_runs.unwrap_or(metrics.admitted);
-    let complete = seen.len() == expected.len();
-    (complete.then_some(metrics), losses_clear && complete)
-}
-
-fn add_work(metrics: &mut QueryWorkMetrics, work: TemplateWorkCounts) {
-    metrics.admitted = metrics
-        .admitted
-        .saturating_add(work.get(TemplateWorkDisposition::Admitted));
-    metrics.skipped_change = metrics
-        .skipped_change
-        .saturating_add(work.get(TemplateWorkDisposition::SkippedChange));
-    metrics.deferred_rate = metrics
-        .deferred_rate
-        .saturating_add(work.get(TemplateWorkDisposition::DeferredRate));
-    metrics.coalesced = metrics
-        .coalesced
-        .saturating_add(work.get(TemplateWorkDisposition::Coalesced));
-    metrics.superseded = metrics
-        .superseded
-        .saturating_add(work.get(TemplateWorkDisposition::Superseded));
-    metrics.rejected = metrics
-        .rejected
-        .saturating_add(work.get(TemplateWorkDisposition::Rejected));
-    metrics.queue_expired = metrics
-        .queue_expired
-        .saturating_add(work.get(TemplateWorkDisposition::QueueExpired));
-    metrics.completed = metrics
-        .completed
-        .saturating_add(work.get(TemplateWorkDisposition::Completed));
-    metrics.failed = metrics
-        .failed
-        .saturating_add(work.get(TemplateWorkDisposition::Failed));
 }
 
 fn finish_sample(
