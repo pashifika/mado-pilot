@@ -855,7 +855,7 @@ independent CoreML rejection and explicit CUDA qualification.
 
 ## Phase 4 change-detection correctness and cost boundary
 
-Proposed [ADR 0050](adr/0050-change-detection-default.md) resolves correctness
+Accepted [ADR 0050](adr/0050-change-detection-default.md) resolves correctness
 before watcher timing. The frozen `G-005` matrix has nine transitions: six
 must-detect and three compatible unchanged rows. `exact-rgba-v1` produces zero
 false skips, admits six analyses, skips three, and inspects 72 pixels. Every

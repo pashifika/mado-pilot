@@ -1,6 +1,6 @@
 # ADR 0050: Select exact RGBA change detection for compatible mapped regions
 
-- **Status:** Proposed pending identical v2 Windows and Apple Silicon hosted reports and clean independent re-review
+- **Status:** Accepted
 - **Date:** 2026-08-27
 - **Gate:** `G-005`
 - **Direction / Slice:** `version-one-delivery` / `phase-4-bounded-template-watch-query`
@@ -73,7 +73,7 @@ The predeclared comparison first rejects any candidate with a false skip or type
 
 Every lower-admitted-work candidate skips the frozen one-pixel in-ROI mandatory transition; the min-8, stride-4, and stride-8 candidates also skip the appearance/disappearance rows. Their reduced work cannot waive those false negatives.
 
-The canonical target-neutral v2 aggregate is `docs/evidence/g-005/accepted-report.json`. Both hosted release-target jobs must reproduce it byte for byte from the tracked evaluator before this ADR becomes Accepted. A target mismatch or incomplete run remains a rejection; no retry or result borrowing is allowed.
+The canonical target-neutral v2 aggregate is `docs/evidence/g-005/accepted-report.json`. Both hosted release-target jobs reproduced it byte for byte from the tracked evaluator on exact revision `3bb191d2221608774d4bb07cabc34b9ec92f6936`. A future target mismatch or incomplete run rejects applicability; no retry or result borrowing is allowed.
 
 ## Alternatives
 
@@ -101,6 +101,7 @@ The fixture bytes are generated repository data, not captured desktop content. T
 - `cargo test --locked -p mado-pilot-testkit --test change_detection_evaluator` passed 11 tests on the first frozen execution, 12 after exact report/runtime descriptor parity was added, 13 after the ADR/report drift gate was added, and 14 under contract v2 after the bounded transition-id privacy regression was added.
 - `cargo test --locked -p mado-pilot-vision --test change_detection` passed six closed-policy, exact-pixel, sequence-gap, identity/geometry/ROI/format, numeric-code, default, and thread/worker-state contracts.
 - Focused Clippy for `mado-pilot-vision` and `mado-pilot-testkit` passed with warnings denied.
-- The protected Windows `x86_64-pc-windows-msvc` and macOS `aarch64-apple-darwin` jobs reproduced report v1 on exact revision `99eb5c13b764614e3f6f0e1edee36548d3883d0c` in run `33034985691`. The additive v2 report requires a fresh both-target run on the patched revision before acceptance.
+- The protected Windows `x86_64-pc-windows-msvc` and macOS `aarch64-apple-darwin` jobs reproduced report v2 on exact revision `3bb191d2221608774d4bb07cabc34b9ec92f6936` in run `33036793853`; `Repository policy` also passed. Branch-policy run `33036793861` passed.
 - Existing workspace dependency-direction, facade, C ABI 1.5 layout, frozen old-header, and C++ tests remain the no-surface-drift gates.
+- Independent correctness, security/privacy, and specification re-review returned CLEAN on exact revision `3bb191d2221608774d4bb07cabc34b9ec92f6936`. The security review confirmed `G005-SEC-001` closed with no remaining finding or defense-in-depth suggestion.
 - `rasen/changes/phase-4-change-detection-default/evidence/` retains both v1 reports, the v2 contract/preflight, complete rejected-candidate tables, hosted reproduction, and review history.

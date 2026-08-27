@@ -37,4 +37,4 @@ cargo run --locked --package mado-pilot-testkit \
 diff -u docs/evidence/g-005/accepted-report.json /tmp/g-005-report.json
 ```
 
-The protected Windows and Apple Silicon jobs run the equivalent command using `RUNNER_TEMP`. ADR 0050 remains Proposed until both jobs reproduce identical bytes on one exact topic revision and independent review passes. Failed or mismatched output remains bound to its source and is never retried into acceptance.
+The protected Windows and Apple Silicon jobs run the equivalent command using `RUNNER_TEMP`. Both reproduced identical v2 bytes on exact revision `3bb191d2221608774d4bb07cabc34b9ec92f6936` in run `33036793853`, and independent correctness, security/privacy, and specification re-review returned CLEAN. ADR 0050 is Accepted. A future failed or mismatched output remains bound to its source and is never retried into acceptance.
