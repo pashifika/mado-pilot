@@ -699,6 +699,7 @@ fn expected_latency_blocks(budgets: &[LatencyBudget]) -> Vec<BudgetBlock<'static
             .map(|(measure, limit)| {
                 let micros = u32::try_from(limit.as_micros())
                     .expect("every frozen latency ceiling fits u32 microseconds");
+
                 BudgetBlock {
                     workload: Some(budget.workload()),
                     measure: Some(measure),
@@ -722,6 +723,23 @@ fn expected_mapped_blocks(budgets: &[MappedBytesBudget]) -> Vec<BudgetBlock<'sta
                 "bytes",
                 exact_limit(budget.bytes()),
             )
+        })
+        .collect()
+}
+fn measurement_key_counts<'a>(profile: &'a str, key: &str) -> Vec<(&'a str, usize)> {
+    profile
+        .split("[[measurement]]")
+        .skip(1)
+        .map(|block| {
+            let workload = block
+                .lines()
+                .find_map(|line| quoted_assignment(line.trim(), "workload"))
+                .expect("measurement carries a workload");
+            let count = block
+                .lines()
+                .filter(|line| number_assignment(line.trim(), key).is_some())
+                .count();
+            (workload, count)
         })
         .collect()
 }
@@ -859,6 +877,34 @@ fn template_watch_profiles_state_exactly_the_mapped_byte_budgets_the_benchmark_e
             recorded,
             expected_mapped_blocks(&PHASE4_TEMPLATE_WATCH_MAPPED_BYTES_BUDGETS),
             "{target} watcher profile and benchmark mapped-byte gates drifted"
+        );
+    }
+}
+#[test]
+fn remediated_template_watch_profiles_retain_one_iteration_span_per_workload() {
+    for (target, profile) in [
+        (
+            "Apple",
+            include_str!(
+                "../../../../docs/benchmarks/phase-4-template-watch-query-remediated-aarch64-apple-darwin.toml"
+            ),
+        ),
+        (
+            "Windows",
+            include_str!(
+                "../../../../docs/benchmarks/phase-4-template-watch-query-remediated-x86_64-pc-windows-msvc.toml"
+            ),
+        ),
+    ] {
+        let counts = measurement_key_counts(profile, "iteration_span_ms");
+        assert_eq!(
+            counts.len(),
+            11,
+            "{target} remediated workload count drifted"
+        );
+        assert!(
+            counts.iter().all(|(_, count)| *count == 1),
+            "{target} remediated profile omitted or duplicated an iteration span: {counts:?}"
         );
     }
 }

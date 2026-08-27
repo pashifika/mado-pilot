@@ -941,12 +941,17 @@ fn bounded_child_output_with<C: PrimaryChildCleanup>(
 /// triple assembled from the parts that are available would be a guess printed
 /// where a measurement condition belongs. A budget is valid only for the target
 /// in its profile, so the wrong string here is worse than no string.
-pub const RELEASE_TARGET: &str = if cfg!(all(target_arch = "aarch64", target_os = "macos")) {
+pub const RELEASE_TARGET: &str = if cfg!(all(
+    target_arch = "aarch64",
+    target_os = "macos",
+    target_vendor = "apple"
+)) {
     "aarch64-apple-darwin"
 } else if cfg!(all(
     target_arch = "x86_64",
     target_os = "windows",
-    target_env = "msvc"
+    target_env = "msvc",
+    target_vendor = "pc"
 )) {
     "x86_64-pc-windows-msvc"
 } else {

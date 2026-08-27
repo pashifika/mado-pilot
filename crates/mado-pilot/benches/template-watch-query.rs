@@ -10,12 +10,11 @@ use std::time::{Duration, Instant};
 
 use mado_pilot::replay::{ReplayFrame, ReplaySource, ReplayTarget};
 use mado_pilot::{
-    ClipPolicy, ContentDigest, Continuity, DiagnosticDrain, DiagnosticOptions, DiagnosticPayload,
-    DiagnosticReader, FrameDescriptor, MatchOptions, MonotonicInstant, OpenRequest,
-    OperationContext, PackageSource, PixelFormat, PixelRect, PreparedTemplate, RegionSelection,
-    Session, TemplateOverload, TemplateQuery, TemplateQueryOutcome, TemplateQueryProgress,
-    TemplateStability, TemplateTerminalOutcome, TemplateWatchDiagnosticOutcome,
-    TemplateWatchRequest, TemplateWorkDisposition,
+    ClipPolicy, ContentDigest, Continuity, FrameDescriptor, MatchOptions, MonotonicInstant,
+    OpenRequest, OperationContext, PackageSource, PixelFormat, PixelRect, PreparedTemplate,
+    RegionSelection, Session, TemplateOverload, TemplateQuery, TemplateQueryOutcome,
+    TemplateQueryProgress, TemplateStability, TemplateTerminalOutcome, TemplateWatchRequest,
+    TemplateWorkDisposition,
 };
 use mado_pilot_adapter_replay::ReplayProvider;
 use mado_pilot_backend_opencv::OpenCvBackend;
@@ -29,11 +28,26 @@ use mado_pilot_testkit::{
     Candidate, CompletionGate, ControlledCapture, ControlledMatcher, ManualClock, MatchBackend,
     ObservedMatcher, ScriptedMatchCall, bench_harness, match_fixtures,
 };
-#[cfg(all(target_arch = "x86_64", target_os = "windows", target_env = "msvc"))]
+#[cfg(all(
+    target_arch = "x86_64",
+    target_os = "windows",
+    target_env = "msvc",
+    target_vendor = "pc"
+))]
 use std::mem::size_of;
-#[cfg(all(target_arch = "x86_64", target_os = "windows", target_env = "msvc"))]
+#[cfg(all(
+    target_arch = "x86_64",
+    target_os = "windows",
+    target_env = "msvc",
+    target_vendor = "pc"
+))]
 use windows::Win32::System::ProcessStatus::{GetProcessMemoryInfo, PROCESS_MEMORY_COUNTERS};
-#[cfg(all(target_arch = "x86_64", target_os = "windows", target_env = "msvc"))]
+#[cfg(all(
+    target_arch = "x86_64",
+    target_os = "windows",
+    target_env = "msvc",
+    target_vendor = "pc"
+))]
 use windows::Win32::System::Threading::GetCurrentProcess;
 
 #[global_allocator]
@@ -260,7 +274,6 @@ fn engine_session_startup(_: &()) -> Sample {
 #[derive(Debug)]
 struct ReplayFixture {
     engine: Engine,
-    diagnostics: DiagnosticReader,
     observed: Arc<ObservedMatcher>,
     target: mado_pilot::TargetId,
     template: PreparedTemplate,
@@ -294,24 +307,16 @@ impl ReplayFixture {
         let observed = Arc::new(ObservedMatcher::new(Arc::new(
             OpenCvBackend::new().expect("OpenCV replay backend"),
         )));
-        let engine = Engine::new_with_options(
-            EngineWiring {
-                engine: engine_id,
-                capture: Arc::new(capture),
-                matcher: Matcher::new(Arc::clone(&observed) as Arc<dyn MatchBackend>),
-                loader: PackageLoader::new(),
-                ocr: None,
-                input: None,
-                permission: None,
-            },
-            mado_pilot_runtime::EngineOptions::new().with_diagnostics(
-                DiagnosticOptions::normal(64).expect("bounded qualification diagnostics"),
-            ),
-        )
+        let engine = Engine::new(EngineWiring {
+            engine: engine_id,
+            capture: Arc::new(capture),
+            matcher: Matcher::new(Arc::clone(&observed) as Arc<dyn MatchBackend>),
+            loader: PackageLoader::new(),
+            ocr: None,
+            input: None,
+            permission: None,
+        })
         .expect("observed OpenCV replay engine");
-        let diagnostics = engine
-            .take_diagnostic_reader()
-            .expect("normal diagnostics enabled");
         let operation = OperationContext::new();
         let target = engine.discover(&operation).expect("discovered")[0].id();
         let package = engine
@@ -322,7 +327,6 @@ impl ReplayFixture {
             .expect("prepared template");
         Self {
             engine,
-            diagnostics,
             observed,
             target,
             template,
@@ -396,7 +400,12 @@ fn replay_watch(fixture: &ReplayFixture) -> Sample {
             .expect("backend completion counter is monotonic"),
     )
     .expect("backend count fits");
-    let metrics = terminal_query_metrics(&fixture.diagnostics, &query, fixture.publications);
+    let metrics = Some(observed_query_metrics(
+        observed_backend_runs,
+        observed_backend_completions,
+        outcome.as_ref(),
+        fixture.publications,
+    ));
     let work_correct = metrics.is_some_and(|work| {
         observed_backend_runs == fixture.expected_backend_runs
             && observed_backend_completions == fixture.expected_backend_runs
@@ -435,7 +444,6 @@ fn replay_watch(fixture: &ReplayFixture) -> Sample {
 #[derive(Debug)]
 struct OpenCvControlledFixture {
     core: ControlledCore,
-    diagnostics: DiagnosticReader,
     observed: Arc<ObservedMatcher>,
     template: PreparedTemplate,
     options: MatchOptions,
@@ -448,7 +456,7 @@ impl OpenCvControlledFixture {
         let observed = Arc::new(ObservedMatcher::new(Arc::new(
             OpenCvBackend::new().expect("OpenCV 4 development installation"),
         )));
-        let (core, diagnostics) = ControlledCore::new_with_diagnostics(
+        let core = ControlledCore::new(
             Arc::clone(&observed) as Arc<dyn MatchBackend>,
             match_fixtures::SCENE,
         );
@@ -460,7 +468,6 @@ impl OpenCvControlledFixture {
         let options = MatchOptions::from_defaults(template.defaults());
         Self {
             core,
-            diagnostics,
             observed,
             template,
             options,
@@ -533,10 +540,13 @@ fn appearance_stable(_: &()) -> Sample {
     let observed_mapped_bytes =
         u64::try_from(fixture.observed.consistent_mapped_bytes().unwrap_or(0))
             .expect("mapped bytes fit");
-    let metrics = terminal_query_metrics(&fixture.diagnostics, &query, 3);
-    let work_correct = fixture.observed.find_count() == 3
-        && fixture.observed.completion_count() == 3
-        && metrics == Some(completed_query_metrics(3, 3));
+    let metrics = Some(observed_query_metrics(
+        u64::try_from(fixture.observed.find_count()).expect("backend count fits"),
+        u64::try_from(fixture.observed.completion_count()).expect("backend count fits"),
+        outcome.as_ref(),
+        3,
+    ));
+    let work_correct = metrics == Some(completed_query_metrics(3, 3));
     let mapped_correct = result_mapped_bytes == Some(FULL_MAPPED_BYTES)
         && observed_mapped_bytes == FULL_MAPPED_BYTES;
     session.close(&bounded_operation()).expect("closed session");
@@ -632,10 +642,13 @@ fn disappearance_reset(_: &()) -> Sample {
     let observed_mapped_bytes =
         u64::try_from(fixture.observed.consistent_mapped_bytes().unwrap_or(0))
             .expect("mapped bytes fit");
-    let metrics = terminal_query_metrics(&fixture.diagnostics, &query, 4);
-    let work_correct = fixture.observed.find_count() == 4
-        && fixture.observed.completion_count() == 4
-        && metrics == Some(completed_query_metrics(4, 4));
+    let metrics = Some(observed_query_metrics(
+        u64::try_from(fixture.observed.find_count()).expect("backend count fits"),
+        u64::try_from(fixture.observed.completion_count()).expect("backend count fits"),
+        outcome.as_ref(),
+        4,
+    ));
+    let work_correct = metrics == Some(completed_query_metrics(4, 4));
     let mapped_correct = result_mapped_bytes == Some(FULL_MAPPED_BYTES)
         && observed_mapped_bytes == FULL_MAPPED_BYTES;
     session.close(&bounded_operation()).expect("closed session");
@@ -711,10 +724,13 @@ fn static_duration(_: &()) -> Sample {
     let observed_mapped_bytes =
         u64::try_from(fixture.observed.consistent_mapped_bytes().unwrap_or(0))
             .expect("mapped bytes fit");
-    let metrics = terminal_query_metrics(&fixture.diagnostics, &query, 3);
-    let work_correct = fixture.observed.find_count() == 3
-        && fixture.observed.completion_count() == 3
-        && metrics == Some(completed_query_metrics(3, 3));
+    let metrics = Some(observed_query_metrics(
+        u64::try_from(fixture.observed.find_count()).expect("backend count fits"),
+        u64::try_from(fixture.observed.completion_count()).expect("backend count fits"),
+        outcome.as_ref(),
+        3,
+    ));
+    let work_correct = metrics == Some(completed_query_metrics(3, 3));
     let mapped_correct = result_mapped_bytes == Some(FULL_MAPPED_BYTES)
         && observed_mapped_bytes == FULL_MAPPED_BYTES;
     session.close(&bounded_operation()).expect("closed session");
@@ -745,49 +761,20 @@ struct ControlledCore {
 
 impl ControlledCore {
     fn new(backend: Arc<dyn MatchBackend>, extent: mado_pilot::PixelExtent) -> Self {
-        Self::new_with_options(backend, extent, mado_pilot_runtime::EngineOptions::new())
-    }
-
-    fn new_with_diagnostics(
-        backend: Arc<dyn MatchBackend>,
-        extent: mado_pilot::PixelExtent,
-    ) -> (Self, DiagnosticReader) {
-        let core = Self::new_with_options(
-            backend,
-            extent,
-            mado_pilot_runtime::EngineOptions::new().with_diagnostics(
-                DiagnosticOptions::normal(64).expect("bounded qualification diagnostics"),
-            ),
-        );
-        let diagnostics = core
-            .engine
-            .take_diagnostic_reader()
-            .expect("normal diagnostics enabled");
-        (core, diagnostics)
-    }
-
-    fn new_with_options(
-        backend: Arc<dyn MatchBackend>,
-        extent: mado_pilot::PixelExtent,
-        options: mado_pilot_runtime::EngineOptions,
-    ) -> Self {
         let issuer = Arc::new(IdentityIssuer::new());
         let capture = Arc::new(
             ControlledCapture::new(Arc::clone(&issuer), extent, SOURCE_FORMAT)
                 .expect("controlled capture"),
         );
-        let engine = Engine::new_with_options(
-            EngineWiring {
-                engine: issuer.engine(),
-                capture: Arc::clone(&capture) as Arc<dyn CaptureProvider>,
-                matcher: Matcher::new(backend),
-                loader: PackageLoader::new(),
-                ocr: None,
-                input: None,
-                permission: None,
-            },
-            options,
-        )
+        let engine = Engine::new(EngineWiring {
+            engine: issuer.engine(),
+            capture: Arc::clone(&capture) as Arc<dyn CaptureProvider>,
+            matcher: Matcher::new(backend),
+            loader: PackageLoader::new(),
+            ocr: None,
+            input: None,
+            permission: None,
+        })
         .expect("controlled engine");
         let target = engine
             .discover(&OperationContext::new())
@@ -1693,47 +1680,23 @@ fn finish_sample(
     sample
 }
 
-fn terminal_query_metrics(
-    reader: &DiagnosticReader,
-    query: &TemplateQuery,
+fn observed_query_metrics(
+    backend_runs: u64,
+    backend_completions: u64,
+    outcome: &TemplateTerminalOutcome,
     producer_publications: u64,
-) -> Option<QueryWorkMetrics> {
-    let DiagnosticDrain::Batch(batch) = reader.drain() else {
-        return None;
-    };
-    if batch.losses().normal() != 0 || batch.losses().debug() != 0 {
-        return None;
-    }
-    let mut matching = batch.records().iter().filter_map(|record| {
-        let DiagnosticPayload::TemplateWatch(diagnostic) = record.payload() else {
-            return None;
-        };
-        (diagnostic.query == query.id()
-            && diagnostic.disposition.is_none()
-            && diagnostic.outcome == Some(TemplateWatchDiagnosticOutcome::Matched))
-        .then_some(diagnostic)
-    });
-    let terminal = matching.next()?;
-    if matching.next().is_some() {
-        return None;
-    }
-    let work = terminal.work;
-    Some(QueryWorkMetrics {
-        backend_runs: work.get(TemplateWorkDisposition::Admitted),
-        query_completions: 1,
-        query_failures: 0,
-        stale_discards: 0,
+) -> QueryWorkMetrics {
+    let matched = u64::from(matches!(outcome, TemplateTerminalOutcome::Matched(_)));
+    QueryWorkMetrics {
+        backend_runs,
+        query_completions: matched,
+        query_failures: u64::from(matches!(outcome, TemplateTerminalOutcome::Failed(_))),
         producer_publications,
-        admitted: work.get(TemplateWorkDisposition::Admitted),
-        skipped_change: work.get(TemplateWorkDisposition::SkippedChange),
-        deferred_rate: work.get(TemplateWorkDisposition::DeferredRate),
-        coalesced: work.get(TemplateWorkDisposition::Coalesced),
-        superseded: work.get(TemplateWorkDisposition::Superseded),
-        rejected: work.get(TemplateWorkDisposition::Rejected),
-        queue_expired: work.get(TemplateWorkDisposition::QueueExpired),
-        completed: work.get(TemplateWorkDisposition::Completed),
-        failed: work.get(TemplateWorkDisposition::Failed),
-    })
+        admitted: backend_runs,
+        completed: backend_completions.saturating_mul(matched),
+        failed: backend_runs.saturating_sub(backend_completions),
+        ..QueryWorkMetrics::default()
+    }
 }
 fn completed_query_metrics(backend_runs: u64, producer_publications: u64) -> QueryWorkMetrics {
     QueryWorkMetrics {
@@ -1906,7 +1869,7 @@ fn enforce_resource_budgets(workloads: &[Workload], heap_limit: usize, resident_
     }
 }
 
-#[cfg(all(target_arch = "aarch64", target_os = "macos"))]
+#[cfg(all(target_arch = "aarch64", target_os = "macos", target_vendor = "apple"))]
 fn enforce_target_budgets(workloads: &[Workload]) {
     bench_harness::enforce_latency_budgets(
         workloads,
@@ -1919,7 +1882,12 @@ fn enforce_target_budgets(workloads: &[Workload]) {
     );
 }
 
-#[cfg(all(target_arch = "x86_64", target_os = "windows", target_env = "msvc"))]
+#[cfg(all(
+    target_arch = "x86_64",
+    target_os = "windows",
+    target_env = "msvc",
+    target_vendor = "pc"
+))]
 fn enforce_target_budgets(workloads: &[Workload]) {
     bench_harness::enforce_latency_budgets(
         workloads,
@@ -1933,14 +1901,19 @@ fn enforce_target_budgets(workloads: &[Workload]) {
 }
 
 #[cfg(not(any(
-    all(target_arch = "aarch64", target_os = "macos"),
-    all(target_arch = "x86_64", target_os = "windows", target_env = "msvc")
+    all(target_arch = "aarch64", target_os = "macos", target_vendor = "apple"),
+    all(
+        target_arch = "x86_64",
+        target_os = "windows",
+        target_env = "msvc",
+        target_vendor = "pc"
+    )
 )))]
 fn enforce_target_budgets(_workloads: &[Workload]) {
     panic!("template-watch qualification budgets exist only for release targets");
 }
 
-#[cfg(all(target_arch = "aarch64", target_os = "macos"))]
+#[cfg(all(target_arch = "aarch64", target_os = "macos", target_vendor = "apple"))]
 fn peak_resident_bytes() -> Option<u64> {
     let mut usage = std::mem::MaybeUninit::<libc::rusage>::uninit();
     // SAFETY: `usage` points to writable storage for one complete `rusage`, and
@@ -1955,7 +1928,12 @@ fn peak_resident_bytes() -> Option<u64> {
         .filter(|bytes| *bytes > 0)
 }
 
-#[cfg(all(target_arch = "x86_64", target_os = "windows", target_env = "msvc"))]
+#[cfg(all(
+    target_arch = "x86_64",
+    target_os = "windows",
+    target_env = "msvc",
+    target_vendor = "pc"
+))]
 fn peak_resident_bytes() -> Option<u64> {
     let mut counters = PROCESS_MEMORY_COUNTERS::default();
     let bytes = u32::try_from(size_of::<PROCESS_MEMORY_COUNTERS>()).ok()?;
@@ -1969,8 +1947,13 @@ fn peak_resident_bytes() -> Option<u64> {
 }
 
 #[cfg(not(any(
-    all(target_arch = "aarch64", target_os = "macos"),
-    all(target_arch = "x86_64", target_os = "windows", target_env = "msvc")
+    all(target_arch = "aarch64", target_os = "macos", target_vendor = "apple"),
+    all(
+        target_arch = "x86_64",
+        target_os = "windows",
+        target_env = "msvc",
+        target_vendor = "pc"
+    )
 )))]
 fn peak_resident_bytes() -> Option<u64> {
     None

@@ -7,8 +7,8 @@ format_version = 1
 id = "phase-4-template-watch-query-x86_64-pc-windows-msvc"
 workload = "deterministic Rust replay/OpenCV watcher plus controlled scheduler oracles"
 phase = "4"
-status = "measured"
-normative = true
+status = "invalidated"
+normative = false
 measurements_recorded = true
 
 [profile]
