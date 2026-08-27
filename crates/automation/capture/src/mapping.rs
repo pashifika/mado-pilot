@@ -24,6 +24,7 @@ use crate::storage::CpuPixels;
 /// The byte view borrows from the mapping, so Rust's own lifetimes enforce the
 /// rule the C ABI will have to state in prose: a borrowed view dies with its
 /// owner.
+#[derive(Clone)]
 pub struct CpuMapping {
     stamp: FrameStamp,
     transform: TransformSnapshot,
@@ -32,6 +33,7 @@ pub struct CpuMapping {
     storage: MappingStorage,
 }
 
+#[derive(Clone)]
 enum MappingStorage {
     /// The frame's own CPU pixels, already in the requested layout: share them.
     ///

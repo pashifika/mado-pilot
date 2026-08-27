@@ -113,19 +113,24 @@
 //!
 //! # Implementation status
 //!
-//! Phase 1 capture/matching, Phase 2 native input, and Phase 3 singular/grouped
-//! OCR are reachable here. Replay and native engine requests accept an injected
-//! `Arc<dyn OcrBackend>`; ordinary constructors without one expose no OCR.
-//! Separate `*_engine_with_default_ocr` constructors preserve native G-004;
+//! Phase 1 capture/matching, Phase 2 native input, Phase 3 singular/grouped
+//! OCR, and the Phase 4 Rust replay/OpenCV template watcher are reachable here.
+//! Replay and native engine requests accept an injected `Arc<dyn OcrBackend>`;
+//! ordinary constructors without one expose no OCR. Separate
+//! `*_engine_with_default_ocr` constructors preserve native G-004;
 //! `*_engine_with_ocr_profile` accepts the closed
 //! [`OcrProfile::BoundedDetector`] selection through [`OcrProfileConfig`].
 //! [`Session::recognize`] preserves singular optional-region results, while
 //! [`Session::scan_ocr_zones`] borrows one through eight capture-pixel zones and
-//! returns one independent caller-grouped result. See
-//! `examples/ocr-default.rs` and `examples/ocr-profile-zones.rs`.
+//! returns one independent caller-grouped result.
+//! [`Session::start_template_watch`] returns one owning poll/wait/cancel handle
+//! over fixed finite scheduling and separate query/wait operation contexts. See
+//! `examples/ocr-default.rs`, `examples/ocr-profile-zones.rs`, and
+//! `examples/template-watch.rs`.
 //!
-//! Watchers and scheduling are not implemented. No platform-native type is
-//! returned, accepted, or downcast through this API.
+//! The watcher adds no OCR predicate, callback, Tokio/future, C/C++, automatic
+//! input, arbitrary scheduler capacity, or native watcher qualification. No
+//! platform-native type is returned, accepted, or downcast through this API.
 //!
 //! # Names, and what may change
 //!
@@ -985,41 +990,47 @@ pub use mado_pilot_runtime::{
     ACCEPTED_BOUNDED_PROFILE_ID, ACCEPTED_G004_DECODER_ID, ACCEPTED_G004_LANGUAGE_PROFILE_ID,
     ACCEPTED_G004_MODEL_ID, ACCEPTED_G004_MODEL_VERSION, ACCEPTED_G004_NORMALIZATION_ID,
     ACCEPTED_G004_PREPROCESSING_ID, ACCEPTED_G004_PROFILE_ID, ACCEPTED_G004_VOCABULARY_ENTRIES,
-    ActivityTag, AssetFault, AssetFaultKind, AssetLimits, AssetPackage, BackendCandidate,
-    BackendDescriptor, BackendId, CancellationToken, CapabilitySupport, CaptureFault,
+    ANALYSIS_ALWAYS_POLICY_CODE, ActivityTag, AssetFault, AssetFaultKind, AssetLimits,
+    AssetPackage, BackendCandidate, BackendDescriptor, BackendId, CancellationToken,
+    CapabilitySupport, CaptureFault, ChangeDetectionDescriptor, ChangeDetectionPolicy,
     CleanupBudget, CleanupState, ClipPolicy, Clock, Confidence, ContentDigest, Continuity,
-    CoordinateSpace, CoordinateSupport, CpuMapping, DecoderId, DeliveryPlan, DiagnosticBatch,
-    DiagnosticCategory, DiagnosticDrain, DiagnosticKind, DiagnosticLevel, DiagnosticLosses,
-    DiagnosticOcrModelInstanceId, DiagnosticOperationId, DiagnosticOperationKind,
-    DiagnosticOptions, DiagnosticPayload, DiagnosticReader, DiagnosticRecord,
-    DiagnosticRecordSequence, DiagnosticTemplateId, Engine, EngineId, EngineOptions, Error,
-    FindOutcome, FindRequest, FocusPolicy, Frame, FrameDescriptor, FrameDiagnostic, FrameOrder,
-    FrameRequest, FrameSelection, FrameSequence, FrameStamp, FrameView, GeometryFault,
-    GeometryPolicy, GeometryRevision, IdentityFault, InputAddressScope, InputAttempt,
-    InputCapability, InputDelivery, InputDescriptor, InputDiagnostic, InputEvent, InputFault,
-    InputOpenRequest, InputOperationKind, InputOperationSet, InputReceipt, InputRequest,
-    InputRequirement, InputRouteCapability, InputSequence, Interruption, Key, LanguageProfileId,
-    Lifecycle, LifecycleDiagnostic, LoadStage, MAX_BACKEND_TEXT_BYTES, MAX_DIAGNOSTIC_CAPACITY,
-    MAX_MODEL_COMPONENT_BYTES, MAX_OCR_CANDIDATES, MAX_OCR_ZONES, MAX_TEXT_BYTES, Manifest,
-    MappingDiagnostic, MappingObserver, Match, MatchDefaults, MatchOptions, MatchResult,
-    MemoryEntry, MemoryPackage, ModelComponentIdentity, ModelId, ModelVersion, Modifier,
-    MonotonicInstant, NormalizationId, OcrBackend, OcrBackendDescriptor, OcrBackendId,
-    OcrBackendIdentity, OcrBackendRequest, OcrBackendVersion, OcrCandidateSink, OcrDiagnostic,
-    OcrDiagnosticOutcome, OcrDiagnosticProfile, OcrExecutionProvider, OcrExecutionProviderPolicy,
-    OcrFault, OcrModelComponent, OcrModelIdentity, OcrModelSource, OcrModelSourceRequest,
-    OcrProfileMetadata, OcrProviderDescriptor, OcrProviderFallbackReason, OcrQuadrilateral,
-    OcrRegion, OcrRequest, OcrRequestedRegionDiagnostic, OcrResult, OcrZone, OcrZoneGroup,
-    OcrZoneScanRequest, OcrZoneScanResult, OpenRequest, OperationContext,
-    OperationStartedDiagnostic, OverflowPolicy, PackagePath, PackageSource, PermissionDiagnostic,
-    PermissionKind, PermissionOutcome, PermissionReport, PermissionState, PixelExtent, PixelFormat,
-    PixelRect, PlatformCode, Point, PointerButton, PointerGeometry, PreparedTemplate,
-    PreprocessingId, PressedState, ProfileId, Provenance, ProviderId, ProviderProfileId, Rect,
-    RegionSelection, Result, RetainedStoragePolicy, RouteAttemptDiagnostic, Scale,
-    SearchDiagnostic, SearchDiagnosticOutcome, SearchFrame, SequenceLimits, SequenceOutcome,
-    Session, SessionDescription, SessionRequest, Status, StreamEpoch, StreamId, SubmissionEvidence,
+    CoordinateSpace, CoordinateSupport, CpuMapping, DEFAULT_CHANGE_DETECTION_DESCRIPTOR, DecoderId,
+    DeliveryPlan, DiagnosticBatch, DiagnosticCategory, DiagnosticDrain, DiagnosticKind,
+    DiagnosticLevel, DiagnosticLosses, DiagnosticOcrModelInstanceId, DiagnosticOperationId,
+    DiagnosticOperationKind, DiagnosticOptions, DiagnosticPayload, DiagnosticReader,
+    DiagnosticRecord, DiagnosticRecordSequence, DiagnosticTemplateId, EXACT_RGBA_POLICY_CODE,
+    Engine, EngineId, EngineOptions, Error, FindOutcome, FindRequest, FocusPolicy, Frame,
+    FrameDescriptor, FrameDiagnostic, FrameOrder, FrameRequest, FrameSelection, FrameSequence,
+    FrameStamp, FrameView, GeometryFault, GeometryPolicy, GeometryRevision, IdentityFault,
+    InputAddressScope, InputAttempt, InputCapability, InputDelivery, InputDescriptor,
+    InputDiagnostic, InputEvent, InputFault, InputOpenRequest, InputOperationKind,
+    InputOperationSet, InputReceipt, InputRequest, InputRequirement, InputRouteCapability,
+    InputSequence, Interruption, Key, LanguageProfileId, Lifecycle, LifecycleDiagnostic, LoadStage,
+    MAX_BACKEND_TEXT_BYTES, MAX_DIAGNOSTIC_CAPACITY, MAX_MODEL_COMPONENT_BYTES, MAX_OCR_CANDIDATES,
+    MAX_OCR_ZONES, MAX_TEXT_BYTES, Manifest, MappingDiagnostic, MappingObserver, Match,
+    MatchDefaults, MatchOptions, MatchResult, MemoryEntry, MemoryPackage, ModelComponentIdentity,
+    ModelId, ModelVersion, Modifier, MonotonicInstant, NormalizationId, OcrBackend,
+    OcrBackendDescriptor, OcrBackendId, OcrBackendIdentity, OcrBackendRequest, OcrBackendVersion,
+    OcrCandidateSink, OcrDiagnostic, OcrDiagnosticOutcome, OcrDiagnosticProfile,
+    OcrExecutionProvider, OcrExecutionProviderPolicy, OcrFault, OcrModelComponent,
+    OcrModelIdentity, OcrModelSource, OcrModelSourceRequest, OcrProfileMetadata,
+    OcrProviderDescriptor, OcrProviderFallbackReason, OcrQuadrilateral, OcrRegion, OcrRequest,
+    OcrRequestedRegionDiagnostic, OcrResult, OcrZone, OcrZoneGroup, OcrZoneScanRequest,
+    OcrZoneScanResult, OpenRequest, OperationContext, OperationStartedDiagnostic, OverflowPolicy,
+    PackagePath, PackageSource, PermissionDiagnostic, PermissionKind, PermissionOutcome,
+    PermissionReport, PermissionState, PixelExtent, PixelFormat, PixelRect, PlatformCode, Point,
+    PointerButton, PointerGeometry, PreparedTemplate, PreprocessingId, PressedState, ProfileId,
+    Provenance, ProviderId, ProviderProfileId, Rect, RegionSelection, Result,
+    RetainedStoragePolicy, RouteAttemptDiagnostic, Scale, SearchDiagnostic,
+    SearchDiagnosticOutcome, SearchFrame, SequenceLimits, SequenceOutcome, Session,
+    SessionDescription, SessionRequest, Status, StreamEpoch, StreamId, SubmissionEvidence,
     Suppression, SystemClock, TargetCapability, TargetDescription, TargetId, TargetKind,
-    TargetPlacement, TemplateDeclaration, TemplateEncoding, TemplateId, TemplateSource,
-    TemplateSourceRequest, TransformSnapshot, VisionFault,
+    TargetPlacement, TemplateAnalysisRate, TemplateDeclaration, TemplateEncoding, TemplateId,
+    TemplateOverload, TemplateQuery, TemplateQueryId, TemplateQueryOutcome, TemplateQueryProgress,
+    TemplateQueryState, TemplateSchedulerDescriptor, TemplateSource, TemplateSourceRequest,
+    TemplateStability, TemplateStabilityKind, TemplateTerminalOutcome, TemplateWatchDiagnostic,
+    TemplateWatchDiagnosticOutcome, TemplateWatchRequest, TemplateWatchResult, TemplateWorkCounts,
+    TemplateWorkDisposition, TransformSnapshot, UnsupportedChangeDetectionPolicy, VisionFault,
 };
 
 /// The asset vocabulary's three module-level constants, qualified.

@@ -5,12 +5,13 @@ A headless visual automation runtime for applications and agents.
 MadoPilot discovers windows and displays, captures frame streams, maps coordinate
 spaces, matches templates, performs one-shot OCR through an explicit backend,
 the accepted CPU profiles, or an explicit initialization-time provider policy,
-and injects input through explicit platform capabilities while reporting
-structured outcomes. Visual-condition watchers and their scheduling remain
-future work. The runtime owns no GUI, tray, overlay, editor, updater, workflow
-catalog, scheduler, or scripting language.
+waits for stable template presence through a bounded Rust query, and injects
+input through explicit platform capabilities while reporting structured
+outcomes. OCR watchers and native template-watcher qualification remain future
+work. The runtime owns no GUI, tray, overlay, editor, updater, workflow catalog,
+general workflow/cron scheduler, or scripting language.
 
-## Status: deterministic, native, and OCR workflows from Rust, C, and C++
+## Status: deterministic, native, OCR, and Rust watcher workflows
 
 **MadoPilot is a developer-facing source runtime, not a packaged automation
 product.** One complete deterministic workflow runs over replayed frames:
@@ -23,6 +24,15 @@ and C++, and the three examples answer the same questions with the same numbers:
 crates/mado-pilot/examples/deterministic-slice.rs
 crates/bindings/capi/examples/c/deterministic-slice.c
 crates/bindings/capi/examples/cpp/deterministic-slice.cpp
+```
+
+Rust replay/OpenCV also exposes one bounded template-presence query with
+non-blocking poll, a blocking wait under separate caller authority, explicit
+cancel, confirmed-only stability, and immutable exact-frame results. The example
+uses no caller frame-polling loop:
+
+```text
+crates/mado-pilot/examples/template-watch.rs
 ```
 
 One-shot OCR over an exact retained replay/native frame is also exposed through
@@ -51,8 +61,9 @@ The same ownership flow over *real* windows and displays — including bounded
 input submission with explicit route evidence and a separate newer-frame visual
 observation — is implemented in the target adapters, composed by the runtime,
 and exposed through the Rust facade, C ABI, and header-only C++ wrapper.
-Optional finite engine-scoped diagnostics correlate those operations and OCR
-without captured pixels, recognized text, caller model identity, or input payloads.
+Optional finite engine-scoped diagnostics correlate those operations, OCR, and
+Rust template queries without captured pixels, recognized text, caller
+template/model identity, or input payloads.
 The native examples each require the operator to name one window exactly and refuse anything ambiguous,
 because the events they submit are real:
 
@@ -112,9 +123,9 @@ failed inference, switch provider after publication, or trigger input.
 | Deterministic Rust workflow: discovery, capture, mapping, assets, matching, close | Implemented over replay input |
 | Native capture | Implemented in both adapters and exposed through Rust, C ABI, and C++; ADR 0030 accepts macOS production capture/transitions, ADR 0031 accepts Windows 1280×720 production capture/transitions, and ADR 0032 accepts Windows mixed-DPI dual-4K production capture |
 | Native input submission | Implemented in both adapters and exposed through Rust, C ABI, and C++; system input, Windows exact-window delivery, and macOS owning-process delivery are explicit, receipts state submission evidence rather than application consumption, and fixture-scoped automatic checks send no uncontrolled desktop input |
-| Bounded diagnostic observation | Implemented through Rust, C ABI, and C++ with allocation-free `Off`, finite `Normal`/`Debug` streams, exact loss counts, and content-redacted OCR records |
-| One-shot OCR public contract | Implemented through Rust, C ABI 1.5, and C++ over explicit backends, accepted ONNX CPU profiles, and explicit initialization-time provider policy; singular and one-to-eight-zone operations remain separate, with no watcher, scheduling, per-inference retry, bundling, or download |
-| Visual-condition watchers and OCR scheduling | Not implemented |
+| Bounded diagnostic observation | Implemented through Rust, C ABI, and C++ with allocation-free `Off`, finite `Normal`/`Debug` streams, exact loss counts, and content-redacted OCR records; Rust-only watcher records add bounded query/source/region/state/stability/disposition/queue/elapsed/outcome facts without changing the released C ABI |
+| One-shot OCR public contract | Implemented through Rust, C ABI 1.5, and C++ over explicit backends, accepted ONNX CPU profiles, and explicit initialization-time provider policy; singular and one-to-eight-zone operations remain separate, with no OCR watcher, OCR scheduling, per-inference retry, bundling, or download |
+| Bounded template-presence query | Implemented through the Rust replay/OpenCV facade with current-once/strictly-newer frames, fixed finite latest-wins scheduling, separate query/wait authority, exact change/rate admission, confirmed-only stability, exact coalescing, fair two-worker progress, stale-result rejection, and one immutable terminal outcome. Callbacks, Tokio/futures, C/C++, OCR predicates, automatic input, native qualification, and watcher performance acceptance are deferred |
 | C ABI, tracked C header, dynamic library | Implemented through ABI 1.5 while preserving complete ABI 1.0, 1.2, 1.3, and 1.4 prefixes at 424, 592, 648, and 720 bytes; provider construction and engine-owned provider descriptors extend the table to 736 bytes; the unreleased 1.1 draft is intentionally unsupported |
 | Header-only C++ RAII wrapper and CMake targets | Implemented through ABI 1.5, including owning profile/zone/provider projections, move-only grouped results, explicit clone, and lvalue-only borrowed OCR/provider descriptor views |
 | C ABI static library, ABI-major loader names, pkg-config, CMake install | Not implemented |
@@ -228,12 +239,13 @@ cargo build --locked --workspace
 cargo test --locked --workspace --all-targets
 ```
 
-The deterministic and default OCR workflows are runnable. The latter reads its
-two paths from the example environment only; the library itself performs no
-environment lookup:
+The deterministic one-shot, bounded template watcher, and default OCR workflows
+are runnable. OCR reads its two paths from the example environment only; the
+library itself performs no environment lookup:
 
 ```sh
 cargo run --locked --package mado-pilot --example deterministic-slice
+cargo run --locked --package mado-pilot --example template-watch
 MADO_PILOT_G004_MODEL_ROOT=/canonical/model/root \
 MADO_PILOT_ONNX_RUNTIME=/canonical/path/libonnxruntime.1.29.0.dylib \
 cargo run --locked --package mado-pilot --example ocr-default

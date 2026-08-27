@@ -10,6 +10,9 @@ use std::num::NonZeroU64;
 use std::sync::atomic::{AtomicU64, AtomicUsize, Ordering};
 use std::sync::{Arc, Mutex, TryLockError, Weak};
 
+use crate::watch::{
+    TemplateQueryId, TemplateQueryState, TemplateWorkCounts, TemplateWorkDisposition,
+};
 use mado_pilot_core::{
     ActivityTag, ClipPolicy, CoordinateSpace, Error, FrameStamp, InputAddressScope, InputDelivery,
     InputOperationKind, Lifecycle, MonotonicInstant, Operation, OperationContext, PermissionKind,
@@ -181,6 +184,8 @@ pub enum DiagnosticOperationKind {
     TemplatePreparation,
     /// Template matching.
     Search,
+    /// Bounded template-presence query.
+    TemplateWatch,
     /// Input submission.
     InputSubmission,
     /// One-shot OCR recognition.
@@ -201,6 +206,8 @@ pub enum DiagnosticKind {
     Mapping,
     /// A search reached a terminal result.
     Search,
+    /// Template watcher state, disposition, or terminal summary.
+    TemplateWatch,
     /// OCR recognition reached a terminal result.
     Ocr,
     /// An input submission reached a terminal receipt.
@@ -307,6 +314,63 @@ pub struct SearchDiagnostic {
     pub outcome: SearchDiagnosticOutcome,
     /// The semantic result count.
     pub result_count: u64,
+}
+
+/// The terminal result projected into a content-redacted watcher diagnostic.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+#[non_exhaustive]
+pub enum TemplateWatchDiagnosticOutcome {
+    /// Confirmed stability produced a match.
+    Matched,
+    /// Explicit or query-context cancellation won.
+    Cancelled,
+    /// The query deadline won.
+    DeadlineExceeded,
+    /// Session close won.
+    SessionClosed,
+    /// Scheduler close won.
+    SchedulerClosed,
+    /// The target was lost.
+    TargetLost,
+    /// Finite queue policy could no longer satisfy the query.
+    Overloaded,
+    /// Mapping or backend work failed.
+    Failed(Status),
+}
+
+/// Bounded watcher state with no template names, pixels, hashes, or backend payloads.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub struct TemplateWatchDiagnostic {
+    /// Engine-local query identity.
+    pub query: TemplateQueryId,
+    /// Target observed by the owning session.
+    pub target: TargetId,
+    /// Complete source identity when one has been considered.
+    pub frame: Option<FrameStamp>,
+    /// Effective capture-pixel region when mapping resolved it.
+    pub region: Option<PixelRect>,
+    /// Coarse query lifecycle state.
+    pub state: TemplateQueryState,
+    /// Confirmed consecutive-match count.
+    pub confirmed_observations: u32,
+    /// Confirmed matching span.
+    pub confirmed_duration_nanos: u64,
+    /// The transition represented by this record, when any.
+    pub disposition: Option<TemplateWorkDisposition>,
+    /// Saturating counts for every disposition.
+    pub work: TemplateWorkCounts,
+    /// Latest pending-frame depth, always zero or one.
+    pub pending_count: u32,
+    /// Current backend analysis depth, bounded by the scheduler descriptor.
+    pub in_flight_count: u32,
+    /// Current live query count for the owning session.
+    pub session_query_count: u32,
+    /// Current live query count for the engine scheduler.
+    pub engine_query_count: u32,
+    /// Caller-clock elapsed duration since query publication.
+    pub elapsed_nanos: u64,
+    /// Immutable terminal result, absent while pending.
+    pub outcome: Option<TemplateWatchDiagnosticOutcome>,
 }
 
 /// One immutable route attempt without input event payloads.
@@ -609,6 +673,8 @@ pub enum DiagnosticPayload {
     Mapping(MappingDiagnostic),
     /// Terminal search summary.
     Search(SearchDiagnostic),
+    /// Bounded template watcher detail.
+    TemplateWatch(TemplateWatchDiagnostic),
     /// Terminal OCR summary.
     Ocr(OcrDiagnostic),
     /// Terminal input summary.
@@ -630,6 +696,7 @@ impl DiagnosticPayload {
             Self::Frame(_) => DiagnosticKind::Frame,
             Self::Mapping(_) => DiagnosticKind::Mapping,
             Self::Search(_) => DiagnosticKind::Search,
+            Self::TemplateWatch(_) => DiagnosticKind::TemplateWatch,
             Self::Ocr(_) => DiagnosticKind::Ocr,
             Self::Input(_) => DiagnosticKind::Input,
             Self::RouteAttempt(_) => DiagnosticKind::RouteAttempt,
@@ -1108,8 +1175,21 @@ impl DiagnosticSink {
         context: &OperationContext,
         payload: impl FnOnce() -> DiagnosticPayload,
     ) {
+        self.normal_at(operation, context.now(), payload);
+    }
+
+    pub(crate) fn normal_at(
+        &self,
+        operation: ObservedOperation,
+        timestamp: MonotonicInstant,
+        payload: impl FnOnce() -> DiagnosticPayload,
+    ) {
         self.stream
-            .emit(DiagnosticLevel::Normal, operation, context.now(), payload());
+            .emit(DiagnosticLevel::Normal, operation, timestamp, payload());
+    }
+
+    pub(crate) fn admits_debug(&self) -> bool {
+        self.stream.level == DiagnosticLevel::Debug
     }
 
     pub(crate) fn debug(
@@ -1121,8 +1201,20 @@ impl DiagnosticSink {
         if self.stream.level != DiagnosticLevel::Debug {
             return;
         }
+        self.debug_at(operation, context.now(), payload);
+    }
+
+    pub(crate) fn debug_at(
+        &self,
+        operation: ObservedOperation,
+        timestamp: MonotonicInstant,
+        payload: impl FnOnce() -> DiagnosticPayload,
+    ) {
+        if self.stream.level != DiagnosticLevel::Debug {
+            return;
+        }
         self.stream
-            .emit(DiagnosticLevel::Debug, operation, context.now(), payload());
+            .emit(DiagnosticLevel::Debug, operation, timestamp, payload());
     }
 
     pub(crate) fn register_template(&self, template: &PreparedTemplate) {
@@ -1514,6 +1606,22 @@ mod tests {
                     format!("{:?}", value.outcome),
                     format!("{:?}", value.result_count),
                 ],
+                DiagnosticPayload::TemplateWatch(value) => vec![
+                    format!("{:?}", value.query),
+                    format!("{:?}", value.target),
+                    format!("{:?}", value.frame),
+                    format!("{:?}", value.region),
+                    format!("{:?}", value.state),
+                    format!("{:?}", value.confirmed_observations),
+                    format!("{:?}", value.confirmed_duration_nanos),
+                    format!("{:?}", value.disposition),
+                    format!("{:?}", value.pending_count),
+                    format!("{:?}", value.in_flight_count),
+                    format!("{:?}", value.session_query_count),
+                    format!("{:?}", value.engine_query_count),
+                    format!("{:?}", value.elapsed_nanos),
+                    format!("{:?}", value.outcome),
+                ],
                 DiagnosticPayload::Ocr(value) => vec![
                     format!("{:?}", value.model_instance),
                     format!("{:?}", value.profile),
@@ -1675,6 +1783,26 @@ mod tests {
                 }),
             ),
             (
+                DiagnosticKind::TemplateWatch,
+                DiagnosticPayload::TemplateWatch(TemplateWatchDiagnostic {
+                    query: TemplateQueryId::new(1).expect("nonzero"),
+                    target,
+                    frame: Some(frame),
+                    region: Some(region),
+                    state: TemplateQueryState::Pending,
+                    confirmed_observations: 0,
+                    confirmed_duration_nanos: 0,
+                    disposition: Some(TemplateWorkDisposition::SkippedChange),
+                    work: TemplateWorkCounts::default(),
+                    pending_count: 0,
+                    in_flight_count: 0,
+                    session_query_count: 1,
+                    engine_query_count: 1,
+                    elapsed_nanos: 7,
+                    outcome: None,
+                }),
+            ),
+            (
                 DiagnosticKind::Ocr,
                 DiagnosticPayload::Ocr(OcrDiagnostic {
                     model_instance: DiagnosticOcrModelInstanceId::new(
@@ -1726,7 +1854,7 @@ mod tests {
             ),
         ];
 
-        assert_eq!(matrix.len(), 9);
+        assert_eq!(matrix.len(), 10);
         let input_key = INPUT_KEY.to_string();
         let sensitive = [
             TEMPLATE_NAME,

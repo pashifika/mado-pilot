@@ -260,8 +260,9 @@ passed `Repository policy`, Windows `x86_64-pc-windows-msvc`, and macOS
 byte without retry or mismatch. Independent correctness, security/privacy, and
 specification re-review returned CLEAN on the same revision.
 
-**Resolution.** ADR 0050 accepts exact RGBA and unblocks the dependent watcher
-Change after this Change merges. Any future false skip or
+**Resolution.** ADR 0050 accepts exact RGBA. The bounded Rust template watcher
+now consumes that policy; native qualification and performance acceptance remain
+separate later work. Any future false skip or
 fixture/report/policy drift restores analysis-always until a new additive
 fixture set, full both-target comparison, and reviewed ADR pass.
 

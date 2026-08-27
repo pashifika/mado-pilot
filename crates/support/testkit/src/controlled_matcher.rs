@@ -13,6 +13,7 @@
 //! implementation to debug.
 
 use std::any::Any;
+use std::collections::VecDeque;
 use std::fmt;
 use std::sync::Arc;
 use std::sync::Mutex;
@@ -27,6 +28,7 @@ use mado_pilot_vision::{
 };
 
 use crate::clock::ManualClock;
+use crate::controlled_ocr::CompletionGate;
 
 /// The backend identity the controlled matcher publishes.
 pub const CONTROLLED_BACKEND: &str = "controlled";
@@ -53,6 +55,40 @@ impl Behavior {
     }
 }
 
+/// One deterministic backend response, optionally held at a completion gate.
+#[derive(Debug, Clone)]
+pub struct ScriptedMatchCall {
+    candidates: Vec<Candidate>,
+    behavior: Behavior,
+    gate: Option<Arc<CompletionGate>>,
+}
+
+impl ScriptedMatchCall {
+    /// Returns one successful scripted candidate set.
+    #[must_use]
+    pub fn new(candidates: Vec<Candidate>) -> Self {
+        Self {
+            candidates,
+            behavior: Behavior::Succeed,
+            gate: None,
+        }
+    }
+
+    /// Replaces the scripted backend behavior.
+    #[must_use]
+    pub const fn with_behavior(mut self, behavior: Behavior) -> Self {
+        self.behavior = behavior;
+        self
+    }
+
+    /// Holds this call after backend admission until `gate` is released.
+    #[must_use]
+    pub fn with_completion_gate(mut self, gate: Arc<CompletionGate>) -> Self {
+        self.gate = Some(gate);
+        self
+    }
+}
+
 /// The compiled state this backend pretends to produce.
 ///
 /// It carries nothing: what matters is that only this backend can downcast to
@@ -73,6 +109,7 @@ struct Script {
     latency: Duration,
     prepare: Behavior,
     find: Behavior,
+    calls: VecDeque<ScriptedMatchCall>,
 }
 
 /// A backend whose every answer a test chooses.
@@ -80,9 +117,11 @@ pub struct ControlledMatcher {
     format: PixelFormat,
     clock: Option<Arc<ManualClock>>,
     cancel_during_find: Option<CancellationToken>,
+    completion_gate: Option<Arc<CompletionGate>>,
     script: Mutex<Script>,
     prepared: AtomicUsize,
     searches: AtomicUsize,
+    completed: AtomicUsize,
 }
 
 impl ControlledMatcher {
@@ -93,9 +132,11 @@ impl ControlledMatcher {
             format,
             clock: None,
             cancel_during_find: None,
+            completion_gate: None,
             script: Mutex::new(Script::default()),
             prepared: AtomicUsize::new(0),
             searches: AtomicUsize::new(0),
+            completed: AtomicUsize::new(0),
         }
     }
 
@@ -107,6 +148,13 @@ impl ControlledMatcher {
     #[must_use]
     pub fn with_candidates(self, candidates: Vec<Candidate>) -> Self {
         self.script().candidates = candidates;
+        self
+    }
+
+    /// Scripts successive searches before falling back to the default response.
+    #[must_use]
+    pub fn with_calls(self, calls: impl IntoIterator<Item = ScriptedMatchCall>) -> Self {
+        self.script().calls = calls.into_iter().collect();
         self
     }
 
@@ -146,6 +194,17 @@ impl ControlledMatcher {
         self
     }
 
+    /// Blocks backend completion at `gate` after admission.
+    ///
+    /// The gate deliberately models an uninterruptible backend call. Tests may
+    /// cancel, close, or supersede authority while it is blocked, then release
+    /// it and prove the late result cannot commit.
+    #[must_use]
+    pub fn with_completion_gate(mut self, gate: Arc<CompletionGate>) -> Self {
+        self.completion_gate = Some(gate);
+        self
+    }
+
     /// Returns how many templates have been prepared.
     #[must_use]
     pub fn prepare_count(&self) -> usize {
@@ -159,6 +218,12 @@ impl ControlledMatcher {
     #[must_use]
     pub fn find_count(&self) -> usize {
         self.searches.load(Ordering::Acquire)
+    }
+
+    /// Returns how many searches completed successfully.
+    #[must_use]
+    pub fn completion_count(&self) -> usize {
+        self.completed.load(Ordering::Acquire)
     }
 
     fn script(&self) -> std::sync::MutexGuard<'_, Script> {
@@ -223,10 +288,21 @@ impl MatchBackend for ControlledMatcher {
             ));
         }
 
-        let (latency, behavior, candidates) = {
-            let script = self.script();
-            (script.latency, script.find, script.candidates.clone())
+        let (latency, behavior, candidates, gate) = {
+            let mut script = self.script();
+            match script.calls.pop_front() {
+                Some(call) => (script.latency, call.behavior, call.candidates, call.gate),
+                None => (
+                    script.latency,
+                    script.find,
+                    script.candidates.clone(),
+                    self.completion_gate.clone(),
+                ),
+            }
         };
+        if let Some(gate) = &gate {
+            gate.enter_and_wait();
+        }
 
         if let Some(clock) = &self.clock {
             clock.advance(latency);
@@ -235,8 +311,14 @@ impl MatchBackend for ControlledMatcher {
             token.cancel();
         }
 
-        behavior.apply()?;
+        let result = behavior.apply().map(|()| candidates);
         let _ = operation;
-        Ok(candidates)
+        if result.is_ok() {
+            self.completed.fetch_add(1, Ordering::AcqRel);
+        }
+        if let Some(gate) = &gate {
+            gate.complete();
+        }
+        result
     }
 }
