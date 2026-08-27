@@ -21,7 +21,7 @@ use mado_pilot_testkit::bench_harness::{GROWTH_LIMIT_BYTES, HARD_BUDGET_PREDICAT
 ///
 /// `example-synthetic.toml` is deliberately absent because it records no
 /// measurements and therefore gates no run.
-const PROFILES: [(&str, &str); 36] = [
+const PROFILES: [(&str, &str); 38] = [
     (
         "docs/benchmarks/phase-1-deterministic-slice-aarch64-apple-darwin.toml",
         include_str!(
@@ -224,6 +224,18 @@ const PROFILES: [(&str, &str); 36] = [
         "docs/benchmarks/phase-4-template-watch-query-x86_64-pc-windows-msvc.toml",
         include_str!(
             "../../../../docs/benchmarks/phase-4-template-watch-query-x86_64-pc-windows-msvc.toml"
+        ),
+    ),
+    (
+        "docs/benchmarks/phase-4-template-watch-query-remediated-aarch64-apple-darwin.toml",
+        include_str!(
+            "../../../../docs/benchmarks/phase-4-template-watch-query-remediated-aarch64-apple-darwin.toml"
+        ),
+    ),
+    (
+        "docs/benchmarks/phase-4-template-watch-query-remediated-x86_64-pc-windows-msvc.toml",
+        include_str!(
+            "../../../../docs/benchmarks/phase-4-template-watch-query-remediated-x86_64-pc-windows-msvc.toml"
         ),
     ),
 ];

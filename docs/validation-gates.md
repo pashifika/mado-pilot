@@ -261,11 +261,14 @@ byte without retry or mismatch. Independent correctness, security/privacy, and
 specification re-review returned CLEAN on the same revision.
 
 **Resolution.** ADR 0050 accepts exact RGBA. The bounded Rust template watcher
-consumes that policy, and ADR 0051 separately accepts deterministic replay/OpenCV
-watcher correctness and target-specific latency/resource budgets on both release
-targets. Native application qualification remains deferred. Any future false
-skip or fixture/report/policy drift restores analysis-always until a new
-additive fixture set, full both-target comparison, and reviewed ADR pass.
+consumes that policy; ADR 0051 accepts deterministic replay/OpenCV watcher
+correctness and target-specific latency/resource budgets, and ADR 0052 corrects
+only the independently remediated Windows ROI maximum after retaining its failed
+cohort. Engine/session startup latency is reported but explicitly withheld;
+every non-time startup gate remains enforced. Native application qualification
+remains deferred. Any future false skip or fixture/report/policy drift restores
+analysis-always until a new additive fixture set, full both-target comparison,
+and reviewed ADR pass.
 
 ## G-006
 

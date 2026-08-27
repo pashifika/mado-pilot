@@ -2722,7 +2722,7 @@ pub const PHASE4_WINDOWS_TEMPLATE_WATCH_LATENCY_BUDGETS: [LatencyBudget; 10] = [
         "roi_match",
         Duration::from_micros(246),
         Duration::from_micros(331),
-        Duration::from_micros(933),
+        Duration::from_micros(348),
     ),
     LatencyBudget::new(
         "static_duration",
@@ -2761,6 +2761,21 @@ pub const PHASE4_WINDOWS_TEMPLATE_WATCH_LATENCY_BUDGETS: [LatencyBudget; 10] = [
         Duration::from_micros(1_317),
     ),
 ];
+
+/// Phase 4 independently remediated Windows template-watch latency ceilings.
+///
+/// ADR 0052 supersedes only the ROI maximum; the predecessor array remains
+/// revision-bound to the original ADR 0051 profile.
+pub const PHASE4_WINDOWS_REMEDIATED_TEMPLATE_WATCH_LATENCY_BUDGETS: [LatencyBudget; 10] = {
+    let mut budgets = PHASE4_WINDOWS_TEMPLATE_WATCH_LATENCY_BUDGETS;
+    budgets[3] = LatencyBudget::new(
+        "roi_match",
+        Duration::from_micros(246),
+        Duration::from_micros(331),
+        Duration::from_micros(933),
+    );
+    budgets
+};
 
 /// Phase 4 Apple deterministic template-watch live-Rust-heap ceiling.
 pub const PHASE4_APPLE_TEMPLATE_WATCH_HEAP_LIMIT_BYTES: usize = 245_760;

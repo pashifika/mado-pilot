@@ -68,8 +68,9 @@ use mado_pilot_testkit::bench_harness::{
     PHASE3_WINDOWS_OCR_LATENCY_BUDGETS, PHASE3_WINDOWS_OCR_REOPEN_CLOSE_LIMIT,
     PHASE3_WINDOWS_OCR_RESIDENT_LIMIT_BYTES, PHASE4_APPLE_TEMPLATE_WATCH_HEAP_LIMIT_BYTES,
     PHASE4_APPLE_TEMPLATE_WATCH_LATENCY_BUDGETS, PHASE4_APPLE_TEMPLATE_WATCH_RESIDENT_LIMIT_BYTES,
-    PHASE4_TEMPLATE_WATCH_MAPPED_BYTES_BUDGETS, PHASE4_WINDOWS_TEMPLATE_WATCH_HEAP_LIMIT_BYTES,
-    PHASE4_WINDOWS_TEMPLATE_WATCH_LATENCY_BUDGETS,
+    PHASE4_TEMPLATE_WATCH_MAPPED_BYTES_BUDGETS,
+    PHASE4_WINDOWS_REMEDIATED_TEMPLATE_WATCH_LATENCY_BUDGETS,
+    PHASE4_WINDOWS_TEMPLATE_WATCH_HEAP_LIMIT_BYTES, PHASE4_WINDOWS_TEMPLATE_WATCH_LATENCY_BUDGETS,
     PHASE4_WINDOWS_TEMPLATE_WATCH_RESIDENT_LIMIT_BYTES, benchmark_block,
 };
 
@@ -77,7 +78,7 @@ use mado_pilot_testkit::bench_harness::{
 ///
 /// `example-synthetic.toml` is deliberately absent because it documents the
 /// format with invented numbers rather than recording a measurement.
-const PROFILES: [(&str, &str); 36] = [
+const PROFILES: [(&str, &str); 38] = [
     (
         "docs/benchmarks/phase-1-deterministic-slice-aarch64-apple-darwin.toml",
         include_str!(
@@ -282,10 +283,22 @@ const PROFILES: [(&str, &str); 36] = [
             "../../../../docs/benchmarks/phase-4-template-watch-query-x86_64-pc-windows-msvc.toml"
         ),
     ),
+    (
+        "docs/benchmarks/phase-4-template-watch-query-remediated-aarch64-apple-darwin.toml",
+        include_str!(
+            "../../../../docs/benchmarks/phase-4-template-watch-query-remediated-aarch64-apple-darwin.toml"
+        ),
+    ),
+    (
+        "docs/benchmarks/phase-4-template-watch-query-remediated-x86_64-pc-windows-msvc.toml",
+        include_str!(
+            "../../../../docs/benchmarks/phase-4-template-watch-query-remediated-x86_64-pc-windows-msvc.toml"
+        ),
+    ),
 ];
 
 /// Native profiles and the latency ceilings enforced by their benchmark.
-const NATIVE_LATENCY_PROFILES: [(&str, &str, &[LatencyBudget]); 21] = [
+const NATIVE_LATENCY_PROFILES: [(&str, &str, &[LatencyBudget]); 23] = [
     (
         "docs/benchmarks/phase-2-2-controlled-capture-aarch64-apple-darwin.toml",
         include_str!(
@@ -426,6 +439,20 @@ const NATIVE_LATENCY_PROFILES: [(&str, &str, &[LatencyBudget]); 21] = [
             "../../../../docs/benchmarks/phase-4-template-watch-query-x86_64-pc-windows-msvc.toml"
         ),
         &PHASE4_WINDOWS_TEMPLATE_WATCH_LATENCY_BUDGETS,
+    ),
+    (
+        "docs/benchmarks/phase-4-template-watch-query-remediated-aarch64-apple-darwin.toml",
+        include_str!(
+            "../../../../docs/benchmarks/phase-4-template-watch-query-remediated-aarch64-apple-darwin.toml"
+        ),
+        &PHASE4_APPLE_TEMPLATE_WATCH_LATENCY_BUDGETS,
+    ),
+    (
+        "docs/benchmarks/phase-4-template-watch-query-remediated-x86_64-pc-windows-msvc.toml",
+        include_str!(
+            "../../../../docs/benchmarks/phase-4-template-watch-query-remediated-x86_64-pc-windows-msvc.toml"
+        ),
+        &PHASE4_WINDOWS_REMEDIATED_TEMPLATE_WATCH_LATENCY_BUDGETS,
     ),
 ];
 
@@ -764,6 +791,22 @@ fn template_watch_profiles_state_exactly_the_resource_budgets_the_benchmark_enfo
             PHASE4_WINDOWS_TEMPLATE_WATCH_HEAP_LIMIT_BYTES,
             PHASE4_WINDOWS_TEMPLATE_WATCH_RESIDENT_LIMIT_BYTES,
         ),
+        (
+            "Apple remediated",
+            include_str!(
+                "../../../../docs/benchmarks/phase-4-template-watch-query-remediated-aarch64-apple-darwin.toml"
+            ),
+            PHASE4_APPLE_TEMPLATE_WATCH_HEAP_LIMIT_BYTES,
+            PHASE4_APPLE_TEMPLATE_WATCH_RESIDENT_LIMIT_BYTES,
+        ),
+        (
+            "Windows remediated",
+            include_str!(
+                "../../../../docs/benchmarks/phase-4-template-watch-query-remediated-x86_64-pc-windows-msvc.toml"
+            ),
+            PHASE4_WINDOWS_TEMPLATE_WATCH_HEAP_LIMIT_BYTES,
+            PHASE4_WINDOWS_TEMPLATE_WATCH_RESIDENT_LIMIT_BYTES,
+        ),
     ];
 
     for (target, profile, heap_limit, resident_limit) in profiles {
@@ -798,13 +841,13 @@ fn template_watch_profiles_state_exactly_the_mapped_byte_budgets_the_benchmark_e
         (
             "Apple",
             include_str!(
-                "../../../../docs/benchmarks/phase-4-template-watch-query-aarch64-apple-darwin.toml"
+                "../../../../docs/benchmarks/phase-4-template-watch-query-remediated-aarch64-apple-darwin.toml"
             ),
         ),
         (
             "Windows",
             include_str!(
-                "../../../../docs/benchmarks/phase-4-template-watch-query-x86_64-pc-windows-msvc.toml"
+                "../../../../docs/benchmarks/phase-4-template-watch-query-remediated-x86_64-pc-windows-msvc.toml"
             ),
         ),
     ] {

@@ -72,3 +72,26 @@ OCR predicates, callbacks, C/C++, native application compatibility/timing, autom
 - `hard_budget_drift.rs` requires the unchanged correctness and 4 KiB growth predicates in both watcher profiles.
 - Historical benchmark files listed by `historical-benchmark-sha256.txt` must remain byte-identical; new watcher profiles and registry rows are additive.
 - Five fresh final processes per target rerun the unchanged workloads after this ADR and after new budget-enforcing executables are built. No retry, exclusion, or sample replacement is accepted.
+
+## Independent-review successor applicability
+
+Independent pre-merge review later found that the first final apparatus did not
+prove every claimed fairness, ROI-pairing, OpenCV-work, mapped-byte, provenance,
+and startup oracle. The original precursor, ceilings, profiles, and final
+processes above remain revision-bound historical evidence; they are not
+relabeled as acceptance for the corrected apparatus.
+
+The independently remediated profile adds `engine_session_startup`, direct
+OpenCV call/completion/mapped-request observation, exact mapped-byte enforcement,
+session-qualified fairness, separate equal/unequal ROI cases, observed OpenCV
+`4.14.0`, and exact release-triple dispatch. Startup p50/p95/maximum are retained
+but their numeric ceiling is explicitly withheld because no pre-remediation
+precursor predeclared one. Its correctness, identity, RSS, heap, growth, zero
+mapping, and zero work remain enforced.
+
+Apple passed all five remediated processes under the unchanged ADR 0051 Apple
+ceilings. The first remediated Windows cohort retained one 0.7458 ms ROI maximum
+failure. [ADR 0052](0052-windows-template-watch-roi-maximum-budget.md)
+supersedes only the Windows ROI maximum for the remediated successor profile;
+all other values in this ADR remain the active bounds. Five fresh successor
+Windows processes passed that focused correction.

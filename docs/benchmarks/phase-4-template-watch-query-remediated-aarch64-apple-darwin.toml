@@ -1,0 +1,677 @@
+# Phase 4 independently remediated template-watch final profile at source
+# 34b3572b2ddce32f1cdafa26d7e84e0d1cef2a28 and tree
+# 12b463a22243462ab7bcaa01fd90a6caf7327a47.
+# The predecessor profile and rejected cohorts remain revision-bound and unchanged.
+
+format_version = 1
+
+[benchmark]
+id = "phase-4-template-watch-query-remediated-aarch64-apple-darwin"
+workload = "independently reviewed deterministic Rust replay/OpenCV watcher plus controlled scheduler oracles"
+phase = "4"
+status = "measured"
+normative = true
+measurements_recorded = true
+
+[profile]
+fixture = "fixtures/assets/phase1-slice and mado-pilot-testkit deterministic scenes"
+fixture_sha256 = "f6a4a3c3a47096c97d50e05c0a0d0bb93a764c159770aa01face22e4dbd2c2a9"
+release_target = "aarch64-apple-darwin"
+hardware = "Apple M1 Pro, 10 CPU cores, 32 GiB"
+os_version = "macOS 26.5.2 (25F84)"
+build_profile = "cargo build --locked --release --package mado-pilot --bench template-watch-query; debug_assertions=false; five fresh sequential processes"
+warmup_iterations = 3
+sample_count = 20
+process_count = 5
+correctness_oracle = "every retained sample checks exact source, match, state, actual backend/mapping work, lifecycle outcomes, ownership, and producer progress"
+queue_policy = "fixed scheduler descriptor: 256 engine queries, 16 active sessions, 64 queries per session, two analyses, one latest pending frame per query"
+producer_surface_copy = "not applicable: immutable replay and controlled CPU frames own no producer surface"
+notes = "executed source 34b3572b2ddce32f1cdafa26d7e84e0d1cef2a28; tree 12b463a22243462ab7bcaa01fd90a6caf7327a47; executable sha256 5c04d689b73dc496b17bd7cf42357f01985e8fb6390d4dcec6221ae8c643c7c7; OpenCV 4.14.0 observed and enforced; independent-review remediation; startup latency explicitly withheld; no retry or exclusion"
+benchmark_executable_sha256 = "5c04d689b73dc496b17bd7cf42357f01985e8fb6390d4dcec6221ae8c643c7c7"
+executed_source = "34b3572b2ddce32f1cdafa26d7e84e0d1cef2a28"
+executed_tree = "12b463a22243462ab7bcaa01fd90a6caf7327a47"
+complete_diff_applicable_successor = "5ba4d63d90aef34d6104b1501faa070adf9966a7"
+startup_latency_budget = "withheld: no pre-remediation precursor predeclared a ceiling"
+peak_resident_bytes = 54689792
+
+[[budget]]
+measure = "result_correctness"
+kind = "hard"
+requirement = "every retained sample satisfies exact source, match, state, work, lifecycle, ownership, and producer-progress oracles"
+predicate = "result_correctness == 0"
+
+[[budget]]
+measure = "allocated_growth_bytes"
+kind = "hard"
+requirement = "repeated watcher queries and controlled engines return transient Rust allocations"
+predicate = "allocated_growth_bytes <= 4096"
+
+[[budget]]
+measure = "peak_allocated_bytes"
+kind = "absolute"
+unit = "bytes"
+direction = "at_most"
+limit = 245760
+rationale = "ADR 0051: 1.25 times the target precursor maximum, rounded upward to 4 KiB"
+
+[[budget]]
+measure = "peak_resident_bytes"
+kind = "absolute"
+unit = "bytes"
+direction = "at_most"
+limit = 69206016
+rationale = "ADR 0051: 1.25 times the target-native precursor maximum, rounded upward to 1 MiB"
+
+[[measurement]]
+workload = "engine_session_startup"
+correctness_oracle = "one fixed replay source constructs the OpenCV engine and opens then closes one session"
+result_correctness = 0
+latency_p50_ms = 0.016042
+latency_p95_ms = 0.017542
+latency_max_ms = 0.018875
+mapped_bytes_per_result = 0
+backend_runs = 0
+query_completions = 0
+query_failures = 0
+stale_discards = 0
+producer_publications = 0
+work_admitted = 0
+work_skipped_change = 0
+work_deferred_rate = 0
+work_coalesced = 0
+work_superseded = 0
+work_rejected = 0
+work_queue_expired = 0
+work_completed = 0
+work_failed = 0
+peak_allocated_bytes = 51352
+allocated_growth_bytes = 0
+peak_resident_bytes = 52576256
+
+[[measurement.budget]]
+measure = "mapped_bytes_per_result"
+kind = "absolute"
+unit = "bytes"
+direction = "at_most"
+limit = 0
+rationale = "exact zero: engine/session startup performs no frame mapping"
+
+[[measurement]]
+workload = "current_match"
+correctness_oracle = "one current replay frame produces the exact planted match set and source stamp"
+result_correctness = 0
+latency_p50_ms = 0.337042
+latency_p95_ms = 0.378417
+latency_max_ms = 0.388708
+mapped_bytes_per_result = 24576
+backend_runs = 20
+query_completions = 20
+query_failures = 0
+stale_discards = 0
+producer_publications = 20
+work_admitted = 20
+work_skipped_change = 0
+work_deferred_rate = 0
+work_coalesced = 0
+work_superseded = 0
+work_rejected = 0
+work_queue_expired = 0
+work_completed = 20
+work_failed = 0
+peak_allocated_bytes = 119952
+allocated_growth_bytes = 1507
+peak_resident_bytes = 54149120
+
+[[measurement.budget]]
+measure = "latency_p50"
+kind = "absolute"
+unit = "milliseconds"
+direction = "at_most"
+limit = 0.673
+rationale = "ADR 0051 predeclared 2x worst precursor statistic rounded upward to 0.001 ms"
+
+[[measurement.budget]]
+measure = "latency_p95"
+kind = "absolute"
+unit = "milliseconds"
+direction = "at_most"
+limit = 0.743
+rationale = "ADR 0051 predeclared 2x worst precursor statistic rounded upward to 0.001 ms"
+
+[[measurement.budget]]
+measure = "latency_max"
+kind = "absolute"
+unit = "milliseconds"
+direction = "at_most"
+limit = 0.933
+rationale = "ADR 0051 predeclared 2x worst precursor statistic rounded upward to 0.001 ms"
+
+[[measurement.budget]]
+measure = "mapped_bytes_per_result"
+kind = "absolute"
+unit = "bytes"
+direction = "at_most"
+limit = 24576
+rationale = "exact effective RGBA8 region for the fixed semantic profile"
+
+[[measurement]]
+workload = "appearance_stable"
+correctness_oracle = "background then two present frames confirms only the second stable presence"
+result_correctness = 0
+latency_p50_ms = 0.961584
+latency_p95_ms = 1.017709
+latency_max_ms = 1.069209
+mapped_bytes_per_result = 24576
+backend_runs = 60
+query_completions = 20
+query_failures = 0
+stale_discards = 0
+producer_publications = 60
+work_admitted = 60
+work_skipped_change = 0
+work_deferred_rate = 0
+work_coalesced = 0
+work_superseded = 0
+work_rejected = 0
+work_queue_expired = 0
+work_completed = 60
+work_failed = 0
+peak_allocated_bytes = 193781
+allocated_growth_bytes = 39
+peak_resident_bytes = 54460416
+
+[[measurement.budget]]
+measure = "latency_p50"
+kind = "absolute"
+unit = "milliseconds"
+direction = "at_most"
+limit = 1.92
+rationale = "ADR 0051 predeclared 2x worst precursor statistic rounded upward to 0.001 ms"
+
+[[measurement.budget]]
+measure = "latency_p95"
+kind = "absolute"
+unit = "milliseconds"
+direction = "at_most"
+limit = 2.135
+rationale = "ADR 0051 predeclared 2x worst precursor statistic rounded upward to 0.001 ms"
+
+[[measurement.budget]]
+measure = "latency_max"
+kind = "absolute"
+unit = "milliseconds"
+direction = "at_most"
+limit = 2.27
+rationale = "ADR 0051 predeclared 2x worst precursor statistic rounded upward to 0.001 ms"
+
+[[measurement.budget]]
+measure = "mapped_bytes_per_result"
+kind = "absolute"
+unit = "bytes"
+direction = "at_most"
+limit = 24576
+rationale = "exact effective RGBA8 region for the fixed semantic profile"
+
+[[measurement]]
+workload = "disappearance_reset"
+correctness_oracle = "a confirmed absence resets stability before two later presence confirmations"
+result_correctness = 0
+latency_p50_ms = 1.256667
+latency_p95_ms = 1.33775
+latency_max_ms = 1.35725
+mapped_bytes_per_result = 24576
+backend_runs = 80
+query_completions = 20
+query_failures = 0
+stale_discards = 0
+producer_publications = 80
+work_admitted = 80
+work_skipped_change = 0
+work_deferred_rate = 0
+work_coalesced = 0
+work_superseded = 0
+work_rejected = 0
+work_queue_expired = 0
+work_completed = 80
+work_failed = 0
+peak_allocated_bytes = 218652
+allocated_growth_bytes = 39
+peak_resident_bytes = 54509568
+
+[[measurement.budget]]
+measure = "latency_p50"
+kind = "absolute"
+unit = "milliseconds"
+direction = "at_most"
+limit = 2.53
+rationale = "ADR 0051 predeclared 2x worst precursor statistic rounded upward to 0.001 ms"
+
+[[measurement.budget]]
+measure = "latency_p95"
+kind = "absolute"
+unit = "milliseconds"
+direction = "at_most"
+limit = 2.652
+rationale = "ADR 0051 predeclared 2x worst precursor statistic rounded upward to 0.001 ms"
+
+[[measurement.budget]]
+measure = "latency_max"
+kind = "absolute"
+unit = "milliseconds"
+direction = "at_most"
+limit = 2.994
+rationale = "ADR 0051 predeclared 2x worst precursor statistic rounded upward to 0.001 ms"
+
+[[measurement.budget]]
+measure = "mapped_bytes_per_result"
+kind = "absolute"
+unit = "bytes"
+direction = "at_most"
+limit = 24576
+rationale = "exact effective RGBA8 region for the fixed semantic profile"
+
+[[measurement]]
+workload = "roi_match"
+correctness_oracle = "the exact capture-pixel ROI maps only itself and retains its source-qualified match"
+result_correctness = 0
+latency_p50_ms = 0.120083
+latency_p95_ms = 0.154667
+latency_max_ms = 0.159666
+mapped_bytes_per_result = 3072
+backend_runs = 20
+query_completions = 20
+query_failures = 0
+stale_discards = 0
+producer_publications = 20
+work_admitted = 20
+work_skipped_change = 0
+work_deferred_rate = 0
+work_coalesced = 0
+work_superseded = 0
+work_rejected = 0
+work_queue_expired = 0
+work_completed = 20
+work_failed = 0
+peak_allocated_bytes = 81008
+allocated_growth_bytes = 2
+peak_resident_bytes = 54558720
+
+[[measurement.budget]]
+measure = "latency_p50"
+kind = "absolute"
+unit = "milliseconds"
+direction = "at_most"
+limit = 0.231
+rationale = "ADR 0051 predeclared 2x worst precursor statistic rounded upward to 0.001 ms"
+
+[[measurement.budget]]
+measure = "latency_p95"
+kind = "absolute"
+unit = "milliseconds"
+direction = "at_most"
+limit = 0.313
+rationale = "ADR 0051 predeclared 2x worst precursor statistic rounded upward to 0.001 ms"
+
+[[measurement.budget]]
+measure = "latency_max"
+kind = "absolute"
+unit = "milliseconds"
+direction = "at_most"
+limit = 0.37
+rationale = "ADR 0051 predeclared 2x worst precursor statistic rounded upward to 0.001 ms"
+
+[[measurement.budget]]
+measure = "mapped_bytes_per_result"
+kind = "absolute"
+unit = "bytes"
+direction = "at_most"
+limit = 3072
+rationale = "exact effective RGBA8 region for the fixed semantic profile"
+
+[[measurement]]
+workload = "static_duration"
+correctness_oracle = "three OpenCV confirmations advance duration only after the manual clock advances"
+result_correctness = 0
+latency_p50_ms = 0.9605
+latency_p95_ms = 1.001083
+latency_max_ms = 1.023625
+mapped_bytes_per_result = 24576
+backend_runs = 60
+query_completions = 20
+query_failures = 0
+stale_discards = 0
+producer_publications = 60
+work_admitted = 60
+work_skipped_change = 0
+work_deferred_rate = 0
+work_coalesced = 0
+work_superseded = 0
+work_rejected = 0
+work_queue_expired = 0
+work_completed = 60
+work_failed = 0
+peak_allocated_bytes = 193916
+allocated_growth_bytes = 39
+peak_resident_bytes = 54591488
+
+[[measurement.budget]]
+measure = "latency_p50"
+kind = "absolute"
+unit = "milliseconds"
+direction = "at_most"
+limit = 1.951
+rationale = "ADR 0051 predeclared 2x worst precursor statistic rounded upward to 0.001 ms"
+
+[[measurement.budget]]
+measure = "latency_p95"
+kind = "absolute"
+unit = "milliseconds"
+direction = "at_most"
+limit = 2.71
+rationale = "ADR 0051 predeclared 2x worst precursor statistic rounded upward to 0.001 ms"
+
+[[measurement.budget]]
+measure = "latency_max"
+kind = "absolute"
+unit = "milliseconds"
+direction = "at_most"
+limit = 2.85
+rationale = "ADR 0051 predeclared 2x worst precursor statistic rounded upward to 0.001 ms"
+
+[[measurement.budget]]
+measure = "mapped_bytes_per_result"
+kind = "absolute"
+unit = "bytes"
+direction = "at_most"
+limit = 24576
+rationale = "exact effective RGBA8 region for the fixed semantic profile"
+
+[[measurement]]
+workload = "coalesced_pair"
+correctness_oracle = "one gated immutable analysis completes two independently owned queries"
+result_correctness = 0
+latency_p50_ms = 0.103916
+latency_p95_ms = 0.128666
+latency_max_ms = 0.134875
+mapped_bytes_per_result = 3072
+backend_runs = 20
+query_completions = 40
+query_failures = 0
+stale_discards = 0
+producer_publications = 20
+work_admitted = 20
+work_skipped_change = 0
+work_deferred_rate = 0
+work_coalesced = 20
+work_superseded = 0
+work_rejected = 0
+work_queue_expired = 0
+work_completed = 40
+work_failed = 0
+peak_allocated_bytes = 10550
+allocated_growth_bytes = 670
+peak_resident_bytes = 54657024
+
+[[measurement.budget]]
+measure = "latency_p50"
+kind = "absolute"
+unit = "milliseconds"
+direction = "at_most"
+limit = 0.214
+rationale = "ADR 0051 predeclared 2x worst precursor statistic rounded upward to 0.001 ms"
+
+[[measurement.budget]]
+measure = "latency_p95"
+kind = "absolute"
+unit = "milliseconds"
+direction = "at_most"
+limit = 0.266
+rationale = "ADR 0051 predeclared 2x worst precursor statistic rounded upward to 0.001 ms"
+
+[[measurement.budget]]
+measure = "latency_max"
+kind = "absolute"
+unit = "milliseconds"
+direction = "at_most"
+limit = 0.309
+rationale = "ADR 0051 predeclared 2x worst precursor statistic rounded upward to 0.001 ms"
+
+[[measurement.budget]]
+measure = "mapped_bytes_per_result"
+kind = "absolute"
+unit = "bytes"
+direction = "at_most"
+limit = 3072
+rationale = "exact effective RGBA8 region for the fixed semantic profile"
+
+[[measurement]]
+workload = "saturation_latest_wins"
+correctness_oracle = "finite saturation retains the query, replaces pending frames, expires visibly, and publishes"
+result_correctness = 0
+latency_p50_ms = 15.266875
+latency_p95_ms = 44.261042
+latency_max_ms = 44.99225
+mapped_bytes_per_result = 3072
+backend_runs = 100
+query_completions = 80
+query_failures = 0
+stale_discards = 40
+producer_publications = 100
+work_admitted = 100
+work_skipped_change = 0
+work_deferred_rate = 0
+work_coalesced = 0
+work_superseded = 60
+work_rejected = 0
+work_queue_expired = 20
+work_completed = 60
+work_failed = 0
+peak_allocated_bytes = 21578
+allocated_growth_bytes = 1937
+peak_resident_bytes = 54689792
+
+[[measurement.budget]]
+measure = "latency_p50"
+kind = "absolute"
+unit = "milliseconds"
+direction = "at_most"
+limit = 30.526
+rationale = "ADR 0051 predeclared 2x worst precursor statistic rounded upward to 0.001 ms"
+
+[[measurement.budget]]
+measure = "latency_p95"
+kind = "absolute"
+unit = "milliseconds"
+direction = "at_most"
+limit = 60.634
+rationale = "ADR 0051 predeclared 2x worst precursor statistic rounded upward to 0.001 ms"
+
+[[measurement.budget]]
+measure = "latency_max"
+kind = "absolute"
+unit = "milliseconds"
+direction = "at_most"
+limit = 86.239
+rationale = "ADR 0051 predeclared 2x worst precursor statistic rounded upward to 0.001 ms"
+
+[[measurement.budget]]
+measure = "mapped_bytes_per_result"
+kind = "absolute"
+unit = "bytes"
+direction = "at_most"
+limit = 3072
+rationale = "exact effective RGBA8 region for the fixed semantic profile"
+
+[[measurement]]
+workload = "two_session_fairness"
+correctness_oracle = "four eligible queries across two sessions enter in two bounded backend waves"
+result_correctness = 0
+latency_p50_ms = 0.290041
+latency_p95_ms = 14.729458
+latency_max_ms = 15.299125
+mapped_bytes_per_result = 3072
+backend_runs = 160
+query_completions = 140
+query_failures = 0
+stale_discards = 20
+producer_publications = 80
+work_admitted = 160
+work_skipped_change = 0
+work_deferred_rate = 0
+work_coalesced = 0
+work_superseded = 60
+work_rejected = 0
+work_queue_expired = 0
+work_completed = 100
+work_failed = 0
+peak_allocated_bytes = 35336
+allocated_growth_bytes = 2032
+peak_resident_bytes = 54689792
+
+[[measurement.budget]]
+measure = "latency_p50"
+kind = "absolute"
+unit = "milliseconds"
+direction = "at_most"
+limit = 0.729
+rationale = "ADR 0051 predeclared 2x worst precursor statistic rounded upward to 0.001 ms"
+
+[[measurement.budget]]
+measure = "latency_p95"
+kind = "absolute"
+unit = "milliseconds"
+direction = "at_most"
+limit = 30.338
+rationale = "ADR 0051 predeclared 2x worst precursor statistic rounded upward to 0.001 ms"
+
+[[measurement.budget]]
+measure = "latency_max"
+kind = "absolute"
+unit = "milliseconds"
+direction = "at_most"
+limit = 30.722
+rationale = "ADR 0051 predeclared 2x worst precursor statistic rounded upward to 0.001 ms"
+
+[[measurement.budget]]
+measure = "mapped_bytes_per_result"
+kind = "absolute"
+unit = "bytes"
+direction = "at_most"
+limit = 3072
+rationale = "exact effective RGBA8 region for the fixed semantic profile"
+
+[[measurement]]
+workload = "cancel_in_flight"
+correctness_oracle = "query cancellation wins before a gated backend completion and discards the late match"
+result_correctness = 0
+latency_p50_ms = 0.084292
+latency_p95_ms = 0.106292
+latency_max_ms = 0.114416
+mapped_bytes_per_result = 3072
+backend_runs = 20
+query_completions = 20
+query_failures = 0
+stale_discards = 0
+producer_publications = 20
+work_admitted = 20
+work_skipped_change = 0
+work_deferred_rate = 0
+work_coalesced = 0
+work_superseded = 20
+work_rejected = 0
+work_queue_expired = 0
+work_completed = 0
+work_failed = 0
+peak_allocated_bytes = 8748
+allocated_growth_bytes = 1897
+peak_resident_bytes = 54689792
+
+[[measurement.budget]]
+measure = "latency_p50"
+kind = "absolute"
+unit = "milliseconds"
+direction = "at_most"
+limit = 0.203
+rationale = "ADR 0051 predeclared 2x worst precursor statistic rounded upward to 0.001 ms"
+
+[[measurement.budget]]
+measure = "latency_p95"
+kind = "absolute"
+unit = "milliseconds"
+direction = "at_most"
+limit = 0.254
+rationale = "ADR 0051 predeclared 2x worst precursor statistic rounded upward to 0.001 ms"
+
+[[measurement.budget]]
+measure = "latency_max"
+kind = "absolute"
+unit = "milliseconds"
+direction = "at_most"
+limit = 0.271
+rationale = "ADR 0051 predeclared 2x worst precursor statistic rounded upward to 0.001 ms"
+
+[[measurement.budget]]
+measure = "mapped_bytes_per_result"
+kind = "absolute"
+unit = "bytes"
+direction = "at_most"
+limit = 3072
+rationale = "exact effective RGBA8 region for the fixed semantic profile"
+
+[[measurement]]
+workload = "close_and_retain"
+correctness_oracle = "repeated close wakes pending work, retained results survive, and later publication progresses"
+result_correctness = 0
+latency_p50_ms = 0.174709
+latency_p95_ms = 0.227375
+latency_max_ms = 0.233042
+mapped_bytes_per_result = 3072
+backend_runs = 40
+query_completions = 60
+query_failures = 0
+stale_discards = 0
+producer_publications = 40
+work_admitted = 40
+work_skipped_change = 0
+work_deferred_rate = 0
+work_coalesced = 0
+work_superseded = 0
+work_rejected = 0
+work_queue_expired = 0
+work_completed = 40
+work_failed = 0
+peak_allocated_bytes = 16892
+allocated_growth_bytes = 41
+peak_resident_bytes = 54689792
+
+[[measurement.budget]]
+measure = "latency_p50"
+kind = "absolute"
+unit = "milliseconds"
+direction = "at_most"
+limit = 0.36
+rationale = "ADR 0051 predeclared 2x worst precursor statistic rounded upward to 0.001 ms"
+
+[[measurement.budget]]
+measure = "latency_p95"
+kind = "absolute"
+unit = "milliseconds"
+direction = "at_most"
+limit = 0.437
+rationale = "ADR 0051 predeclared 2x worst precursor statistic rounded upward to 0.001 ms"
+
+[[measurement.budget]]
+measure = "latency_max"
+kind = "absolute"
+unit = "milliseconds"
+direction = "at_most"
+limit = 0.467
+rationale = "ADR 0051 predeclared 2x worst precursor statistic rounded upward to 0.001 ms"
+
+[[measurement.budget]]
+measure = "mapped_bytes_per_result"
+kind = "absolute"
+unit = "bytes"
+direction = "at_most"
+limit = 3072
+rationale = "exact effective RGBA8 region for the fixed semantic profile"

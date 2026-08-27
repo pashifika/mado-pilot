@@ -1923,7 +1923,7 @@ fn enforce_target_budgets(workloads: &[Workload]) {
 fn enforce_target_budgets(workloads: &[Workload]) {
     bench_harness::enforce_latency_budgets(
         workloads,
-        &bench_harness::PHASE4_WINDOWS_TEMPLATE_WATCH_LATENCY_BUDGETS,
+        &bench_harness::PHASE4_WINDOWS_REMEDIATED_TEMPLATE_WATCH_LATENCY_BUDGETS,
     );
     enforce_resource_budgets(
         workloads,

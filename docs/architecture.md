@@ -63,8 +63,11 @@ Every lower-admitted-work candidate is rejected by a false skip.
 The bounded template watcher runtime consumes that accepted policy through one
 Rust query handle and one fixed engine scheduler. ADR 0051 accepts the
 deterministic replay/OpenCV correctness, latency, RSS, live-heap, and growth
-profiles on both release targets. OCR predicates, callbacks, C/C++, automatic
-input, native-application qualification, arbitrary templates/ROIs, real-time
+profiles on both release targets; ADR 0052 corrects only the independently
+remediated Windows ROI maximum after a retained failure. Startup latency is
+reported without an inferred ceiling, while every non-time startup gate remains
+enforced. OCR predicates, callbacks, C/C++, automatic input,
+native-application qualification, arbitrary templates/ROIs, real-time
 guarantees, and the `v0.4.0` release remain deferred.
 See [Implementation status](#implementation-status).
 
@@ -892,7 +895,7 @@ responsibilities a later phase takes on.
 | Asset resolution into OCR model sources | Implemented in `mado-pilot-assets` with exact component length and SHA-256 validation and immutable shared ownership |
 | Deep search orchestration, result envelope, final operation commit | Implemented in `mado-pilot-runtime` |
 | Input composition: same-provider adapter pairing, required-versus-optional input admission with bounded release of committed capture, per-controller sequence serialization, the one-terminal-receipt rule, and two-sided close | Implemented in `mado-pilot-runtime`. Selecting a permitted route, arbitrating focus, resolving a coordinate against live geometry, revalidating before each irreversible event, and releasing what a stopped sequence pressed stay in `mado-pilot-input` and the Adapter implementing it |
-| Bounded template-presence query and scheduling | Implemented in `mado-pilot-runtime` for the Rust replay/OpenCV surface: current-once then strictly newer frame acquisition, finite latest-wins work, exact change/rate admission, confirmed-only stability, exact coalescing, two-worker fair progress, stale-generation rejection, and idempotent query/session/engine-scheduler close. ADR 0051 accepts the fixed deterministic replay/OpenCV correctness, latency, RSS, live-heap, and growth profiles on both release targets; native application behavior and timing remain unqualified |
+| Bounded template-presence query and scheduling | Implemented in `mado-pilot-runtime` for the Rust replay/OpenCV surface: current-once then strictly newer frame acquisition, finite latest-wins work, exact change/rate admission, confirmed-only stability, exact coalescing, two-worker fair progress, stale-generation rejection, and idempotent query/session/engine-scheduler close. ADRs 0051 and 0052 accept the independently reviewed deterministic replay/OpenCV correctness, latency, RSS, live-heap, growth, exact mapping/work, and engine/session startup profile on both release targets; startup latency has no numeric ceiling, and native application behavior/timing remain unqualified |
 | OCR coalescing and wait-for-text | Not implemented |
 | Public Rust operations for the deterministic replay workflow | Implemented in `mado-pilot`, including the blocking template watcher example with separate query/wait operation contexts |
 | Public Rust operations for native and replay workflows | Implemented in `mado-pilot`, including explicit optional backend wiring, accepted CPU default/profile constructors, owning provider-policy constructors, immutable provider descriptors, borrowed one-to-eight-zone scans, and the Rust template query types. Native watcher qualification is not claimed; no platform-native, `ort`, worker, channel, Tokio, or callback type crosses the facade |
