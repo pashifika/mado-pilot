@@ -221,6 +221,7 @@ dependencies = [
 name = "mado-pilot"
 version = "0.3.1"
 dependencies = [
+ "libc",
  "mado-pilot-adapter-replay",
  "mado-pilot-backend-onnx",
  "mado-pilot-backend-opencv",

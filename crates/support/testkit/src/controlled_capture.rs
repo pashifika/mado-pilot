@@ -17,8 +17,8 @@ use mado_pilot_capture::{
     SessionDescription, StreamState, TargetDescription,
 };
 use mado_pilot_core::{
-    IdentityIssuer, MonotonicInstant, OperationContext, PixelExtent, ProviderId, Result,
-    TargetCapability, TargetId,
+    Error, IdentityIssuer, MonotonicInstant, OperationContext, PixelExtent, ProviderId, Result,
+    Status, TargetCapability, TargetId,
 };
 
 use crate::controlled_storage::ControlledProducer;
@@ -212,6 +212,30 @@ impl ControlledCapture {
             placement: None,
             continuity,
             pixels: vec![fill; descriptor.byte_len()].into_boxed_slice(),
+        })
+    }
+
+    /// Publishes one caller-supplied packed frame to every open session.
+    ///
+    /// # Errors
+    ///
+    /// Returns `InvalidArgument` when `pixels` does not exactly fill the
+    /// configured descriptor, or returns the first stream refusal after every
+    /// open session has received the publication.
+    pub fn publish_pixels(&self, pixels: &[u8], continuity: Continuity) -> Result<()> {
+        let descriptor = self.descriptor;
+        if pixels.len() != descriptor.byte_len() {
+            return Err(Error::new(
+                Status::InvalidArgument,
+                "controlled capture pixels do not match its descriptor",
+            ));
+        }
+        self.deliver(|| Publication {
+            captured_at: MonotonicInstant::ORIGIN,
+            descriptor,
+            placement: None,
+            continuity,
+            pixels: pixels.to_vec().into_boxed_slice(),
         })
     }
 

@@ -17,7 +17,7 @@
 //! renamed or removed fails the build rather than the assertion.
 
 use mado_pilot_testkit::bench_harness::{
-    Benchmark, LatencyBudget, PHASE2_2_CAPTURE_LATENCY_BUDGETS,
+    Benchmark, LatencyBudget, MappedBytesBudget, PHASE2_2_CAPTURE_LATENCY_BUDGETS,
     PHASE2_2_PROCESS_APPKIT_LATENCY_BUDGETS, PHASE2_2_PROCESS_DIAGNOSTIC_LATENCY_BUDGETS,
     PHASE2_2_PROCESS_GAME_LIKE_LATENCY_BUDGETS, PHASE2_2_PROCESS_HEAP_LIMIT_BYTES,
     PHASE2_2_TRANSITION_LATENCY_BUDGETS, PHASE2_PRODUCTION_CAPTURE_HEAP_LIMIT_BYTES,
@@ -66,14 +66,19 @@ use mado_pilot_testkit::bench_harness::{
     PHASE3_OCR_REGION_MAPPED_BYTES, PHASE3_WINDOWS_OCR_CLOSE_LIMIT,
     PHASE3_WINDOWS_OCR_COLD_LOAD_LIMIT, PHASE3_WINDOWS_OCR_HEAP_LIMIT_BYTES,
     PHASE3_WINDOWS_OCR_LATENCY_BUDGETS, PHASE3_WINDOWS_OCR_REOPEN_CLOSE_LIMIT,
-    PHASE3_WINDOWS_OCR_RESIDENT_LIMIT_BYTES, benchmark_block,
+    PHASE3_WINDOWS_OCR_RESIDENT_LIMIT_BYTES, PHASE4_APPLE_TEMPLATE_WATCH_HEAP_LIMIT_BYTES,
+    PHASE4_APPLE_TEMPLATE_WATCH_LATENCY_BUDGETS, PHASE4_APPLE_TEMPLATE_WATCH_RESIDENT_LIMIT_BYTES,
+    PHASE4_TEMPLATE_WATCH_MAPPED_BYTES_BUDGETS,
+    PHASE4_WINDOWS_REMEDIATED_TEMPLATE_WATCH_LATENCY_BUDGETS,
+    PHASE4_WINDOWS_TEMPLATE_WATCH_HEAP_LIMIT_BYTES, PHASE4_WINDOWS_TEMPLATE_WATCH_LATENCY_BUDGETS,
+    PHASE4_WINDOWS_TEMPLATE_WATCH_RESIDENT_LIMIT_BYTES, benchmark_block,
 };
 
 /// Every committed benchmark profile, by repository path and content.
 ///
 /// `example-synthetic.toml` is deliberately absent because it documents the
 /// format with invented numbers rather than recording a measurement.
-const PROFILES: [(&str, &str); 34] = [
+const PROFILES: [(&str, &str); 38] = [
     (
         "docs/benchmarks/phase-1-deterministic-slice-aarch64-apple-darwin.toml",
         include_str!(
@@ -266,10 +271,34 @@ const PROFILES: [(&str, &str); 34] = [
             "../../../../docs/benchmarks/phase-3-1-cuda-remediated-fallback-integrated-zone-ocr-x86_64-pc-windows-msvc.toml"
         ),
     ),
+    (
+        "docs/benchmarks/phase-4-template-watch-query-aarch64-apple-darwin.toml",
+        include_str!(
+            "../../../../docs/benchmarks/phase-4-template-watch-query-aarch64-apple-darwin.toml"
+        ),
+    ),
+    (
+        "docs/benchmarks/phase-4-template-watch-query-x86_64-pc-windows-msvc.toml",
+        include_str!(
+            "../../../../docs/benchmarks/phase-4-template-watch-query-x86_64-pc-windows-msvc.toml"
+        ),
+    ),
+    (
+        "docs/benchmarks/phase-4-template-watch-query-remediated-aarch64-apple-darwin.toml",
+        include_str!(
+            "../../../../docs/benchmarks/phase-4-template-watch-query-remediated-aarch64-apple-darwin.toml"
+        ),
+    ),
+    (
+        "docs/benchmarks/phase-4-template-watch-query-remediated-x86_64-pc-windows-msvc.toml",
+        include_str!(
+            "../../../../docs/benchmarks/phase-4-template-watch-query-remediated-x86_64-pc-windows-msvc.toml"
+        ),
+    ),
 ];
 
 /// Native profiles and the latency ceilings enforced by their benchmark.
-const NATIVE_LATENCY_PROFILES: [(&str, &str, &[LatencyBudget]); 19] = [
+const NATIVE_LATENCY_PROFILES: [(&str, &str, &[LatencyBudget]); 23] = [
     (
         "docs/benchmarks/phase-2-2-controlled-capture-aarch64-apple-darwin.toml",
         include_str!(
@@ -396,6 +425,34 @@ const NATIVE_LATENCY_PROFILES: [(&str, &str, &[LatencyBudget]); 19] = [
             "../../../../docs/benchmarks/phase-3-1-cuda-remediated-fallback-integrated-zone-ocr-x86_64-pc-windows-msvc.toml"
         ),
         &PHASE3_1_WINDOWS_CUDA_FALLBACK_GROUPED_OCR_LATENCY_BUDGETS,
+    ),
+    (
+        "docs/benchmarks/phase-4-template-watch-query-aarch64-apple-darwin.toml",
+        include_str!(
+            "../../../../docs/benchmarks/phase-4-template-watch-query-aarch64-apple-darwin.toml"
+        ),
+        &PHASE4_APPLE_TEMPLATE_WATCH_LATENCY_BUDGETS,
+    ),
+    (
+        "docs/benchmarks/phase-4-template-watch-query-x86_64-pc-windows-msvc.toml",
+        include_str!(
+            "../../../../docs/benchmarks/phase-4-template-watch-query-x86_64-pc-windows-msvc.toml"
+        ),
+        &PHASE4_WINDOWS_TEMPLATE_WATCH_LATENCY_BUDGETS,
+    ),
+    (
+        "docs/benchmarks/phase-4-template-watch-query-remediated-aarch64-apple-darwin.toml",
+        include_str!(
+            "../../../../docs/benchmarks/phase-4-template-watch-query-remediated-aarch64-apple-darwin.toml"
+        ),
+        &PHASE4_APPLE_TEMPLATE_WATCH_LATENCY_BUDGETS,
+    ),
+    (
+        "docs/benchmarks/phase-4-template-watch-query-remediated-x86_64-pc-windows-msvc.toml",
+        include_str!(
+            "../../../../docs/benchmarks/phase-4-template-watch-query-remediated-x86_64-pc-windows-msvc.toml"
+        ),
+        &PHASE4_WINDOWS_REMEDIATED_TEMPLATE_WATCH_LATENCY_BUDGETS,
     ),
 ];
 
@@ -642,6 +699,7 @@ fn expected_latency_blocks(budgets: &[LatencyBudget]) -> Vec<BudgetBlock<'static
             .map(|(measure, limit)| {
                 let micros = u32::try_from(limit.as_micros())
                     .expect("every frozen latency ceiling fits u32 microseconds");
+
                 BudgetBlock {
                     workload: Some(budget.workload()),
                     measure: Some(measure),
@@ -651,6 +709,37 @@ fn expected_latency_blocks(budgets: &[LatencyBudget]) -> Vec<BudgetBlock<'static
                     limit: Some(f64::from(micros) / 1_000.0),
                 }
             })
+        })
+        .collect()
+}
+
+fn expected_mapped_blocks(budgets: &[MappedBytesBudget]) -> Vec<BudgetBlock<'static>> {
+    budgets
+        .iter()
+        .map(|budget| {
+            absolute_budget(
+                Some(budget.workload()),
+                "mapped_bytes_per_result",
+                "bytes",
+                exact_limit(budget.bytes()),
+            )
+        })
+        .collect()
+}
+fn measurement_key_counts<'a>(profile: &'a str, key: &str) -> Vec<(&'a str, usize)> {
+    profile
+        .split("[[measurement]]")
+        .skip(1)
+        .map(|block| {
+            let workload = block
+                .lines()
+                .find_map(|line| quoted_assignment(line.trim(), "workload"))
+                .expect("measurement carries a workload");
+            let count = block
+                .lines()
+                .filter(|line| number_assignment(line.trim(), key).is_some())
+                .count();
+            (workload, count)
         })
         .collect()
 }
@@ -697,6 +786,125 @@ fn native_profiles_state_exactly_the_latency_budgets_the_harness_enforces() {
             expected_latency_blocks(enforced),
             "{path} must record every frozen p50, p95, and maximum latency \
              ceiling enforced by its native benchmark, with no stale extra ceiling"
+        );
+    }
+}
+
+#[test]
+fn template_watch_profiles_state_exactly_the_resource_budgets_the_benchmark_enforces() {
+    let profiles = [
+        (
+            "Apple",
+            include_str!(
+                "../../../../docs/benchmarks/phase-4-template-watch-query-aarch64-apple-darwin.toml"
+            ),
+            PHASE4_APPLE_TEMPLATE_WATCH_HEAP_LIMIT_BYTES,
+            PHASE4_APPLE_TEMPLATE_WATCH_RESIDENT_LIMIT_BYTES,
+        ),
+        (
+            "Windows",
+            include_str!(
+                "../../../../docs/benchmarks/phase-4-template-watch-query-x86_64-pc-windows-msvc.toml"
+            ),
+            PHASE4_WINDOWS_TEMPLATE_WATCH_HEAP_LIMIT_BYTES,
+            PHASE4_WINDOWS_TEMPLATE_WATCH_RESIDENT_LIMIT_BYTES,
+        ),
+        (
+            "Apple remediated",
+            include_str!(
+                "../../../../docs/benchmarks/phase-4-template-watch-query-remediated-aarch64-apple-darwin.toml"
+            ),
+            PHASE4_APPLE_TEMPLATE_WATCH_HEAP_LIMIT_BYTES,
+            PHASE4_APPLE_TEMPLATE_WATCH_RESIDENT_LIMIT_BYTES,
+        ),
+        (
+            "Windows remediated",
+            include_str!(
+                "../../../../docs/benchmarks/phase-4-template-watch-query-remediated-x86_64-pc-windows-msvc.toml"
+            ),
+            PHASE4_WINDOWS_TEMPLATE_WATCH_HEAP_LIMIT_BYTES,
+            PHASE4_WINDOWS_TEMPLATE_WATCH_RESIDENT_LIMIT_BYTES,
+        ),
+    ];
+
+    for (target, profile, heap_limit, resident_limit) in profiles {
+        let recorded: Vec<BudgetBlock<'_>> = budget_blocks(profile)
+            .into_iter()
+            .filter(|budget| budget.workload.is_none() && budget.kind == Some("absolute"))
+            .collect();
+        assert_eq!(
+            recorded,
+            vec![
+                absolute_budget(
+                    None,
+                    "peak_allocated_bytes",
+                    "bytes",
+                    exact_limit(u64::try_from(heap_limit).expect("watcher heap limit fits u64")),
+                ),
+                absolute_budget(
+                    None,
+                    "peak_resident_bytes",
+                    "bytes",
+                    exact_limit(resident_limit),
+                ),
+            ],
+            "{target} watcher profile and benchmark resource ceilings drifted"
+        );
+    }
+}
+
+#[test]
+fn template_watch_profiles_state_exactly_the_mapped_byte_budgets_the_benchmark_enforces() {
+    for (target, profile) in [
+        (
+            "Apple",
+            include_str!(
+                "../../../../docs/benchmarks/phase-4-template-watch-query-remediated-aarch64-apple-darwin.toml"
+            ),
+        ),
+        (
+            "Windows",
+            include_str!(
+                "../../../../docs/benchmarks/phase-4-template-watch-query-remediated-x86_64-pc-windows-msvc.toml"
+            ),
+        ),
+    ] {
+        let recorded: Vec<BudgetBlock<'_>> = budget_blocks(profile)
+            .into_iter()
+            .filter(|budget| budget.measure == Some("mapped_bytes_per_result"))
+            .collect();
+        assert_eq!(
+            recorded,
+            expected_mapped_blocks(&PHASE4_TEMPLATE_WATCH_MAPPED_BYTES_BUDGETS),
+            "{target} watcher profile and benchmark mapped-byte gates drifted"
+        );
+    }
+}
+#[test]
+fn remediated_template_watch_profiles_retain_one_iteration_span_per_workload() {
+    for (target, profile) in [
+        (
+            "Apple",
+            include_str!(
+                "../../../../docs/benchmarks/phase-4-template-watch-query-remediated-aarch64-apple-darwin.toml"
+            ),
+        ),
+        (
+            "Windows",
+            include_str!(
+                "../../../../docs/benchmarks/phase-4-template-watch-query-remediated-x86_64-pc-windows-msvc.toml"
+            ),
+        ),
+    ] {
+        let counts = measurement_key_counts(profile, "iteration_span_ms");
+        assert_eq!(
+            counts.len(),
+            11,
+            "{target} remediated workload count drifted"
+        );
+        assert!(
+            counts.iter().all(|(_, count)| *count == 1),
+            "{target} remediated profile omitted or duplicated an iteration span: {counts:?}"
         );
     }
 }

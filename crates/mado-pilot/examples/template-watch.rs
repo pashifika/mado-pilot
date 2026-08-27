@@ -1,5 +1,9 @@
 //! Waits for stable template presence over replay capture without frame polling.
 //!
+//! This fixed replay/OpenCV path is covered by the Phase 4 qualification profile.
+//! Native application behavior, arbitrary templates/ROIs, and real-time timing
+//! are not implied.
+//!
 //! ```text
 //! cargo run --locked --package mado-pilot --example template-watch
 //! ```

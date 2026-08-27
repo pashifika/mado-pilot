@@ -718,7 +718,10 @@ fn differing_match_options_do_not_coalesce() {
     );
     let session = open_unpublished(&harness);
     let (template, options) = request(&harness);
-    let other_options = options.with_max_results(1).expect("valid result limit");
+    let result_limit = options.with_max_results(1).expect("valid result limit");
+    let score_threshold = options.with_min_score(0.5).expect("valid score threshold");
+    assert_ne!(options, result_limit);
+    assert_ne!(options, score_threshold);
     let first = session
         .start_template_watch(TemplateWatchRequest::new(
             template.clone(),
@@ -728,8 +731,50 @@ fn differing_match_options_do_not_coalesce() {
         .expect("started first query");
     let second = session
         .start_template_watch(TemplateWatchRequest::new(
+            template.clone(),
+            result_limit,
+            OperationContext::new(),
+        ))
+        .expect("started second query");
+    let third = session
+        .start_template_watch(TemplateWatchRequest::new(
             template,
-            other_options,
+            score_threshold,
+            OperationContext::new(),
+        ))
+        .expect("started third query");
+    harness
+        .capture
+        .publish(0x40, Continuity::Continuous)
+        .expect("published frame");
+
+    first.wait(&wait_context()).expect("first completed");
+    second.wait(&wait_context()).expect("second completed");
+    third.wait(&wait_context()).expect("third completed");
+    assert_eq!(harness.matcher.find_count(), 3);
+}
+
+#[test]
+fn separately_prepared_instances_with_one_public_id_do_not_coalesce() {
+    let harness = Harness::new(
+        ControlledMatcher::new(mado_pilot_runtime::PixelFormat::Rgba8)
+            .with_candidates(vec![Candidate::new(1, 1, 0.99)]),
+    );
+    let session = open_unpublished(&harness);
+    let (first_template, first_options) = request(&harness);
+    let (second_template, second_options) = request(&harness);
+    assert_eq!(first_template.id(), second_template.id());
+    let first = session
+        .start_template_watch(TemplateWatchRequest::new(
+            first_template,
+            first_options,
+            OperationContext::new(),
+        ))
+        .expect("started first query");
+    let second = session
+        .start_template_watch(TemplateWatchRequest::new(
+            second_template,
+            second_options,
             OperationContext::new(),
         ))
         .expect("started second query");
@@ -741,6 +786,130 @@ fn differing_match_options_do_not_coalesce() {
     first.wait(&wait_context()).expect("first completed");
     second.wait(&wait_context()).expect("second completed");
     assert_eq!(harness.matcher.find_count(), 2);
+}
+
+#[test]
+fn equal_effective_regions_coalesce() {
+    let harness = Harness::new(
+        ControlledMatcher::new(mado_pilot_runtime::PixelFormat::Rgba8)
+            .with_candidates(vec![Candidate::new(1, 1, 0.99)]),
+    );
+    let session = open_unpublished(&harness);
+    let (template, options) = request(&harness);
+    let full_pixels = RegionSelection::pixels(
+        PixelRect::new(0, 0, 32, 24).expect("valid full-frame ROI"),
+        ClipPolicy::Reject,
+    )
+    .expect("representable full-frame ROI");
+    let implicit = session
+        .start_template_watch(TemplateWatchRequest::new(
+            template.clone(),
+            options,
+            OperationContext::new(),
+        ))
+        .expect("started implicit full-frame query");
+    let explicit = session
+        .start_template_watch(
+            TemplateWatchRequest::new(template, options, OperationContext::new())
+                .with_region(full_pixels),
+        )
+        .expect("started explicit full-frame query");
+    harness
+        .capture
+        .publish(0x40, Continuity::Continuous)
+        .expect("published frame");
+
+    implicit
+        .wait(&wait_context())
+        .expect("implicit query completed");
+    explicit
+        .wait(&wait_context())
+        .expect("explicit query completed");
+    assert_eq!(harness.matcher.find_count(), 1);
+}
+
+#[test]
+fn unequal_effective_regions_do_not_coalesce() {
+    let harness = Harness::new(
+        ControlledMatcher::new(mado_pilot_runtime::PixelFormat::Rgba8)
+            .with_candidates(vec![Candidate::new(1, 1, 0.99)]),
+    );
+    let session = open_unpublished(&harness);
+    let (template, options) = request(&harness);
+    let half_pixels = RegionSelection::pixels(
+        PixelRect::new(0, 0, 16, 24).expect("valid half-frame ROI"),
+        ClipPolicy::Reject,
+    )
+    .expect("representable half-frame ROI");
+    let full = session
+        .start_template_watch(TemplateWatchRequest::new(
+            template.clone(),
+            options,
+            OperationContext::new(),
+        ))
+        .expect("started full-frame query");
+    let half = session
+        .start_template_watch(
+            TemplateWatchRequest::new(template, options, OperationContext::new())
+                .with_region(half_pixels),
+        )
+        .expect("started half-frame query");
+    harness
+        .capture
+        .publish(0x40, Continuity::Continuous)
+        .expect("published frame");
+
+    full.wait(&wait_context()).expect("full query completed");
+    half.wait(&wait_context()).expect("half query completed");
+    assert_eq!(harness.matcher.find_count(), 2);
+}
+
+#[test]
+fn coalesced_analysis_keeps_stability_and_cancellation_query_local() {
+    let harness = Harness::new(
+        ControlledMatcher::new(mado_pilot_runtime::PixelFormat::Rgba8)
+            .with_candidates(vec![Candidate::new(1, 1, 0.99)]),
+    );
+    let session = open_unpublished(&harness);
+    let (template, options) = request(&harness);
+    let stable = session
+        .start_template_watch(
+            TemplateWatchRequest::new(template.clone(), options, OperationContext::new())
+                .with_stability(TemplateStability::consecutive(2).expect("valid stability")),
+        )
+        .expect("started stable query");
+    let immediate = session
+        .start_template_watch(TemplateWatchRequest::new(
+            template,
+            options,
+            OperationContext::new(),
+        ))
+        .expect("started immediate query");
+    harness
+        .capture
+        .publish(0x40, Continuity::Continuous)
+        .expect("published shared frame");
+
+    assert!(matches!(
+        immediate
+            .wait(&wait_context())
+            .expect("immediate query completed")
+            .as_ref(),
+        TemplateTerminalOutcome::Matched(_)
+    ));
+    wait_progress(&stable, |progress| progress.confirmed_observations() == 1);
+    assert_eq!(harness.matcher.find_count(), 1);
+
+    let cancelled = stable.cancel();
+    assert!(matches!(
+        cancelled.as_ref(),
+        TemplateTerminalOutcome::Cancelled
+    ));
+    assert!(matches!(
+        immediate.poll(),
+        TemplateQueryOutcome::Terminal(outcome)
+            if matches!(outcome.as_ref(), TemplateTerminalOutcome::Matched(_))
+    ));
 }
 
 #[test]
@@ -782,15 +951,154 @@ fn two_sessions_reach_backend_admission_with_bounded_fair_progress() {
     second_gate.release();
     first.wait(&wait_context()).expect("first completed");
     second.wait(&wait_context()).expect("second completed");
+    assert_eq!(harness.matcher.find_count(), 2);
+}
+
+#[test]
+fn four_eligible_queries_across_two_sessions_advance_in_bounded_rounds() {
+    let blocker_gates: Vec<_> = (0..2).map(|_| Arc::new(CompletionGate::new())).collect();
+    let fairness_gates: Vec<_> = (0..4).map(|_| Arc::new(CompletionGate::new())).collect();
+    let blocker_calls = blocker_gates.iter().enumerate().map(|(index, gate)| {
+        ScriptedMatchCall::new(vec![Candidate::new(
+            i32::try_from(index + 10).expect("small blocker coordinate"),
+            1,
+            0.99,
+        )])
+        .with_completion_gate(Arc::clone(gate))
+    });
+    let fairness_calls = fairness_gates.iter().enumerate().map(|(index, gate)| {
+        ScriptedMatchCall::new(vec![Candidate::new(
+            i32::try_from(index + 1).expect("small fairness coordinate"),
+            1,
+            0.99,
+        )])
+        .with_completion_gate(Arc::clone(gate))
+    });
+    let harness = Harness::new(
+        ControlledMatcher::new(mado_pilot_runtime::PixelFormat::Rgba8)
+            .with_calls(blocker_calls.chain(fairness_calls)),
+    );
+
+    let blocker_session = open_unpublished(&harness);
+    let blockers: Vec<_> = (0..2)
+        .map(|_| {
+            let (template, options) = request(&harness);
+            blocker_session
+                .start_template_watch(TemplateWatchRequest::new(
+                    template,
+                    options,
+                    OperationContext::new(),
+                ))
+                .expect("started blocker query")
+        })
+        .collect();
+    harness
+        .capture
+        .publish(0x30, Continuity::Continuous)
+        .expect("published blocker frame");
+    for gate in &blocker_gates {
+        assert!(gate.wait_until_entered(Duration::from_secs(2)));
+    }
+    for query in &blockers {
+        assert!(matches!(
+            query.cancel().as_ref(),
+            TemplateTerminalOutcome::Cancelled
+        ));
+    }
+
+    let first_session = open_unpublished(&harness);
+    let second_session = open_unpublished(&harness);
+    let prepared: Vec<_> = (0..4).map(|_| request(&harness)).collect();
+    let first_queries: Vec<_> = prepared[..2]
+        .iter()
+        .map(|(template, options)| {
+            first_session
+                .start_template_watch(TemplateWatchRequest::new(
+                    template.clone(),
+                    *options,
+                    OperationContext::new(),
+                ))
+                .expect("started first-session query")
+        })
+        .collect();
+    let second_queries: Vec<_> = prepared[2..]
+        .iter()
+        .map(|(template, options)| {
+            second_session
+                .start_template_watch(TemplateWatchRequest::new(
+                    template.clone(),
+                    *options,
+                    OperationContext::new(),
+                ))
+                .expect("started second-session query")
+        })
+        .collect();
+    harness
+        .capture
+        .publish(0x40, Continuity::Continuous)
+        .expect("published to both fairness sessions");
+    for query in first_queries.iter().chain(&second_queries) {
+        let _ = wait_progress(query, |progress| progress.pending_count() == 1);
+    }
+
+    for gate in &blocker_gates {
+        gate.release();
+    }
+    assert!(fairness_gates[0].wait_until_entered(Duration::from_secs(2)));
+    assert!(fairness_gates[1].wait_until_entered(Duration::from_secs(2)));
+    assert_eq!(harness.matcher.find_count(), 4);
+    fairness_gates[0].release();
+    assert!(fairness_gates[2].wait_until_entered(Duration::from_secs(2)));
+    assert_eq!(harness.matcher.find_count(), 5);
+    fairness_gates[1].release();
+    assert!(fairness_gates[3].wait_until_entered(Duration::from_secs(2)));
+    assert_eq!(harness.matcher.find_count(), 6);
+    fairness_gates[2].release();
+    fairness_gates[3].release();
+
+    for gate in &blocker_gates {
+        assert!(gate.wait_until_completed(Duration::from_secs(2)));
+    }
+    let mut origins = Vec::with_capacity(4);
+    for query in first_queries.iter().chain(&second_queries) {
+        let outcome = query.wait(&wait_context()).expect("query completed");
+        let TemplateTerminalOutcome::Matched(result) = outcome.as_ref() else {
+            panic!("expected matched fairness outcome, got {outcome:?}");
+        };
+        origins.push(result.result().matches()[0].bounds().left());
+    }
+    assert_eq!(
+        origins[..2]
+            .iter()
+            .filter(|left| matches!(**left, 1 | 2))
+            .count(),
+        1,
+        "the first backend wave must contain one first-session query"
+    );
+    assert_eq!(
+        origins[2..]
+            .iter()
+            .filter(|left| matches!(**left, 1 | 2))
+            .count(),
+        1,
+        "the first backend wave must contain one second-session query"
+    );
+    origins.sort_unstable();
+    assert_eq!(origins, [1, 2, 3, 4]);
+    assert_eq!(harness.matcher.completion_count(), 6);
 }
 
 #[test]
 fn slow_backend_reconsiders_only_the_latest_pending_frame() {
     let first_gate = Arc::new(CompletionGate::new());
+    let second_gate = Arc::new(CompletionGate::new());
+    let final_gate = Arc::new(CompletionGate::new());
     let harness = Harness::new(
         ControlledMatcher::new(mado_pilot_runtime::PixelFormat::Rgba8).with_calls([
             ScriptedMatchCall::new(Vec::new()).with_completion_gate(Arc::clone(&first_gate)),
-            ScriptedMatchCall::new(vec![Candidate::new(1, 1, 0.99)]),
+            ScriptedMatchCall::new(Vec::new()).with_completion_gate(Arc::clone(&second_gate)),
+            ScriptedMatchCall::new(vec![Candidate::new(1, 1, 0.99)])
+                .with_completion_gate(Arc::clone(&final_gate)),
         ]),
     );
     let session = opened(&harness);
@@ -803,20 +1111,46 @@ fn slow_backend_reconsiders_only_the_latest_pending_frame() {
         ))
         .expect("started query");
     assert!(first_gate.wait_until_entered(Duration::from_secs(2)));
-    for fill in [0x32, 0x33, 0x34] {
-        harness
-            .capture
-            .publish(fill, Continuity::Continuous)
-            .expect("published faster than matcher");
-    }
+    harness
+        .capture
+        .publish(0x32, Continuity::Continuous)
+        .expect("published second in-flight frame");
+    assert!(second_gate.wait_until_entered(Duration::from_secs(2)));
+    harness
+        .capture
+        .publish(0x33, Continuity::Continuous)
+        .expect("published pending frame");
+    let _ = wait_progress(&query, |progress| progress.pending_count() == 1);
+    harness
+        .capture
+        .publish(0x34, Continuity::Continuous)
+        .expect("published latest replacement");
+    let replaced = wait_progress(&query, |progress| {
+        progress.pending_count() == 1
+            && progress.work().get(TemplateWorkDisposition::Superseded) == 1
+    });
     first_gate.release();
+    let _ = wait_progress(&query, |progress| {
+        progress.work().get(TemplateWorkDisposition::Superseded) == 2
+    });
+    assert!(final_gate.wait_until_entered(Duration::from_secs(2)));
+    second_gate.release();
+    let ready = wait_progress(&query, |progress| {
+        progress.pending_count() == 0
+            && progress.work().get(TemplateWorkDisposition::Admitted) == 3
+            && progress.work().get(TemplateWorkDisposition::Completed) == 0
+            && progress.work().get(TemplateWorkDisposition::Superseded) == 3
+    });
+    final_gate.release();
 
     let outcome = query.wait(&wait_context()).expect("latest frame matched");
     let TemplateTerminalOutcome::Matched(result) = outcome.as_ref() else {
         panic!("expected match, got {outcome:?}");
     };
+    assert_eq!(replaced.pending_count(), 1);
+    assert_eq!(ready.work().get(TemplateWorkDisposition::Superseded), 3);
     assert_eq!(result.frame().stamp().sequence().value(), 3);
-    assert_eq!(harness.matcher.find_count(), 2);
+    assert_eq!(harness.matcher.find_count(), 3);
 }
 
 #[test]

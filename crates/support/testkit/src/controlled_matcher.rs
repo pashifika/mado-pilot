@@ -112,6 +112,21 @@ struct Script {
     calls: VecDeque<ScriptedMatchCall>,
 }
 
+fn observe_mapped_bytes(observed: &AtomicUsize, bytes: usize) {
+    match observed.compare_exchange(0, bytes, Ordering::AcqRel, Ordering::Acquire) {
+        Ok(_) => {}
+        Err(previous) if previous == bytes => {}
+        Err(_) => observed.store(usize::MAX, Ordering::Release),
+    }
+}
+
+fn consistent_mapped_bytes(observed: &AtomicUsize) -> Option<usize> {
+    match observed.load(Ordering::Acquire) {
+        0 | usize::MAX => None,
+        bytes => Some(bytes),
+    }
+}
+
 /// A backend whose every answer a test chooses.
 pub struct ControlledMatcher {
     format: PixelFormat,
@@ -122,6 +137,7 @@ pub struct ControlledMatcher {
     prepared: AtomicUsize,
     searches: AtomicUsize,
     completed: AtomicUsize,
+    mapped_bytes: AtomicUsize,
 }
 
 impl ControlledMatcher {
@@ -137,6 +153,7 @@ impl ControlledMatcher {
             prepared: AtomicUsize::new(0),
             searches: AtomicUsize::new(0),
             completed: AtomicUsize::new(0),
+            mapped_bytes: AtomicUsize::new(0),
         }
     }
 
@@ -226,6 +243,14 @@ impl ControlledMatcher {
         self.completed.load(Ordering::Acquire)
     }
 
+    /// Returns the byte length observed on every backend request.
+    ///
+    /// `None` means no search ran or different request lengths were observed.
+    #[must_use]
+    pub fn consistent_mapped_bytes(&self) -> Option<usize> {
+        consistent_mapped_bytes(&self.mapped_bytes)
+    }
+
     fn script(&self) -> std::sync::MutexGuard<'_, Script> {
         self.script
             .lock()
@@ -240,6 +265,7 @@ impl fmt::Debug for ControlledMatcher {
             .field("format", &self.format)
             .field("prepared", &self.prepare_count())
             .field("searches", &self.find_count())
+            .field("mapped_bytes", &self.consistent_mapped_bytes())
             .finish_non_exhaustive()
     }
 }
@@ -272,6 +298,7 @@ impl MatchBackend for ControlledMatcher {
         operation: &OperationContext,
     ) -> Result<Vec<Candidate>> {
         self.searches.fetch_add(1, Ordering::AcqRel);
+        observe_mapped_bytes(&self.mapped_bytes, request.pixels.bytes().len());
 
         // The payload must be the one this backend produced. Reaching a foreign
         // payload would mean the matcher's identity check did not run.
@@ -318,6 +345,87 @@ impl MatchBackend for ControlledMatcher {
         }
         if let Some(gate) = &gate {
             gate.complete();
+        }
+        result
+    }
+}
+
+/// A transparent backend wrapper that observes actual search work.
+pub struct ObservedMatcher {
+    backend: Arc<dyn MatchBackend>,
+    searches: AtomicUsize,
+    completed: AtomicUsize,
+    mapped_bytes: AtomicUsize,
+}
+
+impl ObservedMatcher {
+    /// Wraps one backend without changing its public descriptor or results.
+    #[must_use]
+    pub fn new(backend: Arc<dyn MatchBackend>) -> Self {
+        Self {
+            backend,
+            searches: AtomicUsize::new(0),
+            completed: AtomicUsize::new(0),
+            mapped_bytes: AtomicUsize::new(0),
+        }
+    }
+
+    /// Returns how many searches reached the wrapped backend.
+    #[must_use]
+    pub fn find_count(&self) -> usize {
+        self.searches.load(Ordering::Acquire)
+    }
+
+    /// Returns how many wrapped searches completed successfully.
+    #[must_use]
+    pub fn completion_count(&self) -> usize {
+        self.completed.load(Ordering::Acquire)
+    }
+
+    /// Returns the byte length observed on every wrapped backend request.
+    ///
+    /// `None` means no search ran or different request lengths were observed.
+    #[must_use]
+    pub fn consistent_mapped_bytes(&self) -> Option<usize> {
+        consistent_mapped_bytes(&self.mapped_bytes)
+    }
+}
+
+impl fmt::Debug for ObservedMatcher {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        formatter
+            .debug_struct("ObservedMatcher")
+            .field("descriptor", &self.backend.descriptor())
+            .field("searches", &self.find_count())
+            .field("completed", &self.completion_count())
+            .field("mapped_bytes", &self.consistent_mapped_bytes())
+            .finish()
+    }
+}
+
+impl MatchBackend for ObservedMatcher {
+    fn descriptor(&self) -> BackendDescriptor {
+        self.backend.descriptor()
+    }
+
+    fn prepare(
+        &self,
+        source: &TemplateSource,
+        operation: &OperationContext,
+    ) -> Result<PreparedTemplate> {
+        self.backend.prepare(source, operation)
+    }
+
+    fn find(
+        &self,
+        request: &BackendRequest<'_>,
+        operation: &OperationContext,
+    ) -> Result<Vec<Candidate>> {
+        self.searches.fetch_add(1, Ordering::AcqRel);
+        observe_mapped_bytes(&self.mapped_bytes, request.pixels.bytes().len());
+        let result = self.backend.find(request, operation);
+        if result.is_ok() {
+            self.completed.fetch_add(1, Ordering::AcqRel);
         }
         result
     }

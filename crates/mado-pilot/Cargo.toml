@@ -36,6 +36,7 @@ mado-pilot-platform-windows = { path = "../platform/windows", features = ["bench
 
 [target.'cfg(target_os = "macos")'.dev-dependencies]
 mado-pilot-platform-macos = { path = "../platform/macos", features = ["private-fixture"] }
+libc.workspace = true
 
 [dev-dependencies]
 mado-pilot-testkit = { path = "../support/testkit" }
@@ -46,6 +47,10 @@ harness = false
 
 [[bench]]
 name = "native-phase2"
+harness = false
+
+[[bench]]
+name = "template-watch-query"
 harness = false
 
 [lints]
