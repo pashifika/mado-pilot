@@ -15,7 +15,7 @@ const EXPECTED_ROWS_PATH: &str = "fixtures/change-detection/g-005/expected-rows.
 const FRAME_PREFIX: &str = "fixtures/change-detection/g-005/frames/";
 const MANIFEST_SCHEMA: &str = "mado-pilot-change-sequence-manifest-v1";
 const EXPECTED_SCHEMA: &str = "mado-pilot-change-expected-v1";
-const REPORT_SCHEMA: &str = "mado-pilot-change-evaluation-report-v1";
+const REPORT_SCHEMA: &str = "mado-pilot-change-evaluation-report-v2";
 const FIXTURE_SET: &str = "g-005-v1";
 const REQUIRED_LICENSE: &str = "Apache-2.0";
 const MAX_DOCUMENT_BYTES: u64 = 256 * 1024;
@@ -24,6 +24,8 @@ const MAX_TOTAL_FRAME_BYTES: u64 = 16 * 1024 * 1024;
 const MAX_FRAMES: usize = 64;
 const MAX_SEQUENCES: usize = 32;
 const MAX_TRANSITIONS: usize = 128;
+const MAX_TRANSITION_ID_BYTES: usize = 68;
+const MAX_TRANSITION_INDEX_DIGITS: usize = 3;
 const MAX_DIMENSION: u64 = 4096;
 const BYTES_PER_PIXEL: u64 = 4;
 
@@ -1188,11 +1190,23 @@ fn validate_identifier(identifier: &str) -> Result<(), EvaluationError> {
 }
 
 fn validate_transition_identifier(identifier: &str) -> Result<(), EvaluationError> {
+    if identifier.len() > MAX_TRANSITION_ID_BYTES {
+        return Err(EvaluationError::new(EvaluationErrorKind::InvalidIdentifier));
+    }
     let Some((sequence, index)) = identifier.split_once('/') else {
         return Err(EvaluationError::new(EvaluationErrorKind::InvalidIdentifier));
     };
     validate_identifier(sequence)?;
-    if index.is_empty() || !index.bytes().all(|byte| byte.is_ascii_digit()) {
+    let canonical_index = index.len() == 1 || !index.starts_with('0');
+    let in_range = index
+        .parse::<usize>()
+        .is_ok_and(|value| value < MAX_TRANSITIONS);
+    if index.is_empty()
+        || index.len() > MAX_TRANSITION_INDEX_DIGITS
+        || !index.bytes().all(|byte| byte.is_ascii_digit())
+        || !canonical_index
+        || !in_range
+    {
         return Err(EvaluationError::new(EvaluationErrorKind::InvalidIdentifier));
     }
     Ok(())

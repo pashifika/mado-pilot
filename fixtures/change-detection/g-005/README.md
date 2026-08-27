@@ -16,7 +16,7 @@ The generator constructs an 8×8 integer RGBA pattern, then applies declared syn
 
 - `fixture-manifest.json` fixes frame order, canonical repository-relative references, dimensions, row strides, byte lengths, stream/epoch/sequence/geometry identities, ROI, and exact frame-byte SHA-256 digests.
 - `expected-rows.json` fixes the ordered adjacent-transition oracle independently of candidate configuration.
-- `SHA256SUMS` binds both JSON documents and every raw frame file.
+- `SHA256SUMS` binds the generator, both JSON documents, and every raw frame file.
 - `frames/*.rgba` are tightly packed, row-major RGBA8 bytes with no header.
 
 The ordered matrix covers no change, outside-ROI change, a one-pixel must-detect in-ROI change, transient appearance and disappearance, persistent appearance, repeated identical pixels after a sequence gap, geometry revision change, and stream epoch discontinuity.

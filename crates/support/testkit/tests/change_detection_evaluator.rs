@@ -197,6 +197,30 @@ fn strict_loader_rejects_roi_overflow_and_noncanonical_paths() {
 }
 
 #[test]
+fn strict_loader_bounds_transition_ids_before_content_redacted_errors() {
+    let repository = TempRepository::copy_fixture();
+    let long_suffix = "9".repeat(4096);
+    repository.mutate_expected(|expected| {
+        expected["rows"][0]["transition_id"] = Value::String(format!("no-change/{long_suffix}"));
+    });
+
+    let error = RecordedSequenceSet::load(repository.root()).expect_err("oversized transition id");
+    assert_eq!(error.kind(), EvaluationErrorKind::InvalidIdentifier);
+    assert_eq!(error.component_id(), None);
+    let diagnostic = format!("{error:?} {error}");
+    assert!(!diagnostic.contains(&long_suffix));
+
+    let noncanonical = TempRepository::copy_fixture();
+    noncanonical.mutate_expected(|expected| {
+        expected["rows"][0]["transition_id"] = Value::String("no-change/00".to_owned());
+    });
+    let error =
+        RecordedSequenceSet::load(noncanonical.root()).expect_err("noncanonical transition index");
+    assert_eq!(error.kind(), EvaluationErrorKind::InvalidIdentifier);
+    assert_eq!(error.component_id(), None);
+}
+
+#[test]
 fn evaluator_clips_roi_and_retains_the_one_pixel_must_detect_gate() {
     let sequences = RecordedSequenceSet::load(&repository_root()).expect("frozen sequence set");
     let report = evaluate_g005(&sequences);
@@ -259,7 +283,7 @@ fn aggregate_output_is_complete_private_and_byte_stable() {
     assert_eq!(first, second);
     assert!(first.ends_with(b"\n"));
     let report: Value = serde_json::from_slice(&first).expect("report JSON");
-    assert_eq!(report["schema"], "mado-pilot-change-evaluation-report-v1");
+    assert_eq!(report["schema"], "mado-pilot-change-evaluation-report-v2");
     assert_eq!(
         report["candidates"].as_array().expect("candidates").len(),
         7
@@ -340,7 +364,7 @@ fn adr_candidate_table_and_frozen_identities_match_the_accepted_report() {
         ("fixture manifest", "manifest_sha256"),
         ("expected rows", "expected_rows_sha256"),
         (
-            "formatted qualification evaluator source",
+            "security-remediated evaluator source",
             "evaluator_source_sha256",
         ),
         ("canonical candidate plan", "candidate_plan_sha256"),

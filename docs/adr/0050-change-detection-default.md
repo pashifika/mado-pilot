@@ -1,6 +1,6 @@
 # ADR 0050: Select exact RGBA change detection for compatible mapped regions
 
-- **Status:** Proposed pending identical Windows and Apple Silicon hosted reports and independent review
+- **Status:** Proposed pending identical v2 Windows and Apple Silicon hosted reports and clean independent re-review
 - **Date:** 2026-08-27
 - **Gate:** `G-005`
 - **Direction / Slice:** `version-one-delivery` / `phase-4-bounded-template-watch-query`
@@ -12,6 +12,15 @@ A later bounded template watcher needs a default rule for deciding whether routi
 
 The pre-observation contract is `g-005-evaluation-contract-v1`, SHA-256 `953a6faa3753ae94b1e136b691c5f94875913faae9cbbc6ac277c40fe5fdd641`. It fixed the manifest and expected-row schemas, seven candidate/threshold rows, selection order, metrics, authority limits, aggregate report, privacy boundary, and no-post-observation-rewrite rule before candidate execution. The frozen fixture set is repository-owned Apache-2.0 synthetic RGBA8 data with sixteen frames, seven sequences, and nine adjacent transitions.
 
+Independent security/privacy review found that the v1 implementation did not
+bound the numeric suffix of an expected-row transition id before a later
+semantic-mismatch error could reflect it. Additive contract
+`g-005-evaluation-contract-v2`, SHA-256
+`b104399d290e78b9d232bf439e91bc472560a57b5b0066d9d21b56e1d9796a94`,
+bounds the complete id and canonical numeric index before any reflected
+component error. Aggregate schema v2 records the patched evaluator without
+rewriting either historical v1 report.
+
 Exact frozen identities are:
 
 | Component | SHA-256 |
@@ -19,9 +28,9 @@ Exact frozen identities are:
 | fixture manifest | `dea51dc9862373f636870c3593f590fb65cc1489fd2f11a4cbb5842836fa532a` |
 | expected rows | `2c082e24628b64fdc23706226311eb59aab2d61351adb3f86aa42f1c2e6648a1` |
 | complete fixture checksum listing | `50b14842a0dca9e187166757df6b82ea7b3f2dc21b19440b60ce0b7d25d94943` |
-| formatted qualification evaluator source | `9f3f684cd8f418a97c9cbad74165936391934787a396ad29846e427f064a8631` |
+| security-remediated evaluator source | `1b20e1653416806da32e2de4d16638cf07821b215d6a2c0a4912099ba2e88d8b` |
 | canonical candidate plan | `4b84ee426177f3bcd97e77918f73526629067766b15803aecca291ab53ff037c` |
-| canonical formatted report | `12cf52aab777bcfccf75748506a856a0ea4eb6e1435be63b783f2a85353732cf` |
+| canonical v2 report | `44be7f31af81ced9ac7553d210547d995552adcbbc2127cf82ba60854d5a4ab2` |
 
 The first execution ran all named loader, oracle, evaluator, discontinuity, privacy, and byte-stability contracts without changing the oracle after observation. It completed with 11 passed and 0 failed.
 
@@ -33,6 +42,12 @@ rows, candidate plan, decisions, counters, or selected policy. The formatted
 source was rerun as a distinct applicability successor and produced the same
 decision/counter table; the current canonical report binds the new source digest
 instead of relabeling the historical first report.
+
+The independent-review successor changes only bounded transition-id validation,
+content-redacted error behavior, evaluator source identity, and aggregate schema
+id. It reproduces the complete decision/counter table under
+`mado-pilot-change-evaluation-report-v2`; both v1 reports remain immutable
+Change evidence.
 
 ## Decision
 
@@ -56,9 +71,9 @@ The predeclared comparison first rejects any candidate with a false skip or type
 | `sampled-exact-v1/stride-4` | 4 | 2 | 7 | 7 | reject |
 | `sampled-exact-v1/stride-8` | 4 | 2 | 7 | 7 | reject |
 
-Every lower-admitted-work candidate skips the frozen one-pixel in-ROI mandatory transition; the stride-4 and stride-8 candidates also skip the appearance/disappearance rows. Their reduced work cannot waive those false negatives.
+Every lower-admitted-work candidate skips the frozen one-pixel in-ROI mandatory transition; the min-8, stride-4, and stride-8 candidates also skip the appearance/disappearance rows. Their reduced work cannot waive those false negatives.
 
-The canonical target-neutral aggregate is `docs/evidence/g-005/accepted-report.json`. Both hosted release-target jobs must reproduce it byte for byte from the tracked evaluator before this ADR becomes Accepted. A target mismatch or incomplete run remains a rejection; no retry or result borrowing is allowed.
+The canonical target-neutral v2 aggregate is `docs/evidence/g-005/accepted-report.json`. Both hosted release-target jobs must reproduce it byte for byte from the tracked evaluator before this ADR becomes Accepted. A target mismatch or incomplete run remains a rejection; no retry or result borrowing is allowed.
 
 ## Alternatives
 
@@ -79,13 +94,13 @@ The rollback rule is conservative: any future false skip, fixture/report/policy 
 
 ## Privacy
 
-The fixture bytes are generated repository data, not captured desktop content. The strict loader reports only closed error kinds and validated synthetic ids. The aggregate report contains transition/candidate ids, document/evaluator digests, decisions, counters, and authority booleans; it excludes pixels, per-frame hashes, fixture/local paths, desktop/window/process data, credentials, template identities, OCR/input text, and free-form decoder/backend/native payloads.
+The fixture bytes are generated repository data, not captured desktop content. The strict loader reports only closed error kinds and validated bounded synthetic ids; invalid transition ids are rejected without retaining input content. The aggregate report contains transition/candidate ids, document/evaluator digests, decisions, counters, and authority booleans; it excludes pixels, per-frame hashes, fixture/local paths, desktop/window/process data, credentials, template identities, OCR/input text, and free-form decoder/backend/native payloads.
 
 ## Verification
 
-- `cargo test --locked -p mado-pilot-testkit --test change_detection_evaluator` passed 11 tests on the first frozen execution and 12 after exact report/runtime descriptor parity was added without changing the evaluator source or oracle.
+- `cargo test --locked -p mado-pilot-testkit --test change_detection_evaluator` passed 11 tests on the first frozen execution, 12 after exact report/runtime descriptor parity was added, 13 after the ADR/report drift gate was added, and 14 under contract v2 after the bounded transition-id privacy regression was added.
 - `cargo test --locked -p mado-pilot-vision --test change_detection` passed six closed-policy, exact-pixel, sequence-gap, identity/geometry/ROI/format, numeric-code, default, and thread/worker-state contracts.
 - Focused Clippy for `mado-pilot-vision` and `mado-pilot-testkit` passed with warnings denied.
-- The protected Windows `x86_64-pc-windows-msvc` and macOS `aarch64-apple-darwin` jobs each have a named step that emits and byte-compares the report. Their exact topic revision, run ids, and outcomes are pending.
+- The protected Windows `x86_64-pc-windows-msvc` and macOS `aarch64-apple-darwin` jobs reproduced report v1 on exact revision `99eb5c13b764614e3f6f0e1edee36548d3883d0c` in run `33034985691`. The additive v2 report requires a fresh both-target run on the patched revision before acceptance.
 - Existing workspace dependency-direction, facade, C ABI 1.5 layout, frozen old-header, and C++ tests remain the no-surface-drift gates.
-- `rasen/changes/phase-4-change-detection-default/evidence/first-observation.md` retains the preflight identities and complete rejected-candidate table.
+- `rasen/changes/phase-4-change-detection-default/evidence/` retains both v1 reports, the v2 contract/preflight, complete rejected-candidate tables, hosted reproduction, and review history.
