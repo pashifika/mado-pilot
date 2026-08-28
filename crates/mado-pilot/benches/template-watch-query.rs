@@ -943,15 +943,16 @@ fn saturation_latest_wins(_: &()) -> Sample {
     });
     latest_first_gate.release();
     let _ = wait_progress(&latest, |progress| {
-        progress.work().get(TemplateWorkDisposition::Superseded) == 2
+        progress.work().get(TemplateWorkDisposition::Completed) == 1
+            && progress.work().get(TemplateWorkDisposition::Superseded) == 1
     });
     let latest_final_entered = latest_final_gate.wait_until_entered(WAIT);
     latest_second_gate.release();
     let latest_ready = wait_progress(&latest, |progress| {
         progress.pending_count() == 0
             && progress.work().get(TemplateWorkDisposition::Admitted) == 3
-            && progress.work().get(TemplateWorkDisposition::Completed) == 0
-            && progress.work().get(TemplateWorkDisposition::Superseded) == 3
+            && progress.work().get(TemplateWorkDisposition::Completed) == 2
+            && progress.work().get(TemplateWorkDisposition::Superseded) == 1
     });
     latest_final_gate.release();
     let latest_outcome = latest
@@ -966,7 +967,7 @@ fn saturation_latest_wins(_: &()) -> Sample {
     let latest_metrics = Some(QueryWorkMetrics {
         backend_runs: latest_backend_runs,
         query_completions: latest_terminal_matches,
-        stale_discards: 2,
+        stale_discards: 0,
         producer_publications: 4,
         admitted: latest_work.get(TemplateWorkDisposition::Admitted),
         superseded: latest_work.get(TemplateWorkDisposition::Superseded),
@@ -987,9 +988,9 @@ fn saturation_latest_wins(_: &()) -> Sample {
         && latest_metrics.is_some_and(|work| {
             work.backend_runs == 3
                 && work.admitted == 3
-                && work.completed == 1
-                && work.superseded == 3
-                && work.stale_discards == 2
+                && work.completed == 3
+                && work.superseded == 1
+                && work.stale_discards == 0
                 && work.query_completions == 1
         });
     latest_session
@@ -1087,10 +1088,10 @@ fn saturation_latest_wins(_: &()) -> Sample {
     let work_correct = metrics.is_some_and(|work| {
         work.backend_runs == 5
             && work.admitted == 5
-            && work.completed == 3
+            && work.completed == 5
             && work.queue_expired == 1
-            && work.superseded == 3
-            && work.stale_discards == 2
+            && work.superseded == 1
+            && work.stale_discards == 0
             && work.query_completions == 4
             && work.query_failures == 0
             && work.producer_publications == 5
