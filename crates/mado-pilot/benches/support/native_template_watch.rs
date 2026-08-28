@@ -1488,9 +1488,7 @@ fn paired_query_sample(
             .map_err(|_| "typed_operation_failure:VisionFailed".to_owned())?;
         let initial = |progress: TemplateQueryProgress| {
             progress.confirmed_observations() == 0
-                && progress.work().get(TemplateWorkDisposition::Completed) == 1
-                && progress.work().get(TemplateWorkDisposition::DeferredRate) == 0
-                && progress.pending_count() == 0
+                && progress.work().get(TemplateWorkDisposition::Completed) >= 1
                 && progress.in_flight_count() == 0
         };
         let first_initial = wait_progress(&first, initial)?;
@@ -1515,17 +1513,39 @@ fn paired_query_sample(
         if visible.stamp().geometry() != baseline.geometry() {
             return Err("wrong_transform".to_owned());
         }
-        // The acknowledged visible publication supplies the controlled newer
-        // frame that both queries must retain while their shared clock is rate-limited.
-        let deferred = |progress: TemplateQueryProgress| {
+        let first_before = first.benchmark_work_snapshot();
+        let second_before = second.benchmark_work_snapshot();
+        let first_publications = first.benchmark_publication_count();
+        let second_publications = second.benchmark_publication_count();
+        // A second acknowledged repaint creates a controlled visible boundary
+        // after the snapshots above. Change-driven sources publish it directly;
+        // continuous sources may publish another visible frame first. Either way,
+        // both queries must retain post-boundary visible work while rate-limited.
+        run.command_visible()?;
+        let visible = wait_marker_state(run, visible.stamp(), true)?;
+        if visible.stamp().geometry() != baseline.geometry() {
+            return Err("wrong_transform".to_owned());
+        }
+        wait_progress(&first, |progress| {
             progress.confirmed_observations() == 0
-                && progress.work().get(TemplateWorkDisposition::Completed) >= 1
-                && progress.work().get(TemplateWorkDisposition::DeferredRate) >= 1
+                && progress.work().get(TemplateWorkDisposition::DeferredRate)
+                    > first_before
+                        .work()
+                        .get(TemplateWorkDisposition::DeferredRate)
+                && first.benchmark_publication_count() > first_publications
                 && progress.pending_count() == 1
                 && progress.in_flight_count() == 0
-        };
-        wait_progress(&first, deferred)?;
-        wait_progress(&second, deferred)?;
+        })?;
+        wait_progress(&second, |progress| {
+            progress.confirmed_observations() == 0
+                && progress.work().get(TemplateWorkDisposition::DeferredRate)
+                    > second_before
+                        .work()
+                        .get(TemplateWorkDisposition::DeferredRate)
+                && second.benchmark_publication_count() > second_publications
+                && progress.pending_count() == 1
+                && progress.in_flight_count() == 0
+        })?;
         clock.advance(Duration::from_secs(1));
         let (first_terminal, _) = wait_terminal(&first)?;
         let (second_terminal, _) = wait_terminal(&second)?;
