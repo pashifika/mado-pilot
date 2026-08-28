@@ -237,6 +237,7 @@ struct Arguments {
     fixture_executable: PathBuf,
     raw: Vec<String>,
     qualification: bool,
+    full_load_diagnostic: bool,
     enforce_budgets: bool,
     workload_filter: Option<String>,
 }
@@ -253,14 +254,24 @@ impl Arguments {
             "capability_unavailable:fixture_executable"
         );
         let qualification = raw.iter().any(|argument| argument == "--bench");
+        let full_load_diagnostic = raw
+            .iter()
+            .any(|argument| argument == "--full-load-diagnostic");
+        let enforce_budgets = raw.iter().any(|argument| argument == "--enforce-budgets");
         let workload_filter = value(&raw, "--workload").map(str::to_owned);
         assert!(
             !qualification || workload_filter.is_none(),
             "protocol_drift"
         );
+        assert!(
+            !full_load_diagnostic
+                || (!qualification && workload_filter.is_none() && !enforce_budgets),
+            "protocol_drift"
+        );
         Self {
             qualification,
-            enforce_budgets: raw.iter().any(|argument| argument == "--enforce-budgets"),
+            full_load_diagnostic,
+            enforce_budgets,
             workload_filter,
             fixture_executable,
             raw,
@@ -437,7 +448,7 @@ impl Cohort {
 
 pub(super) fn run() {
     let arguments = Arguments::parse();
-    let sample_plan = if arguments.qualification {
+    let sample_plan = if arguments.qualification || arguments.full_load_diagnostic {
         Plan::new(3, 20)
     } else {
         Plan::new(1, 1)
@@ -663,9 +674,11 @@ pub(super) fn run() {
     } else {
         bench_harness::summarize("native-template-watch", sample_plan, &workloads);
     }
-    for workload in &workloads {
-        if sampled_workload(workload.name()) {
-            bench_harness::enforce_hard_budgets(std::slice::from_ref(workload));
+    if !arguments.full_load_diagnostic {
+        for workload in &workloads {
+            if sampled_workload(workload.name()) {
+                bench_harness::enforce_hard_budgets(std::slice::from_ref(workload));
+            }
         }
     }
     if arguments.enforce_budgets {
