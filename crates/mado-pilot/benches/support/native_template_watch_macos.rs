@@ -2,11 +2,19 @@
 
 
 #[cfg(target_os = "macos")]
-use crate::macos_fixture::{FixtureController, LaunchMode};
+use crate::macos_fixture::{
+    FixtureController, LaunchMode, controlled_content_logical_size,
+    controlled_resize_logical_size_matches, expected_controlled_resize_logical_size,
+};
 #[cfg(target_os = "macos")]
 use crate::macos_fixture_control::executable_identity;
 #[cfg(target_os = "macos")]
 use crate::macos_fixture_protocol::{self as protocol, FixtureCommandKind};
+
+#[cfg(target_os = "macos")]
+const FIXTURE_STATUS_OK: u32 = 0;
+#[cfg(target_os = "macos")]
+const FIXTURE_STATUS_UNSUPPORTED: u32 = 2;
 
 #[cfg(target_os = "macos")]
 struct NativeFixture {
@@ -69,7 +77,13 @@ impl NativeFixture {
 
     fn command(&mut self, kind: FixtureCommandKind) -> Result<ControlAcknowledgement, String> {
         let acknowledgement = self.controller.command(kind, FIXTURE_COMMAND_WAIT)?;
-        if acknowledgement.result().status != 0 {
+        let status = acknowledgement.result().status;
+        if kind == FixtureCommandKind::MoveToNextDisplay
+            && status == FIXTURE_STATUS_UNSUPPORTED
+        {
+            return Err("capability_unavailable:topology".to_owned());
+        }
+        if status != FIXTURE_STATUS_OK {
             return Err("fixture_authority_failed".to_owned());
         }
         self.revision = self
@@ -141,12 +155,34 @@ fn permission_oracle(engine: &Engine) -> bool {
 }
 
 #[cfg(target_os = "macos")]
+fn resize_geometry_matches(before: &Frame, after: &Frame) -> bool {
+    let Some(before_placement) = before.transform().target() else {
+        return false;
+    };
+    let Some(after_placement) = after.transform().target() else {
+        return false;
+    };
+    let Some(expected) =
+        expected_controlled_resize_logical_size(before_placement.logical_size())
+    else {
+        return false;
+    };
+    before.descriptor().extent() != after.descriptor().extent()
+        && before_placement.desktop_origin() == after_placement.desktop_origin()
+        && before_placement.scale() == after_placement.scale()
+        && before_placement.desktop_scale() == after_placement.desktop_scale()
+        && controlled_resize_logical_size_matches(after_placement.logical_size(), expected)
+}
+
+#[cfg(target_os = "macos")]
 fn marker_shape(frame: &Frame, _fixture: &NativeFixture) -> Option<MarkerShape> {
     let placement = frame.transform().target()?;
     let scale = placement.scale();
     let (logical_width, logical_height) = placement.logical_size();
-    let horizontal_inset = (logical_width - protocol::WINDOW_POINTS.0) / 2.0;
-    let top_inset = logical_height - protocol::WINDOW_POINTS.1;
+    let (content_width, content_height) =
+        controlled_content_logical_size((logical_width, logical_height))?;
+    let horizontal_inset = (logical_width - content_width) / 2.0;
+    let top_inset = logical_height - content_height;
     if horizontal_inset < 0.0 || top_inset < 0.0 {
         return None;
     }

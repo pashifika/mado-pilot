@@ -159,6 +159,33 @@ fn wait_geometry_change(run: &NativeRun, after: FrameStamp) -> Result<Frame, Str
         stamp = frame.stamp();
     }
 }
+
+fn wait_resize_change(run: &NativeRun, before: &Frame) -> Result<Frame, String> {
+    let deadline = Instant::now() + OPERATION_WAIT;
+    let original = (before.stamp().epoch(), before.stamp().geometry());
+    let mut confirmed = None;
+    let mut stamp = before.stamp();
+    loop {
+        let remaining = deadline.saturating_duration_since(Instant::now());
+        if remaining.is_zero() {
+            return Err("wrong_transform".to_owned());
+        }
+        let frame = run
+            .session
+            .acquire_frame(&FrameRequest::newer_than(stamp), &bounded(remaining))
+            .map_err(|_| "typed_operation_failure:DeadlineExceeded".to_owned())?;
+        let current = (frame.stamp().epoch(), frame.stamp().geometry());
+        if current != original && resize_geometry_matches(before, &frame) {
+            if confirmed == Some(current) {
+                return Ok(frame);
+            }
+            confirmed = Some(current);
+        } else {
+            confirmed = None;
+        }
+        stamp = frame.stamp();
+    }
+}
 fn marker_state(mapping: &mado_pilot::CpuMapping, shape: MarkerShape) -> Option<bool> {
     let stride = mapping.descriptor().stride();
     let bytes = mapping.bytes();
@@ -991,7 +1018,7 @@ fn stale_generation(cohort: &Rc<RefCell<Cohort>>) -> Sample {
         let progress = wait_progress(&query, TemplateQueryProgress::is_in_flight)?;
         let resize = run.fixture.resize_target()?;
         run.accept_acknowledgement(resize)?;
-        let moved_frame = wait_geometry_change(run, old_frame.stamp())?;
+        let moved_frame = wait_resize_change(run, &old_frame)?;
         let moved_geometry = moved_frame.stamp().geometry();
         drop(delay);
         run.command_visible()?;
@@ -1001,7 +1028,7 @@ fn stale_generation(cohort: &Rc<RefCell<Cohort>>) -> Sample {
             terminal_match(&terminal).map(|result| result.frame().stamp().geometry());
         let restore = run.fixture.resize_target()?;
         run.accept_acknowledgement(restore)?;
-        let restored_frame = wait_geometry_change(run, moved_frame.stamp())?;
+        let restored_frame = wait_resize_change(run, &moved_frame)?;
         let restored_placement = restored_frame.transform().target()
             == old_frame.transform().target()
             && restored_frame.descriptor().extent() == old_frame.descriptor().extent();
@@ -1204,7 +1231,12 @@ fn geometry_sample(cohort: &Rc<RefCell<Cohort>>, action: GeometryAction) -> Samp
             GeometryAction::Topology => run.fixture.move_next_display(),
         }?;
         run.accept_acknowledgement(acknowledgement)?;
-        let after = wait_geometry_change(run, before.stamp())?;
+        let after = match action {
+            GeometryAction::Resize => wait_resize_change(run, &before),
+            GeometryAction::Move | GeometryAction::Topology => {
+                wait_geometry_change(run, before.stamp())
+            }
+        }?;
         run.refresh_template(&after, "watch-marker-v1-geometry")?;
         let query = run.start_watch(TemplateStability::immediate())?;
         let baseline = prime_pending(&query)?;
@@ -1213,11 +1245,20 @@ fn geometry_sample(cohort: &Rc<RefCell<Cohort>>, action: GeometryAction) -> Samp
         let geometry_changed = before.stamp().geometry() != after.stamp().geometry();
         let exact = matched_exact(&terminal, run, 1, Some(before.stamp()));
         let restore = match action {
-            GeometryAction::Move => run.fixture.move_target(),
-            GeometryAction::Resize => run.fixture.resize_target(),
-            GeometryAction::Topology => run.fixture.restore_placement(),
+            GeometryAction::Move => Some(run.fixture.move_target()),
+            GeometryAction::Resize => None,
+            GeometryAction::Topology => Some(run.fixture.restore_placement()),
         };
-        let restored = restore.is_ok_and(|ack| run.accept_acknowledgement(ack).is_ok());
+        let restored = if let Some(restore) = restore {
+            let restore = restore?;
+            run.accept_acknowledgement(restore)?;
+            let restored_frame = wait_geometry_change(run, after.stamp())?;
+            before.descriptor() == restored_frame.descriptor()
+                && before.transform().covers_target() == restored_frame.transform().covers_target()
+                && before.transform().target() == restored_frame.transform().target()
+        } else {
+            true
+        };
         run.command_absent()?;
         Ok((
             geometry_changed && exact && restored,
@@ -1357,6 +1398,9 @@ fn observed_sample(
             .and_then(operation)
             .unwrap_or_else(|code| panic!("{code}"))
     };
+    // Terminal authority is already fixed; this bounded wait closes only the
+    // cumulative work interval and fails if late work does not release.
+    wait_for_backend_idle(OPERATION_WAIT).unwrap_or_else(|code| panic!("{code}"));
     finish_observed_sample(started.elapsed(), correct, progress, before)
 }
 

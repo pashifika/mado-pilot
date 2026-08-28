@@ -341,6 +341,25 @@ fn permission_oracle(_engine: &Engine) -> bool {
 }
 
 #[cfg(windows)]
+fn resize_geometry_matches(before: &Frame, after: &Frame) -> bool {
+    let expected = match before.descriptor().extent() {
+        extent if extent == PixelExtent::new(360, 240) => PixelExtent::new(480, 320),
+        extent if extent == PixelExtent::new(480, 320) => PixelExtent::new(360, 240),
+        _ => return false,
+    };
+    let Some(before_placement) = before.transform().target() else {
+        return false;
+    };
+    let Some(after_placement) = after.transform().target() else {
+        return false;
+    };
+    after.descriptor().extent() == expected
+        && before_placement.desktop_origin() == after_placement.desktop_origin()
+        && before_placement.scale() == after_placement.scale()
+        && before_placement.desktop_scale() == after_placement.desktop_scale()
+}
+
+#[cfg(windows)]
 fn marker_shape(frame: &Frame, fixture: &NativeFixture) -> Option<MarkerShape> {
     let placement = frame.transform().target()?;
     let scale = placement.scale();
