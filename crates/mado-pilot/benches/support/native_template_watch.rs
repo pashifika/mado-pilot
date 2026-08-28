@@ -674,11 +674,9 @@ pub(super) fn run() {
     } else {
         bench_harness::summarize("native-template-watch", sample_plan, &workloads);
     }
-    if !arguments.full_load_diagnostic {
-        for workload in &workloads {
-            if sampled_workload(workload.name()) {
-                bench_harness::enforce_hard_budgets(std::slice::from_ref(workload));
-            }
+    for workload in &workloads {
+        if sampled_workload(workload.name()) {
+            bench_harness::enforce_hard_budgets(std::slice::from_ref(workload));
         }
     }
     if arguments.enforce_budgets {
