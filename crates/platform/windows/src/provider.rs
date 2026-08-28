@@ -62,7 +62,7 @@ pub(crate) struct TargetRecord {
     lost: Arc<AtomicBool>,
     geometry: Arc<GeometryLedger>,
     authority: Option<RetainedWindowAuthority>,
-    _closed_token: Option<i64>,
+    closed_token: Option<i64>,
 }
 
 struct PreparedSnapshot {
@@ -198,7 +198,7 @@ impl WindowsCaptureProvider {
             lost,
             geometry: Arc::new(GeometryLedger::default()),
             authority,
-            _closed_token: closed_token,
+            closed_token,
         }))
     }
 
@@ -425,6 +425,14 @@ impl TargetRecord {
             Err(InputFault::TargetLost)
         } else {
             Ok(())
+        }
+    }
+}
+
+impl Drop for TargetRecord {
+    fn drop(&mut self) {
+        if let (CaptureItem::Native(item), Some(token)) = (&self.item, self.closed_token.take()) {
+            let _removed = item.RemoveClosed(token);
         }
     }
 }
