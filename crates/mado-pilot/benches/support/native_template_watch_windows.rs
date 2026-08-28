@@ -347,18 +347,19 @@ fn permission_oracle(_engine: &Engine) -> bool {
 
 #[cfg(windows)]
 fn resize_geometry_matches(before: &Frame, after: &Frame) -> bool {
-    let expected = match before.descriptor().extent() {
-        extent if extent == PixelExtent::new(360, 240) => PixelExtent::new(480, 320),
-        extent if extent == PixelExtent::new(480, 320) => PixelExtent::new(360, 240),
-        _ => return false,
-    };
+    let before_extent = before.descriptor().extent();
+    let after_extent = after.descriptor().extent();
     let Some(before_placement) = before.transform().target() else {
         return false;
     };
     let Some(after_placement) = after.transform().target() else {
         return false;
     };
-    after.descriptor().extent() == expected
+    // The fixture alternates requested outer sizes 360x240 and 480x320. WGC
+    // excludes constant non-client chrome, so its authoritative frame extents
+    // must change by the same exact 120x80 rather than equal the outer sizes.
+    before_extent.width().abs_diff(after_extent.width()) == 120
+        && before_extent.height().abs_diff(after_extent.height()) == 80
         && before_placement.desktop_origin() == after_placement.desktop_origin()
         && before_placement.scale() == after_placement.scale()
         && before_placement.desktop_scale() == after_placement.desktop_scale()
