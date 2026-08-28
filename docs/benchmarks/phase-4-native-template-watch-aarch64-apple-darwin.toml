@@ -1,0 +1,1098 @@
+# Phase 4 native template-watch precursor-bound enforcing profile at source
+# 65da97b06d6de80ea7b59b0b16fd8bc022befea7 and tree
+# 72b233d8b2e34ceee6452fde6f5b0c7bc2d3fa92.
+# ADR 0053 fixes the budgets before the fresh final executable and cohort.
+
+format_version = 1
+
+[benchmark]
+id = "phase-4-native-template-watch-aarch64-apple-darwin"
+workload = "native Rust facade maintained-session template-watch matrix"
+phase = "4"
+status = "measured"
+normative = true
+measurements_recorded = true
+
+[profile]
+fixture = "repository native watch fixture plus generated watch-marker-v1"
+fixture_sha256 = "4591eb891a93e133be7f9b7f5d55007618809cc72ee99e198ec56fe92a94fdfe"
+benchmark_executable_sha256 = "7f49d8115cdd89dc3ea1e5e4f4d1489a64cea56f7c6645bacc560fc935d8877a"
+release_target = "aarch64-apple-darwin"
+hardware = "Apple M1 Pro, 10 CPU cores, 34359738368 bytes memory"
+os_version = "macOS 26.5.2 build 25F84, SDK 26.5"
+deployment_target = "aarch64-apple-darwin"
+build_profile = "cargo build --locked --release --package mado-pilot --bench native-template-watch --features native-template-watch-qualification"
+warmup_iterations = 3
+sample_count = 20
+process_count = 5
+single_run_latency_budgets = "withheld by ADR 0053: eight gate rows retain one observation per process"
+aggregate_mapping_budget = "withheld by ADR 0053: enforce exact mapping accounting and target-native aggregates"
+cadence_count_budgets = "withheld by ADR 0053: enforce exact controlled counts and conservation relations"
+producer_rate_budget = "withheld by ADR 0053: enforce monotonic progress without cross-target publication rate"
+growth_budget_scope = "sampled workloads only; single-run gates have no post-warm growth measure"
+resident_budget_scope = "every sampled workload and every gate row that reports target-native RSS"
+correctness_oracle = "24 ordered source/match/geometry/work/lifecycle/ownership/resource/privacy hard gates"
+queue_policy = "production finite latest-wins capture and template-watch scheduler"
+notes = "source 65da97b06d6de80ea7b59b0b16fd8bc022befea7; tree 72b233d8b2e34ceee6452fde6f5b0c7bc2d3fa92; fixture-source d93ab8715b8ece57e703adea43aff92e2e19294f7f948a2462d88fe8a94bfb8c; backend opencv-4.14.0; toolchain rust-1.97.1-8bab26f4-llvm-22.1.6; host apple-m1-pro-10c-32g; cohort precursor; process 1; control native-watch-control-v1"
+
+[[budget]]
+measure = "result_correctness"
+kind = "hard"
+requirement = "every retained sample satisfies exact source, match, geometry, state, work, lifecycle, ownership, resource, privacy, and producer-progress oracles"
+predicate = "result_correctness == 0"
+
+[[budget]]
+measure = "allocated_growth_bytes"
+kind = "hard"
+requirement = "sampled watcher operations return transient Rust allocations after warmup"
+predicate = "allocated_growth_bytes <= 4096"
+
+[[budget]]
+measure = "peak_allocated_bytes"
+kind = "absolute"
+unit = "bytes"
+direction = "at_most"
+limit = 364232704
+rationale = "ADR 0053: 1.25 times the target-native precursor maximum, rounded upward to 4 KiB"
+
+[[budget]]
+measure = "peak_resident_bytes"
+kind = "absolute"
+unit = "bytes"
+direction = "at_most"
+limit = 3581935616
+rationale = "ADR 0053: 1.25 times the target-native precursor maximum, rounded upward to 1 MiB"
+
+[[measurement]]
+workload = "environment_identity"
+correctness_oracle = "facade/native/fixture identities, availability, and owner binding are exact"
+warmup_iterations = 0
+sample_count = 1
+result_correctness = 0
+latency_p50_ms = 578.888500
+latency_p95_ms = 578.888500
+latency_max_ms = 578.888500
+iteration_span_ms = 578.890166
+mapped_bytes_per_result = 0
+peak_allocated_bytes = 1248800
+steady_allocated_bytes = 43671
+allocated_growth_bytes = 43671
+
+[[measurement]]
+workload = "window_absent_current"
+correctness_oracle = "acknowledged absent current frame remains pending without false stability"
+result_correctness = 0
+latency_p50_ms = 137.638000
+latency_p95_ms = 140.778959
+latency_max_ms = 141.235292
+iteration_span_ms = 172.768452
+mapped_bytes_per_result = 13885440
+backend_runs = 60
+query_completions = 20
+query_failures = 0
+stale_discards = 74
+producer_publications = 94
+work_admitted = 60
+work_skipped_change = 0
+work_deferred_rate = 0
+work_coalesced = 0
+work_superseded = 74
+work_rejected = 0
+work_queue_expired = 0
+work_completed = 20
+work_failed = 0
+peak_allocated_bytes = 18518690
+steady_allocated_bytes = 9258937
+allocated_growth_bytes = 0
+peak_resident_bytes = 264208384
+
+[[measurement.budget]]
+measure = "latency_p50"
+kind = "absolute"
+unit = "milliseconds"
+direction = "at_most"
+limit = 275.276
+rationale = "ADR 0053 precursor: 2x worst target statistic rounded upward to 0.001 ms"
+
+[[measurement.budget]]
+measure = "latency_p95"
+kind = "absolute"
+unit = "milliseconds"
+direction = "at_most"
+limit = 281.558
+rationale = "ADR 0053 precursor: 2x worst target statistic rounded upward to 0.001 ms"
+
+[[measurement.budget]]
+measure = "latency_max"
+kind = "absolute"
+unit = "milliseconds"
+direction = "at_most"
+limit = 285.297
+rationale = "ADR 0053 precursor: 2x worst target statistic rounded upward to 0.001 ms"
+
+[[measurement]]
+workload = "window_transient_appearance"
+correctness_oracle = "one confirmed visible frame followed by acknowledged absence remains nonterminal"
+result_correctness = 0
+latency_p50_ms = 333.654833
+latency_p95_ms = 335.387458
+latency_max_ms = 335.665666
+iteration_span_ms = 365.364218
+mapped_bytes_per_result = 23142400
+backend_runs = 100
+query_completions = 20
+query_failures = 0
+stale_discards = 240
+producer_publications = 320
+work_admitted = 100
+work_skipped_change = 0
+work_deferred_rate = 0
+work_coalesced = 0
+work_superseded = 240
+work_rejected = 0
+work_queue_expired = 0
+work_completed = 80
+work_failed = 0
+peak_allocated_bytes = 23145281
+steady_allocated_bytes = 64
+allocated_growth_bytes = 0
+peak_resident_bytes = 274546688
+
+[[measurement.budget]]
+measure = "latency_p50"
+kind = "absolute"
+unit = "milliseconds"
+direction = "at_most"
+limit = 674.163
+rationale = "ADR 0053 precursor: 2x worst target statistic rounded upward to 0.001 ms"
+
+[[measurement.budget]]
+measure = "latency_p95"
+kind = "absolute"
+unit = "milliseconds"
+direction = "at_most"
+limit = 680.820
+rationale = "ADR 0053 precursor: 2x worst target statistic rounded upward to 0.001 ms"
+
+[[measurement.budget]]
+measure = "latency_max"
+kind = "absolute"
+unit = "milliseconds"
+direction = "at_most"
+limit = 683.207
+rationale = "ADR 0053 precursor: 2x worst target statistic rounded upward to 0.001 ms"
+
+[[measurement]]
+workload = "window_persistent_appearance"
+correctness_oracle = "persistent marker completes only after confirmed duration on authoritative frames"
+result_correctness = 0
+latency_p50_ms = 201.626166
+latency_p95_ms = 206.588875
+latency_max_ms = 207.313667
+iteration_span_ms = 237.105352
+mapped_bytes_per_result = 13885440
+backend_runs = 60
+query_completions = 20
+query_failures = 0
+stale_discards = 180
+producer_publications = 240
+work_admitted = 60
+work_skipped_change = 0
+work_deferred_rate = 0
+work_coalesced = 0
+work_superseded = 180
+work_rejected = 0
+work_queue_expired = 0
+work_completed = 60
+work_failed = 0
+peak_allocated_bytes = 12938637
+steady_allocated_bytes = 0
+allocated_growth_bytes = 0
+peak_resident_bytes = 276742144
+
+[[measurement.budget]]
+measure = "latency_p50"
+kind = "absolute"
+unit = "milliseconds"
+direction = "at_most"
+limit = 408.569
+rationale = "ADR 0053 precursor: 2x worst target statistic rounded upward to 0.001 ms"
+
+[[measurement.budget]]
+measure = "latency_p95"
+kind = "absolute"
+unit = "milliseconds"
+direction = "at_most"
+limit = 415.749
+rationale = "ADR 0053 precursor: 2x worst target statistic rounded upward to 0.001 ms"
+
+[[measurement.budget]]
+measure = "latency_max"
+kind = "absolute"
+unit = "milliseconds"
+direction = "at_most"
+limit = 417.577
+rationale = "ADR 0053 precursor: 2x worst target statistic rounded upward to 0.001 ms"
+
+[[measurement]]
+workload = "window_disappearance_reset"
+correctness_oracle = "absence resets prior confirmation before persistent reappearance"
+result_correctness = 0
+latency_p50_ms = 465.506708
+latency_p95_ms = 468.001084
+latency_max_ms = 468.246292
+iteration_span_ms = 488.744195
+mapped_bytes_per_result = 32399360
+backend_runs = 140
+query_completions = 20
+query_failures = 0
+stale_discards = 400
+producer_publications = 540
+work_admitted = 140
+work_skipped_change = 0
+work_deferred_rate = 0
+work_coalesced = 0
+work_superseded = 400
+work_rejected = 0
+work_queue_expired = 0
+work_completed = 140
+work_failed = 0
+peak_allocated_bytes = 36082413
+steady_allocated_bytes = 0
+allocated_growth_bytes = 0
+peak_resident_bytes = 281952256
+
+[[measurement.budget]]
+measure = "latency_p50"
+kind = "absolute"
+unit = "milliseconds"
+direction = "at_most"
+limit = 938.330
+rationale = "ADR 0053 precursor: 2x worst target statistic rounded upward to 0.001 ms"
+
+[[measurement.budget]]
+measure = "latency_p95"
+kind = "absolute"
+unit = "milliseconds"
+direction = "at_most"
+limit = 945.140
+rationale = "ADR 0053 precursor: 2x worst target statistic rounded upward to 0.001 ms"
+
+[[measurement.budget]]
+measure = "latency_max"
+kind = "absolute"
+unit = "milliseconds"
+direction = "at_most"
+limit = 945.798
+rationale = "ADR 0053 precursor: 2x worst target statistic rounded upward to 0.001 ms"
+
+[[measurement]]
+workload = "window_strictly_newer"
+correctness_oracle = "completion excludes the named absent source and returns a strictly newer frame"
+result_correctness = 0
+latency_p50_ms = 201.141750
+latency_p95_ms = 204.443833
+latency_max_ms = 206.023042
+iteration_span_ms = 240.708420
+mapped_bytes_per_result = 13885440
+backend_runs = 60
+query_completions = 20
+query_failures = 0
+stale_discards = 180
+producer_publications = 240
+work_admitted = 60
+work_skipped_change = 0
+work_deferred_rate = 0
+work_coalesced = 0
+work_superseded = 180
+work_rejected = 0
+work_queue_expired = 0
+work_completed = 60
+work_failed = 0
+peak_allocated_bytes = 12938637
+steady_allocated_bytes = 0
+allocated_growth_bytes = 0
+peak_resident_bytes = 281952256
+
+[[measurement.budget]]
+measure = "latency_p50"
+kind = "absolute"
+unit = "milliseconds"
+direction = "at_most"
+limit = 407.096
+rationale = "ADR 0053 precursor: 2x worst target statistic rounded upward to 0.001 ms"
+
+[[measurement.budget]]
+measure = "latency_p95"
+kind = "absolute"
+unit = "milliseconds"
+direction = "at_most"
+limit = 415.379
+rationale = "ADR 0053 precursor: 2x worst target statistic rounded upward to 0.001 ms"
+
+[[measurement.budget]]
+measure = "latency_max"
+kind = "absolute"
+unit = "milliseconds"
+direction = "at_most"
+limit = 418.778
+rationale = "ADR 0053 precursor: 2x worst target statistic rounded upward to 0.001 ms"
+
+[[measurement]]
+workload = "window_move"
+correctness_oracle = "movement changes geometry authority and only post-move work may commit"
+result_correctness = 0
+latency_p50_ms = 282.057292
+latency_p95_ms = 299.206000
+latency_max_ms = 302.041250
+iteration_span_ms = 320.497531
+mapped_bytes_per_result = 27770880
+backend_runs = 119
+query_completions = 20
+query_failures = 0
+stale_discards = 138
+producer_publications = 237
+work_admitted = 119
+work_skipped_change = 0
+work_deferred_rate = 0
+work_coalesced = 0
+work_superseded = 138
+work_rejected = 0
+work_queue_expired = 0
+work_completed = 99
+work_failed = 0
+peak_allocated_bytes = 31465213
+steady_allocated_bytes = 10568
+allocated_growth_bytes = 0
+peak_resident_bytes = 281952256
+
+[[measurement.budget]]
+measure = "latency_p50"
+kind = "absolute"
+unit = "milliseconds"
+direction = "at_most"
+limit = 564.115
+rationale = "ADR 0053 precursor: 2x worst target statistic rounded upward to 0.001 ms"
+
+[[measurement.budget]]
+measure = "latency_p95"
+kind = "absolute"
+unit = "milliseconds"
+direction = "at_most"
+limit = 599.015
+rationale = "ADR 0053 precursor: 2x worst target statistic rounded upward to 0.001 ms"
+
+[[measurement.budget]]
+measure = "latency_max"
+kind = "absolute"
+unit = "milliseconds"
+direction = "at_most"
+limit = 604.083
+rationale = "ADR 0053 precursor: 2x worst target statistic rounded upward to 0.001 ms"
+
+[[measurement]]
+workload = "window_resize"
+correctness_oracle = "resize changes extent and geometry before a later exact match commits"
+result_correctness = 0
+latency_p50_ms = 285.378333
+latency_p95_ms = 294.430417
+latency_max_ms = 298.077792
+iteration_span_ms = 318.051695
+mapped_bytes_per_result = 31967232
+backend_runs = 110
+query_completions = 20
+query_failures = 0
+stale_discards = 126
+producer_publications = 216
+work_admitted = 110
+work_skipped_change = 0
+work_deferred_rate = 0
+work_coalesced = 0
+work_superseded = 126
+work_rejected = 0
+work_queue_expired = 0
+work_completed = 90
+work_failed = 0
+peak_allocated_bytes = 36277317
+steady_allocated_bytes = 1398784
+allocated_growth_bytes = 0
+peak_resident_bytes = 437157888
+
+[[measurement.budget]]
+measure = "latency_p50"
+kind = "absolute"
+unit = "milliseconds"
+direction = "at_most"
+limit = 574.458
+rationale = "ADR 0053 precursor: 2x worst target statistic rounded upward to 0.001 ms"
+
+[[measurement.budget]]
+measure = "latency_p95"
+kind = "absolute"
+unit = "milliseconds"
+direction = "at_most"
+limit = 598.536
+rationale = "ADR 0053 precursor: 2x worst target statistic rounded upward to 0.001 ms"
+
+[[measurement.budget]]
+measure = "latency_max"
+kind = "absolute"
+unit = "milliseconds"
+direction = "at_most"
+limit = 609.132
+rationale = "ADR 0053 precursor: 2x worst target statistic rounded upward to 0.001 ms"
+
+[[measurement]]
+workload = "window_topology_scale"
+correctness_oracle = "target scale/topology transition selects the exact new marker realization"
+warmup_iterations = 0
+sample_count = 1
+result_correctness = 0
+latency_p50_ms = 175.268583
+latency_p95_ms = 175.268583
+latency_max_ms = 175.268583
+iteration_span_ms = 211.539250
+mapped_bytes_per_result = 5327872
+backend_runs = 4
+query_completions = 1
+query_failures = 0
+stale_discards = 1
+producer_publications = 4
+work_admitted = 4
+work_skipped_change = 0
+work_deferred_rate = 0
+work_coalesced = 0
+work_superseded = 1
+work_rejected = 0
+work_queue_expired = 0
+work_completed = 3
+work_failed = 0
+peak_allocated_bytes = 10656272
+steady_allocated_bytes = 0
+allocated_growth_bytes = 0
+peak_resident_bytes = 455884800
+
+[[measurement]]
+workload = "display_current_newer"
+correctness_oracle = "one owned-fixture display session finds the marker on a strictly newer source"
+warmup_iterations = 0
+sample_count = 1
+result_correctness = 0
+latency_p50_ms = 2260.532042
+latency_p95_ms = 2260.532042
+latency_max_ms = 2260.532042
+iteration_span_ms = 2293.052292
+mapped_bytes_per_result = 235929600
+backend_runs = 4
+query_completions = 1
+query_failures = 0
+stale_discards = 100
+producer_publications = 103
+work_admitted = 4
+work_skipped_change = 0
+work_deferred_rate = 0
+work_coalesced = 0
+work_superseded = 100
+work_rejected = 0
+work_queue_expired = 0
+work_completed = 3
+work_failed = 0
+peak_allocated_bytes = 291386008
+steady_allocated_bytes = 4333
+allocated_growth_bytes = 4333
+peak_resident_bytes = 2865184768
+
+[[measurement]]
+workload = "permission_availability"
+correctness_oracle = "non-prompting native capability facts are available before capture work"
+warmup_iterations = 0
+sample_count = 1
+result_correctness = 0
+latency_p50_ms = 38.682666
+latency_p95_ms = 38.682666
+latency_max_ms = 38.682666
+iteration_span_ms = 38.683125
+mapped_bytes_per_result = 0
+peak_allocated_bytes = 358
+steady_allocated_bytes = 0
+allocated_growth_bytes = -5328032
+
+[[measurement]]
+workload = "native_high_rate_slow_backend"
+correctness_oracle = "controlled slow production OpenCV work stays finite and producer publication advances"
+result_correctness = 0
+latency_p50_ms = 460.851292
+latency_p95_ms = 470.498833
+latency_max_ms = 471.884209
+iteration_span_ms = 489.436816
+mapped_bytes_per_result = 21311488
+backend_runs = 62
+query_completions = 20
+query_failures = 0
+stale_discards = 271
+producer_publications = 313
+work_admitted = 62
+work_skipped_change = 0
+work_deferred_rate = 0
+work_coalesced = 0
+work_superseded = 271
+work_rejected = 0
+work_queue_expired = 0
+work_completed = 42
+work_failed = 0
+peak_allocated_bytes = 25620325
+steady_allocated_bytes = 5328032
+allocated_growth_bytes = 0
+peak_resident_bytes = 2865184768
+
+[[measurement.budget]]
+measure = "latency_p50"
+kind = "absolute"
+unit = "milliseconds"
+direction = "at_most"
+limit = 930.280
+rationale = "ADR 0053 precursor: 2x worst target statistic rounded upward to 0.001 ms"
+
+[[measurement.budget]]
+measure = "latency_p95"
+kind = "absolute"
+unit = "milliseconds"
+direction = "at_most"
+limit = 957.199
+rationale = "ADR 0053 precursor: 2x worst target statistic rounded upward to 0.001 ms"
+
+[[measurement.budget]]
+measure = "latency_max"
+kind = "absolute"
+unit = "milliseconds"
+direction = "at_most"
+limit = 960.783
+rationale = "ADR 0053 precursor: 2x worst target statistic rounded upward to 0.001 ms"
+
+[[measurement]]
+workload = "two_query_fairness"
+correctness_oracle = "two eligible queries both receive a terminal result without thread-order assumptions"
+result_correctness = 0
+latency_p50_ms = 383.712542
+latency_p95_ms = 393.719792
+latency_max_ms = 394.136541
+iteration_span_ms = 418.152397
+mapped_bytes_per_result = 10655744
+backend_runs = 40
+query_completions = 40
+query_failures = 0
+stale_discards = 730
+producer_publications = 405
+work_admitted = 40
+work_skipped_change = 0
+work_deferred_rate = 770
+work_coalesced = 40
+work_superseded = 730
+work_rejected = 0
+work_queue_expired = 0
+work_completed = 80
+work_failed = 0
+peak_allocated_bytes = 79925457
+steady_allocated_bytes = 128
+allocated_growth_bytes = 0
+peak_resident_bytes = 2865184768
+
+[[measurement.budget]]
+measure = "latency_p50"
+kind = "absolute"
+unit = "milliseconds"
+direction = "at_most"
+limit = 771.217
+rationale = "ADR 0053 precursor: 2x worst target statistic rounded upward to 0.001 ms"
+
+[[measurement.budget]]
+measure = "latency_p95"
+kind = "absolute"
+unit = "milliseconds"
+direction = "at_most"
+limit = 788.633
+rationale = "ADR 0053 precursor: 2x worst target statistic rounded upward to 0.001 ms"
+
+[[measurement.budget]]
+measure = "latency_max"
+kind = "absolute"
+unit = "milliseconds"
+direction = "at_most"
+limit = 789.227
+rationale = "ADR 0053 precursor: 2x worst target statistic rounded upward to 0.001 ms"
+
+[[measurement]]
+workload = "two_session_fairness"
+correctness_oracle = "two maintained production sessions independently complete"
+result_correctness = 0
+latency_p50_ms = 802.980625
+latency_p95_ms = 1014.341333
+latency_max_ms = 1016.755167
+iteration_span_ms = 865.833314
+mapped_bytes_per_result = 35855360
+backend_runs = 123
+query_completions = 40
+query_failures = 0
+stale_discards = 305
+producer_publications = 384
+work_admitted = 123
+work_skipped_change = 0
+work_deferred_rate = 0
+work_coalesced = 0
+work_superseded = 305
+work_rejected = 0
+work_queue_expired = 0
+work_completed = 79
+work_failed = 0
+peak_allocated_bytes = 34853457
+steady_allocated_bytes = 0
+allocated_growth_bytes = 0
+peak_resident_bytes = 2865184768
+
+[[measurement.budget]]
+measure = "latency_p50"
+kind = "absolute"
+unit = "milliseconds"
+direction = "at_most"
+limit = 1605.962
+rationale = "ADR 0053 precursor: 2x worst target statistic rounded upward to 0.001 ms"
+
+[[measurement.budget]]
+measure = "latency_p95"
+kind = "absolute"
+unit = "milliseconds"
+direction = "at_most"
+limit = 2051.324
+rationale = "ADR 0053 precursor: 2x worst target statistic rounded upward to 0.001 ms"
+
+[[measurement.budget]]
+measure = "latency_max"
+kind = "absolute"
+unit = "milliseconds"
+direction = "at_most"
+limit = 2089.810
+rationale = "ADR 0053 precursor: 2x worst target statistic rounded upward to 0.001 ms"
+
+[[measurement]]
+workload = "exact_coalescing"
+correctness_oracle = "equal immutable query facts share exactly one backend execution"
+result_correctness = 0
+latency_p50_ms = 383.626083
+latency_p95_ms = 393.215875
+latency_max_ms = 393.655458
+iteration_span_ms = 417.089904
+mapped_bytes_per_result = 10655744
+backend_runs = 40
+query_completions = 40
+query_failures = 0
+stale_discards = 734
+producer_publications = 407
+work_admitted = 40
+work_skipped_change = 0
+work_deferred_rate = 774
+work_coalesced = 40
+work_superseded = 734
+work_rejected = 0
+work_queue_expired = 0
+work_completed = 80
+work_failed = 0
+peak_allocated_bytes = 84230965
+steady_allocated_bytes = 0
+allocated_growth_bytes = 0
+peak_resident_bytes = 2865184768
+
+[[measurement.budget]]
+measure = "latency_p50"
+kind = "absolute"
+unit = "milliseconds"
+direction = "at_most"
+limit = 768.886
+rationale = "ADR 0053 precursor: 2x worst target statistic rounded upward to 0.001 ms"
+
+[[measurement.budget]]
+measure = "latency_p95"
+kind = "absolute"
+unit = "milliseconds"
+direction = "at_most"
+limit = 791.611
+rationale = "ADR 0053 precursor: 2x worst target statistic rounded upward to 0.001 ms"
+
+[[measurement.budget]]
+measure = "latency_max"
+kind = "absolute"
+unit = "milliseconds"
+direction = "at_most"
+limit = 795.228
+rationale = "ADR 0053 precursor: 2x worst target statistic rounded upward to 0.001 ms"
+
+[[measurement]]
+workload = "unequal_no_coalescing"
+correctness_oracle = "distinct preparation instances execute independent backend work"
+result_correctness = 0
+latency_p50_ms = 388.024791
+latency_p95_ms = 393.678333
+latency_max_ms = 396.882500
+iteration_span_ms = 424.297114
+mapped_bytes_per_result = 21311488
+backend_runs = 80
+query_completions = 40
+query_failures = 0
+stale_discards = 191
+producer_publications = 136
+work_admitted = 80
+work_skipped_change = 0
+work_deferred_rate = 211
+work_coalesced = 0
+work_superseded = 191
+work_rejected = 0
+work_queue_expired = 0
+work_completed = 80
+work_failed = 0
+peak_allocated_bytes = 41606909
+steady_allocated_bytes = 0
+allocated_growth_bytes = 0
+peak_resident_bytes = 2865184768
+
+[[measurement.budget]]
+measure = "latency_p50"
+kind = "absolute"
+unit = "milliseconds"
+direction = "at_most"
+limit = 777.984
+rationale = "ADR 0053 precursor: 2x worst target statistic rounded upward to 0.001 ms"
+
+[[measurement.budget]]
+measure = "latency_p95"
+kind = "absolute"
+unit = "milliseconds"
+direction = "at_most"
+limit = 791.200
+rationale = "ADR 0053 precursor: 2x worst target statistic rounded upward to 0.001 ms"
+
+[[measurement.budget]]
+measure = "latency_max"
+kind = "absolute"
+unit = "milliseconds"
+direction = "at_most"
+limit = 795.291
+rationale = "ADR 0053 precursor: 2x worst target statistic rounded upward to 0.001 ms"
+
+[[measurement]]
+workload = "queue_expiry_overload"
+correctness_oracle = "finite scheduler overload is observable and no query is silently lost"
+warmup_iterations = 0
+sample_count = 1
+result_correctness = 0
+latency_p50_ms = 31109.531041
+latency_p95_ms = 31109.531041
+latency_max_ms = 31109.531041
+iteration_span_ms = 31133.469458
+mapped_bytes_per_result = 10655744
+backend_runs = 2
+query_completions = 32
+query_failures = 0
+stale_discards = 4
+producer_publications = 2
+work_admitted = 2
+work_skipped_change = 0
+work_deferred_rate = 0
+work_coalesced = 0
+work_superseded = 4
+work_rejected = 0
+work_queue_expired = 30
+work_completed = 0
+work_failed = 0
+peak_allocated_bytes = 10656496
+steady_allocated_bytes = 224
+allocated_growth_bytes = 224
+peak_resident_bytes = 2865184768
+
+[[measurement]]
+workload = "stale_generation"
+correctness_oracle = "pre-geometry backend completion cannot commit after generation change"
+result_correctness = 0
+latency_p50_ms = 398.783667
+latency_p95_ms = 401.889542
+latency_max_ms = 402.147875
+iteration_span_ms = 432.715231
+mapped_bytes_per_result = 19912704
+backend_runs = 80
+query_completions = 20
+query_failures = 0
+stale_discards = 118
+producer_publications = 138
+work_admitted = 80
+work_skipped_change = 0
+work_deferred_rate = 0
+work_coalesced = 0
+work_superseded = 118
+work_rejected = 0
+work_queue_expired = 0
+work_completed = 20
+work_failed = 0
+peak_allocated_bytes = 18267925
+steady_allocated_bytes = 0
+allocated_growth_bytes = 0
+peak_resident_bytes = 2865184768
+
+[[measurement.budget]]
+measure = "latency_p50"
+kind = "absolute"
+unit = "milliseconds"
+direction = "at_most"
+limit = 797.568
+rationale = "ADR 0053 precursor: 2x worst target statistic rounded upward to 0.001 ms"
+
+[[measurement.budget]]
+measure = "latency_p95"
+kind = "absolute"
+unit = "milliseconds"
+direction = "at_most"
+limit = 805.454
+rationale = "ADR 0053 precursor: 2x worst target statistic rounded upward to 0.001 ms"
+
+[[measurement.budget]]
+measure = "latency_max"
+kind = "absolute"
+unit = "milliseconds"
+direction = "at_most"
+limit = 809.258
+rationale = "ADR 0053 precursor: 2x worst target statistic rounded upward to 0.001 ms"
+
+[[measurement]]
+workload = "wait_cancel_deadline"
+correctness_oracle = "caller wait, query cancellation, and query deadline retain separate authority"
+result_correctness = 0
+latency_p50_ms = 442.251083
+latency_p95_ms = 452.814000
+latency_max_ms = 454.014583
+iteration_span_ms = 463.680058
+mapped_bytes_per_result = 58606592
+backend_runs = 216
+query_completions = 40
+query_failures = 0
+stale_discards = 255
+producer_publications = 20
+work_admitted = 216
+work_skipped_change = 0
+work_deferred_rate = 0
+work_coalesced = 0
+work_superseded = 255
+work_rejected = 0
+work_queue_expired = 0
+work_completed = 136
+work_failed = 0
+peak_allocated_bytes = 37300913
+steady_allocated_bytes = 0
+allocated_growth_bytes = 0
+peak_resident_bytes = 2865184768
+
+[[measurement.budget]]
+measure = "latency_p50"
+kind = "absolute"
+unit = "milliseconds"
+direction = "at_most"
+limit = 888.242
+rationale = "ADR 0053 precursor: 2x worst target statistic rounded upward to 0.001 ms"
+
+[[measurement.budget]]
+measure = "latency_p95"
+kind = "absolute"
+unit = "milliseconds"
+direction = "at_most"
+limit = 908.619
+rationale = "ADR 0053 precursor: 2x worst target statistic rounded upward to 0.001 ms"
+
+[[measurement.budget]]
+measure = "latency_max"
+kind = "absolute"
+unit = "milliseconds"
+direction = "at_most"
+limit = 913.912
+rationale = "ADR 0053 precursor: 2x worst target statistic rounded upward to 0.001 ms"
+
+[[measurement]]
+workload = "native_stop_target_loss"
+correctness_oracle = "owned target close terminates pending native watcher with target loss"
+warmup_iterations = 0
+sample_count = 1
+result_correctness = 0
+latency_p50_ms = 2033.581583
+latency_p95_ms = 2033.581583
+latency_max_ms = 2033.581583
+iteration_span_ms = 2033.586375
+mapped_bytes_per_result = 23142400
+backend_runs = 5
+query_completions = 1
+query_failures = 0
+stale_discards = 4
+producer_publications = 8
+work_admitted = 5
+work_skipped_change = 0
+work_deferred_rate = 0
+work_coalesced = 0
+work_superseded = 4
+work_rejected = 0
+work_queue_expired = 0
+work_completed = 4
+work_failed = 0
+peak_allocated_bytes = 21543130
+steady_allocated_bytes = 0
+allocated_growth_bytes = -5327896
+peak_resident_bytes = 2865184768
+
+[[measurement]]
+workload = "session_engine_close"
+correctness_oracle = "session and engine close are idempotent and wake pending queries exactly once"
+warmup_iterations = 0
+sample_count = 1
+result_correctness = 0
+latency_p50_ms = 2021.375917
+latency_p95_ms = 2021.375917
+latency_max_ms = 2021.375917
+iteration_span_ms = 2021.382250
+mapped_bytes_per_result = 13885440
+backend_runs = 3
+query_completions = 1
+query_failures = 0
+stale_discards = 4
+producer_publications = 5
+work_admitted = 3
+work_skipped_change = 0
+work_deferred_rate = 0
+work_coalesced = 0
+work_superseded = 4
+work_rejected = 0
+work_queue_expired = 0
+work_completed = 1
+work_failed = 0
+peak_allocated_bytes = 17613435
+steady_allocated_bytes = 0
+allocated_growth_bytes = 0
+peak_resident_bytes = 2865184768
+
+[[measurement]]
+workload = "retained_result_mapping"
+correctness_oracle = "retained result/frame/mapping survive parent release without stopping a fresh producer"
+result_correctness = 0
+latency_p50_ms = 2266.273708
+latency_p95_ms = 3588.289291
+latency_max_ms = 3628.315042
+iteration_span_ms = 2408.358500
+mapped_bytes_per_result = 32399360
+backend_runs = 122
+query_completions = 20
+query_failures = 0
+stale_discards = 147
+producer_publications = 249
+work_admitted = 122
+work_skipped_change = 0
+work_deferred_rate = 0
+work_coalesced = 0
+work_superseded = 147
+work_rejected = 0
+work_queue_expired = 0
+work_completed = 102
+work_failed = 0
+peak_allocated_bytes = 36130329
+steady_allocated_bytes = 0
+allocated_growth_bytes = 0
+peak_resident_bytes = 2865184768
+
+[[measurement.budget]]
+measure = "latency_p50"
+kind = "absolute"
+unit = "milliseconds"
+direction = "at_most"
+limit = 4541.716
+rationale = "ADR 0053 precursor: 2x worst target statistic rounded upward to 0.001 ms"
+
+[[measurement.budget]]
+measure = "latency_p95"
+kind = "absolute"
+unit = "milliseconds"
+direction = "at_most"
+limit = 7221.614
+rationale = "ADR 0053 precursor: 2x worst target statistic rounded upward to 0.001 ms"
+
+[[measurement.budget]]
+measure = "latency_max"
+kind = "absolute"
+unit = "milliseconds"
+direction = "at_most"
+limit = 7343.780
+rationale = "ADR 0053 precursor: 2x worst target statistic rounded upward to 0.001 ms"
+
+[[measurement]]
+workload = "fresh_session"
+correctness_oracle = "a fresh production session watches successfully after predecessor teardown"
+result_correctness = 0
+latency_p50_ms = 2146.321292
+latency_p95_ms = 3513.387333
+latency_max_ms = 3520.409084
+iteration_span_ms = 2409.598047
+mapped_bytes_per_result = 27770880
+backend_runs = 105
+query_completions = 20
+query_failures = 0
+stale_discards = 111
+producer_publications = 196
+work_admitted = 105
+work_skipped_change = 0
+work_deferred_rate = 0
+work_coalesced = 0
+work_superseded = 111
+work_rejected = 0
+work_queue_expired = 0
+work_completed = 85
+work_failed = 0
+peak_allocated_bytes = 40761569
+steady_allocated_bytes = 0
+allocated_growth_bytes = 0
+peak_resident_bytes = 2865184768
+
+[[measurement.budget]]
+measure = "latency_p50"
+kind = "absolute"
+unit = "milliseconds"
+direction = "at_most"
+limit = 4357.265
+rationale = "ADR 0053 precursor: 2x worst target statistic rounded upward to 0.001 ms"
+
+[[measurement.budget]]
+measure = "latency_p95"
+kind = "absolute"
+unit = "milliseconds"
+direction = "at_most"
+limit = 7209.869
+rationale = "ADR 0053 precursor: 2x worst target statistic rounded upward to 0.001 ms"
+
+[[measurement.budget]]
+measure = "latency_max"
+kind = "absolute"
+unit = "milliseconds"
+direction = "at_most"
+limit = 7328.993
+rationale = "ADR 0053 precursor: 2x worst target statistic rounded upward to 0.001 ms"
+
+[[measurement]]
+workload = "producer_progress_cleanup_privacy"
+correctness_oracle = "producer progress, bounded cleanup, and allowlisted aggregate output all pass"
+warmup_iterations = 0
+sample_count = 1
+result_correctness = 0
+latency_p50_ms = 0.403083
+latency_p95_ms = 0.403083
+latency_max_ms = 0.403083
+iteration_span_ms = 0.404667
+mapped_bytes_per_result = 0
+peak_allocated_bytes = 1134
+steady_allocated_bytes = 0
+allocated_growth_bytes = 0
+peak_resident_bytes = 2865184768
+
+[backend_accounting]
+runs = 1764
+successful_completions = 1720
+typed_failures = 44
+active = 0

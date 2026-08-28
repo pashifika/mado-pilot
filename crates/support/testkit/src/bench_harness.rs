@@ -2809,6 +2809,218 @@ pub const PHASE4_TEMPLATE_WATCH_MAPPED_BYTES_BUDGETS: [MappedBytesBudget; 11] = 
     MappedBytesBudget::new("close_and_retain", 3_072),
 ];
 
+/// Phase 4 Apple native template-watch latency ceilings from ADR 0053.
+pub const PHASE4_APPLE_NATIVE_TEMPLATE_WATCH_LATENCY_BUDGETS: [LatencyBudget; 16] = [
+    LatencyBudget::new(
+        "window_absent_current",
+        Duration::from_micros(275_276),
+        Duration::from_micros(281_558),
+        Duration::from_micros(285_297),
+    ),
+    LatencyBudget::new(
+        "window_transient_appearance",
+        Duration::from_micros(674_163),
+        Duration::from_micros(680_820),
+        Duration::from_micros(683_207),
+    ),
+    LatencyBudget::new(
+        "window_persistent_appearance",
+        Duration::from_micros(408_569),
+        Duration::from_micros(415_749),
+        Duration::from_micros(417_577),
+    ),
+    LatencyBudget::new(
+        "window_disappearance_reset",
+        Duration::from_micros(938_330),
+        Duration::from_micros(945_140),
+        Duration::from_micros(945_798),
+    ),
+    LatencyBudget::new(
+        "window_strictly_newer",
+        Duration::from_micros(407_096),
+        Duration::from_micros(415_379),
+        Duration::from_micros(418_778),
+    ),
+    LatencyBudget::new(
+        "window_move",
+        Duration::from_micros(564_115),
+        Duration::from_micros(599_015),
+        Duration::from_micros(604_083),
+    ),
+    LatencyBudget::new(
+        "window_resize",
+        Duration::from_micros(574_458),
+        Duration::from_micros(598_536),
+        Duration::from_micros(609_132),
+    ),
+    LatencyBudget::new(
+        "native_high_rate_slow_backend",
+        Duration::from_micros(930_280),
+        Duration::from_micros(957_199),
+        Duration::from_micros(960_783),
+    ),
+    LatencyBudget::new(
+        "two_query_fairness",
+        Duration::from_micros(771_217),
+        Duration::from_micros(788_633),
+        Duration::from_micros(789_227),
+    ),
+    LatencyBudget::new(
+        "two_session_fairness",
+        Duration::from_micros(1_605_962),
+        Duration::from_micros(2_051_324),
+        Duration::from_micros(2_089_810),
+    ),
+    LatencyBudget::new(
+        "exact_coalescing",
+        Duration::from_micros(768_886),
+        Duration::from_micros(791_611),
+        Duration::from_micros(795_228),
+    ),
+    LatencyBudget::new(
+        "unequal_no_coalescing",
+        Duration::from_micros(777_984),
+        Duration::from_micros(791_200),
+        Duration::from_micros(795_291),
+    ),
+    LatencyBudget::new(
+        "stale_generation",
+        Duration::from_micros(797_568),
+        Duration::from_micros(805_454),
+        Duration::from_micros(809_258),
+    ),
+    LatencyBudget::new(
+        "wait_cancel_deadline",
+        Duration::from_micros(888_242),
+        Duration::from_micros(908_619),
+        Duration::from_micros(913_912),
+    ),
+    LatencyBudget::new(
+        "retained_result_mapping",
+        Duration::from_micros(4_541_716),
+        Duration::from_micros(7_221_614),
+        Duration::from_micros(7_343_780),
+    ),
+    LatencyBudget::new(
+        "fresh_session",
+        Duration::from_micros(4_357_265),
+        Duration::from_micros(7_209_869),
+        Duration::from_micros(7_328_993),
+    ),
+];
+
+/// Phase 4 Windows native template-watch latency ceilings from ADR 0053.
+pub const PHASE4_WINDOWS_NATIVE_TEMPLATE_WATCH_LATENCY_BUDGETS: [LatencyBudget; 16] = [
+    LatencyBudget::new(
+        "window_absent_current",
+        Duration::from_micros(11_094),
+        Duration::from_micros(22_476),
+        Duration::from_micros(23_093),
+    ),
+    LatencyBudget::new(
+        "window_transient_appearance",
+        Duration::from_micros(96_437),
+        Duration::from_micros(98_592),
+        Duration::from_micros(99_746),
+    ),
+    LatencyBudget::new(
+        "window_persistent_appearance",
+        Duration::from_micros(138_452),
+        Duration::from_micros(179_120),
+        Duration::from_micros(198_373),
+    ),
+    LatencyBudget::new(
+        "window_disappearance_reset",
+        Duration::from_micros(175_341),
+        Duration::from_micros(184_048),
+        Duration::from_micros(224_420),
+    ),
+    LatencyBudget::new(
+        "window_strictly_newer",
+        Duration::from_micros(138_245),
+        Duration::from_micros(191_042),
+        Duration::from_micros(193_623),
+    ),
+    LatencyBudget::new(
+        "window_move",
+        Duration::from_micros(291_923),
+        Duration::from_micros(336_501),
+        Duration::from_micros(359_500),
+    ),
+    LatencyBudget::new(
+        "window_resize",
+        Duration::from_micros(229_808),
+        Duration::from_micros(264_294),
+        Duration::from_micros(276_969),
+    ),
+    LatencyBudget::new(
+        "native_high_rate_slow_backend",
+        Duration::from_micros(364_648),
+        Duration::from_micros(372_833),
+        Duration::from_micros(375_238),
+    ),
+    LatencyBudget::new(
+        "two_query_fairness",
+        Duration::from_micros(528_941),
+        Duration::from_micros(572_854),
+        Duration::from_micros(583_992),
+    ),
+    LatencyBudget::new(
+        "two_session_fairness",
+        Duration::from_micros(721_416),
+        Duration::from_micros(763_108),
+        Duration::from_micros(814_845),
+    ),
+    LatencyBudget::new(
+        "exact_coalescing",
+        Duration::from_micros(528_717),
+        Duration::from_micros(576_195),
+        Duration::from_micros(578_013),
+    ),
+    LatencyBudget::new(
+        "unequal_no_coalescing",
+        Duration::from_micros(530_719),
+        Duration::from_micros(563_713),
+        Duration::from_micros(608_426),
+    ),
+    LatencyBudget::new(
+        "stale_generation",
+        Duration::from_micros(638_692),
+        Duration::from_micros(683_712),
+        Duration::from_micros(694_482),
+    ),
+    LatencyBudget::new(
+        "wait_cancel_deadline",
+        Duration::from_micros(704_086),
+        Duration::from_micros(721_262),
+        Duration::from_micros(735_515),
+    ),
+    LatencyBudget::new(
+        "retained_result_mapping",
+        Duration::from_micros(462_957),
+        Duration::from_micros(569_525),
+        Duration::from_micros(578_660),
+    ),
+    LatencyBudget::new(
+        "fresh_session",
+        Duration::from_micros(405_649),
+        Duration::from_micros(472_422),
+        Duration::from_micros(509_762),
+    ),
+];
+
+/// Phase 4 Apple native template-watch live-Rust-heap ceiling.
+pub const PHASE4_APPLE_NATIVE_TEMPLATE_WATCH_HEAP_LIMIT_BYTES: usize = 364_232_704;
+
+/// Phase 4 Windows native template-watch live-Rust-heap ceiling.
+pub const PHASE4_WINDOWS_NATIVE_TEMPLATE_WATCH_HEAP_LIMIT_BYTES: usize = 205_737_984;
+
+/// Phase 4 Apple native template-watch process peak-RSS ceiling.
+pub const PHASE4_APPLE_NATIVE_TEMPLATE_WATCH_RESIDENT_LIMIT_BYTES: u64 = 3_581_935_616;
+
+/// Phase 4 Windows native template-watch process peak-RSS ceiling.
+pub const PHASE4_WINDOWS_NATIVE_TEMPLATE_WATCH_RESIDENT_LIMIT_BYTES: u64 = 1_379_926_016;
+
 /// Enforces frozen p50, p95, and per-scenario latency ceilings.
 ///
 /// A missing or duplicated workload is a harness error rather than a skipped

@@ -652,12 +652,17 @@ pub(super) fn run() {
 
     let cleanup_ok = cohort.borrow_mut().finish();
     assert!(cleanup_ok, "cleanup_failed");
-    let expected_workloads = if arguments.workload_filter.is_some() {
-        1
+    if arguments.workload_filter.is_some() {
+        assert_eq!(workloads.len(), 1, "protocol_drift");
     } else {
-        24
-    };
-    assert_eq!(workloads.len(), expected_workloads, "protocol_drift");
+        assert!(
+            workloads
+                .iter()
+                .map(Workload::name)
+                .eq(native_watch_report::WORKLOADS),
+            "protocol_drift"
+        );
+    }
     assert!(
         workloads.iter().all(|workload| workload.incorrect() == 0),
         "semantic_oracle_failed: {}",
@@ -712,17 +717,7 @@ fn add_workload(
 }
 
 fn sampled_workload(name: &str) -> bool {
-    !matches!(
-        name,
-        "environment_identity"
-            | "window_topology_scale"
-            | "display_current_newer"
-            | "permission_availability"
-            | "queue_expiry_overload"
-            | "native_stop_target_loss"
-            | "session_engine_close"
-            | "producer_progress_cleanup_privacy"
-    )
+    native_watch_report::SAMPLED_WORKLOADS.contains(&name)
 }
 fn environment_identity(cohort: &Rc<RefCell<Cohort>>) -> Sample {
     measured(
@@ -1965,6 +1960,69 @@ fn required_enum(arguments: &[String], name: &str, accepted: &[&str]) -> String 
     value.to_owned()
 }
 
+fn enforce_resource_budgets(workloads: &[Workload], heap_limit: usize, resident_limit: u64) {
+    for workload in workloads {
+        assert!(
+            workload.peak_allocated_bytes() <= heap_limit,
+            "{} exceeded the accepted live-Rust-heap ceiling: {} > {heap_limit}",
+            workload.name(),
+            workload.peak_allocated_bytes()
+        );
+        match workload.peak_resident_bytes() {
+            Some(resident) => assert!(
+                resident <= resident_limit,
+                "{} exceeded the accepted process peak-RSS ceiling: {resident} > {resident_limit}",
+                workload.name()
+            ),
+            None => assert!(
+                !sampled_workload(workload.name()),
+                "{} omitted peak resident memory",
+                workload.name()
+            ),
+        }
+    }
+}
+
+#[cfg(all(target_arch = "aarch64", target_os = "macos", target_vendor = "apple"))]
+fn enforce_accepted_budgets(workloads: &[Workload]) {
+    bench_harness::enforce_latency_budgets(
+        workloads,
+        &bench_harness::PHASE4_APPLE_NATIVE_TEMPLATE_WATCH_LATENCY_BUDGETS,
+    );
+    enforce_resource_budgets(
+        workloads,
+        bench_harness::PHASE4_APPLE_NATIVE_TEMPLATE_WATCH_HEAP_LIMIT_BYTES,
+        bench_harness::PHASE4_APPLE_NATIVE_TEMPLATE_WATCH_RESIDENT_LIMIT_BYTES,
+    );
+}
+
+#[cfg(all(
+    target_arch = "x86_64",
+    target_os = "windows",
+    target_env = "msvc",
+    target_vendor = "pc"
+))]
+fn enforce_accepted_budgets(workloads: &[Workload]) {
+    bench_harness::enforce_latency_budgets(
+        workloads,
+        &bench_harness::PHASE4_WINDOWS_NATIVE_TEMPLATE_WATCH_LATENCY_BUDGETS,
+    );
+    enforce_resource_budgets(
+        workloads,
+        bench_harness::PHASE4_WINDOWS_NATIVE_TEMPLATE_WATCH_HEAP_LIMIT_BYTES,
+        bench_harness::PHASE4_WINDOWS_NATIVE_TEMPLATE_WATCH_RESIDENT_LIMIT_BYTES,
+    );
+}
+
+#[cfg(not(any(
+    all(target_arch = "aarch64", target_os = "macos", target_vendor = "apple"),
+    all(
+        target_arch = "x86_64",
+        target_os = "windows",
+        target_env = "msvc",
+        target_vendor = "pc"
+    )
+)))]
 fn enforce_accepted_budgets(_workloads: &[Workload]) {
-    panic!("capability_unavailable:profile");
+    panic!("native template-watch qualification budgets exist only for release targets");
 }

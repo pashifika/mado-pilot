@@ -17,6 +17,54 @@ pub const CORRECTNESS_ORACLE: &str =
 /// Exact finite queue description accepted in a tracked profile.
 pub const QUEUE_POLICY: &str = "production finite latest-wins capture and template-watch scheduler";
 
+/// Exact ordered workload registry accepted by native watcher profiles.
+pub const WORKLOADS: [&str; 24] = [
+    "environment_identity",
+    "window_absent_current",
+    "window_transient_appearance",
+    "window_persistent_appearance",
+    "window_disappearance_reset",
+    "window_strictly_newer",
+    "window_move",
+    "window_resize",
+    "window_topology_scale",
+    "display_current_newer",
+    "permission_availability",
+    "native_high_rate_slow_backend",
+    "two_query_fairness",
+    "two_session_fairness",
+    "exact_coalescing",
+    "unequal_no_coalescing",
+    "queue_expiry_overload",
+    "stale_generation",
+    "wait_cancel_deadline",
+    "native_stop_target_loss",
+    "session_engine_close",
+    "retained_result_mapping",
+    "fresh_session",
+    "producer_progress_cleanup_privacy",
+];
+
+/// Workloads with the accepted three-warmup, twenty-sample latency profile.
+pub const SAMPLED_WORKLOADS: [&str; 16] = [
+    "window_absent_current",
+    "window_transient_appearance",
+    "window_persistent_appearance",
+    "window_disappearance_reset",
+    "window_strictly_newer",
+    "window_move",
+    "window_resize",
+    "native_high_rate_slow_backend",
+    "two_query_fairness",
+    "two_session_fairness",
+    "exact_coalescing",
+    "unequal_no_coalescing",
+    "stale_generation",
+    "wait_cancel_deadline",
+    "retained_result_mapping",
+    "fresh_session",
+];
+
 /// Revision-bound non-sensitive provenance for one process aggregate.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct Provenance<'a> {
