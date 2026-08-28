@@ -1590,8 +1590,6 @@ fn finish_observed_sample(
     let delta = after.checked_delta(before);
     if let Some(delta) = delta {
         metrics.backend_runs = delta.find_calls;
-        metrics.backend_completions = Some(delta.find_completions);
-        metrics.backend_failures = Some(delta.find_failures);
     }
     let accounted = delta.is_some_and(|delta| {
         metrics.admitted == delta.find_calls
@@ -1888,6 +1886,21 @@ fn report(arguments: &Arguments, plan: Plan, workloads: &[Workload]) {
         plan,
         workloads,
     );
+
+    let accounting = backend_snapshot();
+    assert!(
+        accounting.active_finds == 0
+            && accounting.find_calls
+                == accounting
+                    .find_completions
+                    .saturating_add(accounting.find_failures),
+        "unaccounted_work"
+    );
+    println!("[backend_accounting]");
+    println!("runs = {}", accounting.find_calls);
+    println!("successful_completions = {}", accounting.find_completions);
+    println!("typed_failures = {}", accounting.find_failures);
+    println!("active = {}", accounting.active_finds);
 }
 
 fn required_identity(arguments: &[String], name: &str, length: usize) -> String {
