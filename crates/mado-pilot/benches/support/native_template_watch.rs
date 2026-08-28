@@ -1021,7 +1021,6 @@ fn two_query_fairness(cohort: &Rc<RefCell<Cohort>>) -> Sample {
 
 fn two_session_fairness(cohort: &Rc<RefCell<Cohort>>) -> Sample {
     observed_sample(cohort, |run| {
-        run.command_visible()?;
         let second_session = run
             .engine
             .open(run.target, &OpenRequest::new(), &bounded(OPERATION_WAIT))
@@ -1035,6 +1034,7 @@ fn two_session_fairness(cohort: &Rc<RefCell<Cohort>>) -> Sample {
                 OperationContext::new(),
             ))
             .map_err(|_| "typed_operation_failure:VisionFailed".to_owned())?;
+        run.command_visible()?;
         let (first_terminal, _) = wait_terminal(&first)?;
         let (second_terminal, _) = wait_terminal(&second)?;
         drop(delay);
