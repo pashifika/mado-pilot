@@ -1026,76 +1026,182 @@ fn unequal_no_coalescing(cohort: &Rc<RefCell<Cohort>>) -> Sample {
 }
 
 fn queue_expiry_overload(cohort: &Rc<RefCell<Cohort>>) -> Sample {
-    observed_sample(cohort, |run| {
-        run.command_absent()?;
-        let descriptor = TemplateSchedulerDescriptor::selected_default();
-        let expiry = descriptor.eligible_queue_expiry();
-        let mut templates = Vec::with_capacity(32);
-        for index in 0..32 {
-            templates.push(prepare_marker(
-                &run.engine,
-                run.shape,
-                &format!("watch-marker-v1-overload-{index}"),
-            )?);
-        }
-        let before_delay = expiry
-            .checked_add(Duration::from_secs(1))
-            .ok_or_else(|| "protocol_drift".to_owned())?;
-        let delay = install_find_delay(before_delay).ok_or_else(|| "protocol_drift".to_owned())?;
-        let mut queries = Vec::with_capacity(templates.len());
-        for template in templates {
-            queries.push(run.start_watch_with(
-                template,
-                TemplateStability::immediate(),
-                OperationContext::new(),
-            )?);
-        }
-        if queries.len() != 32 {
-            return Err("unbounded_queue".to_owned());
-        }
-        let admission_deadline = Instant::now() + OPERATION_WAIT;
-        let progress = loop {
-            let admitted = queries.iter().find_map(|query| match query.poll() {
-                TemplateQueryOutcome::Pending(progress) if progress.is_in_flight() => {
-                    Some(progress)
+    const QUERY_COUNT: usize = 32;
+
+    let before = backend_snapshot();
+    let started = Instant::now();
+    let mut metrics = {
+        let mut cohort = cohort.borrow_mut();
+        cohort
+            .run()
+            .and_then(|run| {
+                run.command_absent()?;
+                let descriptor = TemplateSchedulerDescriptor::selected_default();
+                let expiry = descriptor.eligible_queue_expiry();
+                let mut templates = Vec::with_capacity(QUERY_COUNT);
+                for index in 0..QUERY_COUNT {
+                    templates.push(prepare_marker(
+                        &run.engine,
+                        run.shape,
+                        &format!("watch-marker-v1-overload-{index}"),
+                    )?);
                 }
-                TemplateQueryOutcome::Pending(_) | TemplateQueryOutcome::Terminal(_) => None,
-            });
-            if let Some(progress) = admitted {
-                break progress;
-            }
-            if Instant::now() >= admission_deadline {
-                return Err("typed_operation_failure:DeadlineExceeded".to_owned());
-            }
-            thread::sleep(POLL_WAIT);
-        };
-        thread::sleep(
-            expiry
-                .checked_add(Duration::from_millis(100))
-                .ok_or_else(|| "protocol_drift".to_owned())?,
-        );
-        drop(delay);
-        let deadline = Instant::now() + OPERATION_WAIT;
-        let overloaded = loop {
-            let overloaded = queries.iter().any(|query| {
-                matches!(
-                    query.poll(),
-                    TemplateQueryOutcome::Terminal(terminal)
-                        if matches!(&*terminal, TemplateTerminalOutcome::Overloaded(TemplateOverload::QueueExpired))
-                )
-            });
-            if overloaded || Instant::now() >= deadline {
-                break overloaded;
-            }
-            thread::sleep(POLL_WAIT);
-        };
-        for query in &queries {
-            let _ = query.cancel();
-        }
-        let all_terminal = queries.iter().all(|query| wait_terminal(query).is_ok());
-        wait_for_backend_idle(before_delay)?;
-        Ok((overloaded && all_terminal, progress))
-    })
+                let before_delay = expiry
+                    .checked_add(Duration::from_secs(1))
+                    .ok_or_else(|| "protocol_drift".to_owned())?;
+                let delay =
+                    install_find_delay(before_delay).ok_or_else(|| "protocol_drift".to_owned())?;
+                let mut queries = Vec::with_capacity(templates.len());
+                for template in templates {
+                    queries.push(run.start_watch_with(
+                        template,
+                        TemplateStability::immediate(),
+                        OperationContext::new(),
+                    )?);
+                }
+                if queries.len() != QUERY_COUNT {
+                    return Err("unbounded_queue".to_owned());
+                }
+
+                let mut latest = vec![None; queries.len()];
+                let admission_deadline = Instant::now() + OPERATION_WAIT;
+                loop {
+                    let mut admitted = false;
+                    for (index, query) in queries.iter().enumerate() {
+                        match query.poll() {
+                            TemplateQueryOutcome::Pending(progress) => {
+                                latest[index] = Some(progress);
+                                admitted |= progress.is_in_flight();
+                            }
+                            TemplateQueryOutcome::Terminal(_) => {}
+                        }
+                    }
+                    if admitted {
+                        break;
+                    }
+                    if Instant::now() >= admission_deadline {
+                        return Err("typed_operation_failure:DeadlineExceeded".to_owned());
+                    }
+                    thread::sleep(POLL_WAIT);
+                }
+
+                thread::sleep(
+                    expiry
+                        .checked_add(Duration::from_millis(100))
+                        .ok_or_else(|| "protocol_drift".to_owned())?,
+                );
+                let overload_deadline = Instant::now() + OPERATION_WAIT;
+                loop {
+                    let mut overloaded = false;
+                    for (index, query) in queries.iter().enumerate() {
+                        match query.poll() {
+                            TemplateQueryOutcome::Pending(progress) => {
+                                latest[index] = Some(progress);
+                            }
+                            TemplateQueryOutcome::Terminal(terminal) => {
+                                overloaded |= matches!(
+                                    &*terminal,
+                                    TemplateTerminalOutcome::Overloaded(
+                                        TemplateOverload::QueueExpired
+                                    )
+                                );
+                            }
+                        }
+                    }
+                    if overloaded {
+                        break;
+                    }
+                    if Instant::now() >= overload_deadline {
+                        return Err("typed_operation_failure:DeadlineExceeded".to_owned());
+                    }
+                    thread::sleep(POLL_WAIT);
+                }
+
+                // Terminal polls intentionally omit progress. Retain each last
+                // pending snapshot, then add only the disposition committed by
+                // the authoritative cancellation/expiry seam below.
+                let mut metrics = QueryWorkMetrics::default();
+                let mut observed_frame = false;
+                for (query, progress) in queries.iter().zip(latest) {
+                    let progress = progress.ok_or_else(|| "unaccounted_work".to_owned())?;
+                    let terminal = query.cancel();
+                    let work = progress.work();
+                    let final_superseded = match &*terminal {
+                        TemplateTerminalOutcome::Cancelled => {
+                            u64::from(progress.pending_count() != 0)
+                                .saturating_add(u64::from(progress.in_flight_count()))
+                        }
+                        TemplateTerminalOutcome::Overloaded(TemplateOverload::QueueExpired) => {
+                            u64::from(progress.in_flight_count())
+                        }
+                        _ => 0,
+                    };
+                    let superseded = work
+                        .get(TemplateWorkDisposition::Superseded)
+                        .saturating_add(final_superseded);
+                    let expected = matches!(
+                        &*terminal,
+                        TemplateTerminalOutcome::Cancelled
+                            | TemplateTerminalOutcome::Overloaded(TemplateOverload::QueueExpired)
+                    );
+                    metrics = metrics.saturating_add(QueryWorkMetrics {
+                        query_completions: u64::from(expected),
+                        query_failures: u64::from(!expected),
+                        stale_discards: superseded,
+                        admitted: work.get(TemplateWorkDisposition::Admitted),
+                        skipped_change: work.get(TemplateWorkDisposition::SkippedChange),
+                        deferred_rate: work.get(TemplateWorkDisposition::DeferredRate),
+                        coalesced: work.get(TemplateWorkDisposition::Coalesced),
+                        superseded,
+                        rejected: work.get(TemplateWorkDisposition::Rejected),
+                        queue_expired: work
+                            .get(TemplateWorkDisposition::QueueExpired)
+                            .saturating_add(u64::from(matches!(
+                                &*terminal,
+                                TemplateTerminalOutcome::Overloaded(TemplateOverload::QueueExpired)
+                            ))),
+                        completed: work.get(TemplateWorkDisposition::Completed),
+                        failed: work.get(TemplateWorkDisposition::Failed),
+                        ..QueryWorkMetrics::default()
+                    });
+                    observed_frame |= progress.last_frame().is_some();
+                }
+                drop(delay);
+                metrics.producer_publications = u64::from(observed_frame);
+                Ok(metrics)
+            })
+            .unwrap_or_else(|code| panic!("{code}"))
+    };
+
+    // The delayed, distinct-template calls cannot coalesce and remain active
+    // until after every query terminal commits.
+    wait_for_backend_idle(OPERATION_WAIT).unwrap_or_else(|code| panic!("{code}"));
+    let delta = backend_snapshot()
+        .checked_delta(before)
+        .unwrap_or_else(|| panic!("unaccounted_work"));
+    metrics.backend_runs = delta.find_calls;
+    metrics.query_failures = metrics.query_failures.saturating_add(delta.find_failures);
+    let expected_queries = u64::try_from(QUERY_COUNT).expect("query count fits");
+    let descriptor = TemplateSchedulerDescriptor::selected_default();
+    let correct = metrics.query_completions == expected_queries
+        && metrics.query_failures == 0
+        && metrics.queue_expired != 0
+        && metrics.admitted == delta.find_calls
+        && metrics.admitted != 0
+        && metrics.admitted <= u64::from(descriptor.max_in_flight_analyses())
+        && metrics.coalesced == 0
+        && metrics.rejected == 0
+        && metrics.completed == 0
+        && metrics.failed == 0
+        && metrics.superseded >= metrics.admitted
+        && delta.find_completions == delta.find_calls
+        && delta.find_failures == 0;
+    let sample =
+        Sample::new(started.elapsed(), correct, delta.mapped_bytes).with_query_work(metrics);
+    match peak_resident_bytes() {
+        Some(bytes) => sample.with_peak_resident_bytes(bytes),
+        None => sample,
+    }
 }
 
 fn stale_generation(cohort: &Rc<RefCell<Cohort>>) -> Sample {
