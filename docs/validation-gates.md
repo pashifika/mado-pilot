@@ -264,11 +264,14 @@ specification re-review returned CLEAN on the same revision.
 consumes that policy; ADR 0051 accepts deterministic replay/OpenCV watcher
 correctness and target-specific latency/resource budgets, and ADR 0052 corrects
 only the independently remediated Windows ROI maximum after retaining its failed
-cohort. Engine/session startup latency is reported but explicitly withheld;
-every non-time startup gate remains enforced. Native application qualification
-remains deferred. Any future false skip or fixture/report/policy drift restores
-analysis-always until a new additive fixture set, full both-target comparison,
-and reviewed ADR pass.
+cohort. ADR 0051 engine/session startup latency remains reported but explicitly
+withheld; every non-time startup gate remains enforced. ADR 0053 accepts
+target-specific native sampled latency, RSS, live-heap, and growth budgets,
+including sampled fresh-session latency, while withholding single-run gate
+timing and cadence-dependent aggregate mapping, work, and publication ceilings.
+Native watcher support remains withheld pending post-ADR final enforcement. Any
+future false skip or fixture/report/policy drift restores analysis-always until
+a new additive fixture set, full both-target comparison, and reviewed ADR pass.
 
 ## G-006
 

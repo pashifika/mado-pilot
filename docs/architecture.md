@@ -69,6 +69,13 @@ reported without an inferred ceiling, while every non-time startup gate remains
 enforced. OCR predicates, callbacks, C/C++, automatic input,
 native-application qualification, arbitrary templates/ROIs, real-time
 guarantees, and the `v0.4.0` release remain deferred.
+
+ADR 0053 accepts target-specific native watcher latency, RSS, live-heap, and
+growth budgets from five exact-source precursor processes on each approved host.
+Single-run gate timing and cadence-dependent aggregate mapping, work, and
+publication ceilings remain explicitly withheld while their exact semantic and
+accounting oracles remain mandatory. Final post-ADR profiles and cohorts are
+pending, so the native watcher support claim remains withheld.
 See [Implementation status](#implementation-status).
 
 ## Product definition
@@ -77,8 +84,8 @@ MadoPilot is a headless visual automation runtime for applications and agents.
 It discovers windows and displays, captures frame streams, maps coordinate
 spaces, performs template matching and one-shot OCR, waits for stable template
 presence through a bounded Rust query, injects input through explicit platform
-capabilities, and reports structured outcomes. OCR watchers and native template
-watcher qualification remain future work.
+capabilities, and reports structured outcomes. OCR watchers remain future work;
+native template watcher support remains withheld pending final qualification.
 
 MadoPilot does not own a GUI, tray, editor, overlay, updater, workflow catalog,
 general workflow/cron scheduler, or general scripting DSL.
