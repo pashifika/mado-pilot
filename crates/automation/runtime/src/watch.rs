@@ -1497,7 +1497,10 @@ impl QueryShared {
             if state.terminal.is_some() {
                 return;
             }
-            if generation != state.generation {
+            let superseded_by_completed_frame = state
+                .last_frame
+                .is_some_and(|last| !matches!(last.order(&stamp), Ok(FrameOrder::Before)));
+            if superseded_by_completed_frame {
                 state.work.increment(TemplateWorkDisposition::Superseded);
                 stale = true;
             } else {

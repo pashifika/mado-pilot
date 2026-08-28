@@ -1184,15 +1184,16 @@ fn slow_backend_reconsiders_only_the_latest_pending_frame() {
     });
     first_gate.release();
     let _ = wait_progress(&query, |progress| {
-        progress.work().get(TemplateWorkDisposition::Superseded) == 2
+        progress.work().get(TemplateWorkDisposition::Completed) == 1
+            && progress.work().get(TemplateWorkDisposition::Superseded) == 1
     });
     assert!(final_gate.wait_until_entered(Duration::from_secs(2)));
     second_gate.release();
     let ready = wait_progress(&query, |progress| {
         progress.pending_count() == 0
             && progress.work().get(TemplateWorkDisposition::Admitted) == 3
-            && progress.work().get(TemplateWorkDisposition::Completed) == 0
-            && progress.work().get(TemplateWorkDisposition::Superseded) == 3
+            && progress.work().get(TemplateWorkDisposition::Completed) == 2
+            && progress.work().get(TemplateWorkDisposition::Superseded) == 1
     });
     final_gate.release();
 
@@ -1201,9 +1202,63 @@ fn slow_backend_reconsiders_only_the_latest_pending_frame() {
         panic!("expected match, got {outcome:?}");
     };
     assert_eq!(replaced.pending_count(), 1);
-    assert_eq!(ready.work().get(TemplateWorkDisposition::Superseded), 3);
+    assert_eq!(ready.work().get(TemplateWorkDisposition::Superseded), 1);
     assert_eq!(result.frame().stamp().sequence().value(), 3);
     assert_eq!(harness.matcher.find_count(), 3);
+}
+
+#[test]
+fn compatible_newer_publications_do_not_starve_first_backend_completion() {
+    let first_gate = Arc::new(CompletionGate::new());
+    let second_gate = Arc::new(CompletionGate::new());
+    let third_gate = Arc::new(CompletionGate::new());
+    let harness = Harness::new(
+        ControlledMatcher::new(mado_pilot_runtime::PixelFormat::Rgba8).with_calls([
+            ScriptedMatchCall::new(Vec::new()).with_completion_gate(Arc::clone(&first_gate)),
+            ScriptedMatchCall::new(Vec::new()).with_completion_gate(Arc::clone(&second_gate)),
+            ScriptedMatchCall::new(Vec::new()).with_completion_gate(Arc::clone(&third_gate)),
+        ]),
+    );
+    let session = opened(&harness);
+    let (template, options) = request(&harness);
+    let query = session
+        .start_template_watch(TemplateWatchRequest::new(
+            template,
+            options,
+            OperationContext::new(),
+        ))
+        .expect("started query");
+    assert!(first_gate.wait_until_entered(Duration::from_secs(2)));
+
+    harness
+        .capture
+        .publish(0x32, Continuity::Continuous)
+        .expect("published second compatible frame");
+    assert!(second_gate.wait_until_entered(Duration::from_secs(2)));
+    harness
+        .capture
+        .publish(0x33, Continuity::Continuous)
+        .expect("published latest pending frame");
+    let _ = wait_progress(&query, |progress| progress.pending_count() == 1);
+
+    first_gate.release();
+    assert!(first_gate.wait_until_completed(Duration::from_secs(2)));
+    let completed = wait_progress(&query, |progress| {
+        progress.work().get(TemplateWorkDisposition::Completed) == 1
+    });
+    assert_eq!(
+        completed
+            .last_frame()
+            .expect("the authoritative completed frame is retained")
+            .sequence()
+            .value(),
+        0
+    );
+    assert!(third_gate.wait_until_entered(Duration::from_secs(2)));
+
+    second_gate.release();
+    third_gate.release();
+    let _ = query.cancel();
 }
 
 #[test]
