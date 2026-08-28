@@ -578,6 +578,15 @@ impl Session {
         watcher.start_query(request)
     }
 
+    /// Waits until this session's watcher acquisition worker has exited.
+    #[cfg(feature = "benchmark-instrumentation")]
+    #[doc(hidden)]
+    pub fn benchmark_wait_template_watcher_idle(&self, wait: &OperationContext) -> Result<()> {
+        self.watcher
+            .get()
+            .map_or(Ok(()), |watcher| watcher.wait_idle_for_benchmark(wait))
+    }
+
     /// Searches one of this session's frames for one prepared template.
     ///
     /// The whole sequence runs under one operation: the frame is acquired, the

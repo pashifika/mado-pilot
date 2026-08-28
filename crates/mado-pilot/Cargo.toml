@@ -13,6 +13,7 @@ qualification-unsupported-api = ["mado-pilot-platform-windows/qualification-unsu
 coreml-provider = ["mado-pilot-backend-onnx/coreml-provider"]
 cuda-provider = ["mado-pilot-backend-onnx/cuda-provider"]
 native-template-watch-qualification = [
+    "mado-pilot-runtime/benchmark-instrumentation",
     "mado-pilot-backend-opencv/benchmark-instrumentation",
     "mado-pilot-platform-macos/private-fixture",
     "mado-pilot-platform-windows/benchmark-instrumentation",

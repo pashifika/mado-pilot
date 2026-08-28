@@ -727,6 +727,25 @@ impl TemplateQuery {
     pub fn cancel(&self) -> Arc<TemplateTerminalOutcome> {
         self.shared.terminate(TemplateTerminalOutcome::Cancelled).0
     }
+
+    /// Returns the exact current work counters for qualification apparatus.
+    ///
+    /// Unlike [`Self::poll`], this feature-gated observer retains the final
+    /// counters after a terminal commit. It never drives query completion.
+    #[cfg(feature = "benchmark-instrumentation")]
+    #[doc(hidden)]
+    #[must_use]
+    pub fn benchmark_work_snapshot(&self) -> TemplateQueryProgress {
+        self.shared.work_snapshot()
+    }
+
+    /// Returns capture publications accepted by this query.
+    #[cfg(feature = "benchmark-instrumentation")]
+    #[doc(hidden)]
+    #[must_use]
+    pub fn benchmark_publication_count(&self) -> u64 {
+        self.shared.publication_count()
+    }
 }
 
 impl fmt::Debug for TemplateQuery {
@@ -784,6 +803,8 @@ struct QueryData {
     rate_eligible_at: Option<MonotonicInstant>,
     stability: StabilityState,
     work: TemplateWorkCounts,
+    #[cfg(feature = "benchmark-instrumentation")]
+    benchmark_publications: u64,
 }
 
 #[derive(Debug, Clone)]
@@ -880,6 +901,26 @@ impl QueryShared {
                 in_flight_count: in_flight_count(&state),
             }),
         }
+    }
+
+    #[cfg(feature = "benchmark-instrumentation")]
+    fn work_snapshot(&self) -> TemplateQueryProgress {
+        let state = lock(&self.state);
+        TemplateQueryProgress {
+            id: self.id,
+            last_frame: state.last_frame,
+            generation: state.generation,
+            confirmed_observations: state.stability.observations,
+            confirmed_duration: state.stability.duration,
+            work: state.work,
+            pending_count: u32::from(state.pending.is_some()),
+            in_flight_count: in_flight_count(&state),
+        }
+    }
+
+    #[cfg(feature = "benchmark-instrumentation")]
+    fn publication_count(&self) -> u64 {
+        lock(&self.state).benchmark_publications
     }
 
     fn terminal(&self) -> Option<Arc<TemplateTerminalOutcome>> {
@@ -997,14 +1038,7 @@ impl QueryShared {
                 (Arc::clone(existing), false)
             } else {
                 state.terminal_frame = query_frame(&state);
-                if state.pending.take().is_some() || state.processing.take().is_some() {
-                    state.work.increment(TemplateWorkDisposition::Superseded);
-                }
-                let in_flight = in_flight_count(&state);
-                state.in_flight.fill(None);
-                for _ in 0..in_flight {
-                    state.work.increment(TemplateWorkDisposition::Superseded);
-                }
+                supersede_outstanding(&mut state);
                 let outcome = Arc::new(outcome);
                 state.terminal = Some(Arc::clone(&outcome));
                 (outcome, true)
@@ -1048,6 +1082,13 @@ impl QueryShared {
             return;
         }
         state.needs_current = false;
+        #[cfg(feature = "benchmark-instrumentation")]
+        {
+            state.benchmark_publications = state
+                .benchmark_publications
+                .checked_add(1)
+                .expect("benchmark publication count fits u64");
+        }
         let incompatible = state.source_frame.is_some_and(|last| {
             last.epoch() != stamp.epoch() || last.geometry() != stamp.geometry()
         });
@@ -1509,11 +1550,7 @@ impl QueryShared {
                 match result {
                     Err(error) => {
                         state.work.increment(TemplateWorkDisposition::Failed);
-                        let superseded = in_flight_count(&state);
-                        state.in_flight.fill(None);
-                        for _ in 0..superseded {
-                            state.work.increment(TemplateWorkDisposition::Superseded);
-                        }
+                        supersede_outstanding(&mut state);
                         state.terminal_frame = Some(stamp);
                         state.terminal = Some(Arc::new(TemplateTerminalOutcome::Failed(error)));
                         terminal_committed = true;
@@ -1553,11 +1590,7 @@ impl QueryShared {
                                         confirmed_observations: state.stability.observations,
                                         confirmed_duration: state.stability.duration,
                                     });
-                                let superseded = in_flight_count(&state);
-                                state.in_flight.fill(None);
-                                for _ in 0..superseded {
-                                    state.work.increment(TemplateWorkDisposition::Superseded);
-                                }
+                                supersede_outstanding(&mut state);
                                 state.terminal = Some(Arc::new(outcome));
                                 state.terminal_frame = Some(stamp);
                                 terminal_committed = true;
@@ -1836,6 +1869,8 @@ impl WatchSession {
                 rate_eligible_at: None,
                 stability: StabilityState::default(),
                 work: TemplateWorkCounts::new(),
+                #[cfg(feature = "benchmark-instrumentation")]
+                benchmark_publications: 0,
             }),
             changed: Condvar::new(),
             reservation_released: AtomicBool::new(false),
@@ -2162,6 +2197,37 @@ impl WatchSession {
 
     fn notify_progress(&self) {
         self.progress.notify_all();
+    }
+
+    #[cfg(feature = "benchmark-instrumentation")]
+    pub(crate) fn wait_idle_for_benchmark(&self, wait: &OperationContext) -> Result<()> {
+        let acquisition = loop {
+            if let Some(interruption) = wait.interruption() {
+                return Err(interruption.into());
+            }
+            let mut state = lock(&self.state);
+            if !state.acquisition_running {
+                break state.acquisition.take();
+            }
+            let duration = wait
+                .remaining()
+                .map_or(WAIT_POLL, |remaining| remaining.min(WAIT_POLL));
+            if duration.is_zero() {
+                continue;
+            }
+            let _ = self
+                .progress
+                .wait_timeout(state, duration)
+                .unwrap_or_else(std::sync::PoisonError::into_inner);
+        };
+        acquisition.map_or(Ok(()), |handle| {
+            handle.join().map_err(|_| {
+                Error::new(
+                    Status::Internal,
+                    "template acquisition worker panicked during benchmark fence",
+                )
+            })
+        })
     }
 
     pub(crate) fn close(&self, outcome: TemplateTerminalOutcome) {
@@ -2986,6 +3052,15 @@ fn in_flight_count(state: &QueryData) -> u32 {
         .in_flight
         .iter()
         .fold(0, |count, item| count + u32::from(item.is_some()))
+}
+
+fn supersede_outstanding(state: &mut QueryData) {
+    let pending = u32::from(state.pending.take().is_some() || state.processing.take().is_some());
+    let superseded = pending.saturating_add(in_flight_count(state));
+    state.in_flight.fill(None);
+    for _ in 0..superseded {
+        state.work.increment(TemplateWorkDisposition::Superseded);
+    }
 }
 
 fn query_frame(state: &QueryData) -> Option<FrameStamp> {

@@ -1207,6 +1207,63 @@ fn slow_backend_reconsiders_only_the_latest_pending_frame() {
     assert_eq!(harness.matcher.find_count(), 3);
 }
 
+#[cfg(feature = "benchmark-instrumentation")]
+#[test]
+fn matched_terminal_releases_pending_and_in_flight_work() {
+    let matched_gate = Arc::new(CompletionGate::new());
+    let stale_gate = Arc::new(CompletionGate::new());
+    let harness = Harness::new(
+        ControlledMatcher::new(mado_pilot_runtime::PixelFormat::Rgba8).with_calls([
+            ScriptedMatchCall::new(vec![Candidate::new(1, 1, 0.99)])
+                .with_completion_gate(Arc::clone(&matched_gate)),
+            ScriptedMatchCall::new(Vec::new()).with_completion_gate(Arc::clone(&stale_gate)),
+        ]),
+    );
+    let session = opened(&harness);
+    let (template, options) = request(&harness);
+    let query = session
+        .start_template_watch(TemplateWatchRequest::new(
+            template,
+            options,
+            OperationContext::new(),
+        ))
+        .expect("started query");
+    assert!(matched_gate.wait_until_entered(Duration::from_secs(2)));
+    harness
+        .capture
+        .publish(0x32, Continuity::Continuous)
+        .expect("published second in-flight frame");
+    assert!(stale_gate.wait_until_entered(Duration::from_secs(2)));
+    harness
+        .capture
+        .publish(0x33, Continuity::Continuous)
+        .expect("published pending frame");
+    let pending = wait_progress(&query, |progress| {
+        progress.pending_count() == 1 && progress.in_flight_count() == 2
+    });
+    assert_eq!(pending.work().get(TemplateWorkDisposition::Admitted), 2);
+
+    matched_gate.release();
+    let outcome = query.wait(&wait_context()).expect("first frame matched");
+    assert!(matches!(
+        outcome.as_ref(),
+        TemplateTerminalOutcome::Matched(_)
+    ));
+    let final_work = query.benchmark_work_snapshot();
+    assert_eq!(final_work.pending_count(), 0);
+    assert_eq!(final_work.in_flight_count(), 0);
+    assert_eq!(final_work.work().get(TemplateWorkDisposition::Completed), 1);
+    assert_eq!(
+        final_work.work().get(TemplateWorkDisposition::Superseded),
+        2
+    );
+    assert_eq!(query.benchmark_publication_count(), 3);
+    session
+        .benchmark_wait_template_watcher_idle(&wait_context())
+        .expect("watcher acquisition stopped after terminal");
+    stale_gate.release();
+}
+
 #[test]
 fn compatible_newer_publications_do_not_starve_first_backend_completion() {
     let first_gate = Arc::new(CompletionGate::new());

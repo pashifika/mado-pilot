@@ -1123,6 +1123,10 @@ pub struct CaptureResources {
 pub struct QueryWorkMetrics {
     /// Backend calls that began.
     pub backend_runs: u64,
+    /// Backend calls that completed successfully, when instrumented.
+    pub backend_completions: Option<u64>,
+    /// Backend calls that returned a typed failure or interruption, when instrumented.
+    pub backend_failures: Option<u64>,
     /// Queries that committed their workload's expected terminal outcome.
     pub query_completions: u64,
     /// Queries that committed an unexpected terminal failure.
@@ -1152,11 +1156,27 @@ pub struct QueryWorkMetrics {
 }
 
 impl QueryWorkMetrics {
+    fn saturating_optional_add(left: Option<u64>, right: Option<u64>) -> Option<u64> {
+        match (left, right) {
+            (Some(left), Some(right)) => Some(left.saturating_add(right)),
+            (Some(value), None) | (None, Some(value)) => Some(value),
+            (None, None) => None,
+        }
+    }
+
     /// Adds two independent workload observations without wrapping.
     #[must_use]
     pub fn saturating_add(self, other: Self) -> Self {
         Self {
             backend_runs: self.backend_runs.saturating_add(other.backend_runs),
+            backend_completions: Self::saturating_optional_add(
+                self.backend_completions,
+                other.backend_completions,
+            ),
+            backend_failures: Self::saturating_optional_add(
+                self.backend_failures,
+                other.backend_failures,
+            ),
             query_completions: self
                 .query_completions
                 .saturating_add(other.query_completions),
@@ -1780,6 +1800,12 @@ pub fn report(benchmark: &Benchmark, profile: &Profile, plan: Plan, workloads: &
         }
         if let Some(metrics) = workload.query_work {
             println!("backend_runs = {}", metrics.backend_runs);
+            if let Some(completions) = metrics.backend_completions {
+                println!("backend_completions = {completions}");
+            }
+            if let Some(failures) = metrics.backend_failures {
+                println!("backend_failures = {failures}");
+            }
             println!("query_completions = {}", metrics.query_completions);
             println!("query_failures = {}", metrics.query_failures);
             println!("stale_discards = {}", metrics.stale_discards);
@@ -3486,6 +3512,7 @@ mod tests {
     fn query_work_sample(_: &()) -> Sample {
         Sample::unmapped(Duration::from_micros(1), true).with_query_work(QueryWorkMetrics {
             backend_runs: 1,
+            backend_completions: Some(1),
             query_completions: 2,
             admitted: 1,
             coalesced: 1,
@@ -3508,6 +3535,7 @@ mod tests {
             workload.query_work(),
             Some(QueryWorkMetrics {
                 backend_runs: 2,
+                backend_completions: Some(2),
                 query_completions: 4,
                 admitted: 2,
                 coalesced: 2,

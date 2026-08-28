@@ -123,6 +123,19 @@ fn establish_absent(run: &mut NativeRun) -> Result<Frame, String> {
     wait_marker_state(run, visible.stamp(), false)
 }
 
+fn settle_absent(run: &mut NativeRun) -> Result<mado_pilot::CpuMapping, String> {
+    let absent = establish_absent(run)?;
+    let shape = marker_shape(&absent, &run.fixture).ok_or_else(|| "wrong_transform".to_owned())?;
+    let mapping = run
+        .session
+        .map_frame(&absent, PixelFormat::Rgba8, &bounded(OPERATION_WAIT))
+        .map_err(|_| "wrong_region".to_owned())?;
+    if marker_state(&mapping, shape) != Some(false) {
+        return Err("fixture_authority_failed".to_owned());
+    }
+    Ok(mapping)
+}
+
 fn wait_geometry_change(run: &NativeRun, after: FrameStamp) -> Result<Frame, String> {
     let deadline = Instant::now() + OPERATION_WAIT;
     let original = (after.epoch(), after.geometry());
@@ -381,6 +394,7 @@ impl NativeRun {
 struct Cohort {
     arguments: Arguments,
     run: Option<NativeRun>,
+    settled_mapping: Option<mado_pilot::CpuMapping>,
 }
 
 impl Cohort {
@@ -388,6 +402,7 @@ impl Cohort {
         Self {
             arguments,
             run: None,
+            settled_mapping: None,
         }
     }
 
@@ -402,7 +417,20 @@ impl Cohort {
         NativeRun::start(&self.arguments)
     }
 
+    fn settle(&mut self) -> Result<(), String> {
+        let mapping = {
+            let run = self.run()?;
+            run.session
+                .benchmark_wait_template_watcher_idle(&bounded(OPERATION_WAIT))
+                .map_err(|error| format!("typed_operation_failure:{:?}", error.status()))?;
+            settle_absent(run)?
+        };
+        self.settled_mapping = Some(mapping);
+        Ok(())
+    }
+
     fn finish(&mut self) -> bool {
+        self.settled_mapping = None;
         self.run.take().is_none_or(NativeRun::close)
     }
 }
@@ -705,13 +733,10 @@ fn window_absent_current(cohort: &Rc<RefCell<Cohort>>) -> Sample {
     observed_sample(cohort, |run| {
         run.command_absent()?;
         let query = run.start_watch(TemplateStability::immediate())?;
-        let progress = prime_pending(&query)?;
-        let _ = query.cancel();
-        let terminal = wait_terminal(&query)?.0;
-        Ok((
-            matches!(&*terminal, TemplateTerminalOutcome::Cancelled),
-            progress,
-        ))
+        prime_pending(&query)?;
+        let terminal = query.cancel();
+        let expected = matches!(&*terminal, TemplateTerminalOutcome::Cancelled);
+        Ok((expected, terminal_query_metrics(&query, expected)?))
     })
 }
 
@@ -725,18 +750,15 @@ fn window_transient_appearance(cohort: &Rc<RefCell<Cohort>>) -> Sample {
         run.command_visible()?;
         let visible = wait_progress(&query, |progress| progress.confirmed_observations() >= 1)?;
         run.command_absent()?;
-        let reset = wait_progress(&query, |progress| {
+        wait_progress(&query, |progress| {
             progress
                 .last_frame()
                 .is_some_and(|stamp| visible.last_frame().is_none_or(|old| stamp != old))
                 && progress.confirmed_observations() == 0
         })?;
-        let _ = query.cancel();
-        let terminal = wait_terminal(&query)?.0;
-        Ok((
-            matches!(&*terminal, TemplateTerminalOutcome::Cancelled),
-            reset,
-        ))
+        let terminal = query.cancel();
+        let expected = matches!(&*terminal, TemplateTerminalOutcome::Cancelled);
+        Ok((expected, terminal_query_metrics(&query, expected)?))
     })
 }
 
@@ -768,11 +790,11 @@ fn window_disappearance_reset(cohort: &Rc<RefCell<Cohort>>) -> Sample {
         let second = wait_progress(&query, |progress| progress.confirmed_observations() >= 1)?;
         clock.advance(STATIC_STABILITY);
         run.command_visible()?;
-        let (terminal, last) = wait_terminal(&query)?;
+        let (terminal, _) = wait_terminal(&query)?;
         let correct = matched_exact(&terminal, run, 1, reset.last_frame())
             && second.last_frame().is_some()
             && matches!(&*terminal, TemplateTerminalOutcome::Matched(result) if result.confirmed_duration() >= STATIC_STABILITY);
-        Ok((correct, last.unwrap_or(second)))
+        Ok((correct, terminal_query_metrics(&query, correct)?))
     })
 }
 
@@ -928,10 +950,10 @@ fn display_current_newer(cohort: &Rc<RefCell<Cohort>>) -> Sample {
                 if terminal.is_err() {
                     let _ = query.cancel();
                 }
-                let (terminal, progress) = terminal?;
+                let (terminal, _) = terminal?;
                 let correct =
                     matched_target_exact(&terminal, display_id, &template_id, shape, 1, newer_than);
-                Ok((correct, progress.unwrap_or(baseline)))
+                Ok((correct, terminal_query_metrics(&query, correct)?))
             })();
             let closed = session.close(&bounded(OPERATION_WAIT)).is_ok();
             let hidden = run.command_absent();
@@ -967,18 +989,16 @@ fn native_high_rate_slow_backend(cohort: &Rc<RefCell<Cohort>>) -> Sample {
             .stamp();
         let delay = install_find_delay(SLOW_BACKEND).ok_or_else(|| "protocol_drift".to_owned())?;
         let query = run.start_watch(TemplateStability::immediate())?;
-        let progress = wait_progress(&query, TemplateQueryProgress::is_in_flight)?;
+        wait_progress(&query, TemplateQueryProgress::is_in_flight)?;
         run.command_visible()?;
         run.command_absent()?;
         run.command_visible()?;
-        let (terminal, terminal_progress) = wait_terminal(&query)?;
+        let (terminal, _) = wait_terminal(&query)?;
         drop(delay);
         wait_for_backend_idle(OPERATION_WAIT)?;
         let later = run.acquire_newer(baseline).is_ok();
-        Ok((
-            terminal.is_match() && later,
-            terminal_progress.unwrap_or(progress),
-        ))
+        let correct = terminal.is_match() && later;
+        Ok((correct, terminal_query_metrics(&query, correct)?))
     })
 }
 
@@ -1002,18 +1022,17 @@ fn two_session_fairness(cohort: &Rc<RefCell<Cohort>>) -> Sample {
                 OperationContext::new(),
             ))
             .map_err(|_| "typed_operation_failure:VisionFailed".to_owned())?;
-        let (first_terminal, first_progress) = wait_terminal(&first)?;
-        let (second_terminal, second_progress) = wait_terminal(&second)?;
+        let (first_terminal, _) = wait_terminal(&first)?;
+        let (second_terminal, _) = wait_terminal(&second)?;
         drop(delay);
         wait_for_backend_idle(OPERATION_WAIT)?;
         let closed = second_session.close(&bounded(OPERATION_WAIT)).is_ok();
         run.command_absent()?;
-        Ok((
-            first_terminal.is_match() && second_terminal.is_match() && closed,
-            first_progress
-                .or(second_progress)
-                .unwrap_or_else(empty_progress),
-        ))
+        let first_expected = first_terminal.is_match();
+        let second_expected = second_terminal.is_match();
+        let metrics = terminal_query_metrics(&first, first_expected)?
+            .saturating_add(terminal_query_metrics(&second, second_expected)?);
+        Ok((first_expected && second_expected && closed, metrics))
     })
 }
 
@@ -1028,180 +1047,115 @@ fn unequal_no_coalescing(cohort: &Rc<RefCell<Cohort>>) -> Sample {
 fn queue_expiry_overload(cohort: &Rc<RefCell<Cohort>>) -> Sample {
     const QUERY_COUNT: usize = 32;
 
-    let before = backend_snapshot();
-    let started = Instant::now();
-    let mut metrics = {
-        let mut cohort = cohort.borrow_mut();
-        cohort
-            .run()
-            .and_then(|run| {
-                run.command_absent()?;
-                let descriptor = TemplateSchedulerDescriptor::selected_default();
-                let expiry = descriptor.eligible_queue_expiry();
-                let mut templates = Vec::with_capacity(QUERY_COUNT);
-                for index in 0..QUERY_COUNT {
-                    templates.push(prepare_marker(
-                        &run.engine,
-                        run.shape,
-                        &format!("watch-marker-v1-overload-{index}"),
-                    )?);
-                }
-                let before_delay = expiry
-                    .checked_add(Duration::from_secs(1))
-                    .ok_or_else(|| "protocol_drift".to_owned())?;
-                let delay =
-                    install_find_delay(before_delay).ok_or_else(|| "protocol_drift".to_owned())?;
-                let mut queries = Vec::with_capacity(templates.len());
-                for template in templates {
-                    queries.push(run.start_watch_with(
-                        template,
-                        TemplateStability::immediate(),
-                        OperationContext::new(),
-                    )?);
-                }
-                if queries.len() != QUERY_COUNT {
-                    return Err("unbounded_queue".to_owned());
-                }
+    observed_sample(cohort, |run| {
+        run.command_absent()?;
+        let descriptor = TemplateSchedulerDescriptor::selected_default();
+        let expiry = descriptor.eligible_queue_expiry();
+        let mut templates = Vec::with_capacity(QUERY_COUNT);
+        for index in 0..QUERY_COUNT {
+            templates.push(prepare_marker(
+                &run.engine,
+                run.shape,
+                &format!("watch-marker-v1-overload-{index}"),
+            )?);
+        }
+        let before_delay = expiry
+            .checked_add(Duration::from_secs(1))
+            .ok_or_else(|| "protocol_drift".to_owned())?;
+        let delay = install_find_delay(before_delay).ok_or_else(|| "protocol_drift".to_owned())?;
+        let before = backend_snapshot();
+        let mut queries = Vec::with_capacity(templates.len());
+        for template in templates {
+            queries.push(run.start_watch_with(
+                template,
+                TemplateStability::immediate(),
+                OperationContext::new(),
+            )?);
+        }
+        if queries.len() != QUERY_COUNT {
+            return Err("unbounded_queue".to_owned());
+        }
 
-                let mut latest = vec![None; queries.len()];
-                let admission_deadline = Instant::now() + OPERATION_WAIT;
-                loop {
-                    let mut admitted = false;
-                    for (index, query) in queries.iter().enumerate() {
-                        match query.poll() {
-                            TemplateQueryOutcome::Pending(progress) => {
-                                latest[index] = Some(progress);
-                                admitted |= progress.is_in_flight();
-                            }
-                            TemplateQueryOutcome::Terminal(_) => {}
-                        }
-                    }
-                    if admitted {
-                        break;
-                    }
-                    if Instant::now() >= admission_deadline {
-                        return Err("typed_operation_failure:DeadlineExceeded".to_owned());
-                    }
-                    thread::sleep(POLL_WAIT);
-                }
+        let admission_deadline = Instant::now() + OPERATION_WAIT;
+        loop {
+            if queries.iter().any(|query| {
+                matches!(
+                    query.poll(),
+                    TemplateQueryOutcome::Pending(progress) if progress.is_in_flight()
+                )
+            }) {
+                break;
+            }
+            if Instant::now() >= admission_deadline {
+                return Err("typed_operation_failure:DeadlineExceeded".to_owned());
+            }
+            thread::sleep(POLL_WAIT);
+        }
 
-                thread::sleep(
-                    expiry
-                        .checked_add(Duration::from_millis(100))
-                        .ok_or_else(|| "protocol_drift".to_owned())?,
-                );
-                let overload_deadline = Instant::now() + OPERATION_WAIT;
-                loop {
-                    let mut overloaded = false;
-                    for (index, query) in queries.iter().enumerate() {
-                        match query.poll() {
-                            TemplateQueryOutcome::Pending(progress) => {
-                                latest[index] = Some(progress);
-                            }
-                            TemplateQueryOutcome::Terminal(terminal) => {
-                                overloaded |= matches!(
-                                    &*terminal,
-                                    TemplateTerminalOutcome::Overloaded(
-                                        TemplateOverload::QueueExpired
-                                    )
-                                );
-                            }
-                        }
-                    }
-                    if overloaded {
-                        break;
-                    }
-                    if Instant::now() >= overload_deadline {
-                        return Err("typed_operation_failure:DeadlineExceeded".to_owned());
-                    }
-                    thread::sleep(POLL_WAIT);
-                }
+        thread::sleep(
+            expiry
+                .checked_add(Duration::from_millis(100))
+                .ok_or_else(|| "protocol_drift".to_owned())?,
+        );
+        let overload_deadline = Instant::now() + OPERATION_WAIT;
+        loop {
+            if queries.iter().any(|query| {
+                matches!(
+                    query.poll(),
+                    TemplateQueryOutcome::Terminal(terminal)
+                        if matches!(
+                            &*terminal,
+                            TemplateTerminalOutcome::Overloaded(
+                                TemplateOverload::QueueExpired
+                            )
+                        )
+                )
+            }) {
+                break;
+            }
+            if Instant::now() >= overload_deadline {
+                return Err("typed_operation_failure:DeadlineExceeded".to_owned());
+            }
+            thread::sleep(POLL_WAIT);
+        }
 
-                // Terminal polls intentionally omit progress. Retain each last
-                // pending snapshot, then add only the disposition committed by
-                // the authoritative cancellation/expiry seam below.
-                let mut metrics = QueryWorkMetrics::default();
-                let mut observed_frame = false;
-                for (query, progress) in queries.iter().zip(latest) {
-                    let progress = progress.ok_or_else(|| "unaccounted_work".to_owned())?;
-                    let terminal = query.cancel();
-                    let work = progress.work();
-                    let final_superseded = match &*terminal {
-                        TemplateTerminalOutcome::Cancelled => {
-                            u64::from(progress.pending_count() != 0)
-                                .saturating_add(u64::from(progress.in_flight_count()))
-                        }
-                        TemplateTerminalOutcome::Overloaded(TemplateOverload::QueueExpired) => {
-                            u64::from(progress.in_flight_count())
-                        }
-                        _ => 0,
-                    };
-                    let superseded = work
-                        .get(TemplateWorkDisposition::Superseded)
-                        .saturating_add(final_superseded);
-                    let expected = matches!(
-                        &*terminal,
-                        TemplateTerminalOutcome::Cancelled
-                            | TemplateTerminalOutcome::Overloaded(TemplateOverload::QueueExpired)
-                    );
-                    metrics = metrics.saturating_add(QueryWorkMetrics {
-                        query_completions: u64::from(expected),
-                        query_failures: u64::from(!expected),
-                        stale_discards: superseded,
-                        admitted: work.get(TemplateWorkDisposition::Admitted),
-                        skipped_change: work.get(TemplateWorkDisposition::SkippedChange),
-                        deferred_rate: work.get(TemplateWorkDisposition::DeferredRate),
-                        coalesced: work.get(TemplateWorkDisposition::Coalesced),
-                        superseded,
-                        rejected: work.get(TemplateWorkDisposition::Rejected),
-                        queue_expired: work
-                            .get(TemplateWorkDisposition::QueueExpired)
-                            .saturating_add(u64::from(matches!(
-                                &*terminal,
-                                TemplateTerminalOutcome::Overloaded(TemplateOverload::QueueExpired)
-                            ))),
-                        completed: work.get(TemplateWorkDisposition::Completed),
-                        failed: work.get(TemplateWorkDisposition::Failed),
-                        ..QueryWorkMetrics::default()
-                    });
-                    observed_frame |= progress.last_frame().is_some();
-                }
-                drop(delay);
-                metrics.producer_publications = u64::from(observed_frame);
-                Ok(metrics)
-            })
-            .unwrap_or_else(|code| panic!("{code}"))
-    };
-
-    // The delayed, distinct-template calls cannot coalesce and remain active
-    // until after every query terminal commits.
-    wait_for_backend_idle(OPERATION_WAIT).unwrap_or_else(|code| panic!("{code}"));
-    let delta = backend_snapshot()
-        .checked_delta(before)
-        .unwrap_or_else(|| panic!("unaccounted_work"));
-    metrics.backend_runs = delta.find_calls;
-    metrics.query_failures = metrics.query_failures.saturating_add(delta.find_failures);
-    let expected_queries = u64::try_from(QUERY_COUNT).expect("query count fits");
-    let descriptor = TemplateSchedulerDescriptor::selected_default();
-    let correct = metrics.query_completions == expected_queries
-        && metrics.query_failures == 0
-        && metrics.queue_expired != 0
-        && metrics.admitted == delta.find_calls
-        && metrics.admitted != 0
-        && metrics.admitted <= u64::from(descriptor.max_in_flight_analyses())
-        && metrics.coalesced == 0
-        && metrics.rejected == 0
-        && metrics.completed == 0
-        && metrics.failed == 0
-        && metrics.superseded >= metrics.admitted
-        && delta.find_completions == delta.find_calls
-        && delta.find_failures == 0;
-    let sample =
-        Sample::new(started.elapsed(), correct, delta.mapped_bytes).with_query_work(metrics);
-    match peak_resident_bytes() {
-        Some(bytes) => sample.with_peak_resident_bytes(bytes),
-        None => sample,
-    }
+        let mut metrics = QueryWorkMetrics::default();
+        for query in &queries {
+            let terminal = query.cancel();
+            let expected = matches!(
+                &*terminal,
+                TemplateTerminalOutcome::Cancelled
+                    | TemplateTerminalOutcome::Overloaded(TemplateOverload::QueueExpired)
+            );
+            let query_metrics = terminal_query_metrics(query, expected)?;
+            let publications = metrics
+                .producer_publications
+                .max(query_metrics.producer_publications);
+            metrics = metrics.saturating_add(query_metrics);
+            metrics.producer_publications = publications;
+        }
+        drop(delay);
+        wait_for_backend_idle(OPERATION_WAIT)?;
+        let delta = backend_snapshot()
+            .checked_delta(before)
+            .ok_or_else(|| "unaccounted_work".to_owned())?;
+        let expected_queries = u64::try_from(QUERY_COUNT).expect("query count fits");
+        let correct = metrics.query_completions == expected_queries
+            && metrics.query_failures == 0
+            && metrics.producer_publications != 0
+            && metrics.queue_expired != 0
+            && metrics.admitted == delta.find_calls
+            && metrics.admitted != 0
+            && metrics.admitted <= u64::from(descriptor.max_in_flight_analyses())
+            && metrics.coalesced == 0
+            && metrics.rejected == 0
+            && metrics.completed == 0
+            && metrics.failed == 0
+            && metrics.superseded >= metrics.admitted
+            && delta.find_completions == delta.find_calls
+            && delta.find_failures == 0;
+        Ok((correct, metrics))
+    })
 }
 
 fn stale_generation(cohort: &Rc<RefCell<Cohort>>) -> Sample {
@@ -1216,14 +1170,14 @@ fn stale_generation(cohort: &Rc<RefCell<Cohort>>) -> Sample {
         let old_geometry = old_frame.stamp().geometry();
         let delay = install_find_delay(SLOW_BACKEND).ok_or_else(|| "protocol_drift".to_owned())?;
         let query = run.start_watch(TemplateStability::immediate())?;
-        let progress = wait_progress(&query, TemplateQueryProgress::is_in_flight)?;
+        wait_progress(&query, TemplateQueryProgress::is_in_flight)?;
         let resize = run.fixture.resize_target()?;
         run.accept_acknowledgement(resize)?;
         let moved_frame = wait_resize_change(run, &old_frame)?;
         let moved_geometry = moved_frame.stamp().geometry();
         drop(delay);
         run.command_visible()?;
-        let (terminal, terminal_progress) = wait_terminal(&query)?;
+        let (terminal, _) = wait_terminal(&query)?;
         wait_for_backend_idle(OPERATION_WAIT)?;
         let new_geometry =
             terminal_match(&terminal).map(|result| result.frame().stamp().geometry());
@@ -1233,13 +1187,11 @@ fn stale_generation(cohort: &Rc<RefCell<Cohort>>) -> Sample {
         let restored_placement = restored_frame.transform().target()
             == old_frame.transform().target()
             && restored_frame.descriptor().extent() == old_frame.descriptor().extent();
-        Ok((
-            terminal.is_match()
-                && old_geometry != moved_geometry
-                && new_geometry == Some(moved_geometry)
-                && restored_placement,
-            terminal_progress.unwrap_or(progress),
-        ))
+        let correct = terminal.is_match()
+            && old_geometry != moved_geometry
+            && new_geometry == Some(moved_geometry)
+            && restored_placement;
+        Ok((correct, terminal_query_metrics(&query, correct)?))
     })
 }
 
@@ -1253,11 +1205,8 @@ fn wait_cancel_deadline(cohort: &Rc<RefCell<Cohort>>) -> Sample {
             .expect_err("caller wait expires")
             .status();
         let still_pending = matches!(wait_query.poll(), TemplateQueryOutcome::Pending(_));
-        let _ = wait_query.cancel();
-        let cancelled = matches!(
-            &*wait_terminal(&wait_query)?.0,
-            TemplateTerminalOutcome::Cancelled
-        );
+        let cancelled_terminal = wait_query.cancel();
+        let cancelled = matches!(&*cancelled_terminal, TemplateTerminalOutcome::Cancelled);
 
         let deadline_query = run.start_watch_with(
             run.template.clone(),
@@ -1266,19 +1215,23 @@ fn wait_cancel_deadline(cohort: &Rc<RefCell<Cohort>>) -> Sample {
                 .with_timeout(Duration::from_millis(250))
                 .map_err(|_| "protocol_drift".to_owned())?,
         )?;
-        let deadline_baseline = prime_pending(&deadline_query)?;
+        prime_pending(&deadline_query)?;
+        let deadline_terminal = wait_terminal(&deadline_query)?.0;
         let deadline = matches!(
-            &*wait_terminal(&deadline_query)?.0,
+            &*deadline_terminal,
             TemplateTerminalOutcome::DeadlineExceeded
         );
         wait_for_backend_idle(OPERATION_WAIT)?;
+        let mut metrics = terminal_query_metrics(&wait_query, cancelled)?
+            .saturating_add(terminal_query_metrics(&deadline_query, deadline)?);
+        metrics.producer_publications = u64::from(metrics.producer_publications != 0);
         Ok((
             wait_status == Status::DeadlineExceeded
                 && still_pending
                 && cancelled
                 && deadline
                 && wait_baseline.confirmed_observations() == 0,
-            deadline_baseline,
+            metrics,
         ))
     })
 }
@@ -1287,7 +1240,7 @@ fn native_stop_target_loss(cohort: &Rc<RefCell<Cohort>>) -> Sample {
     destructive_sample(cohort, |mut run| {
         let _absent = establish_absent(&mut run)?;
         let query = run.start_watch(TemplateStability::immediate())?;
-        let baseline = prime_pending(&query)?;
+        prime_pending(&query)?;
         #[cfg(target_os = "windows")]
         {
             let close = run.fixture.close_target()?;
@@ -1302,12 +1255,10 @@ fn native_stop_target_loss(cohort: &Rc<RefCell<Cohort>>) -> Sample {
                 return Err("fixture_authority_failed".to_owned());
             }
         }
-        let (terminal, progress) = wait_terminal(&query)?;
+        let (terminal, _) = wait_terminal(&query)?;
         wait_for_backend_idle(OPERATION_WAIT)?;
-        Ok((
-            matches!(&*terminal, TemplateTerminalOutcome::TargetLost),
-            progress.unwrap_or(baseline),
-        ))
+        let expected = matches!(&*terminal, TemplateTerminalOutcome::TargetLost);
+        Ok((expected, terminal_query_metrics(&query, expected)?))
     })
 }
 
@@ -1315,20 +1266,16 @@ fn session_engine_close(cohort: &Rc<RefCell<Cohort>>) -> Sample {
     destructive_sample(cohort, |mut run| {
         let _absent = establish_absent(&mut run)?;
         let query = run.start_watch(TemplateStability::immediate())?;
-        let baseline = prime_pending(&query)?;
+        prime_pending(&query)?;
         let first = run.session.close(&bounded(OPERATION_WAIT)).is_ok();
         let second = run.session.close(&bounded(OPERATION_WAIT)).is_ok();
-        let (terminal, progress) = wait_terminal(&query)?;
-        drop(run.engine);
+        let (terminal, _) = wait_terminal(&query)?;
         let stable = Arc::ptr_eq(&terminal, &wait_terminal(&query)?.0);
+        let expected = matches!(&*terminal, TemplateTerminalOutcome::SessionClosed);
+        let metrics = terminal_query_metrics(&query, expected)?;
+        drop(run.engine);
         wait_for_backend_idle(OPERATION_WAIT)?;
-        Ok((
-            first
-                && second
-                && stable
-                && matches!(&*terminal, TemplateTerminalOutcome::SessionClosed),
-            progress.unwrap_or(baseline),
-        ))
+        Ok((first && second && stable && expected, metrics))
     })
 }
 
@@ -1336,9 +1283,11 @@ fn retained_result_mapping(cohort: &Rc<RefCell<Cohort>>) -> Sample {
     destructive_sample(cohort, |mut run| {
         let _absent = establish_absent(&mut run)?;
         let query = run.start_watch(TemplateStability::immediate())?;
-        let baseline = prime_pending(&query)?;
+        prime_pending(&query)?;
         run.command_visible()?;
-        let (terminal, progress) = wait_terminal(&query)?;
+        let (terminal, _) = wait_terminal(&query)?;
+        let matched = terminal.is_match();
+        let metrics = terminal_query_metrics(&query, matched)?;
         let result = terminal_match(&terminal)
             .ok_or_else(|| "wrong_match".to_owned())?
             .clone();
@@ -1371,10 +1320,7 @@ fn retained_result_mapping(cohort: &Rc<RefCell<Cohort>>) -> Sample {
             .is_ok();
         let fresh_closed = fresh_session.close(&bounded(OPERATION_WAIT)).is_ok();
         drop(fresh_engine);
-        Ok((
-            retained && progressed && fresh_closed,
-            progress.unwrap_or(baseline),
-        ))
+        Ok((retained && progressed && fresh_closed, metrics))
     })
 }
 
@@ -1395,12 +1341,13 @@ fn fresh_session(cohort: &Rc<RefCell<Cohort>>) -> Sample {
                 OperationContext::new(),
             ))
             .map_err(|_| "typed_operation_failure:VisionFailed".to_owned())?;
-        let baseline = prime_pending(&query)?;
+        prime_pending(&query)?;
         run.command_visible()?;
-        let (terminal, progress) = wait_terminal(&query)?;
+        let (terminal, _) = wait_terminal(&query)?;
         let closed = session.close(&bounded(OPERATION_WAIT)).is_ok();
         wait_for_backend_idle(OPERATION_WAIT)?;
-        Ok((terminal.is_match() && closed, progress.unwrap_or(baseline)))
+        let matched = terminal.is_match();
+        Ok((matched && closed, terminal_query_metrics(&query, matched)?))
     })
 }
 
@@ -1452,9 +1399,9 @@ fn geometry_sample(cohort: &Rc<RefCell<Cohort>>, action: GeometryAction) -> Samp
         }?;
         run.refresh_template(&after, "watch-marker-v1-geometry")?;
         let query = run.start_watch(TemplateStability::immediate())?;
-        let baseline = prime_pending(&query)?;
+        prime_pending(&query)?;
         run.command_visible()?;
-        let (terminal, progress) = wait_terminal(&query)?;
+        let (terminal, _) = wait_terminal(&query)?;
         let geometry_changed = before.stamp().geometry() != after.stamp().geometry();
         let exact = matched_exact(&terminal, run, 1, Some(before.stamp()));
         let restore = match action {
@@ -1475,10 +1422,8 @@ fn geometry_sample(cohort: &Rc<RefCell<Cohort>>, action: GeometryAction) -> Samp
             true
         };
         run.command_absent()?;
-        Ok((
-            geometry_changed && exact && restored,
-            progress.unwrap_or(baseline),
-        ))
+        let correct = geometry_changed && exact && restored;
+        Ok((correct, terminal_query_metrics(&query, correct)?))
     })
 }
 
@@ -1489,14 +1434,14 @@ fn matched_sample(cohort: &Rc<RefCell<Cohort>>, newer_than: Option<FrameStamp>) 
             .map_err(|_| "protocol_drift".to_owned())?;
         let query = run.start_watch(stability)?;
         run.command_visible()?;
-        let first = wait_progress(&query, |progress| progress.confirmed_observations() >= 1)?;
+        wait_progress(&query, |progress| progress.confirmed_observations() >= 1)?;
         thread::sleep(STATIC_STABILITY);
         run.command_visible()?;
-        let (terminal, progress) = wait_terminal(&query)?;
+        let (terminal, _) = wait_terminal(&query)?;
         let correct = matched_exact(&terminal, run, 1, newer_than)
             && matches!(&*terminal, TemplateTerminalOutcome::Matched(result) if result.confirmed_duration() >= STATIC_STABILITY);
         run.command_absent()?;
-        Ok((correct, progress.unwrap_or(first)))
+        Ok((correct, terminal_query_metrics(&query, correct)?))
     })
 }
 
@@ -1570,43 +1515,51 @@ fn paired_query_sample(
         // the production watcher observes the acknowledged visible revision.
         thread::sleep(Duration::from_millis(100));
         clock.advance(Duration::from_secs(1));
-        let (first_terminal, first_progress) = wait_terminal(&first)?;
-        let (second_terminal, second_progress) = wait_terminal(&second)?;
+        let (first_terminal, _) = wait_terminal(&first)?;
+        let (second_terminal, _) = wait_terminal(&second)?;
         drop(delay);
         wait_for_backend_idle(OPERATION_WAIT)?;
         let delta = backend_snapshot()
             .checked_delta(before)
             .ok_or_else(|| "unaccounted_work".to_owned())?;
         let expected_calls = if distinct_preparation { 2 } else { 1 };
-        let exact_calls = !controlled_delay || delta.find_calls == expected_calls;
+        let exact_calls = delta.find_calls == expected_calls
+            && delta.find_completions == expected_calls
+            && delta.find_failures == 0;
         run.command_absent()?;
-        Ok((
-            first_terminal.is_match() && second_terminal.is_match() && exact_calls,
-            first_progress.or(second_progress).unwrap_or(first_ready),
-        ))
+        let first_expected = first_terminal.is_match();
+        let second_expected = second_terminal.is_match();
+        let first_metrics = terminal_query_metrics(&first, first_expected)?;
+        let second_metrics = terminal_query_metrics(&second, second_expected)?;
+        let publications = first_metrics
+            .producer_publications
+            .max(second_metrics.producer_publications);
+        let mut metrics = first_metrics.saturating_add(second_metrics);
+        metrics.producer_publications = publications;
+        Ok((first_expected && second_expected && exact_calls, metrics))
     })
 }
 
 fn destructive_sample(
     cohort: &Rc<RefCell<Cohort>>,
-    operation: impl FnOnce(NativeRun) -> Result<(bool, TemplateQueryProgress), String>,
+    operation: impl FnOnce(NativeRun) -> Result<(bool, QueryWorkMetrics), String>,
 ) -> Sample {
     let before = backend_snapshot();
     let started = Instant::now();
     let run = cohort.borrow().fresh();
-    let (correct, progress) = run
+    let (correct, metrics) = run
         .and_then(operation)
         .unwrap_or_else(|code| panic!("{code}"));
-    finish_observed_sample(started.elapsed(), correct, progress, before)
+    finish_observed_sample(started.elapsed(), correct, metrics, before)
 }
 
 fn observed_sample(
     cohort: &Rc<RefCell<Cohort>>,
-    operation: impl FnOnce(&mut NativeRun) -> Result<(bool, TemplateQueryProgress), String>,
+    operation: impl FnOnce(&mut NativeRun) -> Result<(bool, QueryWorkMetrics), String>,
 ) -> Sample {
     let before = backend_snapshot();
     let started = Instant::now();
-    let (correct, progress) = {
+    let (correct, metrics) = {
         let mut cohort = cohort.borrow_mut();
         cohort
             .run()
@@ -1616,24 +1569,60 @@ fn observed_sample(
     // Terminal authority is already fixed; this bounded wait closes only the
     // cumulative work interval and fails if late work does not release.
     wait_for_backend_idle(OPERATION_WAIT).unwrap_or_else(|code| panic!("{code}"));
-    finish_observed_sample(started.elapsed(), correct, progress, before)
+    let elapsed = started.elapsed();
+    // Excluded from latency and query/backend accounting, this fence joins the
+    // watcher acquisition worker, then forces and retains one authoritative
+    // absent mapping so native producer state cannot cross the allocator endpoint.
+    cohort
+        .borrow_mut()
+        .settle()
+        .unwrap_or_else(|code| panic!("{code}"));
+    finish_observed_sample(elapsed, correct, metrics, before)
 }
 
 fn finish_observed_sample(
     elapsed: Duration,
     correct: bool,
-    progress: TemplateQueryProgress,
+    mut metrics: QueryWorkMetrics,
     before: BackendSnapshot,
 ) -> Sample {
     let after = backend_snapshot();
     let delta = after.checked_delta(before);
+    if let Some(delta) = delta {
+        metrics.backend_runs = delta.find_calls;
+        metrics.backend_completions = Some(delta.find_completions);
+        metrics.backend_failures = Some(delta.find_failures);
+    }
+    let accounted = delta.is_some_and(|delta| {
+        metrics.admitted == delta.find_calls
+            && delta.find_calls == delta.find_completions.saturating_add(delta.find_failures)
+            && delta.active_finds == 0
+    });
+    let mapped = delta.map_or(0, |value| value.mapped_bytes);
+    let sample = Sample::new(elapsed, correct && accounted, mapped).with_query_work(metrics);
+    match peak_resident_bytes() {
+        Some(bytes) => sample.with_peak_resident_bytes(bytes),
+        None => sample,
+    }
+}
+
+fn terminal_query_metrics(
+    query: &TemplateQuery,
+    expected_terminal: bool,
+) -> Result<QueryWorkMetrics, String> {
+    if !matches!(query.poll(), TemplateQueryOutcome::Terminal(_)) {
+        return Err("silent_query_loss".to_owned());
+    }
+    let progress = query.benchmark_work_snapshot();
+    if progress.pending_count() != 0 || progress.in_flight_count() != 0 {
+        return Err("unaccounted_work".to_owned());
+    }
     let work = progress.work();
-    let metrics = QueryWorkMetrics {
-        backend_runs: delta.map_or(0, |value| value.find_calls),
-        query_completions: u64::from(correct),
-        query_failures: delta.map_or(0, |value| value.find_failures),
+    Ok(QueryWorkMetrics {
+        query_completions: u64::from(expected_terminal),
+        query_failures: u64::from(!expected_terminal),
         stale_discards: work.get(TemplateWorkDisposition::Superseded),
-        producer_publications: progress.last_frame().map_or(0, |_| 1),
+        producer_publications: query.benchmark_publication_count(),
         admitted: work.get(TemplateWorkDisposition::Admitted),
         skipped_change: work.get(TemplateWorkDisposition::SkippedChange),
         deferred_rate: work.get(TemplateWorkDisposition::DeferredRate),
@@ -1643,13 +1632,8 @@ fn finish_observed_sample(
         queue_expired: work.get(TemplateWorkDisposition::QueueExpired),
         completed: work.get(TemplateWorkDisposition::Completed),
         failed: work.get(TemplateWorkDisposition::Failed),
-    };
-    let mapped = delta.map_or(0, |value| value.mapped_bytes);
-    let sample = Sample::new(elapsed, correct && delta.is_some(), mapped).with_query_work(metrics);
-    match peak_resident_bytes() {
-        Some(bytes) => sample.with_peak_resident_bytes(bytes),
-        None => sample,
-    }
+        ..QueryWorkMetrics::default()
+    })
 }
 
 fn measured(operation: impl FnOnce() -> bool, resident: Option<u64>) -> Sample {
@@ -1819,10 +1803,6 @@ fn prepare_marker(
     engine
         .prepare_template(&source, &bounded(OPERATION_WAIT))
         .map_err(|_| "typed_operation_failure:VisionFailed".to_owned())
-}
-
-fn empty_progress() -> TemplateQueryProgress {
-    panic!("authority_violation: a native watcher row produced no observable progress")
 }
 
 fn bounded(wait: Duration) -> OperationContext {
