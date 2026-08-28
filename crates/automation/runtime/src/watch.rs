@@ -2256,10 +2256,12 @@ impl WatchSession {
             state.acquisition_cancel = None;
             state.acquisition.take()
         };
-        drop(acquisition);
         self.terminate_queries(outcome);
         self.deactivate_if_finished();
         self.progress.notify_all();
+        if let Some(acquisition) = acquisition {
+            join_thread(acquisition);
+        }
     }
 
     fn release_query_slot(&self) {
@@ -2992,8 +2994,20 @@ impl WatchScheduler {
             session.close(TemplateTerminalOutcome::SchedulerClosed);
         }
         self.wake();
-        lock(&self.workers).clear();
-        lock(&self.supervisor).take();
+        let workers = std::mem::take(&mut *lock(&self.workers));
+        let supervisor = lock(&self.supervisor).take();
+        for worker in workers {
+            join_thread(worker);
+        }
+        if let Some(supervisor) = supervisor {
+            join_thread(supervisor);
+        }
+    }
+}
+
+fn join_thread(handle: JoinHandle<()>) {
+    if handle.thread().id() != thread::current().id() {
+        let _joined = handle.join();
     }
 }
 fn validate_watch_region(region: RegionSelection) -> Result<()> {
