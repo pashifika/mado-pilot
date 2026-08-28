@@ -16,19 +16,19 @@ use std::sync::mpsc::{self, Receiver};
 #[cfg(windows)]
 use mado_pilot_platform_windows::fixture_protocol as protocol;
 #[cfg(windows)]
-use windows::Win32::Foundation::{BOOL, HDC, HMONITOR, HWND, LPARAM, POINT, RECT, WPARAM};
+use windows::Win32::Foundation::{HWND, LPARAM, POINT, RECT, WPARAM};
 #[cfg(windows)]
-use windows::Win32::Graphics::Gdi::{EnumDisplayMonitors, GetMonitorInfoW, MONITORINFO};
+use windows::Win32::Graphics::Gdi::{
+    ClientToScreen, EnumDisplayMonitors, GetMonitorInfoW, HDC, HMONITOR, MONITORINFO,
+};
 #[cfg(windows)]
 use windows::Win32::System::ProcessStatus::{GetProcessMemoryInfo, PROCESS_MEMORY_COUNTERS};
 #[cfg(windows)]
 use windows::Win32::System::Threading::GetCurrentProcess;
 #[cfg(windows)]
-use windows::Win32::UI::WindowsAndMessaging::{
-    ClientToScreen, FindWindowW, GetWindowRect, PostMessageW,
-};
+use windows::Win32::UI::WindowsAndMessaging::{FindWindowW, GetWindowRect, PostMessageW};
 #[cfg(windows)]
-use windows::core::PCWSTR;
+use windows::core::{BOOL, PCWSTR};
 
 #[cfg(windows)]
 static NEXT_FIXTURE_TOKEN: AtomicU64 = AtomicU64::new(1);
@@ -121,7 +121,9 @@ impl NativeFixture {
     fn authenticated_target(&self, engine: &Engine) -> Result<TargetId, String> {
         let deadline = Instant::now() + FIXTURE_WAIT;
         loop {
-            if let Ok(targets) = engine.discover(&bounded(deadline.saturating_duration_since(Instant::now()))) {
+            if let Ok(targets) =
+                engine.discover(&bounded(deadline.saturating_duration_since(Instant::now())))
+            {
                 let mut matches = targets.iter().filter(|target| {
                     target.name() == self.title
                         && target.capability().kind() == Some(TargetKind::Window)
@@ -296,9 +298,7 @@ unsafe extern "system" fn collect_monitor(
 ) -> BOOL {
     // SAFETY: caller passes an exclusive Vec pointer for the synchronous enumeration.
     let origins = unsafe {
-        &mut *std::ptr::with_exposed_provenance_mut::<Vec<(i32, i32)>>(
-            state.0.cast_unsigned(),
-        )
+        &mut *std::ptr::with_exposed_provenance_mut::<Vec<(i32, i32)>>(state.0.cast_unsigned())
     };
     let mut info = MONITORINFO {
         cbSize: u32::try_from(size_of::<MONITORINFO>()).expect("MONITORINFO size fits u32"),
@@ -326,6 +326,7 @@ fn monitor_origins() -> Result<Vec<(i32, i32)>, String> {
             ),
         )
     }
+    .ok()
     .map_err(|_| "capability_unavailable:topology".to_owned())?;
     Ok(origins)
 }
@@ -370,7 +371,9 @@ fn marker_shape(frame: &Frame, fixture: &NativeFixture) -> Option<MarkerShape> {
     // records are writable for the duration of their synchronous USER32 calls.
     unsafe { GetWindowRect(window, &raw mut outer) }.ok()?;
     // SAFETY: the zero client point is converted for the same live HWND.
-    unsafe { ClientToScreen(window, &raw mut client_origin) }.ok()?;
+    if !unsafe { ClientToScreen(window, &raw mut client_origin) }.as_bool() {
+        return None;
+    }
     let inset_x = client_origin.x.checked_sub(outer.left)?;
     let inset_y = client_origin.y.checked_sub(outer.top)?;
     Some(MarkerShape {
