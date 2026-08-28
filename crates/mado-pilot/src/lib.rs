@@ -860,6 +860,8 @@ fn windows_engine_inner(
     let provider = Arc::new(mado_pilot_platform_windows::WindowsCaptureProvider::new(
         issuer,
     ));
+    #[cfg(feature = "native-template-watch-qualification")]
+    mado_pilot_platform_windows::fixture_observation::register_provider(&provider);
 
     let engine = Engine::new_with_options(
         EngineWiring {
@@ -965,6 +967,8 @@ fn macos_engine_inner(
     let issuer = Arc::new(IdentityIssuer::new());
     let engine = issuer.engine();
     let provider = Arc::new(mado_pilot_platform_macos::MacosCaptureProvider::new(issuer));
+    #[cfg(feature = "native-template-watch-qualification")]
+    mado_pilot_platform_macos::fixture_observation::register_provider(&provider);
 
     let engine = Engine::new_with_options(
         EngineWiring {

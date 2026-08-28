@@ -44,6 +44,10 @@ mod availability;
 mod benchmark_metrics;
 #[cfg(windows)]
 mod discovery;
+#[cfg(all(windows, feature = "benchmark-instrumentation"))]
+#[doc(hidden)]
+#[allow(missing_docs)]
+pub mod fixture_observation;
 #[cfg(windows)]
 #[doc(hidden)]
 #[allow(missing_docs)]

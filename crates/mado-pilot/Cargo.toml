@@ -12,6 +12,11 @@ publish = false
 qualification-unsupported-api = ["mado-pilot-platform-windows/qualification-unsupported-api"]
 coreml-provider = ["mado-pilot-backend-onnx/coreml-provider"]
 cuda-provider = ["mado-pilot-backend-onnx/cuda-provider"]
+native-template-watch-qualification = [
+    "mado-pilot-backend-opencv/benchmark-instrumentation",
+    "mado-pilot-platform-macos/private-fixture",
+    "mado-pilot-platform-windows/benchmark-instrumentation",
+]
 
 [dependencies]
 mado-pilot-adapter-replay = { path = "../adapter/replay" }
@@ -52,6 +57,11 @@ harness = false
 [[bench]]
 name = "template-watch-query"
 harness = false
+
+[[bench]]
+name = "native-template-watch"
+harness = false
+required-features = ["native-template-watch-qualification"]
 
 [lints]
 workspace = true

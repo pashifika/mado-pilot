@@ -77,6 +77,12 @@
 //! ```
 
 mod backend;
+/// Qualification-only cumulative backend observations.
+///
+/// Product composition does not enable this module.
+#[cfg(feature = "benchmark-instrumentation")]
+#[doc(hidden)]
+pub mod benchmark_instrumentation;
 mod candidates;
 mod image;
 

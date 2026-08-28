@@ -419,14 +419,50 @@ fn discard_setup_events_until_quiet<State>(
 
 impl FixtureController {
     /// Launches one signed app bundle through NSWorkspace, binds the control
-    /// peer to that exact retained application instance, and waits for its exact
-    /// version-11 protocol ready facts.
+    /// peer to that exact retained application instance, and waits for the
+    /// current versioned protocol ready facts.
     pub fn start(
         executable: &Path,
         expected_executable: Arc<[u8]>,
         expected_identity: ExecutableIdentity,
         launch_mode: LaunchMode,
         wait: Duration,
+    ) -> Result<Self, String> {
+        Self::start_with_max_attempts(
+            executable,
+            expected_executable,
+            expected_identity,
+            launch_mode,
+            wait,
+            MAX_FIXTURE_LAUNCH_ATTEMPTS,
+        )
+    }
+
+    /// Launches exactly once for a no-retry qualification process.
+    pub fn start_once(
+        executable: &Path,
+        expected_executable: Arc<[u8]>,
+        expected_identity: ExecutableIdentity,
+        launch_mode: LaunchMode,
+        wait: Duration,
+    ) -> Result<Self, String> {
+        Self::start_with_max_attempts(
+            executable,
+            expected_executable,
+            expected_identity,
+            launch_mode,
+            wait,
+            1,
+        )
+    }
+
+    fn start_with_max_attempts(
+        executable: &Path,
+        expected_executable: Arc<[u8]>,
+        expected_identity: ExecutableIdentity,
+        launch_mode: LaunchMode,
+        wait: Duration,
+        max_launch_attempts: u32,
     ) -> Result<Self, String> {
         let executable = executable
             .canonicalize()
@@ -473,7 +509,7 @@ impl FixtureController {
         let deadline = Instant::now() + wait;
         let (stream, application) = loop {
             if !launch_guard.is_live()? {
-                if launch_attempts >= MAX_FIXTURE_LAUNCH_ATTEMPTS || Instant::now() >= deadline {
+                if launch_attempts >= max_launch_attempts || Instant::now() >= deadline {
                     return Err(format!(
                         "the fixture application exited before connecting after \
                          {launch_attempts} launch attempt(s)"
@@ -695,6 +731,34 @@ impl FixtureController {
                 }
             }
         }
+    }
+
+    /// Fences and clears bounded AppKit event summaries observed during a
+    /// capture-only watcher run.
+    ///
+    /// The exact process totals must equal the already bounded event records
+    /// before they are cleared. A reset acknowledgement then proves later
+    /// cleanup cannot inherit those observations. Event payloads are counts
+    /// only; text is never retained by the fixture protocol.
+    pub fn discard_watch_events(&mut self, wait: Duration) -> bool {
+        let deadline = Instant::now() + wait;
+        let Some(report) = self
+            .command(
+                FixtureCommandKind::ReadEvents,
+                deadline.saturating_duration_since(Instant::now()),
+            )
+            .ok()
+            .map(CommandAcknowledgement::result)
+            .filter(|result| result.status == 0)
+        else {
+            return false;
+        };
+        let observed = event_totals(self.pending_events.make_contiguous());
+        if observed != Some(report.events) {
+            return false;
+        }
+        self.pending_events.clear();
+        self.reset_events(0, deadline.saturating_duration_since(Instant::now()))
     }
     /// Resets the fixture's bounded event counters and refuses queued prior-run output.
     pub fn reset_events(&mut self, event_payload_tag: u64, wait: Duration) -> bool {

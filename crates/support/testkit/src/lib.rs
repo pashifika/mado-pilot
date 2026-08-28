@@ -47,6 +47,7 @@ pub mod controlled_storage;
 pub mod fixture_checksums;
 pub mod input_contract;
 pub mod match_fixtures;
+pub mod native_watch_report;
 pub mod ocr_contract;
 pub mod png;
 pub mod scripted_permission;
