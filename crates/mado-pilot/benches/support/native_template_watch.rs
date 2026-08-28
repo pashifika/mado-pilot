@@ -728,9 +728,14 @@ fn window_persistent_appearance(cohort: &Rc<RefCell<Cohort>>) -> Sample {
 fn window_disappearance_reset(cohort: &Rc<RefCell<Cohort>>) -> Sample {
     observed_sample(cohort, |run| {
         run.command_absent()?;
+        let clock = Arc::new(ManualClock::new());
         let stability = TemplateStability::duration(STATIC_STABILITY)
             .map_err(|_| "protocol_drift".to_owned())?;
-        let query = run.start_watch(stability)?;
+        let query = run.start_watch_with(
+            run.template.clone(),
+            stability,
+            OperationContext::new().with_clock(clock.clone()),
+        )?;
         run.command_visible()?;
         let first = wait_progress(&query, |progress| progress.confirmed_observations() >= 1)?;
         run.command_absent()?;
@@ -742,7 +747,7 @@ fn window_disappearance_reset(cohort: &Rc<RefCell<Cohort>>) -> Sample {
         })?;
         run.command_visible()?;
         let second = wait_progress(&query, |progress| progress.confirmed_observations() >= 1)?;
-        thread::sleep(STATIC_STABILITY);
+        clock.advance(STATIC_STABILITY);
         run.command_visible()?;
         let (terminal, last) = wait_terminal(&query)?;
         let correct = matched_exact(&terminal, run, 1, reset.last_frame())
