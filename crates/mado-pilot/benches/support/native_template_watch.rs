@@ -1242,22 +1242,26 @@ fn native_stop_target_loss(cohort: &Rc<RefCell<Cohort>>) -> Sample {
         let query = run.start_watch(TemplateStability::immediate())?;
         prime_pending(&query)?;
         #[cfg(target_os = "windows")]
-        {
+        let source_lost = {
             let close = run.fixture.close_target()?;
             run.accept_acknowledgement(close)?;
-        }
+            run.session
+                .acquire_frame(&FrameRequest::latest(), &bounded(OPERATION_WAIT))
+                .is_err_and(|error| error.status() == Status::TargetLost)
+        };
         #[cfg(target_os = "macos")]
-        {
+        let source_lost = {
             // A destroyed-window ScreenCaptureKit filter can remain quiescent
             // without a terminal callback. Ending the authenticated fixture
             // process exercises the stream authority required by this row.
             if !run.fixture.finish() {
                 return Err("fixture_authority_failed".to_owned());
             }
-        }
+            true
+        };
         let (terminal, _) = wait_terminal(&query)?;
         wait_for_backend_idle(OPERATION_WAIT)?;
-        let expected = matches!(&*terminal, TemplateTerminalOutcome::TargetLost);
+        let expected = source_lost && matches!(&*terminal, TemplateTerminalOutcome::TargetLost);
         Ok((expected, terminal_query_metrics(&query, expected)?))
     })
 }
