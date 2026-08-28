@@ -1569,12 +1569,22 @@ fn report(arguments: &Arguments, plan: Plan, workloads: &[Workload]) {
     let tree = required_identity(&arguments.raw, "--source-tree", 40);
     let executable = required_identity(&arguments.raw, "--executable-sha256", 64);
     let fixture = required_identity(&arguments.raw, "--fixture-sha256", 64);
+    let fixture_source = required_identity(&arguments.raw, "--fixture-source-sha256", 64);
     let process = required_identity(&arguments.raw, "--process-index", 1);
     let cohort = required_enum(&arguments.raw, "--cohort", &["precursor", "final"]);
     let host = required_enum(
         &arguments.raw,
         "--host-class",
         &["apple-m1-pro-10c-32g", "windows-i7-12700kf-32g"],
+    );
+    let backend = required_enum(&arguments.raw, "--backend", &["opencv-4.14.0"]);
+    let toolchain = required_enum(
+        &arguments.raw,
+        "--toolchain",
+        &[
+            "rust-1.97.1-8bab26f4-llvm-22.1.6",
+            "rust-1.97.1-msvc-19.44.35228",
+        ],
     );
     let (hardware, os_version) = Profile::host(&arguments.raw);
     assert!(privacy_tokens_are_bounded(), "privacy_violation");
@@ -1589,7 +1599,7 @@ fn report(arguments: &Arguments, plan: Plan, workloads: &[Workload]) {
         correctness_oracle: native_watch_report::CORRECTNESS_ORACLE,
         queue_policy: native_watch_report::QUEUE_POLICY,
         notes: Some(format!(
-            "source {source}; tree {tree}; host {host}; cohort {cohort}; process {process}; control native-watch-control-v1"
+            "source {source}; tree {tree}; fixture-source {fixture_source}; backend {backend}; toolchain {toolchain}; host {host}; cohort {cohort}; process {process}; control native-watch-control-v1"
         )),
     };
     native_watch_report::validate(
@@ -1597,6 +1607,9 @@ fn report(arguments: &Arguments, plan: Plan, workloads: &[Workload]) {
         native_watch_report::Provenance {
             source: &source,
             tree: &tree,
+            fixture_source: &fixture_source,
+            backend: &backend,
+            toolchain: &toolchain,
             host: &host,
             cohort: &cohort,
             process_index: &process,

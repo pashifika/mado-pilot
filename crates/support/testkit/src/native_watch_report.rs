@@ -24,6 +24,12 @@ pub struct Provenance<'a> {
     pub source: &'a str,
     /// Exact 40-character source tree.
     pub tree: &'a str,
+    /// Exact SHA-256 over the frozen fixture source inventory.
+    pub fixture_source: &'a str,
+    /// Exact allowlisted backend identity and runtime version.
+    pub backend: &'a str,
+    /// Exact allowlisted Rust/native toolchain identity.
+    pub toolchain: &'a str,
     /// Allowlisted approved host class.
     pub host: &'a str,
     /// `precursor` or `final`.
@@ -53,6 +59,12 @@ pub fn validate(profile: &Profile, provenance: Provenance<'_>) -> Result<(), Pri
         || profile.queue_policy != QUEUE_POLICY
         || !is_hex(provenance.source, 40)
         || !is_hex(provenance.tree, 40)
+        || !is_hex(provenance.fixture_source, 64)
+        || provenance.backend != "opencv-4.14.0"
+        || !matches!(
+            provenance.toolchain,
+            "rust-1.97.1-8bab26f4-llvm-22.1.6" | "rust-1.97.1-msvc-19.44.35228"
+        )
         || !matches!(
             provenance.host,
             "apple-m1-pro-10c-32g" | "windows-i7-12700kf-32g"
@@ -68,9 +80,12 @@ pub fn validate(profile: &Profile, provenance: Provenance<'_>) -> Result<(), Pri
         return Err(PrivacyFault::Schema);
     }
     let expected_notes = format!(
-        "source {}; tree {}; host {}; cohort {}; process {}; control native-watch-control-v1",
+        "source {}; tree {}; fixture-source {}; backend {}; toolchain {}; host {}; cohort {}; process {}; control native-watch-control-v1",
         provenance.source,
         provenance.tree,
+        provenance.fixture_source,
+        provenance.backend,
+        provenance.toolchain,
         provenance.host,
         provenance.cohort,
         provenance.process_index,
@@ -141,6 +156,9 @@ mod tests {
         Provenance {
             source: SOURCE,
             tree: TREE,
+            fixture_source: DIGEST,
+            backend: "opencv-4.14.0",
+            toolchain: "rust-1.97.1-8bab26f4-llvm-22.1.6",
             host: "apple-m1-pro-10c-32g",
             cohort: "precursor",
             process_index: "1",
@@ -159,7 +177,7 @@ mod tests {
             correctness_oracle: CORRECTNESS_ORACLE,
             queue_policy: QUEUE_POLICY,
             notes: Some(format!(
-                "source {SOURCE}; tree {TREE}; host apple-m1-pro-10c-32g; cohort precursor; process 1; control native-watch-control-v1"
+                "source {SOURCE}; tree {TREE}; fixture-source {DIGEST}; backend opencv-4.14.0; toolchain rust-1.97.1-8bab26f4-llvm-22.1.6; host apple-m1-pro-10c-32g; cohort precursor; process 1; control native-watch-control-v1"
             )),
         }
     }
