@@ -1648,7 +1648,22 @@ fn engine_drop_closes_scheduler_and_preserves_terminal_authority() {
         .expect("started query");
     assert!(gate.wait_until_entered(Duration::from_secs(2)));
 
-    drop(harness.engine);
+    let (returned, observed_return) = std::sync::mpsc::sync_channel(1);
+    let engine = harness.engine;
+    let dropper = std::thread::spawn(move || {
+        drop(engine);
+        returned.send(()).expect("drop return remains observable");
+    });
+    let returned_before_release = observed_return.recv_timeout(Duration::from_secs(2)).is_ok();
+    if !returned_before_release {
+        gate.release();
+    }
+    dropper.join().expect("engine drop thread completed");
+    assert!(
+        returned_before_release,
+        "engine drop waited for backend completion instead of publishing close"
+    );
+
     let closed = query
         .wait(&wait_context())
         .expect("scheduler close is immutable query outcome");
