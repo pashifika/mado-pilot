@@ -1482,19 +1482,19 @@ fn paired_query_sample(
                 .with_rate(rate),
             )
             .map_err(|_| "typed_operation_failure:VisionFailed".to_owned())?;
-        let ready = |progress: TemplateQueryProgress| {
+        let initial = |progress: TemplateQueryProgress| {
             progress.confirmed_observations() == 0
-                && progress.work().get(TemplateWorkDisposition::Completed) >= 1
-                && progress.work().get(TemplateWorkDisposition::DeferredRate) >= 1
-                && progress.pending_count() == 1
+                && progress.work().get(TemplateWorkDisposition::Completed) == 1
+                && progress.work().get(TemplateWorkDisposition::DeferredRate) == 0
+                && progress.pending_count() == 0
                 && progress.in_flight_count() == 0
         };
-        let first_ready = wait_progress(&first, ready)?;
-        let second_ready = wait_progress(&second, ready)?;
-        let first_stamp = first_ready
+        let first_initial = wait_progress(&first, initial)?;
+        let second_initial = wait_progress(&second, initial)?;
+        let first_stamp = first_initial
             .last_frame()
             .ok_or_else(|| "wrong_source".to_owned())?;
-        let second_stamp = second_ready
+        let second_stamp = second_initial
             .last_frame()
             .ok_or_else(|| "wrong_source".to_owned())?;
         let baseline = if first_stamp.order(&second_stamp) == Ok(FrameOrder::Before) {
@@ -1511,9 +1511,17 @@ fn paired_query_sample(
         if visible.stamp().geometry() != baseline.geometry() {
             return Err("wrong_transform".to_owned());
         }
-        // Both queries remain rate-deferred on the shared manual clock while
-        // the production watcher observes the acknowledged visible revision.
-        thread::sleep(Duration::from_millis(100));
+        // The acknowledged visible publication supplies the controlled newer
+        // frame that both queries must retain while their shared clock is rate-limited.
+        let deferred = |progress: TemplateQueryProgress| {
+            progress.confirmed_observations() == 0
+                && progress.work().get(TemplateWorkDisposition::Completed) >= 1
+                && progress.work().get(TemplateWorkDisposition::DeferredRate) >= 1
+                && progress.pending_count() == 1
+                && progress.in_flight_count() == 0
+        };
+        wait_progress(&first, deferred)?;
+        wait_progress(&second, deferred)?;
         clock.advance(Duration::from_secs(1));
         let (first_terminal, _) = wait_terminal(&first)?;
         let (second_terminal, _) = wait_terminal(&second)?;
