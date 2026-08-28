@@ -28,6 +28,8 @@ pub const CONTROL_REPARENT_TARGET: u32 = 0x8203;
 pub const CONTROL_REPLACE_TARGET: u32 = 0x8204;
 /// Destroys the retained target while keeping adversarial fixtures alive.
 pub const CONTROL_DESTROY_TARGET: u32 = 0x8205;
+/// Successful acknowledgement after destroying the retained target.
+pub const TARGET_LOSS_ACKNOWLEDGEMENT: &str = "control target-loss=ready";
 /// Blocks the fixture message pump for the duration carried in `wParam`.
 pub const CONTROL_BLOCK_QUEUE: u32 = 0x8206;
 /// Replaces a target repeatedly until its retained handle value recurs or the bound is exhausted.

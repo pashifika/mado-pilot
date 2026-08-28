@@ -265,7 +265,7 @@ impl NativeFixture {
 
     fn close_target(&mut self) -> Result<ControlAcknowledgement, String> {
         self.post(protocol::CONTROL_DESTROY_TARGET, 0, 0)?;
-        self.acknowledge("control destroy=ready")
+        self.acknowledge(protocol::TARGET_LOSS_ACKNOWLEDGEMENT)
     }
 
     fn finish(&mut self) -> bool {

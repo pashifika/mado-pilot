@@ -38,9 +38,9 @@ mod fixture {
         CONTROL_DUPLICATE_METADATA, CONTROL_REPARENT_TARGET, CONTROL_REPLACE_TARGET,
         CONTROL_REPORT, CONTROL_REUSE_STRESS, CONTROL_SET_GEOMETRY, CONTROL_SET_VISUAL_ABSENT,
         CONTROL_SET_VISUAL_VISIBLE, FILL_RGB, MAX_RECORDED_EVENTS, ORDINARY_CLASS_NAME,
-        WATCH_MARKER_CELL_SIZE, WATCH_MARKER_HEIGHT, WATCH_MARKER_PRIMARY_RGB,
-        WATCH_MARKER_SECONDARY_RGB, WATCH_MARKER_WIDTH, WATCH_MARKER_X, WATCH_MARKER_Y,
-        ordinary_fixture_title, visual_state_for_control,
+        TARGET_LOSS_ACKNOWLEDGEMENT, WATCH_MARKER_CELL_SIZE, WATCH_MARKER_HEIGHT,
+        WATCH_MARKER_PRIMARY_RGB, WATCH_MARKER_SECONDARY_RGB, WATCH_MARKER_WIDTH, WATCH_MARKER_X,
+        WATCH_MARKER_Y, ordinary_fixture_title, visual_state_for_control,
     };
     use windows::Win32::Foundation::{COLORREF, HINSTANCE, HWND, LPARAM, LRESULT, RECT, WPARAM};
     use windows::Win32::Graphics::Gdi::{
@@ -364,7 +364,7 @@ mod fixture {
                 // SAFETY: control is dispatched only to the live retained target.
                 let destroyed = unsafe { DestroyWindow(hwnd) }.is_ok();
                 print_line(if destroyed {
-                    "control target-loss=ready"
+                    TARGET_LOSS_ACKNOWLEDGEMENT
                 } else {
                     "control target-loss=failed"
                 });
