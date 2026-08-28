@@ -26,7 +26,11 @@ use windows::Win32::System::ProcessStatus::{GetProcessMemoryInfo, PROCESS_MEMORY
 #[cfg(windows)]
 use windows::Win32::System::Threading::GetCurrentProcess;
 #[cfg(windows)]
-use windows::Win32::UI::WindowsAndMessaging::{FindWindowW, GetWindowRect, PostMessageW};
+use windows::Win32::UI::HiDpi::{
+    DPI_AWARENESS_CONTEXT_PER_MONITOR_AWARE_V2, SetThreadDpiAwarenessContext,
+};
+#[cfg(windows)]
+use windows::Win32::UI::WindowsAndMessaging::{FindWindowW, PostMessageW};
 #[cfg(windows)]
 use windows::core::{BOOL, PCWSTR};
 
@@ -363,24 +367,43 @@ fn resize_geometry_matches(before: &Frame, after: &Frame) -> bool {
 #[cfg(windows)]
 fn marker_shape(frame: &Frame, fixture: &NativeFixture) -> Option<MarkerShape> {
     let placement = frame.transform().target()?;
-    let scale = placement.scale();
     let window = fixture.window().ok()?;
-    let mut outer = RECT::default();
-    let mut client_origin = POINT::default();
-    // SAFETY: `window` is the authenticated live fixture HWND and both output
-    // records are writable for the duration of their synchronous USER32 calls.
-    unsafe { GetWindowRect(window, &raw mut outer) }.ok()?;
-    // SAFETY: the zero client point is converted for the same live HWND.
-    if !unsafe { ClientToScreen(window, &raw mut client_origin) }.as_bool() {
+    let marker_x = scaled_i32(MARKER_X_LOGICAL, 1.0)?;
+    let marker_y = scaled_i32(MARKER_Y_LOGICAL, 1.0)?;
+    let marker_cell = scaled_i32(MARKER_CELL_LOGICAL, 1.0)?;
+    let mut origin = POINT {
+        x: marker_x,
+        y: marker_y,
+    };
+    let mut far = POINT {
+        x: marker_x.checked_add(marker_cell)?,
+        y: marker_y.checked_add(marker_cell)?,
+    };
+    // SAFETY: the predefined context is valid on the approved Windows floor and
+    // affects only this thread; the returned prior context is restored below
+    // before any fallible coordinate processing.
+    let prior_dpi =
+        unsafe { SetThreadDpiAwarenessContext(DPI_AWARENESS_CONTEXT_PER_MONITOR_AWARE_V2) };
+    if prior_dpi.0.is_null() {
         return None;
     }
-    let inset_x = client_origin.x.checked_sub(outer.left)?;
-    let inset_y = client_origin.y.checked_sub(outer.top)?;
+    // SAFETY: both points are writable and `window` is the authenticated live fixture HWND.
+    let origin_converted = unsafe { ClientToScreen(window, &raw mut origin) }.as_bool();
+    // SAFETY: same as above for the marker cell's far corner.
+    let far_converted = unsafe { ClientToScreen(window, &raw mut far) }.as_bool();
+    // SAFETY: `prior_dpi` came from the successful context change above.
+    let restored = unsafe { SetThreadDpiAwarenessContext(prior_dpi) };
+    if restored.0.is_null() || !origin_converted || !far_converted {
+        return None;
+    }
+    let cell_width = u32::try_from(far.x.checked_sub(origin.x)?).ok()?;
+    let cell_height = u32::try_from(far.y.checked_sub(origin.y)?).ok()?;
+    let (desktop_x, desktop_y) = placement.desktop_origin();
     Some(MarkerShape {
-        cell_width: scaled_u32(MARKER_CELL_LOGICAL, scale.x())?,
-        cell_height: scaled_u32(MARKER_CELL_LOGICAL, scale.y())?,
-        origin_x: inset_x.checked_add(scaled_i32(MARKER_X_LOGICAL, scale.x())?)?,
-        origin_y: inset_y.checked_add(scaled_i32(MARKER_Y_LOGICAL, scale.y())?)?,
+        cell_width,
+        cell_height,
+        origin_x: scaled_i32(f64::from(origin.x) - desktop_x, 1.0)?,
+        origin_y: scaled_i32(f64::from(origin.y) - desktop_y, 1.0)?,
     })
 }
 
