@@ -120,10 +120,6 @@ impl NativeFixture {
         self.command(FixtureCommandKind::RestorePlacement)
     }
 
-    fn close_target(&mut self) -> Result<ControlAcknowledgement, String> {
-        self.command(FixtureCommandKind::Close)
-    }
-
     fn finish(&mut self) -> bool {
         let events_drained = self.controller.discard_watch_events(FIXTURE_WAIT);
         let fixture_finished = self.controller.finish(FIXTURE_WAIT);

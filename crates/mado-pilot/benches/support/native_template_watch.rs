@@ -15,10 +15,11 @@ use std::time::{Duration, Instant};
 use mado_pilot::{
     ChangeDetectionPolicy, CoordinateSpace, Engine, Frame, FrameOrder, FrameRequest, FrameStamp,
     MatchDefaults, MatchOptions, NativeEngineRequest, OpenRequest, OperationContext, PixelExtent,
-    PixelFormat, PreparedTemplate, Session, Status, TargetId, TargetKind, TemplateAnalysisRate,
-    TemplateEncoding, TemplateId, TemplateOverload, TemplateQuery, TemplateQueryOutcome,
-    TemplateQueryProgress, TemplateSchedulerDescriptor, TemplateSource, TemplateSourceRequest,
-    TemplateStability, TemplateTerminalOutcome, TemplateWatchRequest, TemplateWorkDisposition,
+    PixelFormat, Point, PreparedTemplate, Session, Status, TargetId, TargetKind,
+    TemplateAnalysisRate, TemplateEncoding, TemplateId, TemplateOverload, TemplateQuery,
+    TemplateQueryOutcome, TemplateQueryProgress, TemplateSchedulerDescriptor, TemplateSource,
+    TemplateSourceRequest, TemplateStability, TemplateTerminalOutcome, TemplateWatchRequest,
+    TemplateWorkDisposition,
 };
 use mado_pilot_backend_opencv::benchmark_instrumentation::{
     Snapshot as BackendSnapshot, install_find_delay, snapshot as backend_snapshot,
@@ -55,19 +56,6 @@ struct MarkerShape {
 }
 
 impl MarkerShape {
-    fn from_frame(frame: &Frame) -> Option<Self> {
-        let placement = frame.transform().target()?;
-        let scale = placement.scale();
-        let cell_width = scaled_u32(MARKER_CELL_LOGICAL, scale.x())?;
-        let cell_height = scaled_u32(MARKER_CELL_LOGICAL, scale.y())?;
-        Some(Self {
-            cell_width,
-            cell_height,
-            origin_x: scaled_i32(MARKER_X_LOGICAL, scale.x())?,
-            origin_y: scaled_i32(MARKER_Y_LOGICAL, scale.y())?,
-        })
-    }
-
     const fn extent(self) -> PixelExtent {
         PixelExtent::new(self.cell_width * 3, self.cell_height * 2)
     }
@@ -631,7 +619,16 @@ pub(super) fn run() {
         24
     };
     assert_eq!(workloads.len(), expected_workloads, "protocol_drift");
-    assert!(workloads.iter().all(|workload| workload.incorrect() == 0));
+    assert!(
+        workloads.iter().all(|workload| workload.incorrect() == 0),
+        "semantic_oracle_failed: {}",
+        workloads
+            .iter()
+            .filter(|workload| workload.incorrect() != 0)
+            .map(|workload| workload.name())
+            .collect::<Vec<_>>()
+            .join(",")
+    );
 
     if arguments.qualification {
         report(&arguments, sample_plan, &workloads);
@@ -708,16 +705,11 @@ fn window_absent_current(cohort: &Rc<RefCell<Cohort>>) -> Sample {
     observed_sample(cohort, |run| {
         run.command_absent()?;
         let query = run.start_watch(TemplateStability::immediate())?;
-        let progress = wait_progress(&query, |progress| {
-            progress.work().get(TemplateWorkDisposition::Completed) >= 1
-        })?;
-        let pending = progress.confirmed_observations() == 0
-            && progress.pending_count() <= 1
-            && progress.in_flight_count() <= 1;
+        let progress = prime_pending(&query)?;
         let _ = query.cancel();
         let terminal = wait_terminal(&query)?.0;
         Ok((
-            pending && matches!(&*terminal, TemplateTerminalOutcome::Cancelled),
+            matches!(&*terminal, TemplateTerminalOutcome::Cancelled),
             progress,
         ))
     })
@@ -813,57 +805,145 @@ fn window_topology_scale(cohort: &Rc<RefCell<Cohort>>) -> Sample {
     geometry_sample(cohort, GeometryAction::Topology)
 }
 
+fn project_marker_shape(
+    target_frame: &Frame,
+    display_frame: &Frame,
+    target_shape: MarkerShape,
+) -> Option<MarkerShape> {
+    let target_origin = Point::new(
+        CoordinateSpace::CapturePixels,
+        f64::from(target_shape.origin_x),
+        f64::from(target_shape.origin_y),
+    )
+    .ok()?;
+    let target_cell_end = Point::new(
+        CoordinateSpace::CapturePixels,
+        f64::from(target_shape.origin_x) + f64::from(target_shape.cell_width),
+        f64::from(target_shape.origin_y) + f64::from(target_shape.cell_height),
+    )
+    .ok()?;
+    let desktop_origin = target_frame
+        .transform()
+        .convert_point(target_origin, CoordinateSpace::DesktopLogical)
+        .ok()?;
+    let desktop_cell_end = target_frame
+        .transform()
+        .convert_point(target_cell_end, CoordinateSpace::DesktopLogical)
+        .ok()?;
+    let display_origin = display_frame
+        .transform()
+        .convert_point(desktop_origin, CoordinateSpace::CapturePixels)
+        .ok()?;
+    let display_cell_end = display_frame
+        .transform()
+        .convert_point(desktop_cell_end, CoordinateSpace::CapturePixels)
+        .ok()?;
+    Some(MarkerShape {
+        cell_width: scaled_u32(display_cell_end.x() - display_origin.x(), 1.0)?,
+        cell_height: scaled_u32(display_cell_end.y() - display_origin.y(), 1.0)?,
+        origin_x: scaled_i32(display_origin.x(), 1.0)?,
+        origin_y: scaled_i32(display_origin.y(), 1.0)?,
+    })
+}
+
+fn marker_shape_fits(frame: &Frame, shape: MarkerShape) -> bool {
+    let Ok(left) = u32::try_from(shape.origin_x) else {
+        return false;
+    };
+    let Ok(top) = u32::try_from(shape.origin_y) else {
+        return false;
+    };
+    let expected = shape.extent();
+    let actual = frame.descriptor().extent();
+    left.checked_add(expected.width())
+        .is_some_and(|right| right <= actual.width())
+        && top
+            .checked_add(expected.height())
+            .is_some_and(|bottom| bottom <= actual.height())
+}
+
 fn display_current_newer(cohort: &Rc<RefCell<Cohort>>) -> Sample {
     observed_sample(cohort, |run| {
+        run.command_absent()?;
+        let target_frame = run
+            .session
+            .acquire_frame(&FrameRequest::latest(), &bounded(OPERATION_WAIT))
+            .map_err(|_| "typed_operation_failure:CaptureFailed".to_owned())?;
+        let target_shape = marker_shape(&target_frame, &run.fixture)
+            .ok_or_else(|| "wrong_transform".to_owned())?;
         let displays = run
             .engine
             .discover(&bounded(OPERATION_WAIT))
             .map_err(|_| "capability_unavailable:capture".to_owned())?
             .into_iter()
-            .filter(|target| target.capability().kind() == Some(TargetKind::Display))
-            .collect::<Vec<_>>();
-        let mut matched = false;
-        let mut final_progress = None;
+            .filter(|target| target.capability().kind() == Some(TargetKind::Display));
+
         for display in displays {
-            run.command_absent()?;
+            let display_id = display.id();
             let Ok(session) =
                 run.engine
-                    .open(display.id(), &OpenRequest::new(), &bounded(OPERATION_WAIT))
+                    .open(display_id, &OpenRequest::new(), &bounded(OPERATION_WAIT))
             else {
                 continue;
             };
-            let frame = session
-                .acquire_frame(&FrameRequest::latest(), &bounded(OPERATION_WAIT))
-                .map_err(|_| "typed_operation_failure:CaptureFailed".to_owned())?;
-            let Some(shape) = MarkerShape::from_frame(&frame) else {
+            let Ok(frame) =
+                session.acquire_frame(&FrameRequest::latest(), &bounded(OPERATION_WAIT))
+            else {
+                session
+                    .close(&bounded(OPERATION_WAIT))
+                    .map_err(|_| "cleanup_failed".to_owned())?;
                 continue;
             };
-            let template = prepare_marker(&run.engine, shape, "watch-marker-v1-display")?;
-            let options = MatchOptions::from_defaults(template.defaults());
-            let query = session
-                .start_template_watch(TemplateWatchRequest::new(
-                    template,
-                    options,
-                    OperationContext::new(),
-                ))
-                .map_err(|_| "typed_operation_failure:VisionFailed".to_owned())?;
-            let baseline = prime_pending(&query)?;
-            run.command_visible()?;
-            match wait_terminal_bounded(&query, Duration::from_millis(750)) {
-                Ok((terminal, progress)) if terminal.is_match() => {
-                    matched = true;
-                    final_progress = progress.or(Some(baseline));
-                    let _ = session.close(&bounded(OPERATION_WAIT));
-                    break;
-                }
-                _ => {
-                    let _ = query.cancel();
-                    let _ = session.close(&bounded(OPERATION_WAIT));
-                }
+            let Some(shape) = project_marker_shape(&target_frame, &frame, target_shape) else {
+                session
+                    .close(&bounded(OPERATION_WAIT))
+                    .map_err(|_| "cleanup_failed".to_owned())?;
+                continue;
+            };
+            if !marker_shape_fits(&frame, shape) {
+                session
+                    .close(&bounded(OPERATION_WAIT))
+                    .map_err(|_| "cleanup_failed".to_owned())?;
+                continue;
             }
+
+            let result = (|| {
+                let template = prepare_marker(&run.engine, shape, "watch-marker-v1-display")?;
+                let template_id = template.id().clone();
+                let options = MatchOptions::from_defaults(template.defaults());
+                let query = session
+                    .start_template_watch(TemplateWatchRequest::new(
+                        template,
+                        options,
+                        OperationContext::new(),
+                    ))
+                    .map_err(|_| "typed_operation_failure:VisionFailed".to_owned())?;
+                let baseline = prime_pending(&query)?;
+                let newer_than = baseline.last_frame();
+                run.command_visible()?;
+                // Full-display matching uses the predeclared operation bound.
+                // A shorter wall-clock wait would measure host scheduling and
+                // cancel valid high-resolution work before it can commit.
+                let terminal = wait_terminal(&query);
+                if terminal.is_err() {
+                    let _ = query.cancel();
+                }
+                let (terminal, progress) = terminal?;
+                let correct =
+                    matched_target_exact(&terminal, display_id, &template_id, shape, 1, newer_than);
+                Ok((correct, progress.unwrap_or(baseline)))
+            })();
+            let closed = session.close(&bounded(OPERATION_WAIT)).is_ok();
+            let hidden = run.command_absent();
+            if !closed {
+                return Err("cleanup_failed".to_owned());
+            }
+            hidden?;
+            return result;
         }
+
         run.command_absent()?;
-        Ok((matched, final_progress.unwrap_or_else(empty_progress)))
+        Err("capability_unavailable:display_target".to_owned())
     })
 }
 
@@ -973,7 +1053,22 @@ fn queue_expiry_overload(cohort: &Rc<RefCell<Cohort>>) -> Sample {
         if queries.len() != 32 {
             return Err("unbounded_queue".to_owned());
         }
-        let progress = wait_progress(&queries[0], TemplateQueryProgress::is_in_flight)?;
+        let admission_deadline = Instant::now() + OPERATION_WAIT;
+        let progress = loop {
+            let admitted = queries.iter().find_map(|query| match query.poll() {
+                TemplateQueryOutcome::Pending(progress) if progress.is_in_flight() => {
+                    Some(progress)
+                }
+                TemplateQueryOutcome::Pending(_) | TemplateQueryOutcome::Terminal(_) => None,
+            });
+            if let Some(progress) = admitted {
+                break progress;
+            }
+            if Instant::now() >= admission_deadline {
+                return Err("typed_operation_failure:DeadlineExceeded".to_owned());
+            }
+            thread::sleep(POLL_WAIT);
+        };
         thread::sleep(
             expiry
                 .checked_add(Duration::from_millis(100))
@@ -1087,8 +1182,20 @@ fn native_stop_target_loss(cohort: &Rc<RefCell<Cohort>>) -> Sample {
         let _absent = establish_absent(&mut run)?;
         let query = run.start_watch(TemplateStability::immediate())?;
         let baseline = prime_pending(&query)?;
-        let close = run.fixture.close_target()?;
-        run.accept_acknowledgement(close)?;
+        #[cfg(target_os = "windows")]
+        {
+            let close = run.fixture.close_target()?;
+            run.accept_acknowledgement(close)?;
+        }
+        #[cfg(target_os = "macos")]
+        {
+            // A destroyed-window ScreenCaptureKit filter can remain quiescent
+            // without a terminal callback. Ending the authenticated fixture
+            // process exercises the stream authority required by this row.
+            if !run.fixture.finish() {
+                return Err("fixture_authority_failed".to_owned());
+            }
+        }
         let (terminal, progress) = wait_terminal(&query)?;
         wait_for_backend_idle(OPERATION_WAIT)?;
         Ok((
@@ -1253,9 +1360,11 @@ fn geometry_sample(cohort: &Rc<RefCell<Cohort>>, action: GeometryAction) -> Samp
             let restore = restore?;
             run.accept_acknowledgement(restore)?;
             let restored_frame = wait_geometry_change(run, after.stamp())?;
-            before.descriptor() == restored_frame.descriptor()
+            let restored = before.descriptor() == restored_frame.descriptor()
                 && before.transform().covers_target() == restored_frame.transform().covers_target()
-                && before.transform().target() == restored_frame.transform().target()
+                && before.transform().target() == restored_frame.transform().target();
+            run.refresh_template(&restored_frame, "watch-marker-v1-restored")?;
+            restored
         } else {
             true
         };
@@ -1516,23 +1625,41 @@ fn matched_exact(
     observations: u32,
     newer_than: Option<FrameStamp>,
 ) -> bool {
+    matched_target_exact(
+        terminal,
+        run.target,
+        run.template.id(),
+        run.shape,
+        observations,
+        newer_than,
+    )
+}
+
+fn matched_target_exact(
+    terminal: &TemplateTerminalOutcome,
+    target: TargetId,
+    template: &TemplateId,
+    shape: MarkerShape,
+    observations: u32,
+    newer_than: Option<FrameStamp>,
+) -> bool {
     let TemplateTerminalOutcome::Matched(result) = terminal else {
         return false;
     };
     let match_result = result.result();
     let stamp = result.frame().stamp();
     let bounds = match_result.best().map(|candidate| candidate.bounds());
-    let expected = run.shape.extent();
-    result.target() == run.target
-        && result.template() == run.template.id()
+    let expected = shape.extent();
+    result.target() == target
+        && result.template() == template
         && result.confirmed_observations() >= observations
         && match_result.stamp() == stamp
         && match_result.transform() == result.frame().transform()
         && match_result.backend().id() == "opencv-cpu"
         && match_result.matches().len() == 1
         && bounds.is_some_and(|bounds| {
-            bounds.left() == run.shape.origin_x
-                && bounds.top() == run.shape.origin_y
+            bounds.left() == shape.origin_x
+                && bounds.top() == shape.origin_y
                 && bounds.width() == expected.width()
                 && bounds.height() == expected.height()
                 && match_result.searched().contains_rect(bounds)

@@ -520,7 +520,7 @@ impl FixtureController {
         let mut launch_attempts = 1_u32;
         let deadline = Instant::now() + wait;
         let (stream, application) = loop {
-            if !launch_guard.is_live()? {
+            if max_launch_attempts > 1 && !launch_guard.is_live()? {
                 if launch_attempts >= max_launch_attempts || Instant::now() >= deadline {
                     return Err(format!(
                         "the fixture application exited before connecting after \
@@ -547,7 +547,7 @@ impl FixtureController {
                             match application.executable_identity() {
                                 Ok(identity) => break Some(identity == expected_identity),
                                 Err(error) => {
-                                    if !launch_guard.is_live()? {
+                                    if !application.is_live() {
                                         break None;
                                     }
                                     if Instant::now() >= deadline {
@@ -568,9 +568,6 @@ impl FixtureController {
                                 "the launched fixture identity differs from recorded provenance"
                                     .to_owned(),
                             );
-                        }
-                        if !launch_guard.is_live()? {
-                            continue;
                         }
                         launch_guard.application = Some(application);
                         break (stream, application);
@@ -652,7 +649,7 @@ impl FixtureController {
         if self.stopped
             || self.input.is_none()
             || self.reader_failed.load(Ordering::Acquire)
-            || !self.launched.is_live().ok()?
+            || !self.application.is_live()
             || !self
                 .application
                 .matches_executable_identity(self.expected_identity)
