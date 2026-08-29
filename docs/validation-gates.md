@@ -269,13 +269,17 @@ withheld; every non-time startup gate remains enforced. ADR 0053 accepts
 target-specific native sampled latency, RSS, live-heap, and growth budgets,
 including sampled fresh-session latency, while withholding single-run gate
 timing and cadence-dependent aggregate mapping, work, and publication ceilings.
-ADR 0057 accepts five final WGC and ScreenCaptureKit processes per approved host
-for the existing Rust query boundary. OCR predicates, callbacks/subscriptions,
-C/C++, automatic input, target activation, arbitrary application/template/ROI
+ADR 0057 rejects the historical final WGC and ScreenCaptureKit cohorts after
+independent review found unexercised engine-close and Windows cross-DPI topology
+contracts. The native Rust query API remains implemented, but support is
+withheld until corrected same-semantic-source cohorts, a new cross-target
+aggregate, complete-diff applicability, privacy/security re-review, and
+protected checks pass. OCR predicates, callbacks/subscriptions, C/C++,
+automatic input, target activation, arbitrary application/template/ROI
 compatibility or timing, real-time guarantees, packaging, and release remain
-unavailable. Any future false skip or fixture/report/policy drift restores
-analysis-always until a new additive fixture set, full both-target comparison,
-and reviewed ADR pass.
+unavailable. Any future false skip or fixture/report/policy drift keeps the
+native boundary withheld until a new additive fixture set, full both-target
+comparison, and reviewed ADR pass.
 
 ## G-006
 

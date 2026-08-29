@@ -2,16 +2,16 @@
 
 MadoPilot can wait for stable template presence on maintained Windows Graphics Capture or ScreenCaptureKit sessions through the Rust facade. The caller starts one bounded query and receives one immutable terminal outcome; no caller frame-polling loop, target activation, input injection, host callback, or permission prompt is involved.
 
-This support statement is narrow. It covers the production Rust session boundary qualified by [ADR 0057](adr/0057-native-template-watch-rust-support.md) on the approved Windows and Apple Silicon hosts. It does not certify every application, template, region, display layout, or timing requirement.
+This page documents an implemented but not yet support-qualified native boundary. Independent review rejected the historical two-host evidence; [ADR 0057](adr/0057-native-template-watch-rust-support.md) withholds promotion until corrected Windows and Apple Silicon evidence and aggregate review are complete.
 
-## Supported boundary
+## Current boundary
 
 | Surface | State |
 |---|---|
 | Rust `Session::start_template_watch` over replay/OpenCV | Supported and budget-qualified |
-| Rust `Session::start_template_watch` over Windows WGC window/display sessions | Supported on the qualified Windows floor |
-| Rust `Session::start_template_watch` over macOS ScreenCaptureKit window/display sessions | Supported on the qualified Apple Silicon floor |
-| Non-blocking `TemplateQuery::poll`, blocking `wait`, explicit `cancel`, and immutable terminal results | Supported |
+| Rust `Session::start_template_watch` over Windows WGC window/display sessions | Implemented; support withheld pending the corrected Windows final cohort |
+| Rust `Session::start_template_watch` over macOS ScreenCaptureKit window/display sessions | Implemented; corrected Apple candidate passed, but cross-target promotion remains pending |
+| Non-blocking `TemplateQuery::poll`, blocking `wait`, explicit `cancel`, and immutable terminal results | Implemented; native support follows the underlying session qualification |
 | OCR predicates or wait-for-text | Not implemented |
 | Watcher callbacks or subscriptions | Not implemented |
 | C ABI or C++ watcher start/query APIs | Not implemented; ABI 1.5 remains unchanged |
@@ -19,13 +19,13 @@ This support statement is narrow. It covers the production Rust session boundary
 | Tokio/futures integration or real-time guarantees | Not implemented |
 | Packaged libraries, crates.io publication, static artifacts, installers, tags, or a `v0.4.0` release | Not available |
 
-The accepted native matrices use repository-owned fixtures and a fixed marker to prove source identity, state transitions, geometry resets, deadlines, cancellation, target loss, ownership, cleanup, and finite resource behavior. Those fixtures are qualification apparatus, not a compatibility claim for arbitrary applications or caller content.
+The native matrices use repository-owned fixtures and a fixed marker to prove source identity, state transitions, geometry resets, deadlines, cancellation, target loss, ownership, cleanup, and finite resource behavior. The corrected Apple candidate passed, but the historical two-target matrices were rejected and the corrected Windows cohort remains pending. These fixtures are qualification apparatus, not a compatibility claim for arbitrary applications or caller content.
 
 ## Prerequisites
 
 Build from the repository with its pinned Rust toolchain and a compatible OpenCV 4 development/runtime installation. Native watcher use does not require the private `native-template-watch-qualification` feature; that feature exposes only repository benchmark instrumentation and fixtures.
 
-The supported platform floors remain:
+The qualification platform floors remain:
 
 - `x86_64-pc-windows-msvc`: Windows 11 25H2 build family 26200 on a currently serviced x64 desktop installation.
 - `aarch64-apple-darwin`: Apple Silicon macOS 26.5.2 or newer under the current deployment contract.
@@ -77,7 +77,7 @@ Other terminal outcomes are explicit: `Cancelled`, `DeadlineExceeded`, `SessionC
 
 The production watcher uses fixed finite engine/session/query limits, two engine-wide analysis slots, one latest pending frame per query, a bounded shared mapping cache, and a 30-second eligible-queue residence bound. Capture publication never waits for OpenCV matching. Superseded, coalesced, deferred, rejected, expired, completed, and failed work remains observable through query results or bounded diagnostics.
 
-[ADR 0053](adr/0053-native-template-watch-budgets.md) fixes independent Windows and Apple Silicon regression ceilings. Five fresh final processes per host enforced the identical 24-workload semantic matrix: 16 rows with three warmups and 20 measured samples, plus eight single-run gates. Correctness, source authority, lifecycle, ownership, cleanup, and privacy fail qualification regardless of latency.
+[ADR 0053](adr/0053-native-template-watch-budgets.md) fixes independent Windows and Apple Silicon regression ceilings. The historical five-process final cohorts used the identical 24-workload matrix, but independent review found unexercised lifecycle and Windows topology contracts. A corrected five-process Apple cohort passed at `c363826`; a corrected same-source Windows cohort is still required. Correctness, source authority, lifecycle, ownership, cleanup, and privacy fail qualification regardless of latency.
 
 These numbers are repository-fixture regression budgets, not service-level objectives. Numeric timing remains deliberately unavailable for the eight one-run gates and for cadence-dependent aggregate mapping, work, or publication rates. No cross-target limit, automatic retry, dynamic capacity tuning, or real-time guarantee is implied.
 
@@ -99,4 +99,4 @@ Application logs remain the caller's responsibility. Avoid formatting full nativ
 
 ## Explicit limitations
 
-Native qualification does not promote OCR predicates, callbacks/subscriptions, C ABI/C++, automatic input, target activation, arbitrary application/template/ROI compatibility or timing, real-time behavior, packaging, crates.io/static artifacts, a release tag, or `v0.4.0`. Existing C and C++ compilation, ownership, diagnostics, and frozen-prefix checks remain regression proof only; they are not watcher API checks.
+Native support remains withheld. Qualification does not promote OCR predicates, callbacks/subscriptions, C ABI/C++, automatic input, target activation, arbitrary application/template/ROI compatibility or timing, real-time behavior, packaging, crates.io/static artifacts, a release tag, or `v0.4.0`. Existing C and C++ compilation, ownership, diagnostics, and frozen-prefix checks remain regression proof only; they are not watcher API checks.

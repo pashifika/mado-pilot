@@ -73,12 +73,14 @@ ADR 0053 accepts target-specific native watcher latency, RSS, live-heap, and
 growth budgets from five exact-source precursor processes on each approved host.
 Single-run gate timing and cadence-dependent aggregate mapping, work, and
 publication ceilings remain explicitly withheld while their exact semantic and
-accounting oracles remain mandatory. ADR 0057 accepts the final five-process
-Windows WGC and Apple Silicon ScreenCaptureKit matrices for the existing Rust
-query/poll/wait/cancel/result boundary. OCR predicates, callbacks/subscriptions,
-C/C++, automatic input, target activation, arbitrary application/template/ROI
-compatibility or timing, real-time guarantees, packaging, artifacts, tags, and
-the `v0.4.0` release remain unavailable.
+accounting oracles remain mandatory. ADR 0057 rejects the historical final
+cohorts after independent review found unexercised engine-close and Windows
+cross-DPI topology contracts. The native Rust query API remains implemented,
+but WGC and ScreenCaptureKit support is withheld pending corrected two-host
+qualification. OCR predicates, callbacks/subscriptions, C/C++, automatic input,
+target activation, arbitrary application/template/ROI compatibility or timing,
+real-time guarantees, packaging, artifacts, tags, and the `v0.4.0` release
+remain unavailable.
 See [Implementation status](#implementation-status).
 
 ## Product definition
@@ -906,16 +908,16 @@ responsibilities a later phase takes on.
 | Asset resolution into OCR model sources | Implemented in `mado-pilot-assets` with exact component length and SHA-256 validation and immutable shared ownership |
 | Deep search orchestration, result envelope, final operation commit | Implemented in `mado-pilot-runtime` |
 | Input composition: same-provider adapter pairing, required-versus-optional input admission with bounded release of committed capture, per-controller sequence serialization, the one-terminal-receipt rule, and two-sided close | Implemented in `mado-pilot-runtime`. Selecting a permitted route, arbitrating focus, resolving a coordinate against live geometry, revalidating before each irreversible event, and releasing what a stopped sequence pressed stay in `mado-pilot-input` and the Adapter implementing it |
-| Bounded template-presence query and scheduling | Implemented in `mado-pilot-runtime` for Rust replay/OpenCV and maintained native WGC/ScreenCaptureKit sessions: current-once then strictly newer frame acquisition, finite latest-wins work, exact change/rate admission, confirmed-only stability, exact coalescing, two-worker fair progress, stale-generation rejection, and idempotent query/session/engine-scheduler close. ADRs 0051 and 0052 accept deterministic replay/OpenCV profiles; ADRs 0053 and 0057 accept the target-specific final native Rust boundary. Native profile ceilings remain repository-fixture regressions rather than arbitrary application timing claims |
+| Bounded template-presence query and scheduling | Implemented in `mado-pilot-runtime` for Rust replay/OpenCV and maintained native WGC/ScreenCaptureKit sessions: current-once then strictly newer frame acquisition, finite latest-wins work, exact change/rate admission, confirmed-only stability, exact coalescing, two-worker fair progress, stale-generation rejection, and idempotent query/session/engine-scheduler close. ADRs 0051 and 0052 accept deterministic replay/OpenCV profiles; ADR 0053 retains target-specific native regression budgets, while ADR 0057 withholds native support pending corrected Windows and cross-target qualification |
 | OCR coalescing and wait-for-text | Not implemented |
 | Public Rust operations for the deterministic replay workflow | Implemented in `mado-pilot`, including the blocking replay template watcher example with separate query/wait operation contexts |
-| Public Rust operations for native and replay workflows | Implemented in `mado-pilot`, including explicit optional backend wiring, accepted CPU default/profile constructors, owning provider-policy constructors, immutable provider descriptors, borrowed one-to-eight-zone scans, and qualified Rust template query types over replay, WGC, and ScreenCaptureKit sessions. No platform-native, `ort`, worker, channel, Tokio, or callback type crosses the facade; C ABI/C++ watcher APIs remain absent |
+| Public Rust operations for native and replay workflows | Implemented in `mado-pilot`, including explicit optional backend wiring, accepted CPU default/profile constructors, owning provider-policy constructors, immutable provider descriptors, borrowed one-to-eight-zone scans, and Rust template query types over replay, WGC, and ScreenCaptureKit sessions. Replay/OpenCV watcher support is qualified; native watcher support remains withheld by ADR 0057. No platform-native, `ort`, worker, channel, Tokio, or callback type crosses the facade; C ABI/C++ watcher APIs remain absent |
 | Default adapter wiring and backend rules | OpenCV matching remains required. Every pre-provider constructor preserves CPU behavior. `*_engine_with_ocr_provider` is the only integrated provider-policy path; automatic selection uses only a release-qualified target accelerator, preferred fallback is initialization-only, and required/provider inference failure never falls back |
 | C ABI functions, C header, dynamic library | Implemented through ABI 1.5. ABI 1.0, 1.2, 1.3, and 1.4 remain frozen complete 424-, 592-, 648-, and 720-byte prefixes. ABI 1.5 appends provider construction at offset 720 and engine-owned provider descriptor access at offset 728 for a complete 736-byte table under ADR 0046 |
 | C ABI static library and ABI-major release loader names | Not implemented; see [c-abi.md](c-abi.md) |
 | C++ RAII wrapper, `MadoPilot::C` and `MadoPilot::Cpp` CMake targets | Implemented through ABI 1.5 as a header-only adapter, including owning profile/zone/provider options with repaired projections, move-only grouped results, explicit clone, lvalue-only borrowed OCR/provider descriptor views, typed empty groups, and complete negotiated-suffix refusal |
 | CMake install and export set, pkg-config file | Not implemented; consumption is from the development tree |
-| Numeric performance budgets | Phase 1 and the accepted Phase 2 profiles remain revision-bound under ADRs 0008 and 0024–0032. ADR 0037 accepts target-specific Apple M1 Pro and Core i7-12700KF default-OCR profiles; Phase 3 default-OCR `G-013` is complete on both release targets. ADRs 0039–0041 accept separate exact-source bounded-v2 singular workload budgets. ADR 0044 accepts integrated grouped latency/resource/lifecycle ceilings; ADR 0045 corrects only the new Apple integrated startup value to 200 ms while preserving historical ADR 0041 profiles. ADR 0048 remains historical provider evidence; ADR 0049 adds exact successor Windows CUDA/fallback profiles. ADRs 0051 and 0052 accept replay/OpenCV watcher ceilings; ADR 0053 fixes independent native WGC and ScreenCaptureKit latency, heap, RSS, and growth budgets, and ADR 0057 accepts both exact final cohorts while preserving withheld single-run and cadence-dependent measures |
+| Numeric performance budgets | Phase 1 and the accepted Phase 2 profiles remain revision-bound under ADRs 0008 and 0024–0032. ADR 0037 accepts target-specific Apple M1 Pro and Core i7-12700KF default-OCR profiles; Phase 3 default-OCR `G-013` is complete on both release targets. ADRs 0039–0041 accept separate exact-source bounded-v2 singular workload budgets. ADR 0044 accepts integrated grouped latency/resource/lifecycle ceilings; ADR 0045 corrects only the new Apple integrated startup value to 200 ms while preserving historical ADR 0041 profiles. ADR 0048 remains historical provider evidence; ADR 0049 adds exact successor Windows CUDA/fallback profiles. ADRs 0051 and 0052 accept replay/OpenCV watcher ceilings; ADR 0053 fixes independent native WGC and ScreenCaptureKit latency, heap, RSS, and growth budgets. ADR 0057 rejects the historical final native cohorts, so those budgets do not currently promote native watcher support |
 | Native permission behavior | Implemented on macOS as non-prompting probes. Windows has no permission probe; its input path performs non-prompting integrity comparison and reports proven UIPI without elevation |
 | Release packaging | Not implemented |
 | ABI compatibility testing | Implemented for frozen ABI 1.0, 1.2, 1.3, and 1.4 headers against current ABI 1.5. Historical callers compile only against immutable headers, negotiate their exact extents, and execute against the current library; current C++ tests refuse partial 1.3, 1.4, and 1.5 operations before reading missing entries |
@@ -2581,14 +2583,13 @@ queue or `DiagnosticOperationId`; public `TemplateQueryId` issuance is
 unaffected.
 
 Supported and budget-qualified now: the fixed Rust replay/OpenCV profile shown by
-`crates/mado-pilot/examples/template-watch.rs` and the maintained Windows WGC and
+`crates/mado-pilot/examples/template-watch.rs`. The maintained Windows WGC and
 macOS ScreenCaptureKit Rust session boundary shown by
-`crates/mado-pilot/examples/native-template-watch.rs`. Native qualification
-covers current/newer acquisition, absence, transient and persistent appearance,
-disappearance/reset, movement, resize, display/scale topology, non-prompting
-availability, high-rate and slow-backend work, fairness, coalescing, finite
-overload, stale generations, cancellation/deadline/target loss, close, retained
-ownership, fresh sessions, producer progress, cleanup, and privacy.
+`crates/mado-pilot/examples/native-template-watch.rs` is implemented but not
+support-qualified. Independent review rejected the historical final cohorts
+because their engine-close and Windows topology oracles were incomplete. A
+corrected Apple cohort passed at `c363826`; corrected Windows and cross-target
+qualification remain pending.
 
 Source exhaustion refuses later query starts but lets an already acquired
 pending or in-flight final frame drain. Successfully drained work that leaves
@@ -2602,15 +2603,16 @@ returned directly by `wait` identify only that caller wait. Callers repair the
 source, deadline, rate/stability policy, or backend failure; no retry, fallback,
 automatic input, or capacity tuning is implied.
 
-The accepted target profiles are regression ceilings for repository fixtures
-and controlled scheduler boundaries, not arbitrary application/template/ROI
-compatibility or timing, service-level objectives, or real-time guarantees.
-Numeric timing remains withheld for the eight single-run gates and
-cadence-dependent aggregate mapping, work, and publication rates. OCR
-predicates, callbacks/subscriptions, Tokio/futures, C/C++, automatic input,
-target activation, packaging, crates.io/static artifacts, tags, and release
-remain unavailable. See [Native template watching from
-Rust](native-template-watch.md) and ADR 0057.
+The native target profiles remain revision-bound regression ceilings for
+repository fixtures and controlled scheduler boundaries; they do not currently
+promote native support and are not arbitrary application/template/ROI timing
+claims, service-level objectives, or real-time guarantees. Numeric timing
+remains withheld for the eight single-run gates and cadence-dependent aggregate
+mapping, work, and publication rates. OCR predicates, callbacks/subscriptions,
+Tokio/futures, C/C++, automatic input, target activation, packaging,
+crates.io/static artifacts, tags, and release remain unavailable. See
+[Native template watching from Rust](native-template-watch.md) and rejected
+ADR 0057.
 
 The engine holds contracts only. It cannot observe which adapter is behind one,
 so no orchestration rule can come to depend on a concrete adapter, and there is

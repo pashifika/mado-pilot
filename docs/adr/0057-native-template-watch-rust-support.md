@@ -1,6 +1,6 @@
 # ADR 0057: Native Rust template-watch support
 
-- **Status:** Accepted
+- **Status:** Rejected
 - **Date:** 2026-08-29
 - **Resolves gate:** _none_
 - **Supersedes:** _none_
@@ -11,39 +11,54 @@ The Rust template watcher and replay/OpenCV profile were already accepted, but n
 
 ADR 0053 fixed independent Apple Silicon and Windows budgets from exact-source precursor cohorts before enforcement. The final apparatus then ran five fresh budget-enforcing processes per approved host over one identical 24-workload semantic registry. The tracked aggregate is [Phase 4 native template-watch qualification](../evidence/phase-4-native-template-watch-qualification.md).
 
+Independent review subsequently invalidated that promotion. The executed cohorts
+did not prove a live query's `SchedulerClosed` outcome after engine destruction,
+and the Windows topology row remained on one monitor instead of crossing the
+approved DPI boundary. A corrected Apple cohort passed 5/5 at `c363826`, but the
+same-source Windows cohort and a new cross-target aggregate remain incomplete.
+The former acceptance below is therefore withdrawn rather than relabeled onto
+the rejected measurements.
+
 ## Decision
 
-Accept `Session::start_template_watch` as a supported Rust facade operation over maintained Windows WGC and macOS ScreenCaptureKit window/display sessions on the existing qualified platform floors. The support statement is limited to the public Rust query/poll/wait/cancel/result boundary and the invariants proven by the repository native matrices.
+Withhold native `Session::start_template_watch` support over Windows WGC and
+macOS ScreenCaptureKit sessions until corrected same-semantic-source cohorts,
+cross-target applicability, privacy/security review, and protected checks all
+pass. The Rust APIs and example remain implemented, but implementation is not a
+support claim.
 
-Do not infer support for OCR predicates, callbacks or subscriptions, C ABI/C++, automatic input, target activation, arbitrary application/template/ROI compatibility or timing, real-time guarantees, packaging, artifacts, tags, or a `v0.4.0` release.
+Do not infer support for OCR predicates, callbacks or subscriptions, C ABI/C++,
+automatic input, target activation, arbitrary application/template/ROI
+compatibility or timing, real-time guarantees, packaging, artifacts, tags, or a
+`v0.4.0` release.
 
 ## Alternatives
 
-- Keep native watcher support withheld after both final matrices passed. Rejected because it would contradict exact-source evidence for the production Rust session boundary and leave implemented behavior undocumented.
+- Keep the ADR accepted because every recorded historical row reported success. Rejected because independent review found unexercised lifecycle and topology contracts; zero failures in an incomplete oracle cannot promote support.
 - Promote watcher callbacks, C/C++, or automatic input with the Rust boundary. Rejected because those public contracts do not exist and received no qualification.
 - Claim general native application compatibility from the repository fixture. Rejected because controlled marker geometry, pixels, topology, and timing cannot establish arbitrary caller content or application behavior.
 - Copy one target's latency or resource limits to the other. Rejected by ADR 0053; WGC/D3D11 and ScreenCaptureKit/Core Video retain independent measured ceilings.
 
 ## Consequences
 
-- Rust callers may use the existing target-specific facade constructors, open a maintained native session, and start a bounded template query without a caller frame-polling loop.
-- macOS callers must grant Screen Recording to the hosting application before capture. MadoPilot remains non-prompting. Windows adds no permission UI, permission probe, or elevation behavior.
-- Query and caller-wait deadlines remain separate. Terminal outcomes, exact source correlation, confirmed-only stability, finite scheduling, stale-result rejection, retained ownership, and idempotent close remain mandatory.
-- The public example and native watcher documentation must preserve explicit target selection and must not activate targets, inject input, prompt for permissions, or present fixture performance as an application SLA.
-- The two revision-bound profiles remain historical precursor records. Final hashes attach to the qualification aggregate rather than replacing earlier source-bound facts.
-- C ABI 1.5, the C header, and the C++ wrapper do not change. Existing cross-language checks are regression proof only and are not native watcher API qualification.
+- Deterministic replay/OpenCV template queries remain supported under ADRs 0051 and 0052.
+- Native WGC and ScreenCaptureKit watcher APIs remain implemented but unqualified for public support.
+- The public example and native watcher documentation must state the pending boundary while preserving explicit target selection, non-prompting permissions, no activation or input, and fixture-only performance scope.
+- The revision-bound precursor budgets and rejected final measurements remain historical evidence. Their hashes must not be rewritten as current acceptance.
+- C ABI 1.5, the C header, and the C++ wrapper do not change. Existing cross-language checks remain regression proof only and are not watcher API qualification.
 - Packaging, crates.io/static artifacts, tags, and release delivery remain separate open work.
 
 ## Verification
 
-The decision is enforced by:
+Reconsidering this decision requires:
 
-- `docs/benchmarks/phase-4-native-template-watch-aarch64-apple-darwin.toml` and `docs/benchmarks/phase-4-native-template-watch-x86_64-pc-windows-msvc.toml`;
-- `benchmark_block_drift` and `hard_budget_drift`, which bind workload order, plans, source-shaped identity, hard predicates, and target-specific ceilings;
-- deterministic runtime, facade, fixture-protocol, privacy-schema, scheduler, ownership, cancellation, deadline, close, and diagnostics tests;
-- five accepted final processes per approved host with no process retry, exclusion, reorder, extra priming, or sample replacement;
-- complete-diff applicability from the executed cohort source through the proposed protected merge candidate;
-- independent code/concurrency/specification and focused security/privacy/memory-safety review before protected delivery;
+- five fresh corrected final processes on both approved hosts at one reviewed semantic source, with no retry, exclusion, reorder, extra priming, or sample replacement;
+- a Windows topology transition to a monitor different from the authenticated fixture's current monitor with an effective-DPI change;
+- a live native query proving immutable `SchedulerClosed` after engine destruction;
+- complete workload, budget, lifecycle, cleanup, and privacy aggregates with revision/tree/executable/fixture provenance;
+- complete-diff applicability through the proposed protected merge candidate;
+- independent code/concurrency/specification and focused security/privacy/memory-safety re-review;
 - hosted Windows, macOS, repository-policy, and branch-flow checks on the proposed merge candidate.
 
-A future change to capture publication, mapping, watcher admission, matching, stability, lifecycle, diagnostics, fixture authority, workload/profile enforcement, or the public support statement requires affected native rows to rerun or receive reviewed complete-diff applicability. A false skip or stale successful commit invalidates this acceptance regardless of latency.
+Any false skip, stale successful commit, or unsupported reuse of a rejected process
+keeps native support withheld regardless of latency.
