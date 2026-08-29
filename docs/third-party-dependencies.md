@@ -311,19 +311,26 @@ one immutable shared source. Explicit schema-v2 packages validate the same
 composition does not create a duplicate 25,979,900-byte package allocation.
 
 The two native CI jobs provision these inputs only inside an ephemeral runner.
-They download the official ONNX Runtime 1.29.0 target archive and the two
-tag-pinned ModelScope files, verify reviewed archive/model SHA-256 values before
-extraction/session creation, and pass canonical paths to native tests. Both jobs
-run the backend contract for native and bounded profiles, Rust default facade,
-production C/C++/CMake default flows, frozen C headers, the released
-default-profile benchmark smoke, and the new identical-input native/bounded
-smoke matrix.
+They download the official ONNX Runtime 1.29.0 target archive and obtain each
+model through [ADR 0054](adr/0054-g004-model-download-fallback.md)'s ordered,
+revision- or tag-pinned source allowlist. Every candidate has bounded connect
+and transfer time and must pass the existing reviewed model SHA-256 before its
+bytes become the canonical test path. Download failure or digest mismatch
+advances to the next source; exhaustion fails the job. The original ModelScope
+paths remain allowlisted, while revision-pinned Hugging Face and
+`hf-mirror.com` transports reproduce the same accepted bytes.
 
-This is verification-fixture provisioning, not a product download path, release
+Both jobs run the backend contract for native and bounded profiles, Rust default
+facade, production C/C++/CMake default flows, frozen C headers, the released
+default-profile benchmark smoke, and the identical-input native/bounded smoke
+matrix.
+
+This is verification-fixture transport, not a product download path, release
 bundle, shipped cache, ambient discovery mechanism, or approved-host
-quality/numeric-performance evidence. The bounded benchmark adds only existing
-workspace `serde`/`serde_json` development edges for a tracked fixture/report
-schema; no production dependency, model/runtime byte, or license family changes.
+quality/numeric-performance evidence. Historical G-004 candidate and evaluation
+records remain bound to their original ModelScope-only procedure. The fallback
+changes no model/runtime byte, accepted digest, profile, production dependency,
+or license family.
 
 ADR 0036 keeps the default an explicit native G-004 composition choice: ordinary
 engine constructors remain unchanged, while `*_engine_with_default_ocr`,
