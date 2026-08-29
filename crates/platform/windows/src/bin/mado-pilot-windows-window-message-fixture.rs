@@ -37,10 +37,11 @@ mod fixture {
         BENCHMARK_FILL_RGB, CONTROL_ALLOW_FOREGROUND, CONTROL_BLOCK_QUEUE, CONTROL_DESTROY_TARGET,
         CONTROL_DUPLICATE_METADATA, CONTROL_REPARENT_TARGET, CONTROL_REPLACE_TARGET,
         CONTROL_REPORT, CONTROL_REUSE_STRESS, CONTROL_SET_GEOMETRY, CONTROL_SET_VISUAL_ABSENT,
-        CONTROL_SET_VISUAL_VISIBLE, FILL_RGB, MAX_RECORDED_EVENTS, ORDINARY_CLASS_NAME,
-        TARGET_LOSS_ACKNOWLEDGEMENT, WATCH_MARKER_CELL_SIZE, WATCH_MARKER_HEIGHT,
-        WATCH_MARKER_PRIMARY_RGB, WATCH_MARKER_SECONDARY_RGB, WATCH_MARKER_WIDTH, WATCH_MARKER_X,
-        WATCH_MARKER_Y, ordinary_fixture_title, visual_state_for_control,
+        CONTROL_SET_VISUAL_VISIBLE, CONTROL_TRANSITION_VISUAL, FILL_RGB, MAX_RECORDED_EVENTS,
+        ORDINARY_CLASS_NAME, TARGET_LOSS_ACKNOWLEDGEMENT, VISUAL_TRANSITION_ACKNOWLEDGEMENT,
+        WATCH_MARKER_CELL_SIZE, WATCH_MARKER_HEIGHT, WATCH_MARKER_PRIMARY_RGB,
+        WATCH_MARKER_SECONDARY_RGB, WATCH_MARKER_WIDTH, WATCH_MARKER_X, WATCH_MARKER_Y,
+        ordinary_fixture_title, visual_state_for_control,
     };
     use windows::Win32::Foundation::{COLORREF, HINSTANCE, HWND, LPARAM, LRESULT, RECT, WPARAM};
     use windows::Win32::Graphics::Gdi::{
@@ -357,6 +358,14 @@ mod fixture {
                     state.acknowledgement()
                 } else {
                     "control visual-state=failed"
+                });
+                LRESULT(0)
+            }
+            CONTROL_TRANSITION_VISUAL => {
+                print_line(if pulse_target_paint() {
+                    VISUAL_TRANSITION_ACKNOWLEDGEMENT
+                } else {
+                    "control visual-transition=failed"
                 });
                 LRESULT(0)
             }

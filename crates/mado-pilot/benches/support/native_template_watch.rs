@@ -348,6 +348,12 @@ impl NativeRun {
         Ok(acknowledgement)
     }
 
+    fn command_visual_transition(&mut self) -> Result<ControlAcknowledgement, String> {
+        let acknowledgement = self.fixture.transition_visual()?;
+        self.accept_acknowledgement(acknowledgement)?;
+        Ok(acknowledgement)
+    }
+
     fn accept_acknowledgement(
         &mut self,
         acknowledgement: ControlAcknowledgement,
@@ -795,7 +801,7 @@ fn window_disappearance_reset(cohort: &Rc<RefCell<Cohort>>) -> Sample {
         run.command_visible()?;
         let second = wait_progress(&query, |progress| progress.confirmed_observations() >= 1)?;
         clock.advance(STATIC_STABILITY);
-        run.command_visible()?;
+        run.command_visual_transition()?;
         let (terminal, _) = wait_terminal(&query)?;
         let correct = matched_exact(&terminal, run, 1, reset.last_frame())
             && second.last_frame().is_some()
@@ -1195,7 +1201,7 @@ fn stale_generation(cohort: &Rc<RefCell<Cohort>>) -> Sample {
         let moved_frame = wait_resize_change(run, &old_frame)?;
         let moved_geometry = moved_frame.stamp().geometry();
         drop(delay);
-        run.command_visible()?;
+        run.command_visual_transition()?;
         let (terminal, _) = wait_terminal(&query)?;
         wait_for_backend_idle(OPERATION_WAIT)?;
         let new_geometry =
@@ -1459,7 +1465,7 @@ fn matched_sample(cohort: &Rc<RefCell<Cohort>>, newer_than: Option<FrameStamp>) 
         run.command_visible()?;
         wait_progress(&query, |progress| progress.confirmed_observations() >= 1)?;
         thread::sleep(STATIC_STABILITY);
-        run.command_visible()?;
+        run.command_visual_transition()?;
         let (terminal, _) = wait_terminal(&query)?;
         let correct = matched_exact(&terminal, run, 1, newer_than)
             && matches!(&*terminal, TemplateTerminalOutcome::Matched(result) if result.confirmed_duration() >= STATIC_STABILITY);
@@ -1536,11 +1542,12 @@ fn paired_query_sample(
         let second_before = second.benchmark_work_snapshot();
         let first_publications = first.benchmark_publication_count();
         let second_publications = second.benchmark_publication_count();
-        // A second acknowledged repaint creates a controlled visible boundary
-        // after the snapshots above. Change-driven sources publish it directly;
-        // continuous sources may publish another visible frame first. Either way,
-        // both queries must retain post-boundary visible work while rate-limited.
-        run.command_visible()?;
+        // A pixel-changing transition creates a controlled visible boundary
+        // after the snapshots above without changing the marker. Change-driven
+        // sources publish the new pixels directly; continuous sources may
+        // publish another visible frame first. Either way, both queries must
+        // retain post-boundary visible work while rate-limited.
+        run.command_visual_transition()?;
         let visible = wait_marker_state(run, visible.stamp(), true)?;
         if visible.stamp().geometry() != baseline.geometry() {
             return Err("wrong_transform".to_owned());

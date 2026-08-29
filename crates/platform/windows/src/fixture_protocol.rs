@@ -42,6 +42,10 @@ pub const CONTROL_ALLOW_FOREGROUND: u32 = 0x8209;
 pub const CONTROL_SET_VISUAL_ABSENT: u32 = 0x820a;
 /// Renders the deterministic watcher marker in the retained target.
 pub const CONTROL_SET_VISUAL_VISIBLE: u32 = 0x820b;
+/// Changes the deterministic fill without changing the watcher marker state.
+pub const CONTROL_TRANSITION_VISUAL: u32 = 0x820c;
+/// Successful acknowledgement after one deterministic visual transition.
+pub const VISUAL_TRANSITION_ACKNOWLEDGEMENT: &str = "control visual-transition=ready";
 
 pub const COPYDATA_TAG: usize = 0x4d50_4946;
 pub const ACKNOWLEDGED: usize = 0x4d50_414b;
@@ -438,9 +442,11 @@ fn key_code(key: Key) -> Result<u32, InputFault> {
 #[cfg(test)]
 mod tests {
     use super::{
-        CONTROL_SET_VISUAL_ABSENT, CONTROL_SET_VISUAL_VISIBLE, EventSummary, FixtureSelectionError,
-        FixtureVisualState, HEADER_BYTES, encode_event, fixture_title, format_event_line, is_query,
-        parse_event_line, query_packet, select_unique_fixture, summarize, visual_state_for_control,
+        CONTROL_SET_VISUAL_ABSENT, CONTROL_SET_VISUAL_VISIBLE, CONTROL_TRANSITION_VISUAL,
+        EventSummary, FixtureSelectionError, FixtureVisualState, HEADER_BYTES,
+        VISUAL_TRANSITION_ACKNOWLEDGEMENT, encode_event, fixture_title, format_event_line,
+        is_query, parse_event_line, query_packet, select_unique_fixture, summarize,
+        visual_state_for_control,
     };
     use mado_pilot_capture::{CoordinateSupport, PixelFormat, TargetDescription};
     use mado_pilot_core::{
@@ -496,7 +502,12 @@ mod tests {
             );
         }
         assert_eq!(
-            visual_state_for_control(CONTROL_SET_VISUAL_VISIBLE + 1),
+            VISUAL_TRANSITION_ACKNOWLEDGEMENT,
+            "control visual-transition=ready"
+        );
+        assert_eq!(visual_state_for_control(CONTROL_TRANSITION_VISUAL), None);
+        assert_eq!(
+            visual_state_for_control(CONTROL_TRANSITION_VISUAL + 1),
             None
         );
     }

@@ -213,6 +213,11 @@ impl NativeFixture {
         self.acknowledge(protocol::FixtureVisualState::Absent.acknowledgement())
     }
 
+    fn transition_visual(&mut self) -> Result<ControlAcknowledgement, String> {
+        self.post(protocol::CONTROL_TRANSITION_VISUAL, 0, 0)?;
+        self.acknowledge(protocol::VISUAL_TRANSITION_ACKNOWLEDGEMENT)
+    }
+
     fn set_geometry(
         &mut self,
         x: i32,

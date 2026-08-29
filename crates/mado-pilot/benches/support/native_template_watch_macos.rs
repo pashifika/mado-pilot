@@ -104,6 +104,10 @@ impl NativeFixture {
         self.command(FixtureCommandKind::SetVisualAbsent)
     }
 
+    fn transition_visual(&mut self) -> Result<ControlAcknowledgement, String> {
+        self.command(FixtureCommandKind::Transition)
+    }
+
     fn move_target(&mut self) -> Result<ControlAcknowledgement, String> {
         self.command(FixtureCommandKind::Move)
     }
