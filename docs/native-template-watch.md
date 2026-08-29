@@ -1,6 +1,6 @@
 # Native template watching from Rust
 
-MadoPilot can wait for stable template presence on maintained Windows Graphics Capture or ScreenCaptureKit sessions through the Rust facade. The caller starts one bounded query and receives one immutable terminal outcome; no caller frame-polling loop, target activation, input injection, callback, or permission prompt is involved.
+MadoPilot can wait for stable template presence on maintained Windows Graphics Capture or ScreenCaptureKit sessions through the Rust facade. The caller starts one bounded query and receives one immutable terminal outcome; no caller frame-polling loop, target activation, input injection, host callback, or permission prompt is involved.
 
 This support statement is narrow. It covers the production Rust session boundary qualified by [ADR 0057](adr/0057-native-template-watch-rust-support.md) on the approved Windows and Apple Silicon hosts. It does not certify every application, template, region, display layout, or timing requirement.
 
