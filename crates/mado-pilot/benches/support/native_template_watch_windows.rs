@@ -19,7 +19,8 @@ use mado_pilot_platform_windows::fixture_protocol as protocol;
 use windows::Win32::Foundation::{HWND, LPARAM, POINT, RECT, WPARAM};
 #[cfg(windows)]
 use windows::Win32::Graphics::Gdi::{
-    ClientToScreen, EnumDisplayMonitors, GetMonitorInfoW, HDC, HMONITOR, MONITORINFO,
+    ClientToScreen, EnumDisplayMonitors, GetMonitorInfoW, HDC, HMONITOR,
+    MONITOR_DEFAULTTONEAREST, MONITORINFO, MonitorFromWindow,
 };
 #[cfg(windows)]
 use windows::Win32::System::ProcessStatus::{GetProcessMemoryInfo, PROCESS_MEMORY_COUNTERS};
@@ -250,13 +251,13 @@ impl NativeFixture {
     }
 
     fn move_next_display(&mut self) -> Result<ControlAcknowledgement, String> {
-        let mut origins = monitor_origins()?;
-        origins.sort_unstable();
-        origins.dedup();
-        if origins.len() < 2 {
-            return Err("capability_unavailable:topology".to_owned());
-        }
-        let (x, y) = origins[1];
+        let window = self.window()?;
+        // SAFETY: `window` is the authenticated live fixture HWND.
+        let current = unsafe { MonitorFromWindow(window, MONITOR_DEFAULTTONEAREST) };
+        let current_origin =
+            monitor_origin(current).ok_or_else(|| "capability_unavailable:topology".to_owned())?;
+        let (x, y) = next_monitor_origin(monitor_origins()?, current_origin)
+            .ok_or_else(|| "capability_unavailable:topology".to_owned())?;
         let (width, height) = if self.resized { (480, 320) } else { (360, 240) };
         self.moved = true;
         self.set_geometry(x.saturating_add(80), y.saturating_add(80), width, height)
@@ -309,15 +310,22 @@ unsafe extern "system" fn collect_monitor(
     let origins = unsafe {
         &mut *std::ptr::with_exposed_provenance_mut::<Vec<(i32, i32)>>(state.0.cast_unsigned())
     };
+    if let Some(origin) = monitor_origin(monitor) {
+        origins.push(origin);
+    }
+    true.into()
+}
+
+#[cfg(windows)]
+fn monitor_origin(monitor: HMONITOR) -> Option<(i32, i32)> {
     let mut info = MONITORINFO {
         cbSize: u32::try_from(size_of::<MONITORINFO>()).expect("MONITORINFO size fits u32"),
         ..Default::default()
     };
-    // SAFETY: monitor came from EnumDisplayMonitors and info is writable.
-    if unsafe { GetMonitorInfoW(monitor, &raw mut info) }.as_bool() {
-        origins.push((info.rcMonitor.left, info.rcMonitor.top));
-    }
-    true.into()
+    // SAFETY: `monitor` came from a Win32 monitor lookup and `info` is writable.
+    unsafe { GetMonitorInfoW(monitor, &raw mut info) }
+        .as_bool()
+        .then_some((info.rcMonitor.left, info.rcMonitor.top))
 }
 
 #[cfg(windows)]
@@ -338,6 +346,19 @@ fn monitor_origins() -> Result<Vec<(i32, i32)>, String> {
     .ok()
     .map_err(|_| "capability_unavailable:topology".to_owned())?;
     Ok(origins)
+}
+
+#[cfg(windows)]
+fn next_monitor_origin(
+    mut origins: Vec<(i32, i32)>,
+    current: (i32, i32),
+) -> Option<(i32, i32)> {
+    origins.sort_unstable();
+    origins.dedup();
+    if !origins.iter().any(|origin| *origin == current) {
+        return None;
+    }
+    origins.into_iter().find(|origin| *origin != current)
 }
 
 #[cfg(windows)]
@@ -471,6 +492,17 @@ fn resize_geometry_matches(before: &Frame, after: &Frame) -> bool {
 }
 
 #[cfg(windows)]
+fn topology_geometry_matches(before: &Frame, after: &Frame) -> bool {
+    let Some(before_placement) = before.transform().target() else {
+        return false;
+    };
+    let Some(after_placement) = after.transform().target() else {
+        return false;
+    };
+    before_placement.desktop_scale() != after_placement.desktop_scale()
+}
+
+#[cfg(windows)]
 fn marker_shape(frame: &Frame, fixture: &NativeFixture) -> Option<MarkerShape> {
     let placement = frame.transform().target()?;
     let window = fixture.window().ok()?;
@@ -534,4 +566,27 @@ fn peak_resident_bytes() -> Option<u64> {
     }
     .ok()?;
     u64::try_from(counters.PeakWorkingSetSize).ok()
+}
+
+#[cfg(all(test, windows))]
+mod tests {
+
+    #[test]
+    fn next_monitor_origin_never_selects_the_current_display() {
+        let origins = vec![(0, 0), (-3840, 0), (0, 0)];
+
+        assert_eq!(
+            super::next_monitor_origin(origins.clone(), (0, 0)),
+            Some((-3840, 0))
+        );
+        assert_eq!(
+            super::next_monitor_origin(origins, (-3840, 0)),
+            Some((0, 0))
+        );
+        assert_eq!(super::next_monitor_origin(vec![(0, 0)], (0, 0)), None);
+        assert_eq!(
+            super::next_monitor_origin(vec![(-3840, 0), (0, 0)], (10, 10)),
+            None
+        );
+    }
 }

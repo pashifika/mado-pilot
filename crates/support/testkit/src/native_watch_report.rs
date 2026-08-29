@@ -1,8 +1,8 @@
 //! Strict tracked-output schema for native template-watch qualification.
 //!
 //! Raw harness output remains ignored ephemera. Only a profile whose free-form
-//! fields equal this module's fixed public text and whose host/provenance tokens
-//! pass the bounded validators may be copied into tracked evidence.
+//! fields equal this module's fixed public text and whose host metadata matches
+//! an exact approved profile may be copied into tracked evidence.
 
 use crate::bench_harness::Profile;
 
@@ -16,6 +16,12 @@ pub const CORRECTNESS_ORACLE: &str =
     "24 ordered source/match/geometry/work/lifecycle/ownership/resource/privacy hard gates";
 /// Exact finite queue description accepted in a tracked profile.
 pub const QUEUE_POLICY: &str = "production finite latest-wins capture and template-watch scheduler";
+
+const APPLE_HARDWARE: &str = "Apple M1 Pro, 10 CPU cores, 34359738368 bytes memory";
+const APPLE_PRECURSOR_OS: &str = "macOS 26.5.2 build 25F84, SDK 26.5";
+const APPLE_FINAL_OS: &str = "macOS 26.6.2 build 25G83, SDK 26.5";
+const WINDOWS_HARDWARE: &str = "Intel Core i7-12700KF, 32 GiB";
+const WINDOWS_OS: &str = "Windows 11 Pro 25H2 10.0.26200 UBR 9168; Windows SDK 10.0.26100.0";
 
 /// Exact ordered workload registry accepted by native watcher profiles.
 pub const WORKLOADS: [&str; 24] = [
@@ -91,7 +97,7 @@ pub struct Provenance<'a> {
 pub enum PrivacyFault {
     /// A fixed schema field was changed or an identity was malformed.
     Schema,
-    /// A bounded host string contained a payload-like or path-like value.
+    /// Host metadata did not match an exact approved target profile.
     Payload,
 }
 
@@ -139,11 +145,7 @@ pub fn validate(profile: &Profile, provenance: Provenance<'_>) -> Result<(), Pri
         provenance.process_index,
     );
     if profile.notes.as_deref() != Some(expected_notes.as_str())
-        || !safe_host_field(&profile.hardware)
-        || !safe_host_field(&profile.os_version)
-        || profile.deployment_target.as_deref().is_none_or(|target| {
-            !matches!(target, "aarch64-apple-darwin" | "x86_64-pc-windows-msvc")
-        })
+        || !approved_host_profile(profile, provenance)
         || !is_hex(&profile.fixture_sha256, 64)
         || profile
             .benchmark_executable_sha256
@@ -159,40 +161,32 @@ fn is_hex(value: &str, length: usize) -> bool {
     value.len() == length && value.bytes().all(|byte| byte.is_ascii_hexdigit())
 }
 
-fn safe_host_field(value: &str) -> bool {
-    const FORBIDDEN: [&str; 15] = [
-        "captured_pixel",
-        "pixel_hash",
-        "template_bytes",
-        "template_id",
-        "window_id",
-        "display_id",
-        "process_id",
-        "window_title",
-        "local_path",
-        "credential",
-        "password",
-        "ocr_text",
-        "input_text",
-        "process_inventory",
-        "environment=",
-    ];
-    let lowercase = value.to_ascii_lowercase();
-    !value.is_empty()
-        && value.len() <= 160
-        && !value.contains('\n')
-        && !value.contains('\r')
-        && !value.contains('/')
-        && !value.contains('\\')
-        && !value.contains("..")
-        && FORBIDDEN.iter().all(|term| !lowercase.contains(term))
+fn approved_host_profile(profile: &Profile, provenance: Provenance<'_>) -> bool {
+    match provenance.host {
+        "apple-m1-pro-10c-32g" => {
+            provenance.toolchain == "rust-1.97.1-8bab26f4-llvm-22.1.6"
+                && profile.hardware == APPLE_HARDWARE
+                && matches!(
+                    profile.os_version.as_str(),
+                    APPLE_PRECURSOR_OS | APPLE_FINAL_OS
+                )
+                && profile.deployment_target.as_deref() == Some("aarch64-apple-darwin")
+        }
+        "windows-i7-12700kf-32g" => {
+            provenance.toolchain == "rust-1.97.1-msvc-19.44.35228"
+                && profile.hardware == WINDOWS_HARDWARE
+                && profile.os_version == WINDOWS_OS
+                && profile.deployment_target.as_deref() == Some("x86_64-pc-windows-msvc")
+        }
+        _ => false,
+    }
 }
 
 #[cfg(test)]
 mod tests {
     use super::{
-        BUILD_PROFILE, CORRECTNESS_ORACLE, FIXTURE_DESCRIPTION, PrivacyFault, Provenance,
-        QUEUE_POLICY, validate,
+        APPLE_HARDWARE, APPLE_PRECURSOR_OS, BUILD_PROFILE, CORRECTNESS_ORACLE, FIXTURE_DESCRIPTION,
+        PrivacyFault, Provenance, QUEUE_POLICY, WINDOWS_HARDWARE, WINDOWS_OS, validate,
     };
     use crate::bench_harness::Profile;
 
@@ -218,8 +212,8 @@ mod tests {
             fixture: FIXTURE_DESCRIPTION.to_owned(),
             fixture_sha256: DIGEST.to_owned(),
             benchmark_executable_sha256: Some(DIGEST.to_owned()),
-            hardware: "Apple M1 Pro 10 cores 34359738368 bytes".to_owned(),
-            os_version: "macOS 26.5.2 build 25F84 SDK 26.5 OpenCV 4.14.0".to_owned(),
+            hardware: APPLE_HARDWARE.to_owned(),
+            os_version: APPLE_PRECURSOR_OS.to_owned(),
             deployment_target: Some("aarch64-apple-darwin".to_owned()),
             build_profile: BUILD_PROFILE.to_owned(),
             correctness_oracle: CORRECTNESS_ORACLE,
@@ -231,13 +225,33 @@ mod tests {
     }
 
     #[test]
-    fn the_exact_allowlisted_profile_is_accepted() {
+    fn both_exact_allowlisted_host_profiles_are_accepted() {
         assert_eq!(validate(&profile(), provenance()), Ok(()));
+
+        let mut windows_profile = profile();
+        windows_profile.hardware = WINDOWS_HARDWARE.to_owned();
+        windows_profile.os_version = WINDOWS_OS.to_owned();
+        windows_profile.deployment_target = Some("x86_64-pc-windows-msvc".to_owned());
+        windows_profile.notes = Some(format!(
+            "source {SOURCE}; tree {TREE}; fixture-source {DIGEST}; backend opencv-4.14.0; toolchain rust-1.97.1-msvc-19.44.35228; host windows-i7-12700kf-32g; cohort precursor; process 1; control native-watch-control-v1"
+        ));
+        let windows_provenance = Provenance {
+            toolchain: "rust-1.97.1-msvc-19.44.35228",
+            host: "windows-i7-12700kf-32g",
+            ..provenance()
+        };
+        assert_eq!(validate(&windows_profile, windows_provenance), Ok(()));
+        assert_eq!(
+            validate(&windows_profile, provenance()),
+            Err(PrivacyFault::Payload)
+        );
     }
 
     #[test]
-    fn payload_categories_cannot_enter_host_or_os_fields() {
+    fn arbitrary_or_payload_host_fields_are_rejected() {
         for payload in [
+            "Alice MacBook Pro serial C02SECRET",
+            "window title Secret Project",
             "captured_pixel_hash=abc",
             "template_bytes=abc",
             "template_id=secret",
@@ -252,6 +266,13 @@ mod tests {
         ] {
             let mut candidate = profile();
             candidate.hardware = payload.to_owned();
+            assert_eq!(
+                validate(&candidate, provenance()),
+                Err(PrivacyFault::Payload)
+            );
+
+            let mut candidate = profile();
+            candidate.os_version = payload.to_owned();
             assert_eq!(
                 validate(&candidate, provenance()),
                 Err(PrivacyFault::Payload)

@@ -180,6 +180,18 @@ fn resize_geometry_matches(before: &Frame, after: &Frame) -> bool {
 }
 
 #[cfg(target_os = "macos")]
+fn topology_geometry_matches(before: &Frame, after: &Frame) -> bool {
+    let Some(before_placement) = before.transform().target() else {
+        return false;
+    };
+    let Some(after_placement) = after.transform().target() else {
+        return false;
+    };
+    before_placement.desktop_origin() != after_placement.desktop_origin()
+        && before_placement.logical_size() == after_placement.logical_size()
+}
+
+#[cfg(target_os = "macos")]
 fn marker_shape(frame: &Frame, _fixture: &NativeFixture) -> Option<MarkerShape> {
     let placement = frame.transform().target()?;
     let scale = placement.scale();

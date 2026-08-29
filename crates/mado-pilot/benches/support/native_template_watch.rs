@@ -1294,17 +1294,45 @@ fn native_stop_target_loss(cohort: &Rc<RefCell<Cohort>>) -> Sample {
 fn session_engine_close(cohort: &Rc<RefCell<Cohort>>) -> Sample {
     destructive_sample(cohort, |mut run| {
         let _absent = establish_absent(&mut run)?;
-        let query = run.start_watch(TemplateStability::immediate())?;
-        prime_pending(&query)?;
+        let session_query = run.start_watch(TemplateStability::immediate())?;
+        prime_pending(&session_query)?;
         let first = run.session.close(&bounded(OPERATION_WAIT)).is_ok();
         let second = run.session.close(&bounded(OPERATION_WAIT)).is_ok();
-        let (terminal, _) = wait_terminal(&query)?;
-        let stable = Arc::ptr_eq(&terminal, &wait_terminal(&query)?.0);
-        let expected = matches!(&*terminal, TemplateTerminalOutcome::SessionClosed);
-        let metrics = terminal_query_metrics(&query, expected)?;
+        let (session_terminal, _) = wait_terminal(&session_query)?;
+        let session_stable = Arc::ptr_eq(&session_terminal, &wait_terminal(&session_query)?.0);
+        let session_closed = matches!(&*session_terminal, TemplateTerminalOutcome::SessionClosed);
+        let session_metrics = terminal_query_metrics(&session_query, session_closed)?;
+
+        let engine_session = run
+            .engine
+            .open(run.target, &OpenRequest::new(), &bounded(OPERATION_WAIT))
+            .map_err(|_| "typed_operation_failure:CaptureFailed".to_owned())?;
+        let engine_query = engine_session
+            .start_template_watch(TemplateWatchRequest::new(
+                run.template.clone(),
+                MatchOptions::from_defaults(run.template.defaults()),
+                OperationContext::new(),
+            ))
+            .map_err(|_| "typed_operation_failure:VisionFailed".to_owned())?;
+        prime_pending(&engine_query)?;
         drop(run.engine);
+        let (engine_terminal, _) = wait_terminal(&engine_query)?;
+        let engine_stable = Arc::ptr_eq(&engine_terminal, &wait_terminal(&engine_query)?.0);
+        let scheduler_closed =
+            matches!(&*engine_terminal, TemplateTerminalOutcome::SchedulerClosed);
+        let engine_metrics = terminal_query_metrics(&engine_query, scheduler_closed)?;
+        let engine_session_closed = engine_session.close(&bounded(OPERATION_WAIT)).is_ok();
         wait_for_backend_idle(OPERATION_WAIT)?;
-        Ok((first && second && stable && expected, metrics))
+        Ok((
+            first
+                && second
+                && session_stable
+                && session_closed
+                && engine_stable
+                && scheduler_closed
+                && engine_session_closed,
+            session_metrics.saturating_add(engine_metrics),
+        ))
     })
 }
 
@@ -1432,6 +1460,8 @@ fn geometry_sample(cohort: &Rc<RefCell<Cohort>>, action: GeometryAction) -> Samp
         run.command_visible()?;
         let (terminal, _) = wait_terminal(&query)?;
         let geometry_changed = before.stamp().geometry() != after.stamp().geometry();
+        let topology_changed = !matches!(action, GeometryAction::Topology)
+            || topology_geometry_matches(&before, &after);
         let exact = matched_exact(&terminal, run, 1, Some(before.stamp()));
         let restore = match action {
             GeometryAction::Move => Some(run.fixture.move_target()),
@@ -1451,7 +1481,7 @@ fn geometry_sample(cohort: &Rc<RefCell<Cohort>>, action: GeometryAction) -> Samp
             true
         };
         run.command_absent()?;
-        let correct = geometry_changed && exact && restored;
+        let correct = geometry_changed && topology_changed && exact && restored;
         Ok((correct, terminal_query_metrics(&query, correct)?))
     })
 }
