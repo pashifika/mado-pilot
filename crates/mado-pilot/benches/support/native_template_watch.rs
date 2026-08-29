@@ -755,9 +755,14 @@ fn window_absent_current(cohort: &Rc<RefCell<Cohort>>) -> Sample {
 fn window_transient_appearance(cohort: &Rc<RefCell<Cohort>>) -> Sample {
     observed_sample(cohort, |run| {
         run.command_absent()?;
-        let query = run.start_watch(
-            TemplateStability::duration(Duration::from_secs(1))
-                .map_err(|_| "protocol_drift".to_owned())?,
+        // Freeze query time: host scheduling between the visible and absent
+        // acknowledgements must not turn this transient into a duration match.
+        let stability = TemplateStability::duration(Duration::from_secs(1))
+            .map_err(|_| "protocol_drift".to_owned())?;
+        let query = run.start_watch_with(
+            run.template.clone(),
+            stability,
+            OperationContext::new().with_clock(Arc::new(ManualClock::new())),
         )?;
         run.command_visible()?;
         let visible = wait_progress(&query, |progress| progress.confirmed_observations() >= 1)?;
