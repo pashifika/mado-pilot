@@ -1014,10 +1014,12 @@ fn two_query_fairness(cohort: &Rc<RefCell<Cohort>>) -> Sample {
 
 fn two_session_fairness(cohort: &Rc<RefCell<Cohort>>) -> Sample {
     observed_sample(cohort, |run| {
+        run.command_absent()?;
         let second_session = run
             .engine
             .open(run.target, &OpenRequest::new(), &bounded(OPERATION_WAIT))
             .map_err(|_| "typed_operation_failure:CaptureFailed".to_owned())?;
+        prepare_two_session_readiness(run, &second_session)?;
         let delay = install_find_delay(SLOW_BACKEND).ok_or_else(|| "protocol_drift".to_owned())?;
         let first = run.start_watch(TemplateStability::immediate())?;
         let second = second_session
@@ -1027,9 +1029,13 @@ fn two_session_fairness(cohort: &Rc<RefCell<Cohort>>) -> Sample {
                 OperationContext::new(),
             ))
             .map_err(|_| "typed_operation_failure:VisionFailed".to_owned())?;
+        let first_before = wait_query_publication(&first)?;
+        let second_before = wait_query_publication(&second)?;
         run.command_visible()?;
         let (first_terminal, _) = wait_terminal(&first)?;
         let (second_terminal, _) = wait_terminal(&second)?;
+        let first_saw_stimulus = first.benchmark_publication_count() > first_before;
+        let second_saw_stimulus = second.benchmark_publication_count() > second_before;
         drop(delay);
         wait_for_backend_idle(OPERATION_WAIT)?;
         let closed = second_session.close(&bounded(OPERATION_WAIT)).is_ok();
@@ -1038,7 +1044,14 @@ fn two_session_fairness(cohort: &Rc<RefCell<Cohort>>) -> Sample {
         let second_expected = second_terminal.is_match();
         let metrics = terminal_query_metrics(&first, first_expected)?
             .saturating_add(terminal_query_metrics(&second, second_expected)?);
-        Ok((first_expected && second_expected && closed, metrics))
+        Ok((
+            first_expected
+                && second_expected
+                && first_saw_stimulus
+                && second_saw_stimulus
+                && closed,
+            metrics,
+        ))
     })
 }
 
@@ -1708,6 +1721,26 @@ fn prime_pending(query: &TemplateQuery) -> Result<TemplateQueryProgress, String>
             && progress.pending_count() <= 1
             && progress.in_flight_count() <= 2
     })
+}
+
+fn wait_query_publication(query: &TemplateQuery) -> Result<u64, String> {
+    let deadline = Instant::now() + OPERATION_WAIT;
+    loop {
+        let publications = query.benchmark_publication_count();
+        match query.poll() {
+            TemplateQueryOutcome::Pending(progress)
+                if publications != 0 && progress.confirmed_observations() == 0 =>
+            {
+                return Ok(publications);
+            }
+            TemplateQueryOutcome::Pending(_) => {}
+            TemplateQueryOutcome::Terminal(_) => return Err("authority_violation".to_owned()),
+        }
+        if Instant::now() >= deadline {
+            return Err("typed_operation_failure:DeadlineExceeded".to_owned());
+        }
+        thread::sleep(POLL_WAIT);
+    }
 }
 
 fn wait_terminal(

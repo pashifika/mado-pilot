@@ -336,8 +336,108 @@ fn monitor_origins() -> Result<Vec<(i32, i32)>, String> {
 }
 
 #[cfg(windows)]
+const WGC_READY_PROBE: Duration = Duration::from_millis(50);
+
+#[cfg(windows)]
 fn native_engine() -> mado_pilot::Result<Engine> {
     mado_pilot::windows_engine(NativeEngineRequest::new())
+}
+
+#[cfg(windows)]
+fn prepare_two_session_readiness(run: &mut NativeRun, second: &Session) -> Result<(), String> {
+    let deadline = Instant::now() + OPERATION_WAIT;
+    let mut first_cursor = None;
+    let mut second_cursor = None;
+    loop {
+        if Instant::now() >= deadline {
+            let _restored = run.command_absent();
+            return Err("typed_operation_failure:DeadlineExceeded".to_owned());
+        }
+
+        run.command_visible()?;
+        let visible = (|| {
+            let second_visible = try_observe_marker_state(
+                second,
+                &run.fixture,
+                &mut second_cursor,
+                true,
+                readiness_probe_wait(deadline),
+            )?;
+            let first_visible = try_observe_marker_state(
+                &run.session,
+                &run.fixture,
+                &mut first_cursor,
+                true,
+                readiness_probe_wait(deadline),
+            )?;
+            Ok((first_visible, second_visible))
+        })();
+        let restored = run.command_absent();
+        let (first_visible, second_visible) = match visible {
+            Ok(observed) => observed,
+            Err(error) => {
+                let _restored = restored;
+                return Err(error);
+            }
+        };
+        restored?;
+
+        let second_absent = try_observe_marker_state(
+            second,
+            &run.fixture,
+            &mut second_cursor,
+            false,
+            readiness_probe_wait(deadline),
+        )?;
+        let first_absent = try_observe_marker_state(
+            &run.session,
+            &run.fixture,
+            &mut first_cursor,
+            false,
+            readiness_probe_wait(deadline),
+        )?;
+        if first_visible && second_visible && first_absent && second_absent {
+            return Ok(());
+        }
+    }
+}
+
+#[cfg(windows)]
+fn readiness_probe_wait(deadline: Instant) -> Duration {
+    WGC_READY_PROBE.min(deadline.saturating_duration_since(Instant::now()))
+}
+
+#[cfg(windows)]
+fn try_observe_marker_state(
+    session: &Session,
+    fixture: &NativeFixture,
+    cursor: &mut Option<FrameStamp>,
+    expected_visible: bool,
+    wait: Duration,
+) -> Result<bool, String> {
+    let deadline = Instant::now() + wait;
+    loop {
+        let remaining = deadline.saturating_duration_since(Instant::now());
+        if remaining.is_zero() {
+            return Ok(false);
+        }
+        let request = cursor.map_or_else(FrameRequest::latest, FrameRequest::newer_than);
+        let frame = match session.acquire_frame(&request, &bounded(remaining)) {
+            Ok(frame) => frame,
+            Err(error) if error.status() == Status::DeadlineExceeded => return Ok(false),
+            Err(error) => {
+                return Err(format!("typed_operation_failure:{:?}", error.status()));
+            }
+        };
+        *cursor = Some(frame.stamp());
+        let shape = marker_shape(&frame, fixture).ok_or_else(|| "wrong_transform".to_owned())?;
+        let mapping = session
+            .map_frame(&frame, PixelFormat::Rgba8, &bounded(remaining))
+            .map_err(|_| "wrong_region".to_owned())?;
+        if marker_state(&mapping, shape) == Some(expected_visible) {
+            return Ok(true);
+        }
+    }
 }
 
 #[cfg(windows)]

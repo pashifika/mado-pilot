@@ -140,6 +140,11 @@ fn native_engine() -> mado_pilot::Result<Engine> {
 }
 
 #[cfg(target_os = "macos")]
+fn prepare_two_session_readiness(_run: &mut NativeRun, _second: &Session) -> Result<(), String> {
+    Ok(())
+}
+
+#[cfg(target_os = "macos")]
 fn permission_oracle(engine: &Engine) -> bool {
     use mado_pilot::{PermissionKind, PermissionState};
 
