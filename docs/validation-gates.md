@@ -271,15 +271,16 @@ including sampled fresh-session latency, while withholding single-run gate
 timing and cadence-dependent aggregate mapping, work, and publication ceilings.
 ADR 0057 rejects the historical final WGC and ScreenCaptureKit cohorts after
 independent review found unexercised engine-close and Windows cross-DPI topology
-contracts. The corrected `c363826` Apple cohort passed, but its same-source
-Windows process 1 terminated red because the topology oracle compared the
-invariant physical-desktop scale instead of the per-target effective-DPI scale;
-processes 2–5 were correctly not launched. Replacement source `f16591f` requires
-fresh same-semantic-source cohorts, a new cross-target aggregate, complete-diff
-applicability, privacy/security re-review, and protected checks. The native Rust
-query API remains implemented, but support is withheld. OCR predicates,
-callbacks/subscriptions, C/C++, automatic input, target activation, arbitrary
-application/template/ROI compatibility or timing, real-time guarantees,
+contracts. Replacement source `f16591f` corrected both semantics. Its fresh
+Windows cohort passed 5/5, including the different-monitor 144-to-120-DPI
+transition. Its fresh Apple cohort passed processes 1–4, then process 5
+terminated red at `retained_result_mapping` after ScreenCaptureKit suspended the
+newly opened stream. Fifty focused runs and one immediate full-load diagnostic
+passed without reproducing the suspension, but neither result replaces the
+terminal-red qualification process. The native Rust query API remains
+implemented, but support is withheld.
+OCR predicates, callbacks/subscriptions, C/C++, automatic input, target activation,
+arbitrary application/template/ROI compatibility or timing, real-time guarantees,
 packaging, and release remain unavailable.
 Any future false skip or fixture/report/policy drift keeps the native boundary
 withheld until a new additive fixture set, full both-target

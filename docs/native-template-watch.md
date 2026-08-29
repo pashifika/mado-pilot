@@ -2,15 +2,15 @@
 
 MadoPilot can wait for stable template presence on maintained Windows Graphics Capture or ScreenCaptureKit sessions through the Rust facade. The caller starts one bounded query and receives one immutable terminal outcome; no caller frame-polling loop, target activation, input injection, host callback, or permission prompt is involved.
 
-This page documents an implemented but not yet support-qualified native boundary. Independent review rejected the historical two-host evidence; [ADR 0057](adr/0057-native-template-watch-rust-support.md) withholds promotion until corrected Windows and Apple Silicon evidence and aggregate review are complete.
+This page documents an implemented but not support-qualified native boundary. Independent review rejected the historical two-host evidence; replacement source `f16591f` passed the corrected Windows matrix but terminated red in Apple process 5, so [ADR 0057](adr/0057-native-template-watch-rust-support.md) continues to withhold promotion.
 
 ## Current boundary
 
 | Surface | State |
 |---|---|
 | Rust `Session::start_template_watch` over replay/OpenCV | Supported and budget-qualified |
-| Rust `Session::start_template_watch` over Windows WGC window/display sessions | Implemented; support withheld pending the corrected Windows final cohort |
-| Rust `Session::start_template_watch` over macOS ScreenCaptureKit window/display sessions | Implemented; corrected Apple candidate passed, but cross-target promotion remains pending |
+| Rust `Session::start_template_watch` over Windows WGC window/display sessions | Implemented; corrected `f16591f` final cohort passed 5/5, but cross-target support remains withheld |
+| Rust `Session::start_template_watch` over macOS ScreenCaptureKit window/display sessions | Implemented; `f16591f` final process 5 terminated red after a ScreenCaptureKit stream suspension |
 | Non-blocking `TemplateQuery::poll`, blocking `wait`, explicit `cancel`, and immutable terminal results | Implemented; native support follows the underlying session qualification |
 | OCR predicates or wait-for-text | Not implemented |
 | Watcher callbacks or subscriptions | Not implemented |
@@ -19,7 +19,7 @@ This page documents an implemented but not yet support-qualified native boundary
 | Tokio/futures integration or real-time guarantees | Not implemented |
 | Packaged libraries, crates.io publication, static artifacts, installers, tags, or a `v0.4.0` release | Not available |
 
-The native matrices use repository-owned fixtures and a fixed marker to prove source identity, state transitions, geometry resets, deadlines, cancellation, target loss, ownership, cleanup, and finite resource behavior. The corrected Apple candidate passed, but the historical two-target matrices were rejected and the corrected Windows cohort remains pending. These fixtures are qualification apparatus, not a compatibility claim for arbitrary applications or caller content.
+The native matrices use repository-owned fixtures and a fixed marker to prove source identity, state transitions, geometry resets, deadlines, cancellation, target loss, ownership, cleanup, and finite resource behavior. The corrected Windows cohort passed, while the same-source Apple cohort terminated red in process 5. These fixtures are qualification apparatus, not a compatibility claim for arbitrary applications or caller content.
 
 ## Prerequisites
 
@@ -77,7 +77,7 @@ Other terminal outcomes are explicit: `Cancelled`, `DeadlineExceeded`, `SessionC
 
 The production watcher uses fixed finite engine/session/query limits, two engine-wide analysis slots, one latest pending frame per query, a bounded shared mapping cache, and a 30-second eligible-queue residence bound. Capture publication never waits for OpenCV matching. Superseded, coalesced, deferred, rejected, expired, completed, and failed work remains observable through query results or bounded diagnostics.
 
-[ADR 0053](adr/0053-native-template-watch-budgets.md) fixes independent Windows and Apple Silicon regression ceilings. The historical five-process final cohorts used the identical 24-workload matrix, but independent review found unexercised lifecycle and Windows topology contracts. A corrected five-process Apple cohort passed at `c363826`; its same-source Windows process 1 terminated red because the topology oracle compared Windows' invariant physical-desktop scale instead of per-target effective-DPI scale. Replacement source `f16591f` therefore requires fresh both-target cohorts. Correctness, source authority, lifecycle, ownership, cleanup, and privacy fail qualification regardless of latency.
+[ADR 0053](adr/0053-native-template-watch-budgets.md) fixes independent Windows and Apple Silicon regression ceilings. Replacement source `f16591f` corrected the engine-close and Windows cross-DPI semantics rejected by independent review. Its Windows cohort passed five fresh processes. Its Apple cohort passed processes 1–4, then process 5 terminated red at `retained_result_mapping` after ScreenCaptureKit suspended the newly opened stream. Fifty focused runs and one immediate full-load diagnostic passed without reproducing the suspension, but qualification permits no retry or replacement. Correctness, source authority, lifecycle, ownership, cleanup, and privacy fail qualification regardless of latency.
 
 These numbers are repository-fixture regression budgets, not service-level objectives. Numeric timing remains deliberately unavailable for the eight one-run gates and for cadence-dependent aggregate mapping, work, or publication rates. No cross-target limit, automatic retry, dynamic capacity tuning, or real-time guarantee is implied.
 

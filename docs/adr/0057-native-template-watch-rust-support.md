@@ -14,12 +14,13 @@ ADR 0053 fixed independent Apple Silicon and Windows budgets from exact-source p
 Independent review subsequently invalidated that promotion. The executed cohorts
 did not prove a live query's `SchedulerClosed` outcome after engine destruction,
 and the Windows topology row remained on one monitor instead of crossing the
-approved DPI boundary. A corrected Apple cohort passed 5/5 at `c363826`, but its
-same-source Windows process 1 terminated red because the qualification oracle
-compared Windows' invariant physical-desktop scale instead of the per-target
-effective-DPI scale. Processes 2–5 were correctly not launched. The rejected
-source cannot be relabeled; replacement source `f16591f` requires fresh
-both-target cohorts and a new cross-target aggregate.
+approved DPI boundary. Replacement source `f16591f` corrected both semantics.
+Its fresh Windows cohort passed 5/5, including the different-monitor
+144-to-120-DPI transition. Its fresh Apple cohort passed processes 1–4, then
+process 5 terminated red during `retained_result_mapping` after ScreenCaptureKit
+suspended the newly opened stream. Fifty focused runs and one immediate
+full-load diagnostic did not reproduce the suspension, but the failed
+qualification process cannot be replaced or relabeled.
 
 ## Decision
 

@@ -1,6 +1,6 @@
 # Phase 4 native template-watch qualification
 
-This is a historical rejected qualification record. It preserves the non-sensitive measurements and the reason [ADR 0057](../adr/0057-native-template-watch-rust-support.md) now withholds native watcher support; raw process streams and diagnostic artifacts remain in the change evidence store.
+This is a historical and current rejected qualification record. It preserves non-sensitive measurements and the reasons [ADR 0057](../adr/0057-native-template-watch-rust-support.md) withholds native watcher support; raw process streams and diagnostic artifacts remain in the change evidence store.
 
 ## Identity and applicability
 
@@ -8,9 +8,28 @@ The Apple and Windows cohorts executed from source `367b32473eb9e053165380ad9c48
 
 Independent review later found that neither cohort exercised a live query's `SchedulerClosed` outcome after engine destruction. The Windows topology row also selected the fixture's current monitor and did not cross the approved DPI boundary. The former post-cohort applicability proof cannot repair missing executed semantics, so the `367b324` results remain revision-bound diagnostics.
 
-A corrected Apple cohort passed 5/5 at `c3638264589c24c22ed1d30bfbb50714f28734f5`. Its same-source Windows process 1 completed all 24 workloads but terminated red at `semantic_oracle_failed:window_topology_scale`; processes 2–5 were correctly not launched. Source inspection found that the gate compared Windows' invariant physical-desktop scale instead of the per-target effective-DPI scale. Native support remains withheld while replacement source `f16591f` requires fresh both-target cohorts, a new cross-target aggregate, complete-diff applicability, privacy/security re-review, and protected checks.
+Replacement source `f16591f` corrected the Windows scale oracle and retained the engine-close semantics. Its fresh Windows cohort passed 5/5 and 120/120 rows, including the different-monitor 144-to-120-DPI transition. Its fresh Apple cohort passed processes 1–4 and serialized 96 green rows, then process 5 terminated red during the `retained_result_mapping` warmup with `producer_stalled` after ScreenCaptureKit suspended the newly opened stream. Fifty focused runs and one immediate full-load diagnostic did not reproduce the suspension, but neither result replaces the terminal-red qualification process. Native support remains withheld.
 
 The revision-bound precursor hashes and measurements in both profile files remain attached to their actual source. Final executable hashes in this record do not replace those frozen historical fields.
+
+## Replacement-source outcome
+
+| Target | Approved host | Executable SHA-256 | Fixture SHA-256 | Result |
+|---|---|---|---|---|
+| `aarch64-apple-darwin` | Apple M1 Pro, macOS 26.6.2 build 25G83, SDK 26.5, Rust 1.97.1/LLVM 22.1.6 | `5cb47e861a4b8eca2315bdb1238003be5385956095197a86e04965ea40a7e793` | `4591eb891a93e133be7f9b7f5d55007618809cc72ee99e198ec56fe92a94fdfe` | Processes 1–4 green; process 5 terminal red at `retained_result_mapping`; rejected |
+| `x86_64-pc-windows-msvc` | Core i7-12700KF, Windows 11 Pro 25H2 build 26200.9168, Rust 1.97.1/MSVC 19.44.35228 | `b339cb820701e3de66c5a670a422a8314bf55af8ab8e291193df02d5adcbb759` | `af2e4e86b0a115471490f2f5fa7c1f55c1a8572945b68097afb1b0f4330f69fc` | 5/5 processes and 120/120 rows green; retained pending cross-target decision |
+
+The Apple process 1–4 maximum retained ratios were 0.635668 latency,
+0.320064 live Rust heap, and 0.362330 target-native RSS. The Windows maximum
+ratios were 0.873045 latency, 0.799975 heap, and 0.798921 RSS. Every serialized
+row passed its correctness and target-specific budget, and backend accounting
+conserved with no active work. The Apple process 5 failure occurred before
+report serialization, so no missing measurements are inferred.
+
+The qualification protocol retained five sequential Apple process launches and
+five sequential Windows processes with zero retry, exclusion, filtering,
+reorder, extra priming, overlap, sample replacement, or process replacement.
+The Apple terminal red prevents a cross-target acceptance aggregate.
 
 ## Rejected historical cohorts
 
@@ -43,6 +62,8 @@ Rejected evidence remains revision-bound rather than being rewritten as success:
 - The Windows controller selected the fixture's current monitor under the approved left-of-primary topology, so its five topology rows did not prove a cross-display DPI transition.
 - Corrected Apple attempts that stopped on retained native-session ownership, confirmed user input, or a real-clock transient race remain rejected; the fresh `c363826` cohort started only after those causes were corrected.
 - The corrected `c363826` Windows final attempt proved the required different-monitor 144-to-120-DPI apparatus, then stopped at `semantic_oracle_failed:window_topology_scale`. The gate compared the invariant physical-desktop scale instead of the per-target effective-DPI scale; its first process is retained as terminal-red evidence and processes 2–5 were not launched.
+- The `f16591f` Windows replacement cohort passed all five fresh processes and the corrected per-target scale oracle without reusing its disposable focused diagnostic.
+- The `f16591f` Apple replacement cohort passed processes 1–4, then process 5 stopped at `producer_stalled` after a ScreenCaptureKit suspension. Post-failure diagnostics remain non-qualification evidence and do not replace that process.
 
 ## Privacy and withheld claims
 
