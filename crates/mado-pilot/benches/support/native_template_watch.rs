@@ -1363,6 +1363,9 @@ fn retained_result_mapping(cohort: &Rc<RefCell<Cohort>>) -> Sample {
             .map_err(|_| "cleanup_failed".to_owned())?;
         drop(query);
         drop(terminal);
+        // A closed session still owns its native session allocation until dropped.
+        // The retained result and mapping, not that owner, must survive teardown.
+        drop(run.session);
         drop(run.engine);
         let retained =
             mapping.stamp() == retained_stamp && mapping.bytes().starts_with(&retained_prefix);
