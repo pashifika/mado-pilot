@@ -6,9 +6,10 @@ MadoPilot discovers windows and displays, captures frame streams, maps coordinat
 spaces, matches templates, performs one-shot OCR through an explicit backend,
 the accepted CPU profiles, or an explicit initialization-time provider policy,
 waits for stable template presence through a bounded Rust query over replay or
-qualified native sessions, and injects input through explicit platform
-capabilities while reporting structured outcomes. OCR watchers remain future
-work. The runtime owns no GUI, tray, overlay, editor, updater, workflow catalog,
+implemented native sessions whose support qualification remains pending, and
+injects input through explicit platform capabilities while reporting structured
+outcomes. OCR watchers remain future work. The runtime owns no GUI, tray,
+overlay, editor, updater, workflow catalog,
 general workflow/cron scheduler, or scripting language.
 
 ## Status: deterministic, native, OCR, and Rust watcher workflows
