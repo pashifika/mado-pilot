@@ -355,7 +355,7 @@ fn next_monitor_origin(
 ) -> Option<(i32, i32)> {
     origins.sort_unstable();
     origins.dedup();
-    if !origins.iter().any(|origin| *origin == current) {
+    if !origins.contains(&current) {
         return None;
     }
     origins.into_iter().find(|origin| *origin != current)
@@ -492,6 +492,16 @@ fn resize_geometry_matches(before: &Frame, after: &Frame) -> bool {
 }
 
 #[cfg(windows)]
+fn target_scale_changed(
+    before: &mado_pilot::TargetPlacement,
+    after: &mado_pilot::TargetPlacement,
+) -> bool {
+    // Windows virtual-desktop coordinates are physical, so every placement's
+    // desktop scale is 1.0. The target scale carries the monitor's effective DPI.
+    before.scale() != after.scale()
+}
+
+#[cfg(windows)]
 fn topology_geometry_matches(before: &Frame, after: &Frame) -> bool {
     let Some(before_placement) = before.transform().target() else {
         return false;
@@ -499,7 +509,7 @@ fn topology_geometry_matches(before: &Frame, after: &Frame) -> bool {
     let Some(after_placement) = after.transform().target() else {
         return false;
     };
-    before_placement.desktop_scale() != after_placement.desktop_scale()
+    target_scale_changed(&before_placement, &after_placement)
 }
 
 #[cfg(windows)]
@@ -570,6 +580,25 @@ fn peak_resident_bytes() -> Option<u64> {
 
 #[cfg(all(test, windows))]
 mod tests {
+
+    #[test]
+    fn topology_uses_per_target_scale_on_the_physical_windows_desktop() {
+        let placement_with_target_scale = |scale| {
+            mado_pilot::TargetPlacement::new(
+                (0.0, 0.0),
+                (240.0, 160.0),
+                mado_pilot::Scale::new(scale, scale).expect("target scale"),
+            )
+            .expect("placement")
+            .with_desktop_scale(mado_pilot::Scale::new(1.0, 1.0).expect("desktop scale"))
+        };
+        let before = placement_with_target_scale(1.5);
+        let after = placement_with_target_scale(1.25);
+
+        assert_eq!(before.desktop_scale(), after.desktop_scale());
+        assert!(super::target_scale_changed(&before, &after));
+        assert!(!super::target_scale_changed(&before, &before));
+    }
 
     #[test]
     fn next_monitor_origin_never_selects_the_current_display() {
