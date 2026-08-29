@@ -239,14 +239,39 @@ jobs:
           powershell.exe -NoProfile -Command \
             "Expand-Archive -LiteralPath '$(cygpath -w "${runtime_archive}")' -DestinationPath '$(cygpath -w "${root}")' -Force"
 
+          download_verified_model() {
+            local destination="$1"
+            local expected_sha256="$2"
+            shift 2
+            local candidate
+            local candidate_path="${destination}.download"
+            for candidate in "$@"; do
+              echo "Downloading reviewed model from ${candidate}"
+              if curl --fail --location --silent --show-error \
+                --connect-timeout 10 --max-time 120 \
+                --output "${candidate_path}" "${candidate}" \
+                && printf '%s  %s\n' "${expected_sha256}" "${candidate_path}" \
+                  | sha256sum --check -
+              then
+                mv "${candidate_path}" "${destination}"
+                return 0
+              fi
+              echo "::warning::model source failed download or exact SHA-256 verification"
+            done
+            echo "::error::no allowlisted source supplied the reviewed model bytes"
+            return 1
+          }
+
           detector="${profile_root}/ch_PP-OCRv4_det_mobile.onnx"
           recognizer="${profile_root}/PP-OCRv6_rec_small.onnx"
-          curl --fail --location --silent --show-error --output "${detector}" \
+          download_verified_model "${detector}" "${G004_DETECTOR_SHA256}" \
+            "https://huggingface.co/SWHL/RapidOCR/resolve/1cfba2e90fc938db55889873735088de210cc173/PP-OCRv4/ch_PP-OCRv4_det_infer.onnx" \
+            "https://hf-mirror.com/SWHL/RapidOCR/resolve/1cfba2e90fc938db55889873735088de210cc173/PP-OCRv4/ch_PP-OCRv4_det_infer.onnx" \
             "https://www.modelscope.cn/models/RapidAI/RapidOCR/resolve/v3.9.2/onnx/PP-OCRv4/det/ch_PP-OCRv4_det_mobile.onnx"
-          curl --fail --location --silent --show-error --output "${recognizer}" \
+          download_verified_model "${recognizer}" "${G004_RECOGNIZER_SHA256}" \
+            "https://huggingface.co/DjB314/RapidOCR/resolve/04e88d0483f0bfcdd0f29429594244c10bfc2867/v3.9.2/onnx/PP-OCRv6/rec/PP-OCRv6_rec_small.onnx" \
+            "https://hf-mirror.com/DjB314/RapidOCR/resolve/04e88d0483f0bfcdd0f29429594244c10bfc2867/v3.9.2/onnx/PP-OCRv6/rec/PP-OCRv6_rec_small.onnx" \
             "https://www.modelscope.cn/models/RapidAI/RapidOCR/resolve/v3.9.2/onnx/PP-OCRv6/rec/PP-OCRv6_rec_small.onnx"
-          echo "${G004_DETECTOR_SHA256}  ${detector}" | sha256sum --check -
-          echo "${G004_RECOGNIZER_SHA256}  ${recognizer}" | sha256sum --check -
 
           runtime="${root}/onnxruntime-win-x64-${ONNXRUNTIME_VERSION}/lib/onnxruntime.dll"
           [[ -f "${runtime}" ]]
@@ -456,14 +481,39 @@ jobs:
           echo "${ONNXRUNTIME_OSX_ARM64_SHA256}  ${runtime_archive}" | shasum --algorithm 256 --check
           tar -xzf "${runtime_archive}" -C "${root}"
 
+          download_verified_model() {
+            local destination="$1"
+            local expected_sha256="$2"
+            shift 2
+            local candidate
+            local candidate_path="${destination}.download"
+            for candidate in "$@"; do
+              echo "Downloading reviewed model from ${candidate}"
+              if curl --fail --location --silent --show-error \
+                --connect-timeout 10 --max-time 120 \
+                --output "${candidate_path}" "${candidate}" \
+                && printf '%s  %s\n' "${expected_sha256}" "${candidate_path}" \
+                  | shasum --algorithm 256 --check
+              then
+                mv "${candidate_path}" "${destination}"
+                return 0
+              fi
+              echo "::warning::model source failed download or exact SHA-256 verification"
+            done
+            echo "::error::no allowlisted source supplied the reviewed model bytes"
+            return 1
+          }
+
           detector="${profile_root}/ch_PP-OCRv4_det_mobile.onnx"
           recognizer="${profile_root}/PP-OCRv6_rec_small.onnx"
-          curl --fail --location --silent --show-error --output "${detector}" \
+          download_verified_model "${detector}" "${G004_DETECTOR_SHA256}" \
+            "https://huggingface.co/SWHL/RapidOCR/resolve/1cfba2e90fc938db55889873735088de210cc173/PP-OCRv4/ch_PP-OCRv4_det_infer.onnx" \
+            "https://hf-mirror.com/SWHL/RapidOCR/resolve/1cfba2e90fc938db55889873735088de210cc173/PP-OCRv4/ch_PP-OCRv4_det_infer.onnx" \
             "https://www.modelscope.cn/models/RapidAI/RapidOCR/resolve/v3.9.2/onnx/PP-OCRv4/det/ch_PP-OCRv4_det_mobile.onnx"
-          curl --fail --location --silent --show-error --output "${recognizer}" \
+          download_verified_model "${recognizer}" "${G004_RECOGNIZER_SHA256}" \
+            "https://huggingface.co/DjB314/RapidOCR/resolve/04e88d0483f0bfcdd0f29429594244c10bfc2867/v3.9.2/onnx/PP-OCRv6/rec/PP-OCRv6_rec_small.onnx" \
+            "https://hf-mirror.com/DjB314/RapidOCR/resolve/04e88d0483f0bfcdd0f29429594244c10bfc2867/v3.9.2/onnx/PP-OCRv6/rec/PP-OCRv6_rec_small.onnx" \
             "https://www.modelscope.cn/models/RapidAI/RapidOCR/resolve/v3.9.2/onnx/PP-OCRv6/rec/PP-OCRv6_rec_small.onnx"
-          echo "${G004_DETECTOR_SHA256}  ${detector}" | shasum --algorithm 256 --check
-          echo "${G004_RECOGNIZER_SHA256}  ${recognizer}" | shasum --algorithm 256 --check
 
           runtime="${root}/onnxruntime-osx-arm64-${ONNXRUNTIME_VERSION}/lib/libonnxruntime.1.29.0.dylib"
           [[ -f "${runtime}" ]]
