@@ -1517,18 +1517,15 @@ fn eligible_pending_frame_expires_while_query_analysis_slot_is_full() {
         progress.pending_count() == 1 && progress.in_flight_count() == 1
     });
     clock.advance(Duration::from_secs(31));
-    std::thread::sleep(Duration::from_millis(50));
-    let expired_while_blocked = query.poll();
+    let expired_while_blocked = query.wait(&wait_context());
 
     gate.release();
     assert!(gate.wait_until_completed(Duration::from_secs(2)));
+    let expired_while_blocked =
+        expired_while_blocked.expect("eligible pending frame expired while the slot remained full");
     assert!(matches!(
-        expired_while_blocked,
-        TemplateQueryOutcome::Terminal(outcome)
-            if matches!(
-                outcome.as_ref(),
-                TemplateTerminalOutcome::Overloaded(TemplateOverload::QueueExpired)
-            )
+        expired_while_blocked.as_ref(),
+        TemplateTerminalOutcome::Overloaded(TemplateOverload::QueueExpired)
     ));
 }
 
