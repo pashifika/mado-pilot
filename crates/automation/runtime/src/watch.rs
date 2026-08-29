@@ -2446,6 +2446,7 @@ impl WatchThreadOwner {
 
 impl Drop for WatchThreadOwner {
     fn drop(&mut self) {
+        let current = thread::current().id();
         let state = self
             .state
             .get_mut()
@@ -2454,12 +2455,18 @@ impl Drop for WatchThreadOwner {
         let workers = std::mem::take(&mut state.workers);
         let supervisor = state.supervisor.take();
         for acquisition in acquisitions {
-            let _joined = acquisition.handle.join();
+            if acquisition.handle.thread().id() != current {
+                let _joined = acquisition.handle.join();
+            }
         }
         for worker in workers {
-            let _joined = worker.join();
+            if worker.thread().id() != current {
+                let _joined = worker.join();
+            }
         }
-        if let Some(supervisor) = supervisor {
+        if let Some(supervisor) = supervisor
+            && supervisor.thread().id() != current
+        {
             let _joined = supervisor.join();
         }
     }
@@ -3293,5 +3300,25 @@ mod tests {
 
         owner.join_acquisitions(7);
         assert!(lock(&owner.state).acquisitions.is_empty());
+    }
+
+    #[test]
+    fn owned_thread_drop_detaches_its_current_handle() {
+        let (send_owner, receive_owner) = mpsc::sync_channel(0);
+        let (send_dropped, receive_dropped) = mpsc::sync_channel(0);
+        let handle = thread::spawn(move || {
+            let owner: WatchThreadOwner = receive_owner.recv().expect("received thread owner");
+            drop(owner);
+            send_dropped.send(()).expect("reported owner drop");
+        });
+        let owner = WatchThreadOwner::default();
+        lock(&owner.state).workers.push(handle);
+
+        send_owner
+            .send(owner)
+            .expect("sent owner to managed thread");
+        receive_dropped
+            .recv_timeout(Duration::from_secs(2))
+            .expect("managed thread detached its own handle during owner drop");
     }
 }
