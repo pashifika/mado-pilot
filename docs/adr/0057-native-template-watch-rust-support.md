@@ -14,10 +14,12 @@ ADR 0053 fixed independent Apple Silicon and Windows budgets from exact-source p
 Independent review subsequently invalidated that promotion. The executed cohorts
 did not prove a live query's `SchedulerClosed` outcome after engine destruction,
 and the Windows topology row remained on one monitor instead of crossing the
-approved DPI boundary. A corrected Apple cohort passed 5/5 at `c363826`, but the
-same-source Windows cohort and a new cross-target aggregate remain incomplete.
-The former acceptance below is therefore withdrawn rather than relabeled onto
-the rejected measurements.
+approved DPI boundary. A corrected Apple cohort passed 5/5 at `c363826`, but its
+same-source Windows process 1 terminated red because the qualification oracle
+compared Windows' invariant physical-desktop scale instead of the per-target
+effective-DPI scale. Processes 2–5 were correctly not launched. The rejected
+source cannot be relabeled; replacement source `f16591f` requires fresh
+both-target cohorts and a new cross-target aggregate.
 
 ## Decision
 

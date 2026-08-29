@@ -96,10 +96,13 @@ profiles, the qualified Windows 11 25H2 floor including its controlled native
 unsupported path, and the repaired Windows 1280×720 and mixed-DPI dual-4K
 production profiles. Independent review rejected the historical two-host native
 Rust watcher matrix because its engine-close and Windows cross-DPI topology
-oracles were incomplete. A corrected Apple matrix passed at `c363826`; corrected
-Windows evidence and cross-target review remain pending, so native watcher
-support is withheld. Historical profiles and hosted CI never substitute for
-interactive native rows.
+oracles were incomplete. A corrected Apple matrix passed at `c363826`, but its
+same-source Windows attempt was terminal red because the topology gate compared
+Windows' invariant physical-desktop scale instead of the per-target effective-DPI
+scale. That source remains rejected; replacement source `f16591f` requires fresh
+both-target evidence and cross-target review, so native watcher support is
+withheld. Historical profiles and hosted CI never substitute for interactive
+native rows.
 The dual capture profile retains 600 stationary samples per display and 300
 moving-seam frame pairs with per-frame callback correlation. Windows
 final-source Phase 1 and repository verification run on the exact exit candidate

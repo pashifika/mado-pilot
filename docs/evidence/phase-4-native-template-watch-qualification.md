@@ -8,7 +8,7 @@ The Apple and Windows cohorts executed from source `367b32473eb9e053165380ad9c48
 
 Independent review later found that neither cohort exercised a live query's `SchedulerClosed` outcome after engine destruction. The Windows topology row also selected the fixture's current monitor and did not cross the approved DPI boundary. The former post-cohort applicability proof cannot repair missing executed semantics, so the `367b324` results remain revision-bound diagnostics.
 
-A corrected Apple cohort passed 5/5 at `c3638264589c24c22ed1d30bfbb50714f28734f5`. Native support remains withheld until a corrected same-semantic-source Windows cohort, a new cross-target aggregate, complete-diff applicability, privacy/security re-review, and protected checks pass.
+A corrected Apple cohort passed 5/5 at `c3638264589c24c22ed1d30bfbb50714f28734f5`. Its same-source Windows process 1 completed all 24 workloads but terminated red at `semantic_oracle_failed:window_topology_scale`; processes 2–5 were correctly not launched. Source inspection found that the gate compared Windows' invariant physical-desktop scale instead of the per-target effective-DPI scale. Native support remains withheld while replacement source `f16591f` requires fresh both-target cohorts, a new cross-target aggregate, complete-diff applicability, privacy/security re-review, and protected checks.
 
 The revision-bound precursor hashes and measurements in both profile files remain attached to their actual source. Final executable hashes in this record do not replace those frozen historical fields.
 
@@ -42,6 +42,7 @@ Rejected evidence remains revision-bound rather than being rewritten as success:
 - Independent review rejected both final cohorts because `session_engine_close` closed its only query before engine destruction.
 - The Windows controller selected the fixture's current monitor under the approved left-of-primary topology, so its five topology rows did not prove a cross-display DPI transition.
 - Corrected Apple attempts that stopped on retained native-session ownership, confirmed user input, or a real-clock transient race remain rejected; the fresh `c363826` cohort started only after those causes were corrected.
+- The corrected `c363826` Windows final attempt proved the required different-monitor 144-to-120-DPI apparatus, then stopped at `semantic_oracle_failed:window_topology_scale`. The gate compared the invariant physical-desktop scale instead of the per-target effective-DPI scale; its first process is retained as terminal-red evidence and processes 2–5 were not launched.
 
 ## Privacy and withheld claims
 

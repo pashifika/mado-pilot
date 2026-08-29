@@ -122,7 +122,7 @@ owns and where they genuinely differ.
 | Capture ownership | Windows Graphics Capture streams and Direct3D 11 resource lifetime (implemented) | ScreenCaptureKit streams and Core Video frame lifetime (implemented) |
 | Input ownership | System pointer/keyboard/text plus explicit exact-window `WindowMessage`: ordinary retained top-level windows are unknown-but-attemptable with target-queue evidence, while the dedicated fixture is supported with protocol acknowledgement (implemented in the platform package) | `CGEvent` system pointer/keyboard/text plus an explicitly selected owning-process `ProcessDirected` route. Final protocol-v11 candidate `dec43d7` passed the controlled profiles, and independent `single`, exact two-display non-mirrored `same-scale`, and `mixed-scale` matrices passed for all fourteen controlled pairs. Their release decision is 14 qualified, 0 rejected, and 0 unexecuted. No `WindowMessage` route exists |
 | Permission handling | Capture presents no permission UI; no permission probe exists; input compares target integrity and reports proven UIPI at route preflight | Screen Recording and event-post access reported separately without permission UI; `PermissionKind::InputControl` maps to the public `CGPreflightPostEventAccess` decision re-read before every irreversible event, regardless of the Privacy & Security pane label, while legacy Accessibility trust is only a separate focus input and paired qualification fact (implemented) |
-| Native Rust template watcher | Implemented through maintained WGC window/display sessions; support withheld pending the corrected same-semantic-source Windows cohort and cross-target aggregate because the historical topology row did not cross displays or DPI | Implemented through maintained ScreenCaptureKit window/display sessions; corrected Apple candidate `c363826` passed 5/5, but support remains withheld pending corrected Windows evidence and cross-target review |
+| Native Rust template watcher | Implemented through maintained WGC window/display sessions; corrected `c363826` process 1 terminated red because the topology oracle compared invariant physical-desktop scale instead of per-target effective-DPI scale, so replacement source `f16591f` requires fresh Windows and Apple cohorts | Implemented through maintained ScreenCaptureKit window/display sessions; corrected Apple candidate `c363826` passed 5/5 but cannot transfer to the replacement semantic source, so support remains withheld pending fresh both-target evidence and cross-target review |
 | Native verification host | Core i7-12700KF / RTX 4080 Windows 11 Pro 25H2 build 26200.9168, SDK 10.0.26100.0; `windows-2025` CI remains supporting server evidence | Apple Silicon macOS 26.5.2 (25F84), SDK 26.5 |
 | Deployment floor | Windows 11 25H2 build family 26200 on a currently serviced x64 desktop installation; earlier versions unsupported | macOS 26.5.2; older versions unsupported |
 | Candidate verification | Windows Phase 1 reruns plus repository and release-target checks pass on the exact exit candidate; ADRs 0026, 0028, 0031, and 0032 retain their separate Windows workload sources | Apple Silicon Phase 1 runs remain attributed to `d8336be` and apply by reviewed complete diff; repository and release-target checks pass on the exact exit candidate; ADRs 0024, 0025, 0029, and 0030 retain their separate macOS workload sources |
@@ -2589,8 +2589,10 @@ macOS ScreenCaptureKit Rust session boundary shown by
 `crates/mado-pilot/examples/native-template-watch.rs` is implemented but not
 support-qualified. Independent review rejected the historical final cohorts
 because their engine-close and Windows topology oracles were incomplete. A
-corrected Apple cohort passed at `c363826`; corrected Windows and cross-target
-qualification remain pending.
+corrected Apple cohort passed at `c363826`, but its same-source Windows process 1
+terminated red because the topology gate compared invariant physical-desktop
+scale instead of per-target effective-DPI scale. Replacement source `f16591f`
+requires fresh both-target cohorts and cross-target review.
 
 Source exhaustion refuses later query starts but lets an already acquired
 pending or in-flight final frame drain. Successfully drained work that leaves
