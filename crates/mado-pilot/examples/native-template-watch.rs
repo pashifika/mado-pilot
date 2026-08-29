@@ -110,17 +110,17 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     Ok(())
 }
 
+#[cfg(windows)]
 fn native_engine() -> Result<Engine, Box<dyn std::error::Error>> {
-    #[cfg(windows)]
-    {
-        return Ok(mado_pilot::windows_engine(NativeEngineRequest::new())?);
-    }
-    #[cfg(target_os = "macos")]
-    {
-        return Ok(mado_pilot::macos_engine(NativeEngineRequest::new())?);
-    }
-    #[cfg(not(any(windows, target_os = "macos")))]
-    {
-        Err("native template watching is supported only on Windows and macOS".into())
-    }
+    Ok(mado_pilot::windows_engine(NativeEngineRequest::new())?)
+}
+
+#[cfg(target_os = "macos")]
+fn native_engine() -> Result<Engine, Box<dyn std::error::Error>> {
+    Ok(mado_pilot::macos_engine(NativeEngineRequest::new())?)
+}
+
+#[cfg(not(any(windows, target_os = "macos")))]
+fn native_engine() -> Result<Engine, Box<dyn std::error::Error>> {
+    Err("native template watching is supported only on Windows and macOS".into())
 }
