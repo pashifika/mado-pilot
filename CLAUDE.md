@@ -4,7 +4,7 @@
 
 `docs/architecture.md` is the tracked architecture baseline and the source of truth for package boundaries, dependency directions, public naming, toolchain policy, scope, and implementation status. `docs/validation-gates.md` records the unresolved version-one decisions, and `CONTRIBUTING.md` defines the branch, pull request, and verification policy. Treat the rules in this file as the default project guidance.
 
-When implementation, configuration, packaging, or examples change an architectural decision, keep the relevant documentation synchronized or add a focused architecture decision record (ADR) from `docs/adr/0000-template.md`. The ignored `local_docs/` drafts are proposal material only and are not a repository source of truth; when present, `local_docs/mado-pilot-design-v2.md` supersedes `local_docs/mado-pilot-design.md`. Where a `local_docs/` draft and `docs/architecture.md` disagree about what exists today, `docs/architecture.md` wins.
+When implementation, configuration, packaging, or examples change an architectural decision, keep the relevant documentation synchronized or add a focused architecture decision record (ADR) from `docs/adr/0000-template.md`. The ignored `local_docs/` drafts are proposal material only and are not a repository source of truth; when present, `local_docs/mado-pilot-design-v3.md` is the current local design authority and identifies the decisions it supersedes in `local_docs/mado-pilot-design-v2.md` and `local_docs/mado-pilot-design.md`. Where a `local_docs/` draft and `docs/architecture.md` disagree about what exists today, `docs/architecture.md` wins.
 
 ## Product definition
 
