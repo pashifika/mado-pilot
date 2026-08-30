@@ -291,6 +291,14 @@ as deterministic causes on the exercised topology only; it neither replaces
 the terminal-red cohort nor establishes the failure-case effect of sample-queue
 draining. The comparison-only drain seam was removed, no speculative production
 repair was introduced, and support remains withheld.
+Exact-lifecycle diagnostic source `ba6b045` also completed five single-display
+controls followed by five two-display mixed-DPI rows in one authenticated
+session. All ten fresh producers delivered a complete frame, the expected
+detached-result footprint did not keep an old public session live, and every
+process restored its baseline. The schema retained only display count and
+whether backing scales differed. This bounded non-reproduction selected no
+repair, does not replace the terminal-red qualification process, and leaves the
+gate unresolved.
 OCR predicates, callbacks/subscriptions, C/C++, automatic input, target activation,
 arbitrary application/template/ROI compatibility or timing, real-time guarantees,
 packaging, and release remain unavailable.
