@@ -30,7 +30,7 @@ extern "C" {
 #endif
 
 /* The version of this internal surface. Rust asserts it at load. */
-#define MP_SHIM_ABI_VERSION 20u
+#define MP_SHIM_ABI_VERSION 21u
 
 /* The largest extent, budget, and default wait the shim will accept or apply. */
 #define MP_SHIM_MAX_PIXEL_EXTENT 32768u
@@ -269,10 +269,6 @@ typedef struct mp_shim_open_request {
     uint64_t testing_stop_delay_nanos;
     /* Zero in the product. See the MP_SHIM_RAISE_* test seams above. */
     uint32_t testing_raise_sites;
-#ifdef MP_SHIM_SCK_SUSPENSION_DIAGNOSTICS
-    /* Qualification-only close comparison policy. */
-    uint32_t diagnostic_close_policy;
-#endif
     bool shows_cursor;
     uint8_t reserved[3];
     /* Passed unchanged to both callbacks. Never dereferenced by the shim. */
@@ -308,8 +304,6 @@ typedef struct mp_shim_open_request {
 #define MP_SHIM_SCK_STATUS_KIND_COUNT 8u
 #define MP_SHIM_SCK_DIAGNOSTIC_TRANSITION_CAPACITY 16u
 typedef struct mp_shim_sck_diagnostics_probe mp_shim_sck_diagnostics_probe;
-#define MP_SHIM_SCK_DRAIN_UNCHANGED 0u
-#define MP_SHIM_SCK_DRAIN_SAMPLE_QUEUE 1u
 #define MP_SHIM_SCK_NATIVE_STREAM (1u << 0)
 #define MP_SHIM_SCK_NATIVE_CONFIGURATION (1u << 1)
 #define MP_SHIM_SCK_NATIVE_FILTER (1u << 2)
@@ -336,11 +330,11 @@ typedef struct mp_shim_sck_diagnostics_snapshot {
     uint32_t struct_size;
     uint32_t close_phase;
     uint32_t active_native_slots;
-    uint32_t drain_policy;
+    uint32_t reserved0;
     uint32_t transition_count;
     uint32_t transition_capacity;
     uint32_t transition_start;
-    uint32_t reserved;
+    uint32_t reserved1;
     uint64_t observed_total;
     uint64_t status_counts[MP_SHIM_SCK_STATUS_KIND_COUNT];
     mp_shim_sck_diagnostics_status_event first_status;
@@ -360,42 +354,18 @@ typedef struct mp_shim_sck_diagnostics_snapshot {
     uint64_t detached_leases;
     uint64_t native_objects;
     uint64_t detached_bytes;
-    uint64_t drain_request_generation;
-    uint64_t drain_completion_generation;
-    uint64_t drain_requested_nanos;
-    uint64_t drain_completed_nanos;
     uint64_t transition_overwrites;
     mp_shim_sck_diagnostics_status_event
         transitions[MP_SHIM_SCK_DIAGNOSTIC_TRANSITION_CAPACITY];
 } mp_shim_sck_diagnostics_snapshot;
 
-
-typedef struct mp_shim_sck_diagnostics_drain_test_report {
-    uint32_t struct_size;
-    uint32_t first_wait_status;
-    uint32_t second_wait_status;
-    uint32_t same_queue_status;
-    uint32_t same_queue_followup_status;
-    uint32_t callback_body_calls;
-    uint32_t final_enter_before_fence;
-    uint32_t final_enter_after_fence;
-    uint32_t callback_finished_before_drain;
-    uint32_t reserved;
-    uint64_t request_generation;
-    uint64_t completion_generation;
-    uint64_t callbacks_received;
-    uint64_t callbacks_admitted;
-    uint64_t callbacks_refused;
-    uint64_t callbacks_exited;
-    uint64_t same_queue_elapsed_nanos;
-} mp_shim_sck_diagnostics_drain_test_report;
 /* Reports the native sizes and load-bearing offsets of these private mirrors. */
 mp_shim_status mp_shim_sck_diagnostics_layout(
     uint32_t *out_event_size, uint32_t *out_snapshot_size,
     uint32_t *out_event_raw_value_offset, uint32_t *out_event_sequence_offset,
     uint32_t *out_event_monotonic_nanos_offset, uint32_t *out_status_counts_offset,
     uint32_t *out_first_status_offset, uint32_t *out_callbacks_received_offset,
-    uint32_t *out_drain_request_generation_offset, uint32_t *out_transitions_offset);
+    uint32_t *out_transitions_offset);
 
 /*
  * Feature-only native contract probe. It exercises the same status storage and
@@ -416,8 +386,6 @@ void mp_shim_sck_diagnostics_test_probe_release(
 mp_shim_status mp_shim_sck_diagnostics_test_callback_accounting(
     uint32_t raise_native_exception, uint32_t *out_callback_body_calls,
     mp_shim_sck_diagnostics_snapshot *out_snapshot);
-mp_shim_status mp_shim_sck_diagnostics_test_drain_gate(
-    mp_shim_sck_diagnostics_drain_test_report *out_report);
 #endif
 
 /* Returns MP_SHIM_ABI_VERSION as the linked shim was compiled with it. */
@@ -872,16 +840,6 @@ mp_shim_status mp_shim_session_disable_callbacks(mp_shim_session *session);
  * succeed.
  */
 mp_shim_status mp_shim_session_fence(mp_shim_session *session, uint64_t timeout_nanos);
-
-#ifdef MP_SHIM_SCK_SUSPENSION_DIAGNOSTICS
-/*
- * For drain_sample_queue sessions only, joins producer stop and the diagnostic
- * sample-queue sentinel without crossing the existing callback fence.
- * Timeout is resumable by a later call.
- */
-mp_shim_status mp_shim_session_prepare_close(mp_shim_session *session,
-                                             uint64_t timeout_nanos);
-#endif
 
 /*
  * Joins a pending start, removes the stream output, stops the producer, fences

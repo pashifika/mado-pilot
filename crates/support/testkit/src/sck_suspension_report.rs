@@ -8,11 +8,6 @@
 )]
 
 use serde::{Deserialize, Serialize};
-use std::fmt::Write as _;
-use std::fs::File;
-use std::io::{self, Read};
-
-use sha2::{Digest, Sha256};
 
 pub const SCHEMA_VERSION: u32 = 1;
 pub const STATUS_KIND_COUNT: usize = 8;
@@ -417,24 +412,6 @@ fn valid_event(event: StatusEvent, observed_total: u64) -> bool {
 
 fn is_hex(value: &str, length: usize) -> bool {
     value.len() == length && value.bytes().all(|byte| byte.is_ascii_hexdigit())
-}
-
-pub fn sha256_file(path: &std::path::Path) -> io::Result<String> {
-    let mut file = File::open(path)?;
-    let mut digest = Sha256::new();
-    let mut buffer = [0_u8; 64 * 1024];
-    loop {
-        let read = file.read(&mut buffer)?;
-        if read == 0 {
-            break;
-        }
-        digest.update(&buffer[..read]);
-    }
-    let mut encoded = String::with_capacity(64);
-    for byte in digest.finalize() {
-        write!(&mut encoded, "{byte:02x}").expect("writing to a String cannot fail");
-    }
-    Ok(encoded)
 }
 
 #[cfg(test)]

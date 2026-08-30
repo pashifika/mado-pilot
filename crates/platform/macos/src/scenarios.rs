@@ -75,33 +75,6 @@ fn serialized() -> MutexGuard<'static, ()> {
     GATE.lock().unwrap_or_else(|poisoned| poisoned.into_inner())
 }
 
-#[cfg(feature = "sck-suspension-diagnostics")]
-struct DiagnosticDrainPolicyReset;
-
-#[cfg(feature = "sck-suspension-diagnostics")]
-impl DiagnosticDrainPolicyReset {
-    fn install() -> Self {
-        assert_eq!(
-            crate::sck_suspension_diagnostics::sample_queue_drain_policy(),
-            crate::sck_suspension_diagnostics::SampleQueueDrainPolicy::Unchanged as u32,
-            "serialized scenarios must begin with the default close policy"
-        );
-        crate::sck_suspension_diagnostics::set_sample_queue_drain_policy(
-            crate::sck_suspension_diagnostics::SampleQueueDrainPolicy::DrainSampleQueue,
-        );
-        Self
-    }
-}
-
-#[cfg(feature = "sck-suspension-diagnostics")]
-impl Drop for DiagnosticDrainPolicyReset {
-    fn drop(&mut self) {
-        crate::sck_suspension_diagnostics::set_sample_queue_drain_policy(
-            crate::sck_suspension_diagnostics::SampleQueueDrainPolicy::Unchanged,
-        );
-    }
-}
-
 /// One authorized target, with everything a session open needs.
 struct Harness {
     issuer: Arc<IdentityIssuer>,
@@ -286,9 +259,6 @@ impl Harness {
                 testing_start_delay: start_delay,
                 testing_stop_delay: stop_delay,
                 testing_raise_sites: failure_sites,
-                #[cfg(feature = "sck-suspension-diagnostics")]
-                diagnostic_close_policy:
-                    crate::sck_suspension_diagnostics::SampleQueueDrainPolicy::Unchanged as u32,
             },
             std::ptr::null_mut(),
             ignore_frame,
@@ -1160,47 +1130,6 @@ fn diagnostic_snapshot_is_stable_except_for_owned_frame_release() {
         diagnostic_resources_settle_to(resource_baseline),
         "diagnostic resource counters return to their exact process baseline"
     );
-}
-
-#[cfg(feature = "sck-suspension-diagnostics")]
-#[test]
-fn diagnostic_drain_policy_reports_one_completed_sample_queue_sentinel() {
-    let _serial = serialized();
-    let Some(harness) = Harness::acquire_producing("diagnostic sample-queue drain") else {
-        return;
-    };
-    let _policy_reset = DiagnosticDrainPolicyReset::install();
-    let session = harness.open(0).expect("open");
-    let _frame = next_frame(&session, FrameRequest::latest()).expect("frame");
-
-    close(&session).expect("close with sample-queue drain");
-    let snapshot = session
-        .sck_diagnostics_snapshot()
-        .expect("closed diagnostic snapshot");
-    assert_eq!(
-        snapshot.drain_policy,
-        crate::sck_suspension_diagnostics::SampleQueueDrainPolicy::DrainSampleQueue as u32
-    );
-    assert_eq!(snapshot.drain_request_generation, 1);
-    assert_eq!(snapshot.drain_completion_generation, 1);
-    assert_ne!(snapshot.drain_requested_nanos, 0);
-    assert!(
-        snapshot.stream_stop_completed_nanos <= snapshot.drain_requested_nanos,
-        "drain request must follow producer stop"
-    );
-    assert!(
-        snapshot.drain_requested_nanos <= snapshot.drain_completed_nanos,
-        "drain completion must follow its request"
-    );
-    assert!(
-        snapshot.drain_completed_nanos <= snapshot.callback_fence_completed_nanos,
-        "admission fence must remain later than queue drain"
-    );
-    assert!(
-        snapshot.callback_fence_completed_nanos <= snapshot.close_completed_nanos,
-        "close completion must remain later than its admission fence"
-    );
-    assert_eq!(snapshot.callbacks_received, snapshot.callbacks_exited);
 }
 
 #[test]

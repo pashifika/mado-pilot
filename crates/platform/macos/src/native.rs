@@ -645,8 +645,6 @@ impl NativeSession {
             testing_start_delay,
             testing_stop_delay,
             testing_raise_sites,
-            #[cfg(feature = "sck-suspension-diagnostics")]
-            diagnostic_close_policy: crate::sck_suspension_diagnostics::sample_queue_drain_policy(),
         };
         // Every exit from here to the `NativeSession` below drops `pending`, which
         // closes whatever was opened and reclaims the registration.

@@ -8,7 +8,6 @@
 //! payload crosses this seam.
 
 use std::fmt;
-use std::sync::atomic::{AtomicU32, Ordering};
 use std::sync::{Arc, LazyLock, Mutex, Weak};
 
 use mado_pilot_capture::CaptureSession;
@@ -20,23 +19,6 @@ use crate::shim::{
     SCK_STATUS_STARTED, SCK_STATUS_STOPPED, SCK_STATUS_SUSPENDED, SCK_STATUS_UNKNOWN,
 };
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-#[repr(u32)]
-pub enum SampleQueueDrainPolicy {
-    Unchanged = 0,
-    DrainSampleQueue = 1,
-}
-
-static SAMPLE_QUEUE_DRAIN_POLICY: AtomicU32 =
-    AtomicU32::new(SampleQueueDrainPolicy::Unchanged as u32);
-
-pub fn set_sample_queue_drain_policy(policy: SampleQueueDrainPolicy) {
-    SAMPLE_QUEUE_DRAIN_POLICY.store(policy as u32, Ordering::Release);
-}
-
-pub(crate) fn sample_queue_drain_policy() -> u32 {
-    SAMPLE_QUEUE_DRAIN_POLICY.load(Ordering::Acquire)
-}
 pub const STATUS_KIND_COUNT: usize = 8;
 pub const TRANSITION_CAPACITY: usize = 16;
 
@@ -96,7 +78,6 @@ impl StatusEvent {
 pub struct Snapshot {
     pub close_phase: u32,
     pub active_native_slots: u32,
-    pub drain_policy: u32,
     pub observed_total: u64,
     pub status_counts: [u64; STATUS_KIND_COUNT],
     pub first_status: Option<StatusEvent>,
@@ -116,10 +97,6 @@ pub struct Snapshot {
     pub detached_leases: u64,
     pub native_objects: u64,
     pub detached_bytes: u64,
-    pub drain_request_generation: u64,
-    pub drain_completion_generation: u64,
-    pub drain_requested_nanos: u64,
-    pub drain_completed_nanos: u64,
     pub transition_overwrites: u64,
     pub transition_count: usize,
     pub transitions: [Option<StatusEvent>; TRANSITION_CAPACITY],
@@ -145,7 +122,6 @@ impl Snapshot {
         Self {
             close_phase: snapshot.close_phase,
             active_native_slots: snapshot.active_native_slots,
-            drain_policy: snapshot.drain_policy,
             observed_total: snapshot.observed_total,
             status_counts: snapshot.status_counts,
             first_status: StatusEvent::from_native(snapshot.first_status),
@@ -165,10 +141,6 @@ impl Snapshot {
             detached_leases: snapshot.detached_leases,
             native_objects: snapshot.native_objects,
             detached_bytes: snapshot.detached_bytes,
-            drain_request_generation: snapshot.drain_request_generation,
-            drain_completion_generation: snapshot.drain_completion_generation,
-            drain_requested_nanos: snapshot.drain_requested_nanos,
-            drain_completed_nanos: snapshot.drain_completed_nanos,
             transition_overwrites: snapshot.transition_overwrites,
             transition_count,
             transitions,

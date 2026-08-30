@@ -143,7 +143,7 @@ fn production_shim_has_no_suspension_diagnostic_symbols() {
     );
     assert!(
         !symbols.contains("_mp_shim_session_prepare_close"),
-        "private diagnostic close ordering entered a production shim consumer"
+        "removed diagnostic close ordering entered a production shim consumer"
     );
 }
 
