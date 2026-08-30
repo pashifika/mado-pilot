@@ -1062,6 +1062,60 @@ fn a_frame_a_caller_still_holds_keeps_its_own_storage_after_close() {
 }
 
 #[cfg(feature = "sck-suspension-diagnostics")]
+fn expected_after_post_fence_progress(
+    before: &shim::SckDiagnosticsSnapshot,
+    after: &shim::SckDiagnosticsSnapshot,
+) -> shim::SckDiagnosticsSnapshot {
+    assert_eq!(
+        after.callbacks_admitted, before.callbacks_admitted,
+        "a successful fence admits no later callback"
+    );
+    let received = after
+        .callbacks_received
+        .checked_sub(before.callbacks_received)
+        .expect("received callbacks never move backwards");
+    let refused = after
+        .callbacks_refused
+        .checked_sub(before.callbacks_refused)
+        .expect("refused callbacks never move backwards");
+    let exited = after
+        .callbacks_exited
+        .checked_sub(before.callbacks_exited)
+        .expect("exited callbacks never move backwards");
+    assert_eq!(
+        received, refused,
+        "every callback first observed after the fence is refused"
+    );
+    assert_eq!(
+        received, exited,
+        "every callback first observed after the fence exits"
+    );
+    assert_eq!(after.callbacks_received, after.callbacks_exited);
+    assert_eq!(
+        after.callbacks_received,
+        after
+            .callbacks_admitted
+            .saturating_add(after.callbacks_refused)
+    );
+    assert!(
+        after.session_references <= before.session_references,
+        "post-fence native ownership may be released but not reacquired"
+    );
+    assert!(
+        after.native_objects <= before.native_objects,
+        "post-fence native objects may be released but not created"
+    );
+
+    let mut expected = *before;
+    expected.callbacks_received = after.callbacks_received;
+    expected.callbacks_refused = after.callbacks_refused;
+    expected.callbacks_exited = after.callbacks_exited;
+    expected.session_references = after.session_references;
+    expected.native_objects = after.native_objects;
+    expected
+}
+
+#[cfg(feature = "sck-suspension-diagnostics")]
 #[test]
 fn diagnostic_start_failure_preserves_the_last_live_session_snapshot() {
     let _serial = serialized();
@@ -1111,14 +1165,12 @@ fn diagnostic_snapshot_is_stable_except_for_owned_frame_release() {
         .expect("released-frame diagnostic snapshot");
     assert_eq!(released.detached_leases, 0);
     assert!(released.session_references < closed.session_references);
-    let mut expected = closed;
-    expected.session_references = released.session_references;
+    let mut expected = expected_after_post_fence_progress(&closed, &released);
     expected.detached_leases = released.detached_leases;
-    expected.native_objects = released.native_objects;
     expected.detached_bytes = released.detached_bytes;
     assert_eq!(
         released, expected,
-        "frame release may change only the allowlisted ownership observations"
+        "frame release and refused post-fence callbacks change only allowlisted observations"
     );
 
     drop(session);
@@ -1184,12 +1236,13 @@ fn a_cancelled_close_leaves_a_state_a_later_close_finishes() {
             closed.callbacks_admitted + closed.callbacks_refused
         );
         thread::sleep(Duration::from_millis(10));
+        let post_fence = session
+            .sck_diagnostics_snapshot()
+            .expect("post-fence diagnostic snapshot");
         assert_eq!(
-            session
-                .sck_diagnostics_snapshot()
-                .expect("post-fence diagnostic snapshot"),
-            closed,
-            "a successful fence makes the completed snapshot stable"
+            post_fence,
+            expected_after_post_fence_progress(&closed, &post_fence),
+            "late refusals and output release preserve the completed close snapshot"
         );
     }
 }

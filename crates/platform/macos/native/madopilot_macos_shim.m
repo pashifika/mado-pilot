@@ -1596,7 +1596,7 @@ struct mp_shim_session {
     uint64_t testing_start_delay_nanos;
     uint64_t testing_stop_delay_nanos;
 #ifdef MP_SHIM_SCK_SUSPENSION_DIAGNOSTICS
-    atomic_uint diagnostic_async_holds;
+    atomic_uint diagnostic_session_references;
     bool diagnostic_live_counted;
 #endif
 
@@ -1702,10 +1702,8 @@ static void mp_shim_sck_diagnostics_copy(struct mp_shim_session *session,
     mp_shim_sck_diagnostics_copy_fields(&session->sck_diagnostics, out);
 
     out->close_phase = MP_SHIM_CLOSE_PHASE_LOAD(session);
-    uint64_t references = atomic_load_explicit(&session->refs, memory_order_relaxed);
-    uint64_t async_holds =
-        atomic_load_explicit(&session->diagnostic_async_holds, memory_order_relaxed);
-    out->session_references = references > async_holds ? references - async_holds : 0;
+    out->session_references = atomic_load_explicit(
+        &session->diagnostic_session_references, memory_order_relaxed);
 
     pthread_mutex_lock(&session->native_mutex);
     pthread_mutex_lock(&session->pool_mutex);
@@ -1913,14 +1911,30 @@ static void mp_shim_session_abandon(struct mp_shim_session *session) {
     free(session);
 }
 
-static void mp_shim_session_retain(struct mp_shim_session *session) {
+static void mp_shim_session_retain_raw(struct mp_shim_session *session) {
     atomic_fetch_add(&session->refs, 1u);
 }
 
-static void mp_shim_session_unref(struct mp_shim_session *session) {
+static void mp_shim_session_unref_raw(struct mp_shim_session *session) {
     if (atomic_fetch_sub(&session->refs, 1u) == 1u) {
         mp_shim_session_abandon(session);
     }
+}
+
+static void mp_shim_session_retain(struct mp_shim_session *session) {
+#ifdef MP_SHIM_SCK_SUSPENSION_DIAGNOSTICS
+    atomic_fetch_add_explicit(&session->diagnostic_session_references, 1u,
+                              memory_order_relaxed);
+#endif
+    mp_shim_session_retain_raw(session);
+}
+
+static void mp_shim_session_unref(struct mp_shim_session *session) {
+#ifdef MP_SHIM_SCK_SUSPENSION_DIAGNOSTICS
+    atomic_fetch_sub_explicit(&session->diagnostic_session_references, 1u,
+                              memory_order_relaxed);
+#endif
+    mp_shim_session_unref_raw(session);
 }
 
 /*
@@ -1949,10 +1963,11 @@ static void mp_shim_session_unref(struct mp_shim_session *session) {
 - (instancetype)initWithSession:(struct mp_shim_session *)session {
     self = [super init];
     if (self != nil) {
-        mp_shim_session_retain(session);
-#ifdef MP_SHIM_SCK_SUSPENSION_DIAGNOSTICS
-        atomic_fetch_add_explicit(&session->diagnostic_async_holds, 1, memory_order_relaxed);
-#endif
+        /*
+         * Start/stop completion holds are apparatus, not structural ownership.
+         * Keep the allocation alive without changing the diagnostic reference.
+         */
+        mp_shim_session_retain_raw(session);
         _session = session;
     }
     return self;
@@ -1960,10 +1975,7 @@ static void mp_shim_session_unref(struct mp_shim_session *session) {
 
 - (void)dealloc {
     if (_session != NULL) {
-#ifdef MP_SHIM_SCK_SUSPENSION_DIAGNOSTICS
-        atomic_fetch_sub_explicit(&_session->diagnostic_async_holds, 1, memory_order_relaxed);
-#endif
-        mp_shim_session_unref(_session);
+        mp_shim_session_unref_raw(_session);
         _session = NULL;
     }
 }
@@ -3628,10 +3640,10 @@ mp_shim_status mp_shim_session_open(const mp_shim_open_request *request, mp_shim
     if (session == NULL) {
         return MP_SHIM_PLATFORM_FAILURE;
     }
-    /* The Rust handle's reference. Every other holder adds its own. */
+    /* The Rust handle's structural reference. Native structural owners add their own. */
     atomic_init(&session->refs, 1u);
 #ifdef MP_SHIM_SCK_SUSPENSION_DIAGNOSTICS
-    atomic_init(&session->diagnostic_async_holds, 0);
+    atomic_init(&session->diagnostic_session_references, 1u);
     session->diagnostic_live_counted = false;
 #endif
     atomic_init(&session->output_added, false);
@@ -4278,6 +4290,11 @@ mp_shim_status mp_shim_sck_diagnostics_test_callback_accounting(
         return MP_SHIM_PLATFORM_FAILURE;
     }
 
+    atomic_init(&session.refs, 1u);
+    atomic_init(&session.diagnostic_session_references, 1u);
+    /* Model one async start/stop hold, which is not structural ownership. */
+    mp_shim_session_retain_raw(&session);
+
     uint32_t callback_body_calls = 0;
     if (mp_shim_sck_diagnostics_callback_enter(&session)) {
         @try {
@@ -4302,6 +4319,9 @@ mp_shim_status mp_shim_sck_diagnostics_test_callback_accounting(
     }
     memset(out_snapshot, 0, sizeof(*out_snapshot));
     mp_shim_sck_diagnostics_copy_fields(&session.sck_diagnostics, out_snapshot);
+    out_snapshot->session_references = atomic_load_explicit(
+        &session.diagnostic_session_references, memory_order_relaxed);
+    mp_shim_session_unref_raw(&session);
     *out_callback_body_calls = callback_body_calls;
     mp_shim_sck_diagnostics_destroy(&session.sck_diagnostics, &initializer);
     mp_shim_admission_destroy_with(&session.admission, &initializer);

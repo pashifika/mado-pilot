@@ -4055,6 +4055,10 @@ mod tests {
             assert_eq!(snapshot.callbacks_refused, 1);
             assert_eq!(snapshot.callbacks_exited, 2);
             assert_eq!(
+                snapshot.session_references, 1,
+                "one raw async hold is excluded from structural ownership"
+            );
+            assert_eq!(
                 snapshot.callbacks_received,
                 snapshot.callbacks_admitted + snapshot.callbacks_refused
             );
