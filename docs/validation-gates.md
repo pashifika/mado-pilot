@@ -279,6 +279,10 @@ newly opened stream. Fifty focused runs and one immediate full-load diagnostic
 passed without reproducing the suspension, but neither result replaces the
 terminal-red qualification process. The native Rust query API remains
 implemented, but support is withheld.
+Corrective successor `7139a68` serializes backend generation admission per
+query and bounds Windows fixture output before allocation. The `f16591f` host
+cohorts do not qualify those changed runtime and harness semantics, so a future
+support decision requires a fresh complete protocol on both approved hosts.
 OCR predicates, callbacks/subscriptions, C/C++, automatic input, target activation,
 arbitrary application/template/ROI compatibility or timing, real-time guarantees,
 packaging, and release remain unavailable.

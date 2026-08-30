@@ -4,13 +4,18 @@ MadoPilot can wait for stable template presence on maintained Windows Graphics C
 
 This page documents an implemented but not support-qualified native boundary. Independent review rejected the historical two-host evidence; replacement source `f16591f` passed the corrected Windows matrix but terminated red in Apple process 5, so [ADR 0057](adr/0057-native-template-watch-rust-support.md) continues to withhold promotion.
 
+Corrective successor `7139a68` serializes backend generation admission per
+query and bounds Windows fixture output before allocation. The `f16591f` host
+cohorts do not qualify those changed runtime and harness semantics; fresh
+complete cohorts on both hosts would be required before promotion.
+
 ## Current boundary
 
 | Surface | State |
 |---|---|
 | Rust `Session::start_template_watch` over replay/OpenCV | Supported and budget-qualified |
-| Rust `Session::start_template_watch` over Windows WGC window/display sessions | Implemented; corrected `f16591f` final cohort passed 5/5, but cross-target support remains withheld |
-| Rust `Session::start_template_watch` over macOS ScreenCaptureKit window/display sessions | Implemented; `f16591f` final process 5 terminated red after a ScreenCaptureKit stream suspension |
+| Rust `Session::start_template_watch` over Windows WGC window/display sessions | Implemented; historical source `f16591f` passed 5/5, but it does not qualify corrective successor `7139a68` and cross-target support remains withheld |
+| Rust `Session::start_template_watch` over macOS ScreenCaptureKit window/display sessions | Implemented; historical source `f16591f` terminated red in process 5 after a ScreenCaptureKit stream suspension and does not qualify corrective successor `7139a68` |
 | Non-blocking `TemplateQuery::poll`, blocking `wait`, explicit `cancel`, and immutable terminal results | Implemented; native support follows the underlying session qualification |
 | OCR predicates or wait-for-text | Not implemented |
 | Watcher callbacks or subscriptions | Not implemented |

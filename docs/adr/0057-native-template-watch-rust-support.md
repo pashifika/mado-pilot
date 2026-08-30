@@ -22,6 +22,14 @@ suspended the newly opened stream. Fifty focused runs and one immediate
 full-load diagnostic did not reproduce the suspension, but the failed
 qualification process cannot be replaced or relabeled.
 
+Closure review also found that the proposed successor admitted two generations
+for one immediate query and could let an older generation commit after a newer
+generation entered backend analysis. Corrective successor `7139a68` serializes
+per-query generation admission and bounds Windows fixture output before
+allocation. Because those runtime and qualification-harness semantics differ
+from `f16591f`, every retained host cohort remains historical and does not
+qualify the corrective successor.
+
 ## Decision
 
 Withhold native `Session::start_template_watch` support over Windows WGC and

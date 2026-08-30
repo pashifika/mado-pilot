@@ -12,12 +12,19 @@ Replacement source `f16591f` corrected the Windows scale oracle and retained the
 
 The revision-bound precursor hashes and measurements in both profile files remain attached to their actual source. Final executable hashes in this record do not replace those frozen historical fields.
 
+Corrective successor `7139a68773b2049f8eb0faa83d9f3c356db4afca`
+serializes backend generation admission per query and bounds Windows fixture
+output before allocation. Those runtime and harness changes make this
+`f16591f` host evidence inapplicable to the current implementation. The
+corrective successor has no replacement native cohort; support remains
+withheld.
+
 ## Replacement-source outcome
 
 | Target | Approved host | Executable SHA-256 | Fixture SHA-256 | Result |
 |---|---|---|---|---|
 | `aarch64-apple-darwin` | Apple M1 Pro, macOS 26.6.2 build 25G83, SDK 26.5, Rust 1.97.1/LLVM 22.1.6 | `5cb47e861a4b8eca2315bdb1238003be5385956095197a86e04965ea40a7e793` | `4591eb891a93e133be7f9b7f5d55007618809cc72ee99e198ec56fe92a94fdfe` | Processes 1–4 green; process 5 terminal red at `retained_result_mapping`; rejected |
-| `x86_64-pc-windows-msvc` | Core i7-12700KF, Windows 11 Pro 25H2 build 26200.9168, Rust 1.97.1/MSVC 19.44.35228 | `b339cb820701e3de66c5a670a422a8314bf55af8ab8e291193df02d5adcbb759` | `af2e4e86b0a115471490f2f5fa7c1f55c1a8572945b68097afb1b0f4330f69fc` | 5/5 processes and 120/120 rows green; retained pending cross-target decision |
+| `x86_64-pc-windows-msvc` | Core i7-12700KF, Windows 11 Pro 25H2 build 26200.9168, Rust 1.97.1/MSVC 19.44.35228 | `b339cb820701e3de66c5a670a422a8314bf55af8ab8e291193df02d5adcbb759` | `af2e4e86b0a115471490f2f5fa7c1f55c1a8572945b68097afb1b0f4330f69fc` | 5/5 processes and 120/120 rows green; retained as historical target evidence, cross-target rejected |
 
 The Apple process 1–4 maximum retained ratios were 0.635668 latency,
 0.320064 live Rust heap, and 0.362330 target-native RSS. The Windows maximum

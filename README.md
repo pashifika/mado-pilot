@@ -103,6 +103,11 @@ in process 5 when ScreenCaptureKit suspended a newly opened stream during
 an immediate full-load diagnostic, but neither diagnostic replaces the terminal
 qualification result. Native watcher support therefore remains withheld.
 Historical profiles and hosted CI never substitute for interactive native rows.
+Corrective successor `7139a68` serializes backend generation admission per query
+and bounds Windows fixture output before allocation. Those runtime and harness
+changes make every `f16591f` host cohort historical for the current
+implementation; a fresh complete protocol on both hosts is required before
+support can be reconsidered.
 The dual capture profile retains 600 stationary samples per display and 300
 moving-seam frame pairs with per-frame callback correlation. Windows
 final-source Phase 1 and repository verification run on the exact exit candidate

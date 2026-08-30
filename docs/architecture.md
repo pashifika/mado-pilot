@@ -81,6 +81,11 @@ cross-DPI topology contracts. Replacement source `f16591f` corrected those
 semantics and passed 5/5 on Windows, but its Apple process 5 terminated red after
 ScreenCaptureKit suspended a newly opened stream. The native Rust query API
 remains implemented, but WGC and ScreenCaptureKit support is withheld.
+Corrective successor `7139a68` serializes backend generation admission per
+query and bounds Windows fixture output before allocation. Those runtime and
+harness changes make every `f16591f` host cohort historical for the current
+implementation; fresh complete cohorts on both hosts are required before
+support can be reconsidered.
 OCR predicates, callbacks/subscriptions, C/C++, automatic input,
 target activation, arbitrary application/template/ROI compatibility or timing,
 real-time guarantees, packaging, artifacts, tags, and the `v0.4.0` release
@@ -126,7 +131,7 @@ owns and where they genuinely differ.
 | Capture ownership | Windows Graphics Capture streams and Direct3D 11 resource lifetime (implemented) | ScreenCaptureKit streams and Core Video frame lifetime (implemented) |
 | Input ownership | System pointer/keyboard/text plus explicit exact-window `WindowMessage`: ordinary retained top-level windows are unknown-but-attemptable with target-queue evidence, while the dedicated fixture is supported with protocol acknowledgement (implemented in the platform package) | `CGEvent` system pointer/keyboard/text plus an explicitly selected owning-process `ProcessDirected` route. Final protocol-v11 candidate `dec43d7` passed the controlled profiles, and independent `single`, exact two-display non-mirrored `same-scale`, and `mixed-scale` matrices passed for all fourteen controlled pairs. Their release decision is 14 qualified, 0 rejected, and 0 unexecuted. No `WindowMessage` route exists |
 | Permission handling | Capture presents no permission UI; no permission probe exists; input compares target integrity and reports proven UIPI at route preflight | Screen Recording and event-post access reported separately without permission UI; `PermissionKind::InputControl` maps to the public `CGPreflightPostEventAccess` decision re-read before every irreversible event, regardless of the Privacy & Security pane label, while legacy Accessibility trust is only a separate focus input and paired qualification fact (implemented) |
-| Native Rust template watcher | Implemented through maintained WGC window/display sessions; replacement source `f16591f` passed 5/5 with the corrected different-monitor 144-to-120-DPI scale oracle, but cross-target support remains withheld after the Apple cohort failed | Implemented through maintained ScreenCaptureKit window/display sessions; replacement source `f16591f` passed processes 1–4, then process 5 terminated red at `retained_result_mapping` after ScreenCaptureKit suspended the new stream, so support remains withheld |
+| Native Rust template watcher | Implemented through maintained WGC window/display sessions; historical source `f16591f` passed 5/5 with the corrected different-monitor 144-to-120-DPI scale oracle, but it does not qualify corrective successor `7139a68` and cross-target support remains withheld | Implemented through maintained ScreenCaptureKit window/display sessions; historical source `f16591f` passed processes 1–4, then process 5 terminated red at `retained_result_mapping` after ScreenCaptureKit suspended the new stream; it does not qualify corrective successor `7139a68`, so support remains withheld |
 | Native verification host | Core i7-12700KF / RTX 4080 Windows 11 Pro 25H2 build 26200.9168, SDK 10.0.26100.0; `windows-2025` CI remains supporting server evidence | Apple Silicon macOS 26.5.2 (25F84), SDK 26.5 |
 | Deployment floor | Windows 11 25H2 build family 26200 on a currently serviced x64 desktop installation; earlier versions unsupported | macOS 26.5.2; older versions unsupported |
 | Candidate verification | Windows Phase 1 reruns plus repository and release-target checks pass on the exact exit candidate; ADRs 0026, 0028, 0031, and 0032 retain their separate Windows workload sources | Apple Silicon Phase 1 runs remain attributed to `d8336be` and apply by reviewed complete diff; repository and release-target checks pass on the exact exit candidate; ADRs 0024, 0025, 0029, and 0030 retain their separate macOS workload sources |
@@ -2602,6 +2607,9 @@ Apple cohort passed processes 1–4, then process 5 terminated red at
 stream. Fifty focused runs and one immediate full-load diagnostic passed, but
 they do not replace the failed qualification process. Cross-target support
 therefore remains withheld.
+Corrective successor `7139a68` changes runtime generation admission and the
+Windows qualification reader. The `f16591f` host outcomes therefore remain
+historical evidence and cannot qualify the current implementation.
 
 Source exhaustion refuses later query starts but lets an already acquired
 pending or in-flight final frame drain. Successfully drained work that leaves
