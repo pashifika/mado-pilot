@@ -1411,49 +1411,52 @@ fn concurrent_close_wins_before_grouped_c_result_publication() {
             .with_completion_gate(Arc::clone(&gate)),
     );
     let fixture = opened(backend);
-    let _gate_release = gate.release_guard();
     let api = fixture.api;
     let session = fixture.session as usize;
     let frame = fixture.frame as usize;
     let package = fixture.package as usize;
 
-    let worker = thread::spawn(move || {
-        let operation = operation();
-        let zones = [c_zone(0, 0, 32, 24)];
-        let request = c_zone_request(
-            frame as *const crate::capture::madopilot_frame_t,
-            package as *const crate::assets::madopilot_package_t,
-            &zones,
-        );
-        let mut result = ptr::null_mut();
-        let mut error = ptr::null_mut();
-        // SAFETY: the fixture remains alive until this worker joins.
-        let status = unsafe {
-            (api.session_scan_ocr_zones)(
-                session as *const madopilot_session_t,
-                &request,
-                &operation,
-                &mut result,
-                &mut error,
-            )
-        };
-        (status, result as usize, error as usize)
-    });
-    assert!(gate.wait_until_entered(Duration::from_secs(1)));
-    let mut error = ptr::null_mut();
-    // SAFETY: the retained session remains live and both outputs are valid.
-    assert_eq!(
-        // SAFETY: the retained session remains live and both outputs are valid.
-        unsafe { (api.session_close)(fixture.session, &operation(), &mut error) },
-        MADOPILOT_STATUS_OK
-    );
-    assert!(error.is_null());
-    gate.release();
+    thread::scope(|scope| {
+        let worker = scope.spawn(move || {
+            let operation = operation();
+            let zones = [c_zone(0, 0, 32, 24)];
+            let request = c_zone_request(
+                frame as *const crate::capture::madopilot_frame_t,
+                package as *const crate::assets::madopilot_package_t,
+                &zones,
+            );
+            let mut result = ptr::null_mut();
+            let mut error = ptr::null_mut();
+            // SAFETY: the fixture remains alive until this scope joins the worker.
+            let status = unsafe {
+                (api.session_scan_ocr_zones)(
+                    session as *const madopilot_session_t,
+                    &request,
+                    &operation,
+                    &mut result,
+                    &mut error,
+                )
+            };
+            (status, result as usize, error as usize)
+        });
+        // Release the worker before the scope joins it during unwinding.
+        let _gate_release = gate.release_guard();
 
-    let (status, result, error) = worker.join().expect("worker did not panic");
-    assert_eq!(status, MADOPILOT_STATUS_CLOSED);
-    assert_eq!(result, 0);
-    assert_ne!(error, 0);
-    // SAFETY: the failed call returned one owned error reference.
-    unsafe { (api.error_release)(error as *mut madopilot_error_t) };
+        assert!(gate.wait_until_entered(Duration::from_secs(1)));
+        let mut error = ptr::null_mut();
+        assert_eq!(
+            // SAFETY: the retained session remains live and both outputs are valid.
+            unsafe { (api.session_close)(fixture.session, &operation(), &mut error) },
+            MADOPILOT_STATUS_OK
+        );
+        assert!(error.is_null());
+        gate.release();
+
+        let (status, result, error) = worker.join().expect("worker did not panic");
+        assert_eq!(status, MADOPILOT_STATUS_CLOSED);
+        assert_eq!(result, 0);
+        assert_ne!(error, 0);
+        // SAFETY: the failed call returned one owned error reference.
+        unsafe { (api.error_release)(error as *mut madopilot_error_t) };
+    });
 }
