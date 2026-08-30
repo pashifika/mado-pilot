@@ -1185,16 +1185,21 @@ fn slow_backend_reconsiders_only_the_latest_pending_frame() {
         progress.work().get(TemplateWorkDisposition::Completed) == 1
     });
     assert!(final_gate.wait_until_entered(Duration::from_secs(2)));
+    let ready = wait_progress(&query, |progress| {
+        progress.pending_count() == 0
+            && progress.in_flight_count() == 1
+            && progress.work().get(TemplateWorkDisposition::Admitted) == 2
+            && progress.work().get(TemplateWorkDisposition::Completed) == 1
+    });
     final_gate.release();
 
     let outcome = query.wait(&wait_context()).expect("latest frame matched");
     let TemplateTerminalOutcome::Matched(result) = outcome.as_ref() else {
         panic!("expected match, got {outcome:?}");
     };
-    let ready = query.benchmark_work_snapshot();
     assert_eq!(replaced.pending_count(), 1);
     assert_eq!(ready.work().get(TemplateWorkDisposition::Admitted), 2);
-    assert_eq!(ready.work().get(TemplateWorkDisposition::Completed), 2);
+    assert_eq!(ready.work().get(TemplateWorkDisposition::Completed), 1);
     assert_eq!(ready.work().get(TemplateWorkDisposition::Superseded), 0);
     assert_eq!(result.frame().stamp().sequence().value(), 3);
     assert_eq!(harness.matcher.find_count(), 2);

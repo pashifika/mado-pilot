@@ -74,6 +74,8 @@ impl NativeFixture {
             .take()
             .ok_or_else(|| "fixture_authority_failed".to_owned())?;
         let (sender, lines) = mpsc::sync_channel(64);
+        // The receiver may stop draining before Drop joins this reader, so a
+        // full channel must terminate the reader instead of blocking it.
         let reader = thread::Builder::new()
             .name("mado-pilot-native-watch-fixture".to_owned())
             .spawn(move || {
@@ -89,7 +91,7 @@ impl NativeFixture {
                                     line.pop();
                                 }
                                 if let Ok(decoded) = String::from_utf8(std::mem::take(&mut line)) {
-                                    let _sent = sender.send(decoded);
+                                    let _sent = sender.try_send(decoded);
                                 }
                             }
                             break;
@@ -104,7 +106,7 @@ impl NativeFixture {
                             let Ok(decoded) = String::from_utf8(std::mem::take(&mut line)) else {
                                 break;
                             };
-                            if sender.send(decoded).is_err() {
+                            if sender.try_send(decoded).is_err() {
                                 break;
                             }
                             line = Vec::with_capacity(MAX_OUTPUT_LINE_BYTES);
