@@ -24,6 +24,7 @@ pub const DISPLAY_CAPACITY: usize = 2;
 pub const PROCESS_COUNT: usize = 10;
 pub const OPERATION_DEADLINE_MILLIS: u32 = 5_000;
 pub const LIFECYCLE_STEP_CAPACITY: usize = 11;
+const NATIVE_CLOSE_PHASE_COMPLETE: u32 = 5;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
@@ -460,9 +461,9 @@ pub fn validate_row(row: &Row) -> Result<(), ValidationFault> {
             || old.detached_bytes <= baseline.detached_bytes
             || post_drop.native_objects <= baseline.native_objects
             || post_drop.detached_bytes <= baseline.detached_bytes
-            || post_drop.live_sessions <= baseline.live_sessions
-            || old.close_phase != 6
-            || fresh.close_phase != 6
+            || post_drop.live_sessions != baseline.live_sessions
+            || old.close_phase != NATIVE_CLOSE_PHASE_COMPLETE
+            || fresh.close_phase != NATIVE_CLOSE_PHASE_COMPLETE
         {
             return Err(ValidationFault::Ownership);
         }
@@ -474,11 +475,14 @@ pub fn validate_row(row: &Row) -> Result<(), ValidationFault> {
                 .fresh_snapshot
                 .as_ref()
                 .ok_or(ValidationFault::Snapshot)?;
+            let expected_latency = fresh
+                .first_complete_nanos
+                .checked_sub(fresh.stream_start_completed_nanos);
             if row.old_snapshot.is_none()
                 || row.post_old_drop_resources.is_none()
                 || row.old_frame.is_none()
                 || row.fresh_frame.is_none()
-                || row.first_complete_latency_nanos.is_none()
+                || row.first_complete_latency_nanos != expected_latency
                 || !row.owners.terminal_result
                 || !row.owners.mapping
                 || !row.owners.mapping_readable_after_fresh_close
@@ -639,7 +643,7 @@ fn validate_snapshot(snapshot: &Snapshot) -> Result<(), ValidationFault> {
         .iter()
         .copied()
         .fold(0_u64, u64::saturating_add);
-    if snapshot.close_phase > 6
+    if snapshot.close_phase > NATIVE_CLOSE_PHASE_COMPLETE
         || snapshot.active_native_slots & !ACTIVE_NATIVE_SLOT_MASK != 0
         || snapshot.transition_count as usize > TRANSITION_CAPACITY
         || snapshot.callbacks_received
@@ -647,7 +651,7 @@ fn validate_snapshot(snapshot: &Snapshot) -> Result<(), ValidationFault> {
                 .callbacks_admitted
                 .saturating_add(snapshot.callbacks_refused)
         || snapshot.observed_total != observed
-        || (snapshot.close_phase == 6
+        || (snapshot.close_phase == NATIVE_CLOSE_PHASE_COMPLETE
             && (snapshot.active_native_slots != 0
                 || snapshot.callbacks_received != snapshot.callbacks_exited
                 || snapshot.stream_stop_requested_nanos == 0
@@ -656,19 +660,19 @@ fn validate_snapshot(snapshot: &Snapshot) -> Result<(), ValidationFault> {
                 || snapshot.callback_fence_completed_nanos == 0
                 || snapshot.close_completed_nanos == 0))
         || !ordered(
+            snapshot.callback_admission_stopped_nanos,
+            snapshot.callback_fence_completed_nanos,
+        )
+        || !ordered(
+            snapshot.callback_fence_completed_nanos,
+            snapshot.stream_stop_requested_nanos,
+        )
+        || !ordered(
             snapshot.stream_stop_requested_nanos,
             snapshot.stream_stop_completed_nanos,
         )
         || !ordered(
             snapshot.stream_stop_completed_nanos,
-            snapshot.callback_admission_stopped_nanos,
-        )
-        || !ordered(
-            snapshot.callback_admission_stopped_nanos,
-            snapshot.callback_fence_completed_nanos,
-        )
-        || !ordered(
-            snapshot.callback_fence_completed_nanos,
             snapshot.close_completed_nanos,
         )
         || (snapshot.status_counts[0] == 0) != (snapshot.first_complete_nanos == 0)
@@ -796,7 +800,7 @@ mod tests {
         let mut transitions = [None; TRANSITION_CAPACITY];
         transitions[0] = status_event;
         Snapshot {
-            close_phase: 6,
+            close_phase: NATIVE_CLOSE_PHASE_COMPLETE,
             active_native_slots: 0,
             observed_total: observed,
             status_counts,
@@ -807,10 +811,10 @@ mod tests {
             callbacks_refused: 0,
             callbacks_exited: observed,
             stream_start_completed_nanos: 20,
-            stream_stop_requested_nanos: 30,
-            stream_stop_completed_nanos: 40,
-            callback_admission_stopped_nanos: 50,
-            callback_fence_completed_nanos: 60,
+            stream_stop_requested_nanos: 50,
+            stream_stop_completed_nanos: 60,
+            callback_admission_stopped_nanos: 30,
+            callback_fence_completed_nanos: 40,
             close_completed_nanos: 70,
             first_complete_nanos: u64::from(matches!(kind, Some(0))) * 10,
             session_references: 2,
@@ -835,7 +839,7 @@ mod tests {
             post_old_drop_resources: Some(ProcessResources {
                 native_objects: 1,
                 detached_bytes: 64,
-                live_sessions: 1,
+                live_sessions: 0,
                 callbacks_in_flight: 0,
             }),
             final_resources: Some(ProcessResources::default()),
@@ -862,7 +866,7 @@ mod tests {
                 geometry_revision: 0,
             }),
             streams_distinct: Some(true),
-            first_complete_latency_nanos: Some(0),
+            first_complete_latency_nanos: None,
             old_snapshot: Some(snapshot(Some(0))),
             fresh_snapshot: Some(snapshot(Some(0))),
             stage: Stage::Complete,
@@ -1076,6 +1080,38 @@ mod tests {
     }
 
     #[test]
+    fn native_complete_close_phase_is_accepted_exactly() {
+        let mut row = completed_row(1);
+        row.old_snapshot.as_mut().expect("old snapshot").close_phase = NATIVE_CLOSE_PHASE_COMPLETE;
+        row.fresh_snapshot
+            .as_mut()
+            .expect("fresh snapshot")
+            .close_phase = NATIVE_CLOSE_PHASE_COMPLETE;
+        assert!(validate_row(&row).is_ok());
+
+        for snapshot in [&mut row.old_snapshot, &mut row.fresh_snapshot] {
+            snapshot.as_mut().expect("snapshot").close_phase += 1;
+        }
+        assert_eq!(validate_row(&row), Err(ValidationFault::Snapshot));
+    }
+
+    #[test]
+    fn production_callback_fence_precedes_native_stop() {
+        let mut observed = snapshot(None);
+        observed.callback_admission_stopped_nanos = 30;
+        observed.callback_fence_completed_nanos = 40;
+        observed.stream_stop_requested_nanos = 50;
+        observed.stream_stop_completed_nanos = 60;
+        assert!(validate_snapshot(&observed).is_ok());
+
+        observed.stream_stop_requested_nanos = 30;
+        observed.stream_stop_completed_nanos = 40;
+        observed.callback_admission_stopped_nanos = 50;
+        observed.callback_fence_completed_nanos = 60;
+        assert_eq!(validate_snapshot(&observed), Err(ValidationFault::Snapshot));
+    }
+
+    #[test]
     fn snapshot_validation_accepts_saturation_and_bounded_overwrite() {
         let saturated = Snapshot {
             observed_total: u64::MAX,
@@ -1120,6 +1156,32 @@ mod tests {
             validate_snapshot(&overwritten),
             Err(ValidationFault::Snapshot)
         );
+    }
+
+    #[test]
+    fn complete_before_start_callback_has_no_post_start_latency() {
+        let mut row = completed_row(1);
+        row.first_complete_latency_nanos = None;
+        assert!(validate_row(&row).is_ok());
+
+        row.first_complete_latency_nanos = Some(0);
+        assert_eq!(validate_row(&row), Err(ValidationFault::Schema));
+    }
+
+    #[test]
+    fn post_drop_footprint_has_no_live_public_session() {
+        let mut row = completed_row(1);
+        row.post_old_drop_resources
+            .as_mut()
+            .expect("post-drop resources")
+            .live_sessions = row.baseline.expect("baseline").live_sessions;
+        assert!(validate_row(&row).is_ok());
+
+        row.post_old_drop_resources
+            .as_mut()
+            .expect("post-drop resources")
+            .live_sessions += 1;
+        assert_eq!(validate_row(&row), Err(ValidationFault::Ownership));
     }
 
     #[test]
