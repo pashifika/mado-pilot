@@ -12,8 +12,10 @@ test them, so that this document never describes behavior a reader cannot use.
 
 **Status: Phase 1, Phase 2 native capture/input/observation, and Phase 3
 singular/grouped OCR composition reach Rust, C, and C++. Phase 4 bounded
-template-presence queries reach the Rust replay/OpenCV and qualified native
-WGC/ScreenCaptureKit facade boundaries.** Platform-neutral contracts,
+template-presence queries are qualified at the Rust replay/OpenCV boundary and
+implemented at the native WGC/ScreenCaptureKit facade boundaries; native
+watcher support remains withheld after the final cross-host qualification ended
+Apple terminal red.** Platform-neutral contracts,
 deterministic replay, asset loading, OpenCV matching, bounded ONNX OCR with
 explicit initialization-time provider policy, finite template watcher
 scheduling, runtime orchestration, engine-scoped diagnostics, the Rust facade,
@@ -2509,9 +2511,9 @@ stability independently of session and scheduler lifetime.
 
 The selected `TemplateSchedulerDescriptor` is immutable: 256 live queries per
 engine, 16 sessions holding live watcher-work reservations, 64 live queries per
-session, two engine-wide in-flight analyses, one latest pending frame per query,
-and a shared mapped-region cache bounded by both 64 MiB of pixel bytes and 256
-retained entries. Eligible
+session, two engine-wide in-flight analyses with at most one admitted generation
+per query, one latest pending frame per query, and a shared mapped-region cache
+bounded by both 64 MiB of pixel bytes and 256 retained entries. Eligible
 queue residence is bounded to 30 seconds. The engine owns two lazy analysis
 workers and one lazy control supervisor that only sweeps query
 deadline/cancellation, rate eligibility, and queue expiry; each active watcher
@@ -2531,9 +2533,11 @@ Admission proceeds in this order:
 3. Apply exact change detection. `Unchanged` may skip routine analysis only
    before stability begins; it never confirms presence or advances stability.
 4. Apply the query-clock rate interval. Deferred work remains one latest frame.
-5. Increment the query generation and admit backend work. Equivalent requests
-   coalesce only when backend/format, prepared-template instance, complete frame
-   stamp, clipped ROI, options, preprocessing facts, and next generation match.
+5. Increment the query generation and admit backend work. At most one generation
+   per query may be in backend analysis; another query may use the second
+   engine-wide slot. Equivalent requests coalesce only when backend/format,
+   prepared-template instance, complete frame stamp, clipped ROI, options,
+   preprocessing facts, and next generation match.
 6. Commit only the authoritative generation. A no-match resets stability; only
    confirmed matches increment consecutive observations or extend duration.
    Cancellation, deadline, target loss, close, overload, or a newer generation

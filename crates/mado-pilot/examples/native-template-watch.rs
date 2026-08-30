@@ -4,6 +4,10 @@
 //! or polls frames. Grant capture permission to the host application before
 //! running it where the platform requires that grant.
 //!
+//! The native watcher wiring shown here is implemented but not a production
+//! support statement. Native watcher support remains withheld until the same
+//! qualification protocol passes on both release hosts.
+//!
 //! ```text
 //! cargo run --locked --package mado-pilot --example native-template-watch -- \
 //!   <asset-package-directory> <template-name> <target-index>
@@ -129,5 +133,8 @@ fn native_engine() -> Result<Engine, Box<dyn std::error::Error>> {
 
 #[cfg(not(any(windows, target_os = "macos")))]
 fn native_engine() -> Result<Engine, Box<dyn std::error::Error>> {
-    Err("native template watching is supported only on Windows and macOS".into())
+    Err(
+        "native template watcher wiring is available only on Windows and macOS; production support is withheld on all platforms pending qualification"
+            .into(),
+    )
 }

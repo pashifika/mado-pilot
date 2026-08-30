@@ -1144,12 +1144,10 @@ fn four_eligible_queries_across_two_sessions_advance_in_bounded_rounds() {
 #[test]
 fn slow_backend_reconsiders_only_the_latest_pending_frame() {
     let first_gate = Arc::new(CompletionGate::new());
-    let second_gate = Arc::new(CompletionGate::new());
     let final_gate = Arc::new(CompletionGate::new());
     let harness = Harness::new(
         ControlledMatcher::new(mado_pilot_runtime::PixelFormat::Rgba8).with_calls([
             ScriptedMatchCall::new(Vec::new()).with_completion_gate(Arc::clone(&first_gate)),
-            ScriptedMatchCall::new(Vec::new()).with_completion_gate(Arc::clone(&second_gate)),
             ScriptedMatchCall::new(vec![Candidate::new(1, 1, 0.99)])
                 .with_completion_gate(Arc::clone(&final_gate)),
         ]),
@@ -1167,57 +1165,49 @@ fn slow_backend_reconsiders_only_the_latest_pending_frame() {
     harness
         .capture
         .publish(0x32, Continuity::Continuous)
-        .expect("published second in-flight frame");
-    assert!(second_gate.wait_until_entered(Duration::from_secs(2)));
+        .expect("published pending frame");
     harness
         .capture
         .publish(0x33, Continuity::Continuous)
-        .expect("published pending frame");
-    let _ = wait_progress(&query, |progress| progress.pending_count() == 1);
+        .expect("published pending replacement");
     harness
         .capture
         .publish(0x34, Continuity::Continuous)
         .expect("published latest replacement");
     let replaced = wait_progress(&query, |progress| {
         progress.pending_count() == 1
-            && progress.work().get(TemplateWorkDisposition::Superseded) == 1
+            && progress.in_flight_count() == 1
+            && progress.work().get(TemplateWorkDisposition::Admitted) == 1
     });
+
     first_gate.release();
     let _ = wait_progress(&query, |progress| {
         progress.work().get(TemplateWorkDisposition::Completed) == 1
-            && progress.work().get(TemplateWorkDisposition::Superseded) == 1
     });
     assert!(final_gate.wait_until_entered(Duration::from_secs(2)));
-    second_gate.release();
-    let ready = wait_progress(&query, |progress| {
-        progress.pending_count() == 0
-            && progress.work().get(TemplateWorkDisposition::Admitted) == 3
-            && progress.work().get(TemplateWorkDisposition::Completed) == 2
-            && progress.work().get(TemplateWorkDisposition::Superseded) == 1
-    });
     final_gate.release();
 
     let outcome = query.wait(&wait_context()).expect("latest frame matched");
     let TemplateTerminalOutcome::Matched(result) = outcome.as_ref() else {
         panic!("expected match, got {outcome:?}");
     };
+    let ready = query.benchmark_work_snapshot();
     assert_eq!(replaced.pending_count(), 1);
-    assert_eq!(ready.work().get(TemplateWorkDisposition::Superseded), 1);
+    assert_eq!(ready.work().get(TemplateWorkDisposition::Admitted), 2);
+    assert_eq!(ready.work().get(TemplateWorkDisposition::Completed), 2);
+    assert_eq!(ready.work().get(TemplateWorkDisposition::Superseded), 0);
     assert_eq!(result.frame().stamp().sequence().value(), 3);
-    assert_eq!(harness.matcher.find_count(), 3);
+    assert_eq!(harness.matcher.find_count(), 2);
 }
 
 #[cfg(feature = "benchmark-instrumentation")]
 #[test]
-fn matched_terminal_releases_pending_and_in_flight_work() {
+fn matched_terminal_releases_pending_work() {
     let matched_gate = Arc::new(CompletionGate::new());
-    let stale_gate = Arc::new(CompletionGate::new());
     let harness = Harness::new(
-        ControlledMatcher::new(mado_pilot_runtime::PixelFormat::Rgba8).with_calls([
-            ScriptedMatchCall::new(vec![Candidate::new(1, 1, 0.99)])
-                .with_completion_gate(Arc::clone(&matched_gate)),
-            ScriptedMatchCall::new(Vec::new()).with_completion_gate(Arc::clone(&stale_gate)),
-        ]),
+        ControlledMatcher::new(mado_pilot_runtime::PixelFormat::Rgba8)
+            .with_calls([ScriptedMatchCall::new(vec![Candidate::new(1, 1, 0.99)])
+                .with_completion_gate(Arc::clone(&matched_gate))]),
     );
     let session = opened(&harness);
     let (template, options) = request(&harness);
@@ -1232,48 +1222,43 @@ fn matched_terminal_releases_pending_and_in_flight_work() {
     harness
         .capture
         .publish(0x32, Continuity::Continuous)
-        .expect("published second in-flight frame");
-    assert!(stale_gate.wait_until_entered(Duration::from_secs(2)));
-    harness
-        .capture
-        .publish(0x33, Continuity::Continuous)
         .expect("published pending frame");
     let pending = wait_progress(&query, |progress| {
-        progress.pending_count() == 1 && progress.in_flight_count() == 2
+        progress.pending_count() == 1
+            && progress.in_flight_count() == 1
+            && progress.work().get(TemplateWorkDisposition::Admitted) == 1
     });
-    assert_eq!(pending.work().get(TemplateWorkDisposition::Admitted), 2);
+    assert_eq!(pending.work().get(TemplateWorkDisposition::Superseded), 0);
 
     matched_gate.release();
     let outcome = query.wait(&wait_context()).expect("first frame matched");
-    assert!(matches!(
-        outcome.as_ref(),
-        TemplateTerminalOutcome::Matched(_)
-    ));
+    let TemplateTerminalOutcome::Matched(result) = outcome.as_ref() else {
+        panic!("expected match, got {outcome:?}");
+    };
+    assert_eq!(result.frame().stamp().sequence().value(), 0);
     let final_work = query.benchmark_work_snapshot();
     assert_eq!(final_work.pending_count(), 0);
     assert_eq!(final_work.in_flight_count(), 0);
+    assert_eq!(final_work.work().get(TemplateWorkDisposition::Admitted), 1);
     assert_eq!(final_work.work().get(TemplateWorkDisposition::Completed), 1);
     assert_eq!(
         final_work.work().get(TemplateWorkDisposition::Superseded),
-        2
+        1
     );
-    assert_eq!(query.benchmark_publication_count(), 3);
+    assert_eq!(query.benchmark_publication_count(), 2);
     session
         .benchmark_wait_template_watcher_idle(&wait_context())
         .expect("watcher acquisition stopped after terminal");
-    stale_gate.release();
 }
 
 #[test]
 fn compatible_newer_publications_do_not_starve_first_backend_completion() {
     let first_gate = Arc::new(CompletionGate::new());
-    let second_gate = Arc::new(CompletionGate::new());
-    let third_gate = Arc::new(CompletionGate::new());
+    let latest_gate = Arc::new(CompletionGate::new());
     let harness = Harness::new(
         ControlledMatcher::new(mado_pilot_runtime::PixelFormat::Rgba8).with_calls([
             ScriptedMatchCall::new(Vec::new()).with_completion_gate(Arc::clone(&first_gate)),
-            ScriptedMatchCall::new(Vec::new()).with_completion_gate(Arc::clone(&second_gate)),
-            ScriptedMatchCall::new(Vec::new()).with_completion_gate(Arc::clone(&third_gate)),
+            ScriptedMatchCall::new(Vec::new()).with_completion_gate(Arc::clone(&latest_gate)),
         ]),
     );
     let session = opened(&harness);
@@ -1290,13 +1275,17 @@ fn compatible_newer_publications_do_not_starve_first_backend_completion() {
     harness
         .capture
         .publish(0x32, Continuity::Continuous)
-        .expect("published second compatible frame");
-    assert!(second_gate.wait_until_entered(Duration::from_secs(2)));
+        .expect("published compatible pending frame");
     harness
         .capture
         .publish(0x33, Continuity::Continuous)
-        .expect("published latest pending frame");
-    let _ = wait_progress(&query, |progress| progress.pending_count() == 1);
+        .expect("published latest pending replacement");
+    let pending = wait_progress(&query, |progress| {
+        progress.pending_count() == 1
+            && progress.in_flight_count() == 1
+            && progress.work().get(TemplateWorkDisposition::Admitted) == 1
+    });
+    assert_eq!(pending.work().get(TemplateWorkDisposition::Admitted), 1);
 
     first_gate.release();
     assert!(first_gate.wait_until_completed(Duration::from_secs(2)));
@@ -1311,10 +1300,19 @@ fn compatible_newer_publications_do_not_starve_first_backend_completion() {
             .value(),
         0
     );
-    assert!(third_gate.wait_until_entered(Duration::from_secs(2)));
-
-    second_gate.release();
-    third_gate.release();
+    assert!(latest_gate.wait_until_entered(Duration::from_secs(2)));
+    latest_gate.release();
+    let latest = wait_progress(&query, |progress| {
+        progress.work().get(TemplateWorkDisposition::Completed) == 2
+    });
+    assert_eq!(
+        latest
+            .last_frame()
+            .expect("the latest pending frame completed")
+            .sequence()
+            .value(),
+        2
+    );
     let _ = query.cancel();
 }
 
@@ -1530,21 +1528,16 @@ fn eligible_pending_frame_expires_while_query_analysis_slot_is_full() {
 }
 
 #[test]
-fn older_generation_finishing_last_cannot_replace_newer_success() {
-    let older = Arc::new(CompletionGate::new());
+fn immediate_query_serializes_compatible_generations() {
+    let first = Arc::new(CompletionGate::new());
     let newer = Arc::new(CompletionGate::new());
-    let found = vec![Candidate::new(1, 1, 0.99)];
-    let harness = Harness::with_diagnostics(
+    let harness = Harness::new(
         ControlledMatcher::new(mado_pilot_runtime::PixelFormat::Rgba8).with_calls([
-            ScriptedMatchCall::new(found.clone()).with_completion_gate(Arc::clone(&older)),
-            ScriptedMatchCall::new(found).with_completion_gate(Arc::clone(&newer)),
+            ScriptedMatchCall::new(Vec::new()).with_completion_gate(Arc::clone(&first)),
+            ScriptedMatchCall::new(vec![Candidate::new(1, 1, 0.99)])
+                .with_completion_gate(Arc::clone(&newer)),
         ]),
-        16,
     );
-    let reader = harness
-        .engine
-        .take_diagnostic_reader()
-        .expect("debug diagnostics enabled");
     let session = opened(&harness);
     let (template, options) = request(&harness);
     let query = session
@@ -1554,46 +1547,38 @@ fn older_generation_finishing_last_cannot_replace_newer_success() {
             OperationContext::new(),
         ))
         .expect("started query");
-    assert!(older.wait_until_entered(Duration::from_secs(2)));
+    assert!(first.wait_until_entered(Duration::from_secs(2)));
+
     harness
         .capture
         .publish(0x32, Continuity::Continuous)
-        .expect("published newer generation");
-    assert!(newer.wait_until_entered(Duration::from_secs(2)));
+        .expect("published newer compatible frame");
+    let newer_entered_while_first_running = newer.wait_until_entered(Duration::from_millis(100));
+    let TemplateQueryOutcome::Pending(pending) = query.poll() else {
+        panic!("gated generations keep the query pending")
+    };
+    first.release();
+    if !newer_entered_while_first_running {
+        assert!(newer.wait_until_entered(Duration::from_secs(2)));
+    }
     newer.release();
+
+    assert!(
+        !newer_entered_while_first_running,
+        "one query must not admit a newer generation while its authoritative generation runs"
+    );
+    assert_eq!(pending.pending_count(), 1);
+    assert_eq!(pending.in_flight_count(), 1);
+    assert_eq!(pending.work().get(TemplateWorkDisposition::Admitted), 1);
 
     let outcome = query
         .wait(&wait_context())
-        .expect("newer generation committed");
+        .expect("serialized newer generation committed");
     let TemplateTerminalOutcome::Matched(result) = outcome.as_ref() else {
         panic!("expected newer match, got {outcome:?}");
     };
     assert_eq!(result.frame().stamp().sequence().value(), 1);
-
-    older.release();
-    assert!(older.wait_until_completed(Duration::from_secs(2)));
-    let TemplateQueryOutcome::Terminal(retained) = query.poll() else {
-        panic!("newer result remains terminal")
-    };
-    assert!(Arc::ptr_eq(&outcome, &retained));
-    let DiagnosticDrain::Batch(batch) = reader.drain() else {
-        panic!("expected diagnostic batch");
-    };
-    assert_eq!(
-        batch
-            .records()
-            .iter()
-            .filter(|record| {
-                matches!(
-                    record.payload(),
-                    DiagnosticPayload::TemplateWatch(value)
-                        if value.outcome == Some(TemplateWatchDiagnosticOutcome::Matched)
-                            && value.disposition.is_none()
-                )
-            })
-            .count(),
-        1
-    );
+    assert_eq!(harness.matcher.completion_count(), 2);
 }
 
 #[test]

@@ -3,7 +3,7 @@
 #[cfg(windows)]
 use std::collections::VecDeque;
 #[cfg(windows)]
-use std::io::{BufRead, BufReader};
+use std::io::Read;
 #[cfg(windows)]
 use std::mem::size_of;
 #[cfg(windows)]
@@ -37,6 +37,8 @@ use windows::core::{BOOL, PCWSTR};
 
 #[cfg(windows)]
 static NEXT_FIXTURE_TOKEN: AtomicU64 = AtomicU64::new(1);
+#[cfg(windows)]
+const MAX_OUTPUT_LINE_BYTES: usize = 1_024;
 
 #[cfg(windows)]
 struct NativeFixture {
@@ -75,10 +77,44 @@ impl NativeFixture {
         let reader = thread::Builder::new()
             .name("mado-pilot-native-watch-fixture".to_owned())
             .spawn(move || {
-                for line in BufReader::new(output).lines() {
-                    let Ok(line) = line else { break };
-                    if line.len() > 1_024 || sender.send(line).is_err() {
-                        break;
+                let mut stream = output;
+                let mut line = Vec::with_capacity(MAX_OUTPUT_LINE_BYTES);
+                let mut byte = [0u8; 1];
+                let mut overflow = false;
+                loop {
+                    match stream.read(&mut byte) {
+                        Ok(0) => {
+                            if !overflow && !line.is_empty() {
+                                if line.last() == Some(&b'\r') {
+                                    line.pop();
+                                }
+                                if let Ok(decoded) = String::from_utf8(std::mem::take(&mut line)) {
+                                    let _sent = sender.send(decoded);
+                                }
+                            }
+                            break;
+                        }
+                        Ok(_) if byte[0] == b'\n' => {
+                            if overflow {
+                                break;
+                            }
+                            if line.last() == Some(&b'\r') {
+                                line.pop();
+                            }
+                            let Ok(decoded) = String::from_utf8(std::mem::take(&mut line)) else {
+                                break;
+                            };
+                            if sender.send(decoded).is_err() {
+                                break;
+                            }
+                            line = Vec::with_capacity(MAX_OUTPUT_LINE_BYTES);
+                        }
+                        Ok(_) if !overflow && line.len() < MAX_OUTPUT_LINE_BYTES => {
+                            line.push(byte[0]);
+                        }
+                        Ok(_) => overflow = true,
+                        Err(error) if error.kind() == std::io::ErrorKind::Interrupted => {}
+                        Err(_) => break,
                     }
                 }
             })

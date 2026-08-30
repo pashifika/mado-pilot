@@ -75,7 +75,7 @@ Other terminal outcomes are explicit: `Cancelled`, `DeadlineExceeded`, `SessionC
 
 ## Scheduling and performance
 
-The production watcher uses fixed finite engine/session/query limits, two engine-wide analysis slots, one latest pending frame per query, a bounded shared mapping cache, and a 30-second eligible-queue residence bound. Capture publication never waits for OpenCV matching. Superseded, coalesced, deferred, rejected, expired, completed, and failed work remains observable through query results or bounded diagnostics.
+The production watcher uses fixed finite engine/session/query limits, two engine-wide analysis slots with at most one admitted generation per query, one latest pending frame per query, a bounded shared mapping cache, and a 30-second eligible-queue residence bound. Capture publication never waits for OpenCV matching. Superseded, coalesced, deferred, rejected, expired, completed, and failed work remains observable through query results or bounded diagnostics.
 
 [ADR 0053](adr/0053-native-template-watch-budgets.md) fixes independent Windows and Apple Silicon regression ceilings. Replacement source `f16591f` corrected the engine-close and Windows cross-DPI semantics rejected by independent review. Its Windows cohort passed five fresh processes. Its Apple cohort passed processes 1–4, then process 5 terminated red at `retained_result_mapping` after ScreenCaptureKit suspended the newly opened stream. Fifty focused runs and one immediate full-load diagnostic passed without reproducing the suspension, but qualification permits no retry or replacement. Correctness, source authority, lifecycle, ownership, cleanup, and privacy fail qualification regardless of latency.
 

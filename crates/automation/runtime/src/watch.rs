@@ -1132,13 +1132,10 @@ impl QueryShared {
         )
     }
 
+    // A query admits one generation at a time so an older generation can never
+    // commit after a newer generation has entered backend analysis.
     fn analysis_capacity_reached(&self, state: &QueryData) -> bool {
-        let limit = if self.stability.kind() == TemplateStabilityKind::Immediate {
-            MAX_IN_FLIGHT_ANALYSES
-        } else {
-            1
-        };
-        state.in_flight.iter().flatten().count() >= limit
+        state.in_flight.iter().any(Option::is_some)
     }
 
     fn has_admitted_or_considered(&self, stamp: FrameStamp) -> bool {
@@ -1539,10 +1536,8 @@ impl QueryShared {
             if state.terminal.is_some() {
                 return;
             }
-            let superseded_by_completed_frame = state
-                .last_frame
-                .is_some_and(|last| !matches!(last.order(&stamp), Ok(FrameOrder::Before)));
-            if superseded_by_completed_frame {
+            let superseded_by_newer_generation = generation != state.generation;
+            if superseded_by_newer_generation {
                 state.work.increment(TemplateWorkDisposition::Superseded);
                 stale = true;
             } else {
