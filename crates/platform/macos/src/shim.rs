@@ -181,6 +181,12 @@ struct OpaqueSession {
     _private: [u8; 0],
 }
 
+#[cfg(feature = "sck-suspension-diagnostics")]
+#[repr(C)]
+struct OpaqueSckDiagnosticsObserver {
+    _private: [u8; 0],
+}
+
 #[cfg(all(test, feature = "sck-suspension-diagnostics"))]
 #[repr(C)]
 struct OpaqueSckDiagnosticsProbe {
@@ -1030,6 +1036,19 @@ pub(crate) struct OpenRequest {
     pub(crate) testing_raise_sites: u32,
 }
 
+/// A feature-only hold on closed-session diagnostic bookkeeping.
+#[cfg(feature = "sck-suspension-diagnostics")]
+pub(crate) struct SckDiagnosticsObserver {
+    handle: NonNull<OpaqueSckDiagnosticsObserver>,
+}
+
+// SAFETY: observer reads use the same locked and atomic fields as Session reads.
+#[cfg(feature = "sck-suspension-diagnostics")]
+unsafe impl Send for SckDiagnosticsObserver {}
+// SAFETY: see the Send justification.
+#[cfg(feature = "sck-suspension-diagnostics")]
+unsafe impl Sync for SckDiagnosticsObserver {}
+
 /// One open native session.
 pub(crate) struct Session {
     handle: NonNull<OpaqueSession>,
@@ -1161,6 +1180,21 @@ impl Session {
         }
     }
 
+    /// Acquires a non-structural observer after this session has closed.
+    #[cfg(feature = "sck-suspension-diagnostics")]
+    pub(crate) fn sck_diagnostics_observer(&self) -> Result<SckDiagnosticsObserver, ShimStatus> {
+        let mut observer = std::ptr::null_mut();
+        // SAFETY: the session handle is owned here and `observer` is a writable
+        // output for one opaque handle.
+        let status = unsafe {
+            mp_shim_sck_diagnostics_observer_acquire(self.handle.as_ptr(), &raw mut observer)
+        };
+        ShimStatus::from_raw(status).into_result()?;
+        NonNull::new(observer)
+            .map(|handle| SckDiagnosticsObserver { handle })
+            .ok_or(ShimStatus::PlatformFailure)
+    }
+
     /// Copies the private, bounded ScreenCaptureKit producer diagnostics.
     #[cfg(feature = "sck-suspension-diagnostics")]
     pub(crate) fn sck_diagnostics_snapshot(&self) -> Result<SckDiagnosticsSnapshot, ShimStatus> {
@@ -1172,6 +1206,28 @@ impl Session {
         };
         ShimStatus::from_raw(status).into_result()?;
         Ok(snapshot)
+    }
+}
+
+#[cfg(feature = "sck-suspension-diagnostics")]
+impl SckDiagnosticsObserver {
+    pub(crate) fn snapshot(&self) -> Result<SckDiagnosticsSnapshot, ShimStatus> {
+        let mut snapshot = SckDiagnosticsSnapshot::requested();
+        // SAFETY: the observer is owned here and `snapshot` is a writable,
+        // size-versioned output with the exact fixed transition capacity.
+        let status = unsafe {
+            mp_shim_sck_diagnostics_observer_snapshot_read(self.handle.as_ptr(), &raw mut snapshot)
+        };
+        ShimStatus::from_raw(status).into_result()?;
+        Ok(snapshot)
+    }
+}
+
+#[cfg(feature = "sck-suspension-diagnostics")]
+impl Drop for SckDiagnosticsObserver {
+    fn drop(&mut self) {
+        // SAFETY: this observer owns exactly one non-structural native hold.
+        unsafe { mp_shim_sck_diagnostics_observer_release(self.handle.as_ptr()) };
     }
 }
 
@@ -3772,6 +3828,18 @@ unsafe extern "C" {
         session: *const OpaqueSession,
         out_snapshot: *mut SckDiagnosticsSnapshot,
     ) -> u32;
+    #[cfg(feature = "sck-suspension-diagnostics")]
+    fn mp_shim_sck_diagnostics_observer_acquire(
+        session: *const OpaqueSession,
+        out_observer: *mut *mut OpaqueSckDiagnosticsObserver,
+    ) -> u32;
+    #[cfg(feature = "sck-suspension-diagnostics")]
+    fn mp_shim_sck_diagnostics_observer_snapshot_read(
+        observer: *const OpaqueSckDiagnosticsObserver,
+        out_snapshot: *mut SckDiagnosticsSnapshot,
+    ) -> u32;
+    #[cfg(feature = "sck-suspension-diagnostics")]
+    fn mp_shim_sck_diagnostics_observer_release(observer: *mut OpaqueSckDiagnosticsObserver);
 
     fn mp_shim_frame_detach(borrowed: *mut OpaqueFrame, out: *mut *mut OpaqueFrame) -> u32;
     fn mp_shim_frame_release(frame: *mut OpaqueFrame);

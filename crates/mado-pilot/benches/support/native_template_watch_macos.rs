@@ -470,6 +470,12 @@ fn execute_sck_signature_lifecycle(
             sck_signature::FailureClass::OldCloseFailed,
         )
     })?;
+    let old_observer = sck_diagnostics::session_observer(old_stream).map_err(|_| {
+        SckSignatureFailure::new(
+            sck_signature::Stage::OldOwnerDrop,
+            sck_signature::FailureClass::DiagnosticSnapshotFailed,
+        )
+    })?;
     drop(query);
     drop(terminal);
     drop(run.session);
@@ -479,7 +485,8 @@ fn execute_sck_signature_lifecycle(
         .expect("protocol_drift");
 
     row.old_snapshot = Some(
-        sck_diagnostics::session_snapshot(old_stream)
+        old_observer
+            .snapshot()
             .map(report_snapshot)
             .map_err(|_| {
                 SckSignatureFailure::new(

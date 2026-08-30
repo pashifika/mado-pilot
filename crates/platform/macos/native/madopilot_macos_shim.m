@@ -4306,6 +4306,38 @@ mp_shim_status mp_shim_sck_diagnostics_snapshot_read(
     MP_SHIM_END
 }
 
+mp_shim_status mp_shim_sck_diagnostics_observer_acquire(
+    const mp_shim_session *session, mp_shim_sck_diagnostics_observer **out_observer) {
+    if (out_observer == NULL) {
+        return MP_SHIM_INVALID_ARGUMENT;
+    }
+    *out_observer = NULL;
+    if (!mp_shim_session_valid(session)) {
+        return MP_SHIM_INVALID_ARGUMENT;
+    }
+    struct mp_shim_session *owner = (struct mp_shim_session *)session;
+    if (!atomic_load_explicit(&owner->closed, memory_order_acquire)) {
+        return MP_SHIM_INVALID_ARGUMENT;
+    }
+    mp_shim_session_retain_raw(owner);
+    *out_observer = (mp_shim_sck_diagnostics_observer *)owner;
+    return MP_SHIM_OK;
+}
+
+mp_shim_status mp_shim_sck_diagnostics_observer_snapshot_read(
+    const mp_shim_sck_diagnostics_observer *observer,
+    mp_shim_sck_diagnostics_snapshot *out_snapshot) {
+    return mp_shim_sck_diagnostics_snapshot_read((const mp_shim_session *)observer,
+                                                 out_snapshot);
+}
+
+void mp_shim_sck_diagnostics_observer_release(
+    mp_shim_sck_diagnostics_observer *observer) {
+    if (observer != NULL) {
+        mp_shim_session_unref_raw((struct mp_shim_session *)observer);
+    }
+}
+
 static bool mp_shim_sck_diagnostics_test_probe_valid(
     const mp_shim_sck_diagnostics_probe *probe) {
     return probe != NULL && probe->magic == MP_SHIM_SCK_DIAGNOSTICS_PROBE_MAGIC;

@@ -304,6 +304,11 @@ typedef struct mp_shim_open_request {
 #define MP_SHIM_SCK_STATUS_KIND_COUNT 8u
 #define MP_SHIM_SCK_DIAGNOSTIC_TRANSITION_CAPACITY 16u
 typedef struct mp_shim_sck_diagnostics_probe mp_shim_sck_diagnostics_probe;
+/*
+ * Feature-only observer for closed-session bookkeeping. It retains the native
+ * allocation without contributing to structural session ownership.
+ */
+typedef struct mp_shim_session mp_shim_sck_diagnostics_observer;
 #define MP_SHIM_SCK_NATIVE_STREAM (1u << 0)
 #define MP_SHIM_SCK_NATIVE_CONFIGURATION (1u << 1)
 #define MP_SHIM_SCK_NATIVE_FILTER (1u << 2)
@@ -898,6 +903,16 @@ mp_shim_status mp_shim_session_live_objects(const mp_shim_session *session, uint
 /* Copies one bounded, privacy-safe diagnostic snapshot. */
 mp_shim_status mp_shim_sck_diagnostics_snapshot_read(
     const mp_shim_session *session, mp_shim_sck_diagnostics_snapshot *out_snapshot);
+/* Retains only the native allocation needed for post-owner-drop observation. */
+mp_shim_status mp_shim_sck_diagnostics_observer_acquire(
+    const mp_shim_session *session, mp_shim_sck_diagnostics_observer **out_observer);
+/* Copies one bounded snapshot through an acquired diagnostic observer. */
+mp_shim_status mp_shim_sck_diagnostics_observer_snapshot_read(
+    const mp_shim_sck_diagnostics_observer *observer,
+    mp_shim_sck_diagnostics_snapshot *out_snapshot);
+/* Releases an acquired observer. Accepts NULL. */
+void mp_shim_sck_diagnostics_observer_release(
+    mp_shim_sck_diagnostics_observer *observer);
 /* Copies process-global resource totals used by the diagnostic baseline gate. */
 mp_shim_status mp_shim_sck_diagnostics_process_resources(
     uint64_t *out_native_objects, uint64_t *out_detached_bytes,

@@ -1,11 +1,12 @@
 //! Private, feature-gated ScreenCaptureKit producer diagnostics.
 //!
 //! The facade owns concrete capture sessions behind platform-neutral trait
-//! objects. Qualification therefore reaches a session through this weak registry,
-//! keyed by its public stream identity. The registry never extends a session or
-//! native resource lifetime. Snapshotting is a cold operation and all returned
-//! values are fixed-size numeric state; no target identity, title, image, or OCR
-//! payload crosses this seam.
+//! objects. Qualification reaches a live Rust session through a weak registry
+//! keyed by its public stream identity. The registry never extends a session
+//! lifetime. An acquired [`SessionObserver`] keeps only a closed native
+//! allocation's bookkeeping alive; it retains no ScreenCaptureKit object and
+//! does not contribute to structural session ownership. Snapshotting is cold,
+//! bounded, and identifier-free.
 
 use std::fmt;
 use std::sync::{Arc, LazyLock, Mutex, Weak};
@@ -179,6 +180,28 @@ pub enum SnapshotError {
     NativeFailure,
 }
 
+pub struct SessionObserver {
+    observer: shim::SckDiagnosticsObserver,
+}
+
+impl fmt::Debug for SessionObserver {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        formatter.debug_struct("SessionObserver").finish()
+    }
+}
+
+impl SessionObserver {
+    pub fn snapshot(&self) -> Result<Snapshot, SnapshotError> {
+        self.native_snapshot().map(Snapshot::from_native)
+    }
+
+    pub(crate) fn native_snapshot(&self) -> Result<shim::SckDiagnosticsSnapshot, SnapshotError> {
+        self.observer
+            .snapshot()
+            .map_err(|_| SnapshotError::NativeFailure)
+    }
+}
+
 impl fmt::Display for SnapshotError {
     fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
         let message = match self {
@@ -223,25 +246,33 @@ pub fn take_open_failure_snapshot() -> Option<Snapshot> {
         .take()
 }
 
-pub fn session_snapshot(stream: StreamId) -> Result<Snapshot, SnapshotError> {
-    let session = {
-        let mut sessions = SESSIONS
-            .lock()
-            .unwrap_or_else(std::sync::PoisonError::into_inner);
-        sessions.retain(|candidate| candidate.strong_count() != 0);
-        let mut matching = None;
-        for candidate in sessions.iter().filter_map(Weak::upgrade) {
-            if candidate.description().stream() != stream {
-                continue;
-            }
-            if matching.is_some() {
-                return Err(SnapshotError::AmbiguousSession);
-            }
-            matching = Some(candidate);
+fn find_session(stream: StreamId) -> Result<Arc<NativeSession>, SnapshotError> {
+    let mut sessions = SESSIONS
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner);
+    sessions.retain(|candidate| candidate.strong_count() != 0);
+    let mut matching = None;
+    for candidate in sessions.iter().filter_map(Weak::upgrade) {
+        if candidate.description().stream() != stream {
+            continue;
         }
-        matching.ok_or(SnapshotError::SessionNotFound)?
-    };
-    session
+        if matching.is_some() {
+            return Err(SnapshotError::AmbiguousSession);
+        }
+        matching = Some(candidate);
+    }
+    matching.ok_or(SnapshotError::SessionNotFound)
+}
+
+pub fn session_observer(stream: StreamId) -> Result<SessionObserver, SnapshotError> {
+    find_session(stream)?
+        .sck_diagnostics_observer()
+        .map(|observer| SessionObserver { observer })
+        .map_err(|_| SnapshotError::NativeFailure)
+}
+
+pub fn session_snapshot(stream: StreamId) -> Result<Snapshot, SnapshotError> {
+    find_session(stream)?
         .sck_diagnostics_snapshot()
         .map(Snapshot::from_native)
         .map_err(|_| SnapshotError::NativeFailure)
