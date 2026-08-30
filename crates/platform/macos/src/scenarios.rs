@@ -1061,6 +1061,129 @@ fn a_frame_a_caller_still_holds_keeps_its_own_storage_after_close() {
     );
 }
 
+#[cfg(feature = "sck-suspension-diagnostics")]
+fn expected_after_post_fence_progress(
+    before: &shim::SckDiagnosticsSnapshot,
+    after: &shim::SckDiagnosticsSnapshot,
+) -> shim::SckDiagnosticsSnapshot {
+    assert_eq!(
+        after.callbacks_admitted, before.callbacks_admitted,
+        "a successful fence admits no later callback"
+    );
+    let received = after
+        .callbacks_received
+        .checked_sub(before.callbacks_received)
+        .expect("received callbacks never move backwards");
+    let refused = after
+        .callbacks_refused
+        .checked_sub(before.callbacks_refused)
+        .expect("refused callbacks never move backwards");
+    let exited = after
+        .callbacks_exited
+        .checked_sub(before.callbacks_exited)
+        .expect("exited callbacks never move backwards");
+    assert_eq!(
+        received, refused,
+        "every callback first observed after the fence is refused"
+    );
+    assert_eq!(
+        received, exited,
+        "every callback first observed after the fence exits"
+    );
+    assert_eq!(after.callbacks_received, after.callbacks_exited);
+    assert_eq!(
+        after.callbacks_received,
+        after
+            .callbacks_admitted
+            .saturating_add(after.callbacks_refused)
+    );
+    assert!(
+        after.session_references <= before.session_references,
+        "post-fence native ownership may be released but not reacquired"
+    );
+    assert!(
+        after.native_objects <= before.native_objects,
+        "post-fence native objects may be released but not created"
+    );
+
+    let mut expected = *before;
+    expected.callbacks_received = after.callbacks_received;
+    expected.callbacks_refused = after.callbacks_refused;
+    expected.callbacks_exited = after.callbacks_exited;
+    expected.session_references = after.session_references;
+    expected.native_objects = after.native_objects;
+    expected
+}
+
+#[cfg(feature = "sck-suspension-diagnostics")]
+#[test]
+fn diagnostic_start_failure_preserves_the_last_live_session_snapshot() {
+    let _serial = serialized();
+    let Some(harness) = Harness::acquire("diagnostic start failure") else {
+        return;
+    };
+
+    assert!(harness.open(RAISE_AT_START).is_err());
+    let snapshot = crate::sck_suspension_diagnostics::take_open_failure_snapshot()
+        .expect("the failed start records its live native session");
+    assert_eq!(snapshot.close_phase, 0);
+    assert_ne!(
+        snapshot.active_native_slots, 0,
+        "the snapshot precedes failure-path teardown"
+    );
+    assert_ne!(
+        snapshot.stream_start_completed_nanos, 0,
+        "the contained completion is timestamped before the start waiter resumes"
+    );
+}
+
+#[cfg(feature = "sck-suspension-diagnostics")]
+#[test]
+fn diagnostic_snapshot_is_stable_except_for_owned_frame_release() {
+    let _serial = serialized();
+    let Some(harness) = Harness::acquire("diagnostic retained-frame release") else {
+        return;
+    };
+    let baseline = shim::live_objects();
+    let resource_baseline =
+        crate::sck_suspension_diagnostics::process_resources().expect("resource baseline");
+    let session = harness.open(0).expect("open");
+    let frame = next_frame(&session, FrameRequest::latest()).expect("frame");
+
+    close(&session).expect("close");
+    let closed = session
+        .sck_diagnostics_snapshot()
+        .expect("closed diagnostic snapshot");
+    assert_eq!(closed.active_native_slots, 0);
+    assert_eq!(closed.detached_leases, 1);
+    assert!(closed.detached_bytes > resource_baseline.detached_bytes);
+    assert_eq!(closed.callbacks_received, closed.callbacks_exited);
+
+    drop(frame);
+    let released = session
+        .sck_diagnostics_snapshot()
+        .expect("released-frame diagnostic snapshot");
+    assert_eq!(released.detached_leases, 0);
+    assert!(released.session_references < closed.session_references);
+    let mut expected = expected_after_post_fence_progress(&closed, &released);
+    expected.detached_leases = released.detached_leases;
+    expected.detached_bytes = released.detached_bytes;
+    assert_eq!(
+        released, expected,
+        "frame release and refused post-fence callbacks change only allowlisted observations"
+    );
+
+    drop(session);
+    assert!(
+        settles_to(baseline),
+        "diagnostic retained-frame release returns native ownership to baseline"
+    );
+    assert!(
+        diagnostic_resources_settle_to(resource_baseline),
+        "diagnostic resource counters return to their exact process baseline"
+    );
+}
+
 #[test]
 fn a_cancelled_close_leaves_a_state_a_later_close_finishes() {
     let _serial = serialized();
@@ -1082,9 +1205,46 @@ fn a_cancelled_close_leaves_a_state_a_later_close_finishes() {
         Lifecycle::Open,
         "a cancelled close still stops accepting new work"
     );
+    #[cfg(feature = "sck-suspension-diagnostics")]
+    let interrupted = {
+        let snapshot = session
+            .sck_diagnostics_snapshot()
+            .expect("interrupted-close diagnostic snapshot");
+        assert_ne!(snapshot.callback_admission_stopped_nanos, 0);
+        assert_eq!(snapshot.callback_fence_completed_nanos, 0);
+        assert_eq!(snapshot.close_completed_nanos, 0);
+        snapshot
+    };
 
     close(&session).expect("a later close continues rather than restarting");
     assert_eq!(session.lifecycle(), Lifecycle::Closed);
+    #[cfg(feature = "sck-suspension-diagnostics")]
+    {
+        let closed = session
+            .sck_diagnostics_snapshot()
+            .expect("completed-close diagnostic snapshot");
+        assert_ne!(closed.callback_admission_stopped_nanos, 0);
+        assert_ne!(closed.callback_fence_completed_nanos, 0);
+        assert_ne!(closed.close_completed_nanos, 0);
+        assert_eq!(
+            closed.callback_admission_stopped_nanos, interrupted.callback_admission_stopped_nanos,
+            "a close retry continues the original admission-stop transition"
+        );
+        assert_eq!(closed.callbacks_received, closed.callbacks_exited);
+        assert_eq!(
+            closed.callbacks_received,
+            closed.callbacks_admitted + closed.callbacks_refused
+        );
+        thread::sleep(Duration::from_millis(10));
+        let post_fence = session
+            .sck_diagnostics_snapshot()
+            .expect("post-fence diagnostic snapshot");
+        assert_eq!(
+            post_fence,
+            expected_after_post_fence_progress(&closed, &post_fence),
+            "late refusals and output release preserve the completed close snapshot"
+        );
+    }
 }
 
 #[test]
@@ -1393,6 +1553,24 @@ fn contained_site(name: &str, site: u32, expectation: FrameExpectation) {
                     "close cannot deliver a second terminal callback"
                 );
             }
+            #[cfg(feature = "sck-suspension-diagnostics")]
+            {
+                let diagnostics = session
+                    .sck_diagnostics_snapshot()
+                    .expect("contained-site diagnostic snapshot");
+                assert_eq!(
+                    diagnostics.callbacks_received,
+                    diagnostics.callbacks_admitted + diagnostics.callbacks_refused
+                );
+                assert_eq!(diagnostics.callbacks_received, diagnostics.callbacks_exited);
+                assert_ne!(diagnostics.callback_fence_completed_nanos, 0);
+                if expectation == FrameExpectation::None {
+                    assert_ne!(
+                        diagnostics.callbacks_admitted, 0,
+                        "the callback-boundary failure must have entered a callback"
+                    );
+                }
+            }
             drop(session);
         }
         Err(error) => {
@@ -1475,6 +1653,22 @@ fn settles_to(baseline: u64) -> bool {
     let deadline = Instant::now() + Duration::from_secs(2);
     loop {
         if shim::live_objects() <= baseline {
+            return true;
+        }
+        if Instant::now() >= deadline {
+            return false;
+        }
+        thread::sleep(Duration::from_millis(10));
+    }
+}
+
+#[cfg(feature = "sck-suspension-diagnostics")]
+fn diagnostic_resources_settle_to(
+    baseline: crate::sck_suspension_diagnostics::ProcessResources,
+) -> bool {
+    let deadline = Instant::now() + Duration::from_secs(2);
+    loop {
+        if crate::sck_suspension_diagnostics::process_resources() == Ok(baseline) {
             return true;
         }
         if Instant::now() >= deadline {

@@ -1,6 +1,5 @@
 // macOS transport and target-owner binding for the shared native watcher harness.
 
-
 #[cfg(target_os = "macos")]
 use crate::macos_fixture::{
     FixtureController, LaunchMode, controlled_content_logical_size,
@@ -10,7 +9,6 @@ use crate::macos_fixture::{
 use crate::macos_fixture_control::executable_identity;
 #[cfg(target_os = "macos")]
 use crate::macos_fixture_protocol::{self as protocol, FixtureCommandKind};
-
 #[cfg(target_os = "macos")]
 const FIXTURE_STATUS_OK: u32 = 0;
 #[cfg(target_os = "macos")]

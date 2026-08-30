@@ -283,6 +283,14 @@ Corrective successor `7139a68` serializes backend generation admission per
 query and bounds Windows fixture output before allocation. The `f16591f` host
 cohorts do not qualify those changed runtime and harness semantics, so a future
 support decision requires a fresh complete protocol on both approved hosts.
+ADR 0059 retains a separate exact-source `f0eab45` single-display diagnostic.
+All eight fixed ownership and close-ordering processes completed and restored
+their resource baselines, but no suspension occurred and no row selected a
+causal repair. That result rejects copied mapping and retained-frame ownership
+as deterministic causes on the exercised topology only; it neither replaces
+the terminal-red cohort nor establishes the failure-case effect of sample-queue
+draining. The comparison-only drain seam was removed, no speculative production
+repair was introduced, and support remains withheld.
 OCR predicates, callbacks/subscriptions, C/C++, automatic input, target activation,
 arbitrary application/template/ROI compatibility or timing, real-time guarantees,
 packaging, and release remain unavailable.

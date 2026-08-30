@@ -1,0 +1,109 @@
+{
+  "schema": "mado-pilot-sck-suspension-diagnostic-protocol-v1",
+  "status": "published_before_execution",
+  "published_utc": "2026-08-30T10:34:04Z",
+  "processes_launched_before_publication": 0,
+  "change": "macos-screen-capture-kit-suspension-remediation",
+  "pull_request": "https://github.com/pashifika/mado-pilot/pull/61",
+  "source": {
+    "branch": "fix/macos-sck-suspension-remediation",
+    "revision": "f0eab45c3918914098040b96458e5d583bf2a32a",
+    "tree": "b948622ffb5ac7c3c572a2dea2ab4694d7601010"
+  },
+  "host": {
+    "class": "apple-m1-pro-10c-32g",
+    "target": "aarch64-apple-darwin",
+    "hardware": "Apple M1 Pro, 10 CPU cores, 34359738368 bytes memory",
+    "operating_system": "macOS 26.6.2 build 25G83",
+    "sdk_profile": "xcode-26.5",
+    "active_macos_sdk": "26.5",
+    "rust": "rust-1.97.1-8bab26f4-llvm-22.1.6",
+    "apple_clang": "Apple clang 21.0.0 (clang-2100.1.1.101)",
+    "required_topology": "single-display",
+    "required_display": "built-in Color LCD, 1512 x 982 logical at 120 Hz, non-mirrored",
+    "prepublication_topology_observation": "blocked: two active non-mirrored displays (built-in 1512 x 982 and external 3840 x 2160); no diagnostic process launched"
+  },
+  "artifacts": {
+    "build_commands": [
+      "cargo build --locked --release --package mado-pilot --bench native-template-watch --features native-template-watch-qualification",
+      "cargo build --locked --release --package mado-pilot-platform-macos --features private-fixture --bin mado-pilot-macos-input-fixture"
+    ],
+    "diagnostic_executable": "target/release/deps/native_template_watch-fbc01f4e9ac09d04",
+    "diagnostic_executable_sha256": "3aa9485c733654834524bab10aee701bdf3cae29dad83dce87c1bbebb8be44ee",
+    "fixture_executable": "target/mado-pilot-fixtures/MadoPilotWatchFixture.app/Contents/MacOS/mado-pilot-macos-input-fixture",
+    "fixture_executable_sha256": "4591eb891a93e133be7f9b7f5d55007618809cc72ee99e198ec56fe92a94fdfe",
+    "fixture_signature": "valid ad-hoc bundle signature; identifier dev.mado-pilot.macos-input-fixture",
+    "fixture_source_sha256": "f1c60db58650c1770f67b22c0e65563cf125c3800f43242d973da900d795395a",
+    "fixture_source_digest_algorithm": "SHA-256 over raw file contents concatenated in listed order with no paths or separators",
+    "fixture_source_inventory": [
+      "crates/platform/macos/Cargo.toml",
+      "crates/platform/macos/build.rs",
+      "crates/platform/macos/src/fixture_protocol.rs",
+      "crates/platform/macos/src/fixture_control.rs",
+      "crates/platform/macos/src/bin/mado-pilot-macos-input-fixture.rs",
+      "crates/platform/macos/native/madopilot_macos_input_fixture.h",
+      "crates/platform/macos/native/madopilot_macos_input_fixture.m"
+    ]
+  },
+  "matrix": {
+    "process_count": 8,
+    "parallelism": 1,
+    "order": [
+      {"process_index": 1, "drain_policy": "unchanged", "retention_variant": "none"},
+      {"process_index": 2, "drain_policy": "unchanged", "retention_variant": "mapping_only"},
+      {"process_index": 3, "drain_policy": "unchanged", "retention_variant": "frame_only"},
+      {"process_index": 4, "drain_policy": "unchanged", "retention_variant": "both"},
+      {"process_index": 5, "drain_policy": "drain_sample_queue", "retention_variant": "none"},
+      {"process_index": 6, "drain_policy": "drain_sample_queue", "retention_variant": "mapping_only"},
+      {"process_index": 7, "drain_policy": "drain_sample_queue", "retention_variant": "frame_only"},
+      {"process_index": 8, "drain_policy": "drain_sample_queue", "retention_variant": "both"}
+    ],
+    "operation_deadline_seconds": 5,
+    "fixture_lifecycle_and_settlement_deadline_seconds": 10,
+    "fixture_command_deadline_seconds": 2,
+    "poll_interval_milliseconds": 5
+  },
+  "arguments_common": [
+    "--sck-suspension-diagnostic",
+    "--fixture-executable=target/mado-pilot-fixtures/MadoPilotWatchFixture.app/Contents/MacOS/mado-pilot-macos-input-fixture",
+    "--source-revision=f0eab45c3918914098040b96458e5d583bf2a32a",
+    "--source-tree=b948622ffb5ac7c3c572a2dea2ab4694d7601010",
+    "--executable-sha256=3aa9485c733654834524bab10aee701bdf3cae29dad83dce87c1bbebb8be44ee",
+    "--fixture-sha256=4591eb891a93e133be7f9b7f5d55007618809cc72ee99e198ec56fe92a94fdfe",
+    "--fixture-source-sha256=f1c60db58650c1770f67b22c0e65563cf125c3800f43242d973da900d795395a",
+    "--host-class=apple-m1-pro-10c-32g",
+    "--os-profile=macos-26.6.2-build-25G83",
+    "--sdk-profile=xcode-26.5",
+    "--topology=single-display"
+  ],
+  "execution_rules": {
+    "preflight": [
+      "require exactly one active, non-mirrored built-in display matching the declared logical resolution and refresh rate",
+      "require current HEAD and tree to equal the declared source identity with no tracked worktree changes",
+      "recompute and require the diagnostic executable, fixture executable, and ordered fixture-source SHA-256 values",
+      "require strict fixture code-signature validation and the declared signing identifier",
+      "require non-prompting Screen Recording authorization and exact fixture authority before process 1"
+    ],
+    "integrity_stop_conditions": [
+      "launch no process when any preflight fact differs",
+      "launch no later process if source, artifact, topology, fixture authority, or privacy schema changes",
+      "retain an operation-failed row as evidence; do not retry or replace it",
+      "continue the remaining fixed matrix after an ordinary operation failure only when identity, topology, authority, and privacy invariants remain valid"
+    ],
+    "no_retry_replacement_rule": "Each matrix cell is one process and one attempt. No failed process, sample, row, target, fixture launch, or artifact is retried, excluded, reordered, substituted, or replaced. No timeout extension, sleep, extra priming, hidden recovery, or target switch is permitted.",
+    "raw_retention": "Capture each process stdout, stderr, and exit status in an ignored local evidence directory. Retain all pass and failure rows. Delete raw output only after aggregate extraction, schema validation, and privacy review retain the bounded rows and hashes."
+  },
+  "privacy_schema": {
+    "schema_version": 1,
+    "allowed_top_level_fields": [
+      "schema_version", "process_index", "policy", "variant", "provenance", "baseline", "final_resources", "owners", "fixture_revision", "first_complete_latency_nanos", "old_snapshot", "fresh_snapshot", "stage", "outcome"
+    ],
+    "allowed_status_event_fields": ["kind", "raw_value", "sequence", "monotonic_nanos"],
+    "allowed_process_resource_fields": ["native_objects", "detached_bytes", "live_sessions", "callbacks_in_flight"],
+    "allowed_owner_fields": ["frame", "mapping", "frame_readable_after_fresh_close", "mapping_readable_after_fresh_close"],
+    "forbidden": [
+      "captured pixels or image derivatives", "recognized text", "window titles", "target or native identifiers", "paths in emitted rows", "framework objects", "credentials", "free-form native payloads or logs"
+    ],
+    "validation": "Reject unknown fields, wrong provenance, missing or duplicate process rows, order changes, out-of-domain status/phase/slot values, invalid saturating counters or ring shape, owner mismatch, baseline leakage, and non-allowlisted strings."
+  }
+}

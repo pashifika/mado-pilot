@@ -181,6 +181,10 @@ fn main() {
         .warnings(true)
         .extra_warnings(true);
 
+    if std::env::var_os("CARGO_FEATURE_SCK_SUSPENSION_DIAGNOSTICS").is_some() {
+        shim.define("MP_SHIM_SCK_SUSPENSION_DIAGNOSTICS", "1");
+    }
+
     if sanitize {
         // Instrumenting the shim is what makes the freed access observable, and
         // linking the runtime into this package's test binaries is what makes the
