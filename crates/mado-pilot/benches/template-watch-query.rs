@@ -922,11 +922,22 @@ fn saturation_latest_wins(_: &()) -> Sample {
         .capture
         .publish(0x41, Continuity::Continuous)
         .expect("published pending frame");
+    let latest_first_pending = wait_progress(&latest, |progress| {
+        progress.pending_count() == 1
+            && progress.in_flight_count() == 1
+            && progress.work().get(TemplateWorkDisposition::Admitted) == 1
+    });
     latest_run
         .core
         .capture
         .publish(0x42, Continuity::Continuous)
         .expect("published pending replacement");
+    let latest_first_replaced = wait_progress(&latest, |progress| {
+        progress.pending_count() == 1
+            && progress.in_flight_count() == 1
+            && progress.work().get(TemplateWorkDisposition::Admitted) == 1
+            && progress.work().get(TemplateWorkDisposition::Superseded) == 1
+    });
     latest_run
         .core
         .capture
@@ -936,6 +947,7 @@ fn saturation_latest_wins(_: &()) -> Sample {
         progress.pending_count() == 1
             && progress.in_flight_count() == 1
             && progress.work().get(TemplateWorkDisposition::Admitted) == 1
+            && progress.work().get(TemplateWorkDisposition::Superseded) == 2
     });
     latest_first_gate.release();
     let _ = wait_progress(&latest, |progress| {
@@ -972,6 +984,8 @@ fn saturation_latest_wins(_: &()) -> Sample {
     });
     let latest_correct = latest_first_entered
         && latest_final_entered
+        && latest_first_pending.pending_count() == 1
+        && latest_first_replaced.pending_count() == 1
         && latest_replaced.pending_count() == 1
         && matches!(
             latest_outcome.as_ref(),
@@ -982,7 +996,7 @@ fn saturation_latest_wins(_: &()) -> Sample {
             work.backend_runs == 2
                 && work.admitted == 2
                 && work.completed == 2
-                && work.superseded == 0
+                && work.superseded == 2
                 && work.stale_discards == 0
                 && work.query_completions == 1
         });
@@ -1083,7 +1097,7 @@ fn saturation_latest_wins(_: &()) -> Sample {
             && work.admitted == 4
             && work.completed == 4
             && work.queue_expired == 1
-            && work.superseded == 0
+            && work.superseded == 2
             && work.stale_discards == 0
             && work.query_completions == 4
             && work.query_failures == 0

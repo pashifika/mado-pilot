@@ -1166,20 +1166,31 @@ fn slow_backend_reconsiders_only_the_latest_pending_frame() {
         .capture
         .publish(0x32, Continuity::Continuous)
         .expect("published pending frame");
-    harness
-        .capture
-        .publish(0x33, Continuity::Continuous)
-        .expect("published pending replacement");
-    harness
-        .capture
-        .publish(0x34, Continuity::Continuous)
-        .expect("published latest replacement");
-    let replaced = wait_progress(&query, |progress| {
+    let first_pending = wait_progress(&query, |progress| {
         progress.pending_count() == 1
             && progress.in_flight_count() == 1
             && progress.work().get(TemplateWorkDisposition::Admitted) == 1
     });
-
+    harness
+        .capture
+        .publish(0x33, Continuity::Continuous)
+        .expect("published pending replacement");
+    let first_replaced = wait_progress(&query, |progress| {
+        progress.pending_count() == 1
+            && progress.in_flight_count() == 1
+            && progress.work().get(TemplateWorkDisposition::Admitted) == 1
+            && progress.work().get(TemplateWorkDisposition::Superseded) == 1
+    });
+    harness
+        .capture
+        .publish(0x34, Continuity::Continuous)
+        .expect("published latest replacement");
+    let latest_replaced = wait_progress(&query, |progress| {
+        progress.pending_count() == 1
+            && progress.in_flight_count() == 1
+            && progress.work().get(TemplateWorkDisposition::Admitted) == 1
+            && progress.work().get(TemplateWorkDisposition::Superseded) == 2
+    });
     first_gate.release();
     let _ = wait_progress(&query, |progress| {
         progress.work().get(TemplateWorkDisposition::Completed) == 1
@@ -1197,10 +1208,12 @@ fn slow_backend_reconsiders_only_the_latest_pending_frame() {
     let TemplateTerminalOutcome::Matched(result) = outcome.as_ref() else {
         panic!("expected match, got {outcome:?}");
     };
-    assert_eq!(replaced.pending_count(), 1);
+    assert_eq!(first_pending.pending_count(), 1);
+    assert_eq!(first_replaced.pending_count(), 1);
+    assert_eq!(latest_replaced.pending_count(), 1);
     assert_eq!(ready.work().get(TemplateWorkDisposition::Admitted), 2);
     assert_eq!(ready.work().get(TemplateWorkDisposition::Completed), 1);
-    assert_eq!(ready.work().get(TemplateWorkDisposition::Superseded), 0);
+    assert_eq!(ready.work().get(TemplateWorkDisposition::Superseded), 2);
     assert_eq!(result.frame().stamp().sequence().value(), 3);
     assert_eq!(harness.matcher.find_count(), 2);
 }
