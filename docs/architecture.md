@@ -86,6 +86,10 @@ query and bounds Windows fixture output before allocation. Those runtime and
 harness changes make every `f16591f` host cohort historical for the current
 implementation; fresh complete cohorts on both hosts are required before
 support can be reconsidered.
+ADR 0058 separates implementation integration from support promotion. Merging a
+verified native watcher implementation into `dev/0.4.0` does not alter the
+failed qualification or withheld support state; diagnosis and repair continue
+from that integrated baseline under fresh evidence.
 OCR predicates, callbacks/subscriptions, C/C++, automatic input,
 target activation, arbitrary application/template/ROI compatibility or timing,
 real-time guarantees, packaging, artifacts, tags, and the `v0.4.0` release
