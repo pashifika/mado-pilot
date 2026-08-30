@@ -911,6 +911,8 @@ fn saturation_latest_wins(_: &()) -> Sample {
         MatchOptions::from_defaults(latest_template.defaults()),
         OperationContext::new(),
     );
+    let _latest_first_release = latest_first_gate.release_guard();
+    let _latest_final_release = latest_final_gate.release_guard();
     latest_run
         .core
         .capture
@@ -1027,6 +1029,8 @@ fn saturation_latest_wins(_: &()) -> Sample {
         MatchOptions::from_defaults(second_template.defaults()),
         OperationContext::new(),
     );
+    let _first_release = first_gate.release_guard();
+    let _second_release = second_gate.release_guard();
     saturation_run
         .core
         .capture

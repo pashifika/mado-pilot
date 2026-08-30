@@ -59,7 +59,7 @@ pub use controlled_input::ControlledInput;
 pub use controlled_matcher::{Behavior, ControlledMatcher, ObservedMatcher, ScriptedMatchCall};
 pub use controlled_ocr::{
     CONTROLLED_OCR_BACKEND, CONTROLLED_OCR_MODEL, CONTROLLED_OCR_PROFILE, CompletionGate,
-    ControlledOcr, OcrBehavior, ScriptedOcrCall, ScriptedOcrCandidate,
+    CompletionGateReleaseGuard, ControlledOcr, OcrBehavior, ScriptedOcrCall, ScriptedOcrCandidate,
 };
 pub use controlled_storage::{ControlledProducer, Conversion};
 pub use mado_pilot_vision::{Candidate, MatchBackend};

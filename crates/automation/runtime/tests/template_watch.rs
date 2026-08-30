@@ -716,6 +716,10 @@ fn source_end_allows_an_already_pending_last_frame_to_complete() {
 fn exact_queries_coalesce_backend_work_without_sharing_terminal_state() {
     let blocker_gates: Vec<_> = (0..2).map(|_| Arc::new(CompletionGate::new())).collect();
     let harness = Harness::new(coalescing_matcher(&blocker_gates));
+    let _blocker_releases: Vec<_> = blocker_gates
+        .iter()
+        .map(|gate| gate.release_guard())
+        .collect();
     occupy_match_workers(&harness, &blocker_gates);
 
     let session = open_unpublished(&harness);
@@ -842,6 +846,10 @@ fn separately_prepared_instances_with_one_public_id_do_not_coalesce() {
 fn equal_effective_regions_coalesce() {
     let blocker_gates: Vec<_> = (0..2).map(|_| Arc::new(CompletionGate::new())).collect();
     let harness = Harness::new(coalescing_matcher(&blocker_gates));
+    let _blocker_releases: Vec<_> = blocker_gates
+        .iter()
+        .map(|gate| gate.release_guard())
+        .collect();
     occupy_match_workers(&harness, &blocker_gates);
 
     let session = open_unpublished(&harness);
@@ -1161,6 +1169,8 @@ fn slow_backend_reconsiders_only_the_latest_pending_frame() {
             OperationContext::new(),
         ))
         .expect("started query");
+    let _first_release = first_gate.release_guard();
+    let _final_release = final_gate.release_guard();
     assert!(first_gate.wait_until_entered(Duration::from_secs(2)));
     harness
         .capture
