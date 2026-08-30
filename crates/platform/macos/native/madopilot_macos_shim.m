@@ -2170,15 +2170,19 @@ mp_shim_status mp_shim_sck_diagnostics_layout(
 
 mp_shim_status mp_shim_sck_diagnostics_topology_layout(
     uint32_t *out_mode_size, uint32_t *out_topology_size,
-    uint32_t *out_mode_refresh_offset, uint32_t *out_topology_modes_offset) {
+    uint32_t *out_mode_refresh_offset, uint32_t *out_mode_backing_scale_offset,
+    uint32_t *out_topology_modes_offset) {
     if (out_mode_size == NULL || out_topology_size == NULL ||
-        out_mode_refresh_offset == NULL || out_topology_modes_offset == NULL) {
+        out_mode_refresh_offset == NULL || out_mode_backing_scale_offset == NULL ||
+        out_topology_modes_offset == NULL) {
         return MP_SHIM_INVALID_ARGUMENT;
     }
     *out_mode_size = (uint32_t)sizeof(mp_shim_sck_diagnostics_display_mode);
     *out_topology_size = (uint32_t)sizeof(mp_shim_sck_diagnostics_display_topology);
     *out_mode_refresh_offset =
         (uint32_t)offsetof(mp_shim_sck_diagnostics_display_mode, refresh_millihertz);
+    *out_mode_backing_scale_offset =
+        (uint32_t)offsetof(mp_shim_sck_diagnostics_display_mode, backing_scale_milli);
     *out_topology_modes_offset =
         (uint32_t)offsetof(mp_shim_sck_diagnostics_display_topology, modes);
     return MP_SHIM_OK;
@@ -2195,6 +2199,9 @@ static bool mp_shim_sck_diagnostics_display_mode_after(
     }
     if (left->refresh_millihertz != right->refresh_millihertz) {
         return left->refresh_millihertz > right->refresh_millihertz;
+    }
+    if (left->backing_scale_milli != right->backing_scale_milli) {
+        return left->backing_scale_milli > right->backing_scale_milli;
     }
     if (left->built_in != right->built_in) {
         return left->built_in > right->built_in;
@@ -2225,11 +2232,18 @@ static mp_shim_status mp_shim_sck_diagnostics_read_display_mode(
     }
     size_t width = CGDisplayModeGetWidth(mode);
     size_t height = CGDisplayModeGetHeight(mode);
+    size_t pixel_width = CGDisplayModeGetPixelWidth(mode);
     double refresh = CGDisplayModeGetRefreshRate(mode);
     CGDisplayModeRelease(mode);
-    if (width == 0 || height == 0 || width > UINT32_MAX || height > UINT32_MAX ||
-        !isfinite(refresh) || refresh < 0.0 ||
-        refresh > (double)UINT32_MAX / 1000.0) {
+    double backing_scale = width == 0 ? 0.0 : (double)pixel_width / (double)width;
+    if (width == 0 || height == 0 || pixel_width == 0 || width > UINT32_MAX ||
+        height > UINT32_MAX || !isfinite(refresh) || refresh < 0.0 ||
+        refresh > (double)UINT32_MAX / 1000.0 || !isfinite(backing_scale) ||
+        backing_scale <= 0.0 || backing_scale > (double)UINT32_MAX / 1000.0) {
+        return MP_SHIM_PLATFORM_FAILURE;
+    }
+    uint32_t backing_scale_milli = (uint32_t)llround(backing_scale * 1000.0);
+    if (backing_scale_milli == 0) {
         return MP_SHIM_PLATFORM_FAILURE;
     }
     out_mode->logical_width = (uint32_t)width;
@@ -2237,6 +2251,7 @@ static mp_shim_status mp_shim_sck_diagnostics_read_display_mode(
     out_mode->refresh_millihertz = (uint32_t)llround(refresh * 1000.0);
     out_mode->built_in = CGDisplayIsBuiltin(display) ? 1u : 0u;
     out_mode->mirrored = CGDisplayIsInMirrorSet(display) ? 1u : 0u;
+    out_mode->backing_scale_milli = backing_scale_milli;
     return MP_SHIM_OK;
 }
 
@@ -4494,7 +4509,8 @@ mp_shim_status mp_shim_sck_diagnostics_test_display_topology(
     for (uint32_t index = 0; index < mode_count; index += 1) {
         if (modes[index].logical_width == 0 || modes[index].logical_height == 0 ||
             modes[index].refresh_millihertz > 1000000u ||
-            modes[index].built_in > 1 || modes[index].mirrored > 1) {
+            modes[index].built_in > 1 || modes[index].mirrored > 1 ||
+            modes[index].backing_scale_milli == 0) {
             return MP_SHIM_INVALID_ARGUMENT;
         }
     }

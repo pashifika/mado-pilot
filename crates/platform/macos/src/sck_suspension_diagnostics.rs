@@ -22,21 +22,11 @@ use crate::shim::{
 
 pub const STATUS_KIND_COUNT: usize = 8;
 pub const TRANSITION_CAPACITY: usize = 16;
-pub const DISPLAY_CAPACITY: usize = 2;
-
-#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
-pub struct DisplayMode {
-    pub logical_width: u32,
-    pub logical_height: u32,
-    pub refresh_millihertz: u32,
-    pub built_in: bool,
-    pub mirrored: bool,
-}
 
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
 pub struct DisplayTopology {
     pub display_count: u32,
-    pub modes: [Option<DisplayMode>; DISPLAY_CAPACITY],
+    pub has_distinct_backing_scales: bool,
 }
 
 static SESSIONS: LazyLock<Mutex<Vec<Weak<NativeSession>>>> =
@@ -306,31 +296,33 @@ fn display_topology_from_native(
         usize::try_from(native.mode_count).map_err(|_| SnapshotError::NativeFailure)?;
     let expected_count = usize::try_from(native.display_count)
         .unwrap_or(usize::MAX)
-        .min(DISPLAY_CAPACITY);
-    if mode_count > DISPLAY_CAPACITY || mode_count != expected_count {
+        .min(shim::SCK_DIAGNOSTIC_DISPLAY_CAPACITY);
+    if mode_count > shim::SCK_DIAGNOSTIC_DISPLAY_CAPACITY || mode_count != expected_count {
         return Err(SnapshotError::NativeFailure);
     }
-    let mut modes = [None; DISPLAY_CAPACITY];
-    for (destination, source) in modes.iter_mut().zip(native.modes).take(mode_count) {
+    let mut first_backing_scale = None;
+    let mut has_distinct_backing_scales = false;
+    for source in native.modes.into_iter().take(mode_count) {
         if source.logical_width == 0
             || source.logical_height == 0
             || source.refresh_millihertz > 1_000_000
             || source.built_in > 1
             || source.mirrored > 1
+            || source.backing_scale_milli == 0
         {
             return Err(SnapshotError::NativeFailure);
         }
-        *destination = Some(DisplayMode {
-            logical_width: source.logical_width,
-            logical_height: source.logical_height,
-            refresh_millihertz: source.refresh_millihertz,
-            built_in: source.built_in != 0,
-            mirrored: source.mirrored != 0,
-        });
+        match first_backing_scale {
+            Some(first) if first != source.backing_scale_milli => {
+                has_distinct_backing_scales = true;
+            }
+            None => first_backing_scale = Some(source.backing_scale_milli),
+            Some(_) => {}
+        }
     }
     Ok(DisplayTopology {
         display_count: native.display_count,
-        modes,
+        has_distinct_backing_scales,
     })
 }
 
@@ -338,12 +330,13 @@ fn display_topology_from_native(
 mod tests {
     use super::*;
 
-    fn native_mode() -> shim::SckDiagnosticsDisplayMode {
+    fn native_mode(backing_scale_milli: u32) -> shim::SckDiagnosticsDisplayMode {
         let mut mode = shim::SckDiagnosticsDisplayMode::default();
         mode.logical_width = 1512;
         mode.logical_height = 982;
         mode.refresh_millihertz = 120_000;
         mode.built_in = 1;
+        mode.backing_scale_milli = backing_scale_milli;
         mode
     }
 
@@ -351,14 +344,35 @@ mod tests {
         let mut topology = shim::SckDiagnosticsDisplayTopology::requested();
         topology.display_count = 1;
         topology.mode_count = 1;
-        topology.modes[0] = native_mode();
+        topology.modes[0] = native_mode(2_000);
         topology
     }
 
     #[test]
-    fn display_topology_rejects_unsupported_refresh_boolean_and_count_values() {
-        assert!(display_topology_from_native(native_topology()).is_ok());
+    fn display_topology_reports_only_count_and_distinct_backing_scale_class() {
+        assert_eq!(
+            display_topology_from_native(native_topology()),
+            Ok(DisplayTopology {
+                display_count: 1,
+                has_distinct_backing_scales: false,
+            })
+        );
 
+        let mut mixed = native_topology();
+        mixed.display_count = 2;
+        mixed.mode_count = 2;
+        mixed.modes[1] = native_mode(1_000);
+        assert_eq!(
+            display_topology_from_native(mixed),
+            Ok(DisplayTopology {
+                display_count: 2,
+                has_distinct_backing_scales: true,
+            })
+        );
+    }
+
+    #[test]
+    fn display_topology_rejects_invalid_native_shape() {
         let mut invalid = native_topology();
         invalid.modes[0].refresh_millihertz = 1_000_001;
         assert_eq!(
@@ -367,6 +381,12 @@ mod tests {
         );
         let mut invalid = native_topology();
         invalid.modes[0].mirrored = 2;
+        assert_eq!(
+            display_topology_from_native(invalid),
+            Err(SnapshotError::NativeFailure)
+        );
+        let mut invalid = native_topology();
+        invalid.modes[0].backing_scale_milli = 0;
         assert_eq!(
             display_topology_from_native(invalid),
             Err(SnapshotError::NativeFailure)

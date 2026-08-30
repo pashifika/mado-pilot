@@ -30,7 +30,7 @@ extern "C" {
 #endif
 
 /* The version of this internal surface. Rust asserts it at load. */
-#define MP_SHIM_ABI_VERSION 22u
+#define MP_SHIM_ABI_VERSION 23u
 
 /* The largest extent, budget, and default wait the shim will accept or apply. */
 #define MP_SHIM_MAX_PIXEL_EXTENT 32768u
@@ -366,14 +366,15 @@ typedef struct mp_shim_sck_diagnostics_snapshot {
 
 #define MP_SHIM_SCK_DIAGNOSTIC_DISPLAY_CAPACITY 2u
 
-/* One identifier-free active display mode. */
+/* One process-local active display mode used to classify DPI. */
 typedef struct mp_shim_sck_diagnostics_display_mode {
     uint32_t logical_width;
     uint32_t logical_height;
     uint32_t refresh_millihertz;
     uint32_t built_in;
     uint32_t mirrored;
-    uint32_t reserved[3];
+    uint32_t backing_scale_milli;
+    uint32_t reserved[2];
 } mp_shim_sck_diagnostics_display_mode;
 
 /* One cold, bounded active-display topology snapshot. */
@@ -395,7 +396,8 @@ mp_shim_status mp_shim_sck_diagnostics_layout(
     uint32_t *out_transitions_offset);
 mp_shim_status mp_shim_sck_diagnostics_topology_layout(
     uint32_t *out_mode_size, uint32_t *out_topology_size,
-    uint32_t *out_mode_refresh_offset, uint32_t *out_topology_modes_offset);
+    uint32_t *out_mode_refresh_offset, uint32_t *out_mode_backing_scale_offset,
+    uint32_t *out_topology_modes_offset);
 mp_shim_status mp_shim_sck_diagnostics_read_display_topology(
     mp_shim_sck_diagnostics_display_topology *out_topology);
 

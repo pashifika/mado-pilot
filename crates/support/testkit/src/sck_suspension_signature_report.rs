@@ -17,10 +17,9 @@ use sha2::{Digest, Sha256};
 
 use serde::{Deserialize, Serialize};
 
-pub const SCHEMA_VERSION: u32 = 1;
+pub const SCHEMA_VERSION: u32 = 2;
 pub const STATUS_KIND_COUNT: usize = 8;
 pub const TRANSITION_CAPACITY: usize = 16;
-pub const DISPLAY_CAPACITY: usize = 2;
 pub const PROCESS_COUNT: usize = 10;
 pub const OPERATION_DEADLINE_MILLIS: u32 = 5_000;
 pub const LIFECYCLE_STEP_CAPACITY: usize = 11;
@@ -90,19 +89,9 @@ pub struct Provenance {
 
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
-pub struct DisplayMode {
-    pub logical_width: u32,
-    pub logical_height: u32,
-    pub refresh_millihertz: u32,
-    pub built_in: bool,
-    pub mirrored: bool,
-}
-
-#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(deny_unknown_fields)]
 pub struct DisplayTopology {
     pub display_count: u32,
-    pub modes: [Option<DisplayMode>; DISPLAY_CAPACITY],
+    pub has_distinct_backing_scales: bool,
 }
 
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
@@ -589,35 +578,11 @@ const fn expected_topology(class: TopologyClass) -> DisplayTopology {
     match class {
         TopologyClass::SingleDisplayControl => DisplayTopology {
             display_count: 1,
-            modes: [
-                Some(DisplayMode {
-                    logical_width: 1_512,
-                    logical_height: 982,
-                    refresh_millihertz: 120_000,
-                    built_in: true,
-                    mirrored: false,
-                }),
-                None,
-            ],
+            has_distinct_backing_scales: false,
         },
         TopologyClass::HistoricalTwoDisplay => DisplayTopology {
             display_count: 2,
-            modes: [
-                Some(DisplayMode {
-                    logical_width: 1_512,
-                    logical_height: 982,
-                    refresh_millihertz: 120_000,
-                    built_in: false,
-                    mirrored: false,
-                }),
-                Some(DisplayMode {
-                    logical_width: 3_840,
-                    logical_height: 2_160,
-                    refresh_millihertz: 120_000,
-                    built_in: false,
-                    mirrored: false,
-                }),
-            ],
+            has_distinct_backing_scales: true,
         },
     }
 }
@@ -1001,6 +966,17 @@ mod tests {
             .insert("native_identifier".to_owned(), serde_json::json!(17));
         let unknown = serde_json::to_string(&value).expect("serializes");
         assert_eq!(parse_json_line(&unknown), Err(ValidationFault::Privacy));
+
+        let mut exact_configuration = serde_json::to_value(completed_row(1)).expect("serializes");
+        exact_configuration["observed_topology"]
+            .as_object_mut()
+            .expect("observed topology object")
+            .insert("modes".to_owned(), serde_json::json!([]));
+        let exact_configuration = serde_json::to_string(&exact_configuration).expect("serializes");
+        assert_eq!(
+            parse_json_line(&exact_configuration),
+            Err(ValidationFault::Privacy)
+        );
         let line = completed_row(1).to_json_line().expect("valid row");
         assert_eq!(
             parse_json_line(&format!("{line}\n")),
@@ -1009,9 +985,8 @@ mod tests {
     }
 
     #[test]
-    fn topology_profiles_reject_unsupported_refresh_mirroring_and_counts() {
+    fn topology_classes_require_only_display_count_and_distinct_backing_scales() {
         let single = expected_topology(TopologyClass::SingleDisplayControl);
-
         let historical = expected_topology(TopologyClass::HistoricalTwoDisplay);
         assert!(topology_matches(
             TopologyClass::SingleDisplayControl,
@@ -1022,23 +997,6 @@ mod tests {
             historical
         ));
 
-        let mut unsupported_refresh = single;
-        unsupported_refresh.modes[0]
-            .as_mut()
-            .expect("single mode")
-            .refresh_millihertz = 0;
-        assert!(!topology_matches(
-            TopologyClass::SingleDisplayControl,
-            unsupported_refresh
-        ));
-
-        let mut mirrored = historical;
-        mirrored.modes[1].as_mut().expect("second mode").mirrored = true;
-        assert!(!topology_matches(
-            TopologyClass::HistoricalTwoDisplay,
-            mirrored
-        ));
-
         let mut wrong_count = single;
         wrong_count.display_count = 2;
         assert!(!topology_matches(
@@ -1046,11 +1004,18 @@ mod tests {
             wrong_count
         ));
 
-        let mut built_in = historical;
-        built_in.modes[0].as_mut().expect("first mode").built_in = true;
+        let mut unexpected_mixed_scale = single;
+        unexpected_mixed_scale.has_distinct_backing_scales = true;
+        assert!(!topology_matches(
+            TopologyClass::SingleDisplayControl,
+            unexpected_mixed_scale
+        ));
+
+        let mut same_scale = historical;
+        same_scale.has_distinct_backing_scales = false;
         assert!(!topology_matches(
             TopologyClass::HistoricalTwoDisplay,
-            built_in
+            same_scale
         ));
     }
     #[test]

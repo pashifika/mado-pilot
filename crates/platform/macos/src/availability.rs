@@ -63,7 +63,7 @@ pub(crate) fn linked_shim_agrees() -> bool {
 }
 
 #[cfg(feature = "sck-suspension-diagnostics")]
-fn sck_diagnostics_layout_agrees(linked: [u32; 9], topology: [u32; 4]) -> bool {
+fn sck_diagnostics_layout_agrees(linked: [u32; 9], topology: [u32; 5]) -> bool {
     linked == shim::declared_sck_diagnostics_layout()
         && topology == shim::declared_sck_diagnostics_topology_layout()
 }

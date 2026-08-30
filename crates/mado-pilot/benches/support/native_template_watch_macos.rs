@@ -759,15 +759,7 @@ const fn report_frame_identity(stamp: FrameStamp) -> sck_signature::FrameIdentit
 fn report_topology(topology: sck_diagnostics::DisplayTopology) -> sck_signature::DisplayTopology {
     sck_signature::DisplayTopology {
         display_count: topology.display_count,
-        modes: topology.modes.map(|mode| {
-            mode.map(|mode| sck_signature::DisplayMode {
-                logical_width: mode.logical_width,
-                logical_height: mode.logical_height,
-                refresh_millihertz: mode.refresh_millihertz,
-                built_in: mode.built_in,
-                mirrored: mode.mirrored,
-            })
-        }),
+        has_distinct_backing_scales: topology.has_distinct_backing_scales,
     }
 }
 

@@ -42,7 +42,7 @@ use mado_pilot_capture::CaptureFault;
 use mado_pilot_core::{OperationContext, PermissionState, PixelExtent};
 
 /// The internal surface version this build was written against.
-pub(crate) const ABI_VERSION: u32 = 22;
+pub(crate) const ABI_VERSION: u32 = 23;
 
 /// Largest wait the shim is ever asked for, so one native call cannot consume a
 /// caller's whole budget.
@@ -258,7 +258,7 @@ impl SckDiagnosticsSnapshot {
     }
 }
 
-/// One identifier-free active display mode.
+/// One identifier-free active display mode used to classify DPI.
 #[cfg(feature = "sck-suspension-diagnostics")]
 #[repr(C)]
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
@@ -268,7 +268,8 @@ pub(crate) struct SckDiagnosticsDisplayMode {
     pub(crate) refresh_millihertz: u32,
     pub(crate) built_in: u32,
     pub(crate) mirrored: u32,
-    reserved: [u32; 3],
+    pub(crate) backing_scale_milli: u32,
+    reserved: [u32; 2],
 }
 
 /// One cold, bounded active-display topology snapshot.
@@ -2507,22 +2508,29 @@ pub(crate) fn linked_sck_diagnostics_layout() -> [u32; 9] {
 
 /// Returns private display-topology sizes and offsets compiled into the linked shim.
 #[cfg(feature = "sck-suspension-diagnostics")]
-pub(crate) fn linked_sck_diagnostics_topology_layout() -> [u32; 4] {
-    let mut layout = [0; 4];
-    let [mode_size, topology_size, mode_refresh, topology_modes] = &mut layout;
-    // SAFETY: all four outputs are writable for one u32 each.
+pub(crate) fn linked_sck_diagnostics_topology_layout() -> [u32; 5] {
+    let mut layout = [0; 5];
+    let [
+        mode_size,
+        topology_size,
+        mode_refresh,
+        mode_backing_scale,
+        topology_modes,
+    ] = &mut layout;
+    // SAFETY: all five outputs are writable for one u32 each.
     let status = unsafe {
         mp_shim_sck_diagnostics_topology_layout(
             &raw mut *mode_size,
             &raw mut *topology_size,
             &raw mut *mode_refresh,
+            &raw mut *mode_backing_scale,
             &raw mut *topology_modes,
         )
     };
     if ShimStatus::from_raw(status) == ShimStatus::Ok {
         layout
     } else {
-        [0; 4]
+        [0; 5]
     }
 }
 
@@ -2557,13 +2565,18 @@ pub(crate) fn declared_sck_diagnostics_layout() -> [u32; 9] {
 
 /// Returns private display-topology sizes and offsets compiled into the Rust mirrors.
 #[cfg(feature = "sck-suspension-diagnostics")]
-pub(crate) fn declared_sck_diagnostics_topology_layout() -> [u32; 4] {
+pub(crate) fn declared_sck_diagnostics_topology_layout() -> [u32; 5] {
     [
         u32::try_from(size_of::<SckDiagnosticsDisplayMode>()).expect("structure size fits u32"),
         u32::try_from(size_of::<SckDiagnosticsDisplayTopology>()).expect("structure size fits u32"),
         u32::try_from(std::mem::offset_of!(
             SckDiagnosticsDisplayMode,
             refresh_millihertz
+        ))
+        .expect("field offset fits u32"),
+        u32::try_from(std::mem::offset_of!(
+            SckDiagnosticsDisplayMode,
+            backing_scale_milli
         ))
         .expect("field offset fits u32"),
         u32::try_from(std::mem::offset_of!(SckDiagnosticsDisplayTopology, modes))
@@ -3588,6 +3601,7 @@ unsafe extern "C" {
         out_mode_size: *mut u32,
         out_topology_size: *mut u32,
         out_mode_refresh_offset: *mut u32,
+        out_mode_backing_scale_offset: *mut u32,
         out_topology_modes_offset: *mut u32,
     ) -> u32;
     #[cfg(feature = "sck-suspension-diagnostics")]
@@ -4067,7 +4081,7 @@ mod tests {
             u32::try_from(SCK_DIAGNOSTIC_TRANSITION_CAPACITY).expect("capacity fits u32")
         );
         let topology_declared = declared_sck_diagnostics_topology_layout();
-        assert_eq!(topology_declared, [32, 80, 8, 16]);
+        assert_eq!(topology_declared, [32, 80, 8, 20, 16]);
         assert_eq!(linked_sck_diagnostics_topology_layout(), topology_declared);
         let requested_topology = SckDiagnosticsDisplayTopology::requested();
         assert_eq!(requested_topology.struct_size, 80);
@@ -4087,6 +4101,7 @@ mod tests {
                 refresh_millihertz: 120_000,
                 built_in: 0,
                 mirrored: 0,
+                backing_scale_milli: 1_000,
                 ..SckDiagnosticsDisplayMode::default()
             },
             SckDiagnosticsDisplayMode {
@@ -4095,6 +4110,7 @@ mod tests {
                 refresh_millihertz: 120_000,
                 built_in: 1,
                 mirrored: 0,
+                backing_scale_milli: 2_000,
                 ..SckDiagnosticsDisplayMode::default()
             },
         ];
@@ -4108,7 +4124,9 @@ mod tests {
         assert_eq!(topology.display_count, 2);
         assert_eq!(topology.mode_count, 2);
         assert_eq!(topology.modes[0].logical_width, 1_512);
+        assert_eq!(topology.modes[0].backing_scale_milli, 2_000);
         assert_eq!(topology.modes[1].logical_width, 3_840);
+        assert_eq!(topology.modes[1].backing_scale_milli, 1_000);
     }
 
     #[cfg(feature = "sck-suspension-diagnostics")]
@@ -4120,6 +4138,7 @@ mod tests {
             refresh_millihertz: 120_000,
             built_in: 1,
             mirrored: 0,
+            backing_scale_milli: 2_000,
             ..SckDiagnosticsDisplayMode::default()
         };
         for invalid in [
@@ -4137,6 +4156,10 @@ mod tests {
             },
             SckDiagnosticsDisplayMode {
                 mirrored: 2,
+                ..valid
+            },
+            SckDiagnosticsDisplayMode {
+                backing_scale_milli: 0,
                 ..valid
             },
         ] {
