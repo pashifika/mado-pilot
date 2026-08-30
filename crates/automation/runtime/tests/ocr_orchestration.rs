@@ -244,6 +244,7 @@ fn close_wins_the_final_gate_without_waiting_for_the_backend() {
     );
     let descriptor = ocr.descriptor();
     let (engine, capture) = wired(Some(Arc::clone(&ocr)));
+    let _gate_release = gate.release_guard();
     let operation = OperationContext::new();
     let (session, frame) = opened_with_frame(&engine, &capture, &operation);
     let session = Arc::new(session);

@@ -1205,6 +1205,7 @@ fn grouped_late_completion_and_close_race_preserve_terminal_outcomes() {
             .with_completion_gate(gate.clone()),
     );
     let recognizer = OcrRecognizer::new(backend.clone());
+    let _gate_release = gate.release_guard();
     let token = CancellationToken::new();
     let worker_recognizer = recognizer.clone();
     let worker_token = token.clone();
@@ -1418,6 +1419,8 @@ fn out_of_order_calls_keep_results_and_latest_observations_isolated() {
         ]));
     let port: Arc<dyn OcrBackend> = backend.clone();
     let recognizer = OcrRecognizer::new(port);
+    let _old_release = old_gate.release_guard();
+    let _new_release = new_gate.release_guard();
     let (old_frame, new_frame) = same_stream_frames();
     let old_stamp = old_frame.stamp();
     let new_stamp = new_frame.stamp();

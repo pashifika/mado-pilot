@@ -355,6 +355,7 @@ fn explicit_cancel_wins_before_a_gated_backend_completion() {
             .with_completion_gate(Arc::clone(&gate)),
         8,
     );
+    let _gate_release = gate.release_guard();
     let reader = harness
         .engine
         .take_diagnostic_reader()
@@ -419,6 +420,7 @@ fn success_wins_before_repeated_explicit_cancel() {
             .with_candidates(vec![Candidate::new(1, 1, 0.99)])
             .with_completion_gate(Arc::clone(&gate)),
     );
+    let _gate_release = gate.release_guard();
     let session = opened(&harness);
     let (template, options) = request(&harness);
     let query = session
@@ -455,6 +457,8 @@ fn exact_unchanged_skip_is_observable_and_does_not_enter_the_backend() {
             ScriptedMatchCall::new(Vec::new()).with_completion_gate(Arc::clone(&changed)),
         ]),
     );
+    let _first_release = first.release_guard();
+    let _changed_release = changed.release_guard();
     let session = opened(&harness);
     let (template, options) = request(&harness);
     let query = session
@@ -984,6 +988,8 @@ fn two_sessions_reach_backend_admission_with_bounded_fair_progress() {
             ScriptedMatchCall::new(found).with_completion_gate(Arc::clone(&second_gate)),
         ]),
     );
+    let _first_release = first_gate.release_guard();
+    let _second_release = second_gate.release_guard();
     let first_session = open_unpublished(&harness);
     let second_session = open_unpublished(&harness);
     let (template, options) = request(&harness);
@@ -1039,6 +1045,14 @@ fn four_eligible_queries_across_two_sessions_advance_in_bounded_rounds() {
         ControlledMatcher::new(mado_pilot_runtime::PixelFormat::Rgba8)
             .with_calls(blocker_calls.chain(fairness_calls)),
     );
+    let _blocker_releases: Vec<_> = blocker_gates
+        .iter()
+        .map(|gate| gate.release_guard())
+        .collect();
+    let _fairness_releases: Vec<_> = fairness_gates
+        .iter()
+        .map(|gate| gate.release_guard())
+        .collect();
 
     let blocker_session = open_unpublished(&harness);
     let blockers: Vec<_> = (0..2)
@@ -1237,6 +1251,7 @@ fn matched_terminal_releases_pending_work() {
             .with_calls([ScriptedMatchCall::new(vec![Candidate::new(1, 1, 0.99)])
                 .with_completion_gate(Arc::clone(&matched_gate))]),
     );
+    let _matched_release = matched_gate.release_guard();
     let session = opened(&harness);
     let (template, options) = request(&harness);
     let query = session
@@ -1289,6 +1304,8 @@ fn compatible_newer_publications_do_not_starve_first_backend_completion() {
             ScriptedMatchCall::new(Vec::new()).with_completion_gate(Arc::clone(&latest_gate)),
         ]),
     );
+    let _first_release = first_gate.release_guard();
+    let _latest_release = latest_gate.release_guard();
     let session = opened(&harness);
     let (template, options) = request(&harness);
     let query = session
@@ -1449,6 +1466,8 @@ fn eligible_query_expires_under_saturated_fixed_workers() {
             ScriptedMatchCall::new(found),
         ]),
     );
+    let _first_release = first_gate.release_guard();
+    let _second_release = second_gate.release_guard();
     let session = open_unpublished(&harness);
     let operation = OperationContext::new();
     let first_template = harness
@@ -1521,6 +1540,7 @@ fn eligible_pending_frame_expires_while_query_analysis_slot_is_full() {
             .with_candidates(vec![Candidate::new(1, 1, 0.99)])
             .with_completion_gate(Arc::clone(&gate)),
     );
+    let _gate_release = gate.release_guard();
     let session = opened(&harness);
     let (template, options) = request(&harness);
     let query = session
@@ -1566,6 +1586,8 @@ fn immediate_query_serializes_compatible_generations() {
                 .with_completion_gate(Arc::clone(&newer)),
         ]),
     );
+    let _first_release = first.release_guard();
+    let _newer_release = newer.release_guard();
     let session = opened(&harness);
     let (template, options) = request(&harness);
     let query = session
@@ -1647,6 +1669,7 @@ fn engine_drop_closes_scheduler_and_preserves_terminal_authority() {
             .with_candidates(vec![Candidate::new(1, 1, 0.99)])
             .with_completion_gate(Arc::clone(&gate)),
     );
+    let _gate_release = gate.release_guard();
     let session = opened(&harness);
     let (template, options) = request(&harness);
     let query = session
@@ -1752,6 +1775,7 @@ fn deadline_during_gated_backend_discards_late_match() {
             .with_candidates(vec![Candidate::new(1, 1, 0.99)])
             .with_completion_gate(Arc::clone(&gate)),
     );
+    let _gate_release = gate.release_guard();
     let session = opened(&harness);
     let (template, options) = request(&harness);
     let query_operation = OperationContext::new()
@@ -1877,6 +1901,7 @@ fn pending_query_keeps_watcher_lifecycle_until_source_end_after_session_drop() {
         ControlledMatcher::new(mado_pilot_runtime::PixelFormat::Rgba8)
             .with_completion_gate(Arc::clone(&gate)),
     );
+    let _gate_release = gate.release_guard();
     let session = opened(&harness);
     let (template, options) = request(&harness);
     let query = session
@@ -1995,6 +2020,7 @@ fn incompatible_newer_source_discards_older_in_flight_confirmation() {
             ScriptedMatchCall::new(found),
         ]),
     );
+    let _older_release = older.release_guard();
     let session = opened(&harness);
     let (template, options) = request(&harness);
     let query = session
@@ -2036,6 +2062,7 @@ fn target_loss_authority_wins_over_in_flight_backend_success() {
             .with_candidates(vec![Candidate::new(1, 1, 0.99)])
             .with_completion_gate(Arc::clone(&gate)),
     );
+    let _gate_release = gate.release_guard();
     let session = opened(&harness);
     let (template, options) = request(&harness);
     let query = session
@@ -2069,6 +2096,7 @@ fn session_close_authority_wins_over_in_flight_backend_success() {
             .with_candidates(vec![Candidate::new(1, 1, 0.99)])
             .with_completion_gate(Arc::clone(&gate)),
     );
+    let _gate_release = gate.release_guard();
     let session = opened(&harness);
     let (template, options) = request(&harness);
     let query = session

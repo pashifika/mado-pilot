@@ -1411,6 +1411,7 @@ fn concurrent_close_wins_before_grouped_c_result_publication() {
             .with_completion_gate(Arc::clone(&gate)),
     );
     let fixture = opened(backend);
+    let _gate_release = gate.release_guard();
     let api = fixture.api;
     let session = fixture.session as usize;
     let frame = fixture.frame as usize;

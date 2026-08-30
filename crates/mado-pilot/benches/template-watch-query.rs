@@ -828,6 +828,7 @@ fn coalesced_pair(_: &()) -> Sample {
             .with_candidates(vec![Candidate::new(1, 1, 0.99)])
             .with_completion_gate(Arc::clone(&gate)),
     );
+    let _gate_release = gate.release_guard();
     let session = run.core.open();
     let template = run.core.prepare("coalesced");
     let options = MatchOptions::from_defaults(template.defaults());
@@ -1172,6 +1173,14 @@ fn two_session_fairness(_: &()) -> Sample {
     let run = ControlledRun::new(
         ControlledMatcher::new(SOURCE_FORMAT).with_calls(blocker_calls.chain(fairness_calls)),
     );
+    let _blocker_releases: Vec<_> = blocker_gates
+        .iter()
+        .map(|gate| gate.release_guard())
+        .collect();
+    let _fairness_releases: Vec<_> = fairness_gates
+        .iter()
+        .map(|gate| gate.release_guard())
+        .collect();
 
     let blocker_session = run.core.open();
     let blockers: Vec<_> = (0..2)
@@ -1315,6 +1324,8 @@ fn two_session_fairness(_: &()) -> Sample {
         ScriptedMatchCall::new(Vec::new()).with_completion_gate(Arc::clone(&first_generation)),
         ScriptedMatchCall::new(found).with_completion_gate(Arc::clone(&next_generation)),
     ]));
+    let _first_generation_release = first_generation.release_guard();
+    let _next_generation_release = next_generation.release_guard();
     let serialized_session = serialized_run.core.open();
     let serialized_template = serialized_run.core.prepare("serialized-generation");
     let serialized_query = start_query(
@@ -1460,6 +1471,7 @@ fn cancel_in_flight(_: &()) -> Sample {
             .with_candidates(vec![Candidate::new(1, 1, 0.99)])
             .with_completion_gate(Arc::clone(&gate)),
     );
+    let _gate_release = gate.release_guard();
     let session = run.core.open();
     let template = run.core.prepare("cancel");
 
