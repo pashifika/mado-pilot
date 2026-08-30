@@ -24,6 +24,8 @@ pub const PROCESS_COUNT: usize = 10;
 pub const OPERATION_DEADLINE_MILLIS: u32 = 5_000;
 pub const LIFECYCLE_STEP_CAPACITY: usize = 11;
 const NATIVE_CLOSE_PHASE_COMPLETE: u32 = 5;
+const STATUS_COMPLETE: usize = 0;
+const EXPLICIT_PRODUCER_STATE_STATUSES: [usize; 4] = [2, 4, 5, 6];
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
@@ -354,6 +356,24 @@ pub fn parse_json_line(line: &str) -> Result<Row, ValidationFault> {
 
 pub fn topology_matches(class: TopologyClass, observed: DisplayTopology) -> bool {
     observed == expected_topology(class)
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum FreshTimeoutOutcome {
+    ExplicitProducerState,
+    MissingProgress,
+}
+
+pub fn classify_fresh_timeout(post_close_snapshot: &Snapshot) -> FreshTimeoutOutcome {
+    if post_close_snapshot.status_counts[STATUS_COMPLETE] == 0
+        && EXPLICIT_PRODUCER_STATE_STATUSES
+            .into_iter()
+            .any(|kind| post_close_snapshot.status_counts[kind] != 0)
+    {
+        FreshTimeoutOutcome::ExplicitProducerState
+    } else {
+        FreshTimeoutOutcome::MissingProgress
+    }
 }
 
 pub fn validate_row(row: &Row) -> Result<(), ValidationFault> {
@@ -792,6 +812,21 @@ mod tests {
         }
     }
 
+    fn explicit_then_complete_snapshot() -> Snapshot {
+        let mut snapshot = snapshot(Some(4));
+        let complete = event(0, 2, 15);
+        snapshot.observed_total = 2;
+        snapshot.status_counts[STATUS_COMPLETE] = 1;
+        snapshot.last_status = Some(complete);
+        snapshot.callbacks_received = 2;
+        snapshot.callbacks_admitted = 2;
+        snapshot.callbacks_exited = 2;
+        snapshot.first_complete_nanos = 15;
+        snapshot.transition_count = 2;
+        snapshot.transitions[1] = Some(complete);
+        snapshot
+    }
+
     fn completed_row(index: u32) -> Row {
         let topology = ORDER[index as usize - 1];
         Row {
@@ -845,6 +880,30 @@ mod tests {
             trace.record(step).unwrap();
         }
         trace
+    }
+
+    #[test]
+    fn timeout_classification_uses_fenced_post_close_snapshot() {
+        let fenced_explicit_state = snapshot(Some(4));
+        assert_eq!(
+            classify_fresh_timeout(&fenced_explicit_state),
+            FreshTimeoutOutcome::ExplicitProducerState
+        );
+
+        let fenced_late_complete = explicit_then_complete_snapshot();
+        assert_eq!(
+            classify_fresh_timeout(&fenced_late_complete),
+            FreshTimeoutOutcome::MissingProgress
+        );
+
+        let mut row = completed_row(1);
+        row.fresh_frame = None;
+        row.first_complete_latency_nanos = None;
+        row.fresh_snapshot = Some(fenced_late_complete);
+        row.stage = Stage::FreshCapture;
+        row.outcome = Outcome::MissingProgress;
+        row.failure = FailureClass::FreshCaptureDeadline;
+        assert!(row.to_json_line().is_ok());
     }
 
     #[test]

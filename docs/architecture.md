@@ -101,8 +101,9 @@ Successor source `ba6b045` then ran the exact public `retained_result_mapping`
 lifecycle in ten fresh processes: five single-display controls and five
 two-display mixed-DPI rows in one authenticated session. Topology evidence was
 limited to display count and whether backing scales differed. Every row produced
-a fresh complete frame, preserved the expected detached result footprint,
-restored its exact process baseline, and observed no non-complete producer state.
+a fresh complete frame, preserved the expected detached result footprint, and
+restored its exact process baseline, while every fresh producer reported only
+complete status.
 This bounded non-reproduction selected no repair, does not replace the
 terminal-red qualification process, and leaves support withheld under ADR 0057.
 OCR predicates, callbacks/subscriptions, C/C++, automatic input,

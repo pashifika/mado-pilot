@@ -556,16 +556,6 @@ fn execute_sck_signature_lifecycle(
         .is_err_and(|error| error.status() != Status::DeadlineExceeded);
     let fresh_capture = fresh_capture.ok();
     let fresh_stream = fresh_session.stream();
-    let pre_close_snapshot = fresh_capture.is_none().then(|| {
-        sck_diagnostics::session_snapshot(fresh_stream)
-            .map(report_snapshot)
-            .map_err(|_| {
-                SckSignatureFailure::new(
-                    sck_signature::Stage::FreshCapture,
-                    sck_signature::FailureClass::DiagnosticSnapshotFailed,
-                )
-            })
-    });
     row.lifecycle
         .record(sck_signature::LifecycleStep::FreshSessionCloseAttempted)
         .expect("protocol_drift");
@@ -619,21 +609,17 @@ fn execute_sck_signature_lifecycle(
             row.failure = sck_signature::FailureClass::FreshCaptureFailed;
         }
         None => {
-            let pre_close_snapshot = pre_close_snapshot
-                .ok_or_else(|| {
-                    SckSignatureFailure::new(
-                        sck_signature::Stage::FreshCapture,
-                        sck_signature::FailureClass::DiagnosticSnapshotFailed,
-                    )
-                })??;
-            if explicit_sck_terminal_state(pre_close_snapshot) {
-                row.stage = sck_signature::Stage::Complete;
-                row.outcome = sck_signature::Outcome::ExplicitProducerState;
-                row.failure = sck_signature::FailureClass::None;
-            } else {
-                row.stage = sck_signature::Stage::FreshCapture;
-                row.outcome = sck_signature::Outcome::MissingProgress;
-                row.failure = sck_signature::FailureClass::FreshCaptureDeadline;
+            match sck_signature::classify_fresh_timeout(&post_close_snapshot) {
+                sck_signature::FreshTimeoutOutcome::ExplicitProducerState => {
+                    row.stage = sck_signature::Stage::Complete;
+                    row.outcome = sck_signature::Outcome::ExplicitProducerState;
+                    row.failure = sck_signature::FailureClass::None;
+                }
+                sck_signature::FreshTimeoutOutcome::MissingProgress => {
+                    row.stage = sck_signature::Stage::FreshCapture;
+                    row.outcome = sck_signature::Outcome::MissingProgress;
+                    row.failure = sck_signature::FailureClass::FreshCaptureDeadline;
+                }
             }
         }
     }
@@ -815,17 +801,4 @@ const fn report_status_event(
         sequence: event.sequence,
         monotonic_nanos: event.monotonic_nanos,
     }
-}
-
-#[cfg(target_os = "macos")]
-fn explicit_sck_terminal_state(snapshot: sck_signature::Snapshot) -> bool {
-    snapshot.status_counts[sck_diagnostics::StatusKind::Complete as usize] == 0
-        && [
-            sck_diagnostics::StatusKind::Blank,
-            sck_diagnostics::StatusKind::Suspended,
-            sck_diagnostics::StatusKind::Stopped,
-            sck_diagnostics::StatusKind::Missing,
-        ]
-        .into_iter()
-        .any(|kind| snapshot.status_counts[kind as usize] != 0)
 }
