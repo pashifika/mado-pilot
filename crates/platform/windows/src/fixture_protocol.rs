@@ -28,6 +28,8 @@ pub const CONTROL_REPARENT_TARGET: u32 = 0x8203;
 pub const CONTROL_REPLACE_TARGET: u32 = 0x8204;
 /// Destroys the retained target while keeping adversarial fixtures alive.
 pub const CONTROL_DESTROY_TARGET: u32 = 0x8205;
+/// Successful acknowledgement after destroying the retained target.
+pub const TARGET_LOSS_ACKNOWLEDGEMENT: &str = "control target-loss=ready";
 /// Blocks the fixture message pump for the duration carried in `wParam`.
 pub const CONTROL_BLOCK_QUEUE: u32 = 0x8206;
 /// Replaces a target repeatedly until its retained handle value recurs or the bound is exhausted.
@@ -36,6 +38,14 @@ pub const CONTROL_REUSE_STRESS: u32 = 0x8207;
 pub const CONTROL_SET_GEOMETRY: u32 = 0x8208;
 /// Allows the test host in `wParam` to restore the owned foreground fixture.
 pub const CONTROL_ALLOW_FOREGROUND: u32 = 0x8209;
+/// Removes the deterministic watcher marker from the retained target.
+pub const CONTROL_SET_VISUAL_ABSENT: u32 = 0x820a;
+/// Renders the deterministic watcher marker in the retained target.
+pub const CONTROL_SET_VISUAL_VISIBLE: u32 = 0x820b;
+/// Changes the deterministic fill without changing the watcher marker state.
+pub const CONTROL_TRANSITION_VISUAL: u32 = 0x820c;
+/// Successful acknowledgement after one deterministic visual transition.
+pub const VISUAL_TRANSITION_ACKNOWLEDGEMENT: &str = "control visual-transition=ready";
 
 pub const COPYDATA_TAG: usize = 0x4d50_4946;
 pub const ACKNOWLEDGED: usize = 0x4d50_414b;
@@ -57,6 +67,20 @@ pub const BENCHMARK_RIGHT_MARKER_X: i32 = 1_200;
 pub const BENCHMARK_MARKER_Y: i32 = 352;
 /// Width and height of each square placement marker.
 pub const BENCHMARK_MARKER_SIZE: i32 = 16;
+/// Primary colour of the deterministic watcher marker, as `0xRRGGBB`.
+pub const WATCH_MARKER_PRIMARY_RGB: u32 = 0x00f2_6b38;
+/// Secondary colour of the deterministic watcher marker, as `0xRRGGBB`.
+pub const WATCH_MARKER_SECONDARY_RGB: u32 = 0x002d_d4bf;
+/// Client-space X origin of `watch-marker-v1`.
+pub const WATCH_MARKER_X: i32 = 64;
+/// Client-space Y origin of `watch-marker-v1`.
+pub const WATCH_MARKER_Y: i32 = 48;
+/// Width and height of one `watch-marker-v1` cell.
+pub const WATCH_MARKER_CELL_SIZE: i32 = 24;
+/// Width of the three-cell `watch-marker-v1` pattern.
+pub const WATCH_MARKER_WIDTH: i32 = WATCH_MARKER_CELL_SIZE * 3;
+/// Height of the two-cell `watch-marker-v1` pattern.
+pub const WATCH_MARKER_HEIGHT: i32 = WATCH_MARKER_CELL_SIZE * 2;
 /// Per-channel tolerance used when a captured benchmark frame is checked.
 pub const FILL_TOLERANCE: u8 = 8;
 
@@ -85,6 +109,41 @@ pub const EVENT_KEY_UP: u32 = KEY_RELEASE;
 /// The event kind a benchmark expects for one direct-text stimulus.
 pub const EVENT_TEXT: u32 = TEXT;
 
+/// Visual state requested by one private watcher-fixture control.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum FixtureVisualState {
+    /// The deterministic background is visible without `watch-marker-v1`.
+    Absent,
+    /// `watch-marker-v1` is rendered over the deterministic background.
+    Visible,
+}
+
+impl FixtureVisualState {
+    /// Returns the exact bounded acknowledgement emitted after a successful repaint.
+    #[must_use]
+    pub const fn acknowledgement(self) -> &'static str {
+        match self {
+            Self::Absent => "control visual-state=absent",
+            Self::Visible => "control visual-state=visible",
+        }
+    }
+
+    /// Returns whether the marker must be rendered.
+    #[must_use]
+    pub const fn marker_is_visible(self) -> bool {
+        matches!(self, Self::Visible)
+    }
+}
+
+/// Decodes one exact watcher-fixture control message.
+#[must_use]
+pub const fn visual_state_for_control(message: u32) -> Option<FixtureVisualState> {
+    match message {
+        CONTROL_SET_VISUAL_ABSENT => Some(FixtureVisualState::Absent),
+        CONTROL_SET_VISUAL_VISIBLE => Some(FixtureVisualState::Visible),
+        _ => None,
+    }
+}
 /// Non-sensitive information the fixture retains about one accepted event.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct EventSummary {
@@ -383,9 +442,11 @@ fn key_code(key: Key) -> Result<u32, InputFault> {
 #[cfg(test)]
 mod tests {
     use super::{
-        EventSummary, FixtureSelectionError, HEADER_BYTES, encode_event, fixture_title,
-        format_event_line, is_query, parse_event_line, query_packet, select_unique_fixture,
-        summarize,
+        CONTROL_SET_VISUAL_ABSENT, CONTROL_SET_VISUAL_VISIBLE, CONTROL_TRANSITION_VISUAL,
+        EventSummary, FixtureSelectionError, FixtureVisualState, HEADER_BYTES,
+        VISUAL_TRANSITION_ACKNOWLEDGEMENT, encode_event, fixture_title, format_event_line,
+        is_query, parse_event_line, query_packet, select_unique_fixture, summarize,
+        visual_state_for_control,
     };
     use mado_pilot_capture::{CoordinateSupport, PixelFormat, TargetDescription};
     use mado_pilot_core::{
@@ -423,6 +484,32 @@ mod tests {
         assert_eq!(line, "event kind=7 units=3");
         assert_eq!(parse_event_line(&line), Some(summary));
         assert_eq!(parse_event_line("event kind=7 units=3 trailing"), None);
+    }
+    #[test]
+    fn watcher_visual_controls_decode_to_exact_bounded_acknowledgements() {
+        for (control, expected) in [
+            (CONTROL_SET_VISUAL_ABSENT, FixtureVisualState::Absent),
+            (CONTROL_SET_VISUAL_VISIBLE, FixtureVisualState::Visible),
+        ] {
+            let state = visual_state_for_control(control).expect("known visual control");
+            assert_eq!(state, expected);
+            assert_eq!(
+                state.acknowledgement(),
+                match expected {
+                    FixtureVisualState::Absent => "control visual-state=absent",
+                    FixtureVisualState::Visible => "control visual-state=visible",
+                }
+            );
+        }
+        assert_eq!(
+            VISUAL_TRANSITION_ACKNOWLEDGEMENT,
+            "control visual-transition=ready"
+        );
+        assert_eq!(visual_state_for_control(CONTROL_TRANSITION_VISUAL), None);
+        assert_eq!(
+            visual_state_for_control(CONTROL_TRANSITION_VISUAL + 1),
+            None
+        );
     }
 
     #[test]

@@ -28,7 +28,7 @@ use crate::diagnostic::{
     PermissionDiagnostic,
 };
 use crate::session::Session;
-use crate::watch::{TemplateSchedulerDescriptor, WatchScheduler};
+use crate::watch::{TemplateSchedulerDescriptor, WatchRuntime};
 
 /// How long the release of an already-opened capture session or input
 /// controller may take when a later step of the same open refuses it.
@@ -181,7 +181,7 @@ pub struct Engine {
     permission: Option<Arc<dyn PermissionProbe>>,
     diagnostics: Option<DiagnosticSink>,
     diagnostic_reader: Mutex<Option<DiagnosticReader>>,
-    watcher: Arc<WatchScheduler>,
+    watcher: WatchRuntime,
 }
 
 impl Engine {
@@ -222,7 +222,7 @@ impl Engine {
             .as_ref()
             .zip(wiring.ocr.as_ref())
             .and_then(|(diagnostics, ocr)| diagnostics.ocr_model(&ocr.descriptor()));
-        let watcher = WatchScheduler::new(wiring.matcher.clone(), diagnostics.clone());
+        let watcher = WatchRuntime::new(wiring.matcher.clone(), diagnostics.clone());
 
         Ok(Self {
             engine: wiring.engine,
@@ -532,7 +532,7 @@ impl Engine {
                         self.ocr_diagnostic,
                         input,
                         self.diagnostics.clone(),
-                        Arc::clone(&self.watcher),
+                        self.watcher.clone(),
                     ));
                 }
                 Err(interruption) => interruption,

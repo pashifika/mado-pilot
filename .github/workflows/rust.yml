@@ -294,6 +294,10 @@ jobs:
         shell: bash
         run: cargo test --locked --workspace --all-targets
 
+      - name: Compile the native template-watch qualification benchmark
+        shell: bash
+        run: cargo check --locked --package mado-pilot --bench native-template-watch --features native-template-watch-qualification
+
       - name: Reproduce the frozen G-005 change-detection report
         shell: bash
         run: |

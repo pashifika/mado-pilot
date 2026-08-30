@@ -36,13 +36,17 @@ mod fixture {
     use mado_pilot_platform_windows::fixture_protocol::{
         BENCHMARK_FILL_RGB, CONTROL_ALLOW_FOREGROUND, CONTROL_BLOCK_QUEUE, CONTROL_DESTROY_TARGET,
         CONTROL_DUPLICATE_METADATA, CONTROL_REPARENT_TARGET, CONTROL_REPLACE_TARGET,
-        CONTROL_REPORT, CONTROL_REUSE_STRESS, CONTROL_SET_GEOMETRY, FILL_RGB, MAX_RECORDED_EVENTS,
-        ORDINARY_CLASS_NAME, ordinary_fixture_title,
+        CONTROL_REPORT, CONTROL_REUSE_STRESS, CONTROL_SET_GEOMETRY, CONTROL_SET_VISUAL_ABSENT,
+        CONTROL_SET_VISUAL_VISIBLE, CONTROL_TRANSITION_VISUAL, FILL_RGB, MAX_RECORDED_EVENTS,
+        ORDINARY_CLASS_NAME, TARGET_LOSS_ACKNOWLEDGEMENT, VISUAL_TRANSITION_ACKNOWLEDGEMENT,
+        WATCH_MARKER_CELL_SIZE, WATCH_MARKER_HEIGHT, WATCH_MARKER_PRIMARY_RGB,
+        WATCH_MARKER_SECONDARY_RGB, WATCH_MARKER_WIDTH, WATCH_MARKER_X, WATCH_MARKER_Y,
+        ordinary_fixture_title, visual_state_for_control,
     };
-    use windows::Win32::Foundation::{COLORREF, HINSTANCE, HWND, LPARAM, LRESULT, WPARAM};
+    use windows::Win32::Foundation::{COLORREF, HINSTANCE, HWND, LPARAM, LRESULT, RECT, WPARAM};
     use windows::Win32::Graphics::Gdi::{
-        BeginPaint, CreateSolidBrush, DeleteObject, EndPaint, FillRect, HGDIOBJ, InvalidateRect,
-        PAINTSTRUCT, UpdateWindow,
+        BeginPaint, CreateSolidBrush, DeleteObject, EndPaint, FillRect, HDC, HGDIOBJ,
+        InvalidateRect, PAINTSTRUCT, UpdateWindow,
     };
     use windows::Win32::System::LibraryLoader::GetModuleHandleW;
     use windows::Win32::System::Threading::{AttachThreadInput, GetCurrentThreadId};
@@ -78,6 +82,7 @@ mod fixture {
     static LAST_F6_DOWN: AtomicBool = AtomicBool::new(false);
     static ANIMATED: AtomicBool = AtomicBool::new(false);
     static GEOMETRY_REPAINTS: AtomicU32 = AtomicU32::new(0);
+    static WATCH_MARKER_VISIBLE: AtomicBool = AtomicBool::new(false);
 
     static TARGET_EVENTS: AtomicU32 = AtomicU32::new(0);
     static REPLACEMENT_EVENTS: AtomicU32 = AtomicU32::new(0);
@@ -345,11 +350,30 @@ mod fixture {
                 });
                 LRESULT(0)
             }
+            CONTROL_SET_VISUAL_ABSENT | CONTROL_SET_VISUAL_VISIBLE => {
+                let state = visual_state_for_control(message)
+                    .expect("the matched private control has one visual state");
+                WATCH_MARKER_VISIBLE.store(state.marker_is_visible(), Ordering::Release);
+                print_line(if repaint_target() {
+                    state.acknowledgement()
+                } else {
+                    "control visual-state=failed"
+                });
+                LRESULT(0)
+            }
+            CONTROL_TRANSITION_VISUAL => {
+                print_line(if pulse_target_paint() {
+                    VISUAL_TRANSITION_ACKNOWLEDGEMENT
+                } else {
+                    "control visual-transition=failed"
+                });
+                LRESULT(0)
+            }
             CONTROL_DESTROY_TARGET => {
                 // SAFETY: control is dispatched only to the live retained target.
                 let destroyed = unsafe { DestroyWindow(hwnd) }.is_ok();
                 print_line(if destroyed {
-                    "control target-loss=ready"
+                    TARGET_LOSS_ACKNOWLEDGEMENT
                 } else {
                     "control target-loss=failed"
                 });
@@ -528,12 +552,16 @@ mod fixture {
         }
     }
 
-    fn pulse_target_paint() -> bool {
+    fn repaint_target() -> bool {
         let target = load_handle(&TARGET);
-        ANIMATED.fetch_xor(true, Ordering::AcqRel);
         // SAFETY: the retained target is owned by this GUI thread.
         unsafe { InvalidateRect(Some(target), None, true) }.as_bool()
             && unsafe { UpdateWindow(target) }.as_bool()
+    }
+
+    fn pulse_target_paint() -> bool {
+        ANIMATED.fetch_xor(true, Ordering::AcqRel);
+        repaint_target()
     }
 
     fn print_report() {
@@ -559,22 +587,48 @@ mod fixture {
         let mut client = Default::default();
         // SAFETY: hwnd is live and client is writable for the current rectangle.
         if unsafe { GetClientRect(hwnd, &raw mut client) }.is_ok() {
-            let fill = if handle_value(hwnd) == TARGET.load(Ordering::Acquire)
-                && ANIMATED.load(Ordering::Acquire)
-            {
+            let is_target = handle_value(hwnd) == TARGET.load(Ordering::Acquire);
+            let fill = if is_target && ANIMATED.load(Ordering::Acquire) {
                 BENCHMARK_FILL_RGB
             } else {
                 FILL_RGB
             };
-            // SAFETY: creating, using, and deleting this process-owned brush is paired.
-            let brush = unsafe { CreateSolidBrush(colorref(fill)) };
-            // SAFETY: device, rectangle, and brush are live for this paint call.
-            let _filled = unsafe { FillRect(device, &raw const client, brush) };
-            // SAFETY: the brush is no longer selected or needed after FillRect.
-            let _deleted = unsafe { DeleteObject(HGDIOBJ(brush.0)) };
+            fill_solid_rect(device, &client, fill);
+            if is_target && WATCH_MARKER_VISIBLE.load(Ordering::Acquire) {
+                let marker = RECT {
+                    left: WATCH_MARKER_X,
+                    top: WATCH_MARKER_Y,
+                    right: WATCH_MARKER_X + WATCH_MARKER_WIDTH,
+                    bottom: WATCH_MARKER_Y + WATCH_MARKER_HEIGHT,
+                };
+                let top_middle = RECT {
+                    left: WATCH_MARKER_X + WATCH_MARKER_CELL_SIZE,
+                    top: WATCH_MARKER_Y,
+                    right: WATCH_MARKER_X + WATCH_MARKER_CELL_SIZE * 2,
+                    bottom: WATCH_MARKER_Y + WATCH_MARKER_CELL_SIZE,
+                };
+                let bottom_left = RECT {
+                    left: WATCH_MARKER_X,
+                    top: WATCH_MARKER_Y + WATCH_MARKER_CELL_SIZE,
+                    right: WATCH_MARKER_X + WATCH_MARKER_CELL_SIZE,
+                    bottom: WATCH_MARKER_Y + WATCH_MARKER_HEIGHT,
+                };
+                fill_solid_rect(device, &marker, WATCH_MARKER_PRIMARY_RGB);
+                fill_solid_rect(device, &top_middle, WATCH_MARKER_SECONDARY_RGB);
+                fill_solid_rect(device, &bottom_left, WATCH_MARKER_SECONDARY_RGB);
+            }
         }
         // SAFETY: balances BeginPaint for this WM_PAINT dispatch.
         let _ended = unsafe { EndPaint(hwnd, &raw const paint) };
+    }
+
+    fn fill_solid_rect(device: HDC, rectangle: &RECT, rgb: u32) {
+        // SAFETY: creating, using, and deleting this process-owned brush is paired.
+        let brush = unsafe { CreateSolidBrush(colorref(rgb)) };
+        // SAFETY: device, rectangle, and brush are live for this paint call.
+        let _filled = unsafe { FillRect(device, rectangle, brush) };
+        // SAFETY: the brush is no longer selected or needed after FillRect.
+        let _deleted = unsafe { DeleteObject(HGDIOBJ(brush.0)) };
     }
 
     fn colorref(rgb: u32) -> COLORREF {

@@ -110,6 +110,19 @@ impl CompletionGate {
         self.changed.notify_all();
     }
 
+    /// Returns a scope guard that releases this gate when dropped.
+    ///
+    /// A controller keeps this guard alive while it performs assertions around a
+    /// blocked backend call. Panic unwinding then opens the gate before owners
+    /// join backend worker threads, preventing a failed test from deadlocking
+    /// during teardown. Explicit [`Self::release`] remains idempotent.
+    #[must_use = "keep the guard alive for every scope that can leave the gate closed"]
+    pub fn release_guard(self: &Arc<Self>) -> CompletionGateReleaseGuard {
+        CompletionGateReleaseGuard {
+            gate: Arc::clone(self),
+        }
+    }
+
     pub(crate) fn enter_and_wait(&self) {
         let mut state = self
             .state
@@ -131,6 +144,18 @@ impl CompletionGate {
             .unwrap_or_else(std::sync::PoisonError::into_inner);
         state.completed = true;
         self.changed.notify_all();
+    }
+}
+
+/// Releases one [`CompletionGate`] when controller scope exits.
+#[derive(Debug)]
+pub struct CompletionGateReleaseGuard {
+    gate: Arc<CompletionGate>,
+}
+
+impl Drop for CompletionGateReleaseGuard {
+    fn drop(&mut self) {
+        self.gate.release();
     }
 }
 
@@ -641,5 +666,26 @@ impl OcrBackend for ControlledOcr {
             token.cancel();
         }
         self.script().close.apply()
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn release_guard_opens_gate_on_scope_exit() {
+        let gate = Arc::new(CompletionGate::new());
+        let worker_gate = Arc::clone(&gate);
+        let worker = std::thread::spawn(move || {
+            worker_gate.enter_and_wait();
+            worker_gate.complete();
+        });
+        let release = gate.release_guard();
+
+        assert!(gate.wait_until_entered(Duration::from_secs(2)));
+        drop(release);
+        assert!(gate.wait_until_completed(Duration::from_secs(2)));
+        worker.join().expect("gate worker completed");
     }
 }

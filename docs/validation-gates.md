@@ -264,11 +264,31 @@ specification re-review returned CLEAN on the same revision.
 consumes that policy; ADR 0051 accepts deterministic replay/OpenCV watcher
 correctness and target-specific latency/resource budgets, and ADR 0052 corrects
 only the independently remediated Windows ROI maximum after retaining its failed
-cohort. Engine/session startup latency is reported but explicitly withheld;
-every non-time startup gate remains enforced. Native application qualification
-remains deferred. Any future false skip or fixture/report/policy drift restores
-analysis-always until a new additive fixture set, full both-target comparison,
-and reviewed ADR pass.
+cohort. ADR 0051 engine/session startup latency remains reported but explicitly
+withheld; every non-time startup gate remains enforced. ADR 0053 accepts
+target-specific native sampled latency, RSS, live-heap, and growth budgets,
+including sampled fresh-session latency, while withholding single-run gate
+timing and cadence-dependent aggregate mapping, work, and publication ceilings.
+ADR 0057 rejects the historical final WGC and ScreenCaptureKit cohorts after
+independent review found unexercised engine-close and Windows cross-DPI topology
+contracts. Replacement source `f16591f` corrected both semantics. Its fresh
+Windows cohort passed 5/5, including the different-monitor 144-to-120-DPI
+transition. Its fresh Apple cohort passed processes 1–4, then process 5
+terminated red at `retained_result_mapping` after ScreenCaptureKit suspended the
+newly opened stream. Fifty focused runs and one immediate full-load diagnostic
+passed without reproducing the suspension, but neither result replaces the
+terminal-red qualification process. The native Rust query API remains
+implemented, but support is withheld.
+Corrective successor `7139a68` serializes backend generation admission per
+query and bounds Windows fixture output before allocation. The `f16591f` host
+cohorts do not qualify those changed runtime and harness semantics, so a future
+support decision requires a fresh complete protocol on both approved hosts.
+OCR predicates, callbacks/subscriptions, C/C++, automatic input, target activation,
+arbitrary application/template/ROI compatibility or timing, real-time guarantees,
+packaging, and release remain unavailable.
+Any future false skip or fixture/report/policy drift keeps the native boundary
+withheld until a new additive fixture set, full both-target
+comparison, and reviewed ADR pass.
 
 ## G-006
 

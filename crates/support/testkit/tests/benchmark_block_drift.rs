@@ -66,19 +66,28 @@ use mado_pilot_testkit::bench_harness::{
     PHASE3_OCR_REGION_MAPPED_BYTES, PHASE3_WINDOWS_OCR_CLOSE_LIMIT,
     PHASE3_WINDOWS_OCR_COLD_LOAD_LIMIT, PHASE3_WINDOWS_OCR_HEAP_LIMIT_BYTES,
     PHASE3_WINDOWS_OCR_LATENCY_BUDGETS, PHASE3_WINDOWS_OCR_REOPEN_CLOSE_LIMIT,
-    PHASE3_WINDOWS_OCR_RESIDENT_LIMIT_BYTES, PHASE4_APPLE_TEMPLATE_WATCH_HEAP_LIMIT_BYTES,
-    PHASE4_APPLE_TEMPLATE_WATCH_LATENCY_BUDGETS, PHASE4_APPLE_TEMPLATE_WATCH_RESIDENT_LIMIT_BYTES,
-    PHASE4_TEMPLATE_WATCH_MAPPED_BYTES_BUDGETS,
+    PHASE3_WINDOWS_OCR_RESIDENT_LIMIT_BYTES, PHASE4_APPLE_NATIVE_TEMPLATE_WATCH_HEAP_LIMIT_BYTES,
+    PHASE4_APPLE_NATIVE_TEMPLATE_WATCH_LATENCY_BUDGETS,
+    PHASE4_APPLE_NATIVE_TEMPLATE_WATCH_RESIDENT_LIMIT_BYTES,
+    PHASE4_APPLE_TEMPLATE_WATCH_HEAP_LIMIT_BYTES, PHASE4_APPLE_TEMPLATE_WATCH_LATENCY_BUDGETS,
+    PHASE4_APPLE_TEMPLATE_WATCH_RESIDENT_LIMIT_BYTES, PHASE4_TEMPLATE_WATCH_MAPPED_BYTES_BUDGETS,
+    PHASE4_WINDOWS_NATIVE_TEMPLATE_WATCH_HEAP_LIMIT_BYTES,
+    PHASE4_WINDOWS_NATIVE_TEMPLATE_WATCH_LATENCY_BUDGETS,
+    PHASE4_WINDOWS_NATIVE_TEMPLATE_WATCH_RESIDENT_LIMIT_BYTES,
     PHASE4_WINDOWS_REMEDIATED_TEMPLATE_WATCH_LATENCY_BUDGETS,
     PHASE4_WINDOWS_TEMPLATE_WATCH_HEAP_LIMIT_BYTES, PHASE4_WINDOWS_TEMPLATE_WATCH_LATENCY_BUDGETS,
     PHASE4_WINDOWS_TEMPLATE_WATCH_RESIDENT_LIMIT_BYTES, benchmark_block,
+};
+use mado_pilot_testkit::native_watch_report::{
+    SAMPLED_WORKLOADS as NATIVE_TEMPLATE_WATCH_SAMPLED_WORKLOADS,
+    WORKLOADS as NATIVE_TEMPLATE_WATCH_WORKLOADS,
 };
 
 /// Every committed benchmark profile, by repository path and content.
 ///
 /// `example-synthetic.toml` is deliberately absent because it documents the
 /// format with invented numbers rather than recording a measurement.
-const PROFILES: [(&str, &str); 38] = [
+const PROFILES: [(&str, &str); 40] = [
     (
         "docs/benchmarks/phase-1-deterministic-slice-aarch64-apple-darwin.toml",
         include_str!(
@@ -295,10 +304,22 @@ const PROFILES: [(&str, &str); 38] = [
             "../../../../docs/benchmarks/phase-4-template-watch-query-remediated-x86_64-pc-windows-msvc.toml"
         ),
     ),
+    (
+        "docs/benchmarks/phase-4-native-template-watch-aarch64-apple-darwin.toml",
+        include_str!(
+            "../../../../docs/benchmarks/phase-4-native-template-watch-aarch64-apple-darwin.toml"
+        ),
+    ),
+    (
+        "docs/benchmarks/phase-4-native-template-watch-x86_64-pc-windows-msvc.toml",
+        include_str!(
+            "../../../../docs/benchmarks/phase-4-native-template-watch-x86_64-pc-windows-msvc.toml"
+        ),
+    ),
 ];
 
 /// Native profiles and the latency ceilings enforced by their benchmark.
-const NATIVE_LATENCY_PROFILES: [(&str, &str, &[LatencyBudget]); 23] = [
+const NATIVE_LATENCY_PROFILES: [(&str, &str, &[LatencyBudget]); 25] = [
     (
         "docs/benchmarks/phase-2-2-controlled-capture-aarch64-apple-darwin.toml",
         include_str!(
@@ -453,6 +474,20 @@ const NATIVE_LATENCY_PROFILES: [(&str, &str, &[LatencyBudget]); 23] = [
             "../../../../docs/benchmarks/phase-4-template-watch-query-remediated-x86_64-pc-windows-msvc.toml"
         ),
         &PHASE4_WINDOWS_REMEDIATED_TEMPLATE_WATCH_LATENCY_BUDGETS,
+    ),
+    (
+        "docs/benchmarks/phase-4-native-template-watch-aarch64-apple-darwin.toml",
+        include_str!(
+            "../../../../docs/benchmarks/phase-4-native-template-watch-aarch64-apple-darwin.toml"
+        ),
+        &PHASE4_APPLE_NATIVE_TEMPLATE_WATCH_LATENCY_BUDGETS,
+    ),
+    (
+        "docs/benchmarks/phase-4-native-template-watch-x86_64-pc-windows-msvc.toml",
+        include_str!(
+            "../../../../docs/benchmarks/phase-4-native-template-watch-x86_64-pc-windows-msvc.toml"
+        ),
+        &PHASE4_WINDOWS_NATIVE_TEMPLATE_WATCH_LATENCY_BUDGETS,
     ),
 ];
 
@@ -825,6 +860,22 @@ fn template_watch_profiles_state_exactly_the_resource_budgets_the_benchmark_enfo
             PHASE4_WINDOWS_TEMPLATE_WATCH_HEAP_LIMIT_BYTES,
             PHASE4_WINDOWS_TEMPLATE_WATCH_RESIDENT_LIMIT_BYTES,
         ),
+        (
+            "Apple native",
+            include_str!(
+                "../../../../docs/benchmarks/phase-4-native-template-watch-aarch64-apple-darwin.toml"
+            ),
+            PHASE4_APPLE_NATIVE_TEMPLATE_WATCH_HEAP_LIMIT_BYTES,
+            PHASE4_APPLE_NATIVE_TEMPLATE_WATCH_RESIDENT_LIMIT_BYTES,
+        ),
+        (
+            "Windows native",
+            include_str!(
+                "../../../../docs/benchmarks/phase-4-native-template-watch-x86_64-pc-windows-msvc.toml"
+            ),
+            PHASE4_WINDOWS_NATIVE_TEMPLATE_WATCH_HEAP_LIMIT_BYTES,
+            PHASE4_WINDOWS_NATIVE_TEMPLATE_WATCH_RESIDENT_LIMIT_BYTES,
+        ),
     ];
 
     for (target, profile, heap_limit, resident_limit) in profiles {
@@ -850,6 +901,90 @@ fn template_watch_profiles_state_exactly_the_resource_budgets_the_benchmark_enfo
             ],
             "{target} watcher profile and benchmark resource ceilings drifted"
         );
+    }
+}
+
+#[test]
+fn native_template_watch_profiles_bind_the_exact_plan_and_withheld_measures() {
+    for (target, host, profile) in [
+        (
+            "aarch64-apple-darwin",
+            "apple-m1-pro-10c-32g",
+            include_str!(
+                "../../../../docs/benchmarks/phase-4-native-template-watch-aarch64-apple-darwin.toml"
+            ),
+        ),
+        (
+            "x86_64-pc-windows-msvc",
+            "windows-i7-12700kf-32g",
+            include_str!(
+                "../../../../docs/benchmarks/phase-4-native-template-watch-x86_64-pc-windows-msvc.toml"
+            ),
+        ),
+    ] {
+        let workloads: Vec<&str> = measurement_key_counts(profile, "result_correctness")
+            .into_iter()
+            .map(|(workload, _)| workload)
+            .collect();
+        assert_eq!(workloads, NATIVE_TEMPLATE_WATCH_WORKLOADS);
+
+        let latency_workloads: Vec<&str> = budget_blocks(profile)
+            .into_iter()
+            .filter(|budget| budget.measure == Some("latency_p50"))
+            .map(|budget| budget.workload.expect("latency budget names a workload"))
+            .collect();
+        assert_eq!(latency_workloads, NATIVE_TEMPLATE_WATCH_SAMPLED_WORKLOADS);
+
+        for (workload, count) in measurement_key_counts(profile, "warmup_iterations") {
+            assert_eq!(
+                count,
+                usize::from(!NATIVE_TEMPLATE_WATCH_SAMPLED_WORKLOADS.contains(&workload)),
+                "{target} {workload} has the wrong local warmup plan"
+            );
+        }
+        for (workload, count) in measurement_key_counts(profile, "sample_count") {
+            assert_eq!(
+                count,
+                usize::from(!NATIVE_TEMPLATE_WATCH_SAMPLED_WORKLOADS.contains(&workload)),
+                "{target} {workload} has the wrong local sample plan"
+            );
+        }
+
+        assert_eq!(
+            table_assignment(profile, "[profile]", "release_target"),
+            Some(target)
+        );
+        assert_eq!(
+            table_assignment(profile, "[profile]", "deployment_target"),
+            Some(target)
+        );
+        let executable = table_assignment(profile, "[profile]", "benchmark_executable_sha256")
+            .expect("native profile carries an executable digest");
+        let fixture = table_assignment(profile, "[profile]", "fixture_sha256")
+            .expect("native profile carries a fixture digest");
+        assert!(is_lower_hex(executable, 64));
+        assert!(is_lower_hex(fixture, 64));
+        let (source, tree) =
+            source_header(profile).expect("native profile carries source identity");
+        assert!(is_lower_hex(source, 40));
+        assert!(is_lower_hex(tree, 40));
+        let notes =
+            table_assignment(profile, "[profile]", "notes").expect("native profile carries notes");
+        assert!(notes.contains(&format!("; host {host};")));
+        assert!(notes.contains("; cohort precursor; process 1; control native-watch-control-v1"));
+        assert!(profile.contains("process_count = 5"));
+        assert!(profile.contains(
+            "single_run_latency_budgets = \"withheld by ADR 0053: eight gate rows retain one observation per process\""
+        ));
+        assert!(profile.contains(
+            "aggregate_mapping_budget = \"withheld by ADR 0053: enforce exact mapping accounting and target-native aggregates\""
+        ));
+        assert!(profile.contains(
+            "cadence_count_budgets = \"withheld by ADR 0053: enforce exact controlled counts and conservation relations\""
+        ));
+        assert!(profile.contains(
+            "producer_rate_budget = \"withheld by ADR 0053: enforce monotonic progress without cross-target publication rate\""
+        ));
     }
 }
 

@@ -47,6 +47,7 @@ pub mod controlled_storage;
 pub mod fixture_checksums;
 pub mod input_contract;
 pub mod match_fixtures;
+pub mod native_watch_report;
 pub mod ocr_contract;
 pub mod png;
 pub mod scripted_permission;
@@ -58,7 +59,7 @@ pub use controlled_input::ControlledInput;
 pub use controlled_matcher::{Behavior, ControlledMatcher, ObservedMatcher, ScriptedMatchCall};
 pub use controlled_ocr::{
     CONTROLLED_OCR_BACKEND, CONTROLLED_OCR_MODEL, CONTROLLED_OCR_PROFILE, CompletionGate,
-    ControlledOcr, OcrBehavior, ScriptedOcrCall, ScriptedOcrCandidate,
+    CompletionGateReleaseGuard, ControlledOcr, OcrBehavior, ScriptedOcrCall, ScriptedOcrCandidate,
 };
 pub use controlled_storage::{ControlledProducer, Conversion};
 pub use mado_pilot_vision::{Candidate, MatchBackend};

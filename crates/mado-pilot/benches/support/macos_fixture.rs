@@ -62,6 +62,18 @@ pub(crate) fn expected_controlled_resize_logical_size(current: (f64, f64)) -> Op
     }
 }
 
+/// Returns the content-view size corresponding to one declared fixture geometry.
+pub(crate) fn controlled_content_logical_size(target: (f64, f64)) -> Option<(f64, f64)> {
+    if !logical_size_matches(target, CONTROLLED_BASE_LOGICAL_SIZE)
+        && !logical_size_matches(target, CONTROLLED_RESIZED_LOGICAL_SIZE)
+    {
+        return None;
+    }
+    let decoration_width = CONTROLLED_BASE_LOGICAL_SIZE.0 - protocol::WINDOW_POINTS.0;
+    let decoration_height = CONTROLLED_BASE_LOGICAL_SIZE.1 - protocol::WINDOW_POINTS.1;
+    Some((target.0 - decoration_width, target.1 - decoration_height))
+}
+
 /// Confirms frame-authoritative target geometry matches the fixture's declared state.
 pub(crate) fn controlled_resize_logical_size_matches(
     actual: (f64, f64),
@@ -419,14 +431,50 @@ fn discard_setup_events_until_quiet<State>(
 
 impl FixtureController {
     /// Launches one signed app bundle through NSWorkspace, binds the control
-    /// peer to that exact retained application instance, and waits for its exact
-    /// version-11 protocol ready facts.
+    /// peer to that exact retained application instance, and waits for the
+    /// current versioned protocol ready facts.
     pub fn start(
         executable: &Path,
         expected_executable: Arc<[u8]>,
         expected_identity: ExecutableIdentity,
         launch_mode: LaunchMode,
         wait: Duration,
+    ) -> Result<Self, String> {
+        Self::start_with_max_attempts(
+            executable,
+            expected_executable,
+            expected_identity,
+            launch_mode,
+            wait,
+            MAX_FIXTURE_LAUNCH_ATTEMPTS,
+        )
+    }
+
+    /// Launches exactly once for a no-retry qualification process.
+    pub fn start_once(
+        executable: &Path,
+        expected_executable: Arc<[u8]>,
+        expected_identity: ExecutableIdentity,
+        launch_mode: LaunchMode,
+        wait: Duration,
+    ) -> Result<Self, String> {
+        Self::start_with_max_attempts(
+            executable,
+            expected_executable,
+            expected_identity,
+            launch_mode,
+            wait,
+            1,
+        )
+    }
+
+    fn start_with_max_attempts(
+        executable: &Path,
+        expected_executable: Arc<[u8]>,
+        expected_identity: ExecutableIdentity,
+        launch_mode: LaunchMode,
+        wait: Duration,
+        max_launch_attempts: u32,
     ) -> Result<Self, String> {
         let executable = executable
             .canonicalize()
@@ -472,8 +520,8 @@ impl FixtureController {
         let mut launch_attempts = 1_u32;
         let deadline = Instant::now() + wait;
         let (stream, application) = loop {
-            if !launch_guard.is_live()? {
-                if launch_attempts >= MAX_FIXTURE_LAUNCH_ATTEMPTS || Instant::now() >= deadline {
+            if max_launch_attempts > 1 && !launch_guard.is_live()? {
+                if launch_attempts >= max_launch_attempts || Instant::now() >= deadline {
                     return Err(format!(
                         "the fixture application exited before connecting after \
                          {launch_attempts} launch attempt(s)"
@@ -499,7 +547,7 @@ impl FixtureController {
                             match application.executable_identity() {
                                 Ok(identity) => break Some(identity == expected_identity),
                                 Err(error) => {
-                                    if !launch_guard.is_live()? {
+                                    if !application.is_live() {
                                         break None;
                                     }
                                     if Instant::now() >= deadline {
@@ -520,9 +568,6 @@ impl FixtureController {
                                 "the launched fixture identity differs from recorded provenance"
                                     .to_owned(),
                             );
-                        }
-                        if !launch_guard.is_live()? {
-                            continue;
                         }
                         launch_guard.application = Some(application);
                         break (stream, application);
@@ -604,7 +649,7 @@ impl FixtureController {
         if self.stopped
             || self.input.is_none()
             || self.reader_failed.load(Ordering::Acquire)
-            || !self.launched.is_live().ok()?
+            || !self.application.is_live()
             || !self
                 .application
                 .matches_executable_identity(self.expected_identity)
@@ -695,6 +740,34 @@ impl FixtureController {
                 }
             }
         }
+    }
+
+    /// Fences and clears bounded AppKit event summaries observed during a
+    /// capture-only watcher run.
+    ///
+    /// The exact process totals must equal the already bounded event records
+    /// before they are cleared. A reset acknowledgement then proves later
+    /// cleanup cannot inherit those observations. Event payloads are counts
+    /// only; text is never retained by the fixture protocol.
+    pub fn discard_watch_events(&mut self, wait: Duration) -> bool {
+        let deadline = Instant::now() + wait;
+        let Some(report) = self
+            .command(
+                FixtureCommandKind::ReadEvents,
+                deadline.saturating_duration_since(Instant::now()),
+            )
+            .ok()
+            .map(CommandAcknowledgement::result)
+            .filter(|result| result.status == 0)
+        else {
+            return false;
+        };
+        let observed = event_totals(self.pending_events.make_contiguous());
+        if observed != Some(report.events) {
+            return false;
+        }
+        self.pending_events.clear();
+        self.reset_events(0, deadline.saturating_duration_since(Instant::now()))
     }
     /// Resets the fixture's bounded event counters and refuses queued prior-run output.
     pub fn reset_events(&mut self, event_payload_tag: u64, wait: Duration) -> bool {
@@ -1275,10 +1348,11 @@ impl Drop for LaunchGuard {
 mod tests {
     use super::{
         LanguageExecutablePin, MAX_OUTPUT_LINE_BYTES, ReaderMessage,
-        auxiliary_window_setup_is_proven, controlled_resize_logical_size_matches,
-        discard_setup_events_until_quiet, expected_controlled_resize_logical_size,
-        finish_reader_output_is_clean, fixture_bundle, language_pins_are_unchanged,
-        next_fixture_run_nonce, post_use_identity_gate, read_bounded_lines, strict_event_reset,
+        auxiliary_window_setup_is_proven, controlled_content_logical_size,
+        controlled_resize_logical_size_matches, discard_setup_events_until_quiet,
+        expected_controlled_resize_logical_size, finish_reader_output_is_clean, fixture_bundle,
+        language_pins_are_unchanged, next_fixture_run_nonce, post_use_identity_gate,
+        read_bounded_lines, strict_event_reset,
     };
     use crate::macos_fixture_protocol::{EVENT_KEY_DOWN, EventSummary, format_event_line};
     use std::collections::VecDeque;
@@ -1323,6 +1397,14 @@ mod tests {
             (640.0, 451.75),
             (640.0, 452.0),
         ));
+        assert_eq!(
+            controlled_content_logical_size((640.0, 451.75)),
+            Some((640.0, 419.75)),
+        );
+        assert_eq!(
+            controlled_content_logical_size((687.999_98, 483.75)),
+            Some((687.999_98, 451.75)),
+        );
     }
 
     #[test]
@@ -1335,6 +1417,7 @@ mod tests {
             (688.0, 480.0),
             (688.0, 484.0),
         ));
+        assert_eq!(controlled_content_logical_size((700.0, 484.0)), None);
     }
     #[test]
     fn language_pin_pair_rejects_either_replaced_file() {

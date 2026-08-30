@@ -671,6 +671,7 @@ impl TemplateQueryOutcome {
 /// [`Self::cancel`]. Completed outcomes remain readable until the handle drops.
 pub struct TemplateQuery {
     shared: Arc<QueryShared>,
+    _threads: Arc<WatchThreadOwner>,
 }
 
 impl TemplateQuery {
@@ -726,6 +727,25 @@ impl TemplateQuery {
     #[must_use]
     pub fn cancel(&self) -> Arc<TemplateTerminalOutcome> {
         self.shared.terminate(TemplateTerminalOutcome::Cancelled).0
+    }
+
+    /// Returns the exact current work counters for qualification apparatus.
+    ///
+    /// Unlike [`Self::poll`], this feature-gated observer retains the final
+    /// counters after a terminal commit. It never drives query completion.
+    #[cfg(feature = "benchmark-instrumentation")]
+    #[doc(hidden)]
+    #[must_use]
+    pub fn benchmark_work_snapshot(&self) -> TemplateQueryProgress {
+        self.shared.work_snapshot()
+    }
+
+    /// Returns capture publications accepted by this query.
+    #[cfg(feature = "benchmark-instrumentation")]
+    #[doc(hidden)]
+    #[must_use]
+    pub fn benchmark_publication_count(&self) -> u64 {
+        self.shared.publication_count()
     }
 }
 
@@ -784,6 +804,8 @@ struct QueryData {
     rate_eligible_at: Option<MonotonicInstant>,
     stability: StabilityState,
     work: TemplateWorkCounts,
+    #[cfg(feature = "benchmark-instrumentation")]
+    benchmark_publications: u64,
 }
 
 #[derive(Debug, Clone)]
@@ -880,6 +902,26 @@ impl QueryShared {
                 in_flight_count: in_flight_count(&state),
             }),
         }
+    }
+
+    #[cfg(feature = "benchmark-instrumentation")]
+    fn work_snapshot(&self) -> TemplateQueryProgress {
+        let state = lock(&self.state);
+        TemplateQueryProgress {
+            id: self.id,
+            last_frame: state.last_frame,
+            generation: state.generation,
+            confirmed_observations: state.stability.observations,
+            confirmed_duration: state.stability.duration,
+            work: state.work,
+            pending_count: u32::from(state.pending.is_some()),
+            in_flight_count: in_flight_count(&state),
+        }
+    }
+
+    #[cfg(feature = "benchmark-instrumentation")]
+    fn publication_count(&self) -> u64 {
+        lock(&self.state).benchmark_publications
     }
 
     fn terminal(&self) -> Option<Arc<TemplateTerminalOutcome>> {
@@ -997,14 +1039,7 @@ impl QueryShared {
                 (Arc::clone(existing), false)
             } else {
                 state.terminal_frame = query_frame(&state);
-                if state.pending.take().is_some() || state.processing.take().is_some() {
-                    state.work.increment(TemplateWorkDisposition::Superseded);
-                }
-                let in_flight = in_flight_count(&state);
-                state.in_flight.fill(None);
-                for _ in 0..in_flight {
-                    state.work.increment(TemplateWorkDisposition::Superseded);
-                }
+                supersede_outstanding(&mut state);
                 let outcome = Arc::new(outcome);
                 state.terminal = Some(Arc::clone(&outcome));
                 (outcome, true)
@@ -1048,6 +1083,13 @@ impl QueryShared {
             return;
         }
         state.needs_current = false;
+        #[cfg(feature = "benchmark-instrumentation")]
+        {
+            state.benchmark_publications = state
+                .benchmark_publications
+                .checked_add(1)
+                .expect("benchmark publication count fits u64");
+        }
         let incompatible = state.source_frame.is_some_and(|last| {
             last.epoch() != stamp.epoch() || last.geometry() != stamp.geometry()
         });
@@ -1090,13 +1132,10 @@ impl QueryShared {
         )
     }
 
+    // A query admits one generation at a time so an older generation can never
+    // commit after a newer generation has entered backend analysis.
     fn analysis_capacity_reached(&self, state: &QueryData) -> bool {
-        let limit = if self.stability.kind() == TemplateStabilityKind::Immediate {
-            MAX_IN_FLIGHT_ANALYSES
-        } else {
-            1
-        };
-        state.in_flight.iter().flatten().count() >= limit
+        state.in_flight.iter().any(Option::is_some)
     }
 
     fn has_admitted_or_considered(&self, stamp: FrameStamp) -> bool {
@@ -1497,7 +1536,8 @@ impl QueryShared {
             if state.terminal.is_some() {
                 return;
             }
-            if generation != state.generation {
+            let superseded_by_newer_generation = generation != state.generation;
+            if superseded_by_newer_generation {
                 state.work.increment(TemplateWorkDisposition::Superseded);
                 stale = true;
             } else {
@@ -1506,11 +1546,7 @@ impl QueryShared {
                 match result {
                     Err(error) => {
                         state.work.increment(TemplateWorkDisposition::Failed);
-                        let superseded = in_flight_count(&state);
-                        state.in_flight.fill(None);
-                        for _ in 0..superseded {
-                            state.work.increment(TemplateWorkDisposition::Superseded);
-                        }
+                        supersede_outstanding(&mut state);
                         state.terminal_frame = Some(stamp);
                         state.terminal = Some(Arc::new(TemplateTerminalOutcome::Failed(error)));
                         terminal_committed = true;
@@ -1550,11 +1586,7 @@ impl QueryShared {
                                         confirmed_observations: state.stability.observations,
                                         confirmed_duration: state.stability.duration,
                                     });
-                                let superseded = in_flight_count(&state);
-                                state.in_flight.fill(None);
-                                for _ in 0..superseded {
-                                    state.work.increment(TemplateWorkDisposition::Superseded);
-                                }
+                                supersede_outstanding(&mut state);
                                 state.terminal = Some(Arc::new(outcome));
                                 state.terminal_frame = Some(stamp);
                                 terminal_committed = true;
@@ -1663,6 +1695,7 @@ pub(crate) struct WatchSession {
     description: SessionDescription,
     capture: Arc<dyn CaptureSession>,
     scheduler: Weak<WatchScheduler>,
+    threads: Weak<WatchThreadOwner>,
     closed: AtomicBool,
     source_ended: AtomicBool,
     activated: AtomicBool,
@@ -1681,7 +1714,6 @@ struct WatchSessionState {
     acquisition_running: bool,
     acquisition_exiting: bool,
     acquisition_generation: u64,
-    acquisition: Option<JoinHandle<()>>,
 }
 
 impl WatchSession {
@@ -1690,12 +1722,14 @@ impl WatchSession {
         description: SessionDescription,
         capture: Arc<dyn CaptureSession>,
         scheduler: Weak<WatchScheduler>,
+        threads: Weak<WatchThreadOwner>,
     ) -> Self {
         Self {
             id,
             description,
             capture,
             scheduler,
+            threads,
             closed: AtomicBool::new(false),
             source_ended: AtomicBool::new(false),
             activated: AtomicBool::new(false),
@@ -1728,6 +1762,9 @@ impl WatchSession {
             .scheduler
             .upgrade()
             .ok_or_else(|| Error::new(Status::Closed, "template watch scheduler is unavailable"))?;
+        let threads = self.threads.upgrade().ok_or_else(|| {
+            Error::new(Status::Closed, "template watch thread owner is unavailable")
+        })?;
         if scheduler.closed.load(Ordering::Acquire) {
             return Err(Error::new(
                 Status::Closed,
@@ -1833,6 +1870,8 @@ impl WatchSession {
                 rate_eligible_at: None,
                 stability: StabilityState::default(),
                 work: TemplateWorkCounts::new(),
+                #[cfg(feature = "benchmark-instrumentation")]
+                benchmark_publications: 0,
             }),
             changed: Condvar::new(),
             reservation_released: AtomicBool::new(false),
@@ -1871,7 +1910,10 @@ impl WatchSession {
             return Err(error);
         }
         scheduler.wake();
-        Ok(TemplateQuery { shared: query })
+        Ok(TemplateQuery {
+            shared: query,
+            _threads: threads,
+        })
     }
 
     fn reserve_query_slot(self: &Arc<Self>, scheduler: &Arc<WatchScheduler>) -> Result<()> {
@@ -1913,6 +1955,9 @@ impl WatchSession {
     }
 
     fn ensure_acquisition(self: &Arc<Self>) -> Result<()> {
+        let threads = self.threads.upgrade().ok_or_else(|| {
+            Error::new(Status::Closed, "template watch thread owner is unavailable")
+        })?;
         let mut state = lock(&self.state);
         while state.acquisition_running && state.acquisition_exiting {
             state = self
@@ -1940,7 +1985,6 @@ impl WatchSession {
             self.progress.notify_all();
             return Ok(());
         }
-        drop(state.acquisition.take());
         let generation = state.acquisition_generation.checked_add(1).ok_or_else(|| {
             Error::new(
                 Status::LimitExceeded,
@@ -1959,10 +2003,14 @@ impl WatchSession {
                     format!("failed to start template acquisition worker: {error}"),
                 )
             })?;
+        let previous = threads.register_acquisition(self.id, handle);
         state.acquisition_cancel = Some(cancellation);
         state.acquisition_running = true;
         state.acquisition_generation = generation;
-        state.acquisition = Some(handle);
+        drop(state);
+        if let Some(previous) = previous {
+            let _joined = previous.join();
+        }
         Ok(())
     }
 
@@ -2161,6 +2209,32 @@ impl WatchSession {
         self.progress.notify_all();
     }
 
+    #[cfg(feature = "benchmark-instrumentation")]
+    pub(crate) fn wait_idle_for_benchmark(&self, wait: &OperationContext) -> Result<()> {
+        loop {
+            if let Some(interruption) = wait.interruption() {
+                return Err(interruption.into());
+            }
+            let state = lock(&self.state);
+            if !state.acquisition_running {
+                break;
+            }
+            let duration = wait
+                .remaining()
+                .map_or(WAIT_POLL, |remaining| remaining.min(WAIT_POLL));
+            if duration.is_zero() {
+                continue;
+            }
+            let _ = self
+                .progress
+                .wait_timeout(state, duration)
+                .unwrap_or_else(std::sync::PoisonError::into_inner);
+        }
+        self.threads.upgrade().map_or(Ok(()), |threads| {
+            threads.join_acquisitions_for_benchmark(self.id)
+        })
+    }
+
     pub(crate) fn close(&self, outcome: TemplateTerminalOutcome) {
         let (first, outcome) = {
             let _activation = lock(&self.activation);
@@ -2176,21 +2250,21 @@ impl WatchSession {
                     .unwrap_or(TemplateTerminalOutcome::SessionClosed),
             )
         };
-        if !first {
-            return;
-        }
-        let acquisition = {
-            let mut state = lock(&self.state);
-            if let Some(cancellation) = &state.acquisition_cancel {
-                cancellation.cancel();
+        if first {
+            {
+                let mut state = lock(&self.state);
+                if let Some(cancellation) = &state.acquisition_cancel {
+                    cancellation.cancel();
+                }
+                state.acquisition_cancel = None;
             }
-            state.acquisition_cancel = None;
-            state.acquisition.take()
-        };
-        drop(acquisition);
-        self.terminate_queries(outcome);
-        self.deactivate_if_finished();
-        self.progress.notify_all();
+            self.terminate_queries(outcome);
+            self.deactivate_if_finished();
+            self.progress.notify_all();
+        }
+        if let Some(threads) = self.threads.upgrade() {
+            threads.join_acquisitions(self.id);
+        }
     }
 
     fn release_query_slot(&self) {
@@ -2253,9 +2327,156 @@ impl WatchSession {
     }
 }
 
+#[derive(Debug, Default)]
+pub(crate) struct WatchThreadOwner {
+    state: Mutex<WatchThreadState>,
+}
+
+#[derive(Debug, Default)]
+struct WatchThreadState {
+    workers: Vec<JoinHandle<()>>,
+    supervisor: Option<JoinHandle<()>>,
+    acquisitions: Vec<AcquisitionThread>,
+}
+
+#[derive(Debug)]
+struct AcquisitionThread {
+    session: u64,
+    handle: JoinHandle<()>,
+}
+impl WatchThreadOwner {
+    fn ensure_scheduler_threads(&self, scheduler: &Arc<WatchScheduler>) -> Result<()> {
+        let mut state = lock(&self.state);
+        while state.workers.len() < MAX_IN_FLIGHT_ANALYSES {
+            let index = state.workers.len();
+            let scheduler = Arc::clone(scheduler);
+            let worker = thread::Builder::new()
+                .name(format!("mado-watch-worker-{index}"))
+                .spawn(move || scheduler.worker_loop())
+                .map_err(|error| {
+                    Error::new(
+                        Status::Internal,
+                        format!("failed to start template analysis worker: {error}"),
+                    )
+                })?;
+            state.workers.push(worker);
+        }
+        if state.supervisor.is_none() {
+            let scheduler = Arc::clone(scheduler);
+            state.supervisor = Some(
+                thread::Builder::new()
+                    .name("mado-watch-supervisor".to_owned())
+                    .spawn(move || scheduler.supervisor_loop())
+                    .map_err(|error| {
+                        Error::new(
+                            Status::Internal,
+                            format!("failed to start template scheduler supervisor: {error}"),
+                        )
+                    })?,
+            );
+        }
+        Ok(())
+    }
+
+    fn register_acquisition(&self, session: u64, handle: JoinHandle<()>) -> Option<JoinHandle<()>> {
+        let current = thread::current().id();
+        let mut state = lock(&self.state);
+        let previous = state
+            .acquisitions
+            .iter()
+            .position(|thread| thread.session == session && thread.handle.thread().id() != current)
+            .map(|index| state.acquisitions.swap_remove(index).handle);
+        state
+            .acquisitions
+            .push(AcquisitionThread { session, handle });
+        previous
+    }
+
+    fn join_acquisitions(&self, session: u64) {
+        let current = thread::current().id();
+        loop {
+            let handle = {
+                let mut state = lock(&self.state);
+                state
+                    .acquisitions
+                    .iter()
+                    .position(|thread| {
+                        thread.session == session && thread.handle.thread().id() != current
+                    })
+                    .map(|index| state.acquisitions.swap_remove(index).handle)
+            };
+            let Some(handle) = handle else {
+                return;
+            };
+            let _joined = handle.join();
+        }
+    }
+
+    #[cfg(feature = "benchmark-instrumentation")]
+    fn join_acquisitions_for_benchmark(&self, session: u64) -> Result<()> {
+        let current = thread::current().id();
+        loop {
+            let handle = {
+                let mut state = lock(&self.state);
+                state
+                    .acquisitions
+                    .iter()
+                    .position(|thread| {
+                        thread.session == session && thread.handle.thread().id() != current
+                    })
+                    .map(|index| state.acquisitions.swap_remove(index).handle)
+            };
+            let Some(handle) = handle else {
+                return Ok(());
+            };
+            handle.join().map_err(|_| {
+                Error::new(
+                    Status::Internal,
+                    "template acquisition worker panicked during benchmark fence",
+                )
+            })?;
+        }
+    }
+}
+
+impl Drop for WatchThreadOwner {
+    fn drop(&mut self) {
+        let current = thread::current().id();
+        let state = self
+            .state
+            .get_mut()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        let acquisitions = std::mem::take(&mut state.acquisitions);
+        let workers = std::mem::take(&mut state.workers);
+        let supervisor = state.supervisor.take();
+        for acquisition in acquisitions {
+            if acquisition.handle.thread().id() != current {
+                let _joined = acquisition.handle.join();
+            }
+        }
+        for worker in workers {
+            if worker.thread().id() != current {
+                let _joined = worker.join();
+            }
+        }
+        if let Some(supervisor) = supervisor
+            && supervisor.thread().id() != current
+        {
+            let _joined = supervisor.join();
+        }
+    }
+}
+
+#[derive(Debug, Clone)]
+pub(crate) struct WatchRuntime {
+    scheduler: Arc<WatchScheduler>,
+    _threads: Arc<WatchThreadOwner>,
+}
+
 #[derive(Debug)]
 pub(crate) struct WatchScheduler {
     matcher: Matcher,
+    threads: Weak<WatchThreadOwner>,
     descriptor: TemplateSchedulerDescriptor,
     diagnostics: Option<DiagnosticSink>,
     closed: AtomicBool,
@@ -2270,8 +2491,6 @@ pub(crate) struct WatchScheduler {
     cache: Mutex<MappingCache>,
     wake_state: Mutex<u64>,
     wake_condition: Condvar,
-    workers: Mutex<Vec<JoinHandle<()>>>,
-    supervisor: Mutex<Option<JoinHandle<()>>>,
 }
 
 #[derive(Debug, Default)]
@@ -2325,10 +2544,12 @@ impl MappingCache {
     }
 }
 
-impl WatchScheduler {
-    pub(crate) fn new(matcher: Matcher, diagnostics: Option<DiagnosticSink>) -> Arc<Self> {
-        Arc::new(Self {
+impl WatchRuntime {
+    pub(crate) fn new(matcher: Matcher, diagnostics: Option<DiagnosticSink>) -> Self {
+        let threads = Arc::new(WatchThreadOwner::default());
+        let scheduler = Arc::new(WatchScheduler {
             matcher,
+            threads: Arc::downgrade(&threads),
             diagnostics,
             descriptor: TemplateSchedulerDescriptor::selected_default(),
             closed: AtomicBool::new(false),
@@ -2343,11 +2564,27 @@ impl WatchScheduler {
             cache: Mutex::new(MappingCache::default()),
             wake_state: Mutex::new(0),
             wake_condition: Condvar::new(),
-            workers: Mutex::new(Vec::new()),
-            supervisor: Mutex::new(None),
-        })
+        });
+        Self {
+            scheduler,
+            _threads: threads,
+        }
     }
 
+    pub(crate) fn descriptor(&self) -> TemplateSchedulerDescriptor {
+        self.scheduler.descriptor()
+    }
+
+    pub(crate) fn register_session(&self, capture: Arc<dyn CaptureSession>) -> Arc<WatchSession> {
+        self.scheduler.register_session(capture)
+    }
+
+    pub(crate) fn close(&self) {
+        self.scheduler.close();
+    }
+}
+
+impl WatchScheduler {
     pub(crate) const fn descriptor(&self) -> TemplateSchedulerDescriptor {
         self.descriptor
     }
@@ -2372,6 +2609,7 @@ impl WatchScheduler {
             capture.description(),
             capture,
             Arc::downgrade(self),
+            self.threads.clone(),
         ))
     }
 
@@ -2423,38 +2661,12 @@ impl WatchScheduler {
     }
 
     fn ensure_workers(self: &Arc<Self>) -> Result<()> {
-        let mut workers = lock(&self.workers);
-        while workers.len() < MAX_IN_FLIGHT_ANALYSES {
-            let index = workers.len();
-            let scheduler = Arc::clone(self);
-            let worker = thread::Builder::new()
-                .name(format!("mado-watch-worker-{index}"))
-                .spawn(move || scheduler.worker_loop())
-                .map_err(|error| {
-                    Error::new(
-                        Status::Internal,
-                        format!("failed to start template analysis worker: {error}"),
-                    )
-                })?;
-            workers.push(worker);
-        }
-        drop(workers);
-        let mut supervisor = lock(&self.supervisor);
-        if supervisor.is_none() {
-            let scheduler = Arc::clone(self);
-            *supervisor = Some(
-                thread::Builder::new()
-                    .name("mado-watch-supervisor".to_owned())
-                    .spawn(move || scheduler.supervisor_loop())
-                    .map_err(|error| {
-                        Error::new(
-                            Status::Internal,
-                            format!("failed to start template scheduler supervisor: {error}"),
-                        )
-                    })?,
-            );
-        }
-        Ok(())
+        self.threads
+            .upgrade()
+            .ok_or_else(|| {
+                Error::new(Status::Closed, "template watch thread owner is unavailable")
+            })?
+            .ensure_scheduler_threads(self)
     }
 
     fn supervisor_loop(self: Arc<Self>) {
@@ -2923,10 +3135,9 @@ impl WatchScheduler {
             session.close(TemplateTerminalOutcome::SchedulerClosed);
         }
         self.wake();
-        lock(&self.workers).clear();
-        lock(&self.supervisor).take();
     }
 }
+
 fn validate_watch_region(region: RegionSelection) -> Result<()> {
     match region {
         RegionSelection::FullFrame => Ok(()),
@@ -2983,6 +3194,15 @@ fn in_flight_count(state: &QueryData) -> u32 {
         .in_flight
         .iter()
         .fold(0, |count, item| count + u32::from(item.is_some()))
+}
+
+fn supersede_outstanding(state: &mut QueryData) {
+    let pending = u32::from(state.pending.take().is_some() || state.processing.take().is_some());
+    let superseded = pending.saturating_add(in_flight_count(state));
+    state.in_flight.fill(None);
+    for _ in 0..superseded {
+        state.work.increment(TemplateWorkDisposition::Superseded);
+    }
 }
 
 fn query_frame(state: &QueryData) -> Option<FrameStamp> {
@@ -3044,4 +3264,56 @@ fn lock<T>(mutex: &Mutex<T>) -> std::sync::MutexGuard<'_, T> {
     mutex
         .lock()
         .unwrap_or_else(std::sync::PoisonError::into_inner)
+}
+
+#[cfg(test)]
+mod tests {
+    use std::sync::mpsc;
+
+    use super::*;
+
+    #[test]
+    fn owned_thread_join_is_deferred_until_external_owner_joins() {
+        let owner = Arc::new(WatchThreadOwner::default());
+        let thread_owner = Arc::clone(&owner);
+        let (start, started) = mpsc::sync_channel(0);
+        let (deferred, observed_defer) = mpsc::sync_channel(0);
+        let handle = thread::spawn(move || {
+            started.recv().expect("external owner registered handle");
+            thread_owner.join_acquisitions(7);
+            deferred.send(()).expect("self-join returned");
+        });
+        lock(&owner.state)
+            .acquisitions
+            .push(AcquisitionThread { session: 7, handle });
+
+        start.send(()).expect("owned thread can start");
+        observed_defer
+            .recv_timeout(Duration::from_secs(2))
+            .expect("owned thread deferred its own handle");
+        assert_eq!(lock(&owner.state).acquisitions.len(), 1);
+
+        owner.join_acquisitions(7);
+        assert!(lock(&owner.state).acquisitions.is_empty());
+    }
+
+    #[test]
+    fn owned_thread_drop_detaches_its_current_handle() {
+        let (send_owner, receive_owner) = mpsc::sync_channel(0);
+        let (send_dropped, receive_dropped) = mpsc::sync_channel(0);
+        let handle = thread::spawn(move || {
+            let owner: WatchThreadOwner = receive_owner.recv().expect("received thread owner");
+            drop(owner);
+            send_dropped.send(()).expect("reported owner drop");
+        });
+        let owner = WatchThreadOwner::default();
+        lock(&owner.state).workers.push(handle);
+
+        send_owner
+            .send(owner)
+            .expect("sent owner to managed thread");
+        receive_dropped
+            .recv_timeout(Duration::from_secs(2))
+            .expect("managed thread detached its own handle during owner drop");
+    }
 }

@@ -28,7 +28,8 @@ use mado_pilot_platform_windows::WindowsCaptureProvider;
 use mado_pilot_platform_windows::fixture_protocol::{
     CONTROL_ALLOW_FOREGROUND, CONTROL_BLOCK_QUEUE, CONTROL_DESTROY_TARGET,
     CONTROL_DUPLICATE_METADATA, CONTROL_REPARENT_TARGET, CONTROL_REPORT, CONTROL_REUSE_STRESS,
-    CONTROL_SET_GEOMETRY, ORDINARY_CLASS_NAME, ordinary_fixture_title,
+    CONTROL_SET_GEOMETRY, CONTROL_SET_VISUAL_ABSENT, CONTROL_SET_VISUAL_VISIBLE,
+    FixtureVisualState, ORDINARY_CLASS_NAME, ordinary_fixture_title,
 };
 use windows::Win32::Foundation::{HWND, LPARAM, POINT, RECT, WPARAM};
 use windows::Win32::Graphics::Gdi::{
@@ -469,6 +470,34 @@ impl Drop for OwnedForeground {
             let _restored = unsafe { SetForegroundWindow(self.original.foreground) };
         }
     }
+}
+#[test]
+#[ignore = "opens real fixture windows; run deliberately on an unlocked desktop"]
+fn watcher_visual_controls_acknowledge_before_fixture_cleanup() {
+    let _serial = NATIVE_MATRIX.lock().expect("native matrix serialized");
+    let mut fixture = FixtureProcess::spawn("watcher-visual-control");
+    let target = fixture.target();
+
+    fixture.control(target, CONTROL_SET_VISUAL_VISIBLE, 0);
+    assert_eq!(
+        fixture.wait_for(
+            FixtureVisualState::Visible.acknowledgement(),
+            Duration::from_secs(5)
+        ),
+        FixtureVisualState::Visible.acknowledgement()
+    );
+    fixture.control(target, CONTROL_SET_VISUAL_ABSENT, 0);
+    assert_eq!(
+        fixture.wait_for(
+            FixtureVisualState::Absent.acknowledgement(),
+            Duration::from_secs(5)
+        ),
+        FixtureVisualState::Absent.acknowledgement()
+    );
+
+    fixture.terminate();
+    assert!(fixture.child.is_none());
+    assert!(fixture.reader.is_none());
 }
 
 #[test]

@@ -34,7 +34,7 @@ use crate::diagnostic::{
 };
 use crate::find::{FindOutcome, FindRequest, SearchFrame};
 use crate::watch::{
-    TemplateQuery, TemplateTerminalOutcome, TemplateWatchRequest, WatchScheduler, WatchSession,
+    TemplateQuery, TemplateTerminalOutcome, TemplateWatchRequest, WatchRuntime, WatchSession,
 };
 
 /// A non-owning diagnostic projection copied into retained frame handles.
@@ -152,7 +152,7 @@ pub struct Session {
     input_descriptor: InputDescriptor,
     diagnostics: Option<DiagnosticSink>,
     closing: AtomicBool,
-    watch_scheduler: Arc<WatchScheduler>,
+    watch_runtime: WatchRuntime,
     watcher: OnceLock<Arc<WatchSession>>,
 }
 
@@ -164,7 +164,7 @@ impl Session {
         ocr_diagnostic: Option<OcrDiagnosticContext>,
         input: Option<Arc<dyn InputController>>,
         diagnostics: Option<DiagnosticSink>,
-        watch_scheduler: Arc<WatchScheduler>,
+        watch_runtime: WatchRuntime,
     ) -> Self {
         // Read once, for the reason the capture description is: an accepted
         // descriptor cannot change, and re-reading it would report the adapter's
@@ -188,7 +188,7 @@ impl Session {
             input_descriptor,
             diagnostics,
             closing: AtomicBool::new(false),
-            watch_scheduler,
+            watch_runtime,
             watcher: OnceLock::new(),
         }
     }
@@ -568,7 +568,7 @@ impl Session {
             return Err(CaptureFault::SessionClosed.into());
         }
         let watcher = self.watcher.get_or_init(|| {
-            self.watch_scheduler
+            self.watch_runtime
                 .register_session(Arc::clone(&self.capture))
         });
         if !self.accepts_work() {
@@ -576,6 +576,15 @@ impl Session {
             return Err(CaptureFault::SessionClosed.into());
         }
         watcher.start_query(request)
+    }
+
+    /// Waits until this session's watcher acquisition worker has exited.
+    #[cfg(feature = "benchmark-instrumentation")]
+    #[doc(hidden)]
+    pub fn benchmark_wait_template_watcher_idle(&self, wait: &OperationContext) -> Result<()> {
+        self.watcher
+            .get()
+            .map_or(Ok(()), |watcher| watcher.wait_idle_for_benchmark(wait))
     }
 
     /// Searches one of this session's frames for one prepared template.
@@ -873,7 +882,7 @@ mod tests {
         DiagnosticReader, DiagnosticSink, SearchDiagnosticOutcome,
     };
     use crate::find::FindRequest;
-    use crate::watch::WatchScheduler;
+    use crate::watch::WatchRuntime;
 
     use super::Session;
 
@@ -922,6 +931,7 @@ mod tests {
             } else {
                 (None, None)
             };
+            let watch_runtime = WatchRuntime::new(matcher.clone(), diagnostics.clone());
 
             Self {
                 capture,
@@ -934,7 +944,7 @@ mod tests {
                     None,
                     None,
                     diagnostics.clone(),
-                    WatchScheduler::new(matcher, diagnostics),
+                    watch_runtime,
                 ),
                 reader,
             }

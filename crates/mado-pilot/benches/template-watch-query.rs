@@ -828,6 +828,7 @@ fn coalesced_pair(_: &()) -> Sample {
             .with_candidates(vec![Candidate::new(1, 1, 0.99)])
             .with_completion_gate(Arc::clone(&gate)),
     );
+    let _gate_release = gate.release_guard();
     let session = run.core.open();
     let template = run.core.prepare("coalesced");
     let options = MatchOptions::from_defaults(template.defaults());
@@ -895,13 +896,10 @@ fn saturation_latest_wins(_: &()) -> Sample {
     let started = Instant::now();
 
     let latest_first_gate = Arc::new(CompletionGate::new());
-    let latest_second_gate = Arc::new(CompletionGate::new());
     let latest_final_gate = Arc::new(CompletionGate::new());
     let latest_run = ControlledRun::new(
         ControlledMatcher::new(SOURCE_FORMAT).with_calls([
             ScriptedMatchCall::new(Vec::new()).with_completion_gate(Arc::clone(&latest_first_gate)),
-            ScriptedMatchCall::new(Vec::new())
-                .with_completion_gate(Arc::clone(&latest_second_gate)),
             ScriptedMatchCall::new(vec![Candidate::new(1, 1, 0.99)])
                 .with_completion_gate(Arc::clone(&latest_final_gate)),
         ]),
@@ -914,6 +912,8 @@ fn saturation_latest_wins(_: &()) -> Sample {
         MatchOptions::from_defaults(latest_template.defaults()),
         OperationContext::new(),
     );
+    let _latest_first_release = latest_first_gate.release_guard();
+    let _latest_final_release = latest_final_gate.release_guard();
     latest_run
         .core
         .capture
@@ -924,14 +924,23 @@ fn saturation_latest_wins(_: &()) -> Sample {
         .core
         .capture
         .publish(0x41, Continuity::Continuous)
-        .expect("published second in-flight frame");
-    let latest_second_entered = latest_second_gate.wait_until_entered(WAIT);
+        .expect("published pending frame");
+    let latest_first_pending = wait_progress(&latest, |progress| {
+        progress.pending_count() == 1
+            && progress.in_flight_count() == 1
+            && progress.work().get(TemplateWorkDisposition::Admitted) == 1
+    });
     latest_run
         .core
         .capture
         .publish(0x42, Continuity::Continuous)
-        .expect("published pending frame");
-    let _ = wait_progress(&latest, |progress| progress.pending_count() == 1);
+        .expect("published pending replacement");
+    let latest_first_replaced = wait_progress(&latest, |progress| {
+        progress.pending_count() == 1
+            && progress.in_flight_count() == 1
+            && progress.work().get(TemplateWorkDisposition::Admitted) == 1
+            && progress.work().get(TemplateWorkDisposition::Superseded) == 1
+    });
     latest_run
         .core
         .capture
@@ -939,19 +948,20 @@ fn saturation_latest_wins(_: &()) -> Sample {
         .expect("published latest replacement");
     let latest_replaced = wait_progress(&latest, |progress| {
         progress.pending_count() == 1
-            && progress.work().get(TemplateWorkDisposition::Superseded) == 1
+            && progress.in_flight_count() == 1
+            && progress.work().get(TemplateWorkDisposition::Admitted) == 1
+            && progress.work().get(TemplateWorkDisposition::Superseded) == 2
     });
     latest_first_gate.release();
     let _ = wait_progress(&latest, |progress| {
-        progress.work().get(TemplateWorkDisposition::Superseded) == 2
+        progress.work().get(TemplateWorkDisposition::Completed) == 1
     });
     let latest_final_entered = latest_final_gate.wait_until_entered(WAIT);
-    latest_second_gate.release();
     let latest_ready = wait_progress(&latest, |progress| {
         progress.pending_count() == 0
-            && progress.work().get(TemplateWorkDisposition::Admitted) == 3
-            && progress.work().get(TemplateWorkDisposition::Completed) == 0
-            && progress.work().get(TemplateWorkDisposition::Superseded) == 3
+            && progress.in_flight_count() == 1
+            && progress.work().get(TemplateWorkDisposition::Admitted) == 2
+            && progress.work().get(TemplateWorkDisposition::Completed) == 1
     });
     latest_final_gate.release();
     let latest_outcome = latest
@@ -966,7 +976,7 @@ fn saturation_latest_wins(_: &()) -> Sample {
     let latest_metrics = Some(QueryWorkMetrics {
         backend_runs: latest_backend_runs,
         query_completions: latest_terminal_matches,
-        stale_discards: 2,
+        stale_discards: 0,
         producer_publications: 4,
         admitted: latest_work.get(TemplateWorkDisposition::Admitted),
         superseded: latest_work.get(TemplateWorkDisposition::Superseded),
@@ -976,8 +986,9 @@ fn saturation_latest_wins(_: &()) -> Sample {
         ..QueryWorkMetrics::default()
     });
     let latest_correct = latest_first_entered
-        && latest_second_entered
         && latest_final_entered
+        && latest_first_pending.pending_count() == 1
+        && latest_first_replaced.pending_count() == 1
         && latest_replaced.pending_count() == 1
         && matches!(
             latest_outcome.as_ref(),
@@ -985,11 +996,11 @@ fn saturation_latest_wins(_: &()) -> Sample {
                 if result.frame().stamp().sequence().value() == 3
         )
         && latest_metrics.is_some_and(|work| {
-            work.backend_runs == 3
-                && work.admitted == 3
-                && work.completed == 1
-                && work.superseded == 3
-                && work.stale_discards == 2
+            work.backend_runs == 2
+                && work.admitted == 2
+                && work.completed == 2
+                && work.superseded == 2
+                && work.stale_discards == 0
                 && work.query_completions == 1
         });
     latest_session
@@ -1019,6 +1030,8 @@ fn saturation_latest_wins(_: &()) -> Sample {
         MatchOptions::from_defaults(second_template.defaults()),
         OperationContext::new(),
     );
+    let _first_release = first_gate.release_guard();
+    let _second_release = second_gate.release_guard();
     saturation_run
         .core
         .capture
@@ -1085,12 +1098,12 @@ fn saturation_latest_wins(_: &()) -> Sample {
         .zip(saturation_metrics)
         .map(|(latest, saturation)| latest.saturating_add(saturation));
     let work_correct = metrics.is_some_and(|work| {
-        work.backend_runs == 5
-            && work.admitted == 5
-            && work.completed == 3
+        work.backend_runs == 4
+            && work.admitted == 4
+            && work.completed == 4
             && work.queue_expired == 1
-            && work.superseded == 3
-            && work.stale_discards == 2
+            && work.superseded == 2
+            && work.stale_discards == 0
             && work.query_completions == 4
             && work.query_failures == 0
             && work.producer_publications == 5
@@ -1113,7 +1126,6 @@ fn saturation_latest_wins(_: &()) -> Sample {
     drop(latest_session);
     drop(latest_run);
     drop(latest_first_gate);
-    drop(latest_second_gate);
     drop(latest_final_gate);
     drop(expired);
     drop(first_outcome);
@@ -1161,6 +1173,14 @@ fn two_session_fairness(_: &()) -> Sample {
     let run = ControlledRun::new(
         ControlledMatcher::new(SOURCE_FORMAT).with_calls(blocker_calls.chain(fairness_calls)),
     );
+    let _blocker_releases: Vec<_> = blocker_gates
+        .iter()
+        .map(|gate| gate.release_guard())
+        .collect();
+    let _fairness_releases: Vec<_> = fairness_gates
+        .iter()
+        .map(|gate| gate.release_guard())
+        .collect();
 
     let blocker_session = run.core.open();
     let blockers: Vec<_> = (0..2)
@@ -1297,101 +1317,120 @@ fn two_session_fairness(_: &()) -> Sample {
         .close(&bounded_operation())
         .expect("closed second session");
 
-    let older = Arc::new(CompletionGate::new());
-    let newer = Arc::new(CompletionGate::new());
+    let first_generation = Arc::new(CompletionGate::new());
+    let next_generation = Arc::new(CompletionGate::new());
     let found = vec![Candidate::new(1, 1, 0.99)];
-    let stale_run = ControlledRun::new(ControlledMatcher::new(SOURCE_FORMAT).with_calls([
-        ScriptedMatchCall::new(found.clone()).with_completion_gate(Arc::clone(&older)),
-        ScriptedMatchCall::new(found).with_completion_gate(Arc::clone(&newer)),
+    let serialized_run = ControlledRun::new(ControlledMatcher::new(SOURCE_FORMAT).with_calls([
+        ScriptedMatchCall::new(Vec::new()).with_completion_gate(Arc::clone(&first_generation)),
+        ScriptedMatchCall::new(found).with_completion_gate(Arc::clone(&next_generation)),
     ]));
-    let stale_session = stale_run.core.open();
-    let stale_template = stale_run.core.prepare("stale-generation");
-    let stale_query = start_query(
-        &stale_session,
-        stale_template.clone(),
-        MatchOptions::from_defaults(stale_template.defaults()),
+    let _first_generation_release = first_generation.release_guard();
+    let _next_generation_release = next_generation.release_guard();
+    let serialized_session = serialized_run.core.open();
+    let serialized_template = serialized_run.core.prepare("serialized-generation");
+    let serialized_query = start_query(
+        &serialized_session,
+        serialized_template.clone(),
+        MatchOptions::from_defaults(serialized_template.defaults()),
         OperationContext::new(),
     );
-    stale_run
+    serialized_run
         .core
         .capture
         .publish(0x40, Continuity::Continuous)
-        .expect("published older generation");
-    let older_entered = older.wait_until_entered(WAIT);
-    stale_run
+        .expect("published first generation");
+    let first_generation_entered = first_generation.wait_until_entered(WAIT);
+    serialized_run
         .core
         .capture
         .publish(0x41, Continuity::Continuous)
-        .expect("published newer generation");
-    let newer_entered = newer.wait_until_entered(WAIT);
-    newer.release();
-    let newer_outcome = stale_query
+        .expect("published next generation");
+    let serialized_pending = wait_progress(&serialized_query, |progress| {
+        progress.pending_count() == 1
+            && progress.in_flight_count() == 1
+            && progress.work().get(TemplateWorkDisposition::Admitted) == 1
+    });
+    let next_generation_entered_early = next_generation.wait_until_entered(Duration::ZERO);
+    first_generation.release();
+    let first_generation_completed = first_generation.wait_until_completed(WAIT);
+    let next_generation_entered = next_generation.wait_until_entered(WAIT);
+    next_generation.release();
+    let serialized_outcome = serialized_query
         .wait(&bounded_operation())
-        .expect("newer generation committed");
-    older.release();
-    let older_completed = older.wait_until_completed(WAIT);
-    let retained = match stale_query.poll() {
+        .expect("next generation committed");
+    let retained = match serialized_query.poll() {
         TemplateQueryOutcome::Terminal(outcome) => Some(outcome),
         TemplateQueryOutcome::Pending(_) => None,
     };
-    let stale_backend_runs = u64::try_from(stale_run.matcher.find_count()).expect("count fits");
-    let stale_terminal_matches = u64::from(matches!(
-        newer_outcome.as_ref(),
+    let serialized_backend_runs =
+        u64::try_from(serialized_run.matcher.find_count()).expect("count fits");
+    let serialized_terminal_matches = u64::from(matches!(
+        serialized_outcome.as_ref(),
         TemplateTerminalOutcome::Matched(_)
     ));
-    let stale_metrics = Some(QueryWorkMetrics {
-        backend_runs: stale_backend_runs,
-        query_completions: stale_terminal_matches,
-        stale_discards: u64::from(older_entered && newer_entered && older_completed),
+    let serialized_metrics = Some(QueryWorkMetrics {
+        backend_runs: serialized_backend_runs,
+        query_completions: serialized_terminal_matches,
+        stale_discards: 0,
         producer_publications: 2,
-        admitted: stale_backend_runs,
-        superseded: stale_terminal_matches,
-        completed: stale_terminal_matches,
+        admitted: serialized_backend_runs,
+        superseded: 0,
+        completed: serialized_backend_runs,
         ..QueryWorkMetrics::default()
     });
-    let stale_correct = matches!(
-        newer_outcome.as_ref(),
-        TemplateTerminalOutcome::Matched(result)
-            if result.frame().stamp().sequence().value() == 1
-    ) && retained
-        .as_ref()
-        .is_some_and(|retained| Arc::ptr_eq(&newer_outcome, retained))
-        && stale_backend_runs == 2
-        && stale_metrics.is_some_and(|work| work.stale_discards == 1);
-    stale_session
+    let serialized_correct = first_generation_entered
+        && !next_generation_entered_early
+        && first_generation_completed
+        && next_generation_entered
+        && serialized_pending.pending_count() == 1
+        && matches!(
+            serialized_outcome.as_ref(),
+            TemplateTerminalOutcome::Matched(result)
+                if result.frame().stamp().sequence().value() == 1
+        )
+        && retained
+            .as_ref()
+            .is_some_and(|retained| Arc::ptr_eq(&serialized_outcome, retained))
+        && serialized_backend_runs == 2;
+    serialized_session
         .close(&bounded_operation())
-        .expect("closed stale session");
+        .expect("closed serialized session");
 
     let metrics = fairness_metrics
-        .zip(stale_metrics)
-        .map(|(fairness, stale)| fairness.saturating_add(stale));
+        .zip(serialized_metrics)
+        .map(|(fairness, serialized)| fairness.saturating_add(serialized));
     let work_correct = metrics.is_some_and(|work| {
         work.backend_runs == 8
             && work.admitted == 8
-            && work.completed == 5
-            && work.stale_discards == 1
-            && work.superseded == 3
+            && work.completed == 6
+            && work.stale_discards == 0
+            && work.superseded == 2
             && work.query_completions == 7
             && work.query_failures == 0
             && work.producer_publications == 4
     });
     let fairness_mapped =
         u64::try_from(run.matcher.consistent_mapped_bytes().unwrap_or(0)).expect("bytes fit");
-    let stale_mapped =
-        u64::try_from(stale_run.matcher.consistent_mapped_bytes().unwrap_or(0)).expect("bytes fit");
+    let serialized_mapped = u64::try_from(
+        serialized_run
+            .matcher
+            .consistent_mapped_bytes()
+            .unwrap_or(0),
+    )
+    .expect("bytes fit");
     let mapped_correct =
-        fairness_mapped == CONTROLLED_MAPPED_BYTES && stale_mapped == CONTROLLED_MAPPED_BYTES;
+        fairness_mapped == CONTROLLED_MAPPED_BYTES && serialized_mapped == CONTROLLED_MAPPED_BYTES;
 
     let elapsed = started.elapsed();
     drop(retained);
-    drop(newer_outcome);
+    drop(serialized_outcome);
     drop(fairness_outcomes);
     drop(blocker_outcomes);
-    drop(stale_query);
-    drop(stale_session);
-    drop(stale_run);
-    drop(older);
-    drop(newer);
+    drop(serialized_query);
+    drop(serialized_session);
+    drop(serialized_run);
+    drop(first_generation);
+    drop(next_generation);
     drop(queries);
     drop(blockers);
     drop(prepared);
@@ -1415,7 +1454,7 @@ fn two_session_fairness(_: &()) -> Sample {
             && fourth_entered
             && outcomes_correct
             && fairness_work_correct
-            && stale_correct
+            && serialized_correct
             && work_correct
             && mapped_correct
             && cleanup_correct,
@@ -1432,6 +1471,7 @@ fn cancel_in_flight(_: &()) -> Sample {
             .with_candidates(vec![Candidate::new(1, 1, 0.99)])
             .with_completion_gate(Arc::clone(&gate)),
     );
+    let _gate_release = gate.release_guard();
     let session = run.core.open();
     let template = run.core.prepare("cancel");
 

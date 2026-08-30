@@ -72,6 +72,10 @@ pub mod fixture_control;
 #[cfg(all(target_os = "macos", feature = "private-fixture"))]
 #[doc(hidden)]
 #[allow(missing_docs)]
+pub mod fixture_observation;
+#[cfg(all(target_os = "macos", feature = "private-fixture"))]
+#[doc(hidden)]
+#[allow(missing_docs)]
 pub mod fixture_protocol;
 #[cfg(target_os = "macos")]
 mod input;

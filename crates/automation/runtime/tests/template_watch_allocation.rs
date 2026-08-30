@@ -8,7 +8,7 @@ use mado_pilot_runtime::{
     Continuity, MatchOptions, OpenRequest, OperationContext, TemplateTerminalOutcome,
     TemplateWatchRequest,
 };
-use mado_pilot_testkit::bench_harness::{Accounting, Plan, Sample, measure};
+use mado_pilot_testkit::bench_harness::{Accounting, Plan, Sample, enforce_hard_budgets, measure};
 use mado_pilot_testkit::{ControlledMatcher, match_fixtures};
 use mado_pilot_vision::Candidate;
 
@@ -77,6 +77,30 @@ fn one_query(fixture: &Fixture) -> Sample {
     Sample::unmapped(started.elapsed(), correct)
 }
 
+fn one_fresh_owner(_: &()) -> Sample {
+    let started = Instant::now();
+    let fixture = fixture();
+    let query_operation = OperationContext::new()
+        .with_timeout(Duration::from_secs(2))
+        .expect("representable query timeout");
+    let query = fixture
+        .session
+        .start_template_watch(TemplateWatchRequest::new(
+            fixture.template.clone(),
+            fixture.options,
+            query_operation,
+        ))
+        .expect("started query");
+    let wait = OperationContext::new()
+        .with_timeout(Duration::from_secs(2))
+        .expect("representable wait timeout");
+    let matched = query
+        .wait(&wait)
+        .is_ok_and(|outcome| matches!(outcome.as_ref(), TemplateTerminalOutcome::Matched(_)));
+    let closed = fixture.session.close(&wait).is_ok();
+    Sample::unmapped(started.elapsed(), matched && closed)
+}
+
 #[test]
 fn repeated_completed_queries_release_per_query_heap_and_report_progress() {
     let workload = measure(
@@ -98,4 +122,17 @@ fn repeated_completed_queries_release_per_query_heap_and_report_progress() {
         "post-warmup growth was {} bytes",
         workload.growth_bytes()
     );
+}
+
+#[test]
+fn repeated_fresh_runtime_owners_join_all_watcher_threads() {
+    let workload = measure(
+        "fresh-template-watch-owner-allocation",
+        "fresh engines, sessions, queries, and watcher threads release before each sample ends",
+        Plan::new(3, 20),
+        || (),
+        one_fresh_owner,
+    );
+
+    enforce_hard_budgets(std::slice::from_ref(&workload));
 }

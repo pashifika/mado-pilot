@@ -163,6 +163,48 @@ fn exercise_capture_session(
     );
 }
 
+/// Exercises only the owned private control channel; acknowledgements prove fixture
+/// effects and never stand in for capture or matching observations.
+#[test]
+#[ignore = "opens a real signed fixture application on an interactive desktop"]
+fn watcher_visual_controls_acknowledge_and_cleanup_without_capture() {
+    let executable = PathBuf::from(
+        std::env::var_os("MADO_PILOT_MACOS_FIXTURE_EXECUTABLE")
+            .expect("set the exact signed fixture executable"),
+    );
+    let executable_bytes: Arc<[u8]> = std::fs::read(&executable)
+        .expect("the signed fixture executable is readable")
+        .into();
+    let identity =
+        executable_identity(&executable).expect("the signed fixture has a valid code identity");
+    let mut fixture = FixtureController::start(
+        &executable,
+        executable_bytes,
+        identity,
+        LaunchMode::ControlledStatic,
+        FIXTURE_WAIT,
+    )
+    .expect("authenticated watcher fixture starts");
+
+    for kind in [
+        macos_fixture_protocol::FixtureCommandKind::SetVisualVisible,
+        macos_fixture_protocol::FixtureCommandKind::SetVisualAbsent,
+    ] {
+        let result = fixture
+            .command(kind, OPERATION_WAIT)
+            .expect("visual command receives its correlated acknowledgement")
+            .result();
+        assert_eq!(result.status, 0);
+        assert_ne!(result.before_window, 0);
+        assert_eq!(result.after_window, result.before_window);
+    }
+
+    assert!(
+        fixture.finish(FIXTURE_WAIT),
+        "the watcher fixture closes its control channel, process, and output reader"
+    );
+}
+
 /// Drives the exact fixture controller and facade wiring used by the native
 /// benchmark without allocation accounting or profile generation.
 #[test]
