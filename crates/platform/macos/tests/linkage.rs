@@ -133,6 +133,20 @@ fn the_fixture_control_archive_is_absent_from_a_production_shim_consumer() {
     );
 }
 
+#[cfg(not(feature = "sck-suspension-diagnostics"))]
+#[test]
+fn production_shim_has_no_suspension_diagnostic_symbols() {
+    let symbols = linked_symbols();
+    assert!(
+        !symbols.contains("_mp_shim_sck_diagnostics_"),
+        "private ScreenCaptureKit diagnostic symbols entered a production shim consumer"
+    );
+    assert!(
+        !symbols.contains("_mp_shim_session_prepare_close"),
+        "private diagnostic close ordering entered a production shim consumer"
+    );
+}
+
 #[test]
 fn normal_package_targets_gate_the_private_fixture_binary() {
     let manifest = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("Cargo.toml");

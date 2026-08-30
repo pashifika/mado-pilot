@@ -72,6 +72,10 @@
 #define MP_SHIM_TARGET_MAGIC 0x4d505354u
 #define MP_SHIM_PROCESS_EVENT_SOURCE_MAGIC 0x4d505345u
 #define MP_SHIM_FIXTURE_APPLICATION_MAGIC 0x4d504641u
+#ifdef MP_SHIM_SCK_SUSPENSION_DIAGNOSTICS
+#define MP_SHIM_SCK_DIAGNOSTICS_PROBE_MAGIC 0x4d505344u
+static uint8_t mp_shim_sck_sample_queue_key;
+#endif
 
 /*
  * Every entry point and callback trampoline wraps its body in these. Both
@@ -125,6 +129,11 @@ static uint64_t mp_shim_nanos_from_ticks(uint64_t ticks) {
 /* Count of native objects this shim owns, for the ADR 0012 ownership tests. */
 static atomic_ullong mp_shim_owned_objects = 0;
 static atomic_ullong mp_shim_fixture_owned_objects = 0;
+#ifdef MP_SHIM_SCK_SUSPENSION_DIAGNOSTICS
+static atomic_ullong mp_shim_detached_bytes = 0;
+static atomic_ullong mp_shim_live_sessions = 0;
+static atomic_ullong mp_shim_callbacks_in_flight = 0;
+#endif
 
 static void mp_shim_note_owned(void) { atomic_fetch_add(&mp_shim_owned_objects, 1u); }
 
@@ -637,6 +646,14 @@ mp_shim_status mp_shim_executable_identity_for_process(
 static const NSInteger MPShimStreamOutputTypeScreen = 0;
 /* SCFrameStatus.complete */
 static const NSInteger MPShimFrameStatusComplete = 0;
+#ifdef MP_SHIM_SCK_SUSPENSION_DIAGNOSTICS
+/* Remaining SCFrameStatus values from the active SDK 26.5 SCStream.h. */
+static const NSInteger MPShimFrameStatusIdle = 1;
+static const NSInteger MPShimFrameStatusBlank = 2;
+static const NSInteger MPShimFrameStatusSuspended = 3;
+static const NSInteger MPShimFrameStatusStarted = 4;
+static const NSInteger MPShimFrameStatusStopped = 5;
+#endif
 /*
  * `SCStreamErrorCode` values, by value for the reason the framework is not
  * imported. Every one is transcribed from `SCError.h` in the SDK this builds
@@ -1186,6 +1203,96 @@ static mp_shim_status mp_shim_stop_gate_wait(MPShimStopGate *gate, uint64_t time
     return result;
 }
 
+#ifdef MP_SHIM_SCK_SUSPENSION_DIAGNOSTICS
+typedef struct MPShimDrainGate {
+    pthread_mutex_t mutex;
+    pthread_cond_t settled;
+    bool pending;
+    mp_shim_status result;
+    uint64_t request_generation;
+    uint64_t completion_generation;
+    uint64_t requested_nanos;
+    uint64_t completed_nanos;
+} MPShimDrainGate;
+
+static bool mp_shim_drain_gate_init(MPShimDrainGate *gate,
+                                    MPShimPthreadInitializer *initializer) {
+    if (!mp_shim_pthread_mutex_init(&gate->mutex, initializer)) {
+        return false;
+    }
+    if (!mp_shim_pthread_cond_init(&gate->settled, initializer)) {
+        mp_shim_pthread_mutex_destroy(&gate->mutex, initializer);
+        return false;
+    }
+    gate->pending = false;
+    gate->result = MP_SHIM_OK;
+    gate->request_generation = 0;
+    gate->completion_generation = 0;
+    gate->requested_nanos = 0;
+    gate->completed_nanos = 0;
+    return true;
+}
+
+static void mp_shim_drain_gate_destroy_with(MPShimDrainGate *gate,
+                                            MPShimPthreadInitializer *initializer) {
+    mp_shim_pthread_cond_destroy(&gate->settled, initializer);
+    mp_shim_pthread_mutex_destroy(&gate->mutex, initializer);
+}
+
+static bool mp_shim_drain_gate_begin_once(MPShimDrainGate *gate, uint64_t *out_generation) {
+    pthread_mutex_lock(&gate->mutex);
+    bool began = gate->request_generation == 0;
+    if (began) {
+        gate->request_generation = 1;
+        gate->requested_nanos = mp_shim_nanos_from_ticks(mach_absolute_time());
+        gate->pending = true;
+        gate->result = MP_SHIM_OK;
+    }
+    *out_generation = gate->request_generation;
+    pthread_mutex_unlock(&gate->mutex);
+    return began;
+}
+
+static void mp_shim_drain_gate_end(MPShimDrainGate *gate, uint64_t generation,
+                                   mp_shim_status result) {
+    pthread_mutex_lock(&gate->mutex);
+    if (gate->pending && gate->request_generation == generation) {
+        gate->completion_generation = generation;
+        gate->completed_nanos = mp_shim_nanos_from_ticks(mach_absolute_time());
+        gate->result = result;
+        gate->pending = false;
+        pthread_cond_broadcast(&gate->settled);
+    }
+    pthread_mutex_unlock(&gate->mutex);
+}
+
+static mp_shim_status mp_shim_drain_gate_wait(MPShimDrainGate *gate, uint64_t timeout_nanos) {
+    uint64_t began = mp_shim_nanos_from_ticks(mach_absolute_time());
+    uint64_t deadline = began > UINT64_MAX - timeout_nanos ? UINT64_MAX : began + timeout_nanos;
+
+    pthread_mutex_lock(&gate->mutex);
+    while (gate->pending) {
+        uint64_t now = mp_shim_nanos_from_ticks(mach_absolute_time());
+        if (now >= deadline) {
+            pthread_mutex_unlock(&gate->mutex);
+            return MP_SHIM_TIMED_OUT;
+        }
+        uint64_t left = deadline - now;
+        struct timespec relative;
+        relative.tv_sec = (time_t)(left / 1000000000ull);
+        relative.tv_nsec = (long)(left % 1000000000ull);
+        if (pthread_cond_timedwait_relative_np(&gate->settled, &gate->mutex, &relative) != 0 &&
+            gate->pending) {
+            pthread_mutex_unlock(&gate->mutex);
+            return MP_SHIM_TIMED_OUT;
+        }
+    }
+    mp_shim_status result = gate->result;
+    pthread_mutex_unlock(&gate->mutex);
+    return result;
+}
+#endif
+
 /*
  * The asynchronous stop completion's complete no-throw boundary.
  *
@@ -1193,8 +1300,12 @@ static mp_shim_status mp_shim_stop_gate_wait(MPShimStopGate *gate, uint64_t time
  * gate is settled exactly once from @finally, including when delay, error
  * translation, or the deliberate regression seam raises.
  */
-static void mp_shim_complete_stop(MPShimStopGate *gate, atomic_bool *started, NSError *error,
-                                  uint64_t delay_nanos, bool raise_for_test) {
+static void mp_shim_complete_stop(
+    MPShimStopGate *gate, atomic_bool *started, NSError *error, uint64_t delay_nanos,
+#ifdef MP_SHIM_SCK_SUSPENSION_DIAGNOSTICS
+    atomic_uint_fast64_t *diagnostic_completed_nanos,
+#endif
+    bool raise_for_test) {
     mp_shim_status status = MP_SHIM_NATIVE_EXCEPTION;
     @try {
         mp_shim_testing_delay(delay_nanos);
@@ -1209,6 +1320,13 @@ static void mp_shim_complete_stop(MPShimStopGate *gate, atomic_bool *started, NS
         status = MP_SHIM_NATIVE_EXCEPTION;
     } @finally {
         atomic_store(started, false);
+#ifdef MP_SHIM_SCK_SUSPENSION_DIAGNOSTICS
+        if (diagnostic_completed_nanos != NULL) {
+            atomic_store_explicit(diagnostic_completed_nanos,
+                                  mp_shim_nanos_from_ticks(mach_absolute_time()),
+                                  memory_order_relaxed);
+        }
+#endif
         mp_shim_stop_gate_end(gate, status);
     }
 }
@@ -1274,7 +1392,11 @@ mp_shim_status mp_shim_testing_stop_completion_exception(mp_shim_status *out_sta
         return MP_SHIM_PLATFORM_FAILURE;
     }
     mp_shim_stop_gate_begin(&gate);
-    mp_shim_complete_stop(&gate, &started, nil, 0, true);
+    mp_shim_complete_stop(&gate, &started, nil, 0,
+#ifdef MP_SHIM_SCK_SUSPENSION_DIAGNOSTICS
+                          NULL,
+#endif
+                          true);
     /* A later duplicate settlement cannot replace the first contained result. */
     mp_shim_stop_gate_end(&gate, MP_SHIM_OK);
     *out_status = mp_shim_stop_gate_wait(&gate, MP_SHIM_DEFAULT_TIMEOUT_NANOS);
@@ -1334,9 +1456,197 @@ struct mp_shim_fixture_application {
 #define MP_SHIM_CLOSE_START 0u
 #define MP_SHIM_CLOSE_OUTPUT 1u
 #define MP_SHIM_CLOSE_STOP 2u
+#ifdef MP_SHIM_SCK_SUSPENSION_DIAGNOSTICS
+#define MP_SHIM_CLOSE_DRAIN 3u
+#define MP_SHIM_CLOSE_FENCE 4u
+#define MP_SHIM_CLOSE_RELEASE 5u
+#define MP_SHIM_CLOSE_COMPLETE 6u
+#else
 #define MP_SHIM_CLOSE_FENCE 3u
 #define MP_SHIM_CLOSE_RELEASE 4u
 #define MP_SHIM_CLOSE_COMPLETE 5u
+#endif
+
+#ifdef MP_SHIM_SCK_SUSPENSION_DIAGNOSTICS
+#define MP_SHIM_CLOSE_PHASE_INIT(session, phase) atomic_init(&(session)->close_phase, (phase))
+#define MP_SHIM_CLOSE_PHASE_LOAD(session)                                                   \
+    atomic_load_explicit(&(session)->close_phase, memory_order_acquire)
+#define MP_SHIM_CLOSE_PHASE_STORE(session, phase)                                           \
+    atomic_store_explicit(&(session)->close_phase, (phase), memory_order_release)
+#else
+#define MP_SHIM_CLOSE_PHASE_INIT(session, phase) ((session)->close_phase = (phase))
+#define MP_SHIM_CLOSE_PHASE_LOAD(session) ((session)->close_phase)
+#define MP_SHIM_CLOSE_PHASE_STORE(session, phase) ((session)->close_phase = (phase))
+#endif
+
+#ifdef MP_SHIM_SCK_SUSPENSION_DIAGNOSTICS
+typedef struct MPShimSckDiagnostics {
+    pthread_mutex_t mutex;
+    pthread_mutex_t callback_mutex;
+    atomic_uint status_generation;
+    atomic_uint_fast64_t observed_total;
+    atomic_uint_fast64_t status_counts[MP_SHIM_SCK_STATUS_KIND_COUNT];
+    atomic_uint_fast64_t callbacks_received;
+    atomic_uint_fast64_t callbacks_admitted;
+    atomic_uint_fast64_t callbacks_refused;
+    atomic_uint_fast64_t callbacks_exited;
+    atomic_uint_fast64_t stream_start_completed_nanos;
+    atomic_uint_fast64_t stream_stop_requested_nanos;
+    atomic_uint_fast64_t stream_stop_completed_nanos;
+    atomic_uint_fast64_t callback_admission_stopped_nanos;
+    atomic_uint_fast64_t callback_fence_completed_nanos;
+    atomic_uint_fast64_t close_completed_nanos;
+    atomic_uint_fast64_t first_complete_nanos;
+    bool has_status;
+    uint32_t transition_count;
+    uint32_t transition_start;
+    uint64_t transition_overwrites;
+    mp_shim_sck_diagnostics_status_event first_status;
+    mp_shim_sck_diagnostics_status_event last_status;
+    mp_shim_sck_diagnostics_status_event
+        transitions[MP_SHIM_SCK_DIAGNOSTIC_TRANSITION_CAPACITY];
+} MPShimSckDiagnostics;
+
+struct mp_shim_sck_diagnostics_probe {
+    uint32_t magic;
+    MPShimSckDiagnostics diagnostics;
+};
+
+static uint64_t mp_shim_atomic_saturating_increment(atomic_uint_fast64_t *value) {
+    uint_fast64_t current = atomic_load_explicit(value, memory_order_relaxed);
+    while (current != UINT64_MAX &&
+           !atomic_compare_exchange_weak_explicit(value, &current, current + 1,
+                                                  memory_order_relaxed, memory_order_relaxed)) {
+    }
+    return current == UINT64_MAX ? UINT64_MAX : (uint64_t)(current + 1);
+}
+
+static void mp_shim_atomic_record_first(atomic_uint_fast64_t *value, uint64_t observed) {
+    uint_fast64_t expected = 0;
+    (void)atomic_compare_exchange_strong_explicit(value, &expected, observed, memory_order_relaxed,
+                                                  memory_order_relaxed);
+}
+
+static void mp_shim_atomic_record_now(atomic_uint_fast64_t *value) {
+    mp_shim_atomic_record_first(value, mp_shim_nanos_from_ticks(mach_absolute_time()));
+}
+
+static bool mp_shim_sck_diagnostics_init(MPShimSckDiagnostics *diagnostics,
+                                         MPShimPthreadInitializer *initializer) {
+    if (!mp_shim_pthread_mutex_init(&diagnostics->mutex, initializer)) {
+        return false;
+    }
+    if (!mp_shim_pthread_mutex_init(&diagnostics->callback_mutex, initializer)) {
+        mp_shim_pthread_mutex_destroy(&diagnostics->mutex, initializer);
+        return false;
+    }
+    atomic_init(&diagnostics->status_generation, 0);
+    atomic_init(&diagnostics->observed_total, 0);
+    for (size_t kind = 0; kind < MP_SHIM_SCK_STATUS_KIND_COUNT; kind += 1) {
+        atomic_init(&diagnostics->status_counts[kind], 0);
+    }
+    atomic_init(&diagnostics->callbacks_received, 0);
+    atomic_init(&diagnostics->callbacks_admitted, 0);
+    atomic_init(&diagnostics->callbacks_refused, 0);
+    atomic_init(&diagnostics->callbacks_exited, 0);
+    atomic_init(&diagnostics->stream_start_completed_nanos, 0);
+    atomic_init(&diagnostics->stream_stop_requested_nanos, 0);
+    atomic_init(&diagnostics->stream_stop_completed_nanos, 0);
+    atomic_init(&diagnostics->callback_admission_stopped_nanos, 0);
+    atomic_init(&diagnostics->callback_fence_completed_nanos, 0);
+    atomic_init(&diagnostics->close_completed_nanos, 0);
+    atomic_init(&diagnostics->first_complete_nanos, 0);
+    return true;
+}
+
+static void mp_shim_sck_diagnostics_destroy(MPShimSckDiagnostics *diagnostics,
+                                            MPShimPthreadInitializer *initializer) {
+    mp_shim_pthread_mutex_destroy(&diagnostics->callback_mutex, initializer);
+    mp_shim_pthread_mutex_destroy(&diagnostics->mutex, initializer);
+}
+
+static uint32_t mp_shim_sck_status_kind(NSNumber *status, int64_t *out_raw) {
+    if (status == nil) {
+        *out_raw = INT64_MIN;
+        return MP_SHIM_SCK_STATUS_MISSING;
+    }
+    NSInteger raw = status.integerValue;
+    *out_raw = (int64_t)raw;
+    if (raw == MPShimFrameStatusComplete) {
+        return MP_SHIM_SCK_STATUS_COMPLETE;
+    }
+    if (raw == MPShimFrameStatusIdle) {
+        return MP_SHIM_SCK_STATUS_IDLE;
+    }
+    if (raw == MPShimFrameStatusBlank) {
+        return MP_SHIM_SCK_STATUS_BLANK;
+    }
+    if (raw == MPShimFrameStatusStarted) {
+        return MP_SHIM_SCK_STATUS_STARTED;
+    }
+    if (raw == MPShimFrameStatusSuspended) {
+        return MP_SHIM_SCK_STATUS_SUSPENDED;
+    }
+    if (raw == MPShimFrameStatusStopped) {
+        return MP_SHIM_SCK_STATUS_STOPPED;
+    }
+    return MP_SHIM_SCK_STATUS_UNKNOWN;
+}
+
+static bool mp_shim_sck_status_publishable(NSNumber *status) {
+    return status != nil && status.integerValue == MPShimFrameStatusComplete;
+}
+
+static void mp_shim_sck_diagnostics_record_status(MPShimSckDiagnostics *diagnostics,
+                                                  NSNumber *status) {
+    atomic_fetch_add_explicit(&diagnostics->status_generation, 1, memory_order_acq_rel);
+    int64_t raw = 0;
+    uint32_t kind = mp_shim_sck_status_kind(status, &raw);
+    uint64_t sequence = mp_shim_atomic_saturating_increment(&diagnostics->observed_total);
+    (void)mp_shim_atomic_saturating_increment(&diagnostics->status_counts[kind]);
+    mp_shim_sck_diagnostics_status_event event = {
+        .struct_size = (uint32_t)sizeof(mp_shim_sck_diagnostics_status_event),
+        .kind = kind,
+        .raw_value = raw,
+        .sequence = sequence,
+        .monotonic_nanos = mp_shim_nanos_from_ticks(mach_absolute_time()),
+    };
+    if (kind == MP_SHIM_SCK_STATUS_COMPLETE) {
+        mp_shim_atomic_record_first(&diagnostics->first_complete_nanos, event.monotonic_nanos);
+    }
+
+    pthread_mutex_lock(&diagnostics->mutex);
+    bool transitioned = !diagnostics->has_status || diagnostics->last_status.kind != kind ||
+                        diagnostics->last_status.raw_value != raw;
+    if (!diagnostics->has_status) {
+        diagnostics->first_status = event;
+    }
+    diagnostics->last_status = event;
+    diagnostics->has_status = true;
+    if (!transitioned) {
+        pthread_mutex_unlock(&diagnostics->mutex);
+        atomic_fetch_add_explicit(&diagnostics->status_generation, 1, memory_order_release);
+        return;
+    }
+
+    uint32_t index = 0;
+    if (diagnostics->transition_count < MP_SHIM_SCK_DIAGNOSTIC_TRANSITION_CAPACITY) {
+        index = (diagnostics->transition_start + diagnostics->transition_count) %
+                MP_SHIM_SCK_DIAGNOSTIC_TRANSITION_CAPACITY;
+        diagnostics->transition_count += 1;
+    } else {
+        index = diagnostics->transition_start;
+        diagnostics->transition_start =
+            (diagnostics->transition_start + 1) % MP_SHIM_SCK_DIAGNOSTIC_TRANSITION_CAPACITY;
+        if (diagnostics->transition_overwrites != UINT64_MAX) {
+            diagnostics->transition_overwrites += 1;
+        }
+    }
+    diagnostics->transitions[index] = event;
+    pthread_mutex_unlock(&diagnostics->mutex);
+    atomic_fetch_add_explicit(&diagnostics->status_generation, 1, memory_order_release);
+}
+#endif
 
 /*
  * One capture session.
@@ -1366,11 +1676,19 @@ struct mp_shim_session {
     MPShimStartGate start_gate;
     /* Preserves one asynchronous stop across close retries. */
     MPShimStopGate stop_gate;
+#ifdef MP_SHIM_SCK_SUSPENSION_DIAGNOSTICS
+    /* One resumable serial sample-queue sentinel per session. */
+    MPShimDrainGate drain_gate;
+#endif
     /* Serializes claims on the resumable close phases without spanning waits. */
     pthread_mutex_t close_mutex;
     pthread_cond_t close_idle;
     bool close_active;
+#ifdef MP_SHIM_SCK_SUSPENSION_DIAGNOSTICS
+    atomic_uint close_phase;
+#else
     uint32_t close_phase;
+#endif
     mp_shim_status close_error;
     bool close_error_reported;
 
@@ -1379,6 +1697,11 @@ struct mp_shim_session {
     uint32_t testing_raise_sites;
     uint64_t testing_start_delay_nanos;
     uint64_t testing_stop_delay_nanos;
+#ifdef MP_SHIM_SCK_SUSPENSION_DIAGNOSTICS
+    uint32_t diagnostic_close_policy;
+    atomic_uint diagnostic_async_holds;
+    bool diagnostic_live_counted;
+#endif
 
     /*
      * Native ownership. Each slot is retained exactly once and released by
@@ -1413,7 +1736,131 @@ struct mp_shim_session {
     atomic_bool closing;
     atomic_bool closed;
     atomic_bool stop_reported;
+#ifdef MP_SHIM_SCK_SUSPENSION_DIAGNOSTICS
+    MPShimSckDiagnostics sck_diagnostics;
+#endif
 };
+
+#ifdef MP_SHIM_SCK_SUSPENSION_DIAGNOSTICS
+static void mp_shim_sck_diagnostics_copy_fields(MPShimSckDiagnostics *diagnostics,
+                                                mp_shim_sck_diagnostics_snapshot *out) {
+    out->struct_size = (uint32_t)sizeof(*out);
+    out->transition_capacity = MP_SHIM_SCK_DIAGNOSTIC_TRANSITION_CAPACITY;
+    for (;;) {
+        unsigned before =
+            atomic_load_explicit(&diagnostics->status_generation, memory_order_acquire);
+        if ((before & 1u) != 0) {
+            continue;
+        }
+        out->observed_total =
+            atomic_load_explicit(&diagnostics->observed_total, memory_order_relaxed);
+        for (size_t kind = 0; kind < MP_SHIM_SCK_STATUS_KIND_COUNT; kind += 1) {
+            out->status_counts[kind] =
+                atomic_load_explicit(&diagnostics->status_counts[kind], memory_order_relaxed);
+        }
+        pthread_mutex_lock(&diagnostics->mutex);
+        out->transition_count = diagnostics->transition_count;
+        out->transition_start = diagnostics->transition_start;
+        out->transition_overwrites = diagnostics->transition_overwrites;
+        out->first_status = diagnostics->first_status;
+        out->last_status = diagnostics->last_status;
+        memcpy(out->transitions, diagnostics->transitions, sizeof(out->transitions));
+        pthread_mutex_unlock(&diagnostics->mutex);
+        unsigned after =
+            atomic_load_explicit(&diagnostics->status_generation, memory_order_acquire);
+        if (before == after && (after & 1u) == 0) {
+            break;
+        }
+    }
+
+    pthread_mutex_lock(&diagnostics->callback_mutex);
+    out->callbacks_received =
+        atomic_load_explicit(&diagnostics->callbacks_received, memory_order_relaxed);
+    out->callbacks_admitted =
+        atomic_load_explicit(&diagnostics->callbacks_admitted, memory_order_relaxed);
+    out->callbacks_refused =
+        atomic_load_explicit(&diagnostics->callbacks_refused, memory_order_relaxed);
+    out->callbacks_exited =
+        atomic_load_explicit(&diagnostics->callbacks_exited, memory_order_relaxed);
+    pthread_mutex_unlock(&diagnostics->callback_mutex);
+    out->stream_start_completed_nanos =
+        atomic_load_explicit(&diagnostics->stream_start_completed_nanos, memory_order_relaxed);
+    out->stream_stop_requested_nanos =
+        atomic_load_explicit(&diagnostics->stream_stop_requested_nanos, memory_order_relaxed);
+    out->stream_stop_completed_nanos =
+        atomic_load_explicit(&diagnostics->stream_stop_completed_nanos, memory_order_relaxed);
+    out->callback_admission_stopped_nanos = atomic_load_explicit(
+        &diagnostics->callback_admission_stopped_nanos, memory_order_relaxed);
+    out->callback_fence_completed_nanos =
+        atomic_load_explicit(&diagnostics->callback_fence_completed_nanos, memory_order_relaxed);
+    out->close_completed_nanos =
+        atomic_load_explicit(&diagnostics->close_completed_nanos, memory_order_relaxed);
+    out->first_complete_nanos =
+        atomic_load_explicit(&diagnostics->first_complete_nanos, memory_order_relaxed);
+}
+
+static void mp_shim_sck_diagnostics_copy(struct mp_shim_session *session,
+                                         mp_shim_sck_diagnostics_snapshot *out) {
+    memset(out, 0, sizeof(*out));
+    mp_shim_sck_diagnostics_copy_fields(&session->sck_diagnostics, out);
+
+    out->close_phase = MP_SHIM_CLOSE_PHASE_LOAD(session);
+    uint64_t references = atomic_load_explicit(&session->refs, memory_order_relaxed);
+    uint64_t async_holds =
+        atomic_load_explicit(&session->diagnostic_async_holds, memory_order_relaxed);
+    out->session_references = references > async_holds ? references - async_holds : 0;
+    out->drain_policy = session->diagnostic_close_policy;
+    pthread_mutex_lock(&session->drain_gate.mutex);
+    out->drain_request_generation = session->drain_gate.request_generation;
+    out->drain_completion_generation = session->drain_gate.completion_generation;
+    out->drain_requested_nanos = session->drain_gate.requested_nanos;
+    out->drain_completed_nanos = session->drain_gate.completed_nanos;
+    pthread_mutex_unlock(&session->drain_gate.mutex);
+
+    pthread_mutex_lock(&session->native_mutex);
+    pthread_mutex_lock(&session->pool_mutex);
+    out->active_native_slots |= session->stream == NULL ? 0 : MP_SHIM_SCK_NATIVE_STREAM;
+    out->active_native_slots |=
+        session->configuration == NULL ? 0 : MP_SHIM_SCK_NATIVE_CONFIGURATION;
+    out->active_native_slots |= session->filter == NULL ? 0 : MP_SHIM_SCK_NATIVE_FILTER;
+    out->active_native_slots |= session->output == NULL ? 0 : MP_SHIM_SCK_NATIVE_OUTPUT;
+    out->active_native_slots |= session->queue == NULL ? 0 : MP_SHIM_SCK_NATIVE_QUEUE;
+    out->active_native_slots |= session->pool == NULL ? 0 : MP_SHIM_SCK_NATIVE_POOL;
+    out->detached_leases = session->leased;
+    pthread_mutex_unlock(&session->pool_mutex);
+    pthread_mutex_unlock(&session->native_mutex);
+    out->native_objects = atomic_load_explicit(&mp_shim_owned_objects, memory_order_relaxed);
+    out->detached_bytes =
+        atomic_load_explicit(&mp_shim_detached_bytes, memory_order_relaxed);
+}
+
+static bool mp_shim_sck_diagnostics_callback_enter(struct mp_shim_session *session) {
+    MPShimSckDiagnostics *diagnostics = &session->sck_diagnostics;
+    atomic_fetch_add_explicit(&mp_shim_callbacks_in_flight, 1, memory_order_relaxed);
+    bool admitted = mp_shim_admission_enter(&session->admission);
+    pthread_mutex_lock(&diagnostics->callback_mutex);
+    (void)mp_shim_atomic_saturating_increment(&diagnostics->callbacks_received);
+    if (admitted) {
+        (void)mp_shim_atomic_saturating_increment(&diagnostics->callbacks_admitted);
+    } else {
+        (void)mp_shim_atomic_saturating_increment(&diagnostics->callbacks_refused);
+        (void)mp_shim_atomic_saturating_increment(&diagnostics->callbacks_exited);
+    }
+    pthread_mutex_unlock(&diagnostics->callback_mutex);
+    if (!admitted) {
+        atomic_fetch_sub_explicit(&mp_shim_callbacks_in_flight, 1, memory_order_relaxed);
+    }
+    return admitted;
+}
+
+static void mp_shim_sck_diagnostics_callback_exit(struct mp_shim_session *session) {
+    pthread_mutex_lock(&session->sck_diagnostics.callback_mutex);
+    (void)mp_shim_atomic_saturating_increment(&session->sck_diagnostics.callbacks_exited);
+    pthread_mutex_unlock(&session->sck_diagnostics.callback_mutex);
+    atomic_fetch_sub_explicit(&mp_shim_callbacks_in_flight, 1, memory_order_relaxed);
+    mp_shim_admission_leave(&session->admission);
+}
+#endif
 
 struct mp_shim_frame {
     uint32_t magic;
@@ -1448,8 +1895,22 @@ static bool mp_shim_session_sync_init(struct mp_shim_session *session,
     if (!mp_shim_pthread_mutex_init(&session->pool_mutex, initializer)) {
         goto destroy_native;
     }
+#ifdef MP_SHIM_SCK_SUSPENSION_DIAGNOSTICS
+    if (!mp_shim_sck_diagnostics_init(&session->sck_diagnostics, initializer)) {
+        goto destroy_pool;
+    }
+    if (!mp_shim_drain_gate_init(&session->drain_gate, initializer)) {
+        goto destroy_diagnostics;
+    }
+#endif
     return true;
 
+#ifdef MP_SHIM_SCK_SUSPENSION_DIAGNOSTICS
+destroy_diagnostics:
+    mp_shim_sck_diagnostics_destroy(&session->sck_diagnostics, initializer);
+destroy_pool:
+    mp_shim_pthread_mutex_destroy(&session->pool_mutex, initializer);
+#endif
 destroy_native:
     mp_shim_pthread_mutex_destroy(&session->native_mutex, initializer);
 destroy_close_idle:
@@ -1467,6 +1928,10 @@ destroy_admission:
 
 static void mp_shim_session_sync_destroy(struct mp_shim_session *session,
                                          MPShimPthreadInitializer *initializer) {
+#ifdef MP_SHIM_SCK_SUSPENSION_DIAGNOSTICS
+    mp_shim_drain_gate_destroy_with(&session->drain_gate, initializer);
+    mp_shim_sck_diagnostics_destroy(&session->sck_diagnostics, initializer);
+#endif
     mp_shim_pthread_mutex_destroy(&session->pool_mutex, initializer);
     mp_shim_pthread_mutex_destroy(&session->native_mutex, initializer);
     mp_shim_pthread_cond_destroy(&session->close_idle, initializer);
@@ -1479,7 +1944,11 @@ static void mp_shim_session_sync_destroy(struct mp_shim_session *session,
 mp_shim_status mp_shim_testing_session_sync_init(
     uint32_t fail_at, uint32_t *out_attempts, uint32_t *out_initialized,
     uint32_t *out_destroyed, uint32_t *out_success) {
-    if (fail_at > 10 || out_attempts == NULL || out_initialized == NULL ||
+    uint32_t stages = 10;
+#ifdef MP_SHIM_SCK_SUSPENSION_DIAGNOSTICS
+    stages += 4;
+#endif
+    if (fail_at > stages || out_attempts == NULL || out_initialized == NULL ||
         out_destroyed == NULL || out_success == NULL) {
         return MP_SHIM_INVALID_ARGUMENT;
     }
@@ -1517,7 +1986,7 @@ static mp_shim_status mp_shim_close_claim(struct mp_shim_session *session, uint6
             return MP_SHIM_TIMED_OUT;
         }
     }
-    if (session->close_phase == MP_SHIM_CLOSE_COMPLETE) {
+    if (MP_SHIM_CLOSE_PHASE_LOAD(session) == MP_SHIM_CLOSE_COMPLETE) {
         *out_complete = true;
     } else {
         session->close_active = true;
@@ -1597,6 +2066,9 @@ static void mp_shim_session_unref(struct mp_shim_session *session) {
     self = [super init];
     if (self != nil) {
         mp_shim_session_retain(session);
+#ifdef MP_SHIM_SCK_SUSPENSION_DIAGNOSTICS
+        atomic_fetch_add_explicit(&session->diagnostic_async_holds, 1, memory_order_relaxed);
+#endif
         _session = session;
     }
     return self;
@@ -1604,6 +2076,9 @@ static void mp_shim_session_unref(struct mp_shim_session *session) {
 
 - (void)dealloc {
     if (_session != NULL) {
+#ifdef MP_SHIM_SCK_SUSPENSION_DIAGNOSTICS
+        atomic_fetch_sub_explicit(&_session->diagnostic_async_holds, 1, memory_order_relaxed);
+#endif
         mp_shim_session_unref(_session);
         _session = NULL;
     }
@@ -1631,6 +2106,46 @@ static mp_shim_status mp_shim_session_hold_create(struct mp_shim_session *sessio
     *out_hold = hold;
     return MP_SHIM_OK;
 }
+
+#ifdef MP_SHIM_SCK_SUSPENSION_DIAGNOSTICS
+static bool mp_shim_is_current_sample_queue(dispatch_queue_t queue) {
+    return dispatch_get_specific(&mp_shim_sck_sample_queue_key) == (__bridge void *)queue;
+}
+
+static mp_shim_status mp_shim_session_drain_sample_queue(
+    struct mp_shim_session *session, dispatch_queue_t queue, uint64_t timeout_nanos) {
+    uint64_t began = mp_shim_nanos_from_ticks(mach_absolute_time());
+    uint64_t deadline = began > UINT64_MAX - timeout_nanos ? UINT64_MAX : began + timeout_nanos;
+    uint64_t generation = 0;
+    if (mp_shim_drain_gate_begin_once(&session->drain_gate, &generation)) {
+        @try {
+            MPShimSessionHold *hold = nil;
+            mp_shim_status held = mp_shim_session_hold_create(session, false, &hold);
+            if (held != MP_SHIM_OK) {
+                mp_shim_drain_gate_end(&session->drain_gate, generation, held);
+            } else {
+                dispatch_async(queue, ^{
+                  (void)hold;
+                  mp_shim_drain_gate_end(&session->drain_gate, generation, MP_SHIM_OK);
+                });
+            }
+        } @catch (NSException *exception) {
+            (void)exception;
+            mp_shim_drain_gate_end(&session->drain_gate, generation,
+                                   MP_SHIM_NATIVE_EXCEPTION);
+        } @catch (...) {
+            mp_shim_drain_gate_end(&session->drain_gate, generation,
+                                   MP_SHIM_NATIVE_EXCEPTION);
+        }
+    }
+    if (mp_shim_is_current_sample_queue(queue)) {
+        return mp_shim_drain_gate_wait(&session->drain_gate, 0);
+    }
+    uint64_t now = mp_shim_nanos_from_ticks(mach_absolute_time());
+    uint64_t remaining = now >= deadline ? 0 : deadline - now;
+    return mp_shim_drain_gate_wait(&session->drain_gate, remaining);
+}
+#endif
 
 mp_shim_status mp_shim_testing_resource_allocation_failures(
     mp_shim_status *out_semaphore_status, mp_shim_status *out_session_hold_status) {
@@ -1762,6 +2277,42 @@ mp_shim_status mp_shim_struct_sizes(uint32_t *out_target_info, uint32_t *out_fra
     return MP_SHIM_OK;
 }
 
+#ifdef MP_SHIM_SCK_SUSPENSION_DIAGNOSTICS
+mp_shim_status mp_shim_sck_diagnostics_layout(
+    uint32_t *out_event_size, uint32_t *out_snapshot_size,
+    uint32_t *out_event_raw_value_offset, uint32_t *out_event_sequence_offset,
+    uint32_t *out_event_monotonic_nanos_offset, uint32_t *out_status_counts_offset,
+    uint32_t *out_first_status_offset, uint32_t *out_callbacks_received_offset,
+    uint32_t *out_drain_request_generation_offset, uint32_t *out_transitions_offset) {
+    if (out_event_size == NULL || out_snapshot_size == NULL ||
+        out_event_raw_value_offset == NULL || out_event_sequence_offset == NULL ||
+        out_event_monotonic_nanos_offset == NULL || out_status_counts_offset == NULL ||
+        out_first_status_offset == NULL || out_callbacks_received_offset == NULL ||
+        out_drain_request_generation_offset == NULL || out_transitions_offset == NULL) {
+        return MP_SHIM_INVALID_ARGUMENT;
+    }
+    *out_event_size = (uint32_t)sizeof(mp_shim_sck_diagnostics_status_event);
+    *out_snapshot_size = (uint32_t)sizeof(mp_shim_sck_diagnostics_snapshot);
+    *out_event_raw_value_offset =
+        (uint32_t)offsetof(mp_shim_sck_diagnostics_status_event, raw_value);
+    *out_event_sequence_offset =
+        (uint32_t)offsetof(mp_shim_sck_diagnostics_status_event, sequence);
+    *out_event_monotonic_nanos_offset =
+        (uint32_t)offsetof(mp_shim_sck_diagnostics_status_event, monotonic_nanos);
+    *out_status_counts_offset =
+        (uint32_t)offsetof(mp_shim_sck_diagnostics_snapshot, status_counts);
+    *out_first_status_offset =
+        (uint32_t)offsetof(mp_shim_sck_diagnostics_snapshot, first_status);
+    *out_callbacks_received_offset =
+        (uint32_t)offsetof(mp_shim_sck_diagnostics_snapshot, callbacks_received);
+    *out_drain_request_generation_offset =
+        (uint32_t)offsetof(mp_shim_sck_diagnostics_snapshot, drain_request_generation);
+    *out_transitions_offset =
+        (uint32_t)offsetof(mp_shim_sck_diagnostics_snapshot, transitions);
+    return MP_SHIM_OK;
+}
+#endif
+
 mp_shim_status mp_shim_process_struct_offsets(
     uint32_t *out_authority_target_match_count, uint32_t *out_request_target,
     uint32_t *out_request_event_source, uint32_t *out_request_timeout_nanos,
@@ -1872,6 +2423,26 @@ mp_shim_status mp_shim_live_objects(uint64_t *out_live) {
     *out_live = (uint64_t)atomic_load(&mp_shim_owned_objects);
     return MP_SHIM_OK;
 }
+
+#ifdef MP_SHIM_SCK_SUSPENSION_DIAGNOSTICS
+mp_shim_status mp_shim_sck_diagnostics_process_resources(
+    uint64_t *out_native_objects, uint64_t *out_detached_bytes,
+    uint64_t *out_live_sessions, uint64_t *out_callbacks_in_flight) {
+    if (out_native_objects == NULL || out_detached_bytes == NULL ||
+        out_live_sessions == NULL || out_callbacks_in_flight == NULL) {
+        return MP_SHIM_INVALID_ARGUMENT;
+    }
+    *out_native_objects =
+        (uint64_t)atomic_load_explicit(&mp_shim_owned_objects, memory_order_relaxed);
+    *out_detached_bytes =
+        (uint64_t)atomic_load_explicit(&mp_shim_detached_bytes, memory_order_relaxed);
+    *out_live_sessions =
+        (uint64_t)atomic_load_explicit(&mp_shim_live_sessions, memory_order_relaxed);
+    *out_callbacks_in_flight =
+        (uint64_t)atomic_load_explicit(&mp_shim_callbacks_in_flight, memory_order_relaxed);
+    return MP_SHIM_OK;
+}
+#endif
 
 #pragma mark - Inventory
 static bool mp_shim_process_window_eligible(id<MPShimWindow> window, pid_t owner_process) {
@@ -2470,6 +3041,11 @@ static mp_shim_status mp_shim_pool_acquire(struct mp_shim_session *session, uint
             } else {
                 session->leased += 1;
                 mp_shim_note_owned();
+#ifdef MP_SHIM_SCK_SUSPENSION_DIAGNOSTICS
+                atomic_fetch_add_explicit(
+                    &mp_shim_detached_bytes, (uint64_t)CVPixelBufferGetDataSize(buffer),
+                    memory_order_relaxed);
+#endif
                 *out_buffer = buffer;
             }
         }
@@ -2480,6 +3056,11 @@ static mp_shim_status mp_shim_pool_acquire(struct mp_shim_session *session, uint
 }
 
 static void mp_shim_pool_return(struct mp_shim_session *session, CVPixelBufferRef buffer) {
+#ifdef MP_SHIM_SCK_SUSPENSION_DIAGNOSTICS
+    atomic_fetch_sub_explicit(
+        &mp_shim_detached_bytes, (uint64_t)CVPixelBufferGetDataSize(buffer),
+        memory_order_relaxed);
+#endif
     CVPixelBufferRelease(buffer);
     mp_shim_note_released();
     pthread_mutex_lock(&session->pool_mutex);
@@ -2654,6 +3235,9 @@ static void mp_shim_session_terminalize(struct mp_shim_session *session,
                                         mp_shim_status status) {
     @try {
         mp_shim_admission_stop(&session->admission);
+#ifdef MP_SHIM_SCK_SUSPENSION_DIAGNOSTICS
+        mp_shim_atomic_record_now(&session->sck_diagnostics.callback_admission_stopped_nanos);
+#endif
         bool expected = false;
         if (atomic_compare_exchange_strong(&session->stop_reported, &expected, true) &&
             session->stopped_callback != NULL) {
@@ -2743,9 +3327,15 @@ static uint64_t mp_shim_seconds_to_nanos(double seconds) {
     if (session == NULL || session->magic != MP_SHIM_SESSION_MAGIC) {
         return;
     }
+#ifdef MP_SHIM_SCK_SUSPENSION_DIAGNOSTICS
+    if (!mp_shim_sck_diagnostics_callback_enter(session)) {
+        return;
+    }
+#else
     if (!mp_shim_admission_enter(&session->admission)) {
         return;
     }
+#endif
     /* Each work item pools its own temporaries: without this the pool does not
      * drain between items and the live temporary count grows with the run. */
     @autoreleasepool {
@@ -2764,7 +3354,11 @@ static uint64_t mp_shim_seconds_to_nanos(double seconds) {
                 }
             } @finally {
                 /* Decremented here so a thrown exception cannot strand the fence. */
+#ifdef MP_SHIM_SCK_SUSPENSION_DIAGNOSTICS
+                mp_shim_sck_diagnostics_callback_exit(session);
+#else
                 mp_shim_admission_leave(&session->admission);
+#endif
             }
         }
     }
@@ -2778,14 +3372,24 @@ static uint64_t mp_shim_seconds_to_nanos(double seconds) {
     }
     CFArrayRef attachments = CMSampleBufferGetSampleAttachmentsArray(sampleBuffer, false);
     if (attachments == NULL || CFArrayGetCount(attachments) == 0) {
+#ifdef MP_SHIM_SCK_SUSPENSION_DIAGNOSTICS
+        mp_shim_sck_diagnostics_record_status(&session->sck_diagnostics, nil);
+#endif
         return MP_SHIM_OK;
     }
     NSDictionary *attachment =
         (__bridge NSDictionary *)(CFDictionaryRef)CFArrayGetValueAtIndex(attachments, 0);
     NSNumber *status = attachment[(__bridge NSString *)framework->key_status];
+#ifdef MP_SHIM_SCK_SUSPENSION_DIAGNOSTICS
+    mp_shim_sck_diagnostics_record_status(&session->sck_diagnostics, status);
+    if (!mp_shim_sck_status_publishable(status)) {
+        return MP_SHIM_OK;
+    }
+#else
     if (status == nil || status.integerValue != MPShimFrameStatusComplete) {
         return MP_SHIM_OK;
     }
+#endif
 
     CVImageBufferRef image = CMSampleBufferGetImageBuffer(sampleBuffer);
     if (image == NULL || CVPixelBufferGetPixelFormatType(image) != kCVPixelFormatType_32BGRA) {
@@ -3124,6 +3728,11 @@ mp_shim_status mp_shim_session_open(const mp_shim_open_request *request, mp_shim
         (request->kind == MP_SHIM_TARGET_WINDOW && request->owner_process <= 0)) {
         return MP_SHIM_INVALID_ARGUMENT;
     }
+#ifdef MP_SHIM_SCK_SUSPENSION_DIAGNOSTICS
+    if (request->diagnostic_close_policy > MP_SHIM_SCK_DRAIN_SAMPLE_QUEUE) {
+        return MP_SHIM_INVALID_ARGUMENT;
+    }
+#endif
 
     MP_SHIM_BEGIN
     const MPShimFramework *framework = mp_shim_capture_framework();
@@ -3177,6 +3786,10 @@ mp_shim_status mp_shim_session_open(const mp_shim_open_request *request, mp_shim
     if (queue == nil) {
         return MP_SHIM_PLATFORM_FAILURE;
     }
+#ifdef MP_SHIM_SCK_SUSPENSION_DIAGNOSTICS
+    dispatch_queue_set_specific(queue, &mp_shim_sck_sample_queue_key, (__bridge void *)queue,
+                                NULL);
+#endif
 
     struct mp_shim_session *session = calloc(1, sizeof(struct mp_shim_session));
     if (session == NULL) {
@@ -3184,6 +3797,10 @@ mp_shim_status mp_shim_session_open(const mp_shim_open_request *request, mp_shim
     }
     /* The Rust handle's reference. Every other holder adds its own. */
     atomic_init(&session->refs, 1u);
+#ifdef MP_SHIM_SCK_SUSPENSION_DIAGNOSTICS
+    atomic_init(&session->diagnostic_async_holds, 0);
+    session->diagnostic_live_counted = false;
+#endif
     atomic_init(&session->output_added, false);
     atomic_init(&session->started, false);
     atomic_init(&session->closing, false);
@@ -3205,8 +3822,11 @@ mp_shim_status mp_shim_session_open(const mp_shim_open_request *request, mp_shim
     session->testing_raise_sites = request->testing_raise_sites;
     session->testing_start_delay_nanos = request->testing_start_delay_nanos;
     session->testing_stop_delay_nanos = request->testing_stop_delay_nanos;
+#ifdef MP_SHIM_SCK_SUSPENSION_DIAGNOSTICS
+    session->diagnostic_close_policy = request->diagnostic_close_policy;
+#endif
     session->close_active = false;
-    session->close_phase = MP_SHIM_CLOSE_START;
+    MP_SHIM_CLOSE_PHASE_INIT(session, MP_SHIM_CLOSE_START);
     session->close_error = MP_SHIM_OK;
     session->close_error_reported = false;
 
@@ -3252,6 +3872,10 @@ mp_shim_status mp_shim_session_open(const mp_shim_open_request *request, mp_shim
     mp_shim_note_owned();
     session->queue = CFBridgingRetain(queue);
     mp_shim_note_owned();
+#ifdef MP_SHIM_SCK_SUSPENSION_DIAGNOSTICS
+    session->diagnostic_live_counted = true;
+    atomic_fetch_add_explicit(&mp_shim_live_sessions, 1, memory_order_relaxed);
+#endif
     *out = session;
     return MP_SHIM_OK;
     MP_SHIM_END
@@ -3317,6 +3941,9 @@ mp_shim_status mp_shim_session_start(mp_shim_session *session, uint64_t timeout_
           (void)exception;
       } @catch (...) {
       } @finally {
+#ifdef MP_SHIM_SCK_SUSPENSION_DIAGNOSTICS
+          mp_shim_atomic_record_now(&session->sck_diagnostics.stream_start_completed_nanos);
+#endif
           mp_shim_start_gate_end(&session->start_gate);
           dispatch_semaphore_signal(ready);
       }
@@ -3406,6 +4033,9 @@ mp_shim_status mp_shim_session_disable_callbacks(mp_shim_session *session) {
         return MP_SHIM_INVALID_ARGUMENT;
     }
     mp_shim_admission_stop(&session->admission);
+#ifdef MP_SHIM_SCK_SUSPENSION_DIAGNOSTICS
+    mp_shim_atomic_record_now(&session->sck_diagnostics.callback_admission_stopped_nanos);
+#endif
     return MP_SHIM_OK;
 }
 
@@ -3413,10 +4043,22 @@ mp_shim_status mp_shim_session_fence(mp_shim_session *session, uint64_t timeout_
     if (!mp_shim_session_valid(session)) {
         return MP_SHIM_INVALID_ARGUMENT;
     }
-    return mp_shim_admission_fence(&session->admission, timeout_nanos);
+    mp_shim_status status = mp_shim_admission_fence(&session->admission, timeout_nanos);
+#ifdef MP_SHIM_SCK_SUSPENSION_DIAGNOSTICS
+    if (status == MP_SHIM_OK) {
+        mp_shim_atomic_record_now(&session->sck_diagnostics.callback_fence_completed_nanos);
+    }
+#endif
+    return status;
 }
 
+#ifdef MP_SHIM_SCK_SUSPENSION_DIAGNOSTICS
+static mp_shim_status mp_shim_session_close_until(mp_shim_session *session,
+                                                   uint64_t timeout_nanos,
+                                                   bool pause_before_fence) {
+#else
 mp_shim_status mp_shim_session_close(mp_shim_session *session, uint64_t timeout_nanos) {
+#endif
     if (!mp_shim_session_valid(session)) {
         return MP_SHIM_INVALID_ARGUMENT;
     }
@@ -3432,16 +4074,19 @@ mp_shim_status mp_shim_session_close(mp_shim_session *session, uint64_t timeout_
     }
     atomic_store(&session->closing, true);
     mp_shim_admission_stop(&session->admission);
+#ifdef MP_SHIM_SCK_SUSPENSION_DIAGNOSTICS
+    mp_shim_atomic_record_now(&session->sck_diagnostics.callback_admission_stopped_nanos);
+#endif
 
-    while (session->close_phase != MP_SHIM_CLOSE_COMPLETE) {
+    while (MP_SHIM_CLOSE_PHASE_LOAD(session) != MP_SHIM_CLOSE_COMPLETE) {
         uint64_t now = mp_shim_nanos_from_ticks(mach_absolute_time());
         uint64_t remaining = now >= deadline ? 0 : deadline - now;
-        if (remaining == 0 && session->close_phase != MP_SHIM_CLOSE_RELEASE) {
+        if (remaining == 0 && MP_SHIM_CLOSE_PHASE_LOAD(session) != MP_SHIM_CLOSE_RELEASE) {
             mp_shim_close_release(session);
             return MP_SHIM_TIMED_OUT;
         }
 
-        if (session->close_phase == MP_SHIM_CLOSE_START) {
+        if (MP_SHIM_CLOSE_PHASE_LOAD(session) == MP_SHIM_CLOSE_START) {
             mp_shim_status settled = mp_shim_start_gate_wait(&session->start_gate, remaining);
             if (settled == MP_SHIM_TIMED_OUT) {
                 mp_shim_close_release(session);
@@ -3450,12 +4095,12 @@ mp_shim_status mp_shim_session_close(mp_shim_session *session, uint64_t timeout_
             if (settled != MP_SHIM_OK && session->close_error == MP_SHIM_OK) {
                 session->close_error = settled;
             }
-            session->close_phase = MP_SHIM_CLOSE_OUTPUT;
+            MP_SHIM_CLOSE_PHASE_STORE(session, MP_SHIM_CLOSE_OUTPUT);
             continue;
         }
 
         id<MPShimStream> stream = mp_shim_session_copy_stream(session);
-        if (session->close_phase == MP_SHIM_CLOSE_OUTPUT) {
+        if (MP_SHIM_CLOSE_PHASE_LOAD(session) == MP_SHIM_CLOSE_OUTPUT) {
             id output = mp_shim_session_copy_slot(session, &session->output);
             if (stream != nil && atomic_load(&session->output_added)) {
                 @try {
@@ -3478,13 +4123,16 @@ mp_shim_status mp_shim_session_close(mp_shim_session *session, uint64_t timeout_
                 }
                 atomic_store(&session->output_added, false);
             }
-            session->close_phase = MP_SHIM_CLOSE_STOP;
+            MP_SHIM_CLOSE_PHASE_STORE(session, MP_SHIM_CLOSE_STOP);
             continue;
         }
 
-        if (session->close_phase == MP_SHIM_CLOSE_STOP) {
+        if (MP_SHIM_CLOSE_PHASE_LOAD(session) == MP_SHIM_CLOSE_STOP) {
             if (stream != nil && atomic_load(&session->started) &&
                 !mp_shim_stop_gate_pending(&session->stop_gate)) {
+#ifdef MP_SHIM_SCK_SUSPENSION_DIAGNOSTICS
+                mp_shim_atomic_record_now(&session->sck_diagnostics.stream_stop_requested_nanos);
+#endif
                 mp_shim_stop_gate_begin(&session->stop_gate);
                 @try {
                     MPShimSessionHold *hold = [[MPShimSessionHold alloc] initWithSession:session];
@@ -3496,6 +4144,9 @@ mp_shim_status mp_shim_session_close(mp_shim_session *session, uint64_t timeout_
                           mp_shim_complete_stop(
                               &session->stop_gate, &session->started, error,
                               session->testing_stop_delay_nanos,
+#ifdef MP_SHIM_SCK_SUSPENSION_DIAGNOSTICS
+                              &session->sck_diagnostics.stream_stop_completed_nanos,
+#endif
                               (session->testing_raise_sites &
                                MP_SHIM_RAISE_IN_STOP_COMPLETION) != 0);
                         }];
@@ -3517,12 +4168,58 @@ mp_shim_status mp_shim_session_close(mp_shim_session *session, uint64_t timeout_
                 session->close_error == MP_SHIM_OK) {
                 session->close_error = stopped;
             }
-            session->close_phase = MP_SHIM_CLOSE_FENCE;
+#ifdef MP_SHIM_SCK_SUSPENSION_DIAGNOSTICS
+            MP_SHIM_CLOSE_PHASE_STORE(session, MP_SHIM_CLOSE_DRAIN);
+#else
+            MP_SHIM_CLOSE_PHASE_STORE(session, MP_SHIM_CLOSE_FENCE);
+#endif
             continue;
         }
+#ifdef MP_SHIM_SCK_SUSPENSION_DIAGNOSTICS
+        if (MP_SHIM_CLOSE_PHASE_LOAD(session) == MP_SHIM_CLOSE_DRAIN) {
+            if (session->diagnostic_close_policy == MP_SHIM_SCK_DRAIN_UNCHANGED) {
+                MP_SHIM_CLOSE_PHASE_STORE(session, MP_SHIM_CLOSE_FENCE);
+                continue;
+            }
+            dispatch_queue_t queue =
+                (dispatch_queue_t)mp_shim_session_copy_slot(session, &session->queue);
+            if (queue == nil) {
+                if (session->close_error == MP_SHIM_OK) {
+                    session->close_error = MP_SHIM_PLATFORM_FAILURE;
+                }
+                MP_SHIM_CLOSE_PHASE_STORE(session, MP_SHIM_CLOSE_FENCE);
+                continue;
+            }
+            mp_shim_status drained =
+                mp_shim_session_drain_sample_queue(session, queue, remaining);
+            if (drained == MP_SHIM_TIMED_OUT) {
+                mp_shim_close_release(session);
+                return drained;
+            }
+            if (drained != MP_SHIM_OK && session->close_error == MP_SHIM_OK) {
+                session->close_error = drained;
+            }
+            MP_SHIM_CLOSE_PHASE_STORE(session, MP_SHIM_CLOSE_FENCE);
+            continue;
+        }
+#endif
 
-        if (session->close_phase == MP_SHIM_CLOSE_FENCE) {
+#ifdef MP_SHIM_SCK_SUSPENSION_DIAGNOSTICS
+        if (pause_before_fence &&
+            MP_SHIM_CLOSE_PHASE_LOAD(session) == MP_SHIM_CLOSE_FENCE) {
+            mp_shim_close_release(session);
+            return MP_SHIM_OK;
+        }
+#endif
+
+        if (MP_SHIM_CLOSE_PHASE_LOAD(session) == MP_SHIM_CLOSE_FENCE) {
             mp_shim_status fenced = mp_shim_admission_fence(&session->admission, remaining);
+#ifdef MP_SHIM_SCK_SUSPENSION_DIAGNOSTICS
+            if (fenced == MP_SHIM_OK) {
+                mp_shim_atomic_record_now(
+                    &session->sck_diagnostics.callback_fence_completed_nanos);
+            }
+#endif
             if (fenced == MP_SHIM_TIMED_OUT) {
                 mp_shim_close_release(session);
                 return fenced;
@@ -3530,7 +4227,7 @@ mp_shim_status mp_shim_session_close(mp_shim_session *session, uint64_t timeout_
             if (fenced != MP_SHIM_OK && session->close_error == MP_SHIM_OK) {
                 session->close_error = fenced;
             }
-            session->close_phase = MP_SHIM_CLOSE_RELEASE;
+            MP_SHIM_CLOSE_PHASE_STORE(session, MP_SHIM_CLOSE_RELEASE);
             continue;
         }
 
@@ -3596,8 +4293,11 @@ mp_shim_status mp_shim_session_close(mp_shim_session *session, uint64_t timeout_
         } @finally {
             pthread_mutex_unlock(&session->pool_mutex);
         }
-        session->close_phase = MP_SHIM_CLOSE_COMPLETE;
+        MP_SHIM_CLOSE_PHASE_STORE(session, MP_SHIM_CLOSE_COMPLETE);
         atomic_store(&session->closed, true);
+#ifdef MP_SHIM_SCK_SUSPENSION_DIAGNOSTICS
+        mp_shim_atomic_record_now(&session->sck_diagnostics.close_completed_nanos);
+#endif
     }
 
     mp_shim_status reported = MP_SHIM_OK;
@@ -3608,6 +4308,23 @@ mp_shim_status mp_shim_session_close(mp_shim_session *session, uint64_t timeout_
     mp_shim_close_release(session);
     return reported;
 }
+
+#ifdef MP_SHIM_SCK_SUSPENSION_DIAGNOSTICS
+mp_shim_status mp_shim_session_prepare_close(mp_shim_session *session,
+                                             uint64_t timeout_nanos) {
+    if (!mp_shim_session_valid(session)) {
+        return MP_SHIM_INVALID_ARGUMENT;
+    }
+    if (session->diagnostic_close_policy == MP_SHIM_SCK_DRAIN_UNCHANGED) {
+        return MP_SHIM_OK;
+    }
+    return mp_shim_session_close_until(session, timeout_nanos, true);
+}
+
+mp_shim_status mp_shim_session_close(mp_shim_session *session, uint64_t timeout_nanos) {
+    return mp_shim_session_close_until(session, timeout_nanos, false);
+}
+#endif
 
 void mp_shim_session_release(mp_shim_session *session) {
     if (!mp_shim_session_valid(session)) {
@@ -3633,6 +4350,12 @@ void mp_shim_session_release(mp_shim_session *session) {
             });
         }
     }
+#ifdef MP_SHIM_SCK_SUSPENSION_DIAGNOSTICS
+    if (session->diagnostic_live_counted) {
+        session->diagnostic_live_counted = false;
+        atomic_fetch_sub_explicit(&mp_shim_live_sessions, 1, memory_order_relaxed);
+    }
+#endif
     /* Drops the handle's reference. A frame the caller still holds, or a callback
      * still in flight, keeps the allocation alive past this point. */
     mp_shim_session_unref(session);
@@ -3677,6 +4400,301 @@ mp_shim_status mp_shim_session_live_objects(const mp_shim_session *session, uint
     return MP_SHIM_OK;
 }
 
+
+#ifdef MP_SHIM_SCK_SUSPENSION_DIAGNOSTICS
+mp_shim_status mp_shim_sck_diagnostics_snapshot_read(
+    const mp_shim_session *session, mp_shim_sck_diagnostics_snapshot *out_snapshot) {
+    if (!mp_shim_session_valid(session) || out_snapshot == NULL ||
+        out_snapshot->struct_size != sizeof(*out_snapshot) ||
+        out_snapshot->transition_capacity != MP_SHIM_SCK_DIAGNOSTIC_TRANSITION_CAPACITY) {
+        return MP_SHIM_INVALID_ARGUMENT;
+    }
+    MP_SHIM_BEGIN
+    mp_shim_sck_diagnostics_copy((struct mp_shim_session *)session, out_snapshot);
+    return MP_SHIM_OK;
+    MP_SHIM_END
+}
+
+static bool mp_shim_sck_diagnostics_test_probe_valid(
+    const mp_shim_sck_diagnostics_probe *probe) {
+    return probe != NULL && probe->magic == MP_SHIM_SCK_DIAGNOSTICS_PROBE_MAGIC;
+}
+
+mp_shim_status mp_shim_sck_diagnostics_test_probe_open(
+    mp_shim_sck_diagnostics_probe **out_probe) {
+    if (out_probe == NULL) {
+        return MP_SHIM_INVALID_ARGUMENT;
+    }
+    *out_probe = NULL;
+    MP_SHIM_BEGIN
+    mp_shim_sck_diagnostics_probe *probe = calloc(1, sizeof(*probe));
+    if (probe == NULL) {
+        return MP_SHIM_PLATFORM_FAILURE;
+    }
+    MPShimPthreadInitializer initializer = {0};
+    if (!mp_shim_sck_diagnostics_init(&probe->diagnostics, &initializer)) {
+        free(probe);
+        return MP_SHIM_PLATFORM_FAILURE;
+    }
+    probe->magic = MP_SHIM_SCK_DIAGNOSTICS_PROBE_MAGIC;
+    *out_probe = probe;
+    return MP_SHIM_OK;
+    MP_SHIM_END
+}
+
+mp_shim_status mp_shim_sck_diagnostics_test_probe_record(
+    mp_shim_sck_diagnostics_probe *probe, uint32_t present, int64_t raw_value,
+    uint32_t *out_would_publish) {
+    if (!mp_shim_sck_diagnostics_test_probe_valid(probe) || present > 1 ||
+        out_would_publish == NULL) {
+        return MP_SHIM_INVALID_ARGUMENT;
+    }
+    *out_would_publish = 0;
+    MP_SHIM_BEGIN
+    @autoreleasepool {
+        NSNumber *status = present == 0 ? nil : [NSNumber numberWithLongLong:raw_value];
+        *out_would_publish = mp_shim_sck_status_publishable(status) ? 1 : 0;
+        mp_shim_sck_diagnostics_record_status(&probe->diagnostics, status);
+    }
+    return MP_SHIM_OK;
+    MP_SHIM_END
+}
+
+mp_shim_status mp_shim_sck_diagnostics_test_probe_seed_saturation(
+    mp_shim_sck_diagnostics_probe *probe) {
+    if (!mp_shim_sck_diagnostics_test_probe_valid(probe)) {
+        return MP_SHIM_INVALID_ARGUMENT;
+    }
+    MP_SHIM_BEGIN
+    atomic_store_explicit(&probe->diagnostics.observed_total, UINT64_MAX, memory_order_relaxed);
+    for (size_t kind = 0; kind < MP_SHIM_SCK_STATUS_KIND_COUNT; kind += 1) {
+        atomic_store_explicit(&probe->diagnostics.status_counts[kind], UINT64_MAX,
+                              memory_order_relaxed);
+    }
+    return MP_SHIM_OK;
+    MP_SHIM_END
+}
+
+mp_shim_status mp_shim_sck_diagnostics_test_probe_snapshot(
+    mp_shim_sck_diagnostics_probe *probe, uint32_t raise_native_exception,
+    mp_shim_sck_diagnostics_snapshot *out_snapshot) {
+    if (!mp_shim_sck_diagnostics_test_probe_valid(probe) || raise_native_exception > 1 ||
+        out_snapshot == NULL || out_snapshot->struct_size != sizeof(*out_snapshot) ||
+        out_snapshot->transition_capacity != MP_SHIM_SCK_DIAGNOSTIC_TRANSITION_CAPACITY) {
+        return MP_SHIM_INVALID_ARGUMENT;
+    }
+    MP_SHIM_BEGIN
+    if (raise_native_exception != 0) {
+        [NSException raise:@"MPShimInjectedFailure" format:@"diagnostic snapshot"];
+    }
+    memset(out_snapshot, 0, sizeof(*out_snapshot));
+    mp_shim_sck_diagnostics_copy_fields(&probe->diagnostics, out_snapshot);
+    return MP_SHIM_OK;
+    MP_SHIM_END
+}
+
+mp_shim_status mp_shim_sck_diagnostics_test_callback_accounting(
+    uint32_t raise_native_exception, uint32_t *out_callback_body_calls,
+    mp_shim_sck_diagnostics_snapshot *out_snapshot) {
+    if (raise_native_exception > 1 || out_callback_body_calls == NULL || out_snapshot == NULL ||
+        out_snapshot->struct_size != sizeof(*out_snapshot) ||
+        out_snapshot->transition_capacity != MP_SHIM_SCK_DIAGNOSTIC_TRANSITION_CAPACITY) {
+        return MP_SHIM_INVALID_ARGUMENT;
+    }
+    MP_SHIM_BEGIN
+    struct mp_shim_session session = {0};
+    MPShimPthreadInitializer initializer = {0};
+    if (!mp_shim_admission_init(&session.admission, &initializer)) {
+        return MP_SHIM_PLATFORM_FAILURE;
+    }
+    if (!mp_shim_sck_diagnostics_init(&session.sck_diagnostics, &initializer)) {
+        mp_shim_admission_destroy_with(&session.admission, &initializer);
+        return MP_SHIM_PLATFORM_FAILURE;
+    }
+
+    uint32_t callback_body_calls = 0;
+    if (mp_shim_sck_diagnostics_callback_enter(&session)) {
+        @try {
+            callback_body_calls += 1;
+            if (raise_native_exception != 0) {
+                [NSException raise:@"MPShimInjectedFailure" format:@"diagnostic callback"];
+            }
+        } @catch (NSException *exception) {
+            (void)exception;
+        } @catch (...) {
+        } @finally {
+            mp_shim_sck_diagnostics_callback_exit(&session);
+        }
+    }
+
+    mp_shim_admission_stop(&session.admission);
+    mp_shim_status fenced =
+        mp_shim_admission_fence(&session.admission, MP_SHIM_DEFAULT_TIMEOUT_NANOS);
+    if (fenced == MP_SHIM_OK && mp_shim_sck_diagnostics_callback_enter(&session)) {
+        callback_body_calls += 1;
+        mp_shim_sck_diagnostics_callback_exit(&session);
+    }
+    memset(out_snapshot, 0, sizeof(*out_snapshot));
+    mp_shim_sck_diagnostics_copy_fields(&session.sck_diagnostics, out_snapshot);
+    *out_callback_body_calls = callback_body_calls;
+    mp_shim_sck_diagnostics_destroy(&session.sck_diagnostics, &initializer);
+    mp_shim_admission_destroy_with(&session.admission, &initializer);
+    return fenced;
+    MP_SHIM_END
+}
+
+mp_shim_status mp_shim_sck_diagnostics_test_drain_gate(
+    mp_shim_sck_diagnostics_drain_test_report *out_report) {
+    if (out_report == NULL || out_report->struct_size != sizeof(*out_report)) {
+        return MP_SHIM_INVALID_ARGUMENT;
+    }
+    MP_SHIM_BEGIN
+    memset(out_report, 0, sizeof(*out_report));
+    out_report->struct_size = (uint32_t)sizeof(*out_report);
+
+    struct mp_shim_session session = {0};
+    atomic_init(&session.refs, 1u);
+    atomic_init(&session.diagnostic_async_holds, 0);
+    MPShimPthreadInitializer initializer = {0};
+    if (!mp_shim_session_sync_init(&session, &initializer)) {
+        return MP_SHIM_PLATFORM_FAILURE;
+    }
+    dispatch_queue_t queue =
+        dispatch_queue_create("io.github.pashifika.mado-pilot.drain-test", DISPATCH_QUEUE_SERIAL);
+    dispatch_semaphore_t blocker = dispatch_semaphore_create(0);
+    if (queue == nil || blocker == nil) {
+        mp_shim_session_sync_destroy(&session, &initializer);
+        return MP_SHIM_PLATFORM_FAILURE;
+    }
+    dispatch_queue_set_specific(queue, &mp_shim_sck_sample_queue_key, (__bridge void *)queue, NULL);
+
+    atomic_uint callback_body_calls;
+    atomic_bool callback_finished;
+    atomic_init(&callback_body_calls, 0);
+    atomic_init(&callback_finished, false);
+    struct mp_shim_session *session_pointer = &session;
+    atomic_uint *callback_body_calls_pointer = &callback_body_calls;
+    atomic_bool *callback_finished_pointer = &callback_finished;
+    dispatch_async(queue, ^{
+      dispatch_semaphore_wait(blocker, DISPATCH_TIME_FOREVER);
+    });
+    mp_shim_admission_stop(&session.admission);
+    dispatch_async(queue, ^{
+      if (mp_shim_sck_diagnostics_callback_enter(session_pointer)) {
+          atomic_fetch_add_explicit(callback_body_calls_pointer, 1, memory_order_relaxed);
+          mp_shim_sck_diagnostics_callback_exit(session_pointer);
+      }
+      atomic_store_explicit(callback_finished_pointer, true, memory_order_release);
+    });
+
+    out_report->first_wait_status =
+        mp_shim_session_drain_sample_queue(&session, queue, 1000000ull);
+    dispatch_semaphore_signal(blocker);
+    out_report->second_wait_status =
+        mp_shim_session_drain_sample_queue(&session, queue, MP_SHIM_DEFAULT_TIMEOUT_NANOS);
+    dispatch_sync(queue, ^{
+    });
+
+    bool final_before = mp_shim_admission_enter_final(&session.admission);
+    out_report->final_enter_before_fence = final_before ? 1 : 0;
+    if (final_before) {
+        mp_shim_admission_leave(&session.admission);
+    }
+    mp_shim_status fenced =
+        mp_shim_admission_fence(&session.admission, MP_SHIM_DEFAULT_TIMEOUT_NANOS);
+    bool final_after = mp_shim_admission_enter_final(&session.admission);
+    out_report->final_enter_after_fence = final_after ? 1 : 0;
+    if (final_after) {
+        mp_shim_admission_leave(&session.admission);
+    }
+
+    pthread_mutex_lock(&session.drain_gate.mutex);
+    out_report->request_generation = session.drain_gate.request_generation;
+    out_report->completion_generation = session.drain_gate.completion_generation;
+    pthread_mutex_unlock(&session.drain_gate.mutex);
+    out_report->callback_body_calls =
+        atomic_load_explicit(&callback_body_calls, memory_order_relaxed);
+    out_report->callback_finished_before_drain =
+        atomic_load_explicit(&callback_finished, memory_order_acquire) &&
+                out_report->completion_generation == out_report->request_generation
+            ? 1
+            : 0;
+    out_report->callbacks_received =
+        atomic_load_explicit(&session.sck_diagnostics.callbacks_received, memory_order_relaxed);
+    out_report->callbacks_admitted =
+        atomic_load_explicit(&session.sck_diagnostics.callbacks_admitted, memory_order_relaxed);
+    out_report->callbacks_refused =
+        atomic_load_explicit(&session.sck_diagnostics.callbacks_refused, memory_order_relaxed);
+    out_report->callbacks_exited =
+        atomic_load_explicit(&session.sck_diagnostics.callbacks_exited, memory_order_relaxed);
+    mp_shim_session_sync_destroy(&session, &initializer);
+
+    struct mp_shim_session *same_queue_session = calloc(1, sizeof(*same_queue_session));
+    if (same_queue_session == NULL) {
+        return MP_SHIM_PLATFORM_FAILURE;
+    }
+    atomic_init(&same_queue_session->refs, 1u);
+    atomic_init(&same_queue_session->diagnostic_async_holds, 0);
+    MPShimPthreadInitializer same_initializer = {0};
+    if (!mp_shim_session_sync_init(same_queue_session, &same_initializer)) {
+        free(same_queue_session);
+        return MP_SHIM_PLATFORM_FAILURE;
+    }
+    dispatch_queue_t same_queue = dispatch_queue_create(
+        "io.github.pashifika.mado-pilot.same-queue-drain-test", DISPATCH_QUEUE_SERIAL);
+    dispatch_semaphore_t same_done = dispatch_semaphore_create(0);
+    if (same_queue == nil || same_done == nil) {
+        mp_shim_session_sync_destroy(same_queue_session, &same_initializer);
+        free(same_queue_session);
+        return MP_SHIM_PLATFORM_FAILURE;
+    }
+    dispatch_queue_set_specific(same_queue, &mp_shim_sck_sample_queue_key,
+                                (__bridge void *)same_queue, NULL);
+    atomic_uint same_status;
+    atomic_uint_fast64_t same_elapsed;
+    atomic_init(&same_status, MP_SHIM_PLATFORM_FAILURE);
+    atomic_init(&same_elapsed, UINT64_MAX);
+    atomic_uint *same_status_pointer = &same_status;
+    atomic_uint_fast64_t *same_elapsed_pointer = &same_elapsed;
+    dispatch_async(same_queue, ^{
+      uint64_t started = mp_shim_nanos_from_ticks(mach_absolute_time());
+      mp_shim_status status = mp_shim_session_drain_sample_queue(
+          same_queue_session, same_queue, MP_SHIM_DEFAULT_TIMEOUT_NANOS);
+      uint64_t ended = mp_shim_nanos_from_ticks(mach_absolute_time());
+      atomic_store_explicit(same_status_pointer, status, memory_order_release);
+      atomic_store_explicit(same_elapsed_pointer, ended - started, memory_order_release);
+      dispatch_semaphore_signal(same_done);
+    });
+    if (mp_shim_wait(same_done, MP_SHIM_DEFAULT_TIMEOUT_NANOS) != MP_SHIM_OK) {
+        return MP_SHIM_TIMED_OUT;
+    }
+    out_report->same_queue_status = atomic_load_explicit(&same_status, memory_order_acquire);
+    out_report->same_queue_elapsed_nanos =
+        atomic_load_explicit(&same_elapsed, memory_order_acquire);
+    out_report->same_queue_followup_status = mp_shim_session_drain_sample_queue(
+        same_queue_session, same_queue, MP_SHIM_DEFAULT_TIMEOUT_NANOS);
+    dispatch_sync(same_queue, ^{
+    });
+    mp_shim_session_sync_destroy(same_queue_session, &same_initializer);
+    free(same_queue_session);
+
+    if (fenced != MP_SHIM_OK) {
+        return fenced;
+    }
+    return MP_SHIM_OK;
+    MP_SHIM_END
+}
+
+void mp_shim_sck_diagnostics_test_probe_release(mp_shim_sck_diagnostics_probe *probe) {
+    if (!mp_shim_sck_diagnostics_test_probe_valid(probe)) {
+        return;
+    }
+    probe->magic = 0;
+    MPShimPthreadInitializer initializer = {0};
+    mp_shim_sck_diagnostics_destroy(&probe->diagnostics, &initializer);
+    free(probe);
+}
+#endif
 #pragma mark - Controlled process-directed Core Graphics loading
 
 /*

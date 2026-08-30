@@ -44,16 +44,31 @@ pub(crate) fn linked_shim_agrees() -> bool {
     static AGREES: OnceLock<bool> = OnceLock::new();
     *AGREES.get_or_init(|| {
         let (version, sizes, offsets) = shim::linked_layout();
-        version == shim::ABI_VERSION
+        let base_agrees = version == shim::ABI_VERSION
             && sizes == shim::declared_layout()
-            && offsets == shim::declared_process_offsets()
+            && offsets == shim::declared_process_offsets();
+        #[cfg(feature = "sck-suspension-diagnostics")]
+        {
+            base_agrees && sck_diagnostics_layout_agrees(shim::linked_sck_diagnostics_layout())
+        }
+        #[cfg(not(feature = "sck-suspension-diagnostics"))]
+        {
+            base_agrees
+        }
     })
+}
+
+#[cfg(feature = "sck-suspension-diagnostics")]
+fn sck_diagnostics_layout_agrees(linked: [u32; 10]) -> bool {
+    linked == shim::declared_sck_diagnostics_layout()
 }
 
 #[cfg(test)]
 mod tests {
     use mado_pilot_core::Status;
 
+    #[cfg(feature = "sck-suspension-diagnostics")]
+    use super::sck_diagnostics_layout_agrees;
     use super::{ensure_capture_available, linked_shim_agrees};
 
     #[test]
@@ -69,5 +84,20 @@ mod tests {
     #[test]
     fn the_linked_shim_agrees_with_the_declarations_this_build_mirrors() {
         assert!(linked_shim_agrees());
+    }
+
+    #[cfg(feature = "sck-suspension-diagnostics")]
+    #[test]
+    fn the_diagnostic_layout_gate_rejects_every_size_and_offset_mismatch() {
+        let declared = crate::shim::declared_sck_diagnostics_layout();
+        assert!(sck_diagnostics_layout_agrees(declared));
+        for index in 0..declared.len() {
+            let mut mismatched = declared;
+            mismatched[index] ^= 1;
+            assert!(
+                !sck_diagnostics_layout_agrees(mismatched),
+                "layout field {index} was not load-bearing"
+            );
+        }
     }
 }

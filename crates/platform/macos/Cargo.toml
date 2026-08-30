@@ -13,6 +13,8 @@ autobins = false
 # The interactive qualification fixture is not a production package target.
 # Enabling this feature builds and links its separately isolated executable.
 private-fixture = []
+# Private, bounded ScreenCaptureKit producer diagnostics for qualification only.
+sck-suspension-diagnostics = []
 
 [[bin]]
 name = "mado-pilot-macos-input-fixture"

@@ -599,6 +599,8 @@ impl NativeSession {
         testing_stop_delay: Duration,
         operation: &mut Operation<'_>,
     ) -> Result<Arc<Self>> {
+        #[cfg(feature = "sck-suspension-diagnostics")]
+        crate::sck_suspension_diagnostics::clear_open_failure();
         let SessionTarget {
             target,
             stream,
@@ -643,6 +645,8 @@ impl NativeSession {
             testing_start_delay,
             testing_stop_delay,
             testing_raise_sites,
+            #[cfg(feature = "sck-suspension-diagnostics")]
+            diagnostic_close_policy: crate::sck_suspension_diagnostics::sample_queue_drain_policy(),
         };
         // Every exit from here to the `NativeSession` below drops `pending`, which
         // closes whatever was opened and reclaims the registration.
@@ -661,9 +665,6 @@ impl NativeSession {
             drop(unused);
             return Err(CaptureFault::SourceInvalid.into());
         }
-        operation.checkpoint()?;
-
-        spawn_reconfigure_worker(&core, reconfigure, reconfigure_receiver);
 
         let description = SessionDescription::new(
             target,
@@ -686,11 +687,19 @@ impl NativeSession {
             close_reported: AtomicBool::new(false),
         });
 
-        session
-            .core
-            .session()
-            .start(native_wait(operation))
-            .map_err(|status| open_error(status, key.kind()))?;
+        if let Err(error) = operation.checkpoint() {
+            #[cfg(feature = "sck-suspension-diagnostics")]
+            crate::sck_suspension_diagnostics::record_open_failure(&session);
+            return Err(error.into());
+        }
+        spawn_reconfigure_worker(&session.core, reconfigure, reconfigure_receiver);
+        if let Err(status) = session.core.session().start(native_wait(operation)) {
+            #[cfg(feature = "sck-suspension-diagnostics")]
+            crate::sck_suspension_diagnostics::record_open_failure(&session);
+            return Err(open_error(status, key.kind()));
+        }
+        #[cfg(feature = "sck-suspension-diagnostics")]
+        crate::sck_suspension_diagnostics::register_session(&session);
         Ok(session)
     }
 
@@ -726,6 +735,13 @@ impl NativeSession {
                 _ => Ok(()),
             },
         }
+    }
+
+    #[cfg(feature = "sck-suspension-diagnostics")]
+    pub(crate) fn sck_diagnostics_snapshot(
+        &self,
+    ) -> std::result::Result<shim::SckDiagnosticsSnapshot, ShimStatus> {
+        self.core.session().sck_diagnostics_snapshot()
     }
 
     #[cfg(test)]

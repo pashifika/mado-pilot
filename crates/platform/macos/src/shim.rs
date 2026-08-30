@@ -19,6 +19,8 @@ use std::str;
 use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::time::Duration;
+#[cfg(feature = "sck-suspension-diagnostics")]
+use std::time::Instant;
 /// Catches one Rust panic and disposes of its payload without allowing a
 /// panicking payload destructor to unwind into native code.
 pub(crate) fn catch_panic<T>(body: impl FnOnce() -> T) -> Result<T, ()> {
@@ -41,7 +43,7 @@ use mado_pilot_capture::CaptureFault;
 use mado_pilot_core::{OperationContext, PermissionState, PixelExtent};
 
 /// The internal surface version this build was written against.
-pub(crate) const ABI_VERSION: u32 = 19;
+pub(crate) const ABI_VERSION: u32 = 20;
 
 /// Largest wait the shim is ever asked for, so one native call cannot consume a
 /// caller's whole budget.
@@ -64,6 +66,27 @@ const TARGET_INFO_PROCESS_DIRECTED: u32 = 1;
 pub(crate) const FRAME_INFO_SCREEN_RECT: u32 = 1;
 /// `FrameInfo` carries a bounded same-sample producer-capacity recommendation.
 pub(crate) const FRAME_INFO_SURFACE_RECOMMENDATION: u32 = 1 << 1;
+
+#[cfg(feature = "sck-suspension-diagnostics")]
+pub(crate) const SCK_STATUS_COMPLETE: u32 = 0;
+#[cfg(feature = "sck-suspension-diagnostics")]
+pub(crate) const SCK_STATUS_IDLE: u32 = 1;
+#[cfg(feature = "sck-suspension-diagnostics")]
+pub(crate) const SCK_STATUS_BLANK: u32 = 2;
+#[cfg(feature = "sck-suspension-diagnostics")]
+pub(crate) const SCK_STATUS_STARTED: u32 = 3;
+#[cfg(feature = "sck-suspension-diagnostics")]
+pub(crate) const SCK_STATUS_SUSPENDED: u32 = 4;
+#[cfg(feature = "sck-suspension-diagnostics")]
+pub(crate) const SCK_STATUS_STOPPED: u32 = 5;
+#[cfg(feature = "sck-suspension-diagnostics")]
+pub(crate) const SCK_STATUS_MISSING: u32 = 6;
+#[cfg(feature = "sck-suspension-diagnostics")]
+pub(crate) const SCK_STATUS_UNKNOWN: u32 = 7;
+#[cfg(feature = "sck-suspension-diagnostics")]
+pub(crate) const SCK_STATUS_KIND_COUNT: usize = 8;
+#[cfg(feature = "sck-suspension-diagnostics")]
+pub(crate) const SCK_DIAGNOSTIC_TRANSITION_CAPACITY: usize = 16;
 
 /// The largest producer surface extent the shim accepts, mirroring
 /// `MP_SHIM_MAX_PIXEL_EXTENT`. Asking beyond it would be refused, so the Adapter
@@ -157,9 +180,254 @@ struct OpaqueSession {
     _private: [u8; 0],
 }
 
+#[cfg(all(test, feature = "sck-suspension-diagnostics"))]
+#[repr(C)]
+struct OpaqueSckDiagnosticsProbe {
+    _private: [u8; 0],
+}
+
 #[repr(C)]
 pub(crate) struct OpaqueFrame {
     _private: [u8; 0],
+}
+
+/// One privacy-safe status transition in the fixed native diagnostic ring.
+#[cfg(feature = "sck-suspension-diagnostics")]
+#[repr(C)]
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub(crate) struct SckDiagnosticsStatusEvent {
+    pub(crate) struct_size: u32,
+    pub(crate) kind: u32,
+    pub(crate) raw_value: i64,
+    pub(crate) sequence: u64,
+    pub(crate) monotonic_nanos: u64,
+}
+
+/// One cold, bounded snapshot of private ScreenCaptureKit producer state.
+#[cfg(feature = "sck-suspension-diagnostics")]
+#[repr(C)]
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub(crate) struct SckDiagnosticsSnapshot {
+    pub(crate) struct_size: u32,
+    pub(crate) close_phase: u32,
+    pub(crate) active_native_slots: u32,
+    pub(crate) drain_policy: u32,
+    pub(crate) transition_count: u32,
+    pub(crate) transition_capacity: u32,
+    pub(crate) transition_start: u32,
+    reserved: u32,
+    pub(crate) observed_total: u64,
+    pub(crate) status_counts: [u64; SCK_STATUS_KIND_COUNT],
+    pub(crate) first_status: SckDiagnosticsStatusEvent,
+    pub(crate) last_status: SckDiagnosticsStatusEvent,
+    pub(crate) callbacks_received: u64,
+    pub(crate) callbacks_admitted: u64,
+    pub(crate) callbacks_refused: u64,
+    pub(crate) callbacks_exited: u64,
+    pub(crate) stream_start_completed_nanos: u64,
+    pub(crate) stream_stop_requested_nanos: u64,
+    pub(crate) stream_stop_completed_nanos: u64,
+    pub(crate) callback_admission_stopped_nanos: u64,
+    pub(crate) callback_fence_completed_nanos: u64,
+    pub(crate) close_completed_nanos: u64,
+    pub(crate) first_complete_nanos: u64,
+    pub(crate) session_references: u64,
+    pub(crate) detached_leases: u64,
+    pub(crate) native_objects: u64,
+    pub(crate) detached_bytes: u64,
+    pub(crate) drain_request_generation: u64,
+    pub(crate) drain_completion_generation: u64,
+    pub(crate) drain_requested_nanos: u64,
+    pub(crate) drain_completed_nanos: u64,
+    pub(crate) transition_overwrites: u64,
+    pub(crate) transitions: [SckDiagnosticsStatusEvent; SCK_DIAGNOSTIC_TRANSITION_CAPACITY],
+}
+
+#[cfg(feature = "sck-suspension-diagnostics")]
+impl SckDiagnosticsSnapshot {
+    pub(crate) fn requested() -> Self {
+        Self {
+            struct_size: u32::try_from(size_of::<Self>()).expect("structure size fits u32"),
+            transition_capacity: u32::try_from(SCK_DIAGNOSTIC_TRANSITION_CAPACITY)
+                .expect("transition capacity fits u32"),
+            ..Self::default()
+        }
+    }
+}
+
+#[cfg(all(test, feature = "sck-suspension-diagnostics"))]
+#[repr(C)]
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+struct SckDiagnosticsDrainTestReport {
+    struct_size: u32,
+    first_wait_status: u32,
+    second_wait_status: u32,
+    same_queue_status: u32,
+    same_queue_followup_status: u32,
+    callback_body_calls: u32,
+    final_enter_before_fence: u32,
+    final_enter_after_fence: u32,
+    callback_finished_before_drain: u32,
+    reserved: u32,
+    request_generation: u64,
+    completion_generation: u64,
+    callbacks_received: u64,
+    callbacks_admitted: u64,
+    callbacks_refused: u64,
+    callbacks_exited: u64,
+    same_queue_elapsed_nanos: u64,
+}
+
+#[cfg(all(test, feature = "sck-suspension-diagnostics"))]
+impl SckDiagnosticsDrainTestReport {
+    fn requested() -> Self {
+        Self {
+            struct_size: u32::try_from(size_of::<Self>()).expect("structure size fits u32"),
+            ..Self::default()
+        }
+    }
+}
+
+#[cfg(all(test, feature = "sck-suspension-diagnostics"))]
+struct SckDiagnosticsProbeInner {
+    handle: NonNull<OpaqueSckDiagnosticsProbe>,
+}
+
+// SAFETY: the native probe stores counters atomically and protects the transition
+// ring with its mutex. `SckDiagnosticsProbe` is not cloneable and is the only type
+// that can record, while cloneable readers can only take locked snapshots.
+#[cfg(all(test, feature = "sck-suspension-diagnostics"))]
+unsafe impl Send for SckDiagnosticsProbeInner {}
+// SAFETY: same invariant as the `Send` implementation above.
+#[cfg(all(test, feature = "sck-suspension-diagnostics"))]
+unsafe impl Sync for SckDiagnosticsProbeInner {}
+
+#[cfg(all(test, feature = "sck-suspension-diagnostics"))]
+impl Drop for SckDiagnosticsProbeInner {
+    fn drop(&mut self) {
+        // SAFETY: this is the final `Arc` and therefore the last use of the
+        // uniquely owned native probe handle.
+        unsafe { mp_shim_sck_diagnostics_test_probe_release(self.handle.as_ptr()) };
+    }
+}
+
+#[cfg(all(test, feature = "sck-suspension-diagnostics"))]
+struct SckDiagnosticsProbe {
+    inner: Arc<SckDiagnosticsProbeInner>,
+}
+
+#[cfg(all(test, feature = "sck-suspension-diagnostics"))]
+impl SckDiagnosticsProbe {
+    fn open() -> Self {
+        let mut probe = std::ptr::null_mut();
+        // SAFETY: `probe` is a writable output for one opaque handle.
+        let status = unsafe { mp_shim_sck_diagnostics_test_probe_open(&raw mut probe) };
+        assert_eq!(ShimStatus::from_raw(status), ShimStatus::Ok);
+        Self {
+            inner: Arc::new(SckDiagnosticsProbeInner {
+                handle: NonNull::new(probe).expect("successful probe open returns a handle"),
+            }),
+        }
+    }
+
+    fn reader(&self) -> SckDiagnosticsProbeReader {
+        SckDiagnosticsProbeReader {
+            inner: Arc::clone(&self.inner),
+        }
+    }
+
+    fn record(&mut self, raw: Option<i64>) -> bool {
+        let mut would_publish = 0;
+        // SAFETY: this non-cloneable writer is the probe's only record capability;
+        // the output is writable for one u32.
+        let status = unsafe {
+            mp_shim_sck_diagnostics_test_probe_record(
+                self.inner.handle.as_ptr(),
+                u32::from(raw.is_some()),
+                raw.unwrap_or_default(),
+                &raw mut would_publish,
+            )
+        };
+        assert_eq!(ShimStatus::from_raw(status), ShimStatus::Ok);
+        would_publish != 0
+    }
+
+    fn seed_saturation(&mut self) {
+        // SAFETY: this non-cloneable writer is the probe's only mutation
+        // capability other than `record`.
+        let status = unsafe {
+            mp_shim_sck_diagnostics_test_probe_seed_saturation(self.inner.handle.as_ptr())
+        };
+        assert_eq!(ShimStatus::from_raw(status), ShimStatus::Ok);
+    }
+
+    fn snapshot(&self) -> SckDiagnosticsSnapshot {
+        self.reader().snapshot()
+    }
+
+    fn snapshot_with(
+        &self,
+        mut snapshot: SckDiagnosticsSnapshot,
+        raise_native_exception: bool,
+    ) -> (ShimStatus, SckDiagnosticsSnapshot) {
+        // SAFETY: the handle remains live through `self`, and `snapshot` is a
+        // writable size-versioned output.
+        let status = unsafe {
+            mp_shim_sck_diagnostics_test_probe_snapshot(
+                self.inner.handle.as_ptr(),
+                u32::from(raise_native_exception),
+                &raw mut snapshot,
+            )
+        };
+        (ShimStatus::from_raw(status), snapshot)
+    }
+}
+
+#[cfg(all(test, feature = "sck-suspension-diagnostics"))]
+#[derive(Clone)]
+struct SckDiagnosticsProbeReader {
+    inner: Arc<SckDiagnosticsProbeInner>,
+}
+
+#[cfg(all(test, feature = "sck-suspension-diagnostics"))]
+impl SckDiagnosticsProbeReader {
+    fn snapshot(&self) -> SckDiagnosticsSnapshot {
+        let requested = SckDiagnosticsSnapshot::requested();
+        let (status, snapshot) = {
+            let probe = SckDiagnosticsProbe {
+                inner: Arc::clone(&self.inner),
+            };
+            probe.snapshot_with(requested, false)
+        };
+        assert_eq!(status, ShimStatus::Ok);
+        snapshot
+    }
+}
+
+#[cfg(all(test, feature = "sck-suspension-diagnostics"))]
+fn testing_sck_callback_accounting(raise_native_exception: bool) -> (u32, SckDiagnosticsSnapshot) {
+    let mut callback_body_calls = 0;
+    let mut snapshot = SckDiagnosticsSnapshot::requested();
+    // SAFETY: both outputs are writable and the native seam owns its complete
+    // stack-local admission and diagnostic lifetime.
+    let status = unsafe {
+        mp_shim_sck_diagnostics_test_callback_accounting(
+            u32::from(raise_native_exception),
+            &raw mut callback_body_calls,
+            &raw mut snapshot,
+        )
+    };
+    assert_eq!(ShimStatus::from_raw(status), ShimStatus::Ok);
+    (callback_body_calls, snapshot)
+}
+
+#[cfg(all(test, feature = "sck-suspension-diagnostics"))]
+fn testing_sck_drain_gate() -> SckDiagnosticsDrainTestReport {
+    let mut report = SckDiagnosticsDrainTestReport::requested();
+    // SAFETY: `report` is a writable size-versioned output.
+    let status = unsafe { mp_shim_sck_diagnostics_test_drain_gate(&raw mut report) };
+    assert_eq!(ShimStatus::from_raw(status), ShimStatus::Ok);
+    report
 }
 
 /// The frame handle a callback trampoline receives, before it is made safe.
@@ -747,6 +1015,8 @@ pub(crate) struct OpenRequest {
     pub(crate) testing_stop_delay: Duration,
     /// Zero in the product. See the shim's `MP_SHIM_RAISE_*` seams.
     pub(crate) testing_raise_sites: u32,
+    #[cfg(feature = "sck-suspension-diagnostics")]
+    pub(crate) diagnostic_close_policy: u32,
 }
 
 /// One open native session.
@@ -792,6 +1062,8 @@ impl Session {
             testing_start_delay_nanos: nanos(request.testing_start_delay),
             testing_stop_delay_nanos: nanos(request.testing_stop_delay),
             testing_raise_sites: request.testing_raise_sites,
+            #[cfg(feature = "sck-suspension-diagnostics")]
+            diagnostic_close_policy: request.diagnostic_close_policy,
             shows_cursor: false,
             reserved: [0; 3],
             callback_context: context,
@@ -844,6 +1116,17 @@ impl Session {
 
     /// Returns only when no callback is in flight.
     pub(crate) fn fence(&self, wait: Duration) -> Result<(), ShimStatus> {
+        #[cfg(feature = "sck-suspension-diagnostics")]
+        let wait = {
+            let started = Instant::now();
+            // SAFETY: the handle is owned here. For the default policy this is
+            // a no-op; the diagnostic drain policy stops the producer and joins
+            // its one sentinel without crossing the callback fence.
+            let prepared =
+                unsafe { mp_shim_session_prepare_close(self.handle.as_ptr(), nanos(wait)) };
+            ShimStatus::from_raw(prepared).into_result()?;
+            wait.saturating_sub(started.elapsed())
+        };
         // SAFETY: the handle is owned here.
         let status = unsafe { mp_shim_session_fence(self.handle.as_ptr(), nanos(wait)) };
         ShimStatus::from_raw(status).into_result()
@@ -878,6 +1161,19 @@ impl Session {
         } else {
             0
         }
+    }
+
+    /// Copies the private, bounded ScreenCaptureKit producer diagnostics.
+    #[cfg(feature = "sck-suspension-diagnostics")]
+    pub(crate) fn sck_diagnostics_snapshot(&self) -> Result<SckDiagnosticsSnapshot, ShimStatus> {
+        let mut snapshot = SckDiagnosticsSnapshot::requested();
+        // SAFETY: the handle is owned here and `snapshot` is a writable,
+        // size-versioned output with the exact fixed transition capacity.
+        let status = unsafe {
+            mp_shim_sck_diagnostics_snapshot_read(self.handle.as_ptr(), &raw mut snapshot)
+        };
+        ShimStatus::from_raw(status).into_result()?;
+        Ok(snapshot)
     }
 }
 
@@ -1221,6 +1517,31 @@ pub(crate) fn live_objects() -> u64 {
     } else {
         0
     }
+}
+
+#[cfg(feature = "sck-suspension-diagnostics")]
+pub(crate) fn sck_diagnostics_process_resources() -> Result<(u64, u64, u64, u64), ShimStatus> {
+    let mut native_objects = 0;
+    let mut detached_bytes = 0;
+    let mut live_sessions = 0;
+    let mut callbacks_in_flight = 0;
+    // SAFETY: all arguments are writable outputs for one u64.
+    let status = unsafe {
+        mp_shim_sck_diagnostics_process_resources(
+            &raw mut native_objects,
+            &raw mut detached_bytes,
+            &raw mut live_sessions,
+            &raw mut callbacks_in_flight,
+        )
+    };
+    ShimStatus::from_raw(status).into_result().map(|()| {
+        (
+            native_objects,
+            detached_bytes,
+            live_sessions,
+            callbacks_in_flight,
+        )
+    })
 }
 
 /// One pointer button, as the native surface numbers them.
@@ -2079,6 +2400,78 @@ pub(crate) fn declared_process_offsets() -> [u32; 6] {
             invoked_native_units
         ))
         .expect("field offset fits u32"),
+    ]
+}
+
+/// Returns private diagnostic sizes and offsets compiled into the linked shim.
+#[cfg(feature = "sck-suspension-diagnostics")]
+pub(crate) fn linked_sck_diagnostics_layout() -> [u32; 10] {
+    let mut layout = [0; 10];
+    let [
+        event_size,
+        snapshot_size,
+        event_raw_value,
+        event_sequence,
+        event_monotonic_nanos,
+        status_counts,
+        first_status,
+        callbacks_received,
+        drain_request_generation,
+        transitions,
+    ] = &mut layout;
+    // SAFETY: all ten outputs are writable for one u32 each.
+    let status = unsafe {
+        mp_shim_sck_diagnostics_layout(
+            &raw mut *event_size,
+            &raw mut *snapshot_size,
+            &raw mut *event_raw_value,
+            &raw mut *event_sequence,
+            &raw mut *event_monotonic_nanos,
+            &raw mut *status_counts,
+            &raw mut *first_status,
+            &raw mut *callbacks_received,
+            &raw mut *drain_request_generation,
+            &raw mut *transitions,
+        )
+    };
+    if ShimStatus::from_raw(status) == ShimStatus::Ok {
+        layout
+    } else {
+        [0; 10]
+    }
+}
+
+/// Returns private diagnostic sizes and offsets compiled into the Rust mirrors.
+#[cfg(feature = "sck-suspension-diagnostics")]
+pub(crate) fn declared_sck_diagnostics_layout() -> [u32; 10] {
+    [
+        u32::try_from(size_of::<SckDiagnosticsStatusEvent>()).expect("structure size fits u32"),
+        u32::try_from(size_of::<SckDiagnosticsSnapshot>()).expect("structure size fits u32"),
+        u32::try_from(std::mem::offset_of!(SckDiagnosticsStatusEvent, raw_value))
+            .expect("field offset fits u32"),
+        u32::try_from(std::mem::offset_of!(SckDiagnosticsStatusEvent, sequence))
+            .expect("field offset fits u32"),
+        u32::try_from(std::mem::offset_of!(
+            SckDiagnosticsStatusEvent,
+            monotonic_nanos
+        ))
+        .expect("field offset fits u32"),
+        u32::try_from(std::mem::offset_of!(SckDiagnosticsSnapshot, status_counts))
+            .expect("field offset fits u32"),
+        u32::try_from(std::mem::offset_of!(SckDiagnosticsSnapshot, first_status))
+            .expect("field offset fits u32"),
+        u32::try_from(std::mem::offset_of!(
+            SckDiagnosticsSnapshot,
+            callbacks_received
+        ))
+        .expect("field offset fits u32"),
+        u32::try_from(std::mem::offset_of!(
+            SckDiagnosticsSnapshot,
+            drain_request_generation
+        ))
+        .expect("field offset fits u32"),
+        u32::try_from(std::mem::offset_of!(SckDiagnosticsSnapshot, transitions))
+            .expect("field offset fits u32"),
     ]
 }
 
@@ -2997,6 +3390,8 @@ struct NativeOpenRequest {
     testing_start_delay_nanos: u64,
     testing_stop_delay_nanos: u64,
     testing_raise_sites: u32,
+    #[cfg(feature = "sck-suspension-diagnostics")]
+    diagnostic_close_policy: u32,
     shows_cursor: bool,
     reserved: [u8; 3],
     callback_context: *mut c_void,
@@ -3081,6 +3476,19 @@ unsafe extern "C" {
         out_request_timeout_nanos: *mut u32,
         out_report_target_match_count: *mut u32,
         out_report_invoked_native_units: *mut u32,
+    ) -> u32;
+    #[cfg(feature = "sck-suspension-diagnostics")]
+    fn mp_shim_sck_diagnostics_layout(
+        out_event_size: *mut u32,
+        out_snapshot_size: *mut u32,
+        out_event_raw_value_offset: *mut u32,
+        out_event_sequence_offset: *mut u32,
+        out_event_monotonic_nanos_offset: *mut u32,
+        out_status_counts_offset: *mut u32,
+        out_first_status_offset: *mut u32,
+        out_callbacks_received_offset: *mut u32,
+        out_drain_request_generation_offset: *mut u32,
+        out_transitions_offset: *mut u32,
     ) -> u32;
     fn mp_shim_capture_available() -> u32;
     fn mp_shim_probe_screen_capture(out_state: *mut u32) -> u32;
@@ -3306,19 +3714,67 @@ unsafe extern "C" {
         timeout_nanos: u64,
     ) -> u32;
     fn mp_shim_session_disable_callbacks(session: *mut OpaqueSession) -> u32;
+    #[cfg(feature = "sck-suspension-diagnostics")]
+    fn mp_shim_session_prepare_close(session: *mut OpaqueSession, timeout_nanos: u64) -> u32;
     fn mp_shim_session_fence(session: *mut OpaqueSession, timeout_nanos: u64) -> u32;
     fn mp_shim_session_close(session: *mut OpaqueSession, timeout_nanos: u64) -> u32;
     fn mp_shim_session_release(session: *mut OpaqueSession);
     fn mp_shim_session_leased(session: *const OpaqueSession, out_leased: *mut u64) -> u32;
     fn mp_shim_session_live_objects(session: *const OpaqueSession, out_live: *mut u64) -> u32;
+    #[cfg(feature = "sck-suspension-diagnostics")]
+    fn mp_shim_sck_diagnostics_snapshot_read(
+        session: *const OpaqueSession,
+        out_snapshot: *mut SckDiagnosticsSnapshot,
+    ) -> u32;
 
     fn mp_shim_frame_detach(borrowed: *mut OpaqueFrame, out: *mut *mut OpaqueFrame) -> u32;
     fn mp_shim_frame_release(frame: *mut OpaqueFrame);
+    #[cfg(feature = "sck-suspension-diagnostics")]
+    fn mp_shim_sck_diagnostics_process_resources(
+        out_native_objects: *mut u64,
+        out_detached_bytes: *mut u64,
+        out_live_sessions: *mut u64,
+        out_callbacks_in_flight: *mut u64,
+    ) -> u32;
     fn mp_shim_frame_copy_out(
         frame: *const OpaqueFrame,
         destination: *mut u8,
         capacity: usize,
         destination_stride: u64,
+    ) -> u32;
+
+    #[cfg(all(test, feature = "sck-suspension-diagnostics"))]
+    fn mp_shim_sck_diagnostics_test_probe_open(
+        out_probe: *mut *mut OpaqueSckDiagnosticsProbe,
+    ) -> u32;
+    #[cfg(all(test, feature = "sck-suspension-diagnostics"))]
+    fn mp_shim_sck_diagnostics_test_probe_record(
+        probe: *mut OpaqueSckDiagnosticsProbe,
+        present: u32,
+        raw_value: i64,
+        out_would_publish: *mut u32,
+    ) -> u32;
+    #[cfg(all(test, feature = "sck-suspension-diagnostics"))]
+    fn mp_shim_sck_diagnostics_test_probe_seed_saturation(
+        probe: *mut OpaqueSckDiagnosticsProbe,
+    ) -> u32;
+    #[cfg(all(test, feature = "sck-suspension-diagnostics"))]
+    fn mp_shim_sck_diagnostics_test_probe_snapshot(
+        probe: *mut OpaqueSckDiagnosticsProbe,
+        raise_native_exception: u32,
+        out_snapshot: *mut SckDiagnosticsSnapshot,
+    ) -> u32;
+    #[cfg(all(test, feature = "sck-suspension-diagnostics"))]
+    fn mp_shim_sck_diagnostics_test_probe_release(probe: *mut OpaqueSckDiagnosticsProbe);
+    #[cfg(all(test, feature = "sck-suspension-diagnostics"))]
+    fn mp_shim_sck_diagnostics_test_callback_accounting(
+        raise_native_exception: u32,
+        out_callback_body_calls: *mut u32,
+        out_snapshot: *mut SckDiagnosticsSnapshot,
+    ) -> u32;
+    #[cfg(all(test, feature = "sck-suspension-diagnostics"))]
+    fn mp_shim_sck_diagnostics_test_drain_gate(
+        out_report: *mut SckDiagnosticsDrainTestReport,
     ) -> u32;
 
     fn mp_shim_input_target_focused(
@@ -3444,6 +3900,14 @@ mod tests {
         testing_target_release_exception, testing_target_without_process_lifetime,
         testing_terminalize_twice, testing_validate_process_post, validate_open_shape_and_metadata,
     };
+    #[cfg(feature = "sck-suspension-diagnostics")]
+    use super::{
+        SCK_DIAGNOSTIC_TRANSITION_CAPACITY, SCK_STATUS_BLANK, SCK_STATUS_COMPLETE, SCK_STATUS_IDLE,
+        SCK_STATUS_MISSING, SCK_STATUS_STARTED, SCK_STATUS_STOPPED, SCK_STATUS_SUSPENDED,
+        SCK_STATUS_UNKNOWN, SckDiagnosticsProbe, SckDiagnosticsSnapshot, SckDiagnosticsStatusEvent,
+        declared_sck_diagnostics_layout, linked_sck_diagnostics_layout,
+        testing_sck_callback_accounting, testing_sck_drain_gate,
+    };
     use mado_pilot_capture::CaptureFault;
     use mado_pilot_core::{
         CancellationToken, Clock, MonotonicInstant, OperationContext, PixelExtent,
@@ -3466,6 +3930,251 @@ mod tests {
         assert_eq!(version, ABI_VERSION);
         assert_eq!(sizes, declared_layout());
         assert_eq!(offsets, declared_process_offsets());
+    }
+
+    #[cfg(feature = "sck-suspension-diagnostics")]
+    #[test]
+    fn the_linked_sck_diagnostic_layout_is_exact() {
+        let declared = declared_sck_diagnostics_layout();
+
+        assert_eq!(declared, [32, 840, 8, 16, 24, 40, 104, 168, 288, 328]);
+        assert_eq!(linked_sck_diagnostics_layout(), declared);
+        let requested = SckDiagnosticsSnapshot::requested();
+        assert_eq!(requested.struct_size, 840);
+        assert_eq!(
+            requested.transition_capacity,
+            u32::try_from(SCK_DIAGNOSTIC_TRANSITION_CAPACITY).expect("capacity fits u32")
+        );
+    }
+
+    #[cfg(feature = "sck-suspension-diagnostics")]
+    fn diagnostic_transitions(snapshot: &SckDiagnosticsSnapshot) -> Vec<SckDiagnosticsStatusEvent> {
+        let count = usize::try_from(snapshot.transition_count)
+            .expect("transition count fits usize")
+            .min(SCK_DIAGNOSTIC_TRANSITION_CAPACITY);
+        let start = usize::try_from(snapshot.transition_start).expect("ring index fits usize")
+            % SCK_DIAGNOSTIC_TRANSITION_CAPACITY;
+        (0..count)
+            .map(|offset| {
+                snapshot.transitions[(start + offset) % SCK_DIAGNOSTIC_TRANSITION_CAPACITY]
+            })
+            .collect()
+    }
+
+    #[cfg(feature = "sck-suspension-diagnostics")]
+    #[test]
+    fn diagnostic_statuses_normalize_without_changing_complete_publication() {
+        let mut probe = SckDiagnosticsProbe::open();
+        let cases = [
+            (Some(0), SCK_STATUS_COMPLETE, true),
+            (Some(1), SCK_STATUS_IDLE, false),
+            (Some(2), SCK_STATUS_BLANK, false),
+            (Some(3), SCK_STATUS_SUSPENDED, false),
+            (Some(4), SCK_STATUS_STARTED, false),
+            (Some(5), SCK_STATUS_STOPPED, false),
+            (None, SCK_STATUS_MISSING, false),
+            (Some(99), SCK_STATUS_UNKNOWN, false),
+        ];
+        for (raw, _, would_publish) in cases {
+            assert_eq!(probe.record(raw), would_publish);
+        }
+
+        let snapshot = probe.snapshot();
+        assert_eq!(snapshot.observed_total, 8);
+        assert_eq!(snapshot.status_counts, [1; 8]);
+        assert_eq!(snapshot.first_status.kind, SCK_STATUS_COMPLETE);
+        assert_eq!(snapshot.first_status.raw_value, 0);
+        assert_eq!(snapshot.last_status.kind, SCK_STATUS_UNKNOWN);
+        assert_eq!(snapshot.last_status.raw_value, 99);
+        assert_eq!(
+            snapshot.first_complete_nanos,
+            snapshot.first_status.monotonic_nanos
+        );
+        assert_ne!(snapshot.first_complete_nanos, 0);
+
+        let transitions = diagnostic_transitions(&snapshot);
+        assert_eq!(transitions.len(), cases.len());
+        for (index, (event, (raw, kind, _))) in transitions.iter().zip(cases).enumerate() {
+            assert_eq!(event.struct_size, 32);
+            assert_eq!(event.kind, kind);
+            assert_eq!(event.raw_value, raw.unwrap_or(i64::MIN));
+            assert_eq!(
+                event.sequence,
+                u64::try_from(index + 1).expect("sequence fits")
+            );
+            if let Some(previous) = index.checked_sub(1) {
+                assert!(
+                    transitions[previous].monotonic_nanos <= event.monotonic_nanos,
+                    "transition timestamps regressed"
+                );
+            }
+        }
+    }
+
+    #[cfg(feature = "sck-suspension-diagnostics")]
+    #[test]
+    fn diagnostic_counters_saturate_and_the_ring_overwrites_oldest_transitions() {
+        let mut probe = SckDiagnosticsProbe::open();
+        probe.seed_saturation();
+        for index in 0..20 {
+            let raw = i64::from(index % 2);
+            let _ = probe.record(Some(raw));
+        }
+
+        let snapshot = probe.snapshot();
+        assert_eq!(snapshot.observed_total, u64::MAX);
+        assert_eq!(snapshot.status_counts, [u64::MAX; 8]);
+        assert_eq!(snapshot.transition_count, 16);
+        assert_eq!(snapshot.transition_overwrites, 4);
+        assert_eq!(snapshot.first_status.raw_value, 0);
+        assert_eq!(snapshot.last_status.raw_value, 1);
+        let transitions = diagnostic_transitions(&snapshot);
+        assert_eq!(transitions.len(), 16);
+        for (offset, event) in transitions.iter().enumerate() {
+            assert_eq!(event.raw_value, i64::try_from((offset + 4) % 2).unwrap());
+            assert_eq!(event.sequence, u64::MAX);
+        }
+    }
+
+    #[cfg(feature = "sck-suspension-diagnostics")]
+    #[test]
+    fn diagnostic_snapshot_rejects_size_and_capacity_mismatch_without_writing() {
+        let probe = SckDiagnosticsProbe::open();
+        let mut wrong_size = SckDiagnosticsSnapshot::requested();
+        wrong_size.struct_size -= 1;
+        wrong_size.observed_total = 41;
+        let (status, returned) = probe.snapshot_with(wrong_size, false);
+        assert_eq!(status, ShimStatus::InvalidArgument);
+        assert_eq!(returned, wrong_size);
+
+        let mut wrong_capacity = SckDiagnosticsSnapshot::requested();
+        wrong_capacity.transition_capacity -= 1;
+        wrong_capacity.observed_total = 42;
+        let (status, returned) = probe.snapshot_with(wrong_capacity, false);
+        assert_eq!(status, ShimStatus::InvalidArgument);
+        assert_eq!(returned, wrong_capacity);
+    }
+
+    #[cfg(feature = "sck-suspension-diagnostics")]
+    #[test]
+    fn diagnostic_snapshot_contains_native_exceptions_without_writing() {
+        let probe = SckDiagnosticsProbe::open();
+        let mut requested = SckDiagnosticsSnapshot::requested();
+        requested.observed_total = 43;
+        let (status, returned) = probe.snapshot_with(requested, true);
+        assert_eq!(status, ShimStatus::NativeException);
+        assert_eq!(returned, requested);
+    }
+
+    #[cfg(feature = "sck-suspension-diagnostics")]
+    #[test]
+    fn diagnostic_snapshot_is_safe_while_one_writer_records_statuses() {
+        let mut probe = SckDiagnosticsProbe::open();
+        let first_reader = probe.reader();
+        let second_reader = first_reader.clone();
+        let barrier = Arc::new(std::sync::Barrier::new(3));
+
+        let writer_barrier = Arc::clone(&barrier);
+        let writer = std::thread::spawn(move || {
+            writer_barrier.wait();
+            for index in 0..10_000 {
+                let _ = probe.record(Some(i64::from(index % 2)));
+                if index % 64 == 0 {
+                    std::thread::yield_now();
+                }
+            }
+            probe
+        });
+        let spawn_reader = |reader: super::SckDiagnosticsProbeReader,
+                            barrier: Arc<std::sync::Barrier>| {
+            std::thread::spawn(move || {
+                barrier.wait();
+                for _ in 0..2_000 {
+                    let snapshot = reader.snapshot();
+                    assert!(
+                        usize::try_from(snapshot.transition_count).unwrap()
+                            <= SCK_DIAGNOSTIC_TRANSITION_CAPACITY
+                    );
+                    for event in diagnostic_transitions(&snapshot) {
+                        assert_eq!(event.struct_size, 32);
+                        assert!(event.kind < 8);
+                    }
+                }
+            })
+        };
+        let first = spawn_reader(first_reader, Arc::clone(&barrier));
+        let second = spawn_reader(second_reader, barrier);
+
+        let probe = writer.join().expect("diagnostic writer did not panic");
+        first.join().expect("first diagnostic reader did not panic");
+        second
+            .join()
+            .expect("second diagnostic reader did not panic");
+        let snapshot = probe.snapshot();
+        assert_eq!(snapshot.observed_total, 10_000);
+        assert_eq!(snapshot.status_counts[0], 5_000);
+        assert_eq!(snapshot.status_counts[1], 5_000);
+        assert_eq!(snapshot.transition_count, 16);
+        assert_eq!(snapshot.transition_overwrites, 9_984);
+    }
+
+    #[cfg(feature = "sck-suspension-diagnostics")]
+    #[test]
+    fn diagnostic_callback_accounting_exits_on_exception_and_refuses_after_fence() {
+        for raise_native_exception in [false, true] {
+            let (callback_body_calls, snapshot) =
+                testing_sck_callback_accounting(raise_native_exception);
+            assert_eq!(
+                callback_body_calls, 1,
+                "the post-fence delivery cannot enter the callback body"
+            );
+            assert_eq!(snapshot.callbacks_received, 2);
+            assert_eq!(snapshot.callbacks_admitted, 1);
+            assert_eq!(snapshot.callbacks_refused, 1);
+            assert_eq!(snapshot.callbacks_exited, 2);
+            assert_eq!(
+                snapshot.callbacks_received,
+                snapshot.callbacks_admitted + snapshot.callbacks_refused
+            );
+        }
+    }
+
+    #[cfg(feature = "sck-suspension-diagnostics")]
+    #[test]
+    fn diagnostic_drain_retries_one_sentinel_and_never_waits_on_its_queue() {
+        let report = testing_sck_drain_gate();
+        assert_eq!(report.struct_size, 96);
+        assert_eq!(
+            ShimStatus::from_raw(report.first_wait_status),
+            ShimStatus::TimedOut
+        );
+        assert_eq!(
+            ShimStatus::from_raw(report.second_wait_status),
+            ShimStatus::Ok
+        );
+        assert_eq!(report.request_generation, 1);
+        assert_eq!(report.completion_generation, 1);
+        assert_eq!(report.callback_body_calls, 0);
+        assert_eq!(report.callback_finished_before_drain, 1);
+        assert_eq!(report.callbacks_received, 1);
+        assert_eq!(report.callbacks_admitted, 0);
+        assert_eq!(report.callbacks_refused, 1);
+        assert_eq!(report.callbacks_exited, 1);
+        assert_eq!(report.final_enter_before_fence, 1);
+        assert_eq!(report.final_enter_after_fence, 0);
+        assert_eq!(
+            ShimStatus::from_raw(report.same_queue_status),
+            ShimStatus::TimedOut
+        );
+        assert_eq!(
+            ShimStatus::from_raw(report.same_queue_followup_status),
+            ShimStatus::Ok
+        );
+        assert!(
+            report.same_queue_elapsed_nanos < 100_000_000,
+            "same-queue close spent {} ns before returning",
+            report.same_queue_elapsed_nanos
+        );
     }
 
     #[test]
@@ -4471,6 +5180,9 @@ mod tests {
                 queue_depth: 3,
                 detached_budget: 8,
                 testing_start_delay: Duration::ZERO,
+                #[cfg(feature = "sck-suspension-diagnostics")]
+                diagnostic_close_policy:
+                    crate::sck_suspension_diagnostics::SampleQueueDrainPolicy::Unchanged as u32,
                 testing_stop_delay: Duration::ZERO,
                 testing_raise_sites: 0,
             };
@@ -4507,6 +5219,9 @@ mod tests {
                 queue_depth: 3,
                 detached_budget: 8,
                 testing_start_delay: Duration::ZERO,
+                #[cfg(feature = "sck-suspension-diagnostics")]
+                diagnostic_close_policy:
+                    crate::sck_suspension_diagnostics::SampleQueueDrainPolicy::Unchanged as u32,
                 testing_stop_delay: Duration::ZERO,
                 testing_raise_sites: 0,
             };
@@ -4625,6 +5340,9 @@ mod tests {
 
     #[test]
     fn every_session_synchronization_initialization_failure_unwinds_only_owned_objects() {
+        #[cfg(feature = "sck-suspension-diagnostics")]
+        const STAGES: u32 = 14;
+        #[cfg(not(feature = "sck-suspension-diagnostics"))]
         const STAGES: u32 = 10;
         for fail_at in 1..=STAGES {
             let observed =

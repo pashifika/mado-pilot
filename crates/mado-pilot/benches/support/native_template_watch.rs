@@ -87,6 +87,15 @@ fn scaled_i32(value: f64, scale: f64) -> Option<i32> {
 }
 
 fn wait_marker_state(run: &NativeRun, after: FrameStamp, visible: bool) -> Result<Frame, String> {
+    wait_marker_state_on(&run.session, &run.fixture, Some(after), visible)
+}
+
+fn wait_marker_state_on(
+    session: &Session,
+    fixture: &NativeFixture,
+    after: Option<FrameStamp>,
+    visible: bool,
+) -> Result<Frame, String> {
     let deadline = Instant::now() + OPERATION_WAIT;
     let mut stamp = after;
     loop {
@@ -94,20 +103,18 @@ fn wait_marker_state(run: &NativeRun, after: FrameStamp, visible: bool) -> Resul
         if remaining.is_zero() {
             return Err("fixture_authority_failed".to_owned());
         }
-        let frame = run
-            .session
-            .acquire_frame(&FrameRequest::newer_than(stamp), &bounded(remaining))
+        let request = stamp.map_or_else(FrameRequest::latest, FrameRequest::newer_than);
+        let frame = session
+            .acquire_frame(&request, &bounded(remaining))
             .map_err(|_| "typed_operation_failure:DeadlineExceeded".to_owned())?;
-        let shape =
-            marker_shape(&frame, &run.fixture).ok_or_else(|| "wrong_transform".to_owned())?;
-        let mapping = run
-            .session
+        let shape = marker_shape(&frame, fixture).ok_or_else(|| "wrong_transform".to_owned())?;
+        let mapping = session
             .map_frame(&frame, PixelFormat::Rgba8, &bounded(remaining))
             .map_err(|_| "wrong_region".to_owned())?;
         if marker_state(&mapping, shape) == Some(visible) {
             return Ok(frame);
         }
-        stamp = frame.stamp();
+        stamp = Some(frame.stamp());
     }
 }
 
@@ -238,6 +245,7 @@ struct Arguments {
     raw: Vec<String>,
     qualification: bool,
     full_load_diagnostic: bool,
+    sck_suspension_diagnostic: bool,
     enforce_budgets: bool,
     workload_filter: Option<String>,
 }
@@ -257,6 +265,9 @@ impl Arguments {
         let full_load_diagnostic = raw
             .iter()
             .any(|argument| argument == "--full-load-diagnostic");
+        let sck_suspension_diagnostic = raw
+            .iter()
+            .any(|argument| argument == "--sck-suspension-diagnostic");
         let enforce_budgets = raw.iter().any(|argument| argument == "--enforce-budgets");
         let workload_filter = value(&raw, "--workload").map(str::to_owned);
         assert!(
@@ -268,9 +279,18 @@ impl Arguments {
                 || (!qualification && workload_filter.is_none() && !enforce_budgets),
             "protocol_drift"
         );
+        assert!(
+            !sck_suspension_diagnostic
+                || (!qualification
+                    && !full_load_diagnostic
+                    && workload_filter.is_none()
+                    && !enforce_budgets),
+            "protocol_drift"
+        );
         Self {
             qualification,
             full_load_diagnostic,
+            sck_suspension_diagnostic,
             enforce_budgets,
             workload_filter,
             fixture_executable,
@@ -454,6 +474,16 @@ impl Cohort {
 
 pub(super) fn run() {
     let arguments = Arguments::parse();
+    #[cfg(target_os = "macos")]
+    if arguments.sck_suspension_diagnostic {
+        run_sck_suspension_diagnostic(&arguments);
+        return;
+    }
+    #[cfg(not(target_os = "macos"))]
+    assert!(
+        !arguments.sck_suspension_diagnostic,
+        "capability_unavailable:sck_suspension_diagnostic"
+    );
     let sample_plan = if arguments.qualification || arguments.full_load_diagnostic {
         Plan::new(3, 20)
     } else {

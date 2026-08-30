@@ -16,6 +16,7 @@ native-template-watch-qualification = [
     "mado-pilot-runtime/benchmark-instrumentation",
     "mado-pilot-backend-opencv/benchmark-instrumentation",
     "mado-pilot-platform-macos/private-fixture",
+    "mado-pilot-platform-macos/sck-suspension-diagnostics",
     "mado-pilot-platform-windows/benchmark-instrumentation",
 ]
 
