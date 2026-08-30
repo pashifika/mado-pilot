@@ -65,6 +65,8 @@
 /* Bounds on what a caller may ask for, so a request cannot size the producer. */
 #define MP_SHIM_MIN_QUEUE_DEPTH 3u
 #define MP_SHIM_MAX_QUEUE_DEPTH 8u
+/* Upper bound for one active-display enumeration. Matches the geometry helper's. */
+#define MP_SHIM_MAX_ACTIVE_DISPLAYS 16u
 
 #define MP_SHIM_SESSION_MAGIC 0x4d505353u
 #define MP_SHIM_FRAME_MAGIC 0x4d505346u
@@ -2164,6 +2166,117 @@ mp_shim_status mp_shim_sck_diagnostics_layout(
     *out_transitions_offset =
         (uint32_t)offsetof(mp_shim_sck_diagnostics_snapshot, transitions);
     return MP_SHIM_OK;
+}
+
+mp_shim_status mp_shim_sck_diagnostics_topology_layout(
+    uint32_t *out_mode_size, uint32_t *out_topology_size,
+    uint32_t *out_mode_refresh_offset, uint32_t *out_topology_modes_offset) {
+    if (out_mode_size == NULL || out_topology_size == NULL ||
+        out_mode_refresh_offset == NULL || out_topology_modes_offset == NULL) {
+        return MP_SHIM_INVALID_ARGUMENT;
+    }
+    *out_mode_size = (uint32_t)sizeof(mp_shim_sck_diagnostics_display_mode);
+    *out_topology_size = (uint32_t)sizeof(mp_shim_sck_diagnostics_display_topology);
+    *out_mode_refresh_offset =
+        (uint32_t)offsetof(mp_shim_sck_diagnostics_display_mode, refresh_millihertz);
+    *out_topology_modes_offset =
+        (uint32_t)offsetof(mp_shim_sck_diagnostics_display_topology, modes);
+    return MP_SHIM_OK;
+}
+
+static bool mp_shim_sck_diagnostics_display_mode_after(
+    const mp_shim_sck_diagnostics_display_mode *left,
+    const mp_shim_sck_diagnostics_display_mode *right) {
+    if (left->logical_width != right->logical_width) {
+        return left->logical_width > right->logical_width;
+    }
+    if (left->logical_height != right->logical_height) {
+        return left->logical_height > right->logical_height;
+    }
+    if (left->refresh_millihertz != right->refresh_millihertz) {
+        return left->refresh_millihertz > right->refresh_millihertz;
+    }
+    if (left->built_in != right->built_in) {
+        return left->built_in > right->built_in;
+    }
+    return left->mirrored > right->mirrored;
+}
+
+static void mp_shim_sck_diagnostics_sort_display_modes(
+    mp_shim_sck_diagnostics_display_mode *modes, uint32_t count) {
+    for (uint32_t index = 1; index < count; index += 1) {
+        mp_shim_sck_diagnostics_display_mode selected = modes[index];
+        uint32_t destination = index;
+        while (destination > 0 &&
+               mp_shim_sck_diagnostics_display_mode_after(&modes[destination - 1],
+                                                          &selected)) {
+            modes[destination] = modes[destination - 1];
+            destination -= 1;
+        }
+        modes[destination] = selected;
+    }
+}
+
+static mp_shim_status mp_shim_sck_diagnostics_read_display_mode(
+    CGDirectDisplayID display, mp_shim_sck_diagnostics_display_mode *out_mode) {
+    CGDisplayModeRef mode = CGDisplayCopyDisplayMode(display);
+    if (mode == NULL) {
+        return MP_SHIM_PLATFORM_FAILURE;
+    }
+    size_t width = CGDisplayModeGetWidth(mode);
+    size_t height = CGDisplayModeGetHeight(mode);
+    double refresh = CGDisplayModeGetRefreshRate(mode);
+    CGDisplayModeRelease(mode);
+    if (width == 0 || height == 0 || width > UINT32_MAX || height > UINT32_MAX ||
+        !isfinite(refresh) || refresh < 0.0 ||
+        refresh > (double)UINT32_MAX / 1000.0) {
+        return MP_SHIM_PLATFORM_FAILURE;
+    }
+    out_mode->logical_width = (uint32_t)width;
+    out_mode->logical_height = (uint32_t)height;
+    out_mode->refresh_millihertz = (uint32_t)llround(refresh * 1000.0);
+    out_mode->built_in = CGDisplayIsBuiltin(display) ? 1u : 0u;
+    out_mode->mirrored = CGDisplayIsInMirrorSet(display) ? 1u : 0u;
+    return MP_SHIM_OK;
+}
+
+mp_shim_status mp_shim_sck_diagnostics_read_display_topology(
+    mp_shim_sck_diagnostics_display_topology *out_topology) {
+    if (out_topology == NULL ||
+        out_topology->struct_size != sizeof(*out_topology) ||
+        out_topology->mode_capacity != MP_SHIM_SCK_DIAGNOSTIC_DISPLAY_CAPACITY) {
+        return MP_SHIM_INVALID_ARGUMENT;
+    }
+    memset(out_topology, 0, sizeof(*out_topology));
+    out_topology->struct_size = (uint32_t)sizeof(*out_topology);
+    out_topology->mode_capacity = MP_SHIM_SCK_DIAGNOSTIC_DISPLAY_CAPACITY;
+    mp_shim_sck_diagnostics_display_topology topology = {0};
+    topology.struct_size = (uint32_t)sizeof(topology);
+    topology.mode_capacity = MP_SHIM_SCK_DIAGNOSTIC_DISPLAY_CAPACITY;
+    MP_SHIM_BEGIN
+    mp_shim_connect_window_server();
+    CGDirectDisplayID active[MP_SHIM_MAX_ACTIVE_DISPLAYS];
+    uint32_t count = 0;
+    if (CGGetActiveDisplayList(MP_SHIM_MAX_ACTIVE_DISPLAYS, active, &count) !=
+        kCGErrorSuccess) {
+        return MP_SHIM_PLATFORM_FAILURE;
+    }
+    topology.display_count = count;
+    topology.mode_count =
+        count < MP_SHIM_SCK_DIAGNOSTIC_DISPLAY_CAPACITY
+            ? count
+            : MP_SHIM_SCK_DIAGNOSTIC_DISPLAY_CAPACITY;
+    for (uint32_t index = 0; index < topology.mode_count; index += 1) {
+        mp_shim_status status =
+            mp_shim_sck_diagnostics_read_display_mode(active[index], &topology.modes[index]);
+        if (status != MP_SHIM_OK) {
+            return status;
+        }
+    }
+    mp_shim_sck_diagnostics_sort_display_modes(topology.modes, topology.mode_count);
+    *out_topology = topology;
+    return MP_SHIM_OK;
+    MP_SHIM_END
 }
 #endif
 
@@ -4329,6 +4442,45 @@ mp_shim_status mp_shim_sck_diagnostics_test_callback_accounting(
     MP_SHIM_END
 }
 
+mp_shim_status mp_shim_sck_diagnostics_test_display_topology(
+    const mp_shim_sck_diagnostics_display_mode *modes, uint32_t mode_count,
+    uint32_t display_count, uint32_t raise_native_exception,
+    mp_shim_sck_diagnostics_display_topology *out_topology) {
+    uint32_t expected_count =
+        display_count < MP_SHIM_SCK_DIAGNOSTIC_DISPLAY_CAPACITY
+            ? display_count
+            : MP_SHIM_SCK_DIAGNOSTIC_DISPLAY_CAPACITY;
+    if (raise_native_exception > 1 || out_topology == NULL ||
+        out_topology->struct_size != sizeof(*out_topology) ||
+        out_topology->mode_capacity != MP_SHIM_SCK_DIAGNOSTIC_DISPLAY_CAPACITY ||
+        mode_count != expected_count || (mode_count != 0 && modes == NULL)) {
+        return MP_SHIM_INVALID_ARGUMENT;
+    }
+    memset(out_topology, 0, sizeof(*out_topology));
+    out_topology->struct_size = (uint32_t)sizeof(*out_topology);
+    out_topology->mode_capacity = MP_SHIM_SCK_DIAGNOSTIC_DISPLAY_CAPACITY;
+    for (uint32_t index = 0; index < mode_count; index += 1) {
+        if (modes[index].logical_width == 0 || modes[index].logical_height == 0 ||
+            modes[index].refresh_millihertz > 1000000u ||
+            modes[index].built_in > 1 || modes[index].mirrored > 1) {
+            return MP_SHIM_INVALID_ARGUMENT;
+        }
+    }
+    MP_SHIM_BEGIN
+    if (raise_native_exception != 0) {
+        [NSException raise:@"MPShimInjectedFailure" format:@"diagnostic topology"];
+    }
+    out_topology->display_count = display_count;
+    out_topology->mode_count = mode_count;
+    if (mode_count != 0) {
+        memcpy(out_topology->modes, modes,
+               sizeof(mp_shim_sck_diagnostics_display_mode) * mode_count);
+    }
+    mp_shim_sck_diagnostics_sort_display_modes(out_topology->modes, mode_count);
+    return MP_SHIM_OK;
+    MP_SHIM_END
+}
+
 void mp_shim_sck_diagnostics_test_probe_release(mp_shim_sck_diagnostics_probe *probe) {
     if (!mp_shim_sck_diagnostics_test_probe_valid(probe)) {
         return;
@@ -4439,8 +4591,6 @@ static const OptionBits MPShimKeyTranslateNoDeadKeys = 1u << 0;
 #define MP_SHIM_LAYOUT_UNIT_CAPACITY 8u
 /* Hardware key codes are seven bits wide on every keyboard the layout describes. */
 #define MP_SHIM_LAYOUT_KEY_CODES 128u
-/* Upper bound for one active-display enumeration. Matches the geometry helper's. */
-#define MP_SHIM_MAX_ACTIVE_DISPLAYS 16u
 
 typedef struct MPShimKeyboardLayoutApi {
     bool loaded;

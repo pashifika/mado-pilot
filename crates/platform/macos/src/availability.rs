@@ -49,7 +49,11 @@ pub(crate) fn linked_shim_agrees() -> bool {
             && offsets == shim::declared_process_offsets();
         #[cfg(feature = "sck-suspension-diagnostics")]
         {
-            base_agrees && sck_diagnostics_layout_agrees(shim::linked_sck_diagnostics_layout())
+            base_agrees
+                && sck_diagnostics_layout_agrees(
+                    shim::linked_sck_diagnostics_layout(),
+                    shim::linked_sck_diagnostics_topology_layout(),
+                )
         }
         #[cfg(not(feature = "sck-suspension-diagnostics"))]
         {
@@ -59,8 +63,9 @@ pub(crate) fn linked_shim_agrees() -> bool {
 }
 
 #[cfg(feature = "sck-suspension-diagnostics")]
-fn sck_diagnostics_layout_agrees(linked: [u32; 9]) -> bool {
+fn sck_diagnostics_layout_agrees(linked: [u32; 9], topology: [u32; 4]) -> bool {
     linked == shim::declared_sck_diagnostics_layout()
+        && topology == shim::declared_sck_diagnostics_topology_layout()
 }
 
 #[cfg(test)]
@@ -90,13 +95,22 @@ mod tests {
     #[test]
     fn the_diagnostic_layout_gate_rejects_every_size_and_offset_mismatch() {
         let declared = crate::shim::declared_sck_diagnostics_layout();
-        assert!(sck_diagnostics_layout_agrees(declared));
+        let topology = crate::shim::declared_sck_diagnostics_topology_layout();
+        assert!(sck_diagnostics_layout_agrees(declared, topology));
         for index in 0..declared.len() {
             let mut mismatched = declared;
             mismatched[index] ^= 1;
             assert!(
-                !sck_diagnostics_layout_agrees(mismatched),
+                !sck_diagnostics_layout_agrees(mismatched, topology),
                 "layout field {index} was not load-bearing"
+            );
+        }
+        for index in 0..topology.len() {
+            let mut mismatched = topology;
+            mismatched[index] ^= 1;
+            assert!(
+                !sck_diagnostics_layout_agrees(declared, mismatched),
+                "topology layout field {index} was not load-bearing"
             );
         }
     }

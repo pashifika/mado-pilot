@@ -21,6 +21,22 @@ use crate::shim::{
 
 pub const STATUS_KIND_COUNT: usize = 8;
 pub const TRANSITION_CAPACITY: usize = 16;
+pub const DISPLAY_CAPACITY: usize = 2;
+
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub struct DisplayMode {
+    pub logical_width: u32,
+    pub logical_height: u32,
+    pub refresh_millihertz: u32,
+    pub built_in: bool,
+    pub mirrored: bool,
+}
+
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub struct DisplayTopology {
+    pub display_count: u32,
+    pub modes: [Option<DisplayMode>; DISPLAY_CAPACITY],
+}
 
 static SESSIONS: LazyLock<Mutex<Vec<Weak<NativeSession>>>> =
     LazyLock::new(|| Mutex::new(Vec::new()));
@@ -244,4 +260,91 @@ pub fn process_resources() -> Result<ProcessResources, SnapshotError> {
             },
         )
         .map_err(|_| SnapshotError::NativeFailure)
+}
+
+pub fn display_topology() -> Result<DisplayTopology, SnapshotError> {
+    let native =
+        shim::sck_diagnostics_display_topology().map_err(|_| SnapshotError::NativeFailure)?;
+    display_topology_from_native(native)
+}
+
+fn display_topology_from_native(
+    native: shim::SckDiagnosticsDisplayTopology,
+) -> Result<DisplayTopology, SnapshotError> {
+    let mode_count =
+        usize::try_from(native.mode_count).map_err(|_| SnapshotError::NativeFailure)?;
+    let expected_count = usize::try_from(native.display_count)
+        .unwrap_or(usize::MAX)
+        .min(DISPLAY_CAPACITY);
+    if mode_count > DISPLAY_CAPACITY || mode_count != expected_count {
+        return Err(SnapshotError::NativeFailure);
+    }
+    let mut modes = [None; DISPLAY_CAPACITY];
+    for (destination, source) in modes.iter_mut().zip(native.modes).take(mode_count) {
+        if source.logical_width == 0
+            || source.logical_height == 0
+            || source.refresh_millihertz > 1_000_000
+            || source.built_in > 1
+            || source.mirrored > 1
+        {
+            return Err(SnapshotError::NativeFailure);
+        }
+        *destination = Some(DisplayMode {
+            logical_width: source.logical_width,
+            logical_height: source.logical_height,
+            refresh_millihertz: source.refresh_millihertz,
+            built_in: source.built_in != 0,
+            mirrored: source.mirrored != 0,
+        });
+    }
+    Ok(DisplayTopology {
+        display_count: native.display_count,
+        modes,
+    })
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn native_mode() -> shim::SckDiagnosticsDisplayMode {
+        let mut mode = shim::SckDiagnosticsDisplayMode::default();
+        mode.logical_width = 1512;
+        mode.logical_height = 982;
+        mode.refresh_millihertz = 120_000;
+        mode.built_in = 1;
+        mode
+    }
+
+    fn native_topology() -> shim::SckDiagnosticsDisplayTopology {
+        let mut topology = shim::SckDiagnosticsDisplayTopology::requested();
+        topology.display_count = 1;
+        topology.mode_count = 1;
+        topology.modes[0] = native_mode();
+        topology
+    }
+
+    #[test]
+    fn display_topology_rejects_unsupported_refresh_boolean_and_count_values() {
+        assert!(display_topology_from_native(native_topology()).is_ok());
+
+        let mut invalid = native_topology();
+        invalid.modes[0].refresh_millihertz = 1_000_001;
+        assert_eq!(
+            display_topology_from_native(invalid),
+            Err(SnapshotError::NativeFailure)
+        );
+        let mut invalid = native_topology();
+        invalid.modes[0].mirrored = 2;
+        assert_eq!(
+            display_topology_from_native(invalid),
+            Err(SnapshotError::NativeFailure)
+        );
+        let mut invalid = native_topology();
+        invalid.display_count = 2;
+        assert_eq!(
+            display_topology_from_native(invalid),
+            Err(SnapshotError::NativeFailure)
+        );
+    }
 }

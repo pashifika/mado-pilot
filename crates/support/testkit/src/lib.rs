@@ -51,6 +51,7 @@ pub mod native_watch_report;
 pub mod ocr_contract;
 pub mod png;
 pub mod sck_suspension_report;
+pub mod sck_suspension_signature_report;
 pub mod scripted_permission;
 pub mod vision_contract;
 
