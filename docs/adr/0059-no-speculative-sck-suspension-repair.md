@@ -13,11 +13,15 @@ PR #61 added private status, callback, lifecycle, ownership, and resource observ
 
 The retained result is documented in [ScreenCaptureKit suspension diagnosis](../evidence/macos-sck-suspension-diagnostic.md). It rejects mapping ownership and frame ownership as necessary deterministic causes on the exercised host and topology, but it does not reproduce or explain the historical intermittent suspension.
 
+A later exact-lifecycle campaign at source `ba6b0451a1d2b13a8fe418c477e91ea00fe9cff8` ran five single-display controls followed by five two-display mixed-DPI processes in one authenticated graphical session. Its schema recorded only display count and whether backing scales differed. All ten processes produced a fresh complete frame, kept only the expected detached result footprint while the old public session was gone, preserved mapping readability, and restored their exact process baselines. No fresh producer observed a non-complete status, and no process observed a refused callback, close/open overlap, target-readiness failure, or missing progress. The retained result is documented in [ScreenCaptureKit suspension signature capture](../evidence/macos-sck-suspension-signature-capture.md).
+
 ## Decision
 
 Do not change production ScreenCaptureKit close ordering, detached-frame ownership, stream recovery, deadlines, status reporting, or any public Rust/C/C++ contract without a retained failure signature that selects that change.
 
 Remove the comparison-only `drain_sample_queue` execution policy and gate from current source. Retain only feature-gated bounded status, callback, lifecycle, ownership, and resource observability needed to interpret the frozen diagnostic evidence. Native template-watch support remains withheld under ADR 0057.
+
+The `ba6b045` bounded non-reproduction does not select a repair and leaves this decision unchanged. Exact display dimensions, refresh rates, attachment classes, mirror state, and backing-scale values are not required diagnostic evidence; successor topology records remain limited to display count and whether backing scales differ.
 
 ## Alternatives
 
@@ -35,10 +39,12 @@ Remove the comparison-only `drain_sample_queue` execution policy and gate from c
 - The queue-drain comparison cannot be rerun from successor source. Its exact executable, rows, aggregate, hashes, and source revision remain frozen evidence from `f0eab45c3918914098040b96458e5d583bf2a32a`.
 - No repair enforcement point exists, so a repair mutation proof and repaired-source performance comparison are not applicable. Adding either later requires new failure evidence and a new decision.
 - ADR 0057 remains authoritative. No formal repaired-source host cohort, support promotion, packaging, tag, or release claim follows from the green diagnostic.
+- The ten-row `ba6b045` campaign is bounded non-reproduction, not a replacement for the terminal-red qualification process. It does not promote support or justify recovery.
 
 ## Verification
 
 - The frozen eight-row aggregate at source `f0eab45c3918914098040b96458e5d583bf2a32a` passes the typed `mado_pilot_testkit::sck_suspension_report::validate_aggregate` validator and is summarized in [ScreenCaptureKit suspension diagnosis](../evidence/macos-sck-suspension-diagnostic.md).
+- The `ba6b0451a1d2b13a8fe418c477e91ea00fe9cff8` ten-row aggregate passes `mado_pilot_testkit::sck_suspension_signature_report::validate_aggregate`; its protocol, minimal preflights, aggregate, execution index, and hashes are retained in [ScreenCaptureKit suspension signature capture](../evidence/macos-sck-suspension-signature-capture.md).
 - Focused macOS tests enforce status normalization, bounded rings, callback accounting, snapshot consistency, ownership retention, baseline restoration, and native exception containment.
 - The production linkage test rejects `_mp_shim_sck_diagnostics_` and any diagnostic close-ordering symbol in a feature-disabled consumer.
 - Protected macOS, Windows, repository-policy, and branch-flow checks plus independent concurrency/performance/memory-safety and security/privacy review apply before integration.

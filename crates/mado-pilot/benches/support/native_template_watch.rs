@@ -237,6 +237,7 @@ struct Arguments {
     fixture_executable: PathBuf,
     raw: Vec<String>,
     qualification: bool,
+    sck_suspension_signature: bool,
     full_load_diagnostic: bool,
     enforce_budgets: bool,
     workload_filter: Option<String>,
@@ -245,12 +246,15 @@ struct Arguments {
 impl Arguments {
     fn parse() -> Self {
         let raw = std::env::args().skip(1).collect::<Vec<_>>();
+        let sck_suspension_signature = raw
+            .iter()
+            .any(|argument| argument == "--sck-suspension-signature");
         let fixture_executable = value(&raw, "--fixture-executable")
             .map(PathBuf::from)
             .or_else(default_fixture_executable)
             .unwrap_or_else(|| panic!("capability_unavailable:fixture_executable"));
         assert!(
-            fixture_executable.is_file(),
+            sck_suspension_signature || fixture_executable.is_file(),
             "capability_unavailable:fixture_executable"
         );
         let qualification = raw.iter().any(|argument| argument == "--bench");
@@ -268,8 +272,17 @@ impl Arguments {
                 || (!qualification && workload_filter.is_none() && !enforce_budgets),
             "protocol_drift"
         );
+        assert!(
+            !sck_suspension_signature
+                || (!qualification
+                    && !full_load_diagnostic
+                    && workload_filter.is_none()
+                    && !enforce_budgets),
+            "protocol_drift"
+        );
         Self {
             qualification,
+            sck_suspension_signature,
             full_load_diagnostic,
             enforce_budgets,
             workload_filter,
@@ -454,6 +467,13 @@ impl Cohort {
 
 pub(super) fn run() {
     let arguments = Arguments::parse();
+    if arguments.sck_suspension_signature {
+        #[cfg(target_os = "macos")]
+        run_sck_suspension_signature(&arguments);
+        #[cfg(not(target_os = "macos"))]
+        panic!("capability_unavailable:sck_suspension_signature");
+        return;
+    }
     let sample_plan = if arguments.qualification || arguments.full_load_diagnostic {
         Plan::new(3, 20)
     } else {

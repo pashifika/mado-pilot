@@ -1139,7 +1139,7 @@ fn diagnostic_start_failure_preserves_the_last_live_session_snapshot() {
 
 #[cfg(feature = "sck-suspension-diagnostics")]
 #[test]
-fn diagnostic_snapshot_is_stable_except_for_owned_frame_release() {
+fn diagnostic_observer_survives_public_session_drop_for_owned_frame_release() {
     let _serial = serialized();
     let Some(harness) = Harness::acquire("diagnostic retained-frame release") else {
         return;
@@ -1149,22 +1149,37 @@ fn diagnostic_snapshot_is_stable_except_for_owned_frame_release() {
         crate::sck_suspension_diagnostics::process_resources().expect("resource baseline");
     let session = harness.open(0).expect("open");
     let frame = next_frame(&session, FrameRequest::latest()).expect("frame");
+    let stream = session.description().stream();
 
     close(&session).expect("close");
-    let closed = session
+    let before_drop = session
         .sck_diagnostics_snapshot()
+        .expect("pre-drop diagnostic snapshot");
+    let observer =
+        crate::sck_suspension_diagnostics::session_observer(stream).expect("diagnostic observer");
+    drop(session);
+    let closed = observer
+        .native_snapshot()
         .expect("closed diagnostic snapshot");
     assert_eq!(closed.active_native_slots, 0);
+    assert_eq!(
+        closed.session_references.checked_add(1),
+        Some(before_drop.session_references),
+        "the observer does not count as structural session ownership"
+    );
     assert_eq!(closed.detached_leases, 1);
     assert!(closed.detached_bytes > resource_baseline.detached_bytes);
     assert_eq!(closed.callbacks_received, closed.callbacks_exited);
 
     drop(frame);
-    let released = session
-        .sck_diagnostics_snapshot()
+    let released = observer
+        .native_snapshot()
         .expect("released-frame diagnostic snapshot");
+    assert!(
+        released.session_references < closed.session_references,
+        "releasing the retained frame drops its structural session ownership"
+    );
     assert_eq!(released.detached_leases, 0);
-    assert!(released.session_references < closed.session_references);
     let mut expected = expected_after_post_fence_progress(&closed, &released);
     expected.detached_leases = released.detached_leases;
     expected.detached_bytes = released.detached_bytes;
@@ -1173,7 +1188,7 @@ fn diagnostic_snapshot_is_stable_except_for_owned_frame_release() {
         "frame release and refused post-fence callbacks change only allowlisted observations"
     );
 
-    drop(session);
+    drop(observer);
     assert!(
         settles_to(baseline),
         "diagnostic retained-frame release returns native ownership to baseline"

@@ -742,6 +742,13 @@ impl NativeSession {
         self.core.session().sck_diagnostics_snapshot()
     }
 
+    #[cfg(feature = "sck-suspension-diagnostics")]
+    pub(crate) fn sck_diagnostics_observer(
+        &self,
+    ) -> std::result::Result<shim::SckDiagnosticsObserver, ShimStatus> {
+        self.core.session().sck_diagnostics_observer()
+    }
+
     #[cfg(test)]
     pub(crate) fn terminal_reports(&self) -> u64 {
         self.core.terminal_reports.load(Ordering::Acquire)

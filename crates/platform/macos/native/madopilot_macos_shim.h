@@ -30,7 +30,7 @@ extern "C" {
 #endif
 
 /* The version of this internal surface. Rust asserts it at load. */
-#define MP_SHIM_ABI_VERSION 21u
+#define MP_SHIM_ABI_VERSION 23u
 
 /* The largest extent, budget, and default wait the shim will accept or apply. */
 #define MP_SHIM_MAX_PIXEL_EXTENT 32768u
@@ -304,6 +304,11 @@ typedef struct mp_shim_open_request {
 #define MP_SHIM_SCK_STATUS_KIND_COUNT 8u
 #define MP_SHIM_SCK_DIAGNOSTIC_TRANSITION_CAPACITY 16u
 typedef struct mp_shim_sck_diagnostics_probe mp_shim_sck_diagnostics_probe;
+/*
+ * Feature-only observer for closed-session bookkeeping. It retains the native
+ * allocation without contributing to structural session ownership.
+ */
+typedef struct mp_shim_session mp_shim_sck_diagnostics_observer;
 #define MP_SHIM_SCK_NATIVE_STREAM (1u << 0)
 #define MP_SHIM_SCK_NATIVE_CONFIGURATION (1u << 1)
 #define MP_SHIM_SCK_NATIVE_FILTER (1u << 2)
@@ -359,6 +364,29 @@ typedef struct mp_shim_sck_diagnostics_snapshot {
         transitions[MP_SHIM_SCK_DIAGNOSTIC_TRANSITION_CAPACITY];
 } mp_shim_sck_diagnostics_snapshot;
 
+#define MP_SHIM_SCK_DIAGNOSTIC_DISPLAY_CAPACITY 2u
+
+/* One process-local active display mode used to classify DPI. */
+typedef struct mp_shim_sck_diagnostics_display_mode {
+    uint32_t logical_width;
+    uint32_t logical_height;
+    uint32_t refresh_millihertz;
+    uint32_t built_in;
+    uint32_t mirrored;
+    uint32_t backing_scale_milli;
+    uint32_t reserved[2];
+} mp_shim_sck_diagnostics_display_mode;
+
+/* One cold, bounded active-display topology snapshot. */
+typedef struct mp_shim_sck_diagnostics_display_topology {
+    uint32_t struct_size;
+    uint32_t display_count;
+    uint32_t mode_count;
+    uint32_t mode_capacity;
+    mp_shim_sck_diagnostics_display_mode
+        modes[MP_SHIM_SCK_DIAGNOSTIC_DISPLAY_CAPACITY];
+} mp_shim_sck_diagnostics_display_topology;
+
 /* Reports the native sizes and load-bearing offsets of these private mirrors. */
 mp_shim_status mp_shim_sck_diagnostics_layout(
     uint32_t *out_event_size, uint32_t *out_snapshot_size,
@@ -366,6 +394,12 @@ mp_shim_status mp_shim_sck_diagnostics_layout(
     uint32_t *out_event_monotonic_nanos_offset, uint32_t *out_status_counts_offset,
     uint32_t *out_first_status_offset, uint32_t *out_callbacks_received_offset,
     uint32_t *out_transitions_offset);
+mp_shim_status mp_shim_sck_diagnostics_topology_layout(
+    uint32_t *out_mode_size, uint32_t *out_topology_size,
+    uint32_t *out_mode_refresh_offset, uint32_t *out_mode_backing_scale_offset,
+    uint32_t *out_topology_modes_offset);
+mp_shim_status mp_shim_sck_diagnostics_read_display_topology(
+    mp_shim_sck_diagnostics_display_topology *out_topology);
 
 /*
  * Feature-only native contract probe. It exercises the same status storage and
@@ -386,6 +420,10 @@ void mp_shim_sck_diagnostics_test_probe_release(
 mp_shim_status mp_shim_sck_diagnostics_test_callback_accounting(
     uint32_t raise_native_exception, uint32_t *out_callback_body_calls,
     mp_shim_sck_diagnostics_snapshot *out_snapshot);
+mp_shim_status mp_shim_sck_diagnostics_test_display_topology(
+    const mp_shim_sck_diagnostics_display_mode *modes, uint32_t mode_count,
+    uint32_t display_count, uint32_t raise_native_exception,
+    mp_shim_sck_diagnostics_display_topology *out_topology);
 #endif
 
 /* Returns MP_SHIM_ABI_VERSION as the linked shim was compiled with it. */
@@ -867,6 +905,16 @@ mp_shim_status mp_shim_session_live_objects(const mp_shim_session *session, uint
 /* Copies one bounded, privacy-safe diagnostic snapshot. */
 mp_shim_status mp_shim_sck_diagnostics_snapshot_read(
     const mp_shim_session *session, mp_shim_sck_diagnostics_snapshot *out_snapshot);
+/* Retains only the native allocation needed for post-owner-drop observation. */
+mp_shim_status mp_shim_sck_diagnostics_observer_acquire(
+    const mp_shim_session *session, mp_shim_sck_diagnostics_observer **out_observer);
+/* Copies one bounded snapshot through an acquired diagnostic observer. */
+mp_shim_status mp_shim_sck_diagnostics_observer_snapshot_read(
+    const mp_shim_sck_diagnostics_observer *observer,
+    mp_shim_sck_diagnostics_snapshot *out_snapshot);
+/* Releases an acquired observer. Accepts NULL. */
+void mp_shim_sck_diagnostics_observer_release(
+    mp_shim_sck_diagnostics_observer *observer);
 /* Copies process-global resource totals used by the diagnostic baseline gate. */
 mp_shim_status mp_shim_sck_diagnostics_process_resources(
     uint64_t *out_native_objects, uint64_t *out_detached_bytes,

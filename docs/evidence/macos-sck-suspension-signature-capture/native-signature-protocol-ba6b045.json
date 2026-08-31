@@ -1,0 +1,313 @@
+{
+  "schema": "mado-pilot-sck-suspension-signature-protocol-v2",
+  "status": "published_before_mixed_dpi_schema_v2_campaign_execution",
+  "published_utc": "2026-08-30T18:21:51Z",
+  "change": "macos-sck-suspension-signature-capture",
+  "pull_request": "https://github.com/pashifika/mado-pilot/pull/62",
+  "campaign_processes_launched_before_publication": 0,
+  "release_diagnostic_processes_launched_before_publication": 1,
+  "source": {
+    "branch": "test/macos-sck-suspension-signature-capture",
+    "revision": "ba6b0451a1d2b13a8fe418c477e91ea00fe9cff8",
+    "tree": "c645124b42064ae2c10c4f2cb28b86f8d7b385ad",
+    "base_revision": "846dc365de81a6507da73b3553f853cd1e162a05",
+    "tracked_worktree_required_clean": true
+  },
+  "host": {
+    "schema_profile": "apple_m1_pro10c32g",
+    "target": "aarch64-apple-darwin",
+    "hardware": "Apple M1 Pro, 10 physical CPU cores, 34359738368 bytes memory",
+    "os_schema_profile": "macos26_6_2_build25g83",
+    "operating_system": "macOS 26.6.2 build 25G83",
+    "sdk_schema_profile": "xcode26_5",
+    "active_macos_sdk": "26.5",
+    "active_developer_directory": "/Library/Developer/CommandLineTools",
+    "xcodebuild": "unavailable because the active developer directory is CommandLineTools",
+    "apple_clang": "Apple clang 21.0.0 (clang-2100.1.1.101), target arm64-apple-darwin25.6.0",
+    "rust": "rustc 1.97.1 (8bab26f4f 2026-07-14), LLVM 22.1.6"
+  },
+  "artifacts": {
+    "cargo_target_dir": "target/sck-suspension-signature-ba6b045",
+    "build_commands": [
+      "CARGO_TARGET_DIR=target/sck-suspension-signature-ba6b045 cargo build --locked --release --package mado-pilot --bench native-template-watch --features native-template-watch-qualification"
+    ],
+    "diagnostic_executable": "target/sck-suspension-signature-ba6b045/release/deps/native_template_watch-fbc01f4e9ac09d04",
+    "diagnostic_executable_sha256": "c8072bc557991d0762326b83e0c327d2c47cc3d359ff76e8d511a3a98ec6a623",
+    "fixture_executable": "target/sck-suspension-signature-1030b2d/mado-pilot-fixtures/MadoPilotWatchFixture.app/Contents/MacOS/mado-pilot-macos-input-fixture",
+    "fixture_executable_sha256": "c647f79697c28800b5b28b27f97f9847c762149f074c0db198252e6981c9de7f",
+    "fixture_signature": "strictly valid ad-hoc bundle signature",
+    "fixture_signing_identifier": "dev.mado-pilot.macos-input-fixture",
+    "fixture_source_sha256": "f1c60db58650c1770f67b22c0e65563cf125c3800f43242d973da900d795395a",
+    "fixture_source_digest_algorithm": "SHA-256 over raw file contents concatenated in listed order with no paths or separators",
+    "fixture_source_inventory": [
+      "crates/platform/macos/Cargo.toml",
+      "crates/platform/macos/build.rs",
+      "crates/platform/macos/src/fixture_protocol.rs",
+      "crates/platform/macos/src/fixture_control.rs",
+      "crates/platform/macos/src/bin/mado-pilot-macos-input-fixture.rs",
+      "crates/platform/macos/native/madopilot_macos_input_fixture.h",
+      "crates/platform/macos/native/madopilot_macos_input_fixture.m"
+    ],
+    "fixture_reuse": "The strictly valid signed 1030b2d fixture is reused byte-identically because the ordered fixture-source digest is unchanged on ba6b045."
+  },
+  "matrix": {
+    "schema_version": 2,
+    "process_count": 10,
+    "parallelism": 1,
+    "order": [
+      {
+        "process_index": 1,
+        "topology": "single_display_control"
+      },
+      {
+        "process_index": 2,
+        "topology": "single_display_control"
+      },
+      {
+        "process_index": 3,
+        "topology": "single_display_control"
+      },
+      {
+        "process_index": 4,
+        "topology": "single_display_control"
+      },
+      {
+        "process_index": 5,
+        "topology": "single_display_control"
+      },
+      {
+        "process_index": 6,
+        "topology": "historical_two_display"
+      },
+      {
+        "process_index": 7,
+        "topology": "historical_two_display"
+      },
+      {
+        "process_index": 8,
+        "topology": "historical_two_display"
+      },
+      {
+        "process_index": 9,
+        "topology": "historical_two_display"
+      },
+      {
+        "process_index": 10,
+        "topology": "historical_two_display"
+      }
+    ],
+    "operation_deadline_millis": 5000,
+    "fixture_lifecycle_and_settlement_deadline_seconds": 10,
+    "fixture_command_deadline_seconds": 2,
+    "poll_interval_milliseconds": 5,
+    "authenticated_session_transition": "After rows 1 through 5 are retained and validated, keep the authenticated graphical session alive and transition without reboot or logout to any stable two-display topology whose backing scales differ before the cohort-2 preflight and process 6."
+  },
+  "topology_profiles": {
+    "single_display_control": {
+      "display_count": 1,
+      "has_distinct_backing_scales": false
+    },
+    "historical_two_display": {
+      "display_count": 2,
+      "has_distinct_backing_scales": true
+    }
+  },
+  "arguments_fixed": {
+    "flag": "--sck-suspension-signature",
+    "fixture_executable": "target/sck-suspension-signature-1030b2d/mado-pilot-fixtures/MadoPilotWatchFixture.app/Contents/MacOS/mado-pilot-macos-input-fixture",
+    "source_revision": "ba6b0451a1d2b13a8fe418c477e91ea00fe9cff8",
+    "source_tree": "c645124b42064ae2c10c4f2cb28b86f8d7b385ad",
+    "protocol_file": "rasen/changes/macos-sck-suspension-signature-capture/evidence/signature-capture-protocol-ba6b045.json",
+    "protocol_sha256_authority": "signature-capture-protocol-ba6b045.sha256",
+    "executable_sha256": "c8072bc557991d0762326b83e0c327d2c47cc3d359ff76e8d511a3a98ec6a623",
+    "fixture_sha256": "c647f79697c28800b5b28b27f97f9847c762149f074c0db198252e6981c9de7f",
+    "fixture_source_sha256": "f1c60db58650c1770f67b22c0e65563cf125c3800f43242d973da900d795395a",
+    "per_process": [
+      "--process-index=<declared index>",
+      "--topology=<declared topology>"
+    ]
+  },
+  "exact_lifecycle": [
+    "retain matched old terminal result",
+    "retain copied RGBA8 mapping, stamp, and fixed 16-byte prefix",
+    "complete old session close under the unchanged operation context",
+    "acquire one feature-only observer of the closed native allocation without incrementing structural session ownership",
+    "drop old query, terminal owner, public session, and engine while retaining only the cloned result and mapping as product owners",
+    "record old post-fence snapshot through the observer and record process resources",
+    "advance the authenticated fixture revision, construct one fresh engine, rediscover the exact fixture process, and open once",
+    "attempt FrameRequest::latest exactly once under the 5000 ms deadline",
+    "attempt fresh close and record the available live/post-close snapshot",
+    "verify the old result stamp and mapping prefix remain readable",
+    "drop retained result and mapping, release the observer, close the fixture once, and require final resources to equal baseline"
+  ],
+  "execution_rules": {
+    "cohort_preflight": [
+      "require zero live diagnostic or fixture processes before the preflight",
+      "record only active display count and whether backing scales differ, then require the declared topology class",
+      "require current HEAD/tree and tracked worktree to equal the declared source identity",
+      "recompute and require protocol, diagnostic executable, fixture executable, and ordered fixture-source SHA-256 values",
+      "require strict fixture code-signature validation and the declared signing identifier",
+      "require non-prompting Screen Recording authorization and exact fixture authority"
+    ],
+    "per_process_integrity": [
+      "recompute source, protocol, executable, fixture, and fixture-source identities before launch",
+      "require the process index and topology to equal the next declared matrix row",
+      "launch no overlapping diagnostic or fixture process",
+      "capture stdout, stderr, and exit status exactly once",
+      "require exactly one stdout JSON line and validate it before the next process"
+    ],
+    "integrity_stop_conditions": [
+      "launch no process when an external preflight fact differs",
+      "launch no later process if source, artifact, protocol, topology, fixture authority, process order, or privacy schema changes",
+      "a launched process consumes its declared index even when it emits topology_mismatch or another terminal-red row",
+      "retain a terminal-red row and continue the remaining fixed matrix only while every integrity invariant remains valid",
+      "if required diagnostic evidence is unavailable, retain the launched rows as an aborted apparatus-failure campaign and launch no later row in that namespace"
+    ],
+    "no_retry_replacement_rule": "Each matrix row is one fresh process and one attempt. No process, capture, target discovery, fixture launch, sample, row, or artifact is retried, excluded, reordered, substituted, or replaced. No deadline extension, sleep, extra priming, reopen, hidden recovery, topology correction after launch, or target switch is permitted. A predecessor apparatus-failure index may recur only under a new exact-source protocol and fresh namespace; that is a successor campaign, not a retry.",
+    "stdout": "Exactly one compact schema-valid JSON line.",
+    "stderr": "Expected empty; capture and hash exact bytes. Any nonempty bytes require privacy review and remain bound to the execution index.",
+    "exit_status": {
+      "0": "complete_frame only",
+      "2": "every schema-valid terminal-red outcome, including explicit_producer_state, missing_progress, operation_failed, topology_mismatch, and baseline_leak"
+    },
+    "raw_retention": "Capture each process stdout, stderr, and exit status under ignored local_docs storage. Retain all green and red rows. Delete temporary raw output only after exact row bytes and hashes, typed aggregate validation, execution-index agreement, and privacy review are retained."
+  },
+  "privacy_schema": {
+    "allowed_row_fields": [
+      "schema_version",
+      "process_index",
+      "topology",
+      "provenance",
+      "observed_topology",
+      "baseline",
+      "post_old_drop_resources",
+      "final_resources",
+      "owners",
+      "old_fixture_revision",
+      "operation_deadline_millis",
+      "fresh_target_authenticated",
+      "lifecycle",
+      "fresh_fixture_revision",
+      "old_frame",
+      "fresh_frame",
+      "streams_distinct",
+      "first_complete_latency_nanos",
+      "old_snapshot",
+      "fresh_snapshot",
+      "stage",
+      "outcome",
+      "failure"
+    ],
+    "allowed_status_event_fields": [
+      "kind",
+      "raw_value",
+      "sequence",
+      "monotonic_nanos"
+    ],
+    "allowed_process_resource_fields": [
+      "native_objects",
+      "detached_bytes",
+      "live_sessions",
+      "callbacks_in_flight"
+    ],
+    "allowed_owner_fields": [
+      "terminal_result",
+      "mapping",
+      "mapping_readable_after_fresh_close"
+    ],
+    "allowed_frame_identity_fields": [
+      "stream_ordinal",
+      "epoch",
+      "sequence",
+      "geometry_revision"
+    ],
+    "allowed_lifecycle_fields": [
+      "count",
+      "steps"
+    ],
+    "allowed_snapshot_fields": [
+      "close_phase",
+      "active_native_slots",
+      "observed_total",
+      "status_counts",
+      "first_status",
+      "last_status",
+      "callbacks_received",
+      "callbacks_admitted",
+      "callbacks_refused",
+      "callbacks_exited",
+      "stream_start_completed_nanos",
+      "stream_stop_requested_nanos",
+      "stream_stop_completed_nanos",
+      "callback_admission_stopped_nanos",
+      "callback_fence_completed_nanos",
+      "close_completed_nanos",
+      "first_complete_nanos",
+      "session_references",
+      "detached_leases",
+      "native_objects",
+      "detached_bytes",
+      "transition_overwrites",
+      "transition_count",
+      "transitions"
+    ],
+    "forbidden": [
+      "captured pixels or image derivatives",
+      "recognized text",
+      "display names",
+      "display dimensions, refresh rates, built-in or external class, mirror state, backing-scale values, or other exact display configuration",
+      "window titles",
+      "target metadata",
+      "native or framework identifiers",
+      "paths in emitted rows",
+      "credentials",
+      "free-form native payloads or logs",
+      "unbounded arrays or strings outside fixed-length provenance digests"
+    ],
+    "validation": "Reject unknown fields, exact display configuration fields, malformed or differing provenance, wrong order/topology class/deadline, missing/duplicate/reordered rows, invalid snapshot accounting or ring shape, lifecycle retry/reopen/order drift, retained-owner/resource inconsistency, baseline leakage outside its typed outcome, and nonterminal output.",
+    "allowed_display_topology_fields": [
+      "display_count",
+      "has_distinct_backing_scales"
+    ]
+  },
+  "classification": {
+    "captured_terminal_red_signature": "At least one row records an explicit non-complete producer state, missing progress, operation failure, topology mismatch after launch, or baseline leak. Preserve the row and select no repair beyond its observed boundary.",
+    "bounded_non_reproduction": "All ten rows report complete_frame, preserve mapping readability, and restore baseline resources. Preserve ADR 0059 and select no production repair.",
+    "support_status": "ADR 0057 remains WITHHELD for either conclusion.",
+    "apparatus_failure": "A required diagnostic observation fails before the producer lifecycle can be classified. Preserve launched evidence, exclude that namespace from the ten-row aggregate, and require a new revision, protocol, artifacts, and process namespace."
+  },
+  "predecessor_executions": [
+    {
+      "protocol_sha256": "28bb0496c2212789ec15f3723667de668bbf4ab9a0f22083e8c09ad9de5fba0e",
+      "source_revision": "d37e938f6cba5bb38e1667b83cf007d5c065e486",
+      "formal_processes": 5,
+      "formal_result": "aborted_apparatus_failure",
+      "formal_evidence": "aborted-d37e938-single-cohort/manifest.json",
+      "non_campaign_native_reruns": 1,
+      "identity_rejection_smokes": 2,
+      "exclusion": "All predecessor executions use a different source revision, executable, protocol, and namespace. They cannot enter or replace a successor row."
+    },
+    {
+      "protocol_sha256": "df0846cebc17c5b9225cbcdf23a66738b4b23c7534793ca57c9904967011b53e",
+      "source_revision": "7a662bf2e5798e4497a42c5185a111c48ecd36bb",
+      "source_tree": "5314805c7b9952d0d78ac08a5a21f3a892dbef21",
+      "formal_processes": 1,
+      "formal_result": "aborted_apparatus_failure",
+      "formal_evidence": "aborted-7a662bf-successor-process-01/manifest.json",
+      "non_campaign_native_diagnostics": "excluded",
+      "root_cause": "The typed signature validator contradicted the native close phase, production callback-fence ordering, closed-session resource semantics, and observed start-callback/frame ordering.",
+      "remediation_revision": "1030b2d212ea4aab5f16e466b5bd787ae6a8807c",
+      "exclusion": "The launched process emitted no row and remains immutable apparatus-failure evidence. It cannot enter or replace a ba6b045 schema-v2 row."
+    },
+    {
+      "protocol_sha256": "c5317d7fe48bb5262a47a78ff60add1501337f4d28532d2d483403ff6e3f3d9b",
+      "source_revision": "1030b2d212ea4aab5f16e466b5bd787ae6a8807c",
+      "source_tree": "64e43c5627e3025194990173b1a0eb9383578808",
+      "formal_processes": 5,
+      "formal_result": "valid_green_single_display_cohort_protocol_superseded",
+      "formal_evidence": "single-display-cohort-1030b2d/manifest.json",
+      "root_cause": "The protocol crossed an unnecessary reboot boundary and its schema retained exact display configuration fields.",
+      "exclusion": "The immutable schema-v1 rows remain revision-bound predecessor evidence. No row, process index, or exact display profile is reused by the ba6b045 schema-v2 campaign."
+    }
+  ]
+}

@@ -1,0 +1,53 @@
+{
+  "schema": "mado-pilot-sck-suspension-signature-host-preflight-v2",
+  "source_revision": "ba6b0451a1d2b13a8fe418c477e91ea00fe9cff8",
+  "source_tree": "c645124b42064ae2c10c4f2cb28b86f8d7b385ad",
+  "protocol_sha256": "5f1d519544df585e287fc6af4b5c28e8f1d94f5fb8d0d90196cd2b5367209316",
+  "diagnostic_executable_sha256": "c8072bc557991d0762326b83e0c327d2c47cc3d359ff76e8d511a3a98ec6a623",
+  "fixture_executable_sha256": "c647f79697c28800b5b28b27f97f9847c762149f074c0db198252e6981c9de7f",
+  "fixture_source_sha256": "f1c60db58650c1770f67b22c0e65563cf125c3800f43242d973da900d795395a",
+  "host": "apple_m1_pro10c32g",
+  "os": "macos26_6_2_build25g83",
+  "sdk": "xcode26_5",
+  "screen_recording": "granted_without_prompt",
+  "fixture_signature": "strictly_valid",
+  "same_authenticated_graphical_session": true,
+  "reboot_or_logout_between_cohorts": false,
+  "cohorts": [
+    {
+      "topology": "single_display_control",
+      "recorded_utc": "2026-08-30T22:02:42Z",
+      "observed_topology": {
+        "display_count": 1,
+        "has_distinct_backing_scales": false
+      },
+      "process_indexes": [
+        1,
+        2,
+        3,
+        4,
+        5
+      ]
+    },
+    {
+      "topology": "historical_two_display",
+      "recorded_utc": "2026-08-30T22:51:00Z",
+      "observed_topology": {
+        "display_count": 2,
+        "has_distinct_backing_scales": true
+      },
+      "process_indexes": [
+        6,
+        7,
+        8,
+        9,
+        10
+      ]
+    }
+  ],
+  "topology_allowlist": [
+    "display_count",
+    "has_distinct_backing_scales"
+  ],
+  "exact_display_configuration_recorded": false
+}

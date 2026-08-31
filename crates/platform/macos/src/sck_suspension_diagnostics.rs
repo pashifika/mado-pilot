@@ -1,11 +1,12 @@
 //! Private, feature-gated ScreenCaptureKit producer diagnostics.
 //!
 //! The facade owns concrete capture sessions behind platform-neutral trait
-//! objects. Qualification therefore reaches a session through this weak registry,
-//! keyed by its public stream identity. The registry never extends a session or
-//! native resource lifetime. Snapshotting is a cold operation and all returned
-//! values are fixed-size numeric state; no target identity, title, image, or OCR
-//! payload crosses this seam.
+//! objects. Qualification reaches a live Rust session through a weak registry
+//! keyed by its public stream identity. The registry never extends a session
+//! lifetime. An acquired [`SessionObserver`] keeps only a closed native
+//! allocation's bookkeeping alive; it retains no ScreenCaptureKit object and
+//! does not contribute to structural session ownership. Snapshotting is cold,
+//! bounded, and identifier-free.
 
 use std::fmt;
 use std::sync::{Arc, LazyLock, Mutex, Weak};
@@ -21,6 +22,12 @@ use crate::shim::{
 
 pub const STATUS_KIND_COUNT: usize = 8;
 pub const TRANSITION_CAPACITY: usize = 16;
+
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub struct DisplayTopology {
+    pub display_count: u32,
+    pub has_distinct_backing_scales: bool,
+}
 
 static SESSIONS: LazyLock<Mutex<Vec<Weak<NativeSession>>>> =
     LazyLock::new(|| Mutex::new(Vec::new()));
@@ -163,6 +170,28 @@ pub enum SnapshotError {
     NativeFailure,
 }
 
+pub struct SessionObserver {
+    observer: shim::SckDiagnosticsObserver,
+}
+
+impl fmt::Debug for SessionObserver {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        formatter.debug_struct("SessionObserver").finish()
+    }
+}
+
+impl SessionObserver {
+    pub fn snapshot(&self) -> Result<Snapshot, SnapshotError> {
+        self.native_snapshot().map(Snapshot::from_native)
+    }
+
+    pub(crate) fn native_snapshot(&self) -> Result<shim::SckDiagnosticsSnapshot, SnapshotError> {
+        self.observer
+            .snapshot()
+            .map_err(|_| SnapshotError::NativeFailure)
+    }
+}
+
 impl fmt::Display for SnapshotError {
     fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
         let message = match self {
@@ -207,25 +236,33 @@ pub fn take_open_failure_snapshot() -> Option<Snapshot> {
         .take()
 }
 
-pub fn session_snapshot(stream: StreamId) -> Result<Snapshot, SnapshotError> {
-    let session = {
-        let mut sessions = SESSIONS
-            .lock()
-            .unwrap_or_else(std::sync::PoisonError::into_inner);
-        sessions.retain(|candidate| candidate.strong_count() != 0);
-        let mut matching = None;
-        for candidate in sessions.iter().filter_map(Weak::upgrade) {
-            if candidate.description().stream() != stream {
-                continue;
-            }
-            if matching.is_some() {
-                return Err(SnapshotError::AmbiguousSession);
-            }
-            matching = Some(candidate);
+fn find_session(stream: StreamId) -> Result<Arc<NativeSession>, SnapshotError> {
+    let mut sessions = SESSIONS
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner);
+    sessions.retain(|candidate| candidate.strong_count() != 0);
+    let mut matching = None;
+    for candidate in sessions.iter().filter_map(Weak::upgrade) {
+        if candidate.description().stream() != stream {
+            continue;
         }
-        matching.ok_or(SnapshotError::SessionNotFound)?
-    };
-    session
+        if matching.is_some() {
+            return Err(SnapshotError::AmbiguousSession);
+        }
+        matching = Some(candidate);
+    }
+    matching.ok_or(SnapshotError::SessionNotFound)
+}
+
+pub fn session_observer(stream: StreamId) -> Result<SessionObserver, SnapshotError> {
+    find_session(stream)?
+        .sck_diagnostics_observer()
+        .map(|observer| SessionObserver { observer })
+        .map_err(|_| SnapshotError::NativeFailure)
+}
+
+pub fn session_snapshot(stream: StreamId) -> Result<Snapshot, SnapshotError> {
+    find_session(stream)?
         .sck_diagnostics_snapshot()
         .map(Snapshot::from_native)
         .map_err(|_| SnapshotError::NativeFailure)
@@ -244,4 +281,121 @@ pub fn process_resources() -> Result<ProcessResources, SnapshotError> {
             },
         )
         .map_err(|_| SnapshotError::NativeFailure)
+}
+
+pub fn display_topology() -> Result<DisplayTopology, SnapshotError> {
+    let native =
+        shim::sck_diagnostics_display_topology().map_err(|_| SnapshotError::NativeFailure)?;
+    display_topology_from_native(native)
+}
+
+fn display_topology_from_native(
+    native: shim::SckDiagnosticsDisplayTopology,
+) -> Result<DisplayTopology, SnapshotError> {
+    let mode_count =
+        usize::try_from(native.mode_count).map_err(|_| SnapshotError::NativeFailure)?;
+    let expected_count = usize::try_from(native.display_count)
+        .unwrap_or(usize::MAX)
+        .min(shim::SCK_DIAGNOSTIC_DISPLAY_CAPACITY);
+    if mode_count > shim::SCK_DIAGNOSTIC_DISPLAY_CAPACITY || mode_count != expected_count {
+        return Err(SnapshotError::NativeFailure);
+    }
+    let mut first_backing_scale = None;
+    let mut has_distinct_backing_scales = false;
+    for source in native.modes.into_iter().take(mode_count) {
+        if source.logical_width == 0
+            || source.logical_height == 0
+            || source.refresh_millihertz > 1_000_000
+            || source.built_in > 1
+            || source.mirrored > 1
+            || source.backing_scale_milli == 0
+        {
+            return Err(SnapshotError::NativeFailure);
+        }
+        match first_backing_scale {
+            Some(first) if first != source.backing_scale_milli => {
+                has_distinct_backing_scales = true;
+            }
+            None => first_backing_scale = Some(source.backing_scale_milli),
+            Some(_) => {}
+        }
+    }
+    Ok(DisplayTopology {
+        display_count: native.display_count,
+        has_distinct_backing_scales,
+    })
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn native_mode(backing_scale_milli: u32) -> shim::SckDiagnosticsDisplayMode {
+        let mut mode = shim::SckDiagnosticsDisplayMode::default();
+        mode.logical_width = 1512;
+        mode.logical_height = 982;
+        mode.refresh_millihertz = 120_000;
+        mode.built_in = 1;
+        mode.backing_scale_milli = backing_scale_milli;
+        mode
+    }
+
+    fn native_topology() -> shim::SckDiagnosticsDisplayTopology {
+        let mut topology = shim::SckDiagnosticsDisplayTopology::requested();
+        topology.display_count = 1;
+        topology.mode_count = 1;
+        topology.modes[0] = native_mode(2_000);
+        topology
+    }
+
+    #[test]
+    fn display_topology_reports_only_count_and_distinct_backing_scale_class() {
+        assert_eq!(
+            display_topology_from_native(native_topology()),
+            Ok(DisplayTopology {
+                display_count: 1,
+                has_distinct_backing_scales: false,
+            })
+        );
+
+        let mut mixed = native_topology();
+        mixed.display_count = 2;
+        mixed.mode_count = 2;
+        mixed.modes[1] = native_mode(1_000);
+        assert_eq!(
+            display_topology_from_native(mixed),
+            Ok(DisplayTopology {
+                display_count: 2,
+                has_distinct_backing_scales: true,
+            })
+        );
+    }
+
+    #[test]
+    fn display_topology_rejects_invalid_native_shape() {
+        let mut invalid = native_topology();
+        invalid.modes[0].refresh_millihertz = 1_000_001;
+        assert_eq!(
+            display_topology_from_native(invalid),
+            Err(SnapshotError::NativeFailure)
+        );
+        let mut invalid = native_topology();
+        invalid.modes[0].mirrored = 2;
+        assert_eq!(
+            display_topology_from_native(invalid),
+            Err(SnapshotError::NativeFailure)
+        );
+        let mut invalid = native_topology();
+        invalid.modes[0].backing_scale_milli = 0;
+        assert_eq!(
+            display_topology_from_native(invalid),
+            Err(SnapshotError::NativeFailure)
+        );
+        let mut invalid = native_topology();
+        invalid.display_count = 2;
+        assert_eq!(
+            display_topology_from_native(invalid),
+            Err(SnapshotError::NativeFailure)
+        );
+    }
 }

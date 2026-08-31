@@ -42,7 +42,7 @@ use mado_pilot_capture::CaptureFault;
 use mado_pilot_core::{OperationContext, PermissionState, PixelExtent};
 
 /// The internal surface version this build was written against.
-pub(crate) const ABI_VERSION: u32 = 21;
+pub(crate) const ABI_VERSION: u32 = 23;
 
 /// Largest wait the shim is ever asked for, so one native call cannot consume a
 /// caller's whole budget.
@@ -86,6 +86,8 @@ pub(crate) const SCK_STATUS_UNKNOWN: u32 = 7;
 pub(crate) const SCK_STATUS_KIND_COUNT: usize = 8;
 #[cfg(feature = "sck-suspension-diagnostics")]
 pub(crate) const SCK_DIAGNOSTIC_TRANSITION_CAPACITY: usize = 16;
+#[cfg(feature = "sck-suspension-diagnostics")]
+pub(crate) const SCK_DIAGNOSTIC_DISPLAY_CAPACITY: usize = 2;
 
 /// The largest producer surface extent the shim accepts, mirroring
 /// `MP_SHIM_MAX_PIXEL_EXTENT`. Asking beyond it would be refused, so the Adapter
@@ -179,6 +181,12 @@ struct OpaqueSession {
     _private: [u8; 0],
 }
 
+#[cfg(feature = "sck-suspension-diagnostics")]
+#[repr(C)]
+struct OpaqueSckDiagnosticsObserver {
+    _private: [u8; 0],
+}
+
 #[cfg(all(test, feature = "sck-suspension-diagnostics"))]
 #[repr(C)]
 struct OpaqueSckDiagnosticsProbe {
@@ -245,6 +253,44 @@ impl SckDiagnosticsSnapshot {
             struct_size: u32::try_from(size_of::<Self>()).expect("structure size fits u32"),
             transition_capacity: u32::try_from(SCK_DIAGNOSTIC_TRANSITION_CAPACITY)
                 .expect("transition capacity fits u32"),
+            ..Self::default()
+        }
+    }
+}
+
+/// One identifier-free active display mode used to classify DPI.
+#[cfg(feature = "sck-suspension-diagnostics")]
+#[repr(C)]
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub(crate) struct SckDiagnosticsDisplayMode {
+    pub(crate) logical_width: u32,
+    pub(crate) logical_height: u32,
+    pub(crate) refresh_millihertz: u32,
+    pub(crate) built_in: u32,
+    pub(crate) mirrored: u32,
+    pub(crate) backing_scale_milli: u32,
+    reserved: [u32; 2],
+}
+
+/// One cold, bounded active-display topology snapshot.
+#[cfg(feature = "sck-suspension-diagnostics")]
+#[repr(C)]
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub(crate) struct SckDiagnosticsDisplayTopology {
+    pub(crate) struct_size: u32,
+    pub(crate) display_count: u32,
+    pub(crate) mode_count: u32,
+    pub(crate) mode_capacity: u32,
+    pub(crate) modes: [SckDiagnosticsDisplayMode; SCK_DIAGNOSTIC_DISPLAY_CAPACITY],
+}
+
+#[cfg(feature = "sck-suspension-diagnostics")]
+impl SckDiagnosticsDisplayTopology {
+    pub(crate) fn requested() -> Self {
+        Self {
+            struct_size: u32::try_from(size_of::<Self>()).expect("structure size fits u32"),
+            mode_capacity: u32::try_from(SCK_DIAGNOSTIC_DISPLAY_CAPACITY)
+                .expect("display capacity fits u32"),
             ..Self::default()
         }
     }
@@ -381,6 +427,27 @@ fn testing_sck_callback_accounting(raise_native_exception: bool) -> (u32, SckDia
     };
     assert_eq!(ShimStatus::from_raw(status), ShimStatus::Ok);
     (callback_body_calls, snapshot)
+}
+
+#[cfg(all(test, feature = "sck-suspension-diagnostics"))]
+fn testing_sck_display_topology(
+    modes: &[SckDiagnosticsDisplayMode],
+    display_count: u32,
+    raise_native_exception: bool,
+    mut topology: SckDiagnosticsDisplayTopology,
+) -> (ShimStatus, SckDiagnosticsDisplayTopology) {
+    // SAFETY: the slice is readable for `modes.len()` fixed records and
+    // `topology` is a writable size-versioned output.
+    let status = unsafe {
+        mp_shim_sck_diagnostics_test_display_topology(
+            modes.as_ptr(),
+            u32::try_from(modes.len()).expect("test mode count fits u32"),
+            display_count,
+            u32::from(raise_native_exception),
+            &raw mut topology,
+        )
+    };
+    (ShimStatus::from_raw(status), topology)
 }
 
 /// The frame handle a callback trampoline receives, before it is made safe.
@@ -970,6 +1037,19 @@ pub(crate) struct OpenRequest {
     pub(crate) testing_raise_sites: u32,
 }
 
+/// A feature-only hold on closed-session diagnostic bookkeeping.
+#[cfg(feature = "sck-suspension-diagnostics")]
+pub(crate) struct SckDiagnosticsObserver {
+    handle: NonNull<OpaqueSckDiagnosticsObserver>,
+}
+
+// SAFETY: observer reads use the same locked and atomic fields as Session reads.
+#[cfg(feature = "sck-suspension-diagnostics")]
+unsafe impl Send for SckDiagnosticsObserver {}
+// SAFETY: see the Send justification.
+#[cfg(feature = "sck-suspension-diagnostics")]
+unsafe impl Sync for SckDiagnosticsObserver {}
+
 /// One open native session.
 pub(crate) struct Session {
     handle: NonNull<OpaqueSession>,
@@ -1101,6 +1181,21 @@ impl Session {
         }
     }
 
+    /// Acquires a non-structural observer after this session has closed.
+    #[cfg(feature = "sck-suspension-diagnostics")]
+    pub(crate) fn sck_diagnostics_observer(&self) -> Result<SckDiagnosticsObserver, ShimStatus> {
+        let mut observer = std::ptr::null_mut();
+        // SAFETY: the session handle is owned here and `observer` is a writable
+        // output for one opaque handle.
+        let status = unsafe {
+            mp_shim_sck_diagnostics_observer_acquire(self.handle.as_ptr(), &raw mut observer)
+        };
+        ShimStatus::from_raw(status).into_result()?;
+        NonNull::new(observer)
+            .map(|handle| SckDiagnosticsObserver { handle })
+            .ok_or(ShimStatus::PlatformFailure)
+    }
+
     /// Copies the private, bounded ScreenCaptureKit producer diagnostics.
     #[cfg(feature = "sck-suspension-diagnostics")]
     pub(crate) fn sck_diagnostics_snapshot(&self) -> Result<SckDiagnosticsSnapshot, ShimStatus> {
@@ -1112,6 +1207,28 @@ impl Session {
         };
         ShimStatus::from_raw(status).into_result()?;
         Ok(snapshot)
+    }
+}
+
+#[cfg(feature = "sck-suspension-diagnostics")]
+impl SckDiagnosticsObserver {
+    pub(crate) fn snapshot(&self) -> Result<SckDiagnosticsSnapshot, ShimStatus> {
+        let mut snapshot = SckDiagnosticsSnapshot::requested();
+        // SAFETY: the observer is owned here and `snapshot` is a writable,
+        // size-versioned output with the exact fixed transition capacity.
+        let status = unsafe {
+            mp_shim_sck_diagnostics_observer_snapshot_read(self.handle.as_ptr(), &raw mut snapshot)
+        };
+        ShimStatus::from_raw(status).into_result()?;
+        Ok(snapshot)
+    }
+}
+
+#[cfg(feature = "sck-suspension-diagnostics")]
+impl Drop for SckDiagnosticsObserver {
+    fn drop(&mut self) {
+        // SAFETY: this observer owns exactly one non-structural native hold.
+        unsafe { mp_shim_sck_diagnostics_observer_release(self.handle.as_ptr()) };
     }
 }
 
@@ -1480,6 +1597,18 @@ pub(crate) fn sck_diagnostics_process_resources() -> Result<(u64, u64, u64, u64)
             callbacks_in_flight,
         )
     })
+}
+
+#[cfg(feature = "sck-suspension-diagnostics")]
+pub(crate) fn sck_diagnostics_display_topology() -> Result<SckDiagnosticsDisplayTopology, ShimStatus>
+{
+    let mut topology = SckDiagnosticsDisplayTopology::requested();
+    // SAFETY: `topology` is a writable size-versioned output with the declared
+    // fixed mode capacity.
+    let status = unsafe { mp_shim_sck_diagnostics_read_display_topology(&raw mut topology) };
+    ShimStatus::from_raw(status)
+        .into_result()
+        .map(|()| topology)
 }
 
 /// One pointer button, as the native surface numbers them.
@@ -2377,6 +2506,34 @@ pub(crate) fn linked_sck_diagnostics_layout() -> [u32; 9] {
     }
 }
 
+/// Returns private display-topology sizes and offsets compiled into the linked shim.
+#[cfg(feature = "sck-suspension-diagnostics")]
+pub(crate) fn linked_sck_diagnostics_topology_layout() -> [u32; 5] {
+    let mut layout = [0; 5];
+    let [
+        mode_size,
+        topology_size,
+        mode_refresh,
+        mode_backing_scale,
+        topology_modes,
+    ] = &mut layout;
+    // SAFETY: all five outputs are writable for one u32 each.
+    let status = unsafe {
+        mp_shim_sck_diagnostics_topology_layout(
+            &raw mut *mode_size,
+            &raw mut *topology_size,
+            &raw mut *mode_refresh,
+            &raw mut *mode_backing_scale,
+            &raw mut *topology_modes,
+        )
+    };
+    if ShimStatus::from_raw(status) == ShimStatus::Ok {
+        layout
+    } else {
+        [0; 5]
+    }
+}
+
 /// Returns private diagnostic sizes and offsets compiled into the Rust mirrors.
 #[cfg(feature = "sck-suspension-diagnostics")]
 pub(crate) fn declared_sck_diagnostics_layout() -> [u32; 9] {
@@ -2402,6 +2559,27 @@ pub(crate) fn declared_sck_diagnostics_layout() -> [u32; 9] {
         ))
         .expect("field offset fits u32"),
         u32::try_from(std::mem::offset_of!(SckDiagnosticsSnapshot, transitions))
+            .expect("field offset fits u32"),
+    ]
+}
+
+/// Returns private display-topology sizes and offsets compiled into the Rust mirrors.
+#[cfg(feature = "sck-suspension-diagnostics")]
+pub(crate) fn declared_sck_diagnostics_topology_layout() -> [u32; 5] {
+    [
+        u32::try_from(size_of::<SckDiagnosticsDisplayMode>()).expect("structure size fits u32"),
+        u32::try_from(size_of::<SckDiagnosticsDisplayTopology>()).expect("structure size fits u32"),
+        u32::try_from(std::mem::offset_of!(
+            SckDiagnosticsDisplayMode,
+            refresh_millihertz
+        ))
+        .expect("field offset fits u32"),
+        u32::try_from(std::mem::offset_of!(
+            SckDiagnosticsDisplayMode,
+            backing_scale_milli
+        ))
+        .expect("field offset fits u32"),
+        u32::try_from(std::mem::offset_of!(SckDiagnosticsDisplayTopology, modes))
             .expect("field offset fits u32"),
     ]
 }
@@ -3418,6 +3596,18 @@ unsafe extern "C" {
         out_callbacks_received_offset: *mut u32,
         out_transitions_offset: *mut u32,
     ) -> u32;
+    #[cfg(feature = "sck-suspension-diagnostics")]
+    fn mp_shim_sck_diagnostics_topology_layout(
+        out_mode_size: *mut u32,
+        out_topology_size: *mut u32,
+        out_mode_refresh_offset: *mut u32,
+        out_mode_backing_scale_offset: *mut u32,
+        out_topology_modes_offset: *mut u32,
+    ) -> u32;
+    #[cfg(feature = "sck-suspension-diagnostics")]
+    fn mp_shim_sck_diagnostics_read_display_topology(
+        out_topology: *mut SckDiagnosticsDisplayTopology,
+    ) -> u32;
     fn mp_shim_capture_available() -> u32;
     fn mp_shim_probe_screen_capture(out_state: *mut u32) -> u32;
     fn mp_shim_process_authorization(
@@ -3652,6 +3842,18 @@ unsafe extern "C" {
         session: *const OpaqueSession,
         out_snapshot: *mut SckDiagnosticsSnapshot,
     ) -> u32;
+    #[cfg(feature = "sck-suspension-diagnostics")]
+    fn mp_shim_sck_diagnostics_observer_acquire(
+        session: *const OpaqueSession,
+        out_observer: *mut *mut OpaqueSckDiagnosticsObserver,
+    ) -> u32;
+    #[cfg(feature = "sck-suspension-diagnostics")]
+    fn mp_shim_sck_diagnostics_observer_snapshot_read(
+        observer: *const OpaqueSckDiagnosticsObserver,
+        out_snapshot: *mut SckDiagnosticsSnapshot,
+    ) -> u32;
+    #[cfg(feature = "sck-suspension-diagnostics")]
+    fn mp_shim_sck_diagnostics_observer_release(observer: *mut OpaqueSckDiagnosticsObserver);
 
     fn mp_shim_frame_detach(borrowed: *mut OpaqueFrame, out: *mut *mut OpaqueFrame) -> u32;
     fn mp_shim_frame_release(frame: *mut OpaqueFrame);
@@ -3697,6 +3899,14 @@ unsafe extern "C" {
         raise_native_exception: u32,
         out_callback_body_calls: *mut u32,
         out_snapshot: *mut SckDiagnosticsSnapshot,
+    ) -> u32;
+    #[cfg(all(test, feature = "sck-suspension-diagnostics"))]
+    fn mp_shim_sck_diagnostics_test_display_topology(
+        modes: *const SckDiagnosticsDisplayMode,
+        mode_count: u32,
+        display_count: u32,
+        raise_native_exception: u32,
+        out_topology: *mut SckDiagnosticsDisplayTopology,
     ) -> u32;
 
     fn mp_shim_input_target_focused(
@@ -3824,11 +4034,14 @@ mod tests {
     };
     #[cfg(feature = "sck-suspension-diagnostics")]
     use super::{
-        SCK_DIAGNOSTIC_TRANSITION_CAPACITY, SCK_STATUS_BLANK, SCK_STATUS_COMPLETE, SCK_STATUS_IDLE,
-        SCK_STATUS_MISSING, SCK_STATUS_STARTED, SCK_STATUS_STOPPED, SCK_STATUS_SUSPENDED,
-        SCK_STATUS_UNKNOWN, SckDiagnosticsProbe, SckDiagnosticsSnapshot, SckDiagnosticsStatusEvent,
-        declared_sck_diagnostics_layout, linked_sck_diagnostics_layout,
-        testing_sck_callback_accounting,
+        SCK_DIAGNOSTIC_DISPLAY_CAPACITY, SCK_DIAGNOSTIC_TRANSITION_CAPACITY, SCK_STATUS_BLANK,
+        SCK_STATUS_COMPLETE, SCK_STATUS_IDLE, SCK_STATUS_MISSING, SCK_STATUS_STARTED,
+        SCK_STATUS_STOPPED, SCK_STATUS_SUSPENDED, SCK_STATUS_UNKNOWN, SckDiagnosticsDisplayMode,
+        SckDiagnosticsDisplayTopology, SckDiagnosticsProbe, SckDiagnosticsSnapshot,
+        SckDiagnosticsStatusEvent, declared_sck_diagnostics_layout,
+        declared_sck_diagnostics_topology_layout, linked_sck_diagnostics_layout,
+        linked_sck_diagnostics_topology_layout, testing_sck_callback_accounting,
+        testing_sck_display_topology,
     };
     use mado_pilot_capture::CaptureFault;
     use mado_pilot_core::{
@@ -3867,6 +4080,123 @@ mod tests {
             requested.transition_capacity,
             u32::try_from(SCK_DIAGNOSTIC_TRANSITION_CAPACITY).expect("capacity fits u32")
         );
+        let topology_declared = declared_sck_diagnostics_topology_layout();
+        assert_eq!(topology_declared, [32, 80, 8, 20, 16]);
+        assert_eq!(linked_sck_diagnostics_topology_layout(), topology_declared);
+        let requested_topology = SckDiagnosticsDisplayTopology::requested();
+        assert_eq!(requested_topology.struct_size, 80);
+        assert_eq!(
+            requested_topology.mode_capacity,
+            u32::try_from(SCK_DIAGNOSTIC_DISPLAY_CAPACITY).expect("capacity fits u32")
+        );
+    }
+
+    #[cfg(feature = "sck-suspension-diagnostics")]
+    #[test]
+    fn diagnostic_display_topology_is_bounded_sorted_and_identifier_free() {
+        let modes = [
+            SckDiagnosticsDisplayMode {
+                logical_width: 3_840,
+                logical_height: 2_160,
+                refresh_millihertz: 120_000,
+                built_in: 0,
+                mirrored: 0,
+                backing_scale_milli: 1_000,
+                ..SckDiagnosticsDisplayMode::default()
+            },
+            SckDiagnosticsDisplayMode {
+                logical_width: 1_512,
+                logical_height: 982,
+                refresh_millihertz: 120_000,
+                built_in: 1,
+                mirrored: 0,
+                backing_scale_milli: 2_000,
+                ..SckDiagnosticsDisplayMode::default()
+            },
+        ];
+        let (status, topology) = testing_sck_display_topology(
+            &modes,
+            2,
+            false,
+            SckDiagnosticsDisplayTopology::requested(),
+        );
+        assert_eq!(status, ShimStatus::Ok);
+        assert_eq!(topology.display_count, 2);
+        assert_eq!(topology.mode_count, 2);
+        assert_eq!(topology.modes[0].logical_width, 1_512);
+        assert_eq!(topology.modes[0].backing_scale_milli, 2_000);
+        assert_eq!(topology.modes[1].logical_width, 3_840);
+        assert_eq!(topology.modes[1].backing_scale_milli, 1_000);
+    }
+
+    #[cfg(feature = "sck-suspension-diagnostics")]
+    #[test]
+    fn diagnostic_display_topology_rejects_invalid_shape_and_contains_exceptions() {
+        let valid = SckDiagnosticsDisplayMode {
+            logical_width: 1_512,
+            logical_height: 982,
+            refresh_millihertz: 120_000,
+            built_in: 1,
+            mirrored: 0,
+            backing_scale_milli: 2_000,
+            ..SckDiagnosticsDisplayMode::default()
+        };
+        for invalid in [
+            SckDiagnosticsDisplayMode {
+                logical_width: 0,
+                ..valid
+            },
+            SckDiagnosticsDisplayMode {
+                refresh_millihertz: 1_000_001,
+                ..valid
+            },
+            SckDiagnosticsDisplayMode {
+                built_in: 2,
+                ..valid
+            },
+            SckDiagnosticsDisplayMode {
+                mirrored: 2,
+                ..valid
+            },
+            SckDiagnosticsDisplayMode {
+                backing_scale_milli: 0,
+                ..valid
+            },
+        ] {
+            let (status, topology) = testing_sck_display_topology(
+                &[invalid],
+                1,
+                false,
+                SckDiagnosticsDisplayTopology::requested(),
+            );
+            assert_eq!(status, ShimStatus::InvalidArgument);
+            assert_eq!(topology.display_count, 0);
+            assert_eq!(topology.mode_count, 0);
+        }
+
+        let (status, _) = testing_sck_display_topology(
+            &[valid],
+            2,
+            false,
+            SckDiagnosticsDisplayTopology::requested(),
+        );
+        assert_eq!(status, ShimStatus::InvalidArgument);
+        let (status, topology) = testing_sck_display_topology(
+            &[valid],
+            1,
+            true,
+            SckDiagnosticsDisplayTopology::requested(),
+        );
+        assert_eq!(status, ShimStatus::NativeException);
+        assert_eq!(topology.display_count, 0);
+        assert_eq!(topology.mode_count, 0);
+        let (status, _) = testing_sck_display_topology(
+            &[valid],
+            1,
+            false,
+            SckDiagnosticsDisplayTopology::default(),
+        );
+        assert_eq!(status, ShimStatus::InvalidArgument);
     }
 
     #[cfg(feature = "sck-suspension-diagnostics")]

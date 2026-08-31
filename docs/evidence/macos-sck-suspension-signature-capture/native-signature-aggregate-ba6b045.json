@@ -1,0 +1,2152 @@
+[
+  {
+    "schema_version": 2,
+    "process_index": 1,
+    "topology": "single_display_control",
+    "provenance": {
+      "source_revision": "ba6b0451a1d2b13a8fe418c477e91ea00fe9cff8",
+      "source_tree": "c645124b42064ae2c10c4f2cb28b86f8d7b385ad",
+      "protocol_sha256": "5f1d519544df585e287fc6af4b5c28e8f1d94f5fb8d0d90196cd2b5367209316",
+      "executable_sha256": "c8072bc557991d0762326b83e0c327d2c47cc3d359ff76e8d511a3a98ec6a623",
+      "fixture_sha256": "c647f79697c28800b5b28b27f97f9847c762149f074c0db198252e6981c9de7f",
+      "fixture_source_sha256": "f1c60db58650c1770f67b22c0e65563cf125c3800f43242d973da900d795395a",
+      "host": "apple_m1_pro10c32g",
+      "os": "macos26_6_2_build25g83",
+      "sdk": "xcode26_5"
+    },
+    "observed_topology": {
+      "display_count": 1,
+      "has_distinct_backing_scales": false
+    },
+    "baseline": {
+      "native_objects": 0,
+      "detached_bytes": 0,
+      "live_sessions": 0,
+      "callbacks_in_flight": 0
+    },
+    "post_old_drop_resources": {
+      "native_objects": 2,
+      "detached_bytes": 4628480,
+      "live_sessions": 0,
+      "callbacks_in_flight": 0
+    },
+    "final_resources": {
+      "native_objects": 0,
+      "detached_bytes": 0,
+      "live_sessions": 0,
+      "callbacks_in_flight": 0
+    },
+    "owners": {
+      "terminal_result": true,
+      "mapping": true,
+      "mapping_readable_after_fresh_close": true
+    },
+    "old_fixture_revision": 3,
+    "operation_deadline_millis": 5000,
+    "fresh_target_authenticated": true,
+    "lifecycle": {
+      "count": 11,
+      "steps": [
+        "old_result_retained",
+        "old_mapping_retained",
+        "old_session_close_attempted",
+        "old_public_owners_dropped",
+        "old_snapshot_recorded",
+        "fresh_session_opened",
+        "fresh_capture_attempted",
+        "fresh_session_close_attempted",
+        "mapping_verified",
+        "retained_owners_dropped",
+        "fixture_close_attempted"
+      ]
+    },
+    "fresh_fixture_revision": 4,
+    "old_frame": {
+      "stream_ordinal": 1,
+      "epoch": 0,
+      "sequence": 10,
+      "geometry_revision": 0
+    },
+    "fresh_frame": {
+      "stream_ordinal": 1,
+      "epoch": 0,
+      "sequence": 0,
+      "geometry_revision": 0
+    },
+    "streams_distinct": true,
+    "first_complete_latency_nanos": null,
+    "old_snapshot": {
+      "close_phase": 5,
+      "active_native_slots": 0,
+      "observed_total": 16,
+      "status_counts": [
+        16,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0
+      ],
+      "first_status": {
+        "kind": 0,
+        "raw_value": 0,
+        "sequence": 1,
+        "monotonic_nanos": 176293989515083
+      },
+      "last_status": {
+        "kind": 0,
+        "raw_value": 0,
+        "sequence": 16,
+        "monotonic_nanos": 176294243100416
+      },
+      "callbacks_received": 16,
+      "callbacks_admitted": 16,
+      "callbacks_refused": 0,
+      "callbacks_exited": 16,
+      "stream_start_completed_nanos": 176293992005166,
+      "stream_stop_requested_nanos": 176294243745583,
+      "stream_stop_completed_nanos": 176294260364916,
+      "callback_admission_stopped_nanos": 176294243123958,
+      "callback_fence_completed_nanos": 176294243633375,
+      "close_completed_nanos": 176294260391625,
+      "first_complete_nanos": 176293989515083,
+      "session_references": 1,
+      "detached_leases": 1,
+      "native_objects": 2,
+      "detached_bytes": 4628480,
+      "transition_overwrites": 0,
+      "transition_count": 1,
+      "transitions": [
+        {
+          "kind": 0,
+          "raw_value": 0,
+          "sequence": 1,
+          "monotonic_nanos": 176293989515083
+        },
+        null,
+        null,
+        null,
+        null,
+        null,
+        null,
+        null,
+        null,
+        null,
+        null,
+        null,
+        null,
+        null,
+        null,
+        null
+      ]
+    },
+    "fresh_snapshot": {
+      "close_phase": 5,
+      "active_native_slots": 0,
+      "observed_total": 1,
+      "status_counts": [
+        1,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0
+      ],
+      "first_status": {
+        "kind": 0,
+        "raw_value": 0,
+        "sequence": 1,
+        "monotonic_nanos": 176294432310083
+      },
+      "last_status": {
+        "kind": 0,
+        "raw_value": 0,
+        "sequence": 1,
+        "monotonic_nanos": 176294432310083
+      },
+      "callbacks_received": 1,
+      "callbacks_admitted": 1,
+      "callbacks_refused": 0,
+      "callbacks_exited": 1,
+      "stream_start_completed_nanos": 176294437806125,
+      "stream_stop_requested_nanos": 176294437911750,
+      "stream_stop_completed_nanos": 176294450699916,
+      "callback_admission_stopped_nanos": 176294437824208,
+      "callback_fence_completed_nanos": 176294437867166,
+      "close_completed_nanos": 176294450722750,
+      "first_complete_nanos": 176294432310083,
+      "session_references": 2,
+      "detached_leases": 1,
+      "native_objects": 21,
+      "detached_bytes": 9256960,
+      "transition_overwrites": 0,
+      "transition_count": 1,
+      "transitions": [
+        {
+          "kind": 0,
+          "raw_value": 0,
+          "sequence": 1,
+          "monotonic_nanos": 176294432310083
+        },
+        null,
+        null,
+        null,
+        null,
+        null,
+        null,
+        null,
+        null,
+        null,
+        null,
+        null,
+        null,
+        null,
+        null,
+        null
+      ]
+    },
+    "stage": "complete",
+    "outcome": "complete_frame",
+    "failure": "none"
+  },
+  {
+    "schema_version": 2,
+    "process_index": 2,
+    "topology": "single_display_control",
+    "provenance": {
+      "source_revision": "ba6b0451a1d2b13a8fe418c477e91ea00fe9cff8",
+      "source_tree": "c645124b42064ae2c10c4f2cb28b86f8d7b385ad",
+      "protocol_sha256": "5f1d519544df585e287fc6af4b5c28e8f1d94f5fb8d0d90196cd2b5367209316",
+      "executable_sha256": "c8072bc557991d0762326b83e0c327d2c47cc3d359ff76e8d511a3a98ec6a623",
+      "fixture_sha256": "c647f79697c28800b5b28b27f97f9847c762149f074c0db198252e6981c9de7f",
+      "fixture_source_sha256": "f1c60db58650c1770f67b22c0e65563cf125c3800f43242d973da900d795395a",
+      "host": "apple_m1_pro10c32g",
+      "os": "macos26_6_2_build25g83",
+      "sdk": "xcode26_5"
+    },
+    "observed_topology": {
+      "display_count": 1,
+      "has_distinct_backing_scales": false
+    },
+    "baseline": {
+      "native_objects": 0,
+      "detached_bytes": 0,
+      "live_sessions": 0,
+      "callbacks_in_flight": 0
+    },
+    "post_old_drop_resources": {
+      "native_objects": 2,
+      "detached_bytes": 4628480,
+      "live_sessions": 0,
+      "callbacks_in_flight": 0
+    },
+    "final_resources": {
+      "native_objects": 0,
+      "detached_bytes": 0,
+      "live_sessions": 0,
+      "callbacks_in_flight": 0
+    },
+    "owners": {
+      "terminal_result": true,
+      "mapping": true,
+      "mapping_readable_after_fresh_close": true
+    },
+    "old_fixture_revision": 3,
+    "operation_deadline_millis": 5000,
+    "fresh_target_authenticated": true,
+    "lifecycle": {
+      "count": 11,
+      "steps": [
+        "old_result_retained",
+        "old_mapping_retained",
+        "old_session_close_attempted",
+        "old_public_owners_dropped",
+        "old_snapshot_recorded",
+        "fresh_session_opened",
+        "fresh_capture_attempted",
+        "fresh_session_close_attempted",
+        "mapping_verified",
+        "retained_owners_dropped",
+        "fixture_close_attempted"
+      ]
+    },
+    "fresh_fixture_revision": 4,
+    "old_frame": {
+      "stream_ordinal": 1,
+      "epoch": 0,
+      "sequence": 11,
+      "geometry_revision": 0
+    },
+    "fresh_frame": {
+      "stream_ordinal": 1,
+      "epoch": 0,
+      "sequence": 0,
+      "geometry_revision": 0
+    },
+    "streams_distinct": true,
+    "first_complete_latency_nanos": null,
+    "old_snapshot": {
+      "close_phase": 5,
+      "active_native_slots": 0,
+      "observed_total": 16,
+      "status_counts": [
+        16,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0
+      ],
+      "first_status": {
+        "kind": 0,
+        "raw_value": 0,
+        "sequence": 1,
+        "monotonic_nanos": 176301654524416
+      },
+      "last_status": {
+        "kind": 0,
+        "raw_value": 0,
+        "sequence": 16,
+        "monotonic_nanos": 176301902395500
+      },
+      "callbacks_received": 16,
+      "callbacks_admitted": 16,
+      "callbacks_refused": 0,
+      "callbacks_exited": 16,
+      "stream_start_completed_nanos": 176301656074500,
+      "stream_stop_requested_nanos": 176301905567416,
+      "stream_stop_completed_nanos": 176301922231916,
+      "callback_admission_stopped_nanos": 176301905430416,
+      "callback_fence_completed_nanos": 176301905479458,
+      "close_completed_nanos": 176301922261916,
+      "first_complete_nanos": 176301654524416,
+      "session_references": 1,
+      "detached_leases": 1,
+      "native_objects": 2,
+      "detached_bytes": 4628480,
+      "transition_overwrites": 0,
+      "transition_count": 1,
+      "transitions": [
+        {
+          "kind": 0,
+          "raw_value": 0,
+          "sequence": 1,
+          "monotonic_nanos": 176301654524416
+        },
+        null,
+        null,
+        null,
+        null,
+        null,
+        null,
+        null,
+        null,
+        null,
+        null,
+        null,
+        null,
+        null,
+        null,
+        null
+      ]
+    },
+    "fresh_snapshot": {
+      "close_phase": 5,
+      "active_native_slots": 0,
+      "observed_total": 1,
+      "status_counts": [
+        1,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0
+      ],
+      "first_status": {
+        "kind": 0,
+        "raw_value": 0,
+        "sequence": 1,
+        "monotonic_nanos": 176302098808708
+      },
+      "last_status": {
+        "kind": 0,
+        "raw_value": 0,
+        "sequence": 1,
+        "monotonic_nanos": 176302098808708
+      },
+      "callbacks_received": 1,
+      "callbacks_admitted": 1,
+      "callbacks_refused": 0,
+      "callbacks_exited": 1,
+      "stream_start_completed_nanos": 176302104695791,
+      "stream_stop_requested_nanos": 176302104816291,
+      "stream_stop_completed_nanos": 176302114780208,
+      "callback_admission_stopped_nanos": 176302104708708,
+      "callback_fence_completed_nanos": 176302104762833,
+      "close_completed_nanos": 176302114810416,
+      "first_complete_nanos": 176302098808708,
+      "session_references": 2,
+      "detached_leases": 1,
+      "native_objects": 21,
+      "detached_bytes": 9256960,
+      "transition_overwrites": 0,
+      "transition_count": 1,
+      "transitions": [
+        {
+          "kind": 0,
+          "raw_value": 0,
+          "sequence": 1,
+          "monotonic_nanos": 176302098808708
+        },
+        null,
+        null,
+        null,
+        null,
+        null,
+        null,
+        null,
+        null,
+        null,
+        null,
+        null,
+        null,
+        null,
+        null,
+        null
+      ]
+    },
+    "stage": "complete",
+    "outcome": "complete_frame",
+    "failure": "none"
+  },
+  {
+    "schema_version": 2,
+    "process_index": 3,
+    "topology": "single_display_control",
+    "provenance": {
+      "source_revision": "ba6b0451a1d2b13a8fe418c477e91ea00fe9cff8",
+      "source_tree": "c645124b42064ae2c10c4f2cb28b86f8d7b385ad",
+      "protocol_sha256": "5f1d519544df585e287fc6af4b5c28e8f1d94f5fb8d0d90196cd2b5367209316",
+      "executable_sha256": "c8072bc557991d0762326b83e0c327d2c47cc3d359ff76e8d511a3a98ec6a623",
+      "fixture_sha256": "c647f79697c28800b5b28b27f97f9847c762149f074c0db198252e6981c9de7f",
+      "fixture_source_sha256": "f1c60db58650c1770f67b22c0e65563cf125c3800f43242d973da900d795395a",
+      "host": "apple_m1_pro10c32g",
+      "os": "macos26_6_2_build25g83",
+      "sdk": "xcode26_5"
+    },
+    "observed_topology": {
+      "display_count": 1,
+      "has_distinct_backing_scales": false
+    },
+    "baseline": {
+      "native_objects": 0,
+      "detached_bytes": 0,
+      "live_sessions": 0,
+      "callbacks_in_flight": 0
+    },
+    "post_old_drop_resources": {
+      "native_objects": 2,
+      "detached_bytes": 4628480,
+      "live_sessions": 0,
+      "callbacks_in_flight": 0
+    },
+    "final_resources": {
+      "native_objects": 0,
+      "detached_bytes": 0,
+      "live_sessions": 0,
+      "callbacks_in_flight": 0
+    },
+    "owners": {
+      "terminal_result": true,
+      "mapping": true,
+      "mapping_readable_after_fresh_close": true
+    },
+    "old_fixture_revision": 3,
+    "operation_deadline_millis": 5000,
+    "fresh_target_authenticated": true,
+    "lifecycle": {
+      "count": 11,
+      "steps": [
+        "old_result_retained",
+        "old_mapping_retained",
+        "old_session_close_attempted",
+        "old_public_owners_dropped",
+        "old_snapshot_recorded",
+        "fresh_session_opened",
+        "fresh_capture_attempted",
+        "fresh_session_close_attempted",
+        "mapping_verified",
+        "retained_owners_dropped",
+        "fixture_close_attempted"
+      ]
+    },
+    "fresh_fixture_revision": 4,
+    "old_frame": {
+      "stream_ordinal": 1,
+      "epoch": 0,
+      "sequence": 10,
+      "geometry_revision": 0
+    },
+    "fresh_frame": {
+      "stream_ordinal": 1,
+      "epoch": 0,
+      "sequence": 0,
+      "geometry_revision": 0
+    },
+    "streams_distinct": true,
+    "first_complete_latency_nanos": null,
+    "old_snapshot": {
+      "close_phase": 5,
+      "active_native_slots": 0,
+      "observed_total": 15,
+      "status_counts": [
+        15,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0
+      ],
+      "first_status": {
+        "kind": 0,
+        "raw_value": 0,
+        "sequence": 1,
+        "monotonic_nanos": 176309073596333
+      },
+      "last_status": {
+        "kind": 0,
+        "raw_value": 0,
+        "sequence": 15,
+        "monotonic_nanos": 176309308838416
+      },
+      "callbacks_received": 15,
+      "callbacks_admitted": 15,
+      "callbacks_refused": 0,
+      "callbacks_exited": 15,
+      "stream_start_completed_nanos": 176309074815875,
+      "stream_stop_requested_nanos": 176309321194750,
+      "stream_stop_completed_nanos": 176309331128291,
+      "callback_admission_stopped_nanos": 176309321014833,
+      "callback_fence_completed_nanos": 176309321064958,
+      "close_completed_nanos": 176309331157833,
+      "first_complete_nanos": 176309073596333,
+      "session_references": 1,
+      "detached_leases": 1,
+      "native_objects": 2,
+      "detached_bytes": 4628480,
+      "transition_overwrites": 0,
+      "transition_count": 1,
+      "transitions": [
+        {
+          "kind": 0,
+          "raw_value": 0,
+          "sequence": 1,
+          "monotonic_nanos": 176309073596333
+        },
+        null,
+        null,
+        null,
+        null,
+        null,
+        null,
+        null,
+        null,
+        null,
+        null,
+        null,
+        null,
+        null,
+        null,
+        null
+      ]
+    },
+    "fresh_snapshot": {
+      "close_phase": 5,
+      "active_native_slots": 0,
+      "observed_total": 1,
+      "status_counts": [
+        1,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0
+      ],
+      "first_status": {
+        "kind": 0,
+        "raw_value": 0,
+        "sequence": 1,
+        "monotonic_nanos": 176309499219791
+      },
+      "last_status": {
+        "kind": 0,
+        "raw_value": 0,
+        "sequence": 1,
+        "monotonic_nanos": 176309499219791
+      },
+      "callbacks_received": 1,
+      "callbacks_admitted": 1,
+      "callbacks_refused": 0,
+      "callbacks_exited": 1,
+      "stream_start_completed_nanos": 176309504961458,
+      "stream_stop_requested_nanos": 176309505067958,
+      "stream_stop_completed_nanos": 176309513017250,
+      "callback_admission_stopped_nanos": 176309504981833,
+      "callback_fence_completed_nanos": 176309505019750,
+      "close_completed_nanos": 176309513058666,
+      "first_complete_nanos": 176309499219791,
+      "session_references": 2,
+      "detached_leases": 1,
+      "native_objects": 21,
+      "detached_bytes": 9256960,
+      "transition_overwrites": 0,
+      "transition_count": 1,
+      "transitions": [
+        {
+          "kind": 0,
+          "raw_value": 0,
+          "sequence": 1,
+          "monotonic_nanos": 176309499219791
+        },
+        null,
+        null,
+        null,
+        null,
+        null,
+        null,
+        null,
+        null,
+        null,
+        null,
+        null,
+        null,
+        null,
+        null,
+        null
+      ]
+    },
+    "stage": "complete",
+    "outcome": "complete_frame",
+    "failure": "none"
+  },
+  {
+    "schema_version": 2,
+    "process_index": 4,
+    "topology": "single_display_control",
+    "provenance": {
+      "source_revision": "ba6b0451a1d2b13a8fe418c477e91ea00fe9cff8",
+      "source_tree": "c645124b42064ae2c10c4f2cb28b86f8d7b385ad",
+      "protocol_sha256": "5f1d519544df585e287fc6af4b5c28e8f1d94f5fb8d0d90196cd2b5367209316",
+      "executable_sha256": "c8072bc557991d0762326b83e0c327d2c47cc3d359ff76e8d511a3a98ec6a623",
+      "fixture_sha256": "c647f79697c28800b5b28b27f97f9847c762149f074c0db198252e6981c9de7f",
+      "fixture_source_sha256": "f1c60db58650c1770f67b22c0e65563cf125c3800f43242d973da900d795395a",
+      "host": "apple_m1_pro10c32g",
+      "os": "macos26_6_2_build25g83",
+      "sdk": "xcode26_5"
+    },
+    "observed_topology": {
+      "display_count": 1,
+      "has_distinct_backing_scales": false
+    },
+    "baseline": {
+      "native_objects": 0,
+      "detached_bytes": 0,
+      "live_sessions": 0,
+      "callbacks_in_flight": 0
+    },
+    "post_old_drop_resources": {
+      "native_objects": 2,
+      "detached_bytes": 4628480,
+      "live_sessions": 0,
+      "callbacks_in_flight": 0
+    },
+    "final_resources": {
+      "native_objects": 0,
+      "detached_bytes": 0,
+      "live_sessions": 0,
+      "callbacks_in_flight": 0
+    },
+    "owners": {
+      "terminal_result": true,
+      "mapping": true,
+      "mapping_readable_after_fresh_close": true
+    },
+    "old_fixture_revision": 3,
+    "operation_deadline_millis": 5000,
+    "fresh_target_authenticated": true,
+    "lifecycle": {
+      "count": 11,
+      "steps": [
+        "old_result_retained",
+        "old_mapping_retained",
+        "old_session_close_attempted",
+        "old_public_owners_dropped",
+        "old_snapshot_recorded",
+        "fresh_session_opened",
+        "fresh_capture_attempted",
+        "fresh_session_close_attempted",
+        "mapping_verified",
+        "retained_owners_dropped",
+        "fixture_close_attempted"
+      ]
+    },
+    "fresh_fixture_revision": 4,
+    "old_frame": {
+      "stream_ordinal": 1,
+      "epoch": 0,
+      "sequence": 10,
+      "geometry_revision": 0
+    },
+    "fresh_frame": {
+      "stream_ordinal": 1,
+      "epoch": 0,
+      "sequence": 0,
+      "geometry_revision": 0
+    },
+    "streams_distinct": true,
+    "first_complete_latency_nanos": null,
+    "old_snapshot": {
+      "close_phase": 5,
+      "active_native_slots": 0,
+      "observed_total": 15,
+      "status_counts": [
+        15,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0
+      ],
+      "first_status": {
+        "kind": 0,
+        "raw_value": 0,
+        "sequence": 1,
+        "monotonic_nanos": 176316245113666
+      },
+      "last_status": {
+        "kind": 0,
+        "raw_value": 0,
+        "sequence": 15,
+        "monotonic_nanos": 176316483555333
+      },
+      "callbacks_received": 15,
+      "callbacks_admitted": 15,
+      "callbacks_refused": 0,
+      "callbacks_exited": 15,
+      "stream_start_completed_nanos": 176316246552875,
+      "stream_stop_requested_nanos": 176316493542000,
+      "stream_stop_completed_nanos": 176316506210625,
+      "callback_admission_stopped_nanos": 176316493402791,
+      "callback_fence_completed_nanos": 176316493440500,
+      "close_completed_nanos": 176316506257208,
+      "first_complete_nanos": 176316245113666,
+      "session_references": 1,
+      "detached_leases": 1,
+      "native_objects": 2,
+      "detached_bytes": 4628480,
+      "transition_overwrites": 0,
+      "transition_count": 1,
+      "transitions": [
+        {
+          "kind": 0,
+          "raw_value": 0,
+          "sequence": 1,
+          "monotonic_nanos": 176316245113666
+        },
+        null,
+        null,
+        null,
+        null,
+        null,
+        null,
+        null,
+        null,
+        null,
+        null,
+        null,
+        null,
+        null,
+        null,
+        null
+      ]
+    },
+    "fresh_snapshot": {
+      "close_phase": 5,
+      "active_native_slots": 0,
+      "observed_total": 1,
+      "status_counts": [
+        1,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0
+      ],
+      "first_status": {
+        "kind": 0,
+        "raw_value": 0,
+        "sequence": 1,
+        "monotonic_nanos": 176316674966750
+      },
+      "last_status": {
+        "kind": 0,
+        "raw_value": 0,
+        "sequence": 1,
+        "monotonic_nanos": 176316674966750
+      },
+      "callbacks_received": 1,
+      "callbacks_admitted": 1,
+      "callbacks_refused": 0,
+      "callbacks_exited": 1,
+      "stream_start_completed_nanos": 176316681148250,
+      "stream_stop_requested_nanos": 176316681327875,
+      "stream_stop_completed_nanos": 176316695182916,
+      "callback_admission_stopped_nanos": 176316681163458,
+      "callback_fence_completed_nanos": 176316681257375,
+      "close_completed_nanos": 176316695210125,
+      "first_complete_nanos": 176316674966750,
+      "session_references": 2,
+      "detached_leases": 1,
+      "native_objects": 21,
+      "detached_bytes": 9256960,
+      "transition_overwrites": 0,
+      "transition_count": 1,
+      "transitions": [
+        {
+          "kind": 0,
+          "raw_value": 0,
+          "sequence": 1,
+          "monotonic_nanos": 176316674966750
+        },
+        null,
+        null,
+        null,
+        null,
+        null,
+        null,
+        null,
+        null,
+        null,
+        null,
+        null,
+        null,
+        null,
+        null,
+        null
+      ]
+    },
+    "stage": "complete",
+    "outcome": "complete_frame",
+    "failure": "none"
+  },
+  {
+    "schema_version": 2,
+    "process_index": 5,
+    "topology": "single_display_control",
+    "provenance": {
+      "source_revision": "ba6b0451a1d2b13a8fe418c477e91ea00fe9cff8",
+      "source_tree": "c645124b42064ae2c10c4f2cb28b86f8d7b385ad",
+      "protocol_sha256": "5f1d519544df585e287fc6af4b5c28e8f1d94f5fb8d0d90196cd2b5367209316",
+      "executable_sha256": "c8072bc557991d0762326b83e0c327d2c47cc3d359ff76e8d511a3a98ec6a623",
+      "fixture_sha256": "c647f79697c28800b5b28b27f97f9847c762149f074c0db198252e6981c9de7f",
+      "fixture_source_sha256": "f1c60db58650c1770f67b22c0e65563cf125c3800f43242d973da900d795395a",
+      "host": "apple_m1_pro10c32g",
+      "os": "macos26_6_2_build25g83",
+      "sdk": "xcode26_5"
+    },
+    "observed_topology": {
+      "display_count": 1,
+      "has_distinct_backing_scales": false
+    },
+    "baseline": {
+      "native_objects": 0,
+      "detached_bytes": 0,
+      "live_sessions": 0,
+      "callbacks_in_flight": 0
+    },
+    "post_old_drop_resources": {
+      "native_objects": 2,
+      "detached_bytes": 4628480,
+      "live_sessions": 0,
+      "callbacks_in_flight": 0
+    },
+    "final_resources": {
+      "native_objects": 0,
+      "detached_bytes": 0,
+      "live_sessions": 0,
+      "callbacks_in_flight": 0
+    },
+    "owners": {
+      "terminal_result": true,
+      "mapping": true,
+      "mapping_readable_after_fresh_close": true
+    },
+    "old_fixture_revision": 3,
+    "operation_deadline_millis": 5000,
+    "fresh_target_authenticated": true,
+    "lifecycle": {
+      "count": 11,
+      "steps": [
+        "old_result_retained",
+        "old_mapping_retained",
+        "old_session_close_attempted",
+        "old_public_owners_dropped",
+        "old_snapshot_recorded",
+        "fresh_session_opened",
+        "fresh_capture_attempted",
+        "fresh_session_close_attempted",
+        "mapping_verified",
+        "retained_owners_dropped",
+        "fixture_close_attempted"
+      ]
+    },
+    "fresh_fixture_revision": 4,
+    "old_frame": {
+      "stream_ordinal": 1,
+      "epoch": 0,
+      "sequence": 13,
+      "geometry_revision": 0
+    },
+    "fresh_frame": {
+      "stream_ordinal": 1,
+      "epoch": 0,
+      "sequence": 0,
+      "geometry_revision": 0
+    },
+    "streams_distinct": true,
+    "first_complete_latency_nanos": null,
+    "old_snapshot": {
+      "close_phase": 5,
+      "active_native_slots": 0,
+      "observed_total": 18,
+      "status_counts": [
+        18,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0
+      ],
+      "first_status": {
+        "kind": 0,
+        "raw_value": 0,
+        "sequence": 1,
+        "monotonic_nanos": 176323383807750
+      },
+      "last_status": {
+        "kind": 0,
+        "raw_value": 0,
+        "sequence": 18,
+        "monotonic_nanos": 176323669841791
+      },
+      "callbacks_received": 18,
+      "callbacks_admitted": 18,
+      "callbacks_refused": 0,
+      "callbacks_exited": 18,
+      "stream_start_completed_nanos": 176323385199500,
+      "stream_stop_requested_nanos": 176323677572625,
+      "stream_stop_completed_nanos": 176323687977291,
+      "callback_admission_stopped_nanos": 176323677433833,
+      "callback_fence_completed_nanos": 176323677475958,
+      "close_completed_nanos": 176323688007125,
+      "first_complete_nanos": 176323383807750,
+      "session_references": 1,
+      "detached_leases": 1,
+      "native_objects": 2,
+      "detached_bytes": 4628480,
+      "transition_overwrites": 0,
+      "transition_count": 1,
+      "transitions": [
+        {
+          "kind": 0,
+          "raw_value": 0,
+          "sequence": 1,
+          "monotonic_nanos": 176323383807750
+        },
+        null,
+        null,
+        null,
+        null,
+        null,
+        null,
+        null,
+        null,
+        null,
+        null,
+        null,
+        null,
+        null,
+        null,
+        null
+      ]
+    },
+    "fresh_snapshot": {
+      "close_phase": 5,
+      "active_native_slots": 0,
+      "observed_total": 1,
+      "status_counts": [
+        1,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0
+      ],
+      "first_status": {
+        "kind": 0,
+        "raw_value": 0,
+        "sequence": 1,
+        "monotonic_nanos": 176323858632583
+      },
+      "last_status": {
+        "kind": 0,
+        "raw_value": 0,
+        "sequence": 1,
+        "monotonic_nanos": 176323858632583
+      },
+      "callbacks_received": 1,
+      "callbacks_admitted": 1,
+      "callbacks_refused": 0,
+      "callbacks_exited": 1,
+      "stream_start_completed_nanos": 176323864014958,
+      "stream_stop_requested_nanos": 176323864187208,
+      "stream_stop_completed_nanos": 176323874134791,
+      "callback_admission_stopped_nanos": 176323864046791,
+      "callback_fence_completed_nanos": 176323864117000,
+      "close_completed_nanos": 176323874157208,
+      "first_complete_nanos": 176323858632583,
+      "session_references": 2,
+      "detached_leases": 1,
+      "native_objects": 21,
+      "detached_bytes": 9256960,
+      "transition_overwrites": 0,
+      "transition_count": 1,
+      "transitions": [
+        {
+          "kind": 0,
+          "raw_value": 0,
+          "sequence": 1,
+          "monotonic_nanos": 176323858632583
+        },
+        null,
+        null,
+        null,
+        null,
+        null,
+        null,
+        null,
+        null,
+        null,
+        null,
+        null,
+        null,
+        null,
+        null,
+        null
+      ]
+    },
+    "stage": "complete",
+    "outcome": "complete_frame",
+    "failure": "none"
+  },
+  {
+    "schema_version": 2,
+    "process_index": 6,
+    "topology": "historical_two_display",
+    "provenance": {
+      "source_revision": "ba6b0451a1d2b13a8fe418c477e91ea00fe9cff8",
+      "source_tree": "c645124b42064ae2c10c4f2cb28b86f8d7b385ad",
+      "protocol_sha256": "5f1d519544df585e287fc6af4b5c28e8f1d94f5fb8d0d90196cd2b5367209316",
+      "executable_sha256": "c8072bc557991d0762326b83e0c327d2c47cc3d359ff76e8d511a3a98ec6a623",
+      "fixture_sha256": "c647f79697c28800b5b28b27f97f9847c762149f074c0db198252e6981c9de7f",
+      "fixture_source_sha256": "f1c60db58650c1770f67b22c0e65563cf125c3800f43242d973da900d795395a",
+      "host": "apple_m1_pro10c32g",
+      "os": "macos26_6_2_build25g83",
+      "sdk": "xcode26_5"
+    },
+    "observed_topology": {
+      "display_count": 2,
+      "has_distinct_backing_scales": true
+    },
+    "baseline": {
+      "native_objects": 0,
+      "detached_bytes": 0,
+      "live_sessions": 0,
+      "callbacks_in_flight": 0
+    },
+    "post_old_drop_resources": {
+      "native_objects": 2,
+      "detached_bytes": 4628480,
+      "live_sessions": 0,
+      "callbacks_in_flight": 0
+    },
+    "final_resources": {
+      "native_objects": 0,
+      "detached_bytes": 0,
+      "live_sessions": 0,
+      "callbacks_in_flight": 0
+    },
+    "owners": {
+      "terminal_result": true,
+      "mapping": true,
+      "mapping_readable_after_fresh_close": true
+    },
+    "old_fixture_revision": 3,
+    "operation_deadline_millis": 5000,
+    "fresh_target_authenticated": true,
+    "lifecycle": {
+      "count": 11,
+      "steps": [
+        "old_result_retained",
+        "old_mapping_retained",
+        "old_session_close_attempted",
+        "old_public_owners_dropped",
+        "old_snapshot_recorded",
+        "fresh_session_opened",
+        "fresh_capture_attempted",
+        "fresh_session_close_attempted",
+        "mapping_verified",
+        "retained_owners_dropped",
+        "fixture_close_attempted"
+      ]
+    },
+    "fresh_fixture_revision": 4,
+    "old_frame": {
+      "stream_ordinal": 1,
+      "epoch": 0,
+      "sequence": 12,
+      "geometry_revision": 0
+    },
+    "fresh_frame": {
+      "stream_ordinal": 1,
+      "epoch": 0,
+      "sequence": 0,
+      "geometry_revision": 0
+    },
+    "streams_distinct": true,
+    "first_complete_latency_nanos": null,
+    "old_snapshot": {
+      "close_phase": 5,
+      "active_native_slots": 0,
+      "observed_total": 17,
+      "status_counts": [
+        17,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0
+      ],
+      "first_status": {
+        "kind": 0,
+        "raw_value": 0,
+        "sequence": 1,
+        "monotonic_nanos": 179172852995333
+      },
+      "last_status": {
+        "kind": 0,
+        "raw_value": 0,
+        "sequence": 17,
+        "monotonic_nanos": 179173126721833
+      },
+      "callbacks_received": 17,
+      "callbacks_admitted": 17,
+      "callbacks_refused": 0,
+      "callbacks_exited": 17,
+      "stream_start_completed_nanos": 179172854258958,
+      "stream_stop_requested_nanos": 179173136865166,
+      "stream_stop_completed_nanos": 179173151211541,
+      "callback_admission_stopped_nanos": 179173136727291,
+      "callback_fence_completed_nanos": 179173136763125,
+      "close_completed_nanos": 179173151246250,
+      "first_complete_nanos": 179172852995333,
+      "session_references": 1,
+      "detached_leases": 1,
+      "native_objects": 2,
+      "detached_bytes": 4628480,
+      "transition_overwrites": 0,
+      "transition_count": 1,
+      "transitions": [
+        {
+          "kind": 0,
+          "raw_value": 0,
+          "sequence": 1,
+          "monotonic_nanos": 179172852995333
+        },
+        null,
+        null,
+        null,
+        null,
+        null,
+        null,
+        null,
+        null,
+        null,
+        null,
+        null,
+        null,
+        null,
+        null,
+        null
+      ]
+    },
+    "fresh_snapshot": {
+      "close_phase": 5,
+      "active_native_slots": 0,
+      "observed_total": 1,
+      "status_counts": [
+        1,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0
+      ],
+      "first_status": {
+        "kind": 0,
+        "raw_value": 0,
+        "sequence": 1,
+        "monotonic_nanos": 179173324353000
+      },
+      "last_status": {
+        "kind": 0,
+        "raw_value": 0,
+        "sequence": 1,
+        "monotonic_nanos": 179173324353000
+      },
+      "callbacks_received": 1,
+      "callbacks_admitted": 1,
+      "callbacks_refused": 0,
+      "callbacks_exited": 1,
+      "stream_start_completed_nanos": 179173330100333,
+      "stream_stop_requested_nanos": 179173330263541,
+      "stream_stop_completed_nanos": 179173349733208,
+      "callback_admission_stopped_nanos": 179173330116666,
+      "callback_fence_completed_nanos": 179173330172083,
+      "close_completed_nanos": 179173349755500,
+      "first_complete_nanos": 179173324353000,
+      "session_references": 2,
+      "detached_leases": 1,
+      "native_objects": 22,
+      "detached_bytes": 9256960,
+      "transition_overwrites": 0,
+      "transition_count": 1,
+      "transitions": [
+        {
+          "kind": 0,
+          "raw_value": 0,
+          "sequence": 1,
+          "monotonic_nanos": 179173324353000
+        },
+        null,
+        null,
+        null,
+        null,
+        null,
+        null,
+        null,
+        null,
+        null,
+        null,
+        null,
+        null,
+        null,
+        null,
+        null
+      ]
+    },
+    "stage": "complete",
+    "outcome": "complete_frame",
+    "failure": "none"
+  },
+  {
+    "schema_version": 2,
+    "process_index": 7,
+    "topology": "historical_two_display",
+    "provenance": {
+      "source_revision": "ba6b0451a1d2b13a8fe418c477e91ea00fe9cff8",
+      "source_tree": "c645124b42064ae2c10c4f2cb28b86f8d7b385ad",
+      "protocol_sha256": "5f1d519544df585e287fc6af4b5c28e8f1d94f5fb8d0d90196cd2b5367209316",
+      "executable_sha256": "c8072bc557991d0762326b83e0c327d2c47cc3d359ff76e8d511a3a98ec6a623",
+      "fixture_sha256": "c647f79697c28800b5b28b27f97f9847c762149f074c0db198252e6981c9de7f",
+      "fixture_source_sha256": "f1c60db58650c1770f67b22c0e65563cf125c3800f43242d973da900d795395a",
+      "host": "apple_m1_pro10c32g",
+      "os": "macos26_6_2_build25g83",
+      "sdk": "xcode26_5"
+    },
+    "observed_topology": {
+      "display_count": 2,
+      "has_distinct_backing_scales": true
+    },
+    "baseline": {
+      "native_objects": 0,
+      "detached_bytes": 0,
+      "live_sessions": 0,
+      "callbacks_in_flight": 0
+    },
+    "post_old_drop_resources": {
+      "native_objects": 2,
+      "detached_bytes": 4628480,
+      "live_sessions": 0,
+      "callbacks_in_flight": 0
+    },
+    "final_resources": {
+      "native_objects": 0,
+      "detached_bytes": 0,
+      "live_sessions": 0,
+      "callbacks_in_flight": 0
+    },
+    "owners": {
+      "terminal_result": true,
+      "mapping": true,
+      "mapping_readable_after_fresh_close": true
+    },
+    "old_fixture_revision": 3,
+    "operation_deadline_millis": 5000,
+    "fresh_target_authenticated": true,
+    "lifecycle": {
+      "count": 11,
+      "steps": [
+        "old_result_retained",
+        "old_mapping_retained",
+        "old_session_close_attempted",
+        "old_public_owners_dropped",
+        "old_snapshot_recorded",
+        "fresh_session_opened",
+        "fresh_capture_attempted",
+        "fresh_session_close_attempted",
+        "mapping_verified",
+        "retained_owners_dropped",
+        "fixture_close_attempted"
+      ]
+    },
+    "fresh_fixture_revision": 4,
+    "old_frame": {
+      "stream_ordinal": 1,
+      "epoch": 0,
+      "sequence": 15,
+      "geometry_revision": 0
+    },
+    "fresh_frame": {
+      "stream_ordinal": 1,
+      "epoch": 0,
+      "sequence": 0,
+      "geometry_revision": 0
+    },
+    "streams_distinct": true,
+    "first_complete_latency_nanos": null,
+    "old_snapshot": {
+      "close_phase": 5,
+      "active_native_slots": 0,
+      "observed_total": 20,
+      "status_counts": [
+        20,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0
+      ],
+      "first_status": {
+        "kind": 0,
+        "raw_value": 0,
+        "sequence": 1,
+        "monotonic_nanos": 179180393074875
+      },
+      "last_status": {
+        "kind": 0,
+        "raw_value": 0,
+        "sequence": 20,
+        "monotonic_nanos": 179180716108333
+      },
+      "callbacks_received": 20,
+      "callbacks_admitted": 20,
+      "callbacks_refused": 0,
+      "callbacks_exited": 20,
+      "stream_start_completed_nanos": 179180393907083,
+      "stream_stop_requested_nanos": 179180718001916,
+      "stream_stop_completed_nanos": 179180737288125,
+      "callback_admission_stopped_nanos": 179180717816958,
+      "callback_fence_completed_nanos": 179180717862875,
+      "close_completed_nanos": 179180737322375,
+      "first_complete_nanos": 179180393074875,
+      "session_references": 1,
+      "detached_leases": 1,
+      "native_objects": 2,
+      "detached_bytes": 4628480,
+      "transition_overwrites": 0,
+      "transition_count": 1,
+      "transitions": [
+        {
+          "kind": 0,
+          "raw_value": 0,
+          "sequence": 1,
+          "monotonic_nanos": 179180393074875
+        },
+        null,
+        null,
+        null,
+        null,
+        null,
+        null,
+        null,
+        null,
+        null,
+        null,
+        null,
+        null,
+        null,
+        null,
+        null
+      ]
+    },
+    "fresh_snapshot": {
+      "close_phase": 5,
+      "active_native_slots": 0,
+      "observed_total": 1,
+      "status_counts": [
+        1,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0
+      ],
+      "first_status": {
+        "kind": 0,
+        "raw_value": 0,
+        "sequence": 1,
+        "monotonic_nanos": 179180915558458
+      },
+      "last_status": {
+        "kind": 0,
+        "raw_value": 0,
+        "sequence": 1,
+        "monotonic_nanos": 179180915558458
+      },
+      "callbacks_received": 1,
+      "callbacks_admitted": 1,
+      "callbacks_refused": 0,
+      "callbacks_exited": 1,
+      "stream_start_completed_nanos": 179180922249458,
+      "stream_stop_requested_nanos": 179180922361541,
+      "stream_stop_completed_nanos": 179180941669541,
+      "callback_admission_stopped_nanos": 179180922270333,
+      "callback_fence_completed_nanos": 179180922307291,
+      "close_completed_nanos": 179180941692791,
+      "first_complete_nanos": 179180915558458,
+      "session_references": 2,
+      "detached_leases": 1,
+      "native_objects": 22,
+      "detached_bytes": 9256960,
+      "transition_overwrites": 0,
+      "transition_count": 1,
+      "transitions": [
+        {
+          "kind": 0,
+          "raw_value": 0,
+          "sequence": 1,
+          "monotonic_nanos": 179180915558458
+        },
+        null,
+        null,
+        null,
+        null,
+        null,
+        null,
+        null,
+        null,
+        null,
+        null,
+        null,
+        null,
+        null,
+        null,
+        null
+      ]
+    },
+    "stage": "complete",
+    "outcome": "complete_frame",
+    "failure": "none"
+  },
+  {
+    "schema_version": 2,
+    "process_index": 8,
+    "topology": "historical_two_display",
+    "provenance": {
+      "source_revision": "ba6b0451a1d2b13a8fe418c477e91ea00fe9cff8",
+      "source_tree": "c645124b42064ae2c10c4f2cb28b86f8d7b385ad",
+      "protocol_sha256": "5f1d519544df585e287fc6af4b5c28e8f1d94f5fb8d0d90196cd2b5367209316",
+      "executable_sha256": "c8072bc557991d0762326b83e0c327d2c47cc3d359ff76e8d511a3a98ec6a623",
+      "fixture_sha256": "c647f79697c28800b5b28b27f97f9847c762149f074c0db198252e6981c9de7f",
+      "fixture_source_sha256": "f1c60db58650c1770f67b22c0e65563cf125c3800f43242d973da900d795395a",
+      "host": "apple_m1_pro10c32g",
+      "os": "macos26_6_2_build25g83",
+      "sdk": "xcode26_5"
+    },
+    "observed_topology": {
+      "display_count": 2,
+      "has_distinct_backing_scales": true
+    },
+    "baseline": {
+      "native_objects": 0,
+      "detached_bytes": 0,
+      "live_sessions": 0,
+      "callbacks_in_flight": 0
+    },
+    "post_old_drop_resources": {
+      "native_objects": 2,
+      "detached_bytes": 4628480,
+      "live_sessions": 0,
+      "callbacks_in_flight": 0
+    },
+    "final_resources": {
+      "native_objects": 0,
+      "detached_bytes": 0,
+      "live_sessions": 0,
+      "callbacks_in_flight": 0
+    },
+    "owners": {
+      "terminal_result": true,
+      "mapping": true,
+      "mapping_readable_after_fresh_close": true
+    },
+    "old_fixture_revision": 3,
+    "operation_deadline_millis": 5000,
+    "fresh_target_authenticated": true,
+    "lifecycle": {
+      "count": 11,
+      "steps": [
+        "old_result_retained",
+        "old_mapping_retained",
+        "old_session_close_attempted",
+        "old_public_owners_dropped",
+        "old_snapshot_recorded",
+        "fresh_session_opened",
+        "fresh_capture_attempted",
+        "fresh_session_close_attempted",
+        "mapping_verified",
+        "retained_owners_dropped",
+        "fixture_close_attempted"
+      ]
+    },
+    "fresh_fixture_revision": 4,
+    "old_frame": {
+      "stream_ordinal": 1,
+      "epoch": 0,
+      "sequence": 15,
+      "geometry_revision": 0
+    },
+    "fresh_frame": {
+      "stream_ordinal": 1,
+      "epoch": 0,
+      "sequence": 0,
+      "geometry_revision": 0
+    },
+    "streams_distinct": true,
+    "first_complete_latency_nanos": null,
+    "old_snapshot": {
+      "close_phase": 5,
+      "active_native_slots": 0,
+      "observed_total": 20,
+      "status_counts": [
+        20,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0
+      ],
+      "first_status": {
+        "kind": 0,
+        "raw_value": 0,
+        "sequence": 1,
+        "monotonic_nanos": 179187918501208
+      },
+      "last_status": {
+        "kind": 0,
+        "raw_value": 0,
+        "sequence": 20,
+        "monotonic_nanos": 179188241671083
+      },
+      "callbacks_received": 20,
+      "callbacks_admitted": 20,
+      "callbacks_refused": 0,
+      "callbacks_exited": 20,
+      "stream_start_completed_nanos": 179187919657625,
+      "stream_stop_requested_nanos": 179188243065000,
+      "stream_stop_completed_nanos": 179188264371958,
+      "callback_admission_stopped_nanos": 179188242940541,
+      "callback_fence_completed_nanos": 179188242983916,
+      "close_completed_nanos": 179188264410541,
+      "first_complete_nanos": 179187918501208,
+      "session_references": 1,
+      "detached_leases": 1,
+      "native_objects": 2,
+      "detached_bytes": 4628480,
+      "transition_overwrites": 0,
+      "transition_count": 1,
+      "transitions": [
+        {
+          "kind": 0,
+          "raw_value": 0,
+          "sequence": 1,
+          "monotonic_nanos": 179187918501208
+        },
+        null,
+        null,
+        null,
+        null,
+        null,
+        null,
+        null,
+        null,
+        null,
+        null,
+        null,
+        null,
+        null,
+        null,
+        null
+      ]
+    },
+    "fresh_snapshot": {
+      "close_phase": 5,
+      "active_native_slots": 0,
+      "observed_total": 1,
+      "status_counts": [
+        1,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0
+      ],
+      "first_status": {
+        "kind": 0,
+        "raw_value": 0,
+        "sequence": 1,
+        "monotonic_nanos": 179188441434458
+      },
+      "last_status": {
+        "kind": 0,
+        "raw_value": 0,
+        "sequence": 1,
+        "monotonic_nanos": 179188441434458
+      },
+      "callbacks_received": 1,
+      "callbacks_admitted": 1,
+      "callbacks_refused": 0,
+      "callbacks_exited": 1,
+      "stream_start_completed_nanos": 179188447505208,
+      "stream_stop_requested_nanos": 179188447708208,
+      "stream_stop_completed_nanos": 179188461888916,
+      "callback_admission_stopped_nanos": 179188447533708,
+      "callback_fence_completed_nanos": 179188447653500,
+      "close_completed_nanos": 179188461913250,
+      "first_complete_nanos": 179188441434458,
+      "session_references": 2,
+      "detached_leases": 1,
+      "native_objects": 22,
+      "detached_bytes": 9256960,
+      "transition_overwrites": 0,
+      "transition_count": 1,
+      "transitions": [
+        {
+          "kind": 0,
+          "raw_value": 0,
+          "sequence": 1,
+          "monotonic_nanos": 179188441434458
+        },
+        null,
+        null,
+        null,
+        null,
+        null,
+        null,
+        null,
+        null,
+        null,
+        null,
+        null,
+        null,
+        null,
+        null,
+        null
+      ]
+    },
+    "stage": "complete",
+    "outcome": "complete_frame",
+    "failure": "none"
+  },
+  {
+    "schema_version": 2,
+    "process_index": 9,
+    "topology": "historical_two_display",
+    "provenance": {
+      "source_revision": "ba6b0451a1d2b13a8fe418c477e91ea00fe9cff8",
+      "source_tree": "c645124b42064ae2c10c4f2cb28b86f8d7b385ad",
+      "protocol_sha256": "5f1d519544df585e287fc6af4b5c28e8f1d94f5fb8d0d90196cd2b5367209316",
+      "executable_sha256": "c8072bc557991d0762326b83e0c327d2c47cc3d359ff76e8d511a3a98ec6a623",
+      "fixture_sha256": "c647f79697c28800b5b28b27f97f9847c762149f074c0db198252e6981c9de7f",
+      "fixture_source_sha256": "f1c60db58650c1770f67b22c0e65563cf125c3800f43242d973da900d795395a",
+      "host": "apple_m1_pro10c32g",
+      "os": "macos26_6_2_build25g83",
+      "sdk": "xcode26_5"
+    },
+    "observed_topology": {
+      "display_count": 2,
+      "has_distinct_backing_scales": true
+    },
+    "baseline": {
+      "native_objects": 0,
+      "detached_bytes": 0,
+      "live_sessions": 0,
+      "callbacks_in_flight": 0
+    },
+    "post_old_drop_resources": {
+      "native_objects": 2,
+      "detached_bytes": 4628480,
+      "live_sessions": 0,
+      "callbacks_in_flight": 0
+    },
+    "final_resources": {
+      "native_objects": 0,
+      "detached_bytes": 0,
+      "live_sessions": 0,
+      "callbacks_in_flight": 0
+    },
+    "owners": {
+      "terminal_result": true,
+      "mapping": true,
+      "mapping_readable_after_fresh_close": true
+    },
+    "old_fixture_revision": 3,
+    "operation_deadline_millis": 5000,
+    "fresh_target_authenticated": true,
+    "lifecycle": {
+      "count": 11,
+      "steps": [
+        "old_result_retained",
+        "old_mapping_retained",
+        "old_session_close_attempted",
+        "old_public_owners_dropped",
+        "old_snapshot_recorded",
+        "fresh_session_opened",
+        "fresh_capture_attempted",
+        "fresh_session_close_attempted",
+        "mapping_verified",
+        "retained_owners_dropped",
+        "fixture_close_attempted"
+      ]
+    },
+    "fresh_fixture_revision": 4,
+    "old_frame": {
+      "stream_ordinal": 1,
+      "epoch": 0,
+      "sequence": 12,
+      "geometry_revision": 0
+    },
+    "fresh_frame": {
+      "stream_ordinal": 1,
+      "epoch": 0,
+      "sequence": 0,
+      "geometry_revision": 0
+    },
+    "streams_distinct": true,
+    "first_complete_latency_nanos": null,
+    "old_snapshot": {
+      "close_phase": 5,
+      "active_native_slots": 0,
+      "observed_total": 18,
+      "status_counts": [
+        17,
+        1,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0
+      ],
+      "first_status": {
+        "kind": 0,
+        "raw_value": 0,
+        "sequence": 1,
+        "monotonic_nanos": 179196625504833
+      },
+      "last_status": {
+        "kind": 0,
+        "raw_value": 0,
+        "sequence": 18,
+        "monotonic_nanos": 179196918180166
+      },
+      "callbacks_received": 18,
+      "callbacks_admitted": 18,
+      "callbacks_refused": 0,
+      "callbacks_exited": 18,
+      "stream_start_completed_nanos": 179196626834250,
+      "stream_stop_requested_nanos": 179196922017625,
+      "stream_stop_completed_nanos": 179196941502500,
+      "callback_admission_stopped_nanos": 179196921870833,
+      "callback_fence_completed_nanos": 179196921918125,
+      "close_completed_nanos": 179196941530750,
+      "first_complete_nanos": 179196625504833,
+      "session_references": 1,
+      "detached_leases": 1,
+      "native_objects": 2,
+      "detached_bytes": 4628480,
+      "transition_overwrites": 0,
+      "transition_count": 3,
+      "transitions": [
+        {
+          "kind": 0,
+          "raw_value": 0,
+          "sequence": 1,
+          "monotonic_nanos": 179196625504833
+        },
+        {
+          "kind": 1,
+          "raw_value": 1,
+          "sequence": 3,
+          "monotonic_nanos": 179196653002583
+        },
+        {
+          "kind": 0,
+          "raw_value": 0,
+          "sequence": 4,
+          "monotonic_nanos": 179196672391000
+        },
+        null,
+        null,
+        null,
+        null,
+        null,
+        null,
+        null,
+        null,
+        null,
+        null,
+        null,
+        null,
+        null
+      ]
+    },
+    "fresh_snapshot": {
+      "close_phase": 5,
+      "active_native_slots": 0,
+      "observed_total": 1,
+      "status_counts": [
+        1,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0
+      ],
+      "first_status": {
+        "kind": 0,
+        "raw_value": 0,
+        "sequence": 1,
+        "monotonic_nanos": 179197116009291
+      },
+      "last_status": {
+        "kind": 0,
+        "raw_value": 0,
+        "sequence": 1,
+        "monotonic_nanos": 179197116009291
+      },
+      "callbacks_received": 1,
+      "callbacks_admitted": 1,
+      "callbacks_refused": 0,
+      "callbacks_exited": 1,
+      "stream_start_completed_nanos": 179197122286708,
+      "stream_stop_requested_nanos": 179197122457375,
+      "stream_stop_completed_nanos": 179197141724750,
+      "callback_admission_stopped_nanos": 179197122305250,
+      "callback_fence_completed_nanos": 179197122375833,
+      "close_completed_nanos": 179197141777541,
+      "first_complete_nanos": 179197116009291,
+      "session_references": 2,
+      "detached_leases": 1,
+      "native_objects": 22,
+      "detached_bytes": 9256960,
+      "transition_overwrites": 0,
+      "transition_count": 1,
+      "transitions": [
+        {
+          "kind": 0,
+          "raw_value": 0,
+          "sequence": 1,
+          "monotonic_nanos": 179197116009291
+        },
+        null,
+        null,
+        null,
+        null,
+        null,
+        null,
+        null,
+        null,
+        null,
+        null,
+        null,
+        null,
+        null,
+        null,
+        null
+      ]
+    },
+    "stage": "complete",
+    "outcome": "complete_frame",
+    "failure": "none"
+  },
+  {
+    "schema_version": 2,
+    "process_index": 10,
+    "topology": "historical_two_display",
+    "provenance": {
+      "source_revision": "ba6b0451a1d2b13a8fe418c477e91ea00fe9cff8",
+      "source_tree": "c645124b42064ae2c10c4f2cb28b86f8d7b385ad",
+      "protocol_sha256": "5f1d519544df585e287fc6af4b5c28e8f1d94f5fb8d0d90196cd2b5367209316",
+      "executable_sha256": "c8072bc557991d0762326b83e0c327d2c47cc3d359ff76e8d511a3a98ec6a623",
+      "fixture_sha256": "c647f79697c28800b5b28b27f97f9847c762149f074c0db198252e6981c9de7f",
+      "fixture_source_sha256": "f1c60db58650c1770f67b22c0e65563cf125c3800f43242d973da900d795395a",
+      "host": "apple_m1_pro10c32g",
+      "os": "macos26_6_2_build25g83",
+      "sdk": "xcode26_5"
+    },
+    "observed_topology": {
+      "display_count": 2,
+      "has_distinct_backing_scales": true
+    },
+    "baseline": {
+      "native_objects": 0,
+      "detached_bytes": 0,
+      "live_sessions": 0,
+      "callbacks_in_flight": 0
+    },
+    "post_old_drop_resources": {
+      "native_objects": 2,
+      "detached_bytes": 4628480,
+      "live_sessions": 0,
+      "callbacks_in_flight": 0
+    },
+    "final_resources": {
+      "native_objects": 0,
+      "detached_bytes": 0,
+      "live_sessions": 0,
+      "callbacks_in_flight": 0
+    },
+    "owners": {
+      "terminal_result": true,
+      "mapping": true,
+      "mapping_readable_after_fresh_close": true
+    },
+    "old_fixture_revision": 3,
+    "operation_deadline_millis": 5000,
+    "fresh_target_authenticated": true,
+    "lifecycle": {
+      "count": 11,
+      "steps": [
+        "old_result_retained",
+        "old_mapping_retained",
+        "old_session_close_attempted",
+        "old_public_owners_dropped",
+        "old_snapshot_recorded",
+        "fresh_session_opened",
+        "fresh_capture_attempted",
+        "fresh_session_close_attempted",
+        "mapping_verified",
+        "retained_owners_dropped",
+        "fixture_close_attempted"
+      ]
+    },
+    "fresh_fixture_revision": 4,
+    "old_frame": {
+      "stream_ordinal": 1,
+      "epoch": 0,
+      "sequence": 12,
+      "geometry_revision": 0
+    },
+    "fresh_frame": {
+      "stream_ordinal": 1,
+      "epoch": 0,
+      "sequence": 0,
+      "geometry_revision": 0
+    },
+    "streams_distinct": true,
+    "first_complete_latency_nanos": null,
+    "old_snapshot": {
+      "close_phase": 5,
+      "active_native_slots": 0,
+      "observed_total": 17,
+      "status_counts": [
+        17,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0
+      ],
+      "first_status": {
+        "kind": 0,
+        "raw_value": 0,
+        "sequence": 1,
+        "monotonic_nanos": 179204525098958
+      },
+      "last_status": {
+        "kind": 0,
+        "raw_value": 0,
+        "sequence": 17,
+        "monotonic_nanos": 179204799445375
+      },
+      "callbacks_received": 17,
+      "callbacks_admitted": 17,
+      "callbacks_refused": 0,
+      "callbacks_exited": 17,
+      "stream_start_completed_nanos": 179204526436833,
+      "stream_stop_requested_nanos": 179204807176791,
+      "stream_stop_completed_nanos": 179204826707083,
+      "callback_admission_stopped_nanos": 179204807026791,
+      "callback_fence_completed_nanos": 179204807066125,
+      "close_completed_nanos": 179204826741041,
+      "first_complete_nanos": 179204525098958,
+      "session_references": 1,
+      "detached_leases": 1,
+      "native_objects": 2,
+      "detached_bytes": 4628480,
+      "transition_overwrites": 0,
+      "transition_count": 1,
+      "transitions": [
+        {
+          "kind": 0,
+          "raw_value": 0,
+          "sequence": 1,
+          "monotonic_nanos": 179204525098958
+        },
+        null,
+        null,
+        null,
+        null,
+        null,
+        null,
+        null,
+        null,
+        null,
+        null,
+        null,
+        null,
+        null,
+        null,
+        null
+      ]
+    },
+    "fresh_snapshot": {
+      "close_phase": 5,
+      "active_native_slots": 0,
+      "observed_total": 1,
+      "status_counts": [
+        1,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0
+      ],
+      "first_status": {
+        "kind": 0,
+        "raw_value": 0,
+        "sequence": 1,
+        "monotonic_nanos": 179205007793416
+      },
+      "last_status": {
+        "kind": 0,
+        "raw_value": 0,
+        "sequence": 1,
+        "monotonic_nanos": 179205007793416
+      },
+      "callbacks_received": 1,
+      "callbacks_admitted": 1,
+      "callbacks_refused": 0,
+      "callbacks_exited": 1,
+      "stream_start_completed_nanos": 179205014612375,
+      "stream_stop_requested_nanos": 179205014853083,
+      "stream_stop_completed_nanos": 179205032178750,
+      "callback_admission_stopped_nanos": 179205014641250,
+      "callback_fence_completed_nanos": 179205014785791,
+      "close_completed_nanos": 179205032228541,
+      "first_complete_nanos": 179205007793416,
+      "session_references": 2,
+      "detached_leases": 1,
+      "native_objects": 22,
+      "detached_bytes": 9256960,
+      "transition_overwrites": 0,
+      "transition_count": 1,
+      "transitions": [
+        {
+          "kind": 0,
+          "raw_value": 0,
+          "sequence": 1,
+          "monotonic_nanos": 179205007793416
+        },
+        null,
+        null,
+        null,
+        null,
+        null,
+        null,
+        null,
+        null,
+        null,
+        null,
+        null,
+        null,
+        null,
+        null,
+        null
+      ]
+    },
+    "stage": "complete",
+    "outcome": "complete_frame",
+    "failure": "none"
+  }
+]
