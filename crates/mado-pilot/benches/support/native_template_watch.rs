@@ -706,7 +706,7 @@ pub(super) fn run() {
             .join(",")
     );
 
-    if arguments.qualification {
+    if arguments.qualification || arguments.retained_result_lifecycle_diagnostic {
         report(&arguments, sample_plan, &workloads);
     } else {
         bench_harness::summarize("native-template-watch", sample_plan, &workloads);
