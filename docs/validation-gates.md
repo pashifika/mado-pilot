@@ -283,6 +283,13 @@ Corrective successor `7139a68` serializes backend generation admission per
 query and bounds Windows fixture output before allocation. The `f16591f` host
 cohorts do not qualify those changed runtime and harness semantics, so a future
 support decision requires a fresh complete protocol on both approved hosts.
+
+ADR 0061 repairs only the internal native qualification report gate. It replaces
+exact Windows UBR and hardware-text equality with finite canonical provenance,
+keeps host class, build family, SDK, target, toolchain, and backend compatibility
+typed and separate from privacy rejection, and preserves Apple admission. The
+repair changes no budget or public watcher support claim and requires fresh
+affected Windows qualification before its result can be classified.
 OCR predicates, callbacks/subscriptions, C/C++, automatic input, target activation,
 arbitrary application/template/ROI compatibility or timing, real-time guarantees,
 packaging, and release remain unavailable.

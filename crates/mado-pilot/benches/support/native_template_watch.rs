@@ -2020,7 +2020,7 @@ fn report(arguments: &Arguments, plan: Plan, workloads: &[Workload]) {
             process_index: &process,
         },
     )
-    .unwrap_or_else(|_| panic!("privacy_violation"));
+    .unwrap_or_else(|failure| panic!("{}", failure.token()));
     bench_harness::report(
         &Benchmark {
             id: "phase-4-native-template-watch",

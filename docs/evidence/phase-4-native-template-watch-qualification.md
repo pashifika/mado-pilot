@@ -76,4 +76,12 @@ Rejected evidence remains revision-bound rather than being rewritten as success:
 
 Tracked evidence excludes captured pixels or hashes, template bytes or caller template identifiers, titles, raw native/display/window/process identifiers, credentials, OCR/input text, local paths, process inventories, signing identifiers, and unrelated desktop metadata. Exact non-sensitive source, tree, binary, fixture, host class, toolchain, process, workload, aggregate work, resource, and typed-failure facts remain reviewable.
 
+Successor tracked-report schemas classify fixed-schema, privacy-payload, and
+privacy-safe environment incompatibility separately. Windows operating-system
+provenance uses a finite Windows 11 grammar with canonical unsigned 32-bit UBR,
+and approved-host hardware uses bounded structured text; host class, build
+family, SDK, target, toolchain, and backend remain independent compatibility
+gates. Rejected classes publish no report. These successor rules do not rewrite
+the historical process records above.
+
 This evidence does not accept the Windows/macOS native Rust watcher boundary. OCR predicates, callbacks/subscriptions, C ABI/C++, automatic input, target activation, arbitrary application/template/ROI compatibility or timing, real-time guarantees, packaging, crates.io/static artifacts, a release tag, and `v0.4.0` also remain unqualified or unavailable.

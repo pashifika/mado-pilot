@@ -90,6 +90,14 @@ These numbers are repository-fixture regression budgets, not service-level objec
 
 Diagnostics are disabled by default. `Normal` mode retains terminal state, final work counters, and exact loss accounting; `Debug` additionally retains bounded nonterminal dispositions and intermediate counters. Neither mode retains captured pixels or hashes, template bytes or caller template identifiers, window titles, raw native identifiers, local paths, credentials, OCR/input text, native payloads, process inventories, or unrelated desktop metadata.
 
+The private qualification harness applies an additional tracked-report gate
+before publishing evidence. ADR 0061 separates fixed schema and privacy rejection
+from typed environment incompatibility. Windows 11 Pro 25H2 build family 26200
+remains required, while a canonical unsigned 32-bit UBR and bounded hardware
+representation are diagnostic provenance rather than exact-update admission
+keys. Rejected profiles publish no tracked report. This internal repair does not
+change the public watcher interface or the withheld support status.
+
 Application logs remain the caller's responsibility. Avoid formatting full native errors or discovered target names into ordinary telemetry when those values may contain sensitive application or desktop data.
 
 ## Troubleshooting
