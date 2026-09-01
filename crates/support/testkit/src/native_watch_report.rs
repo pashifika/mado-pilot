@@ -247,7 +247,7 @@ fn validate_privacy<'a>(
         || profile
             .benchmark_executable_sha256
             .as_deref()
-            .is_some_and(|digest| !is_hex(digest, 64))
+            .is_none_or(|digest| !is_hex(digest, 64))
     {
         return Err(ValidationError::Privacy);
     }
@@ -901,6 +901,18 @@ mod tests {
 
         let mut candidate = apple_profile();
         candidate.fixture_sha256 = "/tmp/private".to_owned();
+        assert_eq!(
+            validate(&candidate, provenance),
+            Err(ValidationError::Privacy)
+        );
+    }
+
+    #[test]
+    fn missing_benchmark_executable_digest_is_rejected() {
+        let provenance = apple_provenance();
+        let mut candidate = apple_profile();
+        candidate.benchmark_executable_sha256 = None;
+
         assert_eq!(
             validate(&candidate, provenance),
             Err(ValidationError::Privacy)
