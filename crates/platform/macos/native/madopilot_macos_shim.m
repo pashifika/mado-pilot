@@ -4199,6 +4199,13 @@ static atomic_uint mp_shim_fixture_cleanup_observers_max =
     ATOMIC_VAR_INIT(0);
 static dispatch_queue_t mp_shim_fixture_cleanup_queue;
 static dispatch_once_t mp_shim_fixture_cleanup_queue_once;
+static dispatch_queue_t mp_shim_fixture_cleanup_serial_queue(void) {
+    dispatch_once(&mp_shim_fixture_cleanup_queue_once, ^{
+      mp_shim_fixture_cleanup_queue = dispatch_queue_create(
+          "io.madopilot.fixture-cleanup", DISPATCH_QUEUE_SERIAL);
+    });
+    return mp_shim_fixture_cleanup_queue;
+}
 
 typedef struct {
     uint64_t completion_timeout_nanos;
@@ -4535,13 +4542,11 @@ static mp_shim_status mp_shim_fixture_application_schedule_reap(
     if (record == nil) {
         return MP_SHIM_INVALID_ARGUMENT;
     }
-    dispatch_once(&mp_shim_fixture_cleanup_queue_once, ^{
-      mp_shim_fixture_cleanup_queue = dispatch_queue_create(
-          "io.madopilot.fixture-cleanup", DISPATCH_QUEUE_SERIAL);
-    });
+    dispatch_queue_t cleanup_queue =
+        mp_shim_fixture_cleanup_serial_queue();
     mp_shim_fixture_cleanup_counter_increment(
         &mp_shim_fixture_cleanup_scheduled);
-    if (mp_shim_fixture_cleanup_queue == nil) {
+    if (cleanup_queue == nil) {
         mp_shim_fixture_cleanup_counter_increment(
             &mp_shim_fixture_cleanup_exhausted);
         if (record->cleanup_finished != nil) {
@@ -5267,12 +5272,20 @@ mp_shim_status mp_shim_testing_fixture_application_launch(
                          MP_SHIM_TEST_FIXTURE_LIFETIME_FAILURE);
         }
         if (scenario == MP_SHIM_TEST_FIXTURE_DELAYED_DEATH) {
+            dispatch_queue_t cleanup_queue =
+                mp_shim_fixture_cleanup_serial_queue();
+            if (cleanup_queue == nil) {
+                if (owned != NULL) {
+                    mp_shim_fixture_application_release(owned);
+                }
+                return MP_SHIM_PLATFORM_FAILURE;
+            }
             dispatch_after(
                 dispatch_time(
                     DISPATCH_TIME_NOW,
                     (int64_t)(MP_SHIM_FIXTURE_FORCE_TERMINATION_NANOS +
                               250000000ull)),
-                dispatch_get_global_queue(QOS_CLASS_UTILITY, 0), ^{
+                cleanup_queue, ^{
                   atomic_store(&application->test_lifetime_mode,
                                MP_SHIM_TEST_FIXTURE_LIFETIME_DEAD);
                 });
