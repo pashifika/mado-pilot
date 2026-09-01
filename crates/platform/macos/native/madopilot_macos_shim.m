@@ -4778,19 +4778,11 @@ static mp_shim_status mp_shim_fixture_application_submit(
             return mp_shim_fixture_launch_abandon(
                 state, application_value, MP_SHIM_PLATFORM_FAILURE);
         }
-        bool exact_live = false;
-        mp_shim_status lifetime_status =
-            mp_shim_fixture_application_exact_lifetime(
-                application_value, process_id, launch_time,
-                options->lifetime_probe, &exact_live);
-        if (lifetime_status != MP_SHIM_OK || !exact_live) {
-            mp_shim_status failed =
-                lifetime_status == MP_SHIM_NATIVE_EXCEPTION
-                    ? lifetime_status
-                    : MP_SHIM_PLATFORM_FAILURE;
-            return mp_shim_fixture_launch_abandon(
-                state, application_value, failed);
-        }
+        /*
+         * The completion's application, PID, and launch date establish identity.
+         * Workspace process lookup can lag this callback; every later observation
+         * and termination revalidates the stored identity through the exact helper.
+         */
         mp_shim_status created = mp_shim_fixture_application_create(
             application_value, process_id, launch_time,
             options->lifetime_probe, options->cleanup_finished,
@@ -5141,7 +5133,7 @@ mp_shim_status mp_shim_testing_fixture_application_launch(
     uint64_t *out_cleanup_completed, uint64_t *out_cleanup_exhausted,
     uint64_t *out_cleanup_observations,
     uint32_t *out_cleanup_max_observer_concurrency) {
-    if (scenario > MP_SHIM_TEST_FIXTURE_OVERLAPPING_RELEASES ||
+    if (scenario > MP_SHIM_TEST_FIXTURE_TRANSIENT_LIFETIME_REGISTRATION ||
         out_launch_status == NULL || out_submission_calls == NULL ||
         out_graceful_termination_calls == NULL ||
         out_force_termination_calls == NULL || out_terminated == NULL ||
@@ -5232,12 +5224,22 @@ mp_shim_status mp_shim_testing_fixture_application_launch(
             scenario == MP_SHIM_TEST_FIXTURE_OVERLAPPING_RELEASES) {
             application->force_failures_remaining = 1;
         }
+        if (scenario ==
+            MP_SHIM_TEST_FIXTURE_TRANSIENT_LIFETIME_REGISTRATION) {
+            atomic_store(&application->test_lifetime_mode,
+                         MP_SHIM_TEST_FIXTURE_LIFETIME_DEAD);
+        }
 
         mp_shim_fixture_application *owned = NULL;
         uint32_t process_id = 0;
         id url = [NSURL fileURLWithPath:@"/" isDirectory:YES];
         *out_launch_status = mp_shim_fixture_application_submit(
             workspace, configuration, url, &options, &owned, &process_id);
+        if (scenario ==
+            MP_SHIM_TEST_FIXTURE_TRANSIENT_LIFETIME_REGISTRATION) {
+            atomic_store(&application->test_lifetime_mode,
+                         MP_SHIM_TEST_FIXTURE_LIFETIME_LIVE);
+        }
         (void)process_id;
 
         if (scenario != MP_SHIM_TEST_FIXTURE_SEMAPHORE_ALLOCATION_FAILURE) {

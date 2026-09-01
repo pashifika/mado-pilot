@@ -116,6 +116,9 @@ pub(crate) const FAIL_START_HOLD_ALLOCATION: u32 = 512;
 pub(crate) const FAIL_RECONFIGURE_SEMAPHORE_ALLOCATION: u32 = 1024;
 
 #[cfg(test)]
+pub(crate) static NATIVE_LIFECYCLE_TEST_SERIAL: std::sync::Mutex<()> = std::sync::Mutex::new(());
+
+#[cfg(test)]
 const TEST_FIXTURE_SEMAPHORE_ALLOCATION_FAILURE: u32 = 0;
 #[cfg(test)]
 const TEST_FIXTURE_COMPLETION_EXCEPTION: u32 = 1;
@@ -141,6 +144,8 @@ const TEST_FIXTURE_EXACT_PROBE_FAILURE: u32 = 10;
 const TEST_FIXTURE_DELAYED_DEATH: u32 = 11;
 #[cfg(test)]
 const TEST_FIXTURE_OVERLAPPING_RELEASES: u32 = 12;
+#[cfg(test)]
+const TEST_FIXTURE_TRANSIENT_LIFETIME_REGISTRATION: u32 = 13;
 
 #[repr(C)]
 struct OpaqueInventory {
@@ -3506,8 +3511,8 @@ mod tests {
     use std::ffi::c_void;
     use std::panic;
     use std::ptr::NonNull;
+    use std::sync::Arc;
     use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
-    use std::sync::{Arc, Mutex};
     use std::time::Duration;
 
     use super::{
@@ -3521,10 +3526,10 @@ mod tests {
         TEST_FIXTURE_REAPER_HANDOFF, TEST_FIXTURE_RELEASE_REAPER_HANDOFF,
         TEST_FIXTURE_SEMAPHORE_ALLOCATION_FAILURE,
         TEST_FIXTURE_STALE_TERMINATION_AFTER_EXACT_DEATH, TEST_FIXTURE_SUCCESSFUL_RELEASE,
-        TEST_FIXTURE_VALIDATION_FAILURE, TEST_INPUT_ENVIRONMENT_APPLICATION_CHANGE,
-        TEST_INPUT_ENVIRONMENT_COMPLETE_TRACE, TEST_INPUT_ENVIRONMENT_LAUNCH_TIME_CHANGE,
-        TEST_INPUT_ENVIRONMENT_PID_CHANGE, TEST_INPUT_ENVIRONMENT_POINTER_FAILURE,
-        TEST_INPUT_ENVIRONMENT_POINTER_FAILURE_TRACE,
+        TEST_FIXTURE_TRANSIENT_LIFETIME_REGISTRATION, TEST_FIXTURE_VALIDATION_FAILURE,
+        TEST_INPUT_ENVIRONMENT_APPLICATION_CHANGE, TEST_INPUT_ENVIRONMENT_COMPLETE_TRACE,
+        TEST_INPUT_ENVIRONMENT_LAUNCH_TIME_CHANGE, TEST_INPUT_ENVIRONMENT_PID_CHANGE,
+        TEST_INPUT_ENVIRONMENT_POINTER_FAILURE, TEST_INPUT_ENVIRONMENT_POINTER_FAILURE_TRACE,
         TEST_INPUT_ENVIRONMENT_SECOND_LIFETIME_FAILURE, TEST_INPUT_ENVIRONMENT_STABLE_IDENTITY,
         TEST_INPUT_SINGLE_CONFIGURE_EXCEPTION, TEST_INPUT_SINGLE_POST_EXCEPTION,
         TEST_INPUT_TEXT_CONFIGURE_EXCEPTION, TEST_INPUT_TEXT_POST_EXCEPTION,
@@ -3554,10 +3559,8 @@ mod tests {
         CancellationToken, Clock, MonotonicInstant, OperationContext, PixelExtent,
     };
 
-    static FIXTURE_TEST_SERIAL: Mutex<()> = Mutex::new(());
-
     fn serialized_fixture_test() -> std::sync::MutexGuard<'static, ()> {
-        FIXTURE_TEST_SERIAL
+        super::NATIVE_LIFECYCLE_TEST_SERIAL
             .lock()
             .unwrap_or_else(std::sync::PoisonError::into_inner)
     }
@@ -4913,6 +4916,22 @@ mod tests {
         let _serial = serialized_fixture_test();
         let observed = testing_fixture_application_launch(TEST_FIXTURE_SUCCESSFUL_RELEASE)
             .expect("the native fixture-launch seam releases its successful handle");
+
+        assert_eq!(observed.launch_status, ShimStatus::Ok);
+        assert_eq!(observed.submission_calls, 1);
+        assert_eq!(observed.graceful_termination_calls, 1);
+        assert_eq!(observed.force_termination_calls, 1);
+        assert!(observed.terminated);
+        assert_eq!(observed.live_during_handle, observed.live_after_release + 1);
+        assert_cleanup_counts(&observed, 0, 0, 0, 0);
+    }
+
+    #[test]
+    fn fixture_launch_accepts_callback_identity_before_workspace_registration_catches_up() {
+        let _serial = serialized_fixture_test();
+        let observed =
+            testing_fixture_application_launch(TEST_FIXTURE_TRANSIENT_LIFETIME_REGISTRATION)
+                .expect("the transient workspace-registration scenario runs");
 
         assert_eq!(observed.launch_status, ShimStatus::Ok);
         assert_eq!(observed.submission_calls, 1);

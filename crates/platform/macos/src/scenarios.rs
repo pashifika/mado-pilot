@@ -13,7 +13,7 @@
 //! its reason so a green run cannot be read as evidence the scenario ran.
 
 use std::ffi::c_void;
-use std::sync::{Arc, Barrier, Mutex, MutexGuard};
+use std::sync::{Arc, Barrier, MutexGuard};
 use std::thread;
 use std::time::{Duration, Instant};
 
@@ -71,8 +71,9 @@ const FRAME_TIME_LEAD: Duration = Duration::from_millis(50);
 /// one scenario's failure should report itself rather than turn every later
 /// scenario into a second, less informative failure.
 fn serialized() -> MutexGuard<'static, ()> {
-    static GATE: Mutex<()> = Mutex::new(());
-    GATE.lock().unwrap_or_else(|poisoned| poisoned.into_inner())
+    shim::NATIVE_LIFECYCLE_TEST_SERIAL
+        .lock()
+        .unwrap_or_else(|poisoned| poisoned.into_inner())
 }
 
 /// One authorized target, with everything a session open needs.

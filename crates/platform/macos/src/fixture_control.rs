@@ -348,7 +348,9 @@ impl LaunchedFixtureApplication {
             )
         };
         let Some(raw) = NonNull::new(application) else {
-            return Err("the fixture application launcher returned no application".to_owned());
+            return Err(format!(
+                "the fixture application launcher returned no application (status {status})"
+            ));
         };
         if status != 0 || process_id == 0 {
             // SAFETY: a non-null failure output, though contrary to the native

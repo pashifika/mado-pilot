@@ -1127,6 +1127,7 @@ mp_shim_status mp_shim_fixture_cleanup_counts(
 #define MP_SHIM_TEST_FIXTURE_EXACT_PROBE_FAILURE 10u
 #define MP_SHIM_TEST_FIXTURE_DELAYED_DEATH 11u
 #define MP_SHIM_TEST_FIXTURE_OVERLAPPING_RELEASES 12u
+#define MP_SHIM_TEST_FIXTURE_TRANSIENT_LIFETIME_REGISTRATION 13u
 
 /*
  * Exercises fixture launch submission, asynchronous completion containment,
