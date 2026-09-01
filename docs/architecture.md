@@ -1463,6 +1463,16 @@ target. Receipt, bounded fixture observation, and newer-frame visual result
 remain separate facts.
 Structural signature validity proves neither a TCC decision nor an application
 input.
+Private fixture cleanup retains the callback-returned application, PID, and
+launch time as one process lifetime. Every later observation and termination
+request revalidates that exact identity; registry visibility during the launch
+callback is not required. Containment sends at most one graceful and one forced
+request, then one lazy serial queue observes only at 100-millisecond intervals
+for at most twenty attempts. Saturating scheduled, active, completed, and
+exhausted counters exist only in private-fixture builds. This boundary and the
+capture-start lifecycle repair are recorded in
+[ADR 0059](adr/0059-macos-capture-start-and-fixture-cleanup.md).
+
 The capability matrix, commands, privacy limits, bundling/signing step, and manual
 procedure are in [macos-input-verification.md](macos-input-verification.md).
 
@@ -1890,13 +1900,18 @@ every native wait; another close waits only within its own deadline. Joining the
 reportable: a start can outlive the wait its own caller gave it, and settling after
 teardown had finished would leave that outcome with nowhere to go, since open has
 returned and a successful fence has already released the state a callback would reach.
-Close therefore reads a settled result and reports it as its own. Start, stop, and
-fence gates remain pending when one wait expires, and the saved phase is resumed by
-the same caller or a later close rather than restarted. Each wait is bounded by a
-slice of the caller's remaining budget, and expiry becomes the caller's own deadline
-or cancellation rather than a fault. Release completes even when close reports a
-non-timeout failure, and that failure is reported once rather than by every later
-close. The strong reference the shim
+Close therefore reads a settled result and reports it as its own. Start has an
+`idle`, `pending`, or `settled(status)` gate: the first caller alone submits the
+native request, concurrent opens and close join it, and later callers read the
+same normalized status without retaining a framework error object. Each native
+wait is bounded by a slice of the caller's remaining budget. A start-slice
+timeout is not terminal: Rust checkpoints the original operation and rejoins
+without resubmitting. Stop and fence remain pending when one wait expires, and
+the saved phase is resumed by the same caller or a later close rather than
+restarted. Caller-budget expiry or cancellation remains the caller's own
+outcome, not a native fault.
+Release completes even when close reports a non-timeout failure, and that failure
+is reported once rather than by every later close. The strong reference the shim
 holds as its callback context is reclaimed only after a fence proves no callback can
 reach it; if a fence never succeeds, that one reference stays quarantined rather
 than being freed under a live callback. That fence covers the producer's terminal
@@ -2614,6 +2629,12 @@ therefore remains withheld.
 Corrective successor `7139a68` changes runtime generation admission and the
 Windows qualification reader. The `f16591f` host outcomes therefore remain
 historical evidence and cannot qualify the current implementation.
+ADR 0059 independently repairs capture-start wait slicing and finite exact
+fixture cleanup. Its repaired source passed twenty predeclared fresh focused
+Apple processes without retry, replacement, cleanup debt, or retained fixture
+processes. That one-display diagnostic evidence verifies the repaired
+lifecycle contracts only: it neither identifies the archived suspension's
+cause nor satisfies ADR 0057's cross-host native watcher qualification.
 
 Source exhaustion refuses later query starts but lets an already acquired
 pending or in-flight final frame drain. Successfully drained work that leaves
