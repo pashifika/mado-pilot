@@ -3,7 +3,7 @@
 
 #[cfg(target_os = "macos")]
 use crate::macos_fixture::{
-    FixtureController, LaunchMode, controlled_content_logical_size,
+    FixtureController, FixtureFinalization, LaunchMode, controlled_content_logical_size,
     controlled_resize_logical_size_matches, expected_controlled_resize_logical_size,
 };
 #[cfg(target_os = "macos")]
@@ -15,6 +15,20 @@ use crate::macos_fixture_protocol::{self as protocol, FixtureCommandKind};
 const FIXTURE_STATUS_OK: u32 = 0;
 #[cfg(target_os = "macos")]
 const FIXTURE_STATUS_UNSUPPORTED: u32 = 2;
+
+#[cfg(target_os = "macos")]
+#[must_use = "fixture finalization must be checked before accepting a sample"]
+struct NativeFixtureFinalization {
+    events_drained: bool,
+    controller: FixtureFinalization,
+}
+
+#[cfg(target_os = "macos")]
+impl NativeFixtureFinalization {
+    const fn is_accepted(&self) -> bool {
+        self.events_drained && self.controller.is_accepted()
+    }
+}
 
 #[cfg(target_os = "macos")]
 struct NativeFixture {
@@ -124,10 +138,12 @@ impl NativeFixture {
         self.command(FixtureCommandKind::RestorePlacement)
     }
 
-    fn finish(&mut self) -> bool {
+    fn finish(&mut self) -> NativeFixtureFinalization {
         let events_drained = self.controller.discard_watch_events(FIXTURE_WAIT);
-        let fixture_finished = self.controller.finish(FIXTURE_WAIT);
-        events_drained && fixture_finished
+        NativeFixtureFinalization {
+            events_drained,
+            controller: self.controller.finish(FIXTURE_WAIT),
+        }
     }
 }
 

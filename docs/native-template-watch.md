@@ -2,20 +2,26 @@
 
 MadoPilot can wait for stable template presence on maintained Windows Graphics Capture or ScreenCaptureKit sessions through the Rust facade. The caller starts one bounded query and receives one immutable terminal outcome; no caller frame-polling loop, target activation, input injection, host callback, or permission prompt is involved.
 
-This page documents an implemented but not support-qualified native boundary. Independent review rejected the historical two-host evidence; replacement source `f16591f` passed the corrected Windows matrix but terminated red in Apple process 5, so [ADR 0057](adr/0057-native-template-watch-rust-support.md) continues to withhold promotion.
+This page documents an implemented but not support-qualified native boundary.
+Independent review rejected the historical two-host evidence; replacement source
+`f16591f` passed the corrected Windows matrix but terminated red in Apple process
+5, so [ADR 0057](adr/0057-native-template-watch-rust-support.md) continues to
+withhold promotion.
 
-Corrective successor `7139a68` serializes backend generation admission per
-query and bounds Windows fixture output before allocation. The `f16591f` host
-cohorts do not qualify those changed runtime and harness semantics; fresh
-complete cohorts on both hosts would be required before promotion.
+The current integrated repair candidate combines ADR 0061's private Windows
+report-admission correction with ADR 0062's Apple fixture-lifetime correction.
+The Apple controller establishes a retained launched lifetime before acceptance
+and destructive watcher samples consume explicit typed finalization. Fresh
+affected qualification is still pending on both approved hosts; implementation
+checks do not promote support.
 
 ## Current boundary
 
 | Surface | State |
 |---|---|
 | Rust `Session::start_template_watch` over replay/OpenCV | Supported and budget-qualified |
-| Rust `Session::start_template_watch` over Windows WGC window/display sessions | Implemented; historical source `f16591f` passed 5/5, but it does not qualify corrective successor `7139a68` and cross-target support remains withheld |
-| Rust `Session::start_template_watch` over macOS ScreenCaptureKit window/display sessions | Implemented; historical source `f16591f` terminated red in process 5 after a ScreenCaptureKit stream suspension and does not qualify corrective successor `7139a68` |
+| Rust `Session::start_template_watch` over Windows WGC window/display sessions | Implemented; historical source `f16591f` passed 5/5, while the current integrated candidate includes ADR 0061's private report-admission repair. Affected fresh qualification remains pending and cross-target support remains withheld |
+| Rust `Session::start_template_watch` over macOS ScreenCaptureKit window/display sessions | Implemented; historical source `f16591f` terminated red in process 5. ADR 0062's current repair establishes exact retained launch lifetime before fixture acceptance and consumes typed finalization, but fresh integrated qualification remains pending |
 | Non-blocking `TemplateQuery::poll`, blocking `wait`, explicit `cancel`, and immutable terminal results | Implemented; native support follows the underlying session qualification |
 | OCR predicates or wait-for-text | Not implemented |
 | Watcher callbacks or subscriptions | Not implemented |
@@ -24,7 +30,7 @@ complete cohorts on both hosts would be required before promotion.
 | Tokio/futures integration or real-time guarantees | Not implemented |
 | Packaged libraries, crates.io publication, static artifacts, installers, tags, or a `v0.4.0` release | Not available |
 
-The native matrices use repository-owned fixtures and a fixed marker to prove source identity, state transitions, geometry resets, deadlines, cancellation, target loss, ownership, cleanup, and finite resource behavior. The corrected Windows cohort passed, while the same-source Apple cohort terminated red in process 5. These fixtures are qualification apparatus, not a compatibility claim for arbitrary applications or caller content.
+The native matrices use repository-owned fixtures and a fixed marker to prove source identity, state transitions, geometry resets, deadlines, cancellation, target loss, ownership, cleanup, and finite resource behavior. The corrected historical Windows cohort passed, while the same-source historical Apple cohort terminated red in process 5. ADRs 0061 and 0062 repair separately proven private qualification boundaries; neither implementation result replaces a fresh affected cohort. These fixtures are qualification apparatus, not a compatibility claim for arbitrary applications or caller content.
 
 ## Prerequisites
 
@@ -82,7 +88,7 @@ Other terminal outcomes are explicit: `Cancelled`, `DeadlineExceeded`, `SessionC
 
 The production watcher uses fixed finite engine/session/query limits, two engine-wide analysis slots with at most one admitted generation per query, one latest pending frame per query, a bounded shared mapping cache, and a 30-second eligible-queue residence bound. Capture publication never waits for OpenCV matching. Superseded, coalesced, deferred, rejected, expired, completed, and failed work remains observable through query results or bounded diagnostics.
 
-[ADR 0053](adr/0053-native-template-watch-budgets.md) fixes independent Windows and Apple Silicon regression ceilings. Replacement source `f16591f` corrected the engine-close and Windows cross-DPI semantics rejected by independent review. Its Windows cohort passed five fresh processes. Its Apple cohort passed processes 1–4, then process 5 terminated red at `retained_result_mapping` after ScreenCaptureKit suspended the newly opened stream. Fifty focused runs and one immediate full-load diagnostic passed without reproducing the suspension, but qualification permits no retry or replacement. Correctness, source authority, lifecycle, ownership, cleanup, and privacy fail qualification regardless of latency.
+[ADR 0053](adr/0053-native-template-watch-budgets.md) fixes independent Windows and Apple Silicon regression ceilings. Replacement source `f16591f` corrected the engine-close and Windows cross-DPI semantics rejected by independent review. Its Windows cohort passed five fresh processes. Its Apple cohort passed processes 1–4, then process 5 terminated red at `retained_result_mapping` after ScreenCaptureKit suspended the newly opened stream. Later cleanup localization proved an accepted one-attempt fixture had never established its retained launched lifetime; exact-sample correlation placed that deadline-sized cleanup failure on every maximum-latency sample. ADR 0062 fixes that ownership transition without changing deadlines, delayed-reaper bounds, or accepted p95/maximum limits. The uninstrumented integrated candidate must still pass a fresh complete Apple cohort. Correctness, source authority, lifecycle, ownership, cleanup, and privacy fail qualification regardless of latency.
 
 These numbers are repository-fixture regression budgets, not service-level objectives. Numeric timing remains deliberately unavailable for the eight one-run gates and for cadence-dependent aggregate mapping, work, or publication rates. No cross-target limit, automatic retry, dynamic capacity tuning, or real-time guarantee is implied.
 
@@ -95,8 +101,15 @@ before publishing evidence. ADR 0061 separates fixed schema and privacy rejectio
 from typed environment incompatibility. Windows 11 Pro 25H2 build family 26200
 remains required, while a canonical unsigned 32-bit UBR and bounded hardware
 representation are diagnostic provenance rather than exact-update admission
-keys. Rejected profiles publish no tracked report. This internal repair does not
-change the public watcher interface or the withheld support status.
+keys. Rejected profiles publish no tracked report.
+
+On Apple, ADR 0062 keeps fixture finalization facts separate: Stop
+acknowledgement, authenticated and retained launched lifetime, bounded
+containment, output drain, executable identity, and cleanup debt. Failure output
+uses fixed state vocabulary, booleans, and bounded counts rather than paths,
+titles, native identifiers, free-form framework text, or captured content.
+Neither internal repair changes the public watcher interface or the withheld
+support status.
 
 Application logs remain the caller's responsibility. Avoid formatting full native errors or discovered target names into ordinary telemetry when those values may contain sensitive application or desktop data.
 

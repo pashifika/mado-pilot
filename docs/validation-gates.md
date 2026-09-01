@@ -290,6 +290,17 @@ keeps host class, build family, SDK, target, toolchain, and backend compatibilit
 typed and separate from privacy rejection, and preserves Apple admission. The
 repair changes no budget or public watcher support claim and requires fresh
 affected Windows qualification before its result can be classified.
+ADR 0062 retains the Apple terminal-red result and its unchanged budgets, then
+selects the fixture-lifetime repair from separately reviewed cleanup localization
+and exact-sample latency correlation. Both Apple fixture startup paths now wait
+for the retained launched lifetime to become `Live` under the existing launch
+deadline. Private finalization reports acknowledgement, authenticated and
+launched lifetime, bounded containment, reader drain, executable identity, and
+cleanup debt separately; accepted destructive samples consume that result before
+returning instead of relying on `Drop`. These implementation checks are not
+qualification evidence. Fresh integrated Apple qualification and the applicable
+fresh Windows result remain required before the withheld support decision can
+change.
 OCR predicates, callbacks/subscriptions, C/C++, automatic input, target activation,
 arbitrary application/template/ROI compatibility or timing, real-time guarantees,
 packaging, and release remain unavailable.

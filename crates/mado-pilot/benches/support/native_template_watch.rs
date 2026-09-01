@@ -427,7 +427,37 @@ impl NativeRun {
         let session_closed = self.session.close(&bounded(OPERATION_WAIT)).is_ok()
             && self.session.close(&bounded(OPERATION_WAIT)).is_ok();
         drop(self.engine);
-        session_closed && self.fixture.finish()
+        #[cfg(target_os = "macos")]
+        let fixture_finished = self.fixture.finish().is_accepted();
+        #[cfg(target_os = "windows")]
+        let fixture_finished = self.fixture.finish();
+        session_closed && fixture_finished
+    }
+}
+
+struct DestructiveOutcome {
+    correct: bool,
+    metrics: QueryWorkMetrics,
+    #[cfg(target_os = "macos")]
+    completed_at: Instant,
+}
+
+impl DestructiveOutcome {
+    fn finish(correct: bool, metrics: QueryWorkMetrics, fixture: &mut NativeFixture) -> Self {
+        #[cfg(target_os = "macos")]
+        let (correct, completed_at) = crate::macos_fixture::accept_and_observe_fixture_finalization(
+            correct,
+            || fixture.finish().is_accepted(),
+            Instant::now,
+        );
+        #[cfg(target_os = "windows")]
+        let _ = fixture;
+        Self {
+            correct,
+            metrics,
+            #[cfg(target_os = "macos")]
+            completed_at,
+        }
     }
 }
 
@@ -1310,7 +1340,7 @@ fn native_stop_target_loss(cohort: &Rc<RefCell<Cohort>>) -> Sample {
             // A destroyed-window ScreenCaptureKit filter can remain quiescent
             // without a terminal callback. Ending the authenticated fixture
             // process exercises the stream authority required by this row.
-            if !run.fixture.finish() {
+            if !run.fixture.finish().is_accepted() {
                 return Err("fixture_authority_failed".to_owned());
             }
             true
@@ -1318,7 +1348,11 @@ fn native_stop_target_loss(cohort: &Rc<RefCell<Cohort>>) -> Sample {
         let (terminal, _) = wait_terminal(&query)?;
         wait_for_backend_idle(OPERATION_WAIT)?;
         let expected = source_lost && matches!(&*terminal, TemplateTerminalOutcome::TargetLost);
-        Ok((expected, terminal_query_metrics(&query, expected)?))
+        Ok(DestructiveOutcome::finish(
+            expected,
+            terminal_query_metrics(&query, expected)?,
+            &mut run.fixture,
+        ))
     })
 }
 
@@ -1354,15 +1388,17 @@ fn session_engine_close(cohort: &Rc<RefCell<Cohort>>) -> Sample {
         let engine_metrics = terminal_query_metrics(&engine_query, scheduler_closed)?;
         let engine_session_closed = engine_session.close(&bounded(OPERATION_WAIT)).is_ok();
         wait_for_backend_idle(OPERATION_WAIT)?;
-        Ok((
-            first
-                && second
-                && session_stable
-                && session_closed
-                && engine_stable
-                && scheduler_closed
-                && engine_session_closed,
+        let correct = first
+            && second
+            && session_stable
+            && session_closed
+            && engine_stable
+            && scheduler_closed
+            && engine_session_closed;
+        Ok(DestructiveOutcome::finish(
+            correct,
             session_metrics.saturating_add(engine_metrics),
+            &mut run.fixture,
         ))
     })
 }
@@ -1414,7 +1450,11 @@ fn retained_result_mapping(cohort: &Rc<RefCell<Cohort>>) -> Sample {
             })?;
         let fresh_closed = fresh_session.close(&bounded(OPERATION_WAIT)).is_ok();
         drop(fresh_engine);
-        Ok((retained && progressed && fresh_closed, metrics))
+        Ok(DestructiveOutcome::finish(
+            retained && progressed && fresh_closed,
+            metrics,
+            &mut run.fixture,
+        ))
     })
 }
 
@@ -1441,7 +1481,12 @@ fn fresh_session(cohort: &Rc<RefCell<Cohort>>) -> Sample {
         let closed = session.close(&bounded(OPERATION_WAIT)).is_ok();
         wait_for_backend_idle(OPERATION_WAIT)?;
         let matched = terminal.is_match();
-        Ok((matched && closed, terminal_query_metrics(&query, matched)?))
+        let metrics = terminal_query_metrics(&query, matched)?;
+        Ok(DestructiveOutcome::finish(
+            matched && closed,
+            metrics,
+            &mut run.fixture,
+        ))
     })
 }
 
@@ -1667,15 +1712,19 @@ fn paired_query_sample(
 
 fn destructive_sample(
     cohort: &Rc<RefCell<Cohort>>,
-    operation: impl FnOnce(NativeRun) -> Result<(bool, QueryWorkMetrics), String>,
+    operation: impl FnOnce(NativeRun) -> Result<DestructiveOutcome, String>,
 ) -> Sample {
     let before = backend_snapshot();
     let started = Instant::now();
     let run = cohort.borrow().fresh();
-    let (correct, metrics) = run
+    let outcome = run
         .and_then(operation)
         .unwrap_or_else(|code| panic!("{code}"));
-    finish_observed_sample(started.elapsed(), correct, metrics, before)
+    #[cfg(target_os = "macos")]
+    let elapsed = outcome.completed_at.saturating_duration_since(started);
+    #[cfg(target_os = "windows")]
+    let elapsed = started.elapsed();
+    finish_observed_sample(elapsed, outcome.correct, outcome.metrics, before)
 }
 
 fn observed_sample(
