@@ -6,7 +6,7 @@ MadoPilot discovers windows and displays, captures frame streams, maps coordinat
 spaces, matches templates, performs one-shot OCR through an explicit backend,
 the accepted CPU profiles, or an explicit initialization-time provider policy,
 waits for stable template presence through a bounded Rust query over replay or
-implemented native sessions whose support qualification remains pending, and
+implemented native sessions whose support remains withheld, and
 injects input through explicit platform capabilities while reporting structured
 outcomes. OCR watchers remain future work. The runtime owns no GUI, tray,
 overlay, editor, updater, workflow catalog,
@@ -106,8 +106,10 @@ Historical profiles and hosted CI never substitute for interactive native rows.
 Corrective successor `7139a68` serializes backend generation admission per query
 and bounds Windows fixture output before allocation. Those runtime and harness
 changes make every `f16591f` host cohort historical for the current
-implementation; a fresh complete protocol on both hosts is required before
-support can be reconsidered.
+implementation. Integrated successor `9cf746f` combines the ADR 0061 and ADR
+0062 repairs, but each host's sole authorized builder terminated at an apparatus
+control before artifact authority or process 1. ADR 0063 retains both attempts
+without retry, so native watcher support remains withheld.
 The dual capture profile retains 600 stationary samples per display and 300
 moving-seam frame pairs with per-frame callback correlation. Windows
 final-source Phase 1 and repository verification run on the exact exit candidate

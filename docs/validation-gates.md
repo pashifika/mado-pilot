@@ -284,23 +284,24 @@ query and bounds Windows fixture output before allocation. The `f16591f` host
 cohorts do not qualify those changed runtime and harness semantics, so a future
 support decision requires a fresh complete protocol on both approved hosts.
 
-ADR 0061 repairs only the internal native qualification report gate. It replaces
-exact Windows UBR and hardware-text equality with finite canonical provenance,
-keeps host class, build family, SDK, target, toolchain, and backend compatibility
-typed and separate from privacy rejection, and preserves Apple admission. The
-repair changes no budget or public watcher support claim and requires fresh
-affected Windows qualification before its result can be classified.
-ADR 0062 retains the Apple terminal-red result and its unchanged budgets, then
-selects the fixture-lifetime repair from separately reviewed cleanup localization
-and exact-sample latency correlation. Both Apple fixture startup paths now wait
-for the retained launched lifetime to become `Live` under the existing launch
-deadline. Private finalization reports acknowledgement, authenticated and
-launched lifetime, bounded containment, reader drain, executable identity, and
-cleanup debt separately; accepted destructive samples consume that result before
-returning instead of relying on `Drop`. These implementation checks are not
-qualification evidence. Fresh integrated Apple qualification and the applicable
-fresh Windows result remain required before the withheld support decision can
-change.
+ADR 0060 separately retains current-source `030398e` Apple cleanup/latency and
+Windows report-admission terminal-red results without assigning either to the
+historical `f16591f` suspension. ADR 0061 repairs only the internal Windows
+report gate: finite canonical UBR and hardware provenance remains distinct from
+typed host-class, build-family, SDK, target, toolchain, and backend
+compatibility. ADR 0062 selects the Apple exact-lifetime and typed-finalization
+repair from cleanup localization and exact-sample correlation bound to
+`030398e`. The accepted timer observes elapsed only after operation-local
+resources, explicit finalization, and the complete fixture ownership chain are
+dropped. Neither repair changes a budget or public watcher contract.
+
+Integrated candidate `9cf746f` contains both repairs. Its sole authorized Apple
+builder terminated at a post-Cargo controlled-home check, and its sole
+authorized Windows builder terminated at a pre-namespace environment check.
+Neither host produced an artifact authority or launched process 1. ADR 0063
+retains both attempts without retry and classifies them as apparatus failures,
+not product-gate results. The required integrated Apple and Windows cohorts
+therefore do not exist, and the support decision remains withheld.
 OCR predicates, callbacks/subscriptions, C/C++, automatic input, target activation,
 arbitrary application/template/ROI compatibility or timing, real-time guarantees,
 packaging, and release remain unavailable.

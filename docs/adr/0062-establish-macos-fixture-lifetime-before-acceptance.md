@@ -52,8 +52,11 @@ cannot convert an already observed failure into success. Failure diagnostics use
 only fixed state tokens, booleans, counts, and durations; they contain no run,
 process, application, display, path, or payload identity.
 
-The accepted retained-result timer continues to include declared fixture
-finalization and fresh-producer progress. No launch, operation, or cleanup
+The accepted retained-result timer continues through operation-local resource
+drop, explicit typed fixture finalization, and drop of the complete fixture
+controller including its authenticated and retained launched handles; elapsed
+time is observed only after that ownership chain is gone. Fresh-producer
+progress remains inside the operation. No launch, operation, or cleanup
 deadline; delayed-reaper limit; native exact-lifetime rule; p95 limit; maximum
 limit; public Rust API; C ABI; or C++ surface changes.
 
