@@ -291,7 +291,7 @@ impl Arguments {
                     && workload_filter.as_deref() == Some("retained_result_mapping")),
             "protocol_drift"
         );
-        Self {
+        let arguments = Self {
             qualification,
             retained_result_lifecycle_diagnostic,
             full_load_diagnostic,
@@ -299,8 +299,51 @@ impl Arguments {
             workload_filter,
             fixture_executable,
             raw,
-        }
+        };
+        assert!(
+            artifact_identities_match(&arguments),
+            "artifact_identity_drift"
+        );
+        arguments
     }
+}
+
+fn artifact_authority_required(arguments: &Arguments) -> bool {
+    arguments.qualification
+        || arguments.full_load_diagnostic
+        || arguments.retained_result_lifecycle_diagnostic
+        || arguments.enforce_budgets
+}
+
+fn fixture_bytes_match(arguments: &Arguments, bytes: &[u8]) -> bool {
+    !artifact_authority_required(arguments)
+        || value(&arguments.raw, "--fixture-sha256").is_some_and(|expected| {
+            native_watch_report::qualification_bytes_sha256(bytes) == expected
+        })
+}
+
+#[cfg(windows)]
+fn fixture_path_matches(arguments: &Arguments) -> bool {
+    !artifact_authority_required(arguments)
+        || value(&arguments.raw, "--fixture-sha256").is_some_and(|expected| {
+            native_watch_report::artifact_sha256_matches(&arguments.fixture_executable, expected)
+        })
+}
+
+fn artifact_identities_match(arguments: &Arguments) -> bool {
+    if !artifact_authority_required(arguments) {
+        return true;
+    }
+    let Some(executable) = value(&arguments.raw, "--executable-sha256") else {
+        return false;
+    };
+    let Some(fixture) = value(&arguments.raw, "--fixture-sha256") else {
+        return false;
+    };
+    std::env::current_exe()
+        .ok()
+        .is_some_and(|path| native_watch_report::artifact_sha256_matches(&path, executable))
+        && native_watch_report::artifact_sha256_matches(&arguments.fixture_executable, fixture)
 }
 
 fn value<'a>(arguments: &'a [String], name: &str) -> Option<&'a str> {
@@ -744,6 +787,10 @@ pub(super) fn run() {
             .join(",")
     );
 
+    assert!(
+        artifact_identities_match(&arguments),
+        "artifact_identity_drift"
+    );
     if arguments.qualification || arguments.retained_result_lifecycle_diagnostic {
         report(&arguments, sample_plan, &workloads);
     } else {
@@ -757,6 +804,10 @@ pub(super) fn run() {
     if arguments.enforce_budgets {
         enforce_accepted_budgets(&workloads);
     }
+    assert!(
+        artifact_identities_match(&arguments),
+        "artifact_identity_drift"
+    );
 }
 
 fn add_workload(

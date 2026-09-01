@@ -4,6 +4,13 @@
 //! fields satisfy the bounded privacy schema and whose typed environment matches
 //! an approved target may be copied into tracked evidence.
 
+use std::fmt::Write as _;
+use std::fs::File;
+use std::io::Read;
+use std::path::Path;
+
+use sha2::{Digest, Sha256};
+
 use crate::bench_harness::Profile;
 
 /// Exact fixture description accepted in a tracked native watcher profile.
@@ -16,6 +23,38 @@ pub const CORRECTNESS_ORACLE: &str =
     "24 ordered source/match/geometry/work/lifecycle/ownership/resource/privacy hard gates";
 /// Exact finite queue description accepted in a tracked profile.
 pub const QUEUE_POLICY: &str = "production finite latest-wins capture and template-watch scheduler";
+/// Computes the SHA-256 identity of a qualification artifact.
+pub fn artifact_sha256(path: &Path) -> Option<String> {
+    let mut file = File::open(path).ok()?;
+    let mut hasher = Sha256::new();
+    let mut buffer = [0_u8; 16 * 1024];
+    loop {
+        let bytes_read = file.read(&mut buffer).ok()?;
+        if bytes_read == 0 {
+            break;
+        }
+        hasher.update(&buffer[..bytes_read]);
+    }
+    Some(digest_hex(&hasher.finalize()))
+}
+
+/// Computes the SHA-256 identity of in-memory qualification artifact bytes.
+pub fn qualification_bytes_sha256(bytes: &[u8]) -> String {
+    digest_hex(&Sha256::digest(bytes))
+}
+
+fn digest_hex(digest: &[u8]) -> String {
+    let mut result = String::with_capacity(64);
+    for byte in digest {
+        write!(&mut result, "{byte:02x}").expect("writing to a String cannot fail");
+    }
+    result
+}
+
+/// Checks a qualification artifact against an expected SHA-256 identity.
+pub fn artifact_sha256_matches(path: &Path, expected: &str) -> bool {
+    artifact_sha256(path).is_some_and(|actual| actual == expected)
+}
 
 const APPLE_HARDWARE: &str = "Apple M1 Pro, 10 CPU cores, 34359738368 bytes memory";
 const APPLE_PRECURSOR_OS: &str = "macOS 26.5.2 build 25F84, SDK 26.5";
@@ -512,7 +551,8 @@ mod tests {
     use super::{
         APPLE_FINAL_OS, APPLE_HARDWARE, APPLE_PRECURSOR_OS, BUILD_PROFILE, CORRECTNESS_ORACLE,
         EnvironmentFault, FIXTURE_DESCRIPTION, Provenance, QUEUE_POLICY, ValidationError,
-        WINDOWS_HARDWARE_LEGACY, validate,
+        WINDOWS_HARDWARE_LEGACY, artifact_sha256, artifact_sha256_matches,
+        qualification_bytes_sha256, validate,
     };
     use crate::bench_harness::Profile;
 
@@ -1027,5 +1067,22 @@ mod tests {
             ValidationError::Environment(EnvironmentFault::Target).token(),
             "environment_incompatible:target"
         );
+    }
+
+    #[test]
+    fn artifact_identity_rejects_file_replacement() {
+        let path = std::env::temp_dir().join(format!(
+            "mado-pilot-native-watch-artifact-{}",
+            std::process::id()
+        ));
+        std::fs::write(&path, b"accepted artifact").unwrap();
+        let accepted = artifact_sha256(&path).unwrap();
+
+        assert!(artifact_sha256_matches(&path, &accepted));
+        assert_eq!(qualification_bytes_sha256(b"accepted artifact"), accepted);
+
+        std::fs::write(&path, b"replaced artifact").unwrap();
+        assert!(!artifact_sha256_matches(&path, &accepted));
+        std::fs::remove_file(path).unwrap();
     }
 }

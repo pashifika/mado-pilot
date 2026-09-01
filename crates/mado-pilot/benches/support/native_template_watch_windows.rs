@@ -56,6 +56,11 @@ struct NativeFixture {
 #[cfg(windows)]
 impl NativeFixture {
     fn start(arguments: &Arguments) -> Result<Self, String> {
+        let bytes = std::fs::read(&arguments.fixture_executable)
+            .map_err(|_| "fixture_authority_failed".to_owned())?;
+        if !fixture_bytes_match(arguments, &bytes) {
+            return Err("fixture_authority_failed".to_owned());
+        }
         let token = format!(
             "native-watch-{}-{}",
             std::process::id(),
@@ -69,6 +74,11 @@ impl NativeFixture {
             .stderr(Stdio::null())
             .spawn()
             .map_err(|_| "fixture_authority_failed".to_owned())?;
+        if !fixture_path_matches(arguments) {
+            let _ = child.kill();
+            let _ = child.wait();
+            return Err("fixture_authority_failed".to_owned());
+        }
         let output = child
             .stdout
             .take()
