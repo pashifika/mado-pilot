@@ -6,6 +6,7 @@ include!("native_template_watch_macos.rs");
 include!("native_template_watch_windows.rs");
 
 use std::cell::RefCell;
+use std::ops::{Deref, DerefMut};
 use std::path::PathBuf;
 use std::rc::Rc;
 use std::sync::Arc;
@@ -86,7 +87,14 @@ fn scaled_i32(value: f64, scale: f64) -> Option<i32> {
     Some(scaled as i32)
 }
 
-fn wait_marker_state(run: &NativeRun, after: FrameStamp, visible: bool) -> Result<Frame, String> {
+fn wait_marker_state<Fixture>(
+    run: &NativeRun<Fixture>,
+    after: FrameStamp,
+    visible: bool,
+) -> Result<Frame, String>
+where
+    Fixture: Deref<Target = NativeFixture>,
+{
     let deadline = Instant::now() + OPERATION_WAIT;
     let mut stamp = after;
     loop {
@@ -111,7 +119,10 @@ fn wait_marker_state(run: &NativeRun, after: FrameStamp, visible: bool) -> Resul
     }
 }
 
-fn establish_absent(run: &mut NativeRun) -> Result<Frame, String> {
+fn establish_absent<Fixture>(run: &mut NativeRun<Fixture>) -> Result<Frame, String>
+where
+    Fixture: Deref<Target = NativeFixture> + DerefMut,
+{
     let prior = run
         .session
         .acquire_frame(&FrameRequest::latest(), &bounded(OPERATION_WAIT))
@@ -312,8 +323,24 @@ fn default_fixture_executable() -> Option<PathBuf> {
     }
 }
 
-struct NativeRun {
-    fixture: NativeFixture,
+struct OwnedNativeFixture(NativeFixture);
+
+impl Deref for OwnedNativeFixture {
+    type Target = NativeFixture;
+
+    fn deref(&self) -> &Self::Target {
+        &self.0
+    }
+}
+
+impl DerefMut for OwnedNativeFixture {
+    fn deref_mut(&mut self) -> &mut Self::Target {
+        &mut self.0
+    }
+}
+
+struct NativeRun<Fixture = OwnedNativeFixture> {
+    fixture: Fixture,
     engine: Engine,
     target: TargetId,
     session: Session,
@@ -321,6 +348,8 @@ struct NativeRun {
     shape: MarkerShape,
     last_ack: ControlAcknowledgement,
 }
+
+type DestructiveRun<'fixture> = NativeRun<&'fixture mut NativeFixture>;
 
 impl NativeRun {
     fn start(arguments: &Arguments) -> Result<Self, String> {
@@ -346,7 +375,7 @@ impl NativeRun {
         let shape = marker_shape(&frame, &fixture).ok_or_else(|| "wrong_transform".to_owned())?;
         let template = prepare_marker(&engine, shape, "watch-marker-v1")?;
         Ok(Self {
-            fixture,
+            fixture: OwnedNativeFixture(fixture),
             engine,
             target,
             session,
@@ -358,7 +387,12 @@ impl NativeRun {
             },
         })
     }
+}
 
+impl<Fixture> NativeRun<Fixture>
+where
+    Fixture: Deref<Target = NativeFixture> + DerefMut,
+{
     fn command_absent(&mut self) -> Result<ControlAcknowledgement, String> {
         let acknowledgement = self.fixture.set_absent()?;
         self.accept_acknowledgement(acknowledgement)?;
@@ -432,32 +466,6 @@ impl NativeRun {
         #[cfg(target_os = "windows")]
         let fixture_finished = self.fixture.finish();
         session_closed && fixture_finished
-    }
-}
-
-struct DestructiveOutcome {
-    correct: bool,
-    metrics: QueryWorkMetrics,
-    #[cfg(target_os = "macos")]
-    completed_at: Instant,
-}
-
-impl DestructiveOutcome {
-    fn finish(correct: bool, metrics: QueryWorkMetrics, fixture: &mut NativeFixture) -> Self {
-        #[cfg(target_os = "macos")]
-        let (correct, completed_at) = crate::macos_fixture::accept_and_observe_fixture_finalization(
-            correct,
-            || fixture.finish().is_accepted(),
-            Instant::now,
-        );
-        #[cfg(target_os = "windows")]
-        let _ = fixture;
-        Self {
-            correct,
-            metrics,
-            #[cfg(target_os = "macos")]
-            completed_at,
-        }
     }
 }
 
@@ -1348,11 +1356,7 @@ fn native_stop_target_loss(cohort: &Rc<RefCell<Cohort>>) -> Sample {
         let (terminal, _) = wait_terminal(&query)?;
         wait_for_backend_idle(OPERATION_WAIT)?;
         let expected = source_lost && matches!(&*terminal, TemplateTerminalOutcome::TargetLost);
-        Ok(DestructiveOutcome::finish(
-            expected,
-            terminal_query_metrics(&query, expected)?,
-            &mut run.fixture,
-        ))
+        Ok((expected, terminal_query_metrics(&query, expected)?))
     })
 }
 
@@ -1395,11 +1399,7 @@ fn session_engine_close(cohort: &Rc<RefCell<Cohort>>) -> Sample {
             && engine_stable
             && scheduler_closed
             && engine_session_closed;
-        Ok(DestructiveOutcome::finish(
-            correct,
-            session_metrics.saturating_add(engine_metrics),
-            &mut run.fixture,
-        ))
+        Ok((correct, session_metrics.saturating_add(engine_metrics)))
     })
 }
 
@@ -1450,11 +1450,7 @@ fn retained_result_mapping(cohort: &Rc<RefCell<Cohort>>) -> Sample {
             })?;
         let fresh_closed = fresh_session.close(&bounded(OPERATION_WAIT)).is_ok();
         drop(fresh_engine);
-        Ok(DestructiveOutcome::finish(
-            retained && progressed && fresh_closed,
-            metrics,
-            &mut run.fixture,
-        ))
+        Ok((retained && progressed && fresh_closed, metrics))
     })
 }
 
@@ -1482,11 +1478,7 @@ fn fresh_session(cohort: &Rc<RefCell<Cohort>>) -> Sample {
         wait_for_backend_idle(OPERATION_WAIT)?;
         let matched = terminal.is_match();
         let metrics = terminal_query_metrics(&query, matched)?;
-        Ok(DestructiveOutcome::finish(
-            matched && closed,
-            metrics,
-            &mut run.fixture,
-        ))
+        Ok((matched && closed, metrics))
     })
 }
 
@@ -1712,19 +1704,43 @@ fn paired_query_sample(
 
 fn destructive_sample(
     cohort: &Rc<RefCell<Cohort>>,
-    operation: impl FnOnce(NativeRun) -> Result<DestructiveOutcome, String>,
+    operation: impl FnOnce(DestructiveRun<'_>) -> Result<(bool, QueryWorkMetrics), String>,
 ) -> Sample {
     let before = backend_snapshot();
     let started = Instant::now();
-    let run = cohort.borrow().fresh();
-    let outcome = run
-        .and_then(operation)
+    let NativeRun {
+        fixture: OwnedNativeFixture(mut fixture),
+        engine,
+        target,
+        session,
+        template,
+        shape,
+        last_ack,
+    } = cohort
+        .borrow()
+        .fresh()
         .unwrap_or_else(|code| panic!("{code}"));
+    let run = DestructiveRun {
+        fixture: &mut fixture,
+        engine,
+        target,
+        session,
+        template,
+        shape,
+        last_ack,
+    };
+    let result = operation(run);
     #[cfg(target_os = "macos")]
-    let elapsed = outcome.completed_at.saturating_duration_since(started);
+    let (result, fixture_finished, elapsed) =
+        crate::macos_fixture::finalize_result_before_observing(
+            result,
+            || fixture.finish().is_accepted(),
+            || started.elapsed(),
+        );
     #[cfg(target_os = "windows")]
-    let elapsed = started.elapsed();
-    finish_observed_sample(elapsed, outcome.correct, outcome.metrics, before)
+    let (fixture_finished, elapsed) = (fixture.finish(), started.elapsed());
+    let (correct, metrics) = result.unwrap_or_else(|code| panic!("{code}"));
+    finish_observed_sample(elapsed, correct && fixture_finished, metrics, before)
 }
 
 fn observed_sample(

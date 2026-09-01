@@ -427,14 +427,26 @@ impl FixtureFinalization {
     }
 }
 
-pub(crate) fn accept_and_observe_fixture_finalization<Observation>(
-    correct: bool,
+pub(crate) fn finalize_once<ResultValue: Copy>(
+    cached: &mut Option<ResultValue>,
+    finalize: impl FnOnce() -> ResultValue,
+) -> ResultValue {
+    if let Some(result) = *cached {
+        return result;
+    }
+    let result = finalize();
+    *cached = Some(result);
+    result
+}
+
+pub(crate) fn finalize_result_before_observing<ResultValue, Failure, Observation>(
+    result: Result<ResultValue, Failure>,
     finalize: impl FnOnce() -> bool,
     observe: impl FnOnce() -> Observation,
-) -> (bool, Observation) {
+) -> (Result<ResultValue, Failure>, bool, Observation) {
     let finalization_accepted = finalize();
     let observation = observe();
-    (correct && finalization_accepted, observation)
+    (result, finalization_accepted, observation)
 }
 
 /// One owned fixture application and its bounded command/event channel.
@@ -1572,9 +1584,9 @@ mod tests {
         AuthenticatedProcessLifetime, FixtureCleanupDebt, FixtureExitObservation,
         FixtureFinalization, FixtureLaunchAcceptanceError, LanguageExecutablePin,
         LaunchedApplicationLifetime, MAX_OUTPUT_LINE_BYTES, ReaderMessage,
-        accept_and_observe_fixture_finalization, auxiliary_window_setup_is_proven,
-        controlled_content_logical_size, controlled_resize_logical_size_matches,
-        discard_setup_events_until_quiet, expected_controlled_resize_logical_size,
+        auxiliary_window_setup_is_proven, controlled_content_logical_size,
+        controlled_resize_logical_size_matches, discard_setup_events_until_quiet,
+        expected_controlled_resize_logical_size, finalize_once, finalize_result_before_observing,
         finish_reader_output_is_clean, fixture_bundle, language_pins_are_unchanged,
         next_fixture_run_nonce, observe_fixture_exit_with, post_use_identity_gate,
         read_bounded_lines, strict_event_reset, wait_for_launched_live_with,
@@ -1886,8 +1898,8 @@ mod tests {
     #[test]
     fn accepted_sample_finalizes_before_observing_latency() {
         let phase = Cell::new(0);
-        let (accepted, observed) = accept_and_observe_fixture_finalization(
-            true,
+        let (result, accepted, observed) = finalize_result_before_observing(
+            Ok::<_, ()>(()),
             || {
                 assert_eq!(phase.get(), 0);
                 phase.set(1);
@@ -1899,24 +1911,49 @@ mod tests {
                 7
             },
         );
+        assert_eq!(result, Ok(()));
         assert!(!accepted);
         assert_eq!(observed, 7);
         assert_eq!(phase.get(), 2);
+    }
 
-        let finalized = Cell::new(false);
-        let (accepted, ()) = accept_and_observe_fixture_finalization(
-            false,
+    #[test]
+    fn failed_sample_finalizes_before_propagating_operation_error() {
+        let phase = Cell::new(0);
+        let (result, accepted, observed) = finalize_result_before_observing(
+            Err::<(), _>("typed_operation_failure"),
             || {
-                finalized.set(true);
+                assert_eq!(phase.get(), 0);
+                phase.set(1);
                 true
             },
-            || (),
+            || {
+                assert_eq!(phase.get(), 1);
+                phase.set(2);
+                11
+            },
         );
-        assert!(!accepted);
-        assert!(finalized.get());
-
-        let (accepted, ()) = accept_and_observe_fixture_finalization(true, || true, || ());
+        assert_eq!(result, Err("typed_operation_failure"));
         assert!(accepted);
+        assert_eq!(observed, 11);
+        assert_eq!(phase.get(), 2);
+    }
+
+    #[test]
+    fn finalization_cache_invokes_cleanup_once() {
+        let calls = Cell::new(0);
+        let mut cached = None;
+        let first = finalize_once(&mut cached, || {
+            calls.set(calls.get() + 1);
+            17
+        });
+        let second = finalize_once(&mut cached, || {
+            calls.set(calls.get() + 1);
+            23
+        });
+        assert_eq!(first, 17);
+        assert_eq!(second, 17);
+        assert_eq!(calls.get(), 1);
     }
 
     #[test]
