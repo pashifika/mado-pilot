@@ -134,6 +134,18 @@ fn the_fixture_control_archive_is_absent_from_a_production_shim_consumer() {
 }
 
 #[test]
+fn private_fixture_cleanup_accounting_is_absent_from_production_consumers() {
+    let symbols = linked_symbols();
+
+    assert!(
+        !symbols
+            .lines()
+            .any(|line| line.split_whitespace().last() == Some("_mp_shim_fixture_cleanup_counts")),
+        "private fixture cleanup accounting entered a production shim consumer"
+    );
+}
+
+#[test]
 fn normal_package_targets_gate_the_private_fixture_binary() {
     let manifest = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("Cargo.toml");
     let output = Command::new(env!("CARGO"))

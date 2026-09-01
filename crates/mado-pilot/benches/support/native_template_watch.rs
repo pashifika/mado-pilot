@@ -238,6 +238,7 @@ struct Arguments {
     raw: Vec<String>,
     qualification: bool,
     full_load_diagnostic: bool,
+    retained_result_lifecycle_diagnostic: bool,
     enforce_budgets: bool,
     workload_filter: Option<String>,
 }
@@ -257,6 +258,9 @@ impl Arguments {
         let full_load_diagnostic = raw
             .iter()
             .any(|argument| argument == "--full-load-diagnostic");
+        let retained_result_lifecycle_diagnostic = raw
+            .iter()
+            .any(|argument| argument == "--retained-result-lifecycle-diagnostic");
         let enforce_budgets = raw.iter().any(|argument| argument == "--enforce-budgets");
         let workload_filter = value(&raw, "--workload").map(str::to_owned);
         assert!(
@@ -268,8 +272,17 @@ impl Arguments {
                 || (!qualification && workload_filter.is_none() && !enforce_budgets),
             "protocol_drift"
         );
+        assert!(
+            !retained_result_lifecycle_diagnostic
+                || (!qualification
+                    && !full_load_diagnostic
+                    && !enforce_budgets
+                    && workload_filter.as_deref() == Some("retained_result_mapping")),
+            "protocol_drift"
+        );
         Self {
             qualification,
+            retained_result_lifecycle_diagnostic,
             full_load_diagnostic,
             enforce_budgets,
             workload_filter,
@@ -316,10 +329,20 @@ impl NativeRun {
         let target = fixture.authenticated_target(&engine)?;
         let session = engine
             .open(target, &OpenRequest::new(), &bounded(OPERATION_WAIT))
-            .map_err(|error| format!("typed_operation_failure:{:?}", error.status()))?;
+            .map_err(|error| {
+                format!(
+                    "typed_operation_failure:{:?}:native_run_start=engine_open",
+                    error.status()
+                )
+            })?;
         let frame = session
             .acquire_frame(&FrameRequest::latest(), &bounded(OPERATION_WAIT))
-            .map_err(|error| format!("typed_operation_failure:{:?}", error.status()))?;
+            .map_err(|error| {
+                format!(
+                    "typed_operation_failure:{:?}:native_run_start=first_acquire",
+                    error.status()
+                )
+            })?;
         let shape = marker_shape(&frame, &fixture).ok_or_else(|| "wrong_transform".to_owned())?;
         let template = prepare_marker(&engine, shape, "watch-marker-v1")?;
         Ok(Self {
@@ -454,7 +477,10 @@ impl Cohort {
 
 pub(super) fn run() {
     let arguments = Arguments::parse();
-    let sample_plan = if arguments.qualification || arguments.full_load_diagnostic {
+    let sample_plan = if arguments.qualification
+        || arguments.full_load_diagnostic
+        || arguments.retained_result_lifecycle_diagnostic
+    {
         Plan::new(3, 20)
     } else {
         Plan::new(1, 1)
@@ -680,7 +706,7 @@ pub(super) fn run() {
             .join(",")
     );
 
-    if arguments.qualification {
+    if arguments.qualification || arguments.retained_result_lifecycle_diagnostic {
         report(&arguments, sample_plan, &workloads);
     } else {
         bench_harness::summarize("native-template-watch", sample_plan, &workloads);
@@ -1379,10 +1405,13 @@ fn retained_result_mapping(cohort: &Rc<RefCell<Cohort>>) -> Sample {
         let fresh_target = run.fixture.authenticated_target(&fresh_engine)?;
         let fresh_session = fresh_engine
             .open(fresh_target, &OpenRequest::new(), &bounded(OPERATION_WAIT))
-            .map_err(|_| "producer_stalled".to_owned())?;
+            .map_err(|error| format!("producer_stalled:{:?}:fresh_engine_open", error.status()))?;
         let progressed = fresh_session
             .acquire_frame(&FrameRequest::latest(), &bounded(OPERATION_WAIT))
-            .is_ok();
+            .map(|_| true)
+            .map_err(|error| {
+                format!("producer_stalled:{:?}:fresh_first_acquire", error.status())
+            })?;
         let fresh_closed = fresh_session.close(&bounded(OPERATION_WAIT)).is_ok();
         drop(fresh_engine);
         Ok((retained && progressed && fresh_closed, metrics))
@@ -2017,6 +2046,22 @@ fn report(arguments: &Arguments, plan: Plan, workloads: &[Workload]) {
     println!("successful_completions = {}", accounting.find_completions);
     println!("typed_failures = {}", accounting.find_failures);
     println!("active = {}", accounting.active_finds);
+
+    #[cfg(target_os = "macos")]
+    {
+        let cleanup = fixture_cleanup_counts().unwrap_or_else(|_| panic!("cleanup_failed"));
+        assert!(
+            cleanup.active == 0
+                && cleanup.exhausted == 0
+                && cleanup.scheduled == cleanup.completed.saturating_add(cleanup.exhausted),
+            "cleanup_failed"
+        );
+        println!("[fixture_cleanup_accounting]");
+        println!("scheduled = {}", cleanup.scheduled);
+        println!("active = {}", cleanup.active);
+        println!("completed = {}", cleanup.completed);
+        println!("exhausted = {}", cleanup.exhausted);
+    }
 }
 
 fn required_identity(arguments: &[String], name: &str, length: usize) -> String {

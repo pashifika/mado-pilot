@@ -7,7 +7,7 @@ use crate::macos_fixture::{
     controlled_resize_logical_size_matches, expected_controlled_resize_logical_size,
 };
 #[cfg(target_os = "macos")]
-use crate::macos_fixture_control::executable_identity;
+use crate::macos_fixture_control::{executable_identity, fixture_cleanup_counts};
 #[cfg(target_os = "macos")]
 use crate::macos_fixture_protocol::{self as protocol, FixtureCommandKind};
 
