@@ -181,6 +181,11 @@ fn main() {
         .warnings(true)
         .extra_warnings(true);
 
+    let private_fixture = std::env::var_os("CARGO_FEATURE_PRIVATE_FIXTURE").is_some();
+    if private_fixture {
+        shim.define("MP_SHIM_PRIVATE_FIXTURE", "1");
+    }
+
     if sanitize {
         // Instrumenting the shim is what makes the freed access observable, and
         // linking the runtime into this package's test binaries is what makes the
@@ -193,7 +198,7 @@ fn main() {
     }
 
     shim.compile("madopilot_macos_shim");
-    if std::env::var_os("CARGO_FEATURE_PRIVATE_FIXTURE").is_some() {
+    if private_fixture {
         compile_input_fixture();
     }
 

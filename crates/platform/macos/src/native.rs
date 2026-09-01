@@ -686,11 +686,14 @@ impl NativeSession {
             close_reported: AtomicBool::new(false),
         });
 
-        session
-            .core
-            .session()
-            .start(native_wait(operation))
-            .map_err(|status| open_error(status, key.kind()))?;
+        loop {
+            match session.core.session().start(native_wait(operation)) {
+                Ok(()) => break,
+                Err(ShimStatus::TimedOut) => operation.checkpoint()?,
+                Err(status) => return Err(open_error(status, key.kind())),
+            }
+        }
+        operation.checkpoint()?;
         Ok(session)
     }
 

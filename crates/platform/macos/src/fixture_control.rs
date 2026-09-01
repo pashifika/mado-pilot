@@ -267,6 +267,36 @@ impl AuthenticatedFixtureProcess {
     }
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct FixtureCleanupCounts {
+    pub scheduled: u64,
+    pub active: u64,
+    pub completed: u64,
+    pub exhausted: u64,
+}
+
+pub fn fixture_cleanup_counts() -> Result<FixtureCleanupCounts, String> {
+    let mut counts = FixtureCleanupCounts {
+        scheduled: 0,
+        active: 0,
+        completed: 0,
+        exhausted: 0,
+    };
+    // SAFETY: every output points to its corresponding writable `u64`.
+    let status = unsafe {
+        mp_shim_fixture_cleanup_counts(
+            &raw mut counts.scheduled,
+            &raw mut counts.active,
+            &raw mut counts.completed,
+            &raw mut counts.exhausted,
+        )
+    };
+    if status != 0 {
+        return Err("the fixture cleanup counts could not be read".to_owned());
+    }
+    Ok(counts)
+}
+
 #[repr(C)]
 struct NativeFixtureApplication {
     _private: [u8; 0],
@@ -363,13 +393,9 @@ impl LaunchedFixtureApplication {
 
 impl Drop for LaunchedFixtureApplication {
     fn drop(&mut self) {
-        // A caller that abandons setup before installing its authenticated
-        // process guard must not leave the exact launched application running.
-        // SAFETY: `self` owns this handle exactly once.
-        unsafe {
-            let _termination = mp_shim_fixture_application_terminate(self.raw.as_ptr(), 0);
-            mp_shim_fixture_application_release(self.raw.as_ptr());
-        }
+        // SAFETY: `self` owns this handle exactly once. Native release owns the
+        // one bounded termination sequence for an application still running.
+        unsafe { mp_shim_fixture_application_release(self.raw.as_ptr()) };
     }
 }
 
@@ -646,6 +672,12 @@ unsafe extern "C" {
         force: u32,
     ) -> u32;
     fn mp_shim_fixture_application_release(application: *mut NativeFixtureApplication);
+    fn mp_shim_fixture_cleanup_counts(
+        out_scheduled: *mut u64,
+        out_active: *mut u64,
+        out_completed: *mut u64,
+        out_exhausted: *mut u64,
+    ) -> u32;
     fn mp_shim_input_environment(
         out_process: *mut i64,
         out_process_launch_time: *mut f64,

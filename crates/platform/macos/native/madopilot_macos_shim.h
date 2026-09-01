@@ -75,13 +75,13 @@ extern "C" {
 #define MP_SHIM_RAISE_AFTER_CALLBACK 4u
 #define MP_SHIM_RAISE_AT_TEARDOWN 8u
 #define MP_SHIM_RAISE_IN_START_COMPLETION 16u
+#define MP_SHIM_RAISE_AT_START_SUBMISSION 2048u
 /* Rust-only companion seam: the Rust trampoline panics before processing. */
 #define MP_SHIM_PANIC_IN_RUST_CALLBACK 32u
 #define MP_SHIM_RAISE_IN_STOP_COMPLETION 64u
 /* Rust-only companion seam: one callback outlives the default fence wait. */
 #define MP_SHIM_DELAY_IN_RUST_CALLBACK 128u
 /* Native allocation-failure seams; zero in every product request. */
-#define MP_SHIM_FAIL_START_SEMAPHORE_ALLOCATION 256u
 #define MP_SHIM_FAIL_START_HOLD_ALLOCATION 512u
 #define MP_SHIM_FAIL_RECONFIGURE_SEMAPHORE_ALLOCATION 1024u
 
@@ -412,6 +412,15 @@ mp_shim_status mp_shim_testing_gate_retries(
     uint64_t completion_delay_nanos, uint64_t first_wait_nanos, uint64_t second_wait_nanos,
     mp_shim_status *out_start_first, mp_shim_status *out_start_second,
     mp_shim_status *out_stop_first, mp_shim_status *out_stop_second);
+
+mp_shim_status mp_shim_testing_start_gate_outcome(
+    uint64_t completion_delay_nanos, mp_shim_status completion_status,
+    uint64_t first_wait_nanos, uint64_t second_wait_nanos,
+    mp_shim_status *out_first, mp_shim_status *out_second,
+    uint32_t *out_submissions);
+
+mp_shim_status mp_shim_testing_capture_lifecycle_counts(
+    uint64_t *out_start_submissions, uint64_t *out_stop_submissions);
 
 /*
  * Runs the production stop-completion trampoline with an injected exception.
@@ -1098,6 +1107,12 @@ mp_shim_status mp_shim_fixture_application_terminate(
 void mp_shim_fixture_application_release(
     mp_shim_fixture_application *application);
 
+
+#if defined(MP_SHIM_PRIVATE_FIXTURE)
+mp_shim_status mp_shim_fixture_cleanup_counts(
+    uint64_t *out_scheduled, uint64_t *out_active,
+    uint64_t *out_completed, uint64_t *out_exhausted);
+#endif
 /* Deterministic scenarios for the production-shaped workspace launch helper. */
 #define MP_SHIM_TEST_FIXTURE_SEMAPHORE_ALLOCATION_FAILURE 0u
 #define MP_SHIM_TEST_FIXTURE_COMPLETION_EXCEPTION 1u
@@ -1107,6 +1122,11 @@ void mp_shim_fixture_application_release(
 #define MP_SHIM_TEST_FIXTURE_HANDLE_ALLOCATION_FAILURE 5u
 #define MP_SHIM_TEST_FIXTURE_REAPER_HANDOFF 6u
 #define MP_SHIM_TEST_FIXTURE_RELEASE_REAPER_HANDOFF 7u
+#define MP_SHIM_TEST_FIXTURE_STALE_TERMINATION_AFTER_EXACT_DEATH 8u
+#define MP_SHIM_TEST_FIXTURE_PID_REUSE 9u
+#define MP_SHIM_TEST_FIXTURE_EXACT_PROBE_FAILURE 10u
+#define MP_SHIM_TEST_FIXTURE_DELAYED_DEATH 11u
+#define MP_SHIM_TEST_FIXTURE_OVERLAPPING_RELEASES 12u
 
 /*
  * Exercises fixture launch submission, asynchronous completion containment,
@@ -1118,8 +1138,11 @@ mp_shim_status mp_shim_testing_fixture_application_launch(
     uint32_t *out_submission_calls,
     uint32_t *out_graceful_termination_calls,
     uint32_t *out_force_termination_calls, uint32_t *out_terminated,
-    uint64_t *out_live_during_handle,
-    uint64_t *out_live_after_release);
+    uint64_t *out_live_during_handle, uint64_t *out_live_after_release,
+    uint64_t *out_cleanup_scheduled, uint64_t *out_cleanup_active,
+    uint64_t *out_cleanup_completed, uint64_t *out_cleanup_exhausted,
+    uint64_t *out_cleanup_observations,
+    uint32_t *out_cleanup_max_observer_concurrency);
 
 /*
  * Activates the application retained by `target`, without presenting UI.
