@@ -238,6 +238,7 @@ struct Arguments {
     raw: Vec<String>,
     qualification: bool,
     full_load_diagnostic: bool,
+    retained_result_lifecycle_diagnostic: bool,
     enforce_budgets: bool,
     workload_filter: Option<String>,
 }
@@ -257,6 +258,9 @@ impl Arguments {
         let full_load_diagnostic = raw
             .iter()
             .any(|argument| argument == "--full-load-diagnostic");
+        let retained_result_lifecycle_diagnostic = raw
+            .iter()
+            .any(|argument| argument == "--retained-result-lifecycle-diagnostic");
         let enforce_budgets = raw.iter().any(|argument| argument == "--enforce-budgets");
         let workload_filter = value(&raw, "--workload").map(str::to_owned);
         assert!(
@@ -268,8 +272,17 @@ impl Arguments {
                 || (!qualification && workload_filter.is_none() && !enforce_budgets),
             "protocol_drift"
         );
+        assert!(
+            !retained_result_lifecycle_diagnostic
+                || (!qualification
+                    && !full_load_diagnostic
+                    && !enforce_budgets
+                    && workload_filter.as_deref() == Some("retained_result_mapping")),
+            "protocol_drift"
+        );
         Self {
             qualification,
+            retained_result_lifecycle_diagnostic,
             full_load_diagnostic,
             enforce_budgets,
             workload_filter,
@@ -464,7 +477,10 @@ impl Cohort {
 
 pub(super) fn run() {
     let arguments = Arguments::parse();
-    let sample_plan = if arguments.qualification || arguments.full_load_diagnostic {
+    let sample_plan = if arguments.qualification
+        || arguments.full_load_diagnostic
+        || arguments.retained_result_lifecycle_diagnostic
+    {
         Plan::new(3, 20)
     } else {
         Plan::new(1, 1)
