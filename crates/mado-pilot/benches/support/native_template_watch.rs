@@ -1731,14 +1731,18 @@ fn destructive_sample(
     };
     let result = operation(run);
     #[cfg(target_os = "macos")]
-    let (result, fixture_finished, elapsed) =
-        crate::macos_fixture::finalize_result_before_observing(
-            result,
-            || fixture.finish().is_accepted(),
-            || started.elapsed(),
-        );
+    let (result, fixture_finished, elapsed) = crate::macos_fixture::finalize_drop_then_observe(
+        result,
+        fixture,
+        |fixture| fixture.finish().is_accepted(),
+        || started.elapsed(),
+    );
     #[cfg(target_os = "windows")]
-    let (fixture_finished, elapsed) = (fixture.finish(), started.elapsed());
+    let fixture_finished = fixture.finish();
+    #[cfg(target_os = "windows")]
+    drop(fixture);
+    #[cfg(target_os = "windows")]
+    let elapsed = started.elapsed();
     let (correct, metrics) = result.unwrap_or_else(|code| panic!("{code}"));
     finish_observed_sample(elapsed, correct && fixture_finished, metrics, before)
 }

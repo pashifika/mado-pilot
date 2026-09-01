@@ -439,12 +439,14 @@ pub(crate) fn finalize_once<ResultValue: Copy>(
     result
 }
 
-pub(crate) fn finalize_result_before_observing<ResultValue, Failure, Observation>(
+pub(crate) fn finalize_drop_then_observe<ResultValue, Failure, Owner, Observation>(
     result: Result<ResultValue, Failure>,
-    finalize: impl FnOnce() -> bool,
+    mut owner: Owner,
+    finalize: impl FnOnce(&mut Owner) -> bool,
     observe: impl FnOnce() -> Observation,
 ) -> (Result<ResultValue, Failure>, bool, Observation) {
-    let finalization_accepted = finalize();
+    let finalization_accepted = finalize(&mut owner);
+    drop(owner);
     let observation = observe();
     (result, finalization_accepted, observation)
 }
@@ -1586,7 +1588,7 @@ mod tests {
         LaunchedApplicationLifetime, MAX_OUTPUT_LINE_BYTES, ReaderMessage,
         auxiliary_window_setup_is_proven, controlled_content_logical_size,
         controlled_resize_logical_size_matches, discard_setup_events_until_quiet,
-        expected_controlled_resize_logical_size, finalize_once, finalize_result_before_observing,
+        expected_controlled_resize_logical_size, finalize_drop_then_observe, finalize_once,
         finish_reader_output_is_clean, fixture_bundle, language_pins_are_unchanged,
         next_fixture_run_nonce, observe_fixture_exit_with, post_use_identity_gate,
         read_bounded_lines, strict_event_reset, wait_for_launched_live_with,
@@ -1895,48 +1897,61 @@ mod tests {
         assert!(!deferred.is_accepted());
     }
 
+    struct OrderedFinalizationOwner<'phase>(&'phase Cell<u8>);
+
+    impl Drop for OrderedFinalizationOwner<'_> {
+        fn drop(&mut self) {
+            assert_eq!(self.0.get(), 1);
+            self.0.set(2);
+        }
+    }
+
     #[test]
-    fn accepted_sample_finalizes_before_observing_latency() {
+    fn accepted_sample_finalizes_and_drops_before_observing_latency() {
         let phase = Cell::new(0);
-        let (result, accepted, observed) = finalize_result_before_observing(
+        let owner = OrderedFinalizationOwner(&phase);
+        let (result, accepted, observed) = finalize_drop_then_observe(
             Ok::<_, ()>(()),
-            || {
-                assert_eq!(phase.get(), 0);
-                phase.set(1);
+            owner,
+            |owner| {
+                assert_eq!(owner.0.get(), 0);
+                owner.0.set(1);
                 false
             },
             || {
-                assert_eq!(phase.get(), 1);
-                phase.set(2);
+                assert_eq!(phase.get(), 2);
+                phase.set(3);
                 7
             },
         );
         assert_eq!(result, Ok(()));
         assert!(!accepted);
         assert_eq!(observed, 7);
-        assert_eq!(phase.get(), 2);
+        assert_eq!(phase.get(), 3);
     }
 
     #[test]
-    fn failed_sample_finalizes_before_propagating_operation_error() {
+    fn failed_sample_finalizes_and_drops_before_propagating_operation_error() {
         let phase = Cell::new(0);
-        let (result, accepted, observed) = finalize_result_before_observing(
+        let owner = OrderedFinalizationOwner(&phase);
+        let (result, accepted, observed) = finalize_drop_then_observe(
             Err::<(), _>("typed_operation_failure"),
-            || {
-                assert_eq!(phase.get(), 0);
-                phase.set(1);
+            owner,
+            |owner| {
+                assert_eq!(owner.0.get(), 0);
+                owner.0.set(1);
                 true
             },
             || {
-                assert_eq!(phase.get(), 1);
-                phase.set(2);
+                assert_eq!(phase.get(), 2);
+                phase.set(3);
                 11
             },
         );
         assert_eq!(result, Err("typed_operation_failure"));
         assert!(accepted);
         assert_eq!(observed, 11);
-        assert_eq!(phase.get(), 2);
+        assert_eq!(phase.get(), 3);
     }
 
     #[test]
