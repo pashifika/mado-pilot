@@ -302,6 +302,17 @@ struct NativeFixtureApplication {
     _private: [u8; 0],
 }
 
+/// Exact-lifetime knowledge for one retained workspace launch.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum FixtureApplicationLifetime {
+    /// The workspace registry has not observed this accepted launch yet.
+    Unknown,
+    /// The registry contains the retained application with the same launch time.
+    Live,
+    /// Exact observation proves that retained process lifetime is gone.
+    Lost,
+}
+
 /// One exact application instance returned by the private NSWorkspace launcher.
 pub struct LaunchedFixtureApplication {
     raw: NonNull<NativeFixtureApplication>,
@@ -366,18 +377,32 @@ impl LaunchedFixtureApplication {
         self.process_id
     }
 
-    /// Reports whether the exact retained application instance still runs.
+    /// Observes the exact retained process lifetime.
     ///
-    /// A native observation failure is not proof of exit.
-    pub fn is_live(&self) -> Result<bool, String> {
-        let mut live = 0;
+    /// `Unknown` is the expected transient state when an accepted workspace
+    /// completion arrives before process-registry visibility.
+    pub fn lifetime(&self) -> Result<FixtureApplicationLifetime, String> {
+        let mut lifetime = 0;
         // SAFETY: `raw` remains owned by `self`; the output is writable.
         let status =
-            unsafe { mp_shim_fixture_application_is_live(self.raw.as_ptr(), &raw mut live) };
+            unsafe { mp_shim_fixture_application_lifetime(self.raw.as_ptr(), &raw mut lifetime) };
         if status != 0 {
             return Err("the launched fixture lifetime could not be observed".to_owned());
         }
-        Ok(live == 1)
+        match lifetime {
+            0 => Ok(FixtureApplicationLifetime::Lost),
+            1 => Ok(FixtureApplicationLifetime::Live),
+            2 => Ok(FixtureApplicationLifetime::Unknown),
+            _ => Err("the launched fixture lifetime state was invalid".to_owned()),
+        }
+    }
+
+    /// Reports conservative liveness for callers that only need an exit gate.
+    ///
+    /// A never-observed registry identity is potentially live and therefore
+    /// cannot authorize relaunch or termination.
+    pub fn is_live(&self) -> Result<bool, String> {
+        Ok(self.lifetime()? != FixtureApplicationLifetime::Lost)
     }
 
     /// Requests graceful termination of this exact application instance.
@@ -665,9 +690,9 @@ unsafe extern "C" {
         out_application: *mut *mut NativeFixtureApplication,
         out_process_id: *mut u32,
     ) -> u32;
-    fn mp_shim_fixture_application_is_live(
-        application: *const NativeFixtureApplication,
-        out_live: *mut u32,
+    fn mp_shim_fixture_application_lifetime(
+        application: *mut NativeFixtureApplication,
+        out_lifetime: *mut u32,
     ) -> u32;
     fn mp_shim_fixture_application_terminate(
         application: *mut NativeFixtureApplication,

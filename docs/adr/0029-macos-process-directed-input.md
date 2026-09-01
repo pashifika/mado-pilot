@@ -262,7 +262,9 @@ the existing no-fallback contract after possible effect.
   atomic cancellation fence, replacing direct System-event posting with an
   opaque prepared-input lifecycle and final post gate, and expanding the
   private bounded-wait, synchronization-allocation, exception-containment, and
-  gate-counter verification surface. Version 19 is the current linked surface.
+  gate-counter verification surface. Version 20 makes private fixture lifetime
+  observation explicitly `lost` / `live` / `unknown`; it is the current linked
+  surface.
   Each Rust/native layout change is version- and size-checked together. The
   released C ABI and its frozen prefixes remain unchanged.
 - Qualification cost is real: route-wide and per-pair native rows on the

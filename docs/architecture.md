@@ -1464,13 +1464,18 @@ remain separate facts.
 Structural signature validity proves neither a TCC decision nor an application
 input.
 Private fixture cleanup retains the callback-returned application, PID, and
-launch time as one process lifetime. Every later observation and termination
-request revalidates that exact identity; registry visibility during the launch
-callback is not required. Containment sends at most one graceful and one forced
-request, then one lazy serial queue observes only at 100-millisecond intervals
-for at most twenty attempts. Saturating scheduled, active, completed, and
-exhausted counters exist only in private-fixture builds. This boundary and the
-capture-start lifecycle repair are recorded in
+launch time as one process lifetime. The fixture-specific registry lookup never
+consults advisory `isTerminated`: registry absence before that exact identity
+has been observed is unknown, not death, and authorizes neither relaunch nor
+termination. Synchronous containment waits at most one second for registry
+equality; later registry absence is definitive only after that equality.
+Containment sends at most one graceful and one forced request, then
+allocates delayed-cleanup state only if bounded synchronous containment cannot
+confirm exit. One lazy serial queue observes only at 100-millisecond intervals
+for at most twenty attempts. Allocation failure is counted as scheduled and
+exhausted rather than discarded; all saturating cleanup counters exist only in
+private-fixture builds. This boundary and the capture-start lifecycle repair are
+recorded in
 [ADR 0059](adr/0059-macos-capture-start-and-fixture-cleanup.md).
 
 The capability matrix, commands, privacy limits, bundling/signing step, and manual

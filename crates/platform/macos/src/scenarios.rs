@@ -31,7 +31,7 @@ use crate::discovery::{Candidate, Fingerprint, NativeKey, TargetMetadata, invent
 use crate::input::GeometryLedger;
 use crate::native::{NativeSession, SessionTarget, testing_delayed_callback_is_active};
 use crate::shim::{
-    self, DELAY_IN_RUST_CALLBACK, FAIL_RECONFIGURE_SEMAPHORE_ALLOCATION,
+    self, DELAY_IN_RUST_CALLBACK, FAIL_IN_START_COMPLETION, FAIL_RECONFIGURE_SEMAPHORE_ALLOCATION,
     FAIL_START_HOLD_ALLOCATION, MAX_NATIVE_WAIT, PANIC_IN_RUST_CALLBACK, RAISE_AFTER_CALLBACK,
     RAISE_AT_START, RAISE_AT_START_SUBMISSION, RAISE_AT_TEARDOWN, RAISE_BEFORE_CALLBACK,
     RAISE_IN_START_COMPLETION, RAISE_IN_STOP_COMPLETION,
@@ -1333,7 +1333,7 @@ fn a_close_timeout_during_native_start_is_resumable() {
 }
 
 #[test]
-fn close_during_a_pending_failed_start_joins_failure_and_stops_once() {
+fn close_during_a_pending_native_start_failure_joins_without_stopping() {
     let _serial = serialized();
     let Some(harness) = Harness::acquire("close during pending failed start") else {
         return;
@@ -1345,7 +1345,7 @@ fn close_during_a_pending_failed_start_joins_failure_and_stops_once() {
         .open_unstarted_shim(
             Duration::from_millis(150),
             Duration::ZERO,
-            RAISE_IN_START_COMPLETION,
+            FAIL_IN_START_COMPLETION,
         )
         .expect("open unstarted shim session");
     assert_eq!(
@@ -1355,8 +1355,8 @@ fn close_during_a_pending_failed_start_joins_failure_and_stops_once() {
     );
     assert_eq!(
         session.close(MAX_NATIVE_WAIT),
-        Err(shim::ShimStatus::NativeException),
-        "close reports the cached start failure after stopping accepted ownership"
+        Err(shim::ShimStatus::PlatformFailure),
+        "close reports the cached native start failure without producer ownership"
     );
     drop(session);
     assert!(
@@ -1367,8 +1367,8 @@ fn close_during_a_pending_failed_start_joins_failure_and_stops_once() {
         shim::testing_capture_lifecycle_counts().expect("read lifecycle submission outcome");
     assert_eq!(
         [settled[0] - submissions[0], settled[1] - submissions[1]],
-        [1, 1],
-        "failed settlement still has one accepted start and at most one stop"
+        [1, 0],
+        "failed settlement has one accepted start and no stop without producer ownership"
     );
 }
 
@@ -1513,11 +1513,13 @@ fn a_contained_exception_in_the_start_completion_leaves_no_native_object_alive()
     let _serial = serialized();
     let submissions =
         shim::testing_capture_lifecycle_counts().expect("read lifecycle submission baseline");
-    contained_site(
+    if !contained_site(
         "the start completion",
         RAISE_IN_START_COMPLETION,
         FrameExpectation::Any,
-    );
+    ) {
+        return;
+    }
     let settled =
         shim::testing_capture_lifecycle_counts().expect("read lifecycle submission outcome");
     assert_eq!(
@@ -1621,7 +1623,7 @@ fn start_allocation_failure(name: &str, site: u32) {
     );
 }
 
-fn contained_site(name: &str, site: u32, expectation: FrameExpectation) {
+fn contained_site(name: &str, site: u32, expectation: FrameExpectation) -> bool {
     let scenario = format!("containment at {name}");
     // The frame sites need a display that is actually producing, or the raise
     // never fires and the case passes without having run.
@@ -1631,7 +1633,7 @@ fn contained_site(name: &str, site: u32, expectation: FrameExpectation) {
         Harness::acquire_producing(&scenario)
     };
     let Some(harness) = harness else {
-        return;
+        return false;
     };
     let baseline = shim::live_objects();
 
@@ -1696,6 +1698,7 @@ fn contained_site(name: &str, site: u32, expectation: FrameExpectation) {
          baseline of {baseline}",
         shim::live_objects()
     );
+    true
 }
 
 #[test]

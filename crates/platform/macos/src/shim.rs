@@ -41,7 +41,7 @@ use mado_pilot_capture::CaptureFault;
 use mado_pilot_core::{OperationContext, PermissionState, PixelExtent};
 
 /// The internal surface version this build was written against.
-pub(crate) const ABI_VERSION: u32 = 19;
+pub(crate) const ABI_VERSION: u32 = 20;
 
 /// Largest wait the shim is ever asked for, so one native call cannot consume a
 /// caller's whole budget.
@@ -94,6 +94,9 @@ pub(crate) const RAISE_AT_TEARDOWN: u32 = 8;
 /// it fires after the wait that block signals. See [`RAISE_AT_START`].
 #[cfg(test)]
 pub(crate) const RAISE_IN_START_COMPLETION: u32 = 16;
+/// Simulates an accepted native start whose completion fails without a producer.
+#[cfg(test)]
+pub(crate) const FAIL_IN_START_COMPLETION: u32 = 4096;
 /// Raises before the framework can accept the native start completion.
 #[cfg(test)]
 pub(crate) const RAISE_AT_START_SUBMISSION: u32 = 2048;
@@ -146,6 +149,12 @@ const TEST_FIXTURE_DELAYED_DEATH: u32 = 11;
 const TEST_FIXTURE_OVERLAPPING_RELEASES: u32 = 12;
 #[cfg(test)]
 const TEST_FIXTURE_TRANSIENT_LIFETIME_REGISTRATION: u32 = 13;
+#[cfg(test)]
+const TEST_FIXTURE_CLEANUP_RECORD_ALLOCATION_FAILURE: u32 = 14;
+#[cfg(test)]
+const TEST_FIXTURE_RELEASE_CLEANUP_RECORD_ALLOCATION_FAILURE: u32 = 15;
+#[cfg(test)]
+const TEST_FIXTURE_ADVISORY_TERMINATED_WHILE_EXACT_LIVE: u32 = 16;
 
 #[repr(C)]
 struct OpaqueInventory {
@@ -3520,11 +3529,13 @@ mod tests {
         LaunchContext, MAX_NATIVE_WAIT, MAX_SURFACE_EXTENT, OpaqueFrame, OpenRequest,
         ProcessAuthorization, ProcessCancellationFence, ProcessEventSource,
         ProcessFocusObservation, ProcessOperationCheckpoint, SessionSyncInit, ShimStatus,
-        SignatureMode, TEST_FIXTURE_COMPLETION_EXCEPTION, TEST_FIXTURE_DELAYED_DEATH,
-        TEST_FIXTURE_EXACT_PROBE_FAILURE, TEST_FIXTURE_HANDLE_ALLOCATION_FAILURE,
-        TEST_FIXTURE_LATE_COMPLETION, TEST_FIXTURE_OVERLAPPING_RELEASES, TEST_FIXTURE_PID_REUSE,
-        TEST_FIXTURE_REAPER_HANDOFF, TEST_FIXTURE_RELEASE_REAPER_HANDOFF,
-        TEST_FIXTURE_SEMAPHORE_ALLOCATION_FAILURE,
+        SignatureMode, TEST_FIXTURE_ADVISORY_TERMINATED_WHILE_EXACT_LIVE,
+        TEST_FIXTURE_CLEANUP_RECORD_ALLOCATION_FAILURE, TEST_FIXTURE_COMPLETION_EXCEPTION,
+        TEST_FIXTURE_DELAYED_DEATH, TEST_FIXTURE_EXACT_PROBE_FAILURE,
+        TEST_FIXTURE_HANDLE_ALLOCATION_FAILURE, TEST_FIXTURE_LATE_COMPLETION,
+        TEST_FIXTURE_OVERLAPPING_RELEASES, TEST_FIXTURE_PID_REUSE, TEST_FIXTURE_REAPER_HANDOFF,
+        TEST_FIXTURE_RELEASE_CLEANUP_RECORD_ALLOCATION_FAILURE,
+        TEST_FIXTURE_RELEASE_REAPER_HANDOFF, TEST_FIXTURE_SEMAPHORE_ALLOCATION_FAILURE,
         TEST_FIXTURE_STALE_TERMINATION_AFTER_EXACT_DEATH, TEST_FIXTURE_SUCCESSFUL_RELEASE,
         TEST_FIXTURE_TRANSIENT_LIFETIME_REGISTRATION, TEST_FIXTURE_VALIDATION_FAILURE,
         TEST_INPUT_ENVIRONMENT_APPLICATION_CHANGE, TEST_INPUT_ENVIRONMENT_COMPLETE_TRACE,
@@ -4882,7 +4893,7 @@ mod tests {
     }
 
     #[test]
-    fn fixture_launcher_never_messages_an_application_without_exact_identity() {
+    fn fixture_launcher_reports_invalid_identity_without_messaging_it() {
         let _serial = serialized_fixture_test();
         let observed = testing_fixture_application_launch(TEST_FIXTURE_VALIDATION_FAILURE)
             .expect("the native fixture-launch seam joins its invalid completion");
@@ -4893,7 +4904,7 @@ mod tests {
         assert_eq!(observed.force_termination_calls, 0);
         assert!(!observed.terminated);
         assert_eq!(observed.live_after_release, observed.live_during_handle);
-        assert_cleanup_counts(&observed, 0, 0, 0, 0);
+        assert_cleanup_counts(&observed, 1, 0, 1, 0);
     }
 
     #[test]
@@ -4940,6 +4951,55 @@ mod tests {
         assert!(observed.terminated);
         assert_eq!(observed.live_during_handle, observed.live_after_release + 1);
         assert_cleanup_counts(&observed, 0, 0, 0, 0);
+    }
+
+    #[test]
+    fn fixture_cleanup_ignores_advisory_termination_when_exact_lifetime_is_live() {
+        let _serial = serialized_fixture_test();
+        let observed =
+            testing_fixture_application_launch(TEST_FIXTURE_ADVISORY_TERMINATED_WHILE_EXACT_LIVE)
+                .expect("the stale advisory-termination scenario runs");
+
+        assert_eq!(observed.launch_status, ShimStatus::Ok);
+        assert_eq!(observed.submission_calls, 1);
+        assert_eq!(observed.graceful_termination_calls, 1);
+        assert_eq!(observed.force_termination_calls, 1);
+        assert!(observed.terminated);
+        assert_eq!(observed.live_during_handle, observed.live_after_release + 1);
+        assert_cleanup_counts(&observed, 0, 0, 0, 0);
+    }
+
+    #[test]
+    fn cleanup_record_allocation_failure_is_observable_after_bounded_containment() {
+        let _serial = serialized_fixture_test();
+        let observed =
+            testing_fixture_application_launch(TEST_FIXTURE_CLEANUP_RECORD_ALLOCATION_FAILURE)
+                .expect("the cleanup-record allocation failure scenario runs");
+
+        assert_eq!(observed.launch_status, ShimStatus::PlatformFailure);
+        assert_eq!(observed.submission_calls, 1);
+        assert_eq!(observed.graceful_termination_calls, 1);
+        assert_eq!(observed.force_termination_calls, 1);
+        assert!(!observed.terminated);
+        assert_eq!(observed.live_after_release, observed.live_during_handle);
+        assert_cleanup_counts(&observed, 1, 0, 1, 0);
+    }
+
+    #[test]
+    fn release_cleanup_record_allocation_failure_is_observable_after_bounded_containment() {
+        let _serial = serialized_fixture_test();
+        let observed = testing_fixture_application_launch(
+            TEST_FIXTURE_RELEASE_CLEANUP_RECORD_ALLOCATION_FAILURE,
+        )
+        .expect("the release cleanup-record allocation failure scenario runs");
+
+        assert_eq!(observed.launch_status, ShimStatus::Ok);
+        assert_eq!(observed.submission_calls, 1);
+        assert_eq!(observed.graceful_termination_calls, 1);
+        assert_eq!(observed.force_termination_calls, 1);
+        assert!(!observed.terminated);
+        assert_eq!(observed.live_during_handle, observed.live_after_release + 1);
+        assert_cleanup_counts(&observed, 1, 0, 1, 0);
     }
 
     #[test]

@@ -30,7 +30,7 @@ extern "C" {
 #endif
 
 /* The version of this internal surface. Rust asserts it at load. */
-#define MP_SHIM_ABI_VERSION 19u
+#define MP_SHIM_ABI_VERSION 20u
 
 /* The largest extent, budget, and default wait the shim will accept or apply. */
 #define MP_SHIM_MAX_PIXEL_EXTENT 32768u
@@ -76,6 +76,7 @@ extern "C" {
 #define MP_SHIM_RAISE_AT_TEARDOWN 8u
 #define MP_SHIM_RAISE_IN_START_COMPLETION 16u
 #define MP_SHIM_RAISE_AT_START_SUBMISSION 2048u
+#define MP_SHIM_FAIL_IN_START_COMPLETION 4096u
 /* Rust-only companion seam: the Rust trampoline panics before processing. */
 #define MP_SHIM_PANIC_IN_RUST_CALLBACK 32u
 #define MP_SHIM_RAISE_IN_STOP_COMPLETION 64u
@@ -1089,20 +1090,28 @@ mp_shim_status mp_shim_input_environment(int64_t *out_process,
  * A submitted application that cannot be returned remains retained through a
  * bounded graceful-then-force termination sequence and an exact-object lifecycle
  * observation, including when completion arrives after the caller's wait expires.
- * If that bounded attempt cannot verify exit, delayed reaper ownership persists
- * across bounded retries until the exact application is observed terminated.
+ * If that bounded attempt cannot verify exit, a delayed reaper observes the
+ * exact lifetime up to its finite bound; setup failure is reported as exhaustion.
  */
 mp_shim_status mp_shim_fixture_application_launch(
     const char *bundle_path, const char *const *arguments,
     size_t argument_count, mp_shim_fixture_application **out_application,
     uint32_t *out_process_id);
-mp_shim_status mp_shim_fixture_application_is_live(
-    const mp_shim_fixture_application *application, uint32_t *out_live);
+#define MP_SHIM_FIXTURE_LIFETIME_LOST 0u
+#define MP_SHIM_FIXTURE_LIFETIME_LIVE 1u
+#define MP_SHIM_FIXTURE_LIFETIME_UNKNOWN 2u
+/*
+ * UNKNOWN means the retained launch identity has not yet appeared in the
+ * workspace process registry. It is not authority to relaunch or terminate.
+ */
+mp_shim_status mp_shim_fixture_application_lifetime(
+    mp_shim_fixture_application *application, uint32_t *out_lifetime);
 mp_shim_status mp_shim_fixture_application_terminate(
     mp_shim_fixture_application *application, uint32_t force);
 /*
- * Releases the opaque owner only after the exact application is observed
- * terminated or retained reaper ownership has accepted the handoff.
+ * Runs bounded exact-lifetime containment before releasing the opaque owner.
+ * Unconfirmed exit is handed to the finite reaper or reported as cleanup
+ * exhaustion when delayed state cannot be allocated.
  */
 void mp_shim_fixture_application_release(
     mp_shim_fixture_application *application);
@@ -1128,6 +1137,9 @@ mp_shim_status mp_shim_fixture_cleanup_counts(
 #define MP_SHIM_TEST_FIXTURE_DELAYED_DEATH 11u
 #define MP_SHIM_TEST_FIXTURE_OVERLAPPING_RELEASES 12u
 #define MP_SHIM_TEST_FIXTURE_TRANSIENT_LIFETIME_REGISTRATION 13u
+#define MP_SHIM_TEST_FIXTURE_CLEANUP_RECORD_ALLOCATION_FAILURE 14u
+#define MP_SHIM_TEST_FIXTURE_RELEASE_CLEANUP_RECORD_ALLOCATION_FAILURE 15u
+#define MP_SHIM_TEST_FIXTURE_ADVISORY_TERMINATED_WHILE_EXACT_LIVE 16u
 
 /*
  * Exercises fixture launch submission, asynchronous completion containment,

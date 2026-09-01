@@ -1358,6 +1358,8 @@ struct mp_shim_inventory {
 
 static id mp_shim_process_lifetime(pid_t process, double *out_launch_time,
                                    mp_shim_status *out_status);
+static id mp_shim_fixture_registry_lifetime(
+    pid_t process, double *out_launch_time, mp_shim_status *out_status);
 
 /*
  * One exact capture filter and the owning process lifetime observed with it.
@@ -1402,7 +1404,9 @@ struct mp_shim_fixture_application {
     pid_t process_id;
     double process_launch_time;
     MPShimFixtureLifetimeProbe lifetime_probe;
+    bool lifetime_observed;
     MPShimFixtureObservationHook testing_observation_hook;
+    bool testing_fail_cleanup_record_allocation;
     dispatch_semaphore_t cleanup_finished;
 };
 
@@ -3583,7 +3587,11 @@ mp_shim_status mp_shim_session_start(mp_shim_session *session,
           @try {
               mp_shim_testing_delay(session->testing_start_delay_nanos);
               result =
-                  error == nil ? MP_SHIM_OK : mp_shim_error_status(error);
+                  (session->testing_raise_sites &
+                   MP_SHIM_FAIL_IN_START_COMPLETION) != 0
+                      ? MP_SHIM_PLATFORM_FAILURE
+                      : (error == nil ? MP_SHIM_OK
+                                      : mp_shim_error_status(error));
               if (result == MP_SHIM_OK) {
                   atomic_store(&session->started, true);
               }
@@ -3608,7 +3616,15 @@ mp_shim_status mp_shim_session_start(mp_shim_session *session,
                             format:@"start submission"];
             }
             atomic_fetch_add(&mp_shim_testing_start_submissions, 1u);
-            [stream startCaptureWithCompletionHandler:completion];
+            if ((session->testing_raise_sites &
+                 MP_SHIM_FAIL_IN_START_COMPLETION) != 0) {
+                dispatch_async(
+                    dispatch_get_global_queue(QOS_CLASS_UTILITY, 0), ^{
+                      completion(nil);
+                    });
+            } else {
+                [stream startCaptureWithCompletionHandler:completion];
+            }
         } @catch (...) {
             mp_shim_start_gate_end(&session->start_gate,
                                    MP_SHIM_NATIVE_EXCEPTION);
@@ -4185,6 +4201,7 @@ static void mp_shim_load_appkit(void) {
 #define MP_SHIM_MAX_FIXTURE_ARGUMENT_BYTES 4096u
 #define MP_SHIM_FIXTURE_LAUNCH_TIMEOUT_NANOS (10ull * NSEC_PER_SEC)
 #define MP_SHIM_FIXTURE_GRACEFUL_TERMINATION_NANOS 1000000000ull
+#define MP_SHIM_FIXTURE_REGISTRATION_WAIT_NANOS 1000000000ull
 #define MP_SHIM_FIXTURE_FORCE_TERMINATION_NANOS 1000000000ull
 #define MP_SHIM_FIXTURE_TERMINATION_POLL_NANOS 10000000ull
 #define MP_SHIM_FIXTURE_CLEANUP_OBSERVATION_NANOS 100000000ull
@@ -4207,6 +4224,7 @@ typedef struct {
     uint64_t completion_timeout_nanos;
     bool fail_semaphore_allocation;
     bool fail_handle_allocation;
+    bool fail_cleanup_record_allocation;
     bool raise_in_completion;
     MPShimFixtureLifetimeProbe lifetime_probe;
     dispatch_semaphore_t cleanup_finished;
@@ -4227,6 +4245,7 @@ typedef struct {
     atomic_bool abandoned;
     atomic_bool cleanup_claimed;
     MPShimFixtureLifetimeProbe lifetime_probe;
+    bool fail_cleanup_record_allocation;
     dispatch_semaphore_t cleanup_finished;
 }
 @end
@@ -4238,6 +4257,7 @@ typedef struct {
         application = nil;
         completion_status = MP_SHIM_PLATFORM_FAILURE;
         lifetime_probe = NULL;
+        fail_cleanup_record_allocation = false;
         cleanup_finished = nil;
         atomic_init(&abandoned, false);
         atomic_init(&cleanup_claimed, false);
@@ -4253,6 +4273,7 @@ typedef struct {
     double process_launch_time;
     MPShimFixtureLifetimeProbe lifetime_probe;
     MPShimFixtureObservationHook testing_observation_hook;
+    bool lifetime_observed;
     dispatch_semaphore_t cleanup_finished;
     uint32_t observations_remaining;
     uint32_t observations_started;
@@ -4262,6 +4283,14 @@ typedef struct {
 
 @implementation MPShimFixtureCleanupRecord
 @end
+
+typedef struct {
+    __unsafe_unretained id<MPShimLaunchedApplication> application;
+    pid_t process_id;
+    double process_launch_time;
+    MPShimFixtureLifetimeProbe lifetime_probe;
+    bool *lifetime_observed;
+} mp_shim_fixture_lifetime;
 
 static void
 mp_shim_fixture_cleanup_counter_increment(atomic_uint_fast64_t *counter) {
@@ -4279,44 +4308,96 @@ mp_shim_fixture_cleanup_counter_decrement(atomic_uint_fast64_t *counter) {
     }
 }
 
+static mp_shim_status mp_shim_fixture_application_identity(
+    id<MPShimLaunchedApplication> application, pid_t *out_process_id,
+    double *out_process_launch_time) {
+    if (application == nil || out_process_id == NULL ||
+        out_process_launch_time == NULL) {
+        return MP_SHIM_INVALID_ARGUMENT;
+    }
+    *out_process_id = 0;
+    *out_process_launch_time = NAN;
+    MP_SHIM_BEGIN
+    pid_t process_id = application.processIdentifier;
+    NSDate *launch_date = application.launchDate;
+    double process_launch_time =
+        launch_date == nil ? NAN : launch_date.timeIntervalSinceReferenceDate;
+    if (process_id <= 0 || !isfinite(process_launch_time)) {
+        return MP_SHIM_PLATFORM_FAILURE;
+    }
+    *out_process_id = process_id;
+    *out_process_launch_time = process_launch_time;
+    return MP_SHIM_OK;
+    MP_SHIM_END
+}
+
 static mp_shim_status mp_shim_fixture_application_exact_lifetime(
-    id<MPShimLaunchedApplication> application, pid_t process_id,
-    double process_launch_time, MPShimFixtureLifetimeProbe lifetime_probe,
-    bool *out_live) {
-    if (application == nil || process_id <= 0 ||
-        !isfinite(process_launch_time) || out_live == NULL) {
+    mp_shim_fixture_lifetime *lifetime, bool *out_live) {
+    if (lifetime == NULL || lifetime->application == nil ||
+        lifetime->process_id <= 0 ||
+        !isfinite(lifetime->process_launch_time) ||
+        lifetime->lifetime_observed == NULL || out_live == NULL) {
         return MP_SHIM_INVALID_ARGUMENT;
     }
     *out_live = false;
     MP_SHIM_BEGIN
-    if (lifetime_probe != NULL) {
-        return lifetime_probe(application, process_id, process_launch_time,
-                              out_live);
+    if (lifetime->lifetime_probe != NULL) {
+        mp_shim_status status = lifetime->lifetime_probe(
+            lifetime->application, lifetime->process_id,
+            lifetime->process_launch_time, out_live);
+        if (status == MP_SHIM_OK && *out_live) {
+            *lifetime->lifetime_observed = true;
+        }
+        return status;
     }
     mp_shim_status status = MP_SHIM_PLATFORM_FAILURE;
     double current_launch_time = 0.0;
-    id current =
-        mp_shim_process_lifetime(process_id, &current_launch_time, &status);
+    id current = mp_shim_fixture_registry_lifetime(
+        lifetime->process_id, &current_launch_time, &status);
     if (current == nil) {
+        if (status == MP_SHIM_TARGET_LOST &&
+            !*lifetime->lifetime_observed) {
+            return MP_SHIM_TIMED_OUT;
+        }
         return status;
     }
-    *out_live = [current isEqual:application] &&
-                current_launch_time == process_launch_time;
+    *out_live = [current isEqual:lifetime->application] &&
+                current_launch_time == lifetime->process_launch_time;
+    if (*out_live) {
+        *lifetime->lifetime_observed = true;
+    }
     return MP_SHIM_OK;
     MP_SHIM_END
+}
+
+static mp_shim_status mp_shim_fixture_lifetime_exact_live(
+    mp_shim_fixture_lifetime *lifetime, bool *out_live) {
+    mp_shim_status status =
+        mp_shim_fixture_application_exact_lifetime(lifetime, out_live);
+    if (status == MP_SHIM_TARGET_LOST) {
+        *out_live = false;
+        return MP_SHIM_OK;
+    }
+    return status;
 }
 
 static MPShimFixtureCleanupRecord *mp_shim_fixture_cleanup_record_create(
     id<MPShimLaunchedApplication> application, pid_t process_id,
     double process_launch_time, MPShimFixtureLifetimeProbe lifetime_probe,
+    bool lifetime_observed,
     MPShimFixtureObservationHook testing_observation_hook,
-    dispatch_semaphore_t cleanup_finished, mp_shim_status *out_status) {
+    dispatch_semaphore_t cleanup_finished, bool fail_for_test,
+    mp_shim_status *out_status) {
     if (out_status == NULL) {
         return nil;
     }
     *out_status = MP_SHIM_INVALID_ARGUMENT;
     if (application == nil || process_id <= 0 ||
         !isfinite(process_launch_time)) {
+        return nil;
+    }
+    if (fail_for_test) {
+        *out_status = MP_SHIM_PLATFORM_FAILURE;
         return nil;
     }
     @try {
@@ -4330,6 +4411,7 @@ static MPShimFixtureCleanupRecord *mp_shim_fixture_cleanup_record_create(
         record->process_id = process_id;
         record->process_launch_time = process_launch_time;
         record->lifetime_probe = lifetime_probe;
+        record->lifetime_observed = lifetime_observed;
         record->testing_observation_hook = testing_observation_hook;
         record->cleanup_finished = cleanup_finished;
         record->observations_remaining =
@@ -4348,34 +4430,15 @@ static MPShimFixtureCleanupRecord *mp_shim_fixture_cleanup_record_create(
     }
 }
 
-static MPShimFixtureCleanupRecord *mp_shim_fixture_cleanup_record_from_application(
-    id<MPShimLaunchedApplication> application,
-    MPShimFixtureLifetimeProbe lifetime_probe,
-    dispatch_semaphore_t cleanup_finished, mp_shim_status *out_status) {
-    if (out_status == NULL) {
-        return nil;
-    }
-    *out_status = MP_SHIM_INVALID_ARGUMENT;
-    if (application == nil) {
-        return nil;
-    }
-    @try {
-        pid_t process_id = application.processIdentifier;
-        NSDate *launch_date = application.launchDate;
-        double process_launch_time =
-            launch_date == nil ? NAN
-                               : launch_date.timeIntervalSinceReferenceDate;
-        return mp_shim_fixture_cleanup_record_create(
-            application, process_id, process_launch_time, lifetime_probe, NULL,
-            cleanup_finished, out_status);
-    } @catch (NSException *exception) {
-        (void)exception;
-        *out_status = MP_SHIM_NATIVE_EXCEPTION;
-        return nil;
-    } @catch (...) {
-        *out_status = MP_SHIM_NATIVE_EXCEPTION;
-        return nil;
-    }
+static mp_shim_fixture_lifetime mp_shim_fixture_cleanup_record_lifetime(
+    MPShimFixtureCleanupRecord *record) {
+    return (mp_shim_fixture_lifetime){
+        .application = record->application,
+        .process_id = record->process_id,
+        .process_launch_time = record->process_launch_time,
+        .lifetime_probe = record->lifetime_probe,
+        .lifetime_observed = &record->lifetime_observed,
+    };
 }
 
 static mp_shim_status mp_shim_fixture_cleanup_exact_live(
@@ -4383,39 +4446,34 @@ static mp_shim_status mp_shim_fixture_cleanup_exact_live(
     if (record == nil || out_live == NULL) {
         return MP_SHIM_INVALID_ARGUMENT;
     }
-    mp_shim_status status = mp_shim_fixture_application_exact_lifetime(
-        record->application, record->process_id, record->process_launch_time,
-        record->lifetime_probe, out_live);
-    if (status == MP_SHIM_TARGET_LOST) {
-        *out_live = false;
-        return MP_SHIM_OK;
-    }
-    return status;
+    mp_shim_fixture_lifetime lifetime =
+        mp_shim_fixture_cleanup_record_lifetime(record);
+    return mp_shim_fixture_lifetime_exact_live(&lifetime, out_live);
 }
 
 static mp_shim_status mp_shim_fixture_cleanup_request_termination(
-    MPShimFixtureCleanupRecord *record, bool force, bool *out_accepted) {
-    if (record == nil || out_accepted == NULL) {
+    mp_shim_fixture_lifetime *lifetime, bool force, bool *out_accepted) {
+    if (lifetime == NULL || out_accepted == NULL) {
         return MP_SHIM_INVALID_ARGUMENT;
     }
     *out_accepted = false;
     bool live = false;
     mp_shim_status status =
-        mp_shim_fixture_cleanup_exact_live(record, &live);
+        mp_shim_fixture_lifetime_exact_live(lifetime, &live);
     if (status != MP_SHIM_OK || !live) {
         return status;
     }
     MP_SHIM_BEGIN
-    *out_accepted = force ? [record->application forceTerminate]
-                          : [record->application terminate];
+    *out_accepted = force ? [lifetime->application forceTerminate]
+                          : [lifetime->application terminate];
     return MP_SHIM_OK;
     MP_SHIM_END
 }
 
 static mp_shim_status mp_shim_fixture_cleanup_wait_for_exit(
-    MPShimFixtureCleanupRecord *record, uint64_t timeout_nanos,
+    mp_shim_fixture_lifetime *lifetime, uint64_t timeout_nanos,
     bool *out_exited) {
-    if (record == nil || out_exited == NULL) {
+    if (lifetime == NULL || out_exited == NULL) {
         return MP_SHIM_INVALID_ARGUMENT;
     }
     *out_exited = false;
@@ -4423,7 +4481,7 @@ static mp_shim_status mp_shim_fixture_cleanup_wait_for_exit(
     for (;;) {
         bool live = false;
         mp_shim_status status =
-            mp_shim_fixture_cleanup_exact_live(record, &live);
+            mp_shim_fixture_lifetime_exact_live(lifetime, &live);
         if (status != MP_SHIM_OK) {
             return status;
         }
@@ -4442,41 +4500,66 @@ static mp_shim_status mp_shim_fixture_cleanup_wait_for_exit(
     }
 }
 
+static mp_shim_status mp_shim_fixture_wait_for_registration(
+    mp_shim_fixture_lifetime *lifetime, uint64_t timeout_nanos,
+    bool *out_live) {
+    if (lifetime == NULL || out_live == NULL) {
+        return MP_SHIM_INVALID_ARGUMENT;
+    }
+    uint64_t remaining = timeout_nanos;
+    for (;;) {
+        mp_shim_status status =
+            mp_shim_fixture_lifetime_exact_live(lifetime, out_live);
+        if (status != MP_SHIM_TIMED_OUT ||
+            *lifetime->lifetime_observed) {
+            return status;
+        }
+        if (remaining == 0) {
+            return MP_SHIM_TIMED_OUT;
+        }
+        uint64_t delay = remaining < MP_SHIM_FIXTURE_TERMINATION_POLL_NANOS
+                             ? remaining
+                             : MP_SHIM_FIXTURE_TERMINATION_POLL_NANOS;
+        mp_shim_testing_delay(delay);
+        remaining -= delay;
+    }
+}
+
 static mp_shim_status
-mp_shim_fixture_application_contain(MPShimFixtureCleanupRecord *record) {
-    if (record == nil) {
-        return MP_SHIM_OK;
+mp_shim_fixture_application_contain(mp_shim_fixture_lifetime *lifetime) {
+    if (lifetime == NULL) {
+        return MP_SHIM_INVALID_ARGUMENT;
     }
     bool live = false;
-    mp_shim_status status =
-        mp_shim_fixture_cleanup_exact_live(record, &live);
+    mp_shim_status status = mp_shim_fixture_wait_for_registration(
+        lifetime, MP_SHIM_FIXTURE_REGISTRATION_WAIT_NANOS, &live);
     if (status != MP_SHIM_OK || !live) {
         return status;
     }
 
     bool accepted = false;
     status =
-        mp_shim_fixture_cleanup_request_termination(record, false, &accepted);
+        mp_shim_fixture_cleanup_request_termination(lifetime, false, &accepted);
     if (status != MP_SHIM_OK) {
         return status;
     }
     bool exited = false;
     if (accepted) {
         status = mp_shim_fixture_cleanup_wait_for_exit(
-            record, MP_SHIM_FIXTURE_GRACEFUL_TERMINATION_NANOS, &exited);
+            lifetime, MP_SHIM_FIXTURE_GRACEFUL_TERMINATION_NANOS, &exited);
         if (status != MP_SHIM_OK || exited) {
             return status;
         }
     }
 
     accepted = false;
-    status = mp_shim_fixture_cleanup_request_termination(record, true,
-                                                         &accepted);
+    status =
+        mp_shim_fixture_cleanup_request_termination(lifetime, true, &accepted);
     if (status != MP_SHIM_OK) {
         return status;
     }
     status = mp_shim_fixture_cleanup_wait_for_exit(
-        record, MP_SHIM_FIXTURE_FORCE_TERMINATION_NANOS, &exited);
+        lifetime, MP_SHIM_FIXTURE_FORCE_TERMINATION_NANOS, &exited);
     if (status != MP_SHIM_OK || exited) {
         return status;
     }
@@ -4541,6 +4624,17 @@ static void mp_shim_fixture_cleanup_schedule_observation(
           }
           atomic_fetch_sub(&mp_shim_fixture_cleanup_observers_active, 1u);
         });
+}
+
+static void mp_shim_fixture_cleanup_note_setup_failure(
+    dispatch_semaphore_t cleanup_finished) {
+    mp_shim_fixture_cleanup_counter_increment(
+        &mp_shim_fixture_cleanup_scheduled);
+    mp_shim_fixture_cleanup_counter_increment(
+        &mp_shim_fixture_cleanup_exhausted);
+    if (cleanup_finished != nil) {
+        dispatch_semaphore_signal(cleanup_finished);
+    }
 }
 
 static mp_shim_status mp_shim_fixture_application_schedule_reap(
@@ -4617,24 +4711,50 @@ mp_shim_fixture_launch_abandon(MPShimFixtureLaunchState *state,
         return primary_status;
     }
     bool expected = false;
-    if (!atomic_compare_exchange_strong(&state->cleanup_claimed, &expected, true)) {
+    if (!atomic_compare_exchange_strong(&state->cleanup_claimed, &expected,
+                                        true)) {
         return primary_status;
     }
-    mp_shim_status record_status = MP_SHIM_PLATFORM_FAILURE;
-    MPShimFixtureCleanupRecord *record =
-        mp_shim_fixture_cleanup_record_from_application(
-            cleanup, state->lifetime_probe, state->cleanup_finished,
-            &record_status);
-    if (record == nil) {
-        if (primary_status == MP_SHIM_NATIVE_EXCEPTION ||
-            record_status == MP_SHIM_INVALID_ARGUMENT) {
-            return primary_status;
-        }
-        return record_status;
+
+    pid_t process_id = 0;
+    double process_launch_time = NAN;
+    mp_shim_status identity_status = mp_shim_fixture_application_identity(
+        cleanup, &process_id, &process_launch_time);
+    if (identity_status != MP_SHIM_OK) {
+        mp_shim_fixture_cleanup_note_setup_failure(
+            state->cleanup_finished);
+        return primary_status == MP_SHIM_NATIVE_EXCEPTION
+                   ? primary_status
+                   : identity_status;
     }
+
+    bool lifetime_observed = false;
+    mp_shim_fixture_lifetime lifetime = {
+        .application = cleanup,
+        .process_id = process_id,
+        .process_launch_time = process_launch_time,
+        .lifetime_probe = state->lifetime_probe,
+        .lifetime_observed = &lifetime_observed,
+    };
     mp_shim_status cleanup_status =
-        mp_shim_fixture_application_contain(record);
+        mp_shim_fixture_application_contain(&lifetime);
     if (cleanup_status != MP_SHIM_OK) {
+        mp_shim_status record_status = MP_SHIM_PLATFORM_FAILURE;
+        MPShimFixtureCleanupRecord *record =
+            mp_shim_fixture_cleanup_record_create(
+                cleanup, process_id, process_launch_time,
+                state->lifetime_probe, lifetime_observed, NULL,
+                state->cleanup_finished,
+                state->fail_cleanup_record_allocation, &record_status);
+        if (record == nil) {
+            mp_shim_fixture_cleanup_note_setup_failure(
+                state->cleanup_finished);
+            if (primary_status == MP_SHIM_NATIVE_EXCEPTION ||
+                record_status == MP_SHIM_INVALID_ARGUMENT) {
+                return primary_status;
+            }
+            return record_status;
+        }
         (void)mp_shim_fixture_application_schedule_reap(record);
     }
     if (cleanup_status == MP_SHIM_OK ||
@@ -4648,7 +4768,8 @@ static mp_shim_status
 mp_shim_fixture_application_create(
     id<MPShimLaunchedApplication> application, pid_t process_id,
     double process_launch_time, MPShimFixtureLifetimeProbe lifetime_probe,
-    dispatch_semaphore_t cleanup_finished, bool fail_for_test,
+    dispatch_semaphore_t cleanup_finished,
+    bool fail_cleanup_record_allocation, bool fail_for_test,
     mp_shim_fixture_application **out_application) {
     if (application == nil || process_id <= 0 || !isfinite(process_launch_time) ||
         out_application == NULL) {
@@ -4667,6 +4788,9 @@ mp_shim_fixture_application_create(
     owned->process_id = process_id;
     owned->process_launch_time = process_launch_time;
     owned->lifetime_probe = lifetime_probe;
+    owned->lifetime_observed = false;
+    owned->testing_fail_cleanup_record_allocation =
+        fail_cleanup_record_allocation;
     owned->cleanup_finished = cleanup_finished;
     *out_application = owned;
     mp_shim_note_owned();
@@ -4697,6 +4821,8 @@ static mp_shim_status mp_shim_fixture_application_submit(
         return MP_SHIM_PLATFORM_FAILURE;
     }
     state->lifetime_probe = options->lifetime_probe;
+    state->fail_cleanup_record_allocation =
+        options->fail_cleanup_record_allocation;
     state->cleanup_finished = options->cleanup_finished;
     dispatch_semaphore_t completion = nil;
     mp_shim_status semaphore_status =
@@ -4782,14 +4908,14 @@ static mp_shim_status mp_shim_fixture_application_submit(
             return mp_shim_fixture_launch_abandon(
                 state, application_value, MP_SHIM_PLATFORM_FAILURE);
         }
-        pid_t process_id = application_value.processIdentifier;
-        NSDate *launch_date = application_value.launchDate;
-        double launch_time = launch_date == nil
-                                 ? NAN
-                                 : launch_date.timeIntervalSinceReferenceDate;
-        if (process_id <= 0 || !isfinite(launch_time)) {
+        pid_t process_id = 0;
+        double launch_time = NAN;
+        mp_shim_status identity_status =
+            mp_shim_fixture_application_identity(
+                application_value, &process_id, &launch_time);
+        if (identity_status != MP_SHIM_OK) {
             return mp_shim_fixture_launch_abandon(
-                state, application_value, MP_SHIM_PLATFORM_FAILURE);
+                state, application_value, identity_status);
         }
         /*
          * The completion's application, PID, and launch date establish identity.
@@ -4799,6 +4925,7 @@ static mp_shim_status mp_shim_fixture_application_submit(
         mp_shim_status created = mp_shim_fixture_application_create(
             application_value, process_id, launch_time,
             options->lifetime_probe, options->cleanup_finished,
+            options->fail_cleanup_record_allocation,
             options->fail_handle_allocation, out_application);
         if (created != MP_SHIM_OK) {
             return mp_shim_fixture_launch_abandon(state, application_value, created);
@@ -4880,6 +5007,7 @@ mp_shim_status mp_shim_fixture_application_launch(
             .completion_timeout_nanos = MP_SHIM_FIXTURE_LAUNCH_TIMEOUT_NANOS,
             .fail_semaphore_allocation = false,
             .fail_handle_allocation = false,
+            .fail_cleanup_record_allocation = false,
             .raise_in_completion = false,
             .lifetime_probe = NULL,
             .cleanup_finished = nil,
@@ -4901,30 +5029,41 @@ mp_shim_fixture_application_value(const mp_shim_fixture_application *application
     return (__bridge id<MPShimLaunchedApplication>)application->application;
 }
 
-mp_shim_status mp_shim_fixture_application_is_live(
-    const mp_shim_fixture_application *application, uint32_t *out_live) {
-    if (out_live == NULL) {
+mp_shim_status mp_shim_fixture_application_lifetime(
+    mp_shim_fixture_application *application, uint32_t *out_lifetime) {
+    if (out_lifetime == NULL) {
         return MP_SHIM_INVALID_ARGUMENT;
     }
-    *out_live = 0;
+    *out_lifetime = MP_SHIM_FIXTURE_LIFETIME_UNKNOWN;
     MP_SHIM_BEGIN
-    id<MPShimLaunchedApplication> value = mp_shim_fixture_application_value(application);
+    id<MPShimLaunchedApplication> value =
+        mp_shim_fixture_application_value(application);
     if (value == nil) {
         return MP_SHIM_INVALID_ARGUMENT;
     }
+    mp_shim_fixture_lifetime lifetime = {
+        .application = value,
+        .process_id = application->process_id,
+        .process_launch_time = application->process_launch_time,
+        .lifetime_probe = application->lifetime_probe,
+        .lifetime_observed = &application->lifetime_observed,
+    };
     bool live = false;
     mp_shim_status status =
-        mp_shim_fixture_application_exact_lifetime(
-            value, application->process_id,
-            application->process_launch_time, application->lifetime_probe,
-            &live);
+        mp_shim_fixture_application_exact_lifetime(&lifetime, &live);
     if (status == MP_SHIM_TARGET_LOST) {
+        *out_lifetime = MP_SHIM_FIXTURE_LIFETIME_LOST;
+        return MP_SHIM_OK;
+    }
+    if (status == MP_SHIM_TIMED_OUT &&
+        !application->lifetime_observed) {
         return MP_SHIM_OK;
     }
     if (status != MP_SHIM_OK) {
         return status;
     }
-    *out_live = live ? 1u : 0u;
+    *out_lifetime = live ? MP_SHIM_FIXTURE_LIFETIME_LIVE
+                         : MP_SHIM_FIXTURE_LIFETIME_LOST;
     return MP_SHIM_OK;
     MP_SHIM_END
 }
@@ -4935,16 +5074,21 @@ mp_shim_status mp_shim_fixture_application_terminate(
         return MP_SHIM_INVALID_ARGUMENT;
     }
     MP_SHIM_BEGIN
-    id<MPShimLaunchedApplication> value = mp_shim_fixture_application_value(application);
+    id<MPShimLaunchedApplication> value =
+        mp_shim_fixture_application_value(application);
     if (value == nil) {
         return MP_SHIM_INVALID_ARGUMENT;
     }
+    mp_shim_fixture_lifetime lifetime = {
+        .application = value,
+        .process_id = application->process_id,
+        .process_launch_time = application->process_launch_time,
+        .lifetime_probe = application->lifetime_probe,
+        .lifetime_observed = &application->lifetime_observed,
+    };
     bool live = false;
     mp_shim_status status =
-        mp_shim_fixture_application_exact_lifetime(
-            value, application->process_id,
-            application->process_launch_time, application->lifetime_probe,
-            &live);
+        mp_shim_fixture_application_exact_lifetime(&lifetime, &live);
     if (status == MP_SHIM_TARGET_LOST) {
         return MP_SHIM_OK;
     }
@@ -4959,35 +5103,54 @@ mp_shim_status mp_shim_fixture_application_terminate(
     MP_SHIM_END
 }
 
-void mp_shim_fixture_application_release(mp_shim_fixture_application *application) {
-    if (application == NULL || application->magic != MP_SHIM_FIXTURE_APPLICATION_MAGIC) {
+void mp_shim_fixture_application_release(
+    mp_shim_fixture_application *application) {
+    if (application == NULL ||
+        application->magic != MP_SHIM_FIXTURE_APPLICATION_MAGIC) {
         return;
     }
     CFTypeRef value = application->application;
     id<MPShimLaunchedApplication> exact_application =
         value == NULL ? nil : (__bridge id<MPShimLaunchedApplication>)value;
-    mp_shim_status record_status = MP_SHIM_PLATFORM_FAILURE;
-    MPShimFixtureCleanupRecord *record =
-        mp_shim_fixture_cleanup_record_create(
-            exact_application, application->process_id,
-            application->process_launch_time, application->lifetime_probe,
-            application->testing_observation_hook,
-            application->cleanup_finished, &record_status);
+    bool lifetime_observed = application->lifetime_observed;
+    mp_shim_fixture_lifetime lifetime = {
+        .application = exact_application,
+        .process_id = application->process_id,
+        .process_launch_time = application->process_launch_time,
+        .lifetime_probe = application->lifetime_probe,
+        .lifetime_observed = &lifetime_observed,
+    };
+    mp_shim_status cleanup_status =
+        mp_shim_fixture_application_contain(&lifetime);
+    if (cleanup_status != MP_SHIM_OK) {
+        mp_shim_status record_status = MP_SHIM_PLATFORM_FAILURE;
+        MPShimFixtureCleanupRecord *record =
+            mp_shim_fixture_cleanup_record_create(
+                exact_application, application->process_id,
+                application->process_launch_time,
+                application->lifetime_probe, lifetime_observed,
+                application->testing_observation_hook,
+                application->cleanup_finished,
+                application->testing_fail_cleanup_record_allocation,
+                &record_status);
+        if (record == nil) {
+            mp_shim_fixture_cleanup_note_setup_failure(
+                application->cleanup_finished);
+        } else {
+            (void)mp_shim_fixture_application_schedule_reap(record);
+        }
+    }
+
     application->magic = 0;
     application->application = NULL;
     application->process_id = 0;
     application->process_launch_time = 0.0;
     application->lifetime_probe = NULL;
+    application->lifetime_observed = false;
     application->testing_observation_hook = NULL;
+    application->testing_fail_cleanup_record_allocation = false;
     application->cleanup_finished = nil;
 
-    if (record != nil) {
-        mp_shim_status cleanup_status =
-            mp_shim_fixture_application_contain(record);
-        if (cleanup_status != MP_SHIM_OK) {
-            (void)mp_shim_fixture_application_schedule_reap(record);
-        }
-    }
     @try {
         if (value != NULL) {
             CFRelease(value);
@@ -5006,12 +5169,14 @@ void mp_shim_fixture_application_release(mp_shim_fixture_application *applicatio
 #define MP_SHIM_TEST_FIXTURE_LIFETIME_DEAD 1u
 #define MP_SHIM_TEST_FIXTURE_LIFETIME_REPLACED 2u
 #define MP_SHIM_TEST_FIXTURE_LIFETIME_FAILURE 3u
+#define MP_SHIM_TEST_FIXTURE_LIFETIME_UNKNOWN 4u
 
 @interface MPShimFixtureTestApplication : NSObject <MPShimLaunchedApplication> {
   @public
     pid_t test_process_identifier;
     BOOL test_terminated;
     atomic_uint test_lifetime_mode;
+    atomic_uint test_unknown_probes_remaining;
     __strong NSDate *test_launch_date;
     uint32_t graceful_termination_calls;
     uint32_t force_termination_calls;
@@ -5061,6 +5226,21 @@ static mp_shim_status mp_shim_fixture_test_exact_lifetime(
     }
     if (mode == MP_SHIM_TEST_FIXTURE_LIFETIME_FAILURE) {
         return MP_SHIM_PLATFORM_FAILURE;
+    }
+    if (mode == MP_SHIM_TEST_FIXTURE_LIFETIME_UNKNOWN) {
+        unsigned int remaining =
+            atomic_load(&test_application->test_unknown_probes_remaining);
+        while (remaining > 0u &&
+               !atomic_compare_exchange_weak(
+                   &test_application->test_unknown_probes_remaining,
+                   &remaining, remaining - 1u)) {
+        }
+        if (remaining > 0u) {
+            return MP_SHIM_TIMED_OUT;
+        }
+        atomic_store(&test_application->test_lifetime_mode,
+                     MP_SHIM_TEST_FIXTURE_LIFETIME_LIVE);
+        *out_live = true;
     }
     return MP_SHIM_OK;
 }
@@ -5159,7 +5339,8 @@ mp_shim_status mp_shim_testing_fixture_application_launch(
     uint64_t *out_cleanup_completed, uint64_t *out_cleanup_exhausted,
     uint64_t *out_cleanup_observations,
     uint32_t *out_cleanup_max_observer_concurrency) {
-    if (scenario > MP_SHIM_TEST_FIXTURE_TRANSIENT_LIFETIME_REGISTRATION ||
+    if (scenario >
+            MP_SHIM_TEST_FIXTURE_ADVISORY_TERMINATED_WHILE_EXACT_LIVE ||
         out_launch_status == NULL || out_submission_calls == NULL ||
         out_graceful_termination_calls == NULL ||
         out_force_termination_calls == NULL || out_terminated == NULL ||
@@ -5213,6 +5394,7 @@ mp_shim_status mp_shim_testing_fixture_application_launch(
             [NSDate dateWithTimeIntervalSinceReferenceDate:1000.0];
         atomic_init(&application->test_lifetime_mode,
                     MP_SHIM_TEST_FIXTURE_LIFETIME_LIVE);
+        atomic_init(&application->test_unknown_probes_remaining, 0u);
         workspace->test_application = application;
         workspace->callback_finished = callback_completion;
         bool wait_for_cleanup =
@@ -5220,7 +5402,10 @@ mp_shim_status mp_shim_testing_fixture_application_launch(
             scenario == MP_SHIM_TEST_FIXTURE_RELEASE_REAPER_HANDOFF ||
             scenario == MP_SHIM_TEST_FIXTURE_EXACT_PROBE_FAILURE ||
             scenario == MP_SHIM_TEST_FIXTURE_DELAYED_DEATH ||
-            scenario == MP_SHIM_TEST_FIXTURE_OVERLAPPING_RELEASES;
+            scenario == MP_SHIM_TEST_FIXTURE_OVERLAPPING_RELEASES ||
+            scenario == MP_SHIM_TEST_FIXTURE_CLEANUP_RECORD_ALLOCATION_FAILURE ||
+            scenario ==
+                MP_SHIM_TEST_FIXTURE_RELEASE_CLEANUP_RECORD_ALLOCATION_FAILURE;
 
         mp_shim_fixture_launch_options options = {
             .completion_timeout_nanos = 1000000000ull,
@@ -5228,7 +5413,14 @@ mp_shim_status mp_shim_testing_fixture_application_launch(
                 scenario == MP_SHIM_TEST_FIXTURE_SEMAPHORE_ALLOCATION_FAILURE,
             .fail_handle_allocation =
                 scenario == MP_SHIM_TEST_FIXTURE_HANDLE_ALLOCATION_FAILURE ||
-                scenario == MP_SHIM_TEST_FIXTURE_REAPER_HANDOFF,
+                scenario == MP_SHIM_TEST_FIXTURE_REAPER_HANDOFF ||
+                scenario ==
+                    MP_SHIM_TEST_FIXTURE_CLEANUP_RECORD_ALLOCATION_FAILURE,
+            .fail_cleanup_record_allocation =
+                scenario ==
+                    MP_SHIM_TEST_FIXTURE_CLEANUP_RECORD_ALLOCATION_FAILURE ||
+                scenario ==
+                    MP_SHIM_TEST_FIXTURE_RELEASE_CLEANUP_RECORD_ALLOCATION_FAILURE,
             .raise_in_completion =
                 scenario == MP_SHIM_TEST_FIXTURE_COMPLETION_EXCEPTION,
             .lifetime_probe = mp_shim_fixture_test_exact_lifetime,
@@ -5239,6 +5431,10 @@ mp_shim_status mp_shim_testing_fixture_application_launch(
             options.completion_timeout_nanos = 1000000ull;
             workspace->completion_delay_nanos = 20000000ull;
         }
+        if (scenario ==
+            MP_SHIM_TEST_FIXTURE_ADVISORY_TERMINATED_WHILE_EXACT_LIVE) {
+            application->test_terminated = YES;
+        }
         if (scenario == MP_SHIM_TEST_FIXTURE_VALIDATION_FAILURE) {
             application->test_process_identifier = 0;
         }
@@ -5247,13 +5443,17 @@ mp_shim_status mp_shim_testing_fixture_application_launch(
         }
         if (scenario == MP_SHIM_TEST_FIXTURE_RELEASE_REAPER_HANDOFF ||
             scenario == MP_SHIM_TEST_FIXTURE_DELAYED_DEATH ||
-            scenario == MP_SHIM_TEST_FIXTURE_OVERLAPPING_RELEASES) {
+            scenario == MP_SHIM_TEST_FIXTURE_OVERLAPPING_RELEASES ||
+            scenario == MP_SHIM_TEST_FIXTURE_CLEANUP_RECORD_ALLOCATION_FAILURE ||
+            scenario ==
+                MP_SHIM_TEST_FIXTURE_RELEASE_CLEANUP_RECORD_ALLOCATION_FAILURE) {
             application->force_failures_remaining = 1;
         }
         if (scenario ==
             MP_SHIM_TEST_FIXTURE_TRANSIENT_LIFETIME_REGISTRATION) {
             atomic_store(&application->test_lifetime_mode,
-                         MP_SHIM_TEST_FIXTURE_LIFETIME_DEAD);
+                         MP_SHIM_TEST_FIXTURE_LIFETIME_UNKNOWN);
+            atomic_store(&application->test_unknown_probes_remaining, 2u);
         }
 
         mp_shim_fixture_application *owned = NULL;
@@ -5263,8 +5463,20 @@ mp_shim_status mp_shim_testing_fixture_application_launch(
             workspace, configuration, url, &options, &owned, &process_id);
         if (scenario ==
             MP_SHIM_TEST_FIXTURE_TRANSIENT_LIFETIME_REGISTRATION) {
-            atomic_store(&application->test_lifetime_mode,
-                         MP_SHIM_TEST_FIXTURE_LIFETIME_LIVE);
+            uint32_t lifetime = MP_SHIM_FIXTURE_LIFETIME_LOST;
+            mp_shim_status lifetime_status =
+                owned == NULL
+                    ? MP_SHIM_PLATFORM_FAILURE
+                    : mp_shim_fixture_application_lifetime(owned, &lifetime);
+            if (lifetime_status != MP_SHIM_OK ||
+                lifetime != MP_SHIM_FIXTURE_LIFETIME_UNKNOWN) {
+                atomic_store(&application->test_lifetime_mode,
+                             MP_SHIM_TEST_FIXTURE_LIFETIME_LIVE);
+                if (owned != NULL) {
+                    mp_shim_fixture_application_release(owned);
+                }
+                return MP_SHIM_PLATFORM_FAILURE;
+            }
         }
         (void)process_id;
 
@@ -5317,7 +5529,8 @@ mp_shim_status mp_shim_testing_fixture_application_launch(
                 mp_shim_fixture_application_create(
                     overlapping_application, 4343, 2000.0,
                     mp_shim_fixture_test_exact_lifetime,
-                    callback_completion, false, &overlapping_owned);
+                    callback_completion, false, false,
+                    &overlapping_owned);
             if (overlapping_status != MP_SHIM_OK) {
                 if (owned != NULL) {
                     mp_shim_fixture_application_release(owned);
@@ -5412,6 +5625,42 @@ mp_shim_status mp_shim_testing_fixture_application_launch(
 static Class mp_shim_activation_class(void) {
     pthread_once(&mp_shim_appkit_once, mp_shim_load_appkit);
     return mp_shim_running_application_class;
+}
+
+/*
+ * Fixture cleanup uses registry presence and exact identity, never the retained
+ * application's advisory `isTerminated` property.
+ */
+static id mp_shim_fixture_registry_lifetime(
+    pid_t process, double *out_launch_time, mp_shim_status *out_status) {
+    *out_launch_time = 0.0;
+    *out_status = MP_SHIM_PLATFORM_FAILURE;
+    if (process <= 0) {
+        *out_status = MP_SHIM_INVALID_ARGUMENT;
+        return nil;
+    }
+    Class class = mp_shim_activation_class();
+    if (class == Nil) {
+        *out_status = MP_SHIM_UNSUPPORTED;
+        return nil;
+    }
+    id<MPShimRunningApplicationClass> factory =
+        (id<MPShimRunningApplicationClass>)class;
+    id<MPShimProcessLifetimeApplication> running =
+        [factory runningApplicationWithProcessIdentifier:process];
+    if (running == nil || running.processIdentifier != process) {
+        *out_status = MP_SHIM_TARGET_LOST;
+        return nil;
+    }
+    NSDate *launch_date = running.launchDate;
+    double launch_time =
+        launch_date == nil ? NAN : launch_date.timeIntervalSinceReferenceDate;
+    if (!isfinite(launch_time)) {
+        return nil;
+    }
+    *out_launch_time = launch_time;
+    *out_status = MP_SHIM_OK;
+    return running;
 }
 /*
  * Returns one public AppKit process object and its immutable launch date.

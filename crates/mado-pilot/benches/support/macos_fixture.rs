@@ -21,9 +21,9 @@ use std::thread;
 use std::time::{Duration, Instant};
 
 use crate::macos_fixture_control::{
-    AuthenticatedFixtureProcess, ExecutableIdentity, FixtureSocketDirectory,
-    LaunchedFixtureApplication, authenticate_fixture_peer, executable_identity,
-    next_fixture_run_nonce,
+    AuthenticatedFixtureProcess, ExecutableIdentity, FixtureApplicationLifetime,
+    FixtureSocketDirectory, LaunchedFixtureApplication, authenticate_fixture_peer,
+    executable_identity, next_fixture_run_nonce,
 };
 use crate::macos_fixture_protocol::{
     self as protocol, EVENT_FLAGS_CHANGED, EVENT_KEY_DOWN, EVENT_KEY_UP, EVENT_POINTER_MOVE,
@@ -520,7 +520,9 @@ impl FixtureController {
         let mut launch_attempts = 1_u32;
         let deadline = Instant::now() + wait;
         let (stream, application) = loop {
-            if max_launch_attempts > 1 && !launch_guard.is_live()? {
+            if max_launch_attempts > 1
+                && launch_guard.lifetime()? == FixtureApplicationLifetime::Lost
+            {
                 if launch_attempts >= max_launch_attempts || Instant::now() >= deadline {
                     return Err(format!(
                         "the fixture application exited before connecting after \
@@ -1304,11 +1306,11 @@ impl LaunchGuard {
         }
     }
 
-    fn is_live(&self) -> Result<bool, String> {
+    fn lifetime(&self) -> Result<FixtureApplicationLifetime, String> {
         self.launched
             .as_ref()
             .ok_or_else(|| "the guarded launched application is missing".to_owned())?
-            .is_live()
+            .lifetime()
     }
 
     fn take(mut self) -> (LaunchedFixtureApplication, AuthenticatedFixtureProcess) {
