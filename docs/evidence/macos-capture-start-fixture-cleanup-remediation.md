@@ -68,12 +68,14 @@ The linkage suite verifies that `mp_shim_fixture_cleanup_counts` is absent when 
 
 The first hosted all-target run for the campaign source had one failing test:
 the delayed-death seam injected its state change on a shared global utility
-queue and timed out under full-suite load. The final test seam schedules that
-injected change on the same serial queue as the observations, so delayed
-execution preserves their order instead of starving the mutation separately.
-The focused test and the complete macOS all-target suite then passed. No
-production timeout, termination count, observation interval, or observation
-ceiling changed.
+queue and timed out under full-suite load. Moving that injected mutation onto
+the cleanup serial queue passed locally, but the next hosted run still timed
+out; dispatch timing was still part of the oracle. The final seam changes the
+test lifetime on its third cleanup observation immediately before the exact
+probe. It therefore proves rescheduling and eventual exact death without an
+independently scheduled mutation. The focused test and complete local macOS
+all-target suite passed with this seam. No production timeout, termination
+count, observation interval, or observation ceiling changed.
 
 ## Historical and privacy boundary
 
