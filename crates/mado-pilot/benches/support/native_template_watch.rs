@@ -1977,20 +1977,9 @@ fn report(arguments: &Arguments, plan: Plan, workloads: &[Workload]) {
     let fixture_source = required_identity(&arguments.raw, "--fixture-source-sha256", 64);
     let process = required_identity(&arguments.raw, "--process-index", 1);
     let cohort = required_enum(&arguments.raw, "--cohort", &["precursor", "final"]);
-    let host = required_enum(
-        &arguments.raw,
-        "--host-class",
-        &["apple-m1-pro-10c-32g", "windows-i7-12700kf-32g"],
-    );
-    let backend = required_enum(&arguments.raw, "--backend", &["opencv-4.14.0"]);
-    let toolchain = required_enum(
-        &arguments.raw,
-        "--toolchain",
-        &[
-            "rust-1.97.1-8bab26f4-llvm-22.1.6",
-            "rust-1.97.1-msvc-19.44.35228",
-        ],
-    );
+    let host = required_argument(&arguments.raw, "--host-class");
+    let backend = required_argument(&arguments.raw, "--backend");
+    let toolchain = required_argument(&arguments.raw, "--toolchain");
     let (hardware, os_version) = Profile::host(&arguments.raw);
     assert!(privacy_tokens_are_bounded(), "privacy_violation");
     let profile = Profile {
@@ -2075,6 +2064,12 @@ fn required_identity(arguments: &[String], name: &str, length: usize) -> String 
         "identity_mismatch"
     );
     value.to_owned()
+}
+
+fn required_argument(arguments: &[String], name: &str) -> String {
+    value(arguments, name)
+        .unwrap_or_else(|| panic!("identity_mismatch"))
+        .to_owned()
 }
 
 fn required_enum(arguments: &[String], name: &str, accepted: &[&str]) -> String {

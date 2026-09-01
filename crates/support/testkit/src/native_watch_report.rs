@@ -24,6 +24,7 @@ const WINDOWS_HARDWARE_LEGACY: &str = "Intel Core i7-12700KF, 32 GiB";
 const WINDOWS_HARDWARE_PREFIX: &str = "Intel Core i7-12700KF, ";
 const WINDOWS_HARDWARE_BYTES_SUFFIX: &str = " bytes memory";
 const WINDOWS_SUPPORTED_SDK: [u32; 4] = [10, 0, 26100, 0];
+const WINDOWS_VERSION_MAX_BYTES: usize = 128;
 
 /// Exact ordered workload registry accepted by native watcher profiles.
 pub const WORKLOADS: [&str; 24] = [
@@ -427,7 +428,10 @@ fn parse_platform_version(value: &str) -> Option<PlatformVersion<'_>> {
 }
 
 fn parse_windows_version(value: &str) -> Option<WindowsVersion<'_>> {
-    let mut parts = value.split_ascii_whitespace();
+    if value.len() > WINDOWS_VERSION_MAX_BYTES {
+        return None;
+    }
+    let mut parts = value.split(' ');
     if parts.next()? != "Windows" {
         return None;
     }
@@ -664,6 +668,33 @@ mod tests {
                 "hardware {hardware}"
             );
         }
+    }
+
+    #[test]
+    fn windows_os_provenance_requires_bounded_single_space_grammar() {
+        let provenance = windows_provenance();
+        for os in [
+            format!(" {WINDOWS_SERVICED_OS}"),
+            format!("{WINDOWS_SERVICED_OS} "),
+            WINDOWS_SERVICED_OS.replacen("Windows 11", "Windows  11", 1),
+            WINDOWS_SERVICED_OS.replacen("Windows 11", "Windows\t11", 1),
+            WINDOWS_SERVICED_OS.replacen("Windows 11", "Windows\n11", 1),
+        ] {
+            let candidate = windows_profile(provenance, WINDOWS_OBSERVED_HARDWARE, os.as_str());
+            assert_eq!(
+                validate(&candidate, provenance),
+                Err(ValidationError::Privacy),
+                "OS whitespace variant"
+            );
+        }
+
+        let overlong = "Windows 4294967295 Enterprise 99H2 4294967295.4294967295.4294967295 UBR 4294967295; Windows SDK 4294967295.4294967295.4294967295.4294967295";
+        assert!(overlong.len() > 128);
+        let candidate = windows_profile(provenance, WINDOWS_OBSERVED_HARDWARE, overlong);
+        assert_eq!(
+            validate(&candidate, provenance),
+            Err(ValidationError::Privacy)
+        );
     }
 
     #[test]
