@@ -740,6 +740,8 @@ fn peak_resident_bytes() -> Option<u64> {
 
 #[cfg(all(test, windows))]
 mod tests {
+    use super::MonitorFact;
+
 
     #[test]
     fn topology_uses_per_target_scale_on_the_physical_windows_desktop() {
@@ -761,21 +763,52 @@ mod tests {
     }
 
     #[test]
-    fn next_monitor_origin_never_selects_the_current_display() {
-        let origins = vec![(0, 0), (-3840, 0), (0, 0)];
+    fn next_monitor_origin_requires_a_different_origin_and_scale() {
+        let monitors = vec![
+            MonitorFact {
+                origin: (0, 0),
+                dpi: (96, 96),
+            },
+            MonitorFact {
+                origin: (-3840, 0),
+                dpi: (144, 144),
+            },
+            MonitorFact {
+                origin: (0, 0),
+                dpi: (96, 96),
+            },
+        ];
 
         assert_eq!(
-            super::next_monitor_origin(origins.clone(), (0, 0)),
+            super::next_monitor_origin(monitors.clone(), (0, 0), (96, 96)),
             Some((-3840, 0))
         );
         assert_eq!(
-            super::next_monitor_origin(origins, (-3840, 0)),
+            super::next_monitor_origin(monitors, (-3840, 0), (144, 144)),
             Some((0, 0))
         );
-        assert_eq!(super::next_monitor_origin(vec![(0, 0)], (0, 0)), None);
         assert_eq!(
-            super::next_monitor_origin(vec![(-3840, 0), (0, 0)], (10, 10)),
+            super::next_monitor_origin(
+                vec![MonitorFact {
+                    origin: (0, 0),
+                    dpi: (96, 96),
+                }],
+                (0, 0),
+                (96, 96),
+            ),
             None
+        );
+    }
+
+    #[test]
+    #[ignore = "queries the approved mixed-DPI Windows qualification topology"]
+    fn approved_host_exposes_distinct_effective_monitor_scale() {
+        let monitors = super::monitor_facts().expect("monitor facts");
+        let first = monitors.first().expect("at least one monitor");
+
+        assert!(
+            monitors.iter().any(|monitor| monitor.dpi != first.dpi),
+            "approved mixed-DPI host must expose distinct effective monitor scale"
         );
     }
 }
