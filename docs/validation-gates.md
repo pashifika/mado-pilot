@@ -319,7 +319,7 @@ historical ScreenCaptureKit suspension. V2 separates authority:
 Session open alone is not a first-pixel guarantee. Lane B has finite absolute
 startup, token-observation, operation, and teardown deadlines, reports semantic
 and cleanup facts independently, and classifies pre-execution apparatus failure
-as `INFRA` or `UNSUPPORTED` rather than product `FAIL`. Source `0dabd9f` passes
+as `INFRA` or `UNSUPPORTED` rather than product `FAIL`. Source `318ad1c` passes
 all eight Apple Lane B semantic and cleanup scenarios with exact 2× token
 capture and fixture finalization. Windows Lane B is pending, so cross-target
 native support remains withheld.

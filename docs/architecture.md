@@ -101,7 +101,7 @@ any PR #59–#64 record. Lane A retains deterministic replay/OpenCV scheduler an
 query authority; required Windows and macOS Lane B jobs own only the compact WGC
 and ScreenCaptureKit semantic contract driven by an acknowledged pixel-encoded
 post-open token; Lane C retains optional statistical, topology, resource, and
-endurance evidence. Source `0dabd9f` passed all eight Apple Lane B semantic and
+endurance evidence. Source `318ad1c` passed all eight Apple Lane B semantic and
 cleanup scenarios on the approved Retina host. Windows Lane B is pending, so
 cross-target native support remains withheld. This successor protocol neither
 identifies nor repairs the historical ScreenCaptureKit suspension, and it does

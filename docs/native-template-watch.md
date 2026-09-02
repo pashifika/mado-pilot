@@ -16,7 +16,7 @@ not yet a cross-target support promotion.
 |---|---|
 | Rust `Session::start_template_watch` over replay/OpenCV | Supported and budget-qualified |
 | Rust `Session::start_template_watch` over Windows WGC window/display sessions | Implemented; required V2 Lane B execution on the approved mixed-DPI host is pending. Historical and consumed-builder results remain revision-bound under ADRs 0057 and 0060–0063; cross-target support remains withheld |
-| Rust `Session::start_template_watch` over macOS ScreenCaptureKit window/display sessions | Implemented; V2 source `0dabd9f` passed all eight Lane B semantic and cleanup scenarios on the approved Apple M1 Pro, macOS 26.6.2, SDK 26.5 host, including captured 2× token scale and exact fixture finalization. Cross-target support remains withheld until Windows Lane B passes |
+| Rust `Session::start_template_watch` over macOS ScreenCaptureKit window/display sessions | Implemented; V2 source `318ad1c` passed all eight Lane B semantic and cleanup scenarios on the approved Apple M1 Pro, macOS 26.6.2, SDK 26.5 host, including captured 2× token scale and exact fixture finalization. Cross-target support remains withheld until Windows Lane B passes |
 | Non-blocking `TemplateQuery::poll`, blocking `wait`, explicit `cancel`, and immutable terminal results | Implemented; native support follows the underlying session qualification |
 | OCR predicates or wait-for-text | Not implemented |
 | Watcher callbacks or subscriptions | Not implemented |
@@ -25,7 +25,7 @@ not yet a cross-target support promotion.
 | Tokio/futures integration or real-time guarantees | Not implemented |
 | Packaged libraries, crates.io publication, static artifacts, installers, tags, or a `v0.4.0` release | Not available |
 
-The V2 native matrices use repository-owned token fixtures to prove exact producer progress, source/frame correlation, geometry generation, retained ownership, lifecycle outcomes, and bounded cleanup. The Apple report is bound to commit `0dabd9fc2a336824d1ba5779344b9affd527cff6`, tree `f8d983c063adaa8234ea2c2a92d636c20fb8f720`, and separately hashed runner, fixture, codec, and report artifacts. Earlier V1 Windows passes, Apple terminal failures, repairs, and consumed builders remain historical facts only; V2 neither relabels them nor claims a cause for the historical ScreenCaptureKit suspension. These fixtures are qualification apparatus, not a compatibility claim for arbitrary applications or caller content.
+The V2 native matrices use repository-owned token fixtures to prove exact producer progress, source/frame correlation, geometry generation, retained ownership, lifecycle outcomes, and bounded cleanup. The current Apple report is bound to commit `318ad1c49102d9fcd33448d12ee75d739bf04336`, tree `00fe097cb4b1ea4eaf58abc87f496584f50d3ae8`, runner SHA-256 `7a4720f3ca8b756b0f2757988921c901983a13ef6e67fd86926860e3d5e6ea87`, fixture SHA-256 `d7fe848cccaf2db829dafd538b36460d1c015d33d666ac4158e015d4e700e307`, codec SHA-256 `8b59a9cbc375e21ca39514a6c2f2ca16ebdaec47b82126d7c7d36c7809dc8f10`, and report SHA-256 `9518c00ec118b1e2f21027fd1c7bd811a3f176f79ef89752714ef27c65ce6289`. Earlier V1 Windows passes, Apple terminal failures, repairs, and consumed builders remain historical facts only; V2 neither relabels them nor claims a cause for the historical ScreenCaptureKit suspension. These fixtures are qualification apparatus, not a compatibility claim for arbitrary applications or caller content.
 
 ## Qualification V2 protocol and migration
 
@@ -152,7 +152,7 @@ The production watcher uses fixed finite engine/session/query limits, two engine
 Current-source revision `030398e` produced a distinct `retained_result_mapping` terminal red: bounded fixture finalization failed and p95 and maximum latency exceeded their unchanged limits. ADR 0060 retains that result without assigning a cause. Cleanup localization and exact-sample correlation bound to `030398e` then selected ADR 0062's exact retained-lifetime and typed-finalization repair without changing deadlines, delayed-reaper bounds, or accepted limits.
 
 Qualification V2 replaces the monolithic required campaign with the compact
-token-driven contract. Source `0dabd9f` passed the Apple Lane B integration and
+token-driven contract. Source `318ad1c` passed the Apple Lane B integration and
 cleanup boundary; Windows Lane B remains pending. The historical target-specific
 numbers remain repository-fixture regression evidence, not service-level
 objectives or Lane B pass criteria. New statistical enforcement belongs only to

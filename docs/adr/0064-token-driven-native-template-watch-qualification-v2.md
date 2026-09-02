@@ -101,15 +101,26 @@ finalization. The private Lane B schema is
 and target-specific statistical enforcement require the separate
 `--lane-c-evidence` mode.
 
-The approved Apple M1 Pro host on macOS 26.6.2 build 25G83 with SDK 26.5 ran the
-exact release runner once. All eight semantic facts and all eight cleanup facts
-were `PASS`; captured target scale was exactly `[2000, 2000]` milli-scale units,
-and finalization reported the accepted-launch `Live` observation, Stop
-acknowledgement, both process lifetimes `Lost`, bounded containment, joined
-reader, drained output, unchanged executable identity, zero active cleanup, no
-exhaustion, and scheduled cleanup equal to completed cleanup. The report,
-runner, fixture, and codec source each have separately retained SHA-256
-identities.
+CI at source `cd89903` exposed two harness defects before either result could be
+accepted: the Windows-only reader moved a decoded line from a pattern guard, and
+the Apple finalizer could observe channel disconnection immediately before the
+reader thread's finished state. Product commit
+`318ad1c49102d9fcd33448d12ee75d739bf04336`, tree
+`00fe097cb4b1ea4eaf58abc87f496584f50d3ae8`, removes both races without changing
+the watcher or public API.
+
+The first `318ad1c` Apple invocation exited `0`, but its complete single-line
+report was not retained by the execution apparatus; that observation is retained
+as `INFRA` and has no authority. After stdout retention was corrected, the
+approved Apple M1 Pro host on macOS 26.6.2 build 25G83 with SDK 26.5 performed
+one separately identified report-bearing invocation. All eight semantic facts
+and all eight cleanup facts were `PASS`; captured target scale was exactly
+`[2000, 2000]` milli-scale units, and finalization reported the accepted-launch
+`Live` observation, Stop acknowledgement, both process lifetimes `Lost`, bounded
+containment, joined reader, drained output, unchanged executable identity, zero
+active cleanup, no exhaustion, and scheduled cleanup equal to completed cleanup.
+The report, runner, fixture, and codec source each have separately retained
+SHA-256 identities.
 
 The required Windows Lane B result is pending. The Apple result therefore
 establishes only the Apple integration boundary and does not yet satisfy the
