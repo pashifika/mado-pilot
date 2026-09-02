@@ -41,7 +41,7 @@ use mado_pilot_capture::CaptureFault;
 use mado_pilot_core::{OperationContext, PermissionState, PixelExtent};
 
 /// The internal surface version this build was written against.
-pub(crate) const ABI_VERSION: u32 = 20;
+pub(crate) const ABI_VERSION: u32 = 21;
 
 /// Largest wait the shim is ever asked for, so one native call cannot consume a
 /// caller's whole budget.

@@ -89,6 +89,10 @@ mod permission;
 mod provider;
 #[cfg(all(test, target_os = "macos"))]
 mod scenarios;
+#[cfg(all(target_os = "macos", feature = "private-fixture"))]
+#[doc(hidden)]
+#[allow(missing_docs)]
+pub mod sck_diagnostics;
 #[cfg(target_os = "macos")]
 mod shim;
 #[cfg(target_os = "macos")]
