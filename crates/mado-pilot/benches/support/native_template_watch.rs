@@ -5,6 +5,9 @@ include!("native_template_watch_macos.rs");
 #[cfg(windows)]
 include!("native_template_watch_windows.rs");
 
+#[path = "native_template_watch_contract.rs"]
+mod native_contract;
+
 use std::cell::RefCell;
 use std::fmt;
 use std::ops::{Deref, DerefMut};
@@ -58,6 +61,40 @@ struct ControlAcknowledgement {
     generation: u64,
     revision: u64,
     visual_token: Option<VisualToken>,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum NativeProcessLifetimeFact {
+    NotObserved,
+    Unknown,
+    Live,
+    Lost,
+    ObservationFailed,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum NativeCleanupDebtFact {
+    None,
+    Deferred,
+}
+
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+struct NativeResourceFacts {
+    baseline_observed: bool,
+    fixture_process_reaped: bool,
+    fixture_reader_joined: bool,
+    protocol_stop_acknowledged: Option<bool>,
+    authenticated_lifetime: Option<NativeProcessLifetimeFact>,
+    launched_lifetime: Option<NativeProcessLifetimeFact>,
+    bounded_containment: bool,
+    output_drained: bool,
+    executable_identity_unchanged: Option<bool>,
+    cleanup_debt: Option<NativeCleanupDebtFact>,
+    apple_launch_accepted_live: Option<bool>,
+    apple_cleanup_scheduled: Option<u64>,
+    apple_cleanup_active: Option<u64>,
+    apple_cleanup_completed: Option<u64>,
+    apple_cleanup_exhausted: Option<u64>,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -673,31 +710,6 @@ fn settle_absent(run: &mut NativeRun) -> Result<mado_pilot::CpuMapping, String> 
     Ok(mapping)
 }
 
-fn wait_geometry_change(run: &NativeRun, after: FrameStamp) -> Result<Frame, String> {
-    let deadline = Instant::now() + OPERATION_WAIT;
-    let original = (after.epoch(), after.geometry());
-    let mut changed = None;
-    let mut stamp = after;
-    loop {
-        let remaining = deadline.saturating_duration_since(Instant::now());
-        if remaining.is_zero() {
-            return Err("wrong_transform".to_owned());
-        }
-        let frame = run
-            .session
-            .acquire_frame(&FrameRequest::newer_than(stamp), &bounded(remaining))
-            .map_err(|_| "typed_operation_failure:DeadlineExceeded".to_owned())?;
-        let current = (frame.stamp().epoch(), frame.stamp().geometry());
-        if current != original {
-            if changed == Some(current) {
-                return Ok(frame);
-            }
-            changed = Some(current);
-        }
-        stamp = frame.stamp();
-    }
-}
-
 fn wait_resize_change(run: &NativeRun, before: &Frame) -> Result<Frame, String> {
     let deadline = Instant::now() + OPERATION_WAIT;
     let original = (before.stamp().epoch(), before.stamp().geometry());
@@ -769,6 +781,12 @@ fn marker_state(mapping: &mado_pilot::CpuMapping, shape: MarkerShape) -> Option<
     visible.then_some(true)
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum ContractArgumentFailure {
+    Protocol,
+    FixtureUnavailable,
+}
+
 #[derive(Debug, Clone)]
 struct Arguments {
     fixture_executable: PathBuf,
@@ -777,10 +795,55 @@ struct Arguments {
     full_load_diagnostic: bool,
     retained_result_lifecycle_diagnostic: bool,
     enforce_budgets: bool,
+    native_contract: bool,
     workload_filter: Option<String>,
 }
 
 impl Arguments {
+    fn contract_requested() -> bool {
+        std::env::args().any(|argument| argument == "--native-contract")
+    }
+
+    fn parse_contract() -> Result<Self, ContractArgumentFailure> {
+        let raw = std::env::args().skip(1).collect::<Vec<_>>();
+        let fixture_prefix = "--fixture-executable=";
+        let contract_switches = raw
+            .iter()
+            .filter(|argument| argument.as_str() == "--native-contract")
+            .count();
+        let fixture_arguments = raw
+            .iter()
+            .filter(|argument| argument.starts_with(fixture_prefix))
+            .count();
+        if contract_switches != 1
+            || fixture_arguments > 1
+            || raw.iter().any(|argument| {
+                argument != "--native-contract"
+                    && (!argument.starts_with(fixture_prefix)
+                        || argument.len() == fixture_prefix.len())
+            })
+        {
+            return Err(ContractArgumentFailure::Protocol);
+        }
+        let fixture_executable = value(&raw, "--fixture-executable")
+            .map(PathBuf::from)
+            .or_else(default_fixture_executable)
+            .ok_or(ContractArgumentFailure::FixtureUnavailable)?;
+        if !fixture_executable.is_file() {
+            return Err(ContractArgumentFailure::FixtureUnavailable);
+        }
+        Ok(Self {
+            fixture_executable,
+            raw,
+            qualification: false,
+            full_load_diagnostic: false,
+            retained_result_lifecycle_diagnostic: false,
+            enforce_budgets: false,
+            workload_filter: None,
+            native_contract: true,
+        })
+    }
+
     fn parse() -> Self {
         let raw = std::env::args().skip(1).collect::<Vec<_>>();
         let fixture_executable = value(&raw, "--fixture-executable")
@@ -791,7 +854,7 @@ impl Arguments {
             fixture_executable.is_file(),
             "capability_unavailable:fixture_executable"
         );
-        let qualification = raw.iter().any(|argument| argument == "--bench");
+        let qualification = raw.iter().any(|argument| argument == "--lane-c-evidence");
         let full_load_diagnostic = raw
             .iter()
             .any(|argument| argument == "--full-load-diagnostic");
@@ -824,6 +887,7 @@ impl Arguments {
             enforce_budgets,
             workload_filter,
             fixture_executable,
+            native_contract: false,
             raw,
         };
         assert!(
@@ -917,6 +981,10 @@ struct NativeRun<Fixture = OwnedNativeFixture> {
     shape: MarkerShape,
     last_ack: ControlAcknowledgement,
     observation: SessionObservation,
+    startup_elapsed: Duration,
+    readiness_token: VisualToken,
+    readiness_stamp: FrameStamp,
+    readiness_scale_milli: Option<[u32; 2]>,
 }
 
 type DestructiveRun<'fixture> = NativeRun<&'fixture mut NativeFixture>;
@@ -942,6 +1010,61 @@ fn acknowledged_visual_token(
         .ok_or_else(|| "fixture_authority_failed".to_owned())
 }
 
+#[derive(Debug, Clone, Copy)]
+struct AcknowledgedVisualState {
+    token: VisualToken,
+    acknowledged_at: Instant,
+}
+
+fn issue_fixture_visual_state_timed(
+    fixture: &mut NativeFixture,
+    last_ack: &mut ControlAcknowledgement,
+    marker: VisualMarkerState,
+) -> Result<AcknowledgedVisualState, String> {
+    let acknowledgement = match marker {
+        VisualMarkerState::Absent => fixture.set_absent()?,
+        VisualMarkerState::Visible => fixture.set_visible()?,
+    };
+    let acknowledged_at = Instant::now();
+    let token = acknowledged_visual_token(acknowledgement, marker)?;
+    accept_control_acknowledgement(last_ack, acknowledgement)?;
+    Ok(AcknowledgedVisualState {
+        token,
+        acknowledged_at,
+    })
+}
+
+fn issue_fixture_visual_state(
+    fixture: &mut NativeFixture,
+    last_ack: &mut ControlAcknowledgement,
+    marker: VisualMarkerState,
+) -> Result<VisualToken, String> {
+    issue_fixture_visual_state_timed(fixture, last_ack, marker)
+        .map(|acknowledgement| acknowledgement.token)
+}
+
+fn synchronize_session_to_token(
+    fixture: &NativeFixture,
+    target: TargetId,
+    session: &Session,
+    observation: &mut SessionObservation,
+    expected: VisualToken,
+) -> Result<Frame, String> {
+    let mut synchronizations = [SessionSynchronization::new(session, observation)];
+    synchronize_sessions(
+        fixture,
+        target,
+        expected,
+        &mut synchronizations,
+        Instant::now() + OPERATION_WAIT,
+    )
+    .map_err(|error| error.to_string())?;
+    synchronizations[0]
+        .frame
+        .take()
+        .ok_or_else(|| "fixture_authority_failed".to_owned())
+}
+
 impl NativeRun {
     fn start(arguments: &Arguments) -> Result<Self, String> {
         let mut fixture = NativeFixture::start(arguments)?;
@@ -955,6 +1078,7 @@ impl NativeRun {
                     error.status()
                 )
             })?;
+        let startup_started = Instant::now();
         let mut last_ack = ControlAcknowledgement {
             generation: 1,
             revision: 0,
@@ -979,6 +1103,7 @@ impl NativeRun {
                 .take()
                 .ok_or_else(|| "fixture_authority_failed".to_owned())?
         };
+        let startup_elapsed = startup_started.elapsed();
         let shape = marker_shape(&frame, &fixture).ok_or_else(|| "wrong_transform".to_owned())?;
         let template = prepare_marker(&engine, shape, "watch-marker-v2")?;
         Ok(Self {
@@ -990,6 +1115,10 @@ impl NativeRun {
             shape,
             last_ack,
             observation,
+            startup_elapsed,
+            readiness_token: expected,
+            readiness_stamp: frame.stamp(),
+            readiness_scale_milli: target_scale_milli(&frame),
         })
     }
 }
@@ -999,13 +1128,7 @@ where
     Fixture: Deref<Target = NativeFixture> + DerefMut,
 {
     fn issue_visual_state(&mut self, marker: VisualMarkerState) -> Result<VisualToken, String> {
-        let acknowledgement = match marker {
-            VisualMarkerState::Absent => self.fixture.set_absent()?,
-            VisualMarkerState::Visible => self.fixture.set_visible()?,
-        };
-        let expected = acknowledged_visual_token(acknowledgement, marker)?;
-        self.accept_acknowledgement(acknowledgement)?;
-        Ok(expected)
+        issue_fixture_visual_state(&mut self.fixture, &mut self.last_ack, marker)
     }
 
     fn synchronize_visual_token(&mut self, expected: VisualToken) -> Result<Frame, String> {
@@ -1016,19 +1139,7 @@ where
             observation,
             ..
         } = self;
-        let mut synchronizations = [SessionSynchronization::new(session, observation)];
-        synchronize_sessions(
-            fixture.deref(),
-            *target,
-            expected,
-            &mut synchronizations,
-            Instant::now() + OPERATION_WAIT,
-        )
-        .map_err(|error| error.to_string())?;
-        synchronizations[0]
-            .frame
-            .take()
-            .ok_or_else(|| "fixture_authority_failed".to_owned())
+        synchronize_session_to_token(fixture.deref(), *target, session, observation, expected)
     }
 
     fn command_visual_state(&mut self, marker: VisualMarkerState) -> Result<Frame, String> {
@@ -1049,7 +1160,7 @@ where
         marker: VisualMarkerState,
         second_session: &Session,
         second_observation: &mut SessionObservation,
-    ) -> Result<(Frame, Frame), String> {
+    ) -> Result<(VisualToken, Frame, Frame), String> {
         let expected = self.issue_visual_state(marker)?;
         let Self {
             fixture,
@@ -1078,7 +1189,7 @@ where
             .frame
             .take()
             .ok_or_else(|| "fixture_authority_failed".to_owned())?;
-        Ok((first, second))
+        Ok((expected, first, second))
     }
 
     fn command_visual_transition(&mut self) -> Result<ControlAcknowledgement, String> {
@@ -1120,6 +1231,28 @@ where
             .map_err(|error| format!("typed_operation_failure:{:?}", error.status()))
     }
 
+    fn matches_visual_token(
+        &self,
+        terminal: &TemplateTerminalOutcome,
+        session: &Session,
+        observations: u32,
+        newer_than: Option<FrameStamp>,
+        expected: VisualToken,
+    ) -> Result<bool, String> {
+        if !matched_target_exact(
+            terminal,
+            self.target,
+            self.template.id(),
+            self.shape,
+            observations,
+            newer_than,
+        ) {
+            return Ok(false);
+        }
+        let result = terminal_match(terminal).ok_or_else(|| "wrong_match".to_owned())?;
+        frame_has_visual_token(session, self.fixture.deref(), result.frame(), expected)
+    }
+
     fn refresh_template(&mut self, frame: &Frame, id: &str) -> Result<(), String> {
         self.shape =
             marker_shape(frame, &self.fixture).ok_or_else(|| "wrong_transform".to_owned())?;
@@ -1127,16 +1260,38 @@ where
         Ok(())
     }
 
-    fn close(mut self) -> bool {
-        let session_closed = self.session.close(&bounded(OPERATION_WAIT)).is_ok()
-            && self.session.close(&bounded(OPERATION_WAIT)).is_ok();
-        drop(self.engine);
-        #[cfg(target_os = "macos")]
-        let fixture_finished = self.fixture.finish().is_accepted();
-        #[cfg(target_os = "windows")]
-        let fixture_finished = self.fixture.finish();
-        session_closed && fixture_finished
+    fn finalize(self) -> NativeRunFinalization {
+        let started = Instant::now();
+        let NativeRun {
+            mut fixture,
+            engine,
+            session,
+            template,
+            ..
+        } = self;
+        let session_closed = session.close(&bounded(OPERATION_WAIT)).is_ok()
+            && session.close(&bounded(OPERATION_WAIT)).is_ok();
+        drop(session);
+        drop(template);
+        drop(engine);
+        let fixture = fixture.finish();
+        NativeRunFinalization {
+            accepted: session_closed && fixture.is_accepted(),
+            elapsed: started.elapsed(),
+            resources: fixture.resources(),
+        }
     }
+
+    fn close(self) -> bool {
+        self.finalize().accepted
+    }
+}
+
+#[derive(Debug, Clone, Copy)]
+struct NativeRunFinalization {
+    accepted: bool,
+    elapsed: Duration,
+    resources: NativeResourceFacts,
 }
 
 struct Cohort {
@@ -1184,6 +1339,10 @@ impl Cohort {
 }
 
 pub(super) fn run() {
+    if Arguments::contract_requested() {
+        native_contract::run();
+        return;
+    }
     let arguments = Arguments::parse();
     let sample_plan = if arguments.qualification
         || arguments.full_load_diagnostic
@@ -1626,6 +1785,13 @@ fn project_marker_shape(
         origin_y: scaled_i32(display_origin.y(), 1.0)?,
     })
 }
+fn target_scale_milli(frame: &Frame) -> Option<[u32; 2]> {
+    let scale = frame.transform().target()?.scale();
+    Some([
+        scaled_u32(scale.x(), 1_000.0)?,
+        scaled_u32(scale.y(), 1_000.0)?,
+    ])
+}
 
 fn marker_shape_fits(frame: &Frame, shape: MarkerShape) -> bool {
     let Ok(left) = u32::try_from(shape.origin_x) else {
@@ -1772,7 +1938,7 @@ fn two_session_fairness(cohort: &Rc<RefCell<Cohort>>) -> Sample {
             .open(run.target, &OpenRequest::new(), &bounded(OPERATION_WAIT))
             .map_err(|_| "typed_operation_failure:CaptureFailed".to_owned())?;
         let mut second_observation = SessionObservation::default();
-        let (_first_absent, _second_absent) = run.command_visual_state_for_pair(
+        let (_absent_token, _first_absent, _second_absent) = run.command_visual_state_for_pair(
             VisualMarkerState::Absent,
             &second_session,
             &mut second_observation,
@@ -1788,7 +1954,7 @@ fn two_session_fairness(cohort: &Rc<RefCell<Cohort>>) -> Sample {
             .map_err(|_| "typed_operation_failure:VisionFailed".to_owned())?;
         let first_before = wait_query_publication(&first)?;
         let second_before = wait_query_publication(&second)?;
-        let (_first_visible, _second_visible) = run.command_visual_state_for_pair(
+        let (visible_token, _first_visible, _second_visible) = run.command_visual_state_for_pair(
             VisualMarkerState::Visible,
             &second_session,
             &mut second_observation,
@@ -1799,10 +1965,12 @@ fn two_session_fairness(cohort: &Rc<RefCell<Cohort>>) -> Sample {
         let second_saw_stimulus = second.benchmark_publication_count() > second_before;
         drop(delay);
         wait_for_backend_idle(OPERATION_WAIT)?;
+        let first_expected =
+            run.matches_visual_token(&first_terminal, &run.session, 1, None, visible_token)?;
+        let second_expected =
+            run.matches_visual_token(&second_terminal, &second_session, 1, None, visible_token)?;
         let closed = second_session.close(&bounded(OPERATION_WAIT)).is_ok();
         run.command_absent()?;
-        let first_expected = first_terminal.is_match();
-        let second_expected = second_terminal.is_match();
         let metrics = terminal_query_metrics(&first, first_expected)?
             .saturating_add(terminal_query_metrics(&second, second_expected)?);
         Ok((
@@ -2055,14 +2223,32 @@ fn session_engine_close(cohort: &Rc<RefCell<Cohort>>) -> Sample {
         let engine_session = run
             .engine
             .open(run.target, &OpenRequest::new(), &bounded(OPERATION_WAIT))
-            .map_err(|_| "typed_operation_failure:CaptureFailed".to_owned())?;
+            .map_err(|error| format!("typed_operation_failure:{:?}", error.status()))?;
+        let expected = run.issue_visual_state(VisualMarkerState::Absent)?;
+        let mut engine_observation = SessionObservation::default();
+        let mut synchronization = [SessionSynchronization::new(
+            &engine_session,
+            &mut engine_observation,
+        )];
+        synchronize_sessions(
+            run.fixture,
+            run.target,
+            expected,
+            &mut synchronization,
+            Instant::now() + OPERATION_WAIT,
+        )
+        .map_err(|error| error.to_string())?;
+        let _engine_frame = synchronization[0]
+            .frame
+            .take()
+            .ok_or_else(|| "fixture_authority_failed".to_owned())?;
         let engine_query = engine_session
             .start_template_watch(TemplateWatchRequest::new(
                 run.template.clone(),
                 MatchOptions::from_defaults(run.template.defaults()),
                 OperationContext::new(),
             ))
-            .map_err(|_| "typed_operation_failure:VisionFailed".to_owned())?;
+            .map_err(|error| format!("typed_operation_failure:{:?}", error.status()))?;
         prime_pending(&engine_query)?;
         drop(run.engine);
         let (engine_terminal, _) = wait_terminal(&engine_query)?;
@@ -2087,76 +2273,136 @@ fn retained_result_mapping(cohort: &Rc<RefCell<Cohort>>) -> Sample {
     destructive_sample(cohort, |mut run| {
         let _absent = establish_absent(&mut run)?;
         let query = run.start_watch(TemplateStability::immediate())?;
-        prime_pending(&query)?;
-        run.command_visible()?;
+        wait_query_publication(&query)?;
+        let visible = run.issue_visual_state(VisualMarkerState::Visible)?;
         let (terminal, _) = wait_terminal(&query)?;
-        let matched = terminal.is_match();
+        let matched = run.matches_visual_token(&terminal, &run.session, 1, None, visible)?;
         let metrics = terminal_query_metrics(&query, matched)?;
         let result = terminal_match(&terminal)
+            .filter(|_| matched)
             .ok_or_else(|| "wrong_match".to_owned())?
             .clone();
-        let mapping = run
-            .session
-            .map_frame(result.frame(), PixelFormat::Rgba8, &bounded(OPERATION_WAIT))
-            .map_err(|_| "ownership_pinned".to_owned())?;
-        let retained_stamp = mapping.stamp();
-        let retained_prefix = mapping
-            .bytes()
-            .get(..mapping.bytes().len().min(16))
-            .map(<[u8]>::to_vec)
-            .ok_or_else(|| "ownership_pinned".to_owned())?;
+        let retained_stamp = result.frame().stamp();
+        let mapping_observer = run.session.mapping_observer();
         run.session
             .close(&bounded(OPERATION_WAIT))
             .map_err(|_| "cleanup_failed".to_owned())?;
         drop(query);
         drop(terminal);
-        // A closed session still owns its native session allocation until dropped.
-        // The retained result and mapping, not that owner, must survive teardown.
         drop(run.session);
         drop(run.engine);
-        let retained =
-            mapping.stamp() == retained_stamp && mapping.bytes().starts_with(&retained_prefix);
+
         let fresh_engine =
             native_engine().map_err(|_| "capability_unavailable:capture".to_owned())?;
         let fresh_target = run.fixture.authenticated_target(&fresh_engine)?;
         let fresh_session = fresh_engine
             .open(fresh_target, &OpenRequest::new(), &bounded(OPERATION_WAIT))
             .map_err(|error| format!("producer_stalled:{:?}:fresh_engine_open", error.status()))?;
-        let progressed = fresh_session
-            .acquire_frame(&FrameRequest::latest(), &bounded(OPERATION_WAIT))
-            .map(|_| true)
-            .map_err(|error| {
-                format!("producer_stalled:{:?}:fresh_first_acquire", error.status())
-            })?;
+        let fresh_token =
+            issue_fixture_visual_state(run.fixture, &mut run.last_ack, VisualMarkerState::Absent)?;
+        let mut fresh_observation = SessionObservation::default();
+        let _fresh_frame = synchronize_session_to_token(
+            run.fixture,
+            fresh_target,
+            &fresh_session,
+            &mut fresh_observation,
+            fresh_token,
+        )?;
+        let retained_native_frame = result.frame().stamp() == retained_stamp;
+        let mapping = mapping_observer
+            .map_frame(result.frame(), PixelFormat::Rgba8, &bounded(OPERATION_WAIT))
+            .map_err(|_| "ownership_pinned".to_owned())?;
+        let mapping_stamp = mapping.stamp();
+        let mapping_prefix = mapping
+            .bytes()
+            .get(..mapping.bytes().len().min(16))
+            .map(<[u8]>::to_vec)
+            .ok_or_else(|| "ownership_pinned".to_owned())?;
+        drop(result);
+        drop(mapping_observer);
         let fresh_closed = fresh_session.close(&bounded(OPERATION_WAIT)).is_ok();
+        drop(fresh_session);
         drop(fresh_engine);
-        Ok((retained && progressed && fresh_closed, metrics))
+
+        let mapping_only_engine =
+            native_engine().map_err(|_| "capability_unavailable:capture".to_owned())?;
+        let mapping_only_target = run.fixture.authenticated_target(&mapping_only_engine)?;
+        let mapping_only_session = mapping_only_engine
+            .open(
+                mapping_only_target,
+                &OpenRequest::new(),
+                &bounded(OPERATION_WAIT),
+            )
+            .map_err(|error| {
+                format!(
+                    "producer_stalled:{:?}:mapping_only_engine_open",
+                    error.status()
+                )
+            })?;
+        let mapping_only_token =
+            issue_fixture_visual_state(run.fixture, &mut run.last_ack, VisualMarkerState::Absent)?;
+        let mut mapping_only_observation = SessionObservation::default();
+        let _mapping_only_frame = synchronize_session_to_token(
+            run.fixture,
+            mapping_only_target,
+            &mapping_only_session,
+            &mut mapping_only_observation,
+            mapping_only_token,
+        )?;
+        let retained_mapping =
+            mapping.stamp() == mapping_stamp && mapping.bytes().starts_with(&mapping_prefix);
+        let mapping_only_closed = mapping_only_session.close(&bounded(OPERATION_WAIT)).is_ok();
+        drop(mapping_only_session);
+        drop(mapping_only_engine);
+        Ok((
+            matched
+                && retained_native_frame
+                && retained_mapping
+                && fresh_closed
+                && mapping_only_closed,
+            metrics,
+        ))
     })
 }
 
 fn fresh_session(cohort: &Rc<RefCell<Cohort>>) -> Sample {
     destructive_sample(cohort, |mut run| {
-        let _absent = establish_absent(&mut run)?;
+        let _predecessor_absent = establish_absent(&mut run)?;
         run.session
             .close(&bounded(OPERATION_WAIT))
             .map_err(|_| "cleanup_failed".to_owned())?;
         let session = run
             .engine
             .open(run.target, &OpenRequest::new(), &bounded(OPERATION_WAIT))
-            .map_err(|_| "typed_operation_failure:CaptureFailed".to_owned())?;
+            .map_err(|error| format!("typed_operation_failure:{:?}", error.status()))?;
+        let absent_token = run.issue_visual_state(VisualMarkerState::Absent)?;
+        let mut observation = SessionObservation::default();
+        let mut synchronization = [SessionSynchronization::new(&session, &mut observation)];
+        synchronize_sessions(
+            run.fixture,
+            run.target,
+            absent_token,
+            &mut synchronization,
+            Instant::now() + OPERATION_WAIT,
+        )
+        .map_err(|error| error.to_string())?;
+        let _absent_frame = synchronization[0]
+            .frame
+            .take()
+            .ok_or_else(|| "fixture_authority_failed".to_owned())?;
         let query = session
             .start_template_watch(TemplateWatchRequest::new(
                 run.template.clone(),
                 MatchOptions::from_defaults(run.template.defaults()),
                 OperationContext::new(),
             ))
-            .map_err(|_| "typed_operation_failure:VisionFailed".to_owned())?;
-        prime_pending(&query)?;
-        run.command_visible()?;
+            .map_err(|error| format!("typed_operation_failure:{:?}", error.status()))?;
+        wait_query_publication(&query)?;
+        let visible_token = run.issue_visual_state(VisualMarkerState::Visible)?;
         let (terminal, _) = wait_terminal(&query)?;
+        let matched = run.matches_visual_token(&terminal, &session, 1, None, visible_token)?;
         let closed = session.close(&bounded(OPERATION_WAIT)).is_ok();
         wait_for_backend_idle(OPERATION_WAIT)?;
-        let matched = terminal.is_match();
         let metrics = terminal_query_metrics(&query, matched)?;
         Ok((matched && closed, metrics))
     })
@@ -2191,51 +2437,45 @@ enum GeometryAction {
 
 fn geometry_sample(cohort: &Rc<RefCell<Cohort>>, action: GeometryAction) -> Sample {
     observed_sample(cohort, |run| {
-        run.command_absent()?;
-        let before = run
-            .session
-            .acquire_frame(&FrameRequest::latest(), &bounded(OPERATION_WAIT))
-            .map_err(|_| "wrong_source".to_owned())?;
+        let before = run.command_absent()?;
         let acknowledgement = match action {
             GeometryAction::Move => run.fixture.move_target(),
             GeometryAction::Resize => run.fixture.resize_target(),
             GeometryAction::Topology => run.fixture.move_next_display(),
         }?;
         run.accept_acknowledgement(acknowledgement)?;
-        let after = match action {
-            GeometryAction::Resize => wait_resize_change(run, &before),
-            GeometryAction::Move | GeometryAction::Topology => {
-                wait_geometry_change(run, before.stamp())
-            }
-        }?;
-        run.refresh_template(&after, "watch-marker-v1-geometry")?;
+        let after = run.command_absent()?;
+        let geometry_changed = before.stamp().geometry() != after.stamp().geometry()
+            && after.stamp().order(&before.stamp()) == Ok(FrameOrder::After);
+        let action_geometry_matches = match action {
+            GeometryAction::Resize => resize_geometry_matches(&before, &after),
+            GeometryAction::Topology => topology_geometry_matches(&before, &after),
+            GeometryAction::Move => true,
+        };
+        run.refresh_template(&after, "watch-marker-v2-geometry")?;
         let query = run.start_watch(TemplateStability::immediate())?;
-        prime_pending(&query)?;
-        run.command_visible()?;
+        wait_query_publication(&query)?;
+        let visible_token = run.issue_visual_state(VisualMarkerState::Visible)?;
         let (terminal, _) = wait_terminal(&query)?;
-        let geometry_changed = before.stamp().geometry() != after.stamp().geometry();
-        let topology_changed = !matches!(action, GeometryAction::Topology)
-            || topology_geometry_matches(&before, &after);
-        let exact = matched_exact(&terminal, run, 1, Some(before.stamp()));
+        let exact = run.matches_visual_token(
+            &terminal,
+            &run.session,
+            1,
+            Some(before.stamp()),
+            visible_token,
+        )?;
         let restore = match action {
-            GeometryAction::Move => Some(run.fixture.move_target()),
-            GeometryAction::Resize => None,
-            GeometryAction::Topology => Some(run.fixture.restore_placement()),
-        };
-        let restored = if let Some(restore) = restore {
-            let restore = restore?;
-            run.accept_acknowledgement(restore)?;
-            let restored_frame = wait_geometry_change(run, after.stamp())?;
-            let restored = before.descriptor() == restored_frame.descriptor()
-                && before.transform().covers_target() == restored_frame.transform().covers_target()
-                && before.transform().target() == restored_frame.transform().target();
-            run.refresh_template(&restored_frame, "watch-marker-v1-restored")?;
-            restored
-        } else {
-            true
-        };
-        run.command_absent()?;
-        let correct = geometry_changed && topology_changed && exact && restored;
+            GeometryAction::Move => run.fixture.move_target(),
+            GeometryAction::Resize => run.fixture.resize_target(),
+            GeometryAction::Topology => run.fixture.restore_placement(),
+        }?;
+        run.accept_acknowledgement(restore)?;
+        let restored_frame = run.command_absent()?;
+        let restored = before.descriptor() == restored_frame.descriptor()
+            && before.transform().covers_target() == restored_frame.transform().covers_target()
+            && before.transform().target() == restored_frame.transform().target();
+        run.refresh_template(&restored_frame, "watch-marker-v2-restored")?;
+        let correct = geometry_changed && action_geometry_matches && exact && restored;
         Ok((correct, terminal_query_metrics(&query, correct)?))
     })
 }
@@ -2246,13 +2486,19 @@ fn matched_sample(cohort: &Rc<RefCell<Cohort>>, newer_than: Option<FrameStamp>) 
         let stability = TemplateStability::duration(STATIC_STABILITY)
             .map_err(|_| "protocol_drift".to_owned())?;
         let query = run.start_watch(stability)?;
-        run.command_visible()?;
+        wait_query_publication(&query)?;
+        let visible_token = run.issue_visual_state(VisualMarkerState::Visible)?;
         wait_progress(&query, |progress| progress.confirmed_observations() >= 1)?;
         thread::sleep(STATIC_STABILITY);
         run.command_visual_transition()?;
         let (terminal, _) = wait_terminal(&query)?;
-        let correct = matched_exact(&terminal, run, 1, newer_than)
-            && matches!(&*terminal, TemplateTerminalOutcome::Matched(result) if result.confirmed_duration() >= STATIC_STABILITY);
+        let correct = run.matches_visual_token(
+            &terminal,
+            &run.session,
+            1,
+            newer_than,
+            visible_token,
+        )? && matches!(&*terminal, TemplateTerminalOutcome::Matched(result) if result.confirmed_duration() >= STATIC_STABILITY);
         run.command_absent()?;
         Ok((correct, terminal_query_metrics(&query, correct)?))
     })
@@ -2396,6 +2642,10 @@ fn destructive_sample(
         shape,
         last_ack,
         observation,
+        startup_elapsed,
+        readiness_token,
+        readiness_stamp,
+        readiness_scale_milli,
     } = cohort
         .borrow()
         .fresh()
@@ -2409,6 +2659,10 @@ fn destructive_sample(
         shape,
         last_ack,
         observation,
+        startup_elapsed,
+        readiness_token,
+        readiness_stamp,
+        readiness_scale_milli,
     };
     let result = operation(run);
     #[cfg(target_os = "macos")]
@@ -2419,7 +2673,7 @@ fn destructive_sample(
         || started.elapsed(),
     );
     #[cfg(target_os = "windows")]
-    let fixture_finished = fixture.finish();
+    let fixture_finished = fixture.finish().is_accepted();
     #[cfg(target_os = "windows")]
     drop(fixture);
     #[cfg(target_os = "windows")]
@@ -2650,6 +2904,19 @@ fn matched_target_exact(
         && newer_than.is_none_or(|prior| stamp.order(&prior) == Ok(FrameOrder::After))
 }
 
+fn frame_has_visual_token(
+    session: &Session,
+    fixture: &NativeFixture,
+    frame: &Frame,
+    expected: VisualToken,
+) -> Result<bool, String> {
+    let shape = token_shape(frame, fixture).ok_or_else(|| "wrong_transform".to_owned())?;
+    let mapping = session
+        .map_frame(frame, PixelFormat::Rgba8, &bounded(OPERATION_WAIT))
+        .map_err(|error| format!("typed_operation_failure:{:?}", error.status()))?;
+    Ok(decode_visual_token(&mapping, shape).is_ok_and(|token| token == expected))
+}
+
 fn terminal_match(outcome: &TemplateTerminalOutcome) -> Option<&mado_pilot::TemplateWatchResult> {
     match outcome {
         TemplateTerminalOutcome::Matched(result) => Some(result),
@@ -2705,9 +2972,11 @@ fn bounded(wait: Duration) -> OperationContext {
 }
 
 fn privacy_tokens_are_bounded() -> bool {
-    const ALLOWLIST: [&str; 7] = [
+    const ALLOWLIST: [&str; 9] = [
         "native-watch-control-v1",
+        native_watch_report::CONTROL_PROTOCOL_V2,
         "watch-marker-v1",
+        "watch-marker-v2",
         "opencv-cpu",
         "aarch64-apple-darwin",
         "x86_64-pc-windows-msvc",
@@ -2733,20 +3002,21 @@ fn report(arguments: &Arguments, plan: Plan, workloads: &[Workload]) {
     let (hardware, os_version) = Profile::host(&arguments.raw);
     assert!(privacy_tokens_are_bounded(), "privacy_violation");
     let profile = Profile {
-        fixture: native_watch_report::FIXTURE_DESCRIPTION.to_owned(),
+        fixture: native_watch_report::FIXTURE_DESCRIPTION_V2.to_owned(),
         fixture_sha256: fixture,
         benchmark_executable_sha256: Some(executable),
         hardware,
         os_version,
         deployment_target: Some(target_name().to_owned()),
-        build_profile: native_watch_report::BUILD_PROFILE.to_owned(),
-        correctness_oracle: native_watch_report::CORRECTNESS_ORACLE,
+        build_profile: native_watch_report::BUILD_PROFILE_V2.to_owned(),
+        correctness_oracle: native_watch_report::CORRECTNESS_ORACLE_V2,
         queue_policy: native_watch_report::QUEUE_POLICY,
         notes: Some(format!(
-            "source {source}; tree {tree}; fixture-source {fixture_source}; backend {backend}; toolchain {toolchain}; host {host}; cohort {cohort}; process {process}; control native-watch-control-v1"
+            "source {source}; tree {tree}; fixture-source {fixture_source}; backend {backend}; toolchain {toolchain}; host {host}; cohort {cohort}; process {process}; control {}",
+            native_watch_report::CONTROL_PROTOCOL_V2,
         )),
     };
-    native_watch_report::validate(
+    native_watch_report::validate_v2(
         &profile,
         native_watch_report::Provenance {
             source: &source,
@@ -2762,8 +3032,8 @@ fn report(arguments: &Arguments, plan: Plan, workloads: &[Workload]) {
     .unwrap_or_else(|failure| panic!("{}", failure.token()));
     bench_harness::report(
         &Benchmark {
-            id: "phase-4-native-template-watch",
-            workload: "native Rust facade maintained-session template-watch matrix",
+            id: "phase-4-native-template-watch-v2-lane-c",
+            workload: "optional V2 native Rust facade template-watch evidence campaign",
             phase: "4",
         },
         &profile,

@@ -381,6 +381,21 @@ impl FixtureCleanupDebt {
     }
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum FixtureProcessLifetimeFact {
+    NotObserved,
+    Unknown,
+    Live,
+    Lost,
+    ObservationFailed,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+struct ReaderFinalization {
+    joined: bool,
+    output_clean: bool,
+}
+
 /// Immutable private fixture finalization facts consumed by qualification.
 #[must_use = "fixture finalization must be checked before accepting a sample"]
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -388,6 +403,7 @@ pub(crate) struct FixtureFinalization {
     stop_acknowledged: bool,
     exit: FixtureExitObservation,
     bounded: bool,
+    reader_joined: bool,
     output_clean: bool,
     executable_unchanged: bool,
     cleanup_debt: FixtureCleanupDebt,
@@ -398,6 +414,7 @@ impl FixtureFinalization {
         stop_acknowledged: bool,
         exit: FixtureExitObservation,
         bounded: bool,
+        reader_joined: bool,
         output_clean: bool,
         executable_unchanged: bool,
     ) -> Self {
@@ -405,6 +422,7 @@ impl FixtureFinalization {
             stop_acknowledged,
             exit,
             bounded,
+            reader_joined,
             output_clean,
             executable_unchanged,
             cleanup_debt: if exit.is_stopped() {
@@ -421,9 +439,56 @@ impl FixtureFinalization {
         self.stop_acknowledged
             && self.exit.is_stopped()
             && self.bounded
+            && self.reader_joined
             && self.output_clean
             && self.executable_unchanged
             && matches!(self.cleanup_debt, FixtureCleanupDebt::None)
+    }
+
+    pub(crate) const fn process_stopped(&self) -> bool {
+        self.exit.is_stopped()
+    }
+
+    pub(crate) const fn reader_joined(&self) -> bool {
+        self.reader_joined
+    }
+    pub(crate) const fn output_clean(&self) -> bool {
+        self.output_clean
+    }
+
+    pub(crate) const fn stop_acknowledged(&self) -> bool {
+        self.stop_acknowledged
+    }
+
+    pub(crate) const fn authenticated_lifetime(&self) -> FixtureProcessLifetimeFact {
+        match self.exit.authenticated {
+            AuthenticatedProcessLifetime::Live => FixtureProcessLifetimeFact::Live,
+            AuthenticatedProcessLifetime::Lost => FixtureProcessLifetimeFact::Lost,
+        }
+    }
+
+    pub(crate) const fn launched_lifetime(&self) -> FixtureProcessLifetimeFact {
+        match self.exit.launched {
+            LaunchedApplicationLifetime::NotObserved => FixtureProcessLifetimeFact::NotObserved,
+            LaunchedApplicationLifetime::Unknown => FixtureProcessLifetimeFact::Unknown,
+            LaunchedApplicationLifetime::Live => FixtureProcessLifetimeFact::Live,
+            LaunchedApplicationLifetime::Lost => FixtureProcessLifetimeFact::Lost,
+            LaunchedApplicationLifetime::ObservationFailed => {
+                FixtureProcessLifetimeFact::ObservationFailed
+            }
+        }
+    }
+
+    pub(crate) const fn bounded(&self) -> bool {
+        self.bounded
+    }
+
+    pub(crate) const fn executable_unchanged(&self) -> bool {
+        self.executable_unchanged
+    }
+
+    pub(crate) const fn has_cleanup_debt(&self) -> bool {
+        matches!(self.cleanup_debt, FixtureCleanupDebt::Deferred)
     }
 }
 
@@ -1108,7 +1173,7 @@ impl FixtureController {
         let process_stopped_in_time = exit.is_stopped() && Instant::now() <= deadline;
         self.stopped = exit.is_stopped();
 
-        let output_clean = finish_reader_output_is_clean(
+        let reader = finish_reader_output(
             self.reader.take(),
             &self.lines,
             &self.reader_failed,
@@ -1120,13 +1185,14 @@ impl FixtureController {
             stop_acknowledged,
             exit,
             bounded,
-            output_clean,
+            reader.joined,
+            reader.output_clean,
             executable_unchanged,
         );
         if !result.is_accepted() {
             eprintln!(
                 "fixture-finalization-failed stop-acknowledged={} authenticated={} launched={} \
-                 exact-process-stopped={} bounded={} output-clean={} \
+                 exact-process-stopped={} bounded={} reader-joined={} output-clean={} \
                  executable-identity-unchanged={} cleanup-debt={} pending-events={} \
                  reader-failed={}",
                 result.stop_acknowledged,
@@ -1134,6 +1200,7 @@ impl FixtureController {
                 result.exit.launched.token(),
                 result.exit.is_stopped(),
                 result.bounded,
+                result.reader_joined,
                 result.output_clean,
                 result.executable_unchanged,
                 result.cleanup_debt.token(),
@@ -1160,7 +1227,7 @@ impl FixtureController {
             deadline,
         )
         .is_stopped();
-        let _output_clean = finish_reader_output_is_clean(
+        let _reader = finish_reader_output(
             self.reader.take(),
             &self.lines,
             &self.reader_failed,
@@ -1196,14 +1263,15 @@ impl Drop for FixtureController {
     }
 }
 
-fn finish_reader_output_is_clean(
+fn finish_reader_output(
     reader: Option<thread::JoinHandle<()>>,
     lines: &Arc<Mutex<mpsc::Receiver<ReaderMessage>>>,
     reader_failed: &AtomicBool,
     pending_events_empty: bool,
     deadline: Instant,
-) -> bool {
+) -> ReaderFinalization {
     let mut output_clean = pending_events_empty && !reader_failed.load(Ordering::Acquire);
+    let mut joined = reader.is_none();
     if let Some(reader) = reader {
         while !reader.is_finished() && Instant::now() < deadline {
             let received = lines
@@ -1221,9 +1289,9 @@ fn finish_reader_output_is_clean(
             }
         }
         if reader.is_finished() {
-            output_clean &= reader.join().is_ok();
+            joined = reader.join().is_ok();
         } else {
-            output_clean = false;
+            joined = false;
         }
     }
     loop {
@@ -1236,7 +1304,10 @@ fn finish_reader_output_is_clean(
             Err(mpsc::TryRecvError::Empty | mpsc::TryRecvError::Disconnected) => break,
         }
     }
-    output_clean && !reader_failed.load(Ordering::Acquire)
+    ReaderFinalization {
+        joined,
+        output_clean: output_clean && joined && !reader_failed.load(Ordering::Acquire),
+    }
 }
 
 fn wait_for_ready(
@@ -1589,9 +1660,9 @@ mod tests {
         auxiliary_window_setup_is_proven, controlled_content_logical_size,
         controlled_resize_logical_size_matches, discard_setup_events_until_quiet,
         expected_controlled_resize_logical_size, finalize_drop_then_observe, finalize_once,
-        finish_reader_output_is_clean, fixture_bundle, language_pins_are_unchanged,
-        next_fixture_run_nonce, observe_fixture_exit_with, post_use_identity_gate,
-        read_bounded_lines, strict_event_reset, wait_for_launched_live_with,
+        finish_reader_output, fixture_bundle, language_pins_are_unchanged, next_fixture_run_nonce,
+        observe_fixture_exit_with, post_use_identity_gate, read_bounded_lines, strict_event_reset,
+        wait_for_launched_live_with,
     };
     use crate::macos_fixture_control::FixtureApplicationLifetime;
     use crate::macos_fixture_protocol::{EVENT_KEY_DOWN, EventSummary, format_event_line};
@@ -1823,7 +1894,7 @@ mod tests {
             authenticated: AuthenticatedProcessLifetime::Lost,
             launched: LaunchedApplicationLifetime::Lost,
         };
-        let accepted = FixtureFinalization::new(true, stopped, true, true, true);
+        let accepted = FixtureFinalization::new(true, stopped, true, true, true, true);
         assert!(accepted.is_accepted());
         assert_eq!(accepted.cleanup_debt, FixtureCleanupDebt::None);
 
@@ -1863,6 +1934,13 @@ mod tests {
         );
         assert!(
             !FixtureFinalization {
+                reader_joined: false,
+                ..accepted
+            }
+            .is_accepted()
+        );
+        assert!(
+            !FixtureFinalization {
                 output_clean: false,
                 ..accepted
             }
@@ -1889,6 +1967,7 @@ mod tests {
                 authenticated: AuthenticatedProcessLifetime::Lost,
                 launched: LaunchedApplicationLifetime::Unknown,
             },
+            true,
             true,
             true,
             true,
@@ -2133,13 +2212,15 @@ mod tests {
         });
         let lines = Arc::new(Mutex::new(receiver));
 
-        assert!(!finish_reader_output_is_clean(
+        let finalization = finish_reader_output(
             Some(reader),
             &lines,
             &AtomicBool::new(false),
             true,
             Instant::now() + Duration::from_secs(1),
-        ));
+        );
+        assert!(finalization.joined);
+        assert!(!finalization.output_clean);
     }
 
     #[test]
@@ -2147,13 +2228,33 @@ mod tests {
         let (_sender, receiver) = mpsc::sync_channel(1);
         let lines = Arc::new(Mutex::new(receiver));
 
-        assert!(!finish_reader_output_is_clean(
+        let finalization = finish_reader_output(
             None,
             &lines,
             &AtomicBool::new(true),
             true,
             Instant::now() + Duration::from_secs(1),
-        ));
+        );
+        assert!(finalization.joined);
+        assert!(!finalization.output_clean);
+    }
+
+    #[test]
+    fn unfinished_reader_is_reported_independently_from_output_cleanliness() {
+        let (_sender, receiver) = mpsc::sync_channel(1);
+        let lines = Arc::new(Mutex::new(receiver));
+        let reader = thread::spawn(|| thread::sleep(Duration::from_millis(25)));
+
+        let finalization = finish_reader_output(
+            Some(reader),
+            &lines,
+            &AtomicBool::new(false),
+            true,
+            Instant::now(),
+        );
+
+        assert!(!finalization.joined);
+        assert!(!finalization.output_clean);
     }
 
     #[test]

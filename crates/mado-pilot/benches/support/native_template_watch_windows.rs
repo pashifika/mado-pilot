@@ -11,7 +11,7 @@ use std::num::NonZeroU32;
 #[cfg(windows)]
 use std::process::{Child, Command, Stdio};
 #[cfg(windows)]
-use std::sync::atomic::{AtomicU64, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 #[cfg(windows)]
 use std::sync::mpsc::{self, Receiver};
 
@@ -32,7 +32,8 @@ use windows::Win32::System::ProcessStatus::{GetProcessMemoryInfo, PROCESS_MEMORY
 use windows::Win32::System::Threading::GetCurrentProcess;
 #[cfg(windows)]
 use windows::Win32::UI::HiDpi::{
-    DPI_AWARENESS_CONTEXT_PER_MONITOR_AWARE_V2, SetThreadDpiAwarenessContext,
+    DPI_AWARENESS_CONTEXT_PER_MONITOR_AWARE_V2, GetDpiForMonitor, MDT_EFFECTIVE_DPI,
+    SetThreadDpiAwarenessContext,
 };
 #[cfg(windows)]
 use windows::Win32::UI::WindowsAndMessaging::{FindWindowW, PostMessageW};
@@ -45,10 +46,54 @@ static NEXT_FIXTURE_TOKEN: AtomicU64 = AtomicU64::new(1);
 const MAX_OUTPUT_LINE_BYTES: usize = 1_024;
 
 #[cfg(windows)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
+struct MonitorFact {
+    origin: (i32, i32),
+    dpi: (u32, u32),
+}
+
+#[cfg(windows)]
+#[must_use = "fixture finalization must be checked before accepting a scenario"]
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+struct NativeFixtureFinalization {
+    process_reaped: bool,
+    reader_joined: bool,
+    output_clean: bool,
+}
+
+#[cfg(windows)]
+impl NativeFixtureFinalization {
+    const fn is_accepted(self) -> bool {
+        self.process_reaped && self.reader_joined && self.output_clean
+    }
+
+    const fn resources(self) -> NativeResourceFacts {
+        NativeResourceFacts {
+            baseline_observed: true,
+            fixture_process_reaped: self.process_reaped,
+            fixture_reader_joined: self.reader_joined,
+            protocol_stop_acknowledged: None,
+            authenticated_lifetime: None,
+            launched_lifetime: None,
+            bounded_containment: self.process_reaped && self.reader_joined,
+            output_drained: self.output_clean,
+            executable_identity_unchanged: None,
+            cleanup_debt: None,
+            apple_launch_accepted_live: None,
+            apple_cleanup_scheduled: None,
+            apple_cleanup_active: None,
+            apple_cleanup_completed: None,
+            apple_cleanup_exhausted: None,
+        }
+    }
+}
+
+#[cfg(windows)]
 struct NativeFixture {
     child: Option<Child>,
     lines: Receiver<String>,
     reader: Option<thread::JoinHandle<()>>,
+    reader_failed: Arc<AtomicBool>,
     pending: VecDeque<String>,
     title: String,
     generation: u64,
@@ -56,6 +101,7 @@ struct NativeFixture {
     moved: bool,
     resized: bool,
     visual_tokens: VisualTokenSequence,
+    finish_result: Option<NativeFixtureFinalization>,
 }
 
 #[cfg(windows)]
@@ -72,7 +118,14 @@ impl NativeFixture {
             NEXT_FIXTURE_TOKEN.fetch_add(1, Ordering::Relaxed)
         );
         let title = protocol::ordinary_fixture_title(&token);
-        let mut child = Command::new(&arguments.fixture_executable)
+        let mut command = Command::new(&arguments.fixture_executable);
+        command.env_clear();
+        for key in ["SystemRoot", "WINDIR"] {
+            if let Some(value) = std::env::var_os(key) {
+                command.env(key, value);
+            }
+        }
+        let mut child = command
             .arg(format!("--title-token={token}"))
             .stdin(Stdio::null())
             .stdout(Stdio::piped())
@@ -80,18 +133,25 @@ impl NativeFixture {
             .spawn()
             .map_err(|_| "fixture_authority_failed".to_owned())?;
         if !fixture_path_matches(arguments) {
-            let _ = child.kill();
-            let _ = child.wait();
+            let _reaped = terminate_child_bounded(
+                &mut child,
+                Instant::now() + FIXTURE_WAIT,
+            );
             return Err("fixture_authority_failed".to_owned());
         }
-        let output = child
-            .stdout
-            .take()
-            .ok_or_else(|| "fixture_authority_failed".to_owned())?;
+        let Some(output) = child.stdout.take() else {
+            let _reaped = terminate_child_bounded(
+                &mut child,
+                Instant::now() + FIXTURE_WAIT,
+            );
+            return Err("fixture_authority_failed".to_owned());
+        };
         let (sender, lines) = mpsc::sync_channel(64);
+        let reader_failed = Arc::new(AtomicBool::new(false));
+        let reader_failed_for_thread = Arc::clone(&reader_failed);
         // The receiver may stop draining before Drop joins this reader, so a
         // full channel must terminate the reader instead of blocking it.
-        let reader = thread::Builder::new()
+        let reader = match thread::Builder::new()
             .name("mado-pilot-native-watch-fixture".to_owned())
             .spawn(move || {
                 let mut stream = output;
@@ -101,27 +161,35 @@ impl NativeFixture {
                 loop {
                     match stream.read(&mut byte) {
                         Ok(0) => {
-                            if !overflow && !line.is_empty() {
+                            if overflow {
+                                reader_failed_for_thread.store(true, Ordering::Release);
+                            } else if !line.is_empty() {
                                 if line.last() == Some(&b'\r') {
                                     line.pop();
                                 }
-                                if let Ok(decoded) = String::from_utf8(std::mem::take(&mut line)) {
-                                    let _sent = sender.try_send(decoded);
+                                match String::from_utf8(std::mem::take(&mut line)) {
+                                    Ok(decoded) if sender.try_send(decoded).is_ok() => {}
+                                    Ok(_) | Err(_) => {
+                                        reader_failed_for_thread.store(true, Ordering::Release);
+                                    }
                                 }
                             }
                             break;
                         }
                         Ok(_) if byte[0] == b'\n' => {
                             if overflow {
+                                reader_failed_for_thread.store(true, Ordering::Release);
                                 break;
                             }
                             if line.last() == Some(&b'\r') {
                                 line.pop();
                             }
                             let Ok(decoded) = String::from_utf8(std::mem::take(&mut line)) else {
+                                reader_failed_for_thread.store(true, Ordering::Release);
                                 break;
                             };
                             if sender.try_send(decoded).is_err() {
+                                reader_failed_for_thread.store(true, Ordering::Release);
                                 break;
                             }
                             line = Vec::with_capacity(MAX_OUTPUT_LINE_BYTES);
@@ -129,17 +197,33 @@ impl NativeFixture {
                         Ok(_) if !overflow && line.len() < MAX_OUTPUT_LINE_BYTES => {
                             line.push(byte[0]);
                         }
-                        Ok(_) => overflow = true,
+                        Ok(_) => {
+                            overflow = true;
+                            reader_failed_for_thread.store(true, Ordering::Release);
+                        }
                         Err(error) if error.kind() == std::io::ErrorKind::Interrupted => {}
-                        Err(_) => break,
+                        Err(_) => {
+                            reader_failed_for_thread.store(true, Ordering::Release);
+                            break;
+                        }
                     }
                 }
             })
-            .map_err(|_| "fixture_authority_failed".to_owned())?;
+        {
+            Ok(reader) => reader,
+            Err(_) => {
+                let _reaped = terminate_child_bounded(
+                    &mut child,
+                    Instant::now() + FIXTURE_WAIT,
+                );
+                return Err("fixture_authority_failed".to_owned());
+            }
+        };
         let mut fixture = Self {
             child: Some(child),
             lines,
             reader: Some(reader),
+            reader_failed,
             pending: VecDeque::new(),
             title,
             generation: 1,
@@ -147,6 +231,7 @@ impl NativeFixture {
             moved: false,
             resized: false,
             visual_tokens: VisualTokenSequence::new(),
+            finish_result: None,
         };
         let ready = fixture.wait_for("fixture-ready ", FIXTURE_WAIT)?;
         let expected = format!(
@@ -342,7 +427,9 @@ impl NativeFixture {
         let current = unsafe { MonitorFromWindow(window, MONITOR_DEFAULTTONEAREST) };
         let current_origin =
             monitor_origin(current).ok_or_else(|| "capability_unavailable:topology".to_owned())?;
-        let (x, y) = next_monitor_origin(monitor_origins()?, current_origin)
+        let current_dpi =
+            monitor_dpi(current).ok_or_else(|| "capability_unavailable:topology".to_owned())?;
+        let (x, y) = next_monitor_origin(monitor_facts()?, current_origin, current_dpi)
             .ok_or_else(|| "capability_unavailable:topology".to_owned())?;
         let (width, height) = if self.resized { (480, 320) } else { (360, 240) };
         self.moved = true;
@@ -360,16 +447,48 @@ impl NativeFixture {
         self.acknowledge(protocol::TARGET_LOSS_ACKNOWLEDGEMENT)
     }
 
-    fn finish(&mut self) -> bool {
-        let mut complete = true;
-        if let Some(mut child) = self.child.take() {
-            let _ = child.kill();
-            complete &= child.wait().is_ok();
+    fn finish(&mut self) -> NativeFixtureFinalization {
+        if let Some(result) = self.finish_result {
+            return result;
         }
-        if let Some(reader) = self.reader.take() {
-            complete &= reader.join().is_ok();
+        let deadline = Instant::now() + FIXTURE_WAIT;
+        let process_reaped = self
+            .child
+            .take()
+            .is_none_or(|mut child| terminate_child_bounded(&mut child, deadline));
+        let reader_joined = self.reader.take().is_none_or(|reader| {
+            while !reader.is_finished() && Instant::now() < deadline {
+                thread::sleep(POLL_WAIT);
+            }
+            reader.is_finished() && reader.join().is_ok()
+        });
+        while let Ok(line) = self.lines.try_recv() {
+            if self.pending.len() == 64 {
+                self.reader_failed.store(true, Ordering::Release);
+                break;
+            }
+            self.pending.push_back(line);
         }
-        complete
+        let output_clean =
+            reader_joined && self.pending.is_empty() && !self.reader_failed.load(Ordering::Acquire);
+        let result = NativeFixtureFinalization {
+            process_reaped,
+            reader_joined,
+            output_clean,
+        };
+        self.finish_result = Some(result);
+        result
+    }
+}
+
+fn terminate_child_bounded(child: &mut Child, deadline: Instant) -> bool {
+    let _termination_requested = child.kill();
+    loop {
+        match child.try_wait() {
+            Ok(Some(_status)) => return true,
+            Ok(None) if Instant::now() < deadline => thread::sleep(POLL_WAIT),
+            Ok(None) | Err(_) => return false,
+        }
     }
 }
 
@@ -393,11 +512,11 @@ unsafe extern "system" fn collect_monitor(
     state: LPARAM,
 ) -> BOOL {
     // SAFETY: caller passes an exclusive Vec pointer for the synchronous enumeration.
-    let origins = unsafe {
-        &mut *std::ptr::with_exposed_provenance_mut::<Vec<(i32, i32)>>(state.0.cast_unsigned())
+    let monitors = unsafe {
+        &mut *std::ptr::with_exposed_provenance_mut::<Vec<MonitorFact>>(state.0.cast_unsigned())
     };
-    if let Some(origin) = monitor_origin(monitor) {
-        origins.push(origin);
+    if let (Some(origin), Some(dpi)) = (monitor_origin(monitor), monitor_dpi(monitor)) {
+        monitors.push(MonitorFact { origin, dpi });
     }
     true.into()
 }
@@ -415,8 +534,19 @@ fn monitor_origin(monitor: HMONITOR) -> Option<(i32, i32)> {
 }
 
 #[cfg(windows)]
-fn monitor_origins() -> Result<Vec<(i32, i32)>, String> {
-    let mut origins = Vec::new();
+fn monitor_dpi(monitor: HMONITOR) -> Option<(u32, u32)> {
+    let mut dpi_x = 0;
+    let mut dpi_y = 0;
+    // SAFETY: `monitor` came from a Win32 monitor lookup and both outputs are writable.
+    unsafe { GetDpiForMonitor(monitor, MDT_EFFECTIVE_DPI, &raw mut dpi_x, &raw mut dpi_y) }
+        .is_ok()
+        .then_some((dpi_x, dpi_y))
+        .filter(|(dpi_x, dpi_y)| *dpi_x != 0 && *dpi_y != 0)
+}
+
+#[cfg(windows)]
+fn monitor_facts() -> Result<Vec<MonitorFact>, String> {
+    let mut monitors = Vec::new();
     // SAFETY: enumeration is synchronous and receives the exclusive Vec pointer.
     unsafe {
         EnumDisplayMonitors(
@@ -424,27 +554,28 @@ fn monitor_origins() -> Result<Vec<(i32, i32)>, String> {
             None,
             Some(collect_monitor),
             LPARAM(
-                isize::try_from((&raw mut origins).expose_provenance())
+                isize::try_from((&raw mut monitors).expose_provenance())
                     .map_err(|_| "capability_unavailable:topology".to_owned())?,
             ),
         )
     }
     .ok()
     .map_err(|_| "capability_unavailable:topology".to_owned())?;
-    Ok(origins)
+    Ok(monitors)
 }
 
 #[cfg(windows)]
 fn next_monitor_origin(
-    mut origins: Vec<(i32, i32)>,
-    current: (i32, i32),
+    mut monitors: Vec<MonitorFact>,
+    current_origin: (i32, i32),
+    current_dpi: (u32, u32),
 ) -> Option<(i32, i32)> {
-    origins.sort_unstable();
-    origins.dedup();
-    if !origins.contains(&current) {
-        return None;
-    }
-    origins.into_iter().find(|origin| *origin != current)
+    monitors.sort_unstable();
+    monitors.dedup();
+    monitors
+        .into_iter()
+        .find(|monitor| monitor.origin != current_origin && monitor.dpi != current_dpi)
+        .map(|monitor| monitor.origin)
 }
 
 #[cfg(windows)]

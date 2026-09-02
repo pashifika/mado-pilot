@@ -3,12 +3,14 @@
 
 #[cfg(target_os = "macos")]
 use crate::macos_fixture::{
-    FixtureController, FixtureFinalization, LaunchMode, controlled_content_logical_size,
-    controlled_resize_logical_size_matches, expected_controlled_resize_logical_size,
-    finalize_once,
+    FixtureController, FixtureFinalization, FixtureProcessLifetimeFact, LaunchMode,
+    controlled_content_logical_size, controlled_resize_logical_size_matches,
+    expected_controlled_resize_logical_size, finalize_once,
 };
 #[cfg(target_os = "macos")]
-use crate::macos_fixture_control::{executable_identity, fixture_cleanup_counts};
+use crate::macos_fixture_control::{
+    FixtureCleanupCounts, executable_identity, fixture_cleanup_counts,
+};
 #[cfg(target_os = "macos")]
 use crate::macos_fixture_protocol::{self as protocol, FixtureCommandKind};
 
@@ -23,12 +25,35 @@ const FIXTURE_STATUS_UNSUPPORTED: u32 = 2;
 struct NativeFixtureFinalization {
     events_drained: bool,
     controller: FixtureFinalization,
+    resources: NativeResourceFacts,
 }
 
 #[cfg(target_os = "macos")]
 impl NativeFixtureFinalization {
-    const fn is_accepted(&self) -> bool {
-        self.events_drained && self.controller.is_accepted()
+    fn is_accepted(&self) -> bool {
+        self.events_drained
+            && self.controller.is_accepted()
+            && self.resources.baseline_observed
+            && self.resources.apple_cleanup_active == Some(0)
+            && self.resources.apple_cleanup_scheduled
+                == self.resources.apple_cleanup_completed
+            && self.resources.apple_cleanup_exhausted == Some(0)
+    }
+
+    const fn resources(&self) -> NativeResourceFacts {
+        self.resources
+    }
+}
+
+fn native_lifetime_fact(value: FixtureProcessLifetimeFact) -> NativeProcessLifetimeFact {
+    match value {
+        FixtureProcessLifetimeFact::NotObserved => NativeProcessLifetimeFact::NotObserved,
+        FixtureProcessLifetimeFact::Unknown => NativeProcessLifetimeFact::Unknown,
+        FixtureProcessLifetimeFact::Live => NativeProcessLifetimeFact::Live,
+        FixtureProcessLifetimeFact::Lost => NativeProcessLifetimeFact::Lost,
+        FixtureProcessLifetimeFact::ObservationFailed => {
+            NativeProcessLifetimeFact::ObservationFailed
+        }
     }
 }
 
@@ -37,12 +62,15 @@ struct NativeFixture {
     controller: FixtureController,
     generation: u64,
     revision: u64,
+    cleanup_baseline: FixtureCleanupCounts,
     finish_result: Option<NativeFixtureFinalization>,
 }
 
 #[cfg(target_os = "macos")]
 impl NativeFixture {
     fn start(arguments: &Arguments) -> Result<Self, String> {
+        let cleanup_baseline =
+            fixture_cleanup_counts().map_err(|_| "fixture_authority_failed".to_owned())?;
         let bytes = std::fs::read(&arguments.fixture_executable)
             .map_err(|_| "fixture_authority_failed".to_owned())?;
         if !fixture_bytes_match(arguments, &bytes) {
@@ -61,6 +89,7 @@ impl NativeFixture {
             controller,
             generation: 1,
             revision: 0,
+            cleanup_baseline,
             finish_result: None,
         })
     }
@@ -161,9 +190,42 @@ impl NativeFixture {
 
     fn finish(&mut self) -> NativeFixtureFinalization {
         let controller = &mut self.controller;
-        finalize_once(&mut self.finish_result, || NativeFixtureFinalization {
-            events_drained: controller.discard_watch_events(FIXTURE_WAIT),
-            controller: controller.finish(FIXTURE_WAIT),
+        let baseline = self.cleanup_baseline;
+        finalize_once(&mut self.finish_result, || {
+            let events_drained = controller.discard_watch_events(FIXTURE_WAIT);
+            let controller = controller.finish(FIXTURE_WAIT);
+            let cleanup = fixture_cleanup_counts().ok();
+            let resources = NativeResourceFacts {
+                baseline_observed: cleanup.is_some(),
+                fixture_process_reaped: controller.process_stopped(),
+                fixture_reader_joined: controller.reader_joined(),
+                protocol_stop_acknowledged: Some(controller.stop_acknowledged()),
+                authenticated_lifetime: Some(native_lifetime_fact(
+                    controller.authenticated_lifetime(),
+                )),
+                launched_lifetime: Some(native_lifetime_fact(controller.launched_lifetime())),
+                bounded_containment: controller.bounded(),
+                output_drained: events_drained && controller.output_clean(),
+                executable_identity_unchanged: Some(controller.executable_unchanged()),
+                cleanup_debt: Some(if controller.has_cleanup_debt() {
+                    NativeCleanupDebtFact::Deferred
+                } else {
+                    NativeCleanupDebtFact::None
+                }),
+                apple_launch_accepted_live: Some(true),
+                apple_cleanup_scheduled: cleanup
+                    .map(|counts| counts.scheduled.saturating_sub(baseline.scheduled)),
+                apple_cleanup_active: cleanup.map(|counts| counts.active),
+                apple_cleanup_completed: cleanup
+                    .map(|counts| counts.completed.saturating_sub(baseline.completed)),
+                apple_cleanup_exhausted: cleanup
+                    .map(|counts| counts.exhausted.saturating_sub(baseline.exhausted)),
+            };
+            NativeFixtureFinalization {
+                events_drained,
+                controller,
+                resources,
+            }
         })
     }
 }

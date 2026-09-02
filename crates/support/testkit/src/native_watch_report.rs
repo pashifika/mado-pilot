@@ -23,6 +23,16 @@ pub const CORRECTNESS_ORACLE: &str =
     "24 ordered source/match/geometry/work/lifecycle/ownership/resource/privacy hard gates";
 /// Exact finite queue description accepted in a tracked profile.
 pub const QUEUE_POLICY: &str = "production finite latest-wins capture and template-watch scheduler";
+
+/// V2 fixture description for the token-driven optional evidence campaign.
+pub const FIXTURE_DESCRIPTION_V2: &str =
+    "repository native watch fixture plus generated watch-marker-v2 and visual-token-v2";
+/// V2 exact build command for the separate optional Lane C evidence mode.
+pub const BUILD_PROFILE_V2: &str = "cargo build --locked --release --package mado-pilot --bench native-template-watch --features native-template-watch-qualification; execute with --lane-c-evidence";
+/// V2 semantic oracle description for the retained 24-workload campaign.
+pub const CORRECTNESS_ORACLE_V2: &str = "24 ordered V2 token-correlated source/match/geometry/work/lifecycle/ownership/resource/privacy hard gates";
+/// V2 private control and report identity carried in exact profile notes.
+pub const CONTROL_PROTOCOL_V2: &str = "native-watch-control-v2-report-v2";
 /// Computes the SHA-256 identity of a qualification artifact.
 pub fn artifact_sha256(path: &Path) -> Option<String> {
     let mut file = File::open(path).ok()?;
@@ -239,6 +249,75 @@ pub fn validate(profile: &Profile, provenance: Provenance<'_>) -> Result<(), Val
     validate_schema(profile, provenance)?;
     let bounded = validate_privacy(profile, provenance)?;
     validate_environment(bounded, provenance)
+}
+
+/// Validates a token-driven V2 Lane C profile without changing V1 admission.
+pub fn validate_v2(profile: &Profile, provenance: Provenance<'_>) -> Result<(), ValidationError> {
+    validate_schema_v2(profile, provenance)?;
+    let bounded = validate_privacy_v2(profile, provenance)?;
+    validate_environment(bounded, provenance)
+}
+
+fn validate_schema_v2(
+    profile: &Profile,
+    provenance: Provenance<'_>,
+) -> Result<(), ValidationError> {
+    if profile.fixture != FIXTURE_DESCRIPTION_V2
+        || profile.build_profile != BUILD_PROFILE_V2
+        || profile.correctness_oracle != CORRECTNESS_ORACLE_V2
+        || profile.queue_policy != QUEUE_POLICY
+        || !is_hex(provenance.source, 40)
+        || !is_hex(provenance.tree, 40)
+        || !is_hex(provenance.fixture_source, 64)
+        || !matches!(provenance.cohort, "precursor" | "final")
+        || parse_canonical_u32(provenance.process_index).is_none_or(|index| index > 99)
+    {
+        return Err(ValidationError::Schema);
+    }
+    Ok(())
+}
+
+fn validate_privacy_v2<'a>(
+    profile: &'a Profile,
+    provenance: Provenance<'_>,
+) -> Result<BoundedEnvironment<'a>, ValidationError> {
+    let host = parse_host_class(provenance.host).ok_or(ValidationError::Privacy)?;
+    if !bounded_backend(provenance.backend) || !bounded_toolchain(provenance.toolchain) {
+        return Err(ValidationError::Privacy);
+    }
+    let hardware = parse_hardware(&profile.hardware).ok_or(ValidationError::Privacy)?;
+    let os = parse_platform_version(&profile.os_version).ok_or(ValidationError::Privacy)?;
+    let target = match profile.deployment_target.as_deref() {
+        Some(target) => Some(parse_deployment_target(target).ok_or(ValidationError::Privacy)?),
+        None => None,
+    };
+    let expected_notes = format!(
+        "source {}; tree {}; fixture-source {}; backend {}; toolchain {}; host {}; cohort {}; process {}; control {}",
+        provenance.source,
+        provenance.tree,
+        provenance.fixture_source,
+        provenance.backend,
+        provenance.toolchain,
+        provenance.host,
+        provenance.cohort,
+        provenance.process_index,
+        CONTROL_PROTOCOL_V2,
+    );
+    if profile.notes.as_deref() != Some(expected_notes.as_str())
+        || !is_hex(&profile.fixture_sha256, 64)
+        || profile
+            .benchmark_executable_sha256
+            .as_deref()
+            .is_none_or(|digest| !is_hex(digest, 64))
+    {
+        return Err(ValidationError::Privacy);
+    }
+    Ok(BoundedEnvironment {
+        host,
+        hardware,
+        os,
+        target,
+    })
 }
 
 fn validate_schema(profile: &Profile, provenance: Provenance<'_>) -> Result<(), ValidationError> {
@@ -549,10 +628,11 @@ fn parse_deployment_target(value: &str) -> Option<DeploymentTarget> {
 #[cfg(test)]
 mod tests {
     use super::{
-        APPLE_FINAL_OS, APPLE_HARDWARE, APPLE_PRECURSOR_OS, BUILD_PROFILE, CORRECTNESS_ORACLE,
-        EnvironmentFault, FIXTURE_DESCRIPTION, Provenance, QUEUE_POLICY, ValidationError,
+        APPLE_FINAL_OS, APPLE_HARDWARE, APPLE_PRECURSOR_OS, BUILD_PROFILE, BUILD_PROFILE_V2,
+        CONTROL_PROTOCOL_V2, CORRECTNESS_ORACLE, CORRECTNESS_ORACLE_V2, EnvironmentFault,
+        FIXTURE_DESCRIPTION, FIXTURE_DESCRIPTION_V2, Provenance, QUEUE_POLICY, ValidationError,
         WINDOWS_HARDWARE_LEGACY, artifact_sha256, artifact_sha256_matches,
-        qualification_bytes_sha256, validate,
+        qualification_bytes_sha256, validate, validate_v2,
     };
     use crate::bench_harness::Profile;
 
@@ -622,6 +702,32 @@ mod tests {
         }
     }
 
+    fn profile_v2(provenance: Provenance<'_>) -> Profile {
+        Profile {
+            fixture: FIXTURE_DESCRIPTION_V2.to_owned(),
+            build_profile: BUILD_PROFILE_V2.to_owned(),
+            correctness_oracle: CORRECTNESS_ORACLE_V2,
+            notes: Some(format!(
+                "source {}; tree {}; fixture-source {}; backend {}; toolchain {}; host {}; cohort {}; process {}; control {}",
+                provenance.source,
+                provenance.tree,
+                provenance.fixture_source,
+                provenance.backend,
+                provenance.toolchain,
+                provenance.host,
+                provenance.cohort,
+                provenance.process_index,
+                CONTROL_PROTOCOL_V2,
+            )),
+            ..profile(
+                provenance,
+                APPLE_HARDWARE,
+                APPLE_PRECURSOR_OS,
+                Some("aarch64-apple-darwin"),
+            )
+        }
+    }
+
     fn apple_profile() -> Profile {
         profile(
             apple_provenance(),
@@ -638,6 +744,37 @@ mod tests {
             os_version,
             Some("x86_64-pc-windows-msvc"),
         )
+    }
+
+    #[test]
+    fn v2_profile_uses_a_separate_schema_without_broadening_v1() {
+        let provenance = apple_provenance();
+        let v2 = profile_v2(provenance);
+
+        assert_eq!(validate_v2(&v2, provenance), Ok(()));
+        assert_eq!(validate(&v2, provenance), Err(ValidationError::Schema));
+        assert_eq!(
+            validate_v2(&apple_profile(), provenance),
+            Err(ValidationError::Schema)
+        );
+    }
+
+    #[test]
+    fn v2_profile_rejects_free_form_native_or_path_payloads() {
+        let provenance = apple_provenance();
+        for payload in ["/tmp/capture.rgba", "native-payload=unbounded"] {
+            let mut candidate = profile_v2(provenance);
+            candidate
+                .notes
+                .as_mut()
+                .expect("V2 notes exist")
+                .push_str(payload);
+
+            assert_eq!(
+                validate_v2(&candidate, provenance),
+                Err(ValidationError::Privacy)
+            );
+        }
     }
 
     #[test]
