@@ -1573,6 +1573,8 @@ mod tests {
     fn r2_2_liveness_bound_rechecks_missing_key_without_native_terminal() {
         let stream = IdentityIssuer::new().issue_stream().expect("issued stream");
         let state = StreamState::with_target_extent(stream);
+        // Reads: derive at 0, bounded admission at 1, caller arbitration at 2,
+        // terminal admission at 3; 4 is a deliberate failure sentinel.
         let clock = Arc::new(ScriptedClock::new(&[0, 1, 2, 3, 4]));
         let operation = OperationContext::new()
             .with_clock(clock)
@@ -1630,6 +1632,35 @@ mod tests {
     }
 
     #[test]
+    fn r2_2_liveness_bound_clamps_to_earlier_caller_deadline() {
+        let caller_deadline = MonotonicInstant::from_origin(Duration::from_millis(7));
+        let clock = Arc::new(ScriptedClock::new(&[5]));
+        let operation = OperationContext::new()
+            .with_clock(clock)
+            .with_deadline(caller_deadline);
+        let observed_deadline = Mutex::new(None);
+
+        let error = frame_with_target_liveness(
+            &operation,
+            Duration::from_millis(100),
+            || true,
+            || panic!("a present key cannot record target loss"),
+            |bounded| {
+                *observed_deadline.lock().expect("deadline lock") = bounded.deadline();
+                Err(CaptureFault::SourceInvalid.into())
+            },
+        )
+        .expect_err("the test acquisition returns its sentinel fault");
+
+        assert_eq!(error.status(), Status::CaptureFailed);
+        assert_eq!(
+            *observed_deadline.lock().expect("deadline lock"),
+            Some(caller_deadline),
+            "the internal liveness interval cannot extend an earlier caller deadline"
+        );
+    }
+
+    #[test]
     fn r2_2_liveness_bound_preserves_cancellation_during_wait() {
         let token = CancellationToken::new();
         let operation = OperationContext::new().with_cancellation(token.clone());
@@ -1675,6 +1706,8 @@ mod tests {
     fn r2_2_liveness_bound_returns_frame_after_internal_expiry() {
         let stream = IdentityIssuer::new().issue_stream().expect("issued stream");
         let state = StreamState::with_target_extent(stream);
+        // Reads: derive at 0, bounded admission at 1, caller arbitration at 2,
+        // then re-derive/admit/commit at 2; 10 is a failure sentinel.
         let clock = Arc::new(ScriptedClock::new(&[0, 1, 2, 2, 2, 2, 10]));
         let operation = OperationContext::new()
             .with_clock(clock)
