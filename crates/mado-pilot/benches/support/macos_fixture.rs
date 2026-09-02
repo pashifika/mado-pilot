@@ -1285,7 +1285,7 @@ fn finish_reader_output(
             match received {
                 Ok(_message) => output_clean = false,
                 Err(mpsc::RecvTimeoutError::Timeout) => {}
-                Err(mpsc::RecvTimeoutError::Disconnected) => break,
+                Err(mpsc::RecvTimeoutError::Disconnected) => thread::yield_now(),
             }
         }
         if reader.is_finished() {

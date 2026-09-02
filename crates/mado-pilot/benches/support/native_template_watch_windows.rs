@@ -167,11 +167,14 @@ impl NativeFixture {
                                 if line.last() == Some(&b'\r') {
                                     line.pop();
                                 }
-                                match String::from_utf8(std::mem::take(&mut line)) {
-                                    Ok(decoded) if sender.try_send(decoded).is_ok() => {}
-                                    Ok(_) | Err(_) => {
-                                        reader_failed_for_thread.store(true, Ordering::Release);
-                                    }
+                                let Ok(decoded) =
+                                    String::from_utf8(std::mem::take(&mut line))
+                                else {
+                                    reader_failed_for_thread.store(true, Ordering::Release);
+                                    break;
+                                };
+                                if sender.try_send(decoded).is_err() {
+                                    reader_failed_for_thread.store(true, Ordering::Release);
                                 }
                             }
                             break;
