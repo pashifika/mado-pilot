@@ -100,6 +100,32 @@ const PAYLOAD_EXTENSIONS: [&str; 33] = [
     "so", "tar", "tgz", "webp", "xz", "zip", "zst",
 ];
 
+const BINARY_MAGICS: [&[u8]; 23] = [
+    b"PK\x03\x04",
+    b"PK\x05\x06",
+    b"PK\x07\x08",
+    b"\x7fELF",
+    b"MZ",
+    b"!<arch>\n",
+    b"\0asm",
+    b"\xfe\xed\xfa\xce",
+    b"\xce\xfa\xed\xfe",
+    b"\xfe\xed\xfa\xcf",
+    b"\xcf\xfa\xed\xfe",
+    b"\xca\xfe\xba\xbe",
+    b"\xbe\xba\xfe\xca",
+    b"\xca\xfe\xba\xbf",
+    b"\xbf\xba\xfe\xca",
+    b"\x1f\x8b",
+    b"BZh",
+    b"\xfd7zXZ\0",
+    b"\x28\xb5\x2f\xfd",
+    b"7z\xbc\xaf\x27\x1c",
+    b"Rar!\x1a\x07",
+    b"%PDF-",
+    b"SQLite format 3\0",
+];
+
 const ALLOWED_G014_ZIPS: [&str; 24] = [
     "fixtures/assets/g-014/adversarial/bomb-compression-ratio.zip",
     "fixtures/assets/g-014/adversarial/bomb-entry-count-declared.zip",
@@ -179,8 +205,8 @@ pub struct TrackedEntry {
     pub object_id: String,
     /// Symlink target bytes decoded as UTF-8; absent for non-symlinks.
     pub symlink_target: Option<String>,
-    /// Whether an unpinned regular blob is valid UTF-8; `None` for pinned blobs and non-files.
-    pub utf8_text: Option<bool>,
+    /// Whether an unpinned regular blob passes text-safety validation.
+    pub safe_text: Option<bool>,
 }
 
 /// Release inputs observed from the committed candidate tree.
@@ -387,11 +413,11 @@ pub fn read_workspace(workspace_root: &Path) -> Result<ReleaseScopeObservation, 
             });
         }
 
-        let (symlink_target, utf8_text) = match mode {
+        let (symlink_target, safe_text) = match mode {
             "120000" => (Some(read_blob_text(workspace_root, object_id, path)?), None),
             "100644" | "100755" if !path_in_pinned_tree(path) => {
                 let bytes = read_blob_bytes(workspace_root, object_id)?;
-                (None, Some(std::str::from_utf8(&bytes).is_ok()))
+                (None, Some(safe_text_blob(&bytes)))
             }
             _ => (None, None),
         };
@@ -401,7 +427,7 @@ pub fn read_workspace(workspace_root: &Path) -> Result<ReleaseScopeObservation, 
                 mode: mode.to_owned(),
                 object_id: object_id.to_owned(),
                 symlink_target,
-                utf8_text,
+                safe_text,
             },
         );
         if previous.is_some() {
@@ -564,6 +590,18 @@ fn read_blob_bytes(workspace_root: &Path, object_id: &str) -> Result<Vec<u8>, Re
     git_output(workspace_root, &["cat-file", "blob", object_id])
 }
 
+fn safe_text_blob(bytes: &[u8]) -> bool {
+    let Ok(text) = std::str::from_utf8(bytes) else {
+        return false;
+    };
+    let has_forbidden_control = text
+        .chars()
+        .any(|character| character.is_control() && !matches!(character, '\n' | '\r' | '\t'));
+    !has_forbidden_control
+        && !BINARY_MAGICS.iter().any(|magic| bytes.starts_with(magic))
+        && bytes.get(257..262) != Some(b"ustar")
+}
+
 fn read_tree_oid(workspace_root: &Path, path: &str) -> Result<String, ReleaseScopeError> {
     let revision = format!("HEAD:{path}");
     let output = git_output(workspace_root, &["rev-parse", "--verify", &revision])?;
@@ -609,8 +647,8 @@ fn forbidden_tracked_entry(
 ) -> Option<&'static str> {
     match (entry.mode.as_str(), entry.symlink_target.as_deref()) {
         ("100644", None) => {
-            if !path_in_pinned_tree(path) && entry.utf8_text != Some(true) {
-                return Some("unpinned regular file is not UTF-8 text");
+            if !path_in_pinned_tree(path) && entry.safe_text != Some(true) {
+                return Some("unpinned regular file failed text-safety validation");
             }
             let file_name = path.rsplit('/').next().unwrap_or(path);
             let has_extension = file_name.rsplit_once('.').is_some();
@@ -712,4 +750,25 @@ fn path_in_pinned_tree(path: &str) -> bool {
     PINNED_TREE_PREFIXES
         .iter()
         .any(|prefix| path.starts_with(prefix))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::safe_text_blob;
+
+    #[test]
+    fn text_safety_rejects_valid_utf8_binary_controls_and_magic() {
+        assert!(!safe_text_blob(b"private\0payload"));
+        assert!(!safe_text_blob(b"MZprintable-payload"));
+        assert!(!safe_text_blob(b"\0asm\x01\0\0\0"));
+
+        let mut tar = vec![b' '; 512];
+        tar[257..262].copy_from_slice(b"ustar");
+        assert!(!safe_text_blob(&tar));
+    }
+
+    #[test]
+    fn text_safety_accepts_source_text_controls_only() {
+        assert!(safe_text_blob("source\ttext\n魔導士\r\n".as_bytes()));
+    }
 }

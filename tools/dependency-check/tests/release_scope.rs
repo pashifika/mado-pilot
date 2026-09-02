@@ -31,7 +31,7 @@ fn compliant_observation() -> ReleaseScopeObservation {
             mode: "120000".to_owned(),
             object_id: "681311eb9cf453d0faddf3aacaec7357e97ba8e9".to_owned(),
             symlink_target: Some("CLAUDE.md".to_owned()),
-            utf8_text: None,
+            safe_text: None,
         },
     );
 
@@ -65,7 +65,7 @@ fn regular_entry(path: &str) -> TrackedEntry {
         mode: "100644".to_owned(),
         object_id: object_id.to_owned(),
         symlink_target: None,
-        utf8_text: Some(true),
+        safe_text: Some(true),
     }
 }
 
@@ -291,7 +291,7 @@ fn unsafe_tree_modes_and_symlink_targets_are_rejected() {
                 mode: "100755".to_owned(),
                 object_id: "executable".to_owned(),
                 symlink_target: None,
-                utf8_text: Some(true),
+                safe_text: Some(true),
             },
         ),
         (
@@ -300,7 +300,7 @@ fn unsafe_tree_modes_and_symlink_targets_are_rejected() {
                 mode: "160000".to_owned(),
                 object_id: "gitlink".to_owned(),
                 symlink_target: None,
-                utf8_text: None,
+                safe_text: None,
             },
         ),
         (
@@ -309,7 +309,7 @@ fn unsafe_tree_modes_and_symlink_targets_are_rejected() {
                 mode: "120000".to_owned(),
                 object_id: "symlink".to_owned(),
                 symlink_target: Some("../../private".to_owned()),
-                utf8_text: None,
+                safe_text: None,
             },
         ),
     ] {
@@ -371,11 +371,11 @@ fn changed_archive_attributes_are_rejected() {
 }
 
 #[test]
-fn renamed_non_utf8_payload_is_rejected() {
+fn renamed_unsafe_text_payload_is_rejected() {
     let path = "vendor/runtime.dat";
     let mut observation = compliant_observation();
     let mut entry = regular_entry(path);
-    entry.utf8_text = Some(false);
+    entry.safe_text = Some(false);
     observation.tracked_entries.insert(path.to_owned(), entry);
 
     assert!(has_violation(&observation, |violation| matches!(
@@ -395,7 +395,7 @@ fn changed_approved_executable_is_rejected() {
             mode: "100755".to_owned(),
             object_id: "d5fae53a3e614aacbb608523dc28603a6c8a3995".to_owned(),
             symlink_target: None,
-            utf8_text: None,
+            safe_text: None,
         },
     );
     assert_eq!(validate(&observation), []);
