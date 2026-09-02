@@ -3,8 +3,9 @@
 
 #[cfg(target_os = "macos")]
 use crate::macos_fixture::{
-    FixtureController, LaunchMode, controlled_content_logical_size,
+    FixtureController, FixtureFinalization, LaunchMode, controlled_content_logical_size,
     controlled_resize_logical_size_matches, expected_controlled_resize_logical_size,
+    finalize_once,
 };
 #[cfg(target_os = "macos")]
 use crate::macos_fixture_control::{executable_identity, fixture_cleanup_counts};
@@ -17,10 +18,26 @@ const FIXTURE_STATUS_OK: u32 = 0;
 const FIXTURE_STATUS_UNSUPPORTED: u32 = 2;
 
 #[cfg(target_os = "macos")]
+#[must_use = "fixture finalization must be checked before accepting a sample"]
+#[derive(Clone, Copy)]
+struct NativeFixtureFinalization {
+    events_drained: bool,
+    controller: FixtureFinalization,
+}
+
+#[cfg(target_os = "macos")]
+impl NativeFixtureFinalization {
+    const fn is_accepted(&self) -> bool {
+        self.events_drained && self.controller.is_accepted()
+    }
+}
+
+#[cfg(target_os = "macos")]
 struct NativeFixture {
     controller: FixtureController,
     generation: u64,
     revision: u64,
+    finish_result: Option<NativeFixtureFinalization>,
 }
 
 #[cfg(target_os = "macos")]
@@ -28,6 +45,9 @@ impl NativeFixture {
     fn start(arguments: &Arguments) -> Result<Self, String> {
         let bytes = std::fs::read(&arguments.fixture_executable)
             .map_err(|_| "fixture_authority_failed".to_owned())?;
+        if !fixture_bytes_match(arguments, &bytes) {
+            return Err("fixture_authority_failed".to_owned());
+        }
         let identity = executable_identity(&arguments.fixture_executable)
             .map_err(|_| "fixture_authority_failed".to_owned())?;
         let controller = FixtureController::start_once(
@@ -41,6 +61,7 @@ impl NativeFixture {
             controller,
             generation: 1,
             revision: 0,
+            finish_result: None,
         })
     }
 
@@ -124,10 +145,12 @@ impl NativeFixture {
         self.command(FixtureCommandKind::RestorePlacement)
     }
 
-    fn finish(&mut self) -> bool {
-        let events_drained = self.controller.discard_watch_events(FIXTURE_WAIT);
-        let fixture_finished = self.controller.finish(FIXTURE_WAIT);
-        events_drained && fixture_finished
+    fn finish(&mut self) -> NativeFixtureFinalization {
+        let controller = &mut self.controller;
+        finalize_once(&mut self.finish_result, || NativeFixtureFinalization {
+            events_drained: controller.discard_watch_events(FIXTURE_WAIT),
+            controller: controller.finish(FIXTURE_WAIT),
+        })
     }
 }
 

@@ -283,6 +283,25 @@ Corrective successor `7139a68` serializes backend generation admission per
 query and bounds Windows fixture output before allocation. The `f16591f` host
 cohorts do not qualify those changed runtime and harness semantics, so a future
 support decision requires a fresh complete protocol on both approved hosts.
+
+ADR 0060 separately retains current-source `030398e` Apple cleanup/latency and
+Windows report-admission terminal-red results without assigning either to the
+historical `f16591f` suspension. ADR 0061 repairs only the internal Windows
+report gate: finite canonical UBR and hardware provenance remains distinct from
+typed host-class, build-family, SDK, target, toolchain, and backend
+compatibility. ADR 0062 selects the Apple exact-lifetime and typed-finalization
+repair from cleanup localization and exact-sample correlation bound to
+`030398e`. The accepted timer observes elapsed only after operation-local
+resources, explicit finalization, and the complete fixture ownership chain are
+dropped. Neither repair changes a budget or public watcher contract.
+
+Integrated candidate `9cf746f` contains both repairs. Its sole authorized Apple
+builder terminated at a post-Cargo controlled-home check, and its sole
+authorized Windows builder terminated at a pre-namespace environment check.
+Neither host produced an artifact authority or launched process 1. ADR 0063
+retains both attempts without retry and classifies them as apparatus failures,
+not product-gate results. The required integrated Apple and Windows cohorts
+therefore do not exist, and the support decision remains withheld.
 OCR predicates, callbacks/subscriptions, C/C++, automatic input, target activation,
 arbitrary application/template/ROI compatibility or timing, real-time guarantees,
 packaging, and release remain unavailable.

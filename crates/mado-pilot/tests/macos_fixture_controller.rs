@@ -200,7 +200,7 @@ fn watcher_visual_controls_acknowledge_and_cleanup_without_capture() {
     }
 
     assert!(
-        fixture.finish(FIXTURE_WAIT),
+        fixture.finish(FIXTURE_WAIT).is_accepted(),
         "the watcher fixture closes its control channel, process, and output reader"
     );
 }
@@ -279,7 +279,7 @@ fn repeated_fresh_capture_sessions_survive_fixture_and_engine_turnover() {
         }
 
         assert!(
-            fixture.finish(FIXTURE_WAIT),
+            fixture.finish(FIXTURE_WAIT).is_accepted(),
             "the authenticated fixture stops cleanly"
         );
     }

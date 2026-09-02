@@ -46,9 +46,10 @@ use mado_pilot_runtime::{
 
 #[cfg(target_os = "macos")]
 use crate::macos_fixture::{
-    CancellationObservation, CommandAcknowledgement, FixtureController, LanguageExecutablePin,
-    LaunchMode, auxiliary_window_setup_is_proven, controlled_resize_logical_size_matches,
-    expected_controlled_resize_logical_size, language_pins_are_unchanged, post_use_identity_gate,
+    CancellationObservation, CommandAcknowledgement, FixtureController, FixtureFinalization,
+    LanguageExecutablePin, LaunchMode, auxiliary_window_setup_is_proven,
+    controlled_resize_logical_size_matches, expected_controlled_resize_logical_size,
+    language_pins_are_unchanged, post_use_identity_gate,
 };
 #[cfg(target_os = "macos")]
 use crate::macos_fixture_protocol as protocol;
@@ -235,7 +236,7 @@ impl FixtureProcess {
         })
     }
 
-    fn close_bounded(&self, wait: Duration) -> bool {
+    fn close_bounded(&self, wait: Duration) -> FixtureFinalization {
         self.with_controller(|controller| controller.finish(wait))
     }
 
@@ -275,7 +276,7 @@ impl Drop for FixtureProcess {
             .controller
             .get_mut()
             .unwrap_or_else(|poisoned| poisoned.into_inner());
-        if !controller.finish(FIXTURE_WAIT) {
+        if !controller.finish(FIXTURE_WAIT).is_accepted() {
             FIXTURE_FINALIZATION_SUCCEEDED.store(false, Ordering::Release);
         }
     }
@@ -1185,7 +1186,7 @@ fn process_session_close(flow: &ProcessCloseFlow) -> Sample {
 fn fixture_controller_close(behavior: &FixtureBehavior) -> Sample {
     let fixture = FixtureProcess::spawn(*behavior);
     let started = Instant::now();
-    let correct = fixture.close_bounded(measured_close_bound());
+    let correct = fixture.close_bounded(measured_close_bound()).is_accepted();
     Sample::unmapped(started.elapsed(), correct)
 }
 

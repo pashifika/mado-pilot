@@ -366,6 +366,91 @@ enum ReaderMessage {
     Failed,
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum FixtureCleanupDebt {
+    None,
+    Deferred,
+}
+
+impl FixtureCleanupDebt {
+    const fn token(self) -> &'static str {
+        match self {
+            Self::None => "none",
+            Self::Deferred => "deferred",
+        }
+    }
+}
+
+/// Immutable private fixture finalization facts consumed by qualification.
+#[must_use = "fixture finalization must be checked before accepting a sample"]
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) struct FixtureFinalization {
+    stop_acknowledged: bool,
+    exit: FixtureExitObservation,
+    bounded: bool,
+    output_clean: bool,
+    executable_unchanged: bool,
+    cleanup_debt: FixtureCleanupDebt,
+}
+
+impl FixtureFinalization {
+    const fn new(
+        stop_acknowledged: bool,
+        exit: FixtureExitObservation,
+        bounded: bool,
+        output_clean: bool,
+        executable_unchanged: bool,
+    ) -> Self {
+        Self {
+            stop_acknowledged,
+            exit,
+            bounded,
+            output_clean,
+            executable_unchanged,
+            cleanup_debt: if exit.is_stopped() {
+                FixtureCleanupDebt::None
+            } else {
+                FixtureCleanupDebt::Deferred
+            },
+        }
+    }
+
+    /// Returns true only when every finalization fact is terminal and clean.
+    #[must_use]
+    pub(crate) const fn is_accepted(&self) -> bool {
+        self.stop_acknowledged
+            && self.exit.is_stopped()
+            && self.bounded
+            && self.output_clean
+            && self.executable_unchanged
+            && matches!(self.cleanup_debt, FixtureCleanupDebt::None)
+    }
+}
+
+pub(crate) fn finalize_once<ResultValue: Copy>(
+    cached: &mut Option<ResultValue>,
+    finalize: impl FnOnce() -> ResultValue,
+) -> ResultValue {
+    if let Some(result) = *cached {
+        return result;
+    }
+    let result = finalize();
+    *cached = Some(result);
+    result
+}
+
+pub(crate) fn finalize_drop_then_observe<ResultValue, Failure, Owner, Observation>(
+    result: Result<ResultValue, Failure>,
+    mut owner: Owner,
+    finalize: impl FnOnce(&mut Owner) -> bool,
+    observe: impl FnOnce() -> Observation,
+) -> (Result<ResultValue, Failure>, bool, Observation) {
+    let finalization_accepted = finalize(&mut owner);
+    drop(owner);
+    let observation = observe();
+    (result, finalization_accepted, observation)
+}
+
 /// One owned fixture application and its bounded command/event channel.
 pub struct FixtureController {
     launched: LaunchedFixtureApplication,
@@ -380,7 +465,7 @@ pub struct FixtureController {
     launch_mode: LaunchMode,
     stopped: bool,
     expected_identity: ExecutableIdentity,
-    finish_result: Option<bool>,
+    finish_result: Option<FixtureFinalization>,
 }
 
 impl fmt::Debug for FixtureController {
@@ -519,7 +604,7 @@ impl FixtureController {
         let mut launch_guard = LaunchGuard::new(launched);
         let mut launch_attempts = 1_u32;
         let deadline = Instant::now() + wait;
-        let (stream, application) = loop {
+        let (stream, application, accepted_launch) = loop {
             if max_launch_attempts > 1
                 && launch_guard.lifetime()? == FixtureApplicationLifetime::Lost
             {
@@ -572,7 +657,8 @@ impl FixtureController {
                             );
                         }
                         launch_guard.application = Some(application);
-                        break (stream, application);
+                        let accepted_launch = wait_for_launched_live(&launch_guard, deadline)?;
+                        break (stream, application, accepted_launch);
                     }
                 }
                 Err(error) if error.kind() == std::io::ErrorKind::WouldBlock => {}
@@ -622,7 +708,7 @@ impl FixtureController {
             );
         }
 
-        let (launched, application) = launch_guard.take();
+        let (launched, application) = launch_guard.take(accepted_launch);
         Ok(Self {
             launched,
             application,
@@ -990,8 +1076,8 @@ impl FixtureController {
             .map_err(|_| "the cleanup observation helper could not start".to_owned())
     }
     /// Stops the private fixture, terminates its exact launched application when
-    /// needed, and verifies no event remained. Idempotent.
-    pub fn finish(&mut self, wait: Duration) -> bool {
+    /// needed, and returns every bounded finalization fact. Idempotent.
+    pub(crate) fn finish(&mut self, wait: Duration) -> FixtureFinalization {
         if let Some(result) = self.finish_result {
             return result;
         }
@@ -999,7 +1085,7 @@ impl FixtureController {
         let executable_unchanged = self
             .application
             .matches_executable_identity(self.expected_identity);
-        let acknowledged = self
+        let stop_acknowledged = self
             .command(
                 FixtureCommandKind::Stop,
                 deadline.saturating_duration_since(Instant::now()),
@@ -1007,17 +1093,20 @@ impl FixtureController {
             .is_ok_and(|ack| ack.result.status == 0);
         self.shutdown_input();
         let graceful_deadline = deadline.min(Instant::now() + GRACEFUL_CLOSE_WAIT);
-        let stopped = if wait_for_authenticated_application_exit(
+        let mut exit = wait_for_authenticated_application_exit(
             &self.application,
             &self.launched,
             graceful_deadline,
-        ) {
-            true
-        } else {
-            terminate_authenticated_application(&mut self.application, &mut self.launched, deadline)
-        };
-        let bounded = stopped && Instant::now() <= deadline;
-        self.stopped = stopped;
+        );
+        if !exit.is_stopped() {
+            exit = terminate_authenticated_application(
+                &mut self.application,
+                &mut self.launched,
+                deadline,
+            );
+        }
+        let process_stopped_in_time = exit.is_stopped() && Instant::now() <= deadline;
+        self.stopped = exit.is_stopped();
 
         let output_clean = finish_reader_output_is_clean(
             self.reader.take(),
@@ -1026,21 +1115,28 @@ impl FixtureController {
             self.pending_events.is_empty(),
             deadline,
         );
-        let result = post_use_identity_gate(
-            acknowledged && stopped && bounded && output_clean,
-            &[executable_unchanged],
+        let bounded = process_stopped_in_time && Instant::now() <= deadline;
+        let result = FixtureFinalization::new(
+            stop_acknowledged,
+            exit,
+            bounded,
+            output_clean,
+            executable_unchanged,
         );
-        if !result {
+        if !result.is_accepted() {
             eprintln!(
-                "fixture-finalization-failed run={} acknowledged={} stopped={} bounded={} \
-                 output-clean={} executable-identity-unchanged={} pending-events={} \
+                "fixture-finalization-failed stop-acknowledged={} authenticated={} launched={} \
+                 exact-process-stopped={} bounded={} output-clean={} \
+                 executable-identity-unchanged={} cleanup-debt={} pending-events={} \
                  reader-failed={}",
-                self.run_nonce,
-                acknowledged,
-                stopped,
-                bounded,
-                output_clean,
-                executable_unchanged,
+                result.stop_acknowledged,
+                result.exit.authenticated.token(),
+                result.exit.launched.token(),
+                result.exit.is_stopped(),
+                result.bounded,
+                result.output_clean,
+                result.executable_unchanged,
+                result.cleanup_debt.token(),
                 self.pending_events.len(),
                 self.reader_failed.load(Ordering::Acquire),
             );
@@ -1062,8 +1158,8 @@ impl FixtureController {
             &mut self.application,
             &mut self.launched,
             deadline,
-        );
-        self.finish_result = Some(false);
+        )
+        .is_stopped();
         let _output_clean = finish_reader_output_is_clean(
             self.reader.take(),
             &self.lines,
@@ -1246,6 +1342,84 @@ fn fixture_bundle(executable: &Path) -> Option<PathBuf> {
         .then(|| bundle.to_path_buf())
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum AuthenticatedProcessLifetime {
+    Live,
+    Lost,
+}
+
+impl AuthenticatedProcessLifetime {
+    const fn token(self) -> &'static str {
+        match self {
+            Self::Live => "live",
+            Self::Lost => "lost",
+        }
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum LaunchedApplicationLifetime {
+    NotObserved,
+    Unknown,
+    Live,
+    Lost,
+    ObservationFailed,
+}
+
+impl LaunchedApplicationLifetime {
+    const fn token(self) -> &'static str {
+        match self {
+            Self::NotObserved => "not-observed",
+            Self::Unknown => "unknown",
+            Self::Live => "live",
+            Self::Lost => "lost",
+            Self::ObservationFailed => "observation-failed",
+        }
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+struct FixtureExitObservation {
+    authenticated: AuthenticatedProcessLifetime,
+    launched: LaunchedApplicationLifetime,
+}
+
+impl FixtureExitObservation {
+    const fn is_stopped(self) -> bool {
+        matches!(self.authenticated, AuthenticatedProcessLifetime::Lost)
+            && matches!(self.launched, LaunchedApplicationLifetime::Lost)
+    }
+}
+
+fn observe_fixture_exit_with(
+    authenticated_is_live: impl FnOnce() -> bool,
+    launched_lifetime: impl FnOnce() -> Result<FixtureApplicationLifetime, String>,
+) -> FixtureExitObservation {
+    if authenticated_is_live() {
+        return FixtureExitObservation {
+            authenticated: AuthenticatedProcessLifetime::Live,
+            launched: LaunchedApplicationLifetime::NotObserved,
+        };
+    }
+    let launched = match launched_lifetime() {
+        Ok(FixtureApplicationLifetime::Unknown) => LaunchedApplicationLifetime::Unknown,
+        Ok(FixtureApplicationLifetime::Live) => LaunchedApplicationLifetime::Live,
+        Ok(FixtureApplicationLifetime::Lost) => LaunchedApplicationLifetime::Lost,
+        Err(_) => LaunchedApplicationLifetime::ObservationFailed,
+    };
+    FixtureExitObservation {
+        authenticated: AuthenticatedProcessLifetime::Lost,
+        launched,
+    }
+}
+
+fn observe_fixture_exit(
+    application: &AuthenticatedFixtureProcess,
+    launched: &LaunchedFixtureApplication,
+) -> FixtureExitObservation {
+    observe_fixture_exit_with(|| application.is_live(), || launched.lifetime())
+}
+
 fn wait_for_launched_application_exit(
     application: &LaunchedFixtureApplication,
     deadline: Instant,
@@ -1265,13 +1439,11 @@ fn wait_for_authenticated_application_exit(
     application: &AuthenticatedFixtureProcess,
     launched: &LaunchedFixtureApplication,
     deadline: Instant,
-) -> bool {
+) -> FixtureExitObservation {
     loop {
-        if !application.is_live() && matches!(launched.is_live(), Ok(false)) {
-            return true;
-        }
-        if Instant::now() >= deadline {
-            return false;
+        let observation = observe_fixture_exit(application, launched);
+        if observation.is_stopped() || Instant::now() >= deadline {
+            return observation;
         }
         thread::sleep(Duration::from_millis(10));
     }
@@ -1281,16 +1453,75 @@ fn terminate_authenticated_application(
     application: &mut AuthenticatedFixtureProcess,
     launched: &mut LaunchedFixtureApplication,
     deadline: Instant,
-) -> bool {
+) -> FixtureExitObservation {
     let _authenticated_terminated = application.terminate();
     let _launched_terminated = launched.terminate();
     let term_deadline = deadline.min(Instant::now() + GRACEFUL_CLOSE_WAIT);
-    if wait_for_authenticated_application_exit(application, launched, term_deadline) {
-        return true;
+    let observation = wait_for_authenticated_application_exit(application, launched, term_deadline);
+    if observation.is_stopped() {
+        return observation;
     }
     let _authenticated_killed = application.kill();
     let _launched_killed = launched.kill();
     wait_for_authenticated_application_exit(application, launched, deadline)
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum FixtureLaunchAcceptanceError {
+    Lost,
+    ObservationFailed,
+    DeadlineExceeded,
+}
+
+impl FixtureLaunchAcceptanceError {
+    const fn message(self) -> &'static str {
+        match self {
+            Self::Lost => {
+                "the fixture application exited before its launched lifetime became observable"
+            }
+            Self::ObservationFailed => "the launched fixture lifetime could not be established",
+            Self::DeadlineExceeded => {
+                "the launched fixture lifetime did not become observable before the deadline"
+            }
+        }
+    }
+}
+
+fn wait_for_launched_live_with(
+    mut observe: impl FnMut() -> Result<FixtureApplicationLifetime, String>,
+    mut deadline_expired: impl FnMut() -> bool,
+    mut wait: impl FnMut(),
+) -> Result<(), FixtureLaunchAcceptanceError> {
+    loop {
+        match observe().map_err(|_| FixtureLaunchAcceptanceError::ObservationFailed)? {
+            FixtureApplicationLifetime::Live if deadline_expired() => {
+                return Err(FixtureLaunchAcceptanceError::DeadlineExceeded);
+            }
+            FixtureApplicationLifetime::Live => return Ok(()),
+            FixtureApplicationLifetime::Lost => {
+                return Err(FixtureLaunchAcceptanceError::Lost);
+            }
+            FixtureApplicationLifetime::Unknown if deadline_expired() => {
+                return Err(FixtureLaunchAcceptanceError::DeadlineExceeded);
+            }
+            FixtureApplicationLifetime::Unknown => wait(),
+        }
+    }
+}
+
+struct AcceptedFixtureLaunch;
+
+fn wait_for_launched_live(
+    guard: &LaunchGuard,
+    deadline: Instant,
+) -> Result<AcceptedFixtureLaunch, String> {
+    wait_for_launched_live_with(
+        || guard.lifetime(),
+        || Instant::now() >= deadline,
+        || thread::sleep(WAIT_SLICE),
+    )
+    .map_err(|failure| failure.message().to_owned())?;
+    Ok(AcceptedFixtureLaunch)
 }
 
 struct LaunchGuard {
@@ -1313,7 +1544,10 @@ impl LaunchGuard {
             .lifetime()
     }
 
-    fn take(mut self) -> (LaunchedFixtureApplication, AuthenticatedFixtureProcess) {
+    fn take(
+        mut self,
+        _accepted: AcceptedFixtureLaunch,
+    ) -> (LaunchedFixtureApplication, AuthenticatedFixtureProcess) {
         let application = self
             .application
             .take()
@@ -1332,7 +1566,7 @@ impl Drop for LaunchGuard {
         if let (Some(application), Some(launched)) =
             (self.application.as_mut(), self.launched.as_mut())
         {
-            let _stopped = terminate_authenticated_application(application, launched, deadline);
+            let _exit = terminate_authenticated_application(application, launched, deadline);
             return;
         }
         if let Some(launched) = self.launched.as_mut() {
@@ -1349,14 +1583,19 @@ impl Drop for LaunchGuard {
 #[cfg(test)]
 mod tests {
     use super::{
-        LanguageExecutablePin, MAX_OUTPUT_LINE_BYTES, ReaderMessage,
+        AuthenticatedProcessLifetime, FixtureCleanupDebt, FixtureExitObservation,
+        FixtureFinalization, FixtureLaunchAcceptanceError, LanguageExecutablePin,
+        LaunchedApplicationLifetime, MAX_OUTPUT_LINE_BYTES, ReaderMessage,
         auxiliary_window_setup_is_proven, controlled_content_logical_size,
         controlled_resize_logical_size_matches, discard_setup_events_until_quiet,
-        expected_controlled_resize_logical_size, finish_reader_output_is_clean, fixture_bundle,
-        language_pins_are_unchanged, next_fixture_run_nonce, post_use_identity_gate,
-        read_bounded_lines, strict_event_reset,
+        expected_controlled_resize_logical_size, finalize_drop_then_observe, finalize_once,
+        finish_reader_output_is_clean, fixture_bundle, language_pins_are_unchanged,
+        next_fixture_run_nonce, observe_fixture_exit_with, post_use_identity_gate,
+        read_bounded_lines, strict_event_reset, wait_for_launched_live_with,
     };
+    use crate::macos_fixture_control::FixtureApplicationLifetime;
     use crate::macos_fixture_protocol::{EVENT_KEY_DOWN, EventSummary, format_event_line};
+    use std::cell::Cell;
     use std::collections::VecDeque;
     use std::io::Write;
     use std::os::unix::fs::PermissionsExt;
@@ -1421,6 +1660,317 @@ mod tests {
         ));
         assert_eq!(controlled_content_logical_size((700.0, 484.0)), None);
     }
+
+    #[test]
+    fn launch_acceptance_waits_for_unknown_then_accepts_live_without_retry() {
+        let mut lifetimes = VecDeque::from([
+            FixtureApplicationLifetime::Unknown,
+            FixtureApplicationLifetime::Live,
+        ]);
+        let mut waits = 0;
+
+        assert_eq!(
+            wait_for_launched_live_with(
+                || Ok(lifetimes.pop_front().expect("the fixed lifetime arrives")),
+                || false,
+                || waits += 1,
+            ),
+            Ok(())
+        );
+        assert_eq!(waits, 1);
+        assert!(lifetimes.is_empty());
+    }
+
+    #[test]
+    fn launch_acceptance_rejects_lost_without_waiting() {
+        let mut waited = false;
+        assert_eq!(
+            wait_for_launched_live_with(
+                || Ok(FixtureApplicationLifetime::Lost),
+                || false,
+                || waited = true,
+            ),
+            Err(FixtureLaunchAcceptanceError::Lost)
+        );
+        assert!(!waited);
+    }
+
+    #[test]
+    fn launch_acceptance_rejects_observation_failure_without_waiting() {
+        let mut waited = false;
+        assert_eq!(
+            wait_for_launched_live_with(
+                || Err("unretained native detail".to_owned()),
+                || false,
+                || waited = true,
+            ),
+            Err(FixtureLaunchAcceptanceError::ObservationFailed)
+        );
+        assert!(!waited);
+    }
+
+    #[test]
+    fn launch_acceptance_rejects_unknown_at_the_existing_deadline() {
+        let mut observations = 0;
+        let mut deadline_checks = VecDeque::from([false, true]);
+        let mut waits = 0;
+
+        assert_eq!(
+            wait_for_launched_live_with(
+                || {
+                    observations += 1;
+                    Ok(FixtureApplicationLifetime::Unknown)
+                },
+                || {
+                    deadline_checks
+                        .pop_front()
+                        .expect("the fixed deadline observation arrives")
+                },
+                || waits += 1,
+            ),
+            Err(FixtureLaunchAcceptanceError::DeadlineExceeded)
+        );
+        assert_eq!(observations, 2);
+        assert_eq!(waits, 1);
+        assert!(deadline_checks.is_empty());
+    }
+
+    #[test]
+    fn launch_acceptance_rejects_live_observed_after_the_deadline() {
+        assert_eq!(
+            wait_for_launched_live_with(
+                || Ok(FixtureApplicationLifetime::Live),
+                || true,
+                || panic!("an expired acceptance must not wait"),
+            ),
+            Err(FixtureLaunchAcceptanceError::DeadlineExceeded)
+        );
+    }
+
+    #[test]
+    fn accepted_live_lifetime_becomes_exact_lost_after_fast_exit() {
+        let mut lifetimes = VecDeque::from([
+            FixtureApplicationLifetime::Unknown,
+            FixtureApplicationLifetime::Live,
+            FixtureApplicationLifetime::Lost,
+        ]);
+
+        assert_eq!(
+            wait_for_launched_live_with(
+                || Ok(lifetimes.pop_front().expect("the startup lifetime arrives")),
+                || false,
+                || {},
+            ),
+            Ok(())
+        );
+        assert_eq!(
+            observe_fixture_exit_with(
+                || false,
+                || Ok(lifetimes.pop_front().expect("the exit lifetime arrives")),
+            ),
+            FixtureExitObservation {
+                authenticated: AuthenticatedProcessLifetime::Lost,
+                launched: LaunchedApplicationLifetime::Lost,
+            }
+        );
+        assert!(lifetimes.is_empty());
+    }
+
+    #[test]
+    fn exact_exit_observation_is_lazy_and_requires_both_lifetimes_lost() {
+        let mut launched_probes = 0;
+        assert_eq!(
+            observe_fixture_exit_with(
+                || true,
+                || {
+                    launched_probes += 1;
+                    Ok(FixtureApplicationLifetime::Lost)
+                },
+            ),
+            FixtureExitObservation {
+                authenticated: AuthenticatedProcessLifetime::Live,
+                launched: LaunchedApplicationLifetime::NotObserved,
+            }
+        );
+        assert_eq!(launched_probes, 0);
+
+        assert_eq!(
+            observe_fixture_exit_with(|| false, || Ok(FixtureApplicationLifetime::Lost)),
+            FixtureExitObservation {
+                authenticated: AuthenticatedProcessLifetime::Lost,
+                launched: LaunchedApplicationLifetime::Lost,
+            }
+        );
+        assert_eq!(
+            observe_fixture_exit_with(|| false, || Ok(FixtureApplicationLifetime::Unknown)),
+            FixtureExitObservation {
+                authenticated: AuthenticatedProcessLifetime::Lost,
+                launched: LaunchedApplicationLifetime::Unknown,
+            }
+        );
+        assert_eq!(
+            observe_fixture_exit_with(|| false, || Err("unretained native detail".to_owned()),),
+            FixtureExitObservation {
+                authenticated: AuthenticatedProcessLifetime::Lost,
+                launched: LaunchedApplicationLifetime::ObservationFailed,
+            }
+        );
+    }
+
+    #[test]
+    fn typed_finalization_rejects_each_incomplete_fact() {
+        let stopped = FixtureExitObservation {
+            authenticated: AuthenticatedProcessLifetime::Lost,
+            launched: LaunchedApplicationLifetime::Lost,
+        };
+        let accepted = FixtureFinalization::new(true, stopped, true, true, true);
+        assert!(accepted.is_accepted());
+        assert_eq!(accepted.cleanup_debt, FixtureCleanupDebt::None);
+
+        assert!(
+            !FixtureFinalization {
+                stop_acknowledged: false,
+                ..accepted
+            }
+            .is_accepted()
+        );
+        assert!(
+            !FixtureFinalization {
+                exit: FixtureExitObservation {
+                    authenticated: AuthenticatedProcessLifetime::Live,
+                    launched: LaunchedApplicationLifetime::NotObserved,
+                },
+                ..accepted
+            }
+            .is_accepted()
+        );
+        assert!(
+            !FixtureFinalization {
+                exit: FixtureExitObservation {
+                    authenticated: AuthenticatedProcessLifetime::Lost,
+                    launched: LaunchedApplicationLifetime::Unknown,
+                },
+                ..accepted
+            }
+            .is_accepted()
+        );
+        assert!(
+            !FixtureFinalization {
+                bounded: false,
+                ..accepted
+            }
+            .is_accepted()
+        );
+        assert!(
+            !FixtureFinalization {
+                output_clean: false,
+                ..accepted
+            }
+            .is_accepted()
+        );
+        assert!(
+            !FixtureFinalization {
+                executable_unchanged: false,
+                ..accepted
+            }
+            .is_accepted()
+        );
+        assert!(
+            !FixtureFinalization {
+                cleanup_debt: FixtureCleanupDebt::Deferred,
+                ..accepted
+            }
+            .is_accepted()
+        );
+
+        let deferred = FixtureFinalization::new(
+            true,
+            FixtureExitObservation {
+                authenticated: AuthenticatedProcessLifetime::Lost,
+                launched: LaunchedApplicationLifetime::Unknown,
+            },
+            true,
+            true,
+            true,
+        );
+        assert_eq!(deferred.cleanup_debt, FixtureCleanupDebt::Deferred);
+        assert!(!deferred.is_accepted());
+    }
+
+    struct OrderedFinalizationOwner<'phase>(&'phase Cell<u8>);
+
+    impl Drop for OrderedFinalizationOwner<'_> {
+        fn drop(&mut self) {
+            assert_eq!(self.0.get(), 1);
+            self.0.set(2);
+        }
+    }
+
+    #[test]
+    fn accepted_sample_finalizes_and_drops_before_observing_latency() {
+        let phase = Cell::new(0);
+        let owner = OrderedFinalizationOwner(&phase);
+        let (result, accepted, observed) = finalize_drop_then_observe(
+            Ok::<_, ()>(()),
+            owner,
+            |owner| {
+                assert_eq!(owner.0.get(), 0);
+                owner.0.set(1);
+                false
+            },
+            || {
+                assert_eq!(phase.get(), 2);
+                phase.set(3);
+                7
+            },
+        );
+        assert_eq!(result, Ok(()));
+        assert!(!accepted);
+        assert_eq!(observed, 7);
+        assert_eq!(phase.get(), 3);
+    }
+
+    #[test]
+    fn failed_sample_finalizes_and_drops_before_propagating_operation_error() {
+        let phase = Cell::new(0);
+        let owner = OrderedFinalizationOwner(&phase);
+        let (result, accepted, observed) = finalize_drop_then_observe(
+            Err::<(), _>("typed_operation_failure"),
+            owner,
+            |owner| {
+                assert_eq!(owner.0.get(), 0);
+                owner.0.set(1);
+                true
+            },
+            || {
+                assert_eq!(phase.get(), 2);
+                phase.set(3);
+                11
+            },
+        );
+        assert_eq!(result, Err("typed_operation_failure"));
+        assert!(accepted);
+        assert_eq!(observed, 11);
+        assert_eq!(phase.get(), 3);
+    }
+
+    #[test]
+    fn finalization_cache_invokes_cleanup_once() {
+        let calls = Cell::new(0);
+        let mut cached = None;
+        let first = finalize_once(&mut cached, || {
+            calls.set(calls.get() + 1);
+            17
+        });
+        let second = finalize_once(&mut cached, || {
+            calls.set(calls.get() + 1);
+            23
+        });
+        assert_eq!(first, 17);
+        assert_eq!(second, 17);
+        assert_eq!(calls.get(), 1);
+    }
+
     #[test]
     fn language_pin_pair_rejects_either_replaced_file() {
         fn pin_pair() -> (LanguageExecutablePin, LanguageExecutablePin) {
@@ -1587,6 +2137,20 @@ mod tests {
             Some(reader),
             &lines,
             &AtomicBool::new(false),
+            true,
+            Instant::now() + Duration::from_secs(1),
+        ));
+    }
+
+    #[test]
+    fn reader_failure_cannot_be_accepted_as_clean_finalization() {
+        let (_sender, receiver) = mpsc::sync_channel(1);
+        let lines = Arc::new(Mutex::new(receiver));
+
+        assert!(!finish_reader_output_is_clean(
+            None,
+            &lines,
+            &AtomicBool::new(true),
             true,
             Instant::now() + Duration::from_secs(1),
         ));
