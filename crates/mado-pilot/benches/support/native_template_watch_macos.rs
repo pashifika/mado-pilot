@@ -98,7 +98,8 @@ impl NativeFixture {
 
     fn command(&mut self, kind: FixtureCommandKind) -> Result<ControlAcknowledgement, String> {
         let acknowledgement = self.controller.command(kind, FIXTURE_COMMAND_WAIT)?;
-        let status = acknowledgement.result().status;
+        let result = acknowledgement.result();
+        let status = result.status;
         if kind == FixtureCommandKind::MoveToNextDisplay
             && status == FIXTURE_STATUS_UNSUPPORTED
         {
@@ -107,6 +108,18 @@ impl NativeFixture {
         if status != FIXTURE_STATUS_OK {
             return Err("fixture_authority_failed".to_owned());
         }
+        let visual_token = match kind {
+            FixtureCommandKind::SetVisualAbsent => Some(VisualMarkerState::Absent),
+            FixtureCommandKind::SetVisualVisible => Some(VisualMarkerState::Visible),
+            _ => None,
+        }
+        .map(|marker| {
+            let token = protocol::visual_token_for_command(kind, result.nonce)
+                .ok_or_else(|| "fixture_authority_failed".to_owned())?;
+            VisualToken::new(token.get(), marker)
+                .ok_or_else(|| "fixture_authority_failed".to_owned())
+        })
+        .transpose()?;
         self.revision = self
             .revision
             .checked_add(1)
@@ -114,6 +127,7 @@ impl NativeFixture {
         Ok(ControlAcknowledgement {
             generation: self.generation,
             revision: self.revision,
+            visual_token,
         })
     }
 

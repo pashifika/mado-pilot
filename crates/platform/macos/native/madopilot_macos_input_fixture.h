@@ -97,8 +97,11 @@ extern "C" {
  * No callback may let a Rust panic escape.
  *
  * `mp_fixture_control` validates the per-run identity and fixed command before
- * enqueuing it on the AppKit main thread. A command nonce greater than the prior
- * nonce executes exactly once; an equal nonce replays the cached result without
+ * enqueuing it on the AppKit main thread. For SetVisualAbsent and
+ * SetVisualVisible, the nonzero command nonce must fit `uint32_t`; the fixture
+ * renders that nonce and marker state in one visual transaction before
+ * `controlled` acknowledges it. A command nonce greater than the prior nonce
+ * executes exactly once; an equal nonce replays the cached result without
  * executing; an older nonce is rejected. A zero return means the command was
  * accepted for asynchronous processing, not that its transition succeeded.
  */

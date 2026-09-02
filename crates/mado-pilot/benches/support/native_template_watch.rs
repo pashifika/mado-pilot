@@ -28,6 +28,7 @@ use mado_pilot_backend_opencv::benchmark_instrumentation::{
 use mado_pilot_testkit::bench_harness::{
     self, Benchmark, Plan, Profile, QueryWorkMetrics, Sample, Workload, measure,
 };
+use mado_pilot_testkit::visual_token::{VisualMarkerState, VisualToken};
 use mado_pilot_testkit::{ManualClock, native_watch_report, png};
 
 const OPERATION_WAIT: Duration = Duration::from_secs(5);
@@ -46,6 +47,7 @@ const MARKER_SECONDARY: [u8; 3] = [0x2d, 0xd4, 0xbf];
 struct ControlAcknowledgement {
     generation: u64,
     revision: u64,
+    visual_token: Option<VisualToken>,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -427,6 +429,7 @@ impl NativeRun {
             last_ack: ControlAcknowledgement {
                 generation: 1,
                 revision: 0,
+                visual_token: None,
             },
         })
     }

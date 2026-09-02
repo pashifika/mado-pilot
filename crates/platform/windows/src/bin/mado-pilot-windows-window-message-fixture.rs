@@ -30,18 +30,20 @@ mod fixture {
     use std::io::{self, Write};
     use std::mem::size_of;
     use std::sync::OnceLock;
-    use std::sync::atomic::{AtomicBool, AtomicU32, AtomicUsize, Ordering};
+    use std::sync::atomic::{AtomicBool, AtomicU32, AtomicU64, AtomicUsize, Ordering};
     use std::time::Duration;
 
     use mado_pilot_platform_windows::fixture_protocol::{
         BENCHMARK_FILL_RGB, CONTROL_ALLOW_FOREGROUND, CONTROL_BLOCK_QUEUE, CONTROL_DESTROY_TARGET,
         CONTROL_DUPLICATE_METADATA, CONTROL_REPARENT_TARGET, CONTROL_REPLACE_TARGET,
         CONTROL_REPORT, CONTROL_REUSE_STRESS, CONTROL_SET_GEOMETRY, CONTROL_SET_VISUAL_ABSENT,
-        CONTROL_SET_VISUAL_VISIBLE, CONTROL_TRANSITION_VISUAL, FILL_RGB, MAX_RECORDED_EVENTS,
-        ORDINARY_CLASS_NAME, TARGET_LOSS_ACKNOWLEDGEMENT, VISUAL_TRANSITION_ACKNOWLEDGEMENT,
-        WATCH_MARKER_CELL_SIZE, WATCH_MARKER_HEIGHT, WATCH_MARKER_PRIMARY_RGB,
-        WATCH_MARKER_SECONDARY_RGB, WATCH_MARKER_WIDTH, WATCH_MARKER_X, WATCH_MARKER_Y,
-        ordinary_fixture_title, visual_state_for_control,
+        CONTROL_SET_VISUAL_VISIBLE, CONTROL_TRANSITION_VISUAL, FILL_RGB, FixtureVisualCommand,
+        MAX_RECORDED_EVENTS, ORDINARY_CLASS_NAME, TARGET_LOSS_ACKNOWLEDGEMENT,
+        VISUAL_TRANSITION_ACKNOWLEDGEMENT, WATCH_MARKER_CELL_SIZE, WATCH_MARKER_HEIGHT,
+        WATCH_MARKER_PRIMARY_RGB, WATCH_MARKER_SECONDARY_RGB, WATCH_MARKER_WIDTH, WATCH_MARKER_X,
+        WATCH_MARKER_Y, WATCH_TOKEN_CELL_COUNT, WATCH_TOKEN_CELL_SIZE, WATCH_TOKEN_GRID_WIDTH,
+        WATCH_TOKEN_X, WATCH_TOKEN_Y, ordinary_fixture_title, visual_command_for_control,
+        visual_token_cell,
     };
     use windows::Win32::Foundation::{COLORREF, HINSTANCE, HWND, LPARAM, LRESULT, RECT, WPARAM};
     use windows::Win32::Graphics::Gdi::{
@@ -82,7 +84,7 @@ mod fixture {
     static LAST_F6_DOWN: AtomicBool = AtomicBool::new(false);
     static ANIMATED: AtomicBool = AtomicBool::new(false);
     static GEOMETRY_REPAINTS: AtomicU32 = AtomicU32::new(0);
-    static WATCH_MARKER_VISIBLE: AtomicBool = AtomicBool::new(false);
+    static WATCH_VISUAL_STATE: AtomicU64 = AtomicU64::new(0);
 
     static TARGET_EVENTS: AtomicU32 = AtomicU32::new(0);
     static REPLACEMENT_EVENTS: AtomicU32 = AtomicU32::new(0);
@@ -351,14 +353,16 @@ mod fixture {
                 LRESULT(0)
             }
             CONTROL_SET_VISUAL_ABSENT | CONTROL_SET_VISUAL_VISIBLE => {
-                let state = visual_state_for_control(message)
-                    .expect("the matched private control has one visual state");
-                WATCH_MARKER_VISIBLE.store(state.marker_is_visible(), Ordering::Release);
-                print_line(if repaint_target() {
-                    state.acknowledgement()
+                let Some(command) = visual_command_for_control(message, wparam.0) else {
+                    print_line("control visual-state=failed");
+                    return LRESULT(0);
+                };
+                WATCH_VISUAL_STATE.store(command.packed(), Ordering::Release);
+                if repaint_target() {
+                    print_line(&command.acknowledgement());
                 } else {
-                    "control visual-state=failed"
-                });
+                    print_line("control visual-state=failed");
+                }
                 LRESULT(0)
             }
             CONTROL_TRANSITION_VISUAL => {
@@ -594,32 +598,82 @@ mod fixture {
                 FILL_RGB
             };
             fill_solid_rect(device, &client, fill);
-            if is_target && WATCH_MARKER_VISIBLE.load(Ordering::Acquire) {
-                let marker = RECT {
-                    left: WATCH_MARKER_X,
-                    top: WATCH_MARKER_Y,
-                    right: WATCH_MARKER_X + WATCH_MARKER_WIDTH,
-                    bottom: WATCH_MARKER_Y + WATCH_MARKER_HEIGHT,
-                };
-                let top_middle = RECT {
-                    left: WATCH_MARKER_X + WATCH_MARKER_CELL_SIZE,
-                    top: WATCH_MARKER_Y,
-                    right: WATCH_MARKER_X + WATCH_MARKER_CELL_SIZE * 2,
-                    bottom: WATCH_MARKER_Y + WATCH_MARKER_CELL_SIZE,
-                };
-                let bottom_left = RECT {
-                    left: WATCH_MARKER_X,
-                    top: WATCH_MARKER_Y + WATCH_MARKER_CELL_SIZE,
-                    right: WATCH_MARKER_X + WATCH_MARKER_CELL_SIZE,
-                    bottom: WATCH_MARKER_Y + WATCH_MARKER_HEIGHT,
-                };
-                fill_solid_rect(device, &marker, WATCH_MARKER_PRIMARY_RGB);
-                fill_solid_rect(device, &top_middle, WATCH_MARKER_SECONDARY_RGB);
-                fill_solid_rect(device, &bottom_left, WATCH_MARKER_SECONDARY_RGB);
+            if is_target
+                && let Some(command) =
+                    FixtureVisualCommand::from_packed(WATCH_VISUAL_STATE.load(Ordering::Acquire))
+            {
+                paint_watch_visual(device, command);
             }
         }
         // SAFETY: balances BeginPaint for this WM_PAINT dispatch.
         let _ended = unsafe { EndPaint(hwnd, &raw const paint) };
+    }
+
+    fn paint_watch_visual(device: HDC, command: FixtureVisualCommand) {
+        // SAFETY: both brushes are process-owned and deleted before this function returns.
+        let primary = unsafe { CreateSolidBrush(colorref(WATCH_MARKER_PRIMARY_RGB)) };
+        // SAFETY: same ownership rule as `primary`.
+        let secondary = unsafe { CreateSolidBrush(colorref(WATCH_MARKER_SECONDARY_RGB)) };
+        if command.state().marker_is_visible() {
+            let marker = RECT {
+                left: WATCH_MARKER_X,
+                top: WATCH_MARKER_Y,
+                right: WATCH_MARKER_X + WATCH_MARKER_WIDTH,
+                bottom: WATCH_MARKER_Y + WATCH_MARKER_HEIGHT,
+            };
+            let top_middle = RECT {
+                left: WATCH_MARKER_X + WATCH_MARKER_CELL_SIZE,
+                top: WATCH_MARKER_Y,
+                right: WATCH_MARKER_X + WATCH_MARKER_CELL_SIZE * 2,
+                bottom: WATCH_MARKER_Y + WATCH_MARKER_CELL_SIZE,
+            };
+            let bottom_left = RECT {
+                left: WATCH_MARKER_X,
+                top: WATCH_MARKER_Y + WATCH_MARKER_CELL_SIZE,
+                right: WATCH_MARKER_X + WATCH_MARKER_CELL_SIZE,
+                bottom: WATCH_MARKER_Y + WATCH_MARKER_HEIGHT,
+            };
+            fill_rect_with_brush(device, &marker, primary);
+            fill_rect_with_brush(device, &top_middle, secondary);
+            fill_rect_with_brush(device, &bottom_left, secondary);
+        }
+
+        for index in 0..WATCH_TOKEN_CELL_COUNT {
+            let column = i32::try_from(index % WATCH_TOKEN_GRID_WIDTH)
+                .expect("visual-token column fits i32");
+            let row =
+                i32::try_from(index / WATCH_TOKEN_GRID_WIDTH).expect("visual-token row fits i32");
+            let left = WATCH_TOKEN_X + column * WATCH_TOKEN_CELL_SIZE;
+            let top = WATCH_TOKEN_Y + row * WATCH_TOKEN_CELL_SIZE;
+            let cell = RECT {
+                left,
+                top,
+                right: left + WATCH_TOKEN_CELL_SIZE,
+                bottom: top + WATCH_TOKEN_CELL_SIZE,
+            };
+            let brush = if visual_token_cell(command, index)
+                .expect("index is bounded by WATCH_TOKEN_CELL_COUNT")
+            {
+                primary
+            } else {
+                secondary
+            };
+            fill_rect_with_brush(device, &cell, brush);
+        }
+
+        // SAFETY: neither brush remains selected after the FillRect calls above.
+        let _primary_deleted = unsafe { DeleteObject(HGDIOBJ(primary.0)) };
+        // SAFETY: same lifetime rule as `primary`.
+        let _secondary_deleted = unsafe { DeleteObject(HGDIOBJ(secondary.0)) };
+    }
+
+    fn fill_rect_with_brush(
+        device: HDC,
+        rectangle: &RECT,
+        brush: windows::Win32::Graphics::Gdi::HBRUSH,
+    ) {
+        // SAFETY: device, rectangle, and process-owned brush are live for this paint call.
+        let _filled = unsafe { FillRect(device, rectangle, brush) };
     }
 
     fn fill_solid_rect(device: HDC, rectangle: &RECT, rgb: u32) {

@@ -4,6 +4,7 @@
 
 use std::collections::VecDeque;
 use std::mem::size_of;
+use std::num::NonZeroU32;
 use std::process::{Child, Command, Stdio};
 use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
 use std::sync::mpsc::{self, Receiver, RecvTimeoutError};
@@ -29,7 +30,7 @@ use mado_pilot_platform_windows::fixture_protocol::{
     CONTROL_ALLOW_FOREGROUND, CONTROL_BLOCK_QUEUE, CONTROL_DESTROY_TARGET,
     CONTROL_DUPLICATE_METADATA, CONTROL_REPARENT_TARGET, CONTROL_REPORT, CONTROL_REUSE_STRESS,
     CONTROL_SET_GEOMETRY, CONTROL_SET_VISUAL_ABSENT, CONTROL_SET_VISUAL_VISIBLE,
-    FixtureVisualState, ORDINARY_CLASS_NAME, ordinary_fixture_title,
+    FixtureVisualCommand, FixtureVisualState, ORDINARY_CLASS_NAME, ordinary_fixture_title,
 };
 use windows::Win32::Foundation::{HWND, LPARAM, POINT, RECT, WPARAM};
 use windows::Win32::Graphics::Gdi::{
@@ -478,21 +479,34 @@ fn watcher_visual_controls_acknowledge_before_fixture_cleanup() {
     let mut fixture = FixtureProcess::spawn("watcher-visual-control");
     let target = fixture.target();
 
-    fixture.control(target, CONTROL_SET_VISUAL_VISIBLE, 0);
-    assert_eq!(
-        fixture.wait_for(
-            FixtureVisualState::Visible.acknowledgement(),
-            Duration::from_secs(5)
-        ),
-        FixtureVisualState::Visible.acknowledgement()
+    let visible = FixtureVisualCommand::new(
+        FixtureVisualState::Visible,
+        NonZeroU32::new(1).expect("nonzero visual token"),
     );
-    fixture.control(target, CONTROL_SET_VISUAL_ABSENT, 0);
+    fixture.control(
+        target,
+        CONTROL_SET_VISUAL_VISIBLE,
+        usize::try_from(visible.token().get()).expect("u32 token fits usize"),
+    );
+    let visible_acknowledgement = visible.acknowledgement();
     assert_eq!(
-        fixture.wait_for(
-            FixtureVisualState::Absent.acknowledgement(),
-            Duration::from_secs(5)
-        ),
-        FixtureVisualState::Absent.acknowledgement()
+        fixture.wait_for(&visible_acknowledgement, Duration::from_secs(5)),
+        visible_acknowledgement
+    );
+
+    let absent = FixtureVisualCommand::new(
+        FixtureVisualState::Absent,
+        NonZeroU32::new(2).expect("nonzero visual token"),
+    );
+    fixture.control(
+        target,
+        CONTROL_SET_VISUAL_ABSENT,
+        usize::try_from(absent.token().get()).expect("u32 token fits usize"),
+    );
+    let absent_acknowledgement = absent.acknowledgement();
+    assert_eq!(
+        fixture.wait_for(&absent_acknowledgement, Duration::from_secs(5)),
+        absent_acknowledgement
     );
 
     fixture.terminate();

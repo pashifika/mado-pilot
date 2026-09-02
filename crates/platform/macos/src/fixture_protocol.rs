@@ -6,18 +6,21 @@
 //! then submits input only through the production Adapter route.
 //!
 //! Commands carry only a version, monotonic nonce, fixed action, and an optional
-//! row token accepted only by the event-reset command. Results carry the same
-//! identity, a bounded status, and before/after native window numbers. No command
-//! or observation contains typed text, pixels, a path, or another application's
-//! identity. The event receiver likewise reports only an event kind and UTF-16
+//! row token accepted only by the event-reset command. A visual command also
+//! renders its nonzero, `u32`-bounded nonce as the captured pixel token. Results
+//! carry the same identity, a bounded status, and before/after native window
+//! numbers. No command or observation contains typed text, pixels, a path, or
+//! another application's identity. The event receiver likewise reports only an
+//! event kind and UTF-16
 //! unit count.
 //!
 //! Selection never rests on a title alone. A candidate must be the only window
 //! with the exact title belonging to the owned child, advertise the qualified
 //! process-directed pairs, and match the fixture's deterministic content.
 
+use std::{fmt, num::NonZeroU32};
+
 use mado_pilot_capture::TargetDescription;
-use std::fmt;
 
 use mado_pilot_core::{
     CapabilitySupport, InputAddressScope, InputDelivery, InputOperationKind, PixelExtent,
@@ -58,6 +61,18 @@ pub const WATCH_MARKER_WIDTH_POINTS: u32 = WATCH_MARKER_CELL_POINTS * 3;
 pub const WATCH_MARKER_HEIGHT_POINTS: u32 = WATCH_MARKER_CELL_POINTS * 2;
 /// Secondary-colour cells in the otherwise primary-colour three-by-two pattern.
 pub const WATCH_MARKER_SECONDARY_CELLS: [(u32, u32); 2] = [(1, 0), (0, 1)];
+/// Client-space X origin of the qualification visual-token grid, in logical points.
+pub const WATCH_TOKEN_X_POINTS: u32 = 176;
+/// Client-space top origin of the qualification visual-token grid, in logical points.
+pub const WATCH_TOKEN_Y_POINTS: u32 = 48;
+/// Logical width and height of one qualification visual-token cell.
+pub const WATCH_TOKEN_CELL_POINTS: u32 = 8;
+/// Logical width of the qualification visual-token grid.
+pub const WATCH_TOKEN_GRID_WIDTH: usize = 10;
+/// Logical height of the qualification visual-token grid.
+pub const WATCH_TOKEN_GRID_HEIGHT: usize = 9;
+/// Total logical cells in the qualification visual-token grid.
+pub const WATCH_TOKEN_CELL_COUNT: usize = WATCH_TOKEN_GRID_WIDTH * WATCH_TOKEN_GRID_HEIGHT;
 
 /// The fixture window's content size, in points.
 pub const WINDOW_POINTS: (f64, f64) = (640.0, 420.0);
@@ -303,6 +318,22 @@ impl FixtureCommandKind {
             Self::Close => 11,
         }
     }
+}
+
+/// Returns the pixel-encoded token carried by a visual command nonce.
+///
+/// Visual commands reserve zero and refuse values wider than the shared
+/// cross-platform `u32` encoding. Non-visual command nonces remain independent
+/// protocol identities and return `None`.
+#[must_use]
+pub fn visual_token_for_command(kind: FixtureCommandKind, nonce: u64) -> Option<NonZeroU32> {
+    if !matches!(
+        kind,
+        FixtureCommandKind::SetVisualAbsent | FixtureCommandKind::SetVisualVisible
+    ) {
+        return None;
+    }
+    u32::try_from(nonce).ok().and_then(NonZeroU32::new)
 }
 
 /// One decoded private fixture command.
@@ -613,6 +644,10 @@ pub fn parse_command_line(line: &str) -> Option<FixtureCommand> {
     if run_nonce == 0
         || nonce == 0
         || (event_payload_tag != 0 && kind != FixtureCommandKind::ResetEvents)
+        || (matches!(
+            kind,
+            FixtureCommandKind::SetVisualAbsent | FixtureCommandKind::SetVisualVisible
+        ) && visual_token_for_command(kind, nonce).is_none())
     {
         return None;
     }
@@ -914,7 +949,7 @@ mod tests {
         format_command_line, format_command_result_line, format_event_line,
         frame_is_fixture_content, frame_is_replacement_content, parse_command_line,
         parse_command_result_line, parse_event_line, parse_event_line_for_run,
-        select_unique_fixture, with_confirmed_fixture_content,
+        select_unique_fixture, visual_token_for_command, with_confirmed_fixture_content,
     };
     use crate::PROVIDER;
 
@@ -1285,6 +1320,15 @@ mod tests {
                 )
             );
             assert_eq!(parse_command_line(&line), Some(visual));
+            let expected_token = matches!(
+                kind,
+                FixtureCommandKind::SetVisualAbsent | FixtureCommandKind::SetVisualVisible
+            )
+            .then(|| u32::try_from(nonce).expect("small visual nonce"));
+            assert_eq!(
+                visual_token_for_command(kind, nonce).map(|token| token.get()),
+                expected_token
+            );
         }
     }
 
@@ -1309,6 +1353,24 @@ mod tests {
         assert!(parse_command_line(&"x".repeat(super::MAX_CONTROL_LINE_BYTES + 1)).is_none());
         assert!(
             parse_command_result_line(&"x".repeat(super::MAX_CONTROL_LINE_BYTES + 1)).is_none()
+        );
+        let oversized_visual = format!(
+            "fixture-command version=13 run=9 nonce={} event-tag=0 action=set-visible",
+            u64::from(u32::MAX) + 1
+        );
+        assert!(parse_command_line(&oversized_visual).is_none());
+        assert_eq!(
+            visual_token_for_command(FixtureCommandKind::SetVisualVisible, u64::from(u32::MAX))
+                .map(|token| token.get()),
+            Some(u32::MAX)
+        );
+        assert_eq!(
+            visual_token_for_command(FixtureCommandKind::SetVisualAbsent, u64::from(u32::MAX) + 1),
+            None
+        );
+        assert_eq!(
+            visual_token_for_command(FixtureCommandKind::Transition, 42),
+            None
         );
     }
 

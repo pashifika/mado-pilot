@@ -7,6 +7,8 @@ use std::io::Read;
 #[cfg(windows)]
 use std::mem::size_of;
 #[cfg(windows)]
+use std::num::NonZeroU32;
+#[cfg(windows)]
 use std::process::{Child, Command, Stdio};
 #[cfg(windows)]
 use std::sync::atomic::{AtomicU64, Ordering};
@@ -15,6 +17,8 @@ use std::sync::mpsc::{self, Receiver};
 
 #[cfg(windows)]
 use mado_pilot_platform_windows::fixture_protocol as protocol;
+#[cfg(windows)]
+use mado_pilot_testkit::visual_token::VisualTokenSequence;
 #[cfg(windows)]
 use windows::Win32::Foundation::{HWND, LPARAM, POINT, RECT, WPARAM};
 #[cfg(windows)]
@@ -51,6 +55,7 @@ struct NativeFixture {
     revision: u64,
     moved: bool,
     resized: bool,
+    visual_tokens: VisualTokenSequence,
 }
 
 #[cfg(windows)]
@@ -141,6 +146,7 @@ impl NativeFixture {
             revision: 0,
             moved: false,
             resized: false,
+            visual_tokens: VisualTokenSequence::new(),
         };
         let ready = fixture.wait_for("fixture-ready ", FIXTURE_WAIT)?;
         let expected = format!(
@@ -249,17 +255,49 @@ impl NativeFixture {
         Ok(ControlAcknowledgement {
             generation: self.generation,
             revision: self.revision,
+            visual_token: None,
         })
     }
 
     fn set_visible(&mut self) -> Result<ControlAcknowledgement, String> {
-        self.post(protocol::CONTROL_SET_VISUAL_VISIBLE, 0, 0)?;
-        self.acknowledge(protocol::FixtureVisualState::Visible.acknowledgement())
+        self.set_visual(
+            protocol::CONTROL_SET_VISUAL_VISIBLE,
+            protocol::FixtureVisualState::Visible,
+            VisualMarkerState::Visible,
+        )
     }
 
     fn set_absent(&mut self) -> Result<ControlAcknowledgement, String> {
-        self.post(protocol::CONTROL_SET_VISUAL_ABSENT, 0, 0)?;
-        self.acknowledge(protocol::FixtureVisualState::Absent.acknowledgement())
+        self.set_visual(
+            protocol::CONTROL_SET_VISUAL_ABSENT,
+            protocol::FixtureVisualState::Absent,
+            VisualMarkerState::Absent,
+        )
+    }
+
+    fn set_visual(
+        &mut self,
+        message: u32,
+        state: protocol::FixtureVisualState,
+        marker: VisualMarkerState,
+    ) -> Result<ControlAcknowledgement, String> {
+        let token = self
+            .visual_tokens
+            .issue(marker)
+            .map_err(|_| "fixture_authority_failed".to_owned())?;
+        let command = protocol::FixtureVisualCommand::new(
+            state,
+            NonZeroU32::new(token.value()).expect("shared tokens are nonzero"),
+        );
+        self.post(
+            message,
+            usize::try_from(token.value())
+                .map_err(|_| "fixture_authority_failed".to_owned())?,
+            0,
+        )?;
+        let mut acknowledgement = self.acknowledge(&command.acknowledgement())?;
+        acknowledgement.visual_token = Some(token);
+        Ok(acknowledgement)
     }
 
     fn transition_visual(&mut self) -> Result<ControlAcknowledgement, String> {
