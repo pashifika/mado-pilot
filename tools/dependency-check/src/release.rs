@@ -21,24 +21,18 @@ const PUBLIC_HEADER_DIR: &str = "crates/bindings/capi/include/madopilot";
 
 /// Git subtree identities frozen for the v0.4.0 source-release boundary.
 pub const REQUIRED_TREE_IDENTITIES: [(&str, &str); 5] = [
-    (
-        PUBLIC_HEADER_DIR,
-        "c669c070bc7064d79749ff45ecc5d4157552a87f",
-    ),
-    (
-        "crates/bindings/capi",
-        "090eb6c21e1f352fa6ce95f9e3f0cd680cef7d83",
-    ),
-    ("docs/evidence", "bbcbcc513f4b3bd3d6f1be5c32098860640df0ba"),
-    (
-        "fixtures/assets/g-014",
-        "581bb0cf200581029fd17e1185c9837a0824eee6",
-    ),
-    (
-        "fixtures/assets/ocr-public-surface/models",
-        "3fa3e0cbd381baf530a3e87cfe6d9f2ce629ccf2",
-    ),
+    (".cargo", "46f2deca6a18229279e14433738418c4df501be9"),
+    (".github", "492d3d33a6d94fc40013a1a7d0ac8e1790157a4b"),
+    ("crates", "7ceccd9ca28965c722cccf8a38ea77aab4ff3835"),
+    ("docs", "a4b22fb0a9427a973a3bcfb445615232ac445f8e"),
+    ("fixtures", "fbfc3e6eabd95b4bbae4926929f9ad593a170d99"),
 ];
+
+/// Git blob identities that control provider archive construction.
+pub const REQUIRED_BLOB_IDENTITIES: [(&str, &str); 1] =
+    [(".gitattributes", "8707e22ae84c17d12e411ab5e769da0a274ad271")];
+
+const PINNED_TREE_PREFIXES: [&str; 5] = [".cargo/", ".github/", "crates/", "docs/", "fixtures/"];
 
 const REQUIRED_RELEASE_FACTS: [(&str, &str); 12] = [
     ("release identity", "# MadoPilot v0.4.0"),
@@ -100,9 +94,10 @@ const FORBIDDEN_SEGMENTS: [(&str, &str); 11] = [
     ("qualification_artifacts", "private qualification output"),
 ];
 
-const PAYLOAD_EXTENSIONS: [&str; 24] = [
-    "a", "bz2", "deb", "dll", "dmg", "dylib", "exe", "gz", "key", "lib", "msi", "onnx", "p12",
-    "pdb", "pem", "pfx", "pkg", "rpm", "so", "tar", "tgz", "xz", "zip", "zst",
+const PAYLOAD_EXTENSIONS: [&str; 33] = [
+    "a", "bin", "bmp", "bz2", "deb", "dll", "dmg", "dylib", "exe", "gif", "gz", "ico", "jpeg",
+    "jpg", "key", "lib", "msi", "onnx", "p12", "pdb", "pem", "pfx", "pkg", "png", "rgba", "rpm",
+    "so", "tar", "tgz", "webp", "xz", "zip", "zst",
 ];
 
 const ALLOWED_G014_ZIPS: [&str; 24] = [
@@ -143,11 +138,22 @@ const ALLOWED_ONNX_FIXTURES: [(&str, &str); 2] = [
     ),
 ];
 
-const ALLOWED_EXECUTABLES: [&str; 3] = [
-    "docs/evidence/g-004/evaluate.py",
-    "docs/evidence/g-004/validate.py",
-    "fixtures/ocr/g-004/generate.py",
+const ALLOWED_EXECUTABLES: [(&str, &str); 3] = [
+    (
+        "docs/evidence/g-004/evaluate.py",
+        "d5fae53a3e614aacbb608523dc28603a6c8a3995",
+    ),
+    (
+        "docs/evidence/g-004/validate.py",
+        "7fc4edaee10ead4d9a8cbc6f9f5e613aa1386ffd",
+    ),
+    (
+        "fixtures/ocr/g-004/generate.py",
+        "78e78b99bf06643c08f5d214dba3f387af51d789",
+    ),
 ];
+
+const ALLOWED_PINNED_FIXTURE_EXTENSIONS: [&str; 3] = ["bin", "png", "rgba"];
 
 const ALLOWED_EXTENSIONLESS_FILES: [&str; 6] = [
     "LICENSE",
@@ -173,6 +179,8 @@ pub struct TrackedEntry {
     pub object_id: String,
     /// Symlink target bytes decoded as UTF-8; absent for non-symlinks.
     pub symlink_target: Option<String>,
+    /// Whether an unpinned regular blob is valid UTF-8; `None` for pinned blobs and non-files.
+    pub utf8_text: Option<bool>,
 }
 
 /// Release inputs observed from the committed candidate tree.
@@ -379,10 +387,13 @@ pub fn read_workspace(workspace_root: &Path) -> Result<ReleaseScopeObservation, 
             });
         }
 
-        let symlink_target = if mode == "120000" {
-            Some(read_blob_text(workspace_root, object_id, path)?)
-        } else {
-            None
+        let (symlink_target, utf8_text) = match mode {
+            "120000" => (Some(read_blob_text(workspace_root, object_id, path)?), None),
+            "100644" | "100755" if !path_in_pinned_tree(path) => {
+                let bytes = read_blob_bytes(workspace_root, object_id)?;
+                (None, Some(std::str::from_utf8(&bytes).is_ok()))
+            }
+            _ => (None, None),
         };
         let previous = tracked_entries.insert(
             path.to_owned(),
@@ -390,6 +401,7 @@ pub fn read_workspace(workspace_root: &Path) -> Result<ReleaseScopeObservation, 
                 mode: mode.to_owned(),
                 object_id: object_id.to_owned(),
                 symlink_target,
+                utf8_text,
             },
         );
         if previous.is_some() {
@@ -438,6 +450,19 @@ pub fn validate(observation: &ReleaseScopeObservation) -> Vec<ReleaseViolation> 
     for (tree, expected) in REQUIRED_TREE_IDENTITIES {
         if observation.tree_oids.get(tree).map(String::as_str) != Some(expected) {
             violations.push(ReleaseViolation::UnexpectedTreeIdentity { tree });
+        }
+    }
+
+    for (path, expected) in REQUIRED_BLOB_IDENTITIES {
+        let observed = observation
+            .tracked_entries
+            .get(path)
+            .map(|entry| entry.object_id.as_str());
+        if observed != Some(expected) {
+            violations.push(ReleaseViolation::ForbiddenReleaseInput {
+                path: path.to_owned(),
+                reason: "required provider-archive control changed or is absent",
+            });
         }
     }
 
@@ -529,10 +554,14 @@ fn read_blob_text(
     object_id: &str,
     path: &str,
 ) -> Result<String, ReleaseScopeError> {
-    let bytes = git_output(workspace_root, &["cat-file", "blob", object_id])?;
+    let bytes = read_blob_bytes(workspace_root, object_id)?;
     String::from_utf8(bytes).map_err(|_| ReleaseScopeError::NonUtf8TrackedContent {
         path: path.to_owned(),
     })
+}
+
+fn read_blob_bytes(workspace_root: &Path, object_id: &str) -> Result<Vec<u8>, ReleaseScopeError> {
+    git_output(workspace_root, &["cat-file", "blob", object_id])
 }
 
 fn read_tree_oid(workspace_root: &Path, path: &str) -> Result<String, ReleaseScopeError> {
@@ -580,6 +609,9 @@ fn forbidden_tracked_entry(
 ) -> Option<&'static str> {
     match (entry.mode.as_str(), entry.symlink_target.as_deref()) {
         ("100644", None) => {
+            if !path_in_pinned_tree(path) && entry.utf8_text != Some(true) {
+                return Some("unpinned regular file is not UTF-8 text");
+            }
             let file_name = path.rsplit('/').next().unwrap_or(path);
             let has_extension = file_name.rsplit_once('.').is_some();
             if !has_extension && !ALLOWED_EXTENSIONLESS_FILES.contains(&path) {
@@ -588,8 +620,8 @@ fn forbidden_tracked_entry(
                 None
             }
         }
-        ("100755", None) if ALLOWED_EXECUTABLES.contains(&path) => None,
-        ("100755", None) => Some("unapproved executable file"),
+        ("100755", None) if allowed_executable(path, &entry.object_id) => None,
+        ("100755", None) => Some("unapproved executable file or content"),
         ("120000", Some(target))
             if path == ALLOWED_SYMLINK.0
                 && target == ALLOWED_SYMLINK.1
@@ -614,7 +646,9 @@ fn forbidden_release_input(path: &str, entry: &TrackedEntry) -> Option<&'static 
         }
     }
 
-    if path.starts_with("crates/bindings/capi/include/")
+    if path
+        .strip_prefix(PUBLIC_HEADER_DIR)
+        .is_some_and(|suffix| suffix.starts_with('/'))
         && path != C_HEADER_FILE
         && path != CPP_HEADER_FILE
     {
@@ -622,6 +656,11 @@ fn forbidden_release_input(path: &str, entry: &TrackedEntry) -> Option<&'static 
     }
 
     let file_name = path.rsplit('/').next().unwrap_or(path);
+    if file_name == ".gitattributes"
+        && (path != ".gitattributes" || entry.object_id != REQUIRED_BLOB_IDENTITIES[0].1)
+    {
+        return Some("unapproved archive attribute file or content");
+    }
     if file_name == ".DS_Store" || file_name.ends_with(".rs.bk") {
         return Some("generated editor or operating-system file");
     }
@@ -649,8 +688,28 @@ fn forbidden_release_input(path: &str, entry: &TrackedEntry) -> Option<&'static 
 }
 
 fn allowed_fixture_payload(path: &str, object_id: &str) -> bool {
-    ALLOWED_G014_ZIPS.contains(&path)
+    let extension = path.rsplit_once('.').map(|(_, extension)| extension);
+    let pinned_fixture = path.starts_with("fixtures/")
+        && extension.is_some_and(|extension| {
+            ALLOWED_PINNED_FIXTURE_EXTENSIONS
+                .iter()
+                .any(|candidate| extension.eq_ignore_ascii_case(candidate))
+        });
+    pinned_fixture
+        || ALLOWED_G014_ZIPS.contains(&path)
         || ALLOWED_ONNX_FIXTURES
             .iter()
             .any(|(candidate, expected)| path == *candidate && object_id == *expected)
+}
+
+fn allowed_executable(path: &str, object_id: &str) -> bool {
+    ALLOWED_EXECUTABLES
+        .iter()
+        .any(|(candidate, expected)| path == *candidate && object_id == *expected)
+}
+
+fn path_in_pinned_tree(path: &str) -> bool {
+    PINNED_TREE_PREFIXES
+        .iter()
+        .any(|prefix| path.starts_with(prefix))
 }

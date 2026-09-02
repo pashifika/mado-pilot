@@ -4,12 +4,14 @@ use std::collections::BTreeMap;
 
 use mado_pilot_dependency_check::release::{
     C_HEADER_FILE, CMAKE_PROJECT_FILE, CPP_HEADER_FILE, RELEASE_NOTES_FILE,
-    REQUIRED_TREE_IDENTITIES, ReleaseScopeObservation, ReleaseViolation, TrackedEntry, validate,
+    REQUIRED_BLOB_IDENTITIES, REQUIRED_TREE_IDENTITIES, ReleaseScopeObservation, ReleaseViolation,
+    TrackedEntry, validate,
 };
 
 fn compliant_observation() -> ReleaseScopeObservation {
     let paths = [
         "AGENTS.md",
+        ".gitattributes",
         "CLAUDE.md",
         RELEASE_NOTES_FILE,
         CMAKE_PROJECT_FILE,
@@ -29,6 +31,7 @@ fn compliant_observation() -> ReleaseScopeObservation {
             mode: "120000".to_owned(),
             object_id: "681311eb9cf453d0faddf3aacaec7357e97ba8e9".to_owned(),
             symlink_target: Some("CLAUDE.md".to_owned()),
+            utf8_text: None,
         },
     );
 
@@ -49,6 +52,7 @@ fn compliant_observation() -> ReleaseScopeObservation {
 
 fn regular_entry(path: &str) -> TrackedEntry {
     let object_id = match path {
+        ".gitattributes" => REQUIRED_BLOB_IDENTITIES[0].1,
         "fixtures/assets/ocr-public-surface/models/detector.onnx" => {
             "cc6723e5145af0e74428c9056f84709dfd06661c"
         }
@@ -61,6 +65,7 @@ fn regular_entry(path: &str) -> TrackedEntry {
         mode: "100644".to_owned(),
         object_id: object_id.to_owned(),
         symlink_target: None,
+        utf8_text: Some(true),
     }
 }
 
@@ -232,6 +237,9 @@ fn private_generated_and_binary_release_inputs_are_rejected() {
         "qualification-output/native.json",
         "vendor/onnxruntime.dll",
         "vendor/libonnxruntime.1.29.0.dylib",
+        "docs/benchmarks/private-capture.png",
+        "vendor/onnxruntime.bin",
+        "docs/.gitattributes",
         "models/production.onnx",
         "release/madopilot.zip",
         "fixtures/assets/g-014/private.zip",
@@ -283,6 +291,7 @@ fn unsafe_tree_modes_and_symlink_targets_are_rejected() {
                 mode: "100755".to_owned(),
                 object_id: "executable".to_owned(),
                 symlink_target: None,
+                utf8_text: Some(true),
             },
         ),
         (
@@ -291,6 +300,7 @@ fn unsafe_tree_modes_and_symlink_targets_are_rejected() {
                 mode: "160000".to_owned(),
                 object_id: "gitlink".to_owned(),
                 symlink_target: None,
+                utf8_text: None,
             },
         ),
         (
@@ -299,6 +309,7 @@ fn unsafe_tree_modes_and_symlink_targets_are_rejected() {
                 mode: "120000".to_owned(),
                 object_id: "symlink".to_owned(),
                 symlink_target: Some("../../private".to_owned()),
+                utf8_text: None,
             },
         ),
     ] {
@@ -340,5 +351,63 @@ fn changed_approved_model_blob_is_rejected() {
         violation,
         ReleaseViolation::ForbiddenReleaseInput { path, .. }
             if path == "fixtures/assets/ocr-public-surface/models/detector.onnx"
+    )));
+}
+
+#[test]
+fn changed_archive_attributes_are_rejected() {
+    let mut observation = compliant_observation();
+    observation
+        .tracked_entries
+        .get_mut(".gitattributes")
+        .expect("compliant observation has archive attributes")
+        .object_id = "changed-attributes".to_owned();
+
+    assert!(has_violation(&observation, |violation| matches!(
+        violation,
+        ReleaseViolation::ForbiddenReleaseInput { path, .. }
+            if path == ".gitattributes"
+    )));
+}
+
+#[test]
+fn renamed_non_utf8_payload_is_rejected() {
+    let path = "vendor/runtime.dat";
+    let mut observation = compliant_observation();
+    let mut entry = regular_entry(path);
+    entry.utf8_text = Some(false);
+    observation.tracked_entries.insert(path.to_owned(), entry);
+
+    assert!(has_violation(&observation, |violation| matches!(
+        violation,
+        ReleaseViolation::ForbiddenReleaseInput { path: observed, .. }
+            if observed == path
+    )));
+}
+
+#[test]
+fn changed_approved_executable_is_rejected() {
+    let path = "docs/evidence/g-004/evaluate.py";
+    let mut observation = compliant_observation();
+    observation.tracked_entries.insert(
+        path.to_owned(),
+        TrackedEntry {
+            mode: "100755".to_owned(),
+            object_id: "d5fae53a3e614aacbb608523dc28603a6c8a3995".to_owned(),
+            symlink_target: None,
+            utf8_text: None,
+        },
+    );
+    assert_eq!(validate(&observation), []);
+
+    observation
+        .tracked_entries
+        .get_mut(path)
+        .expect("approved executable is present")
+        .object_id = "changed-executable".to_owned();
+    assert!(has_violation(&observation, |violation| matches!(
+        violation,
+        ReleaseViolation::ForbiddenReleaseInput { path: observed, .. }
+            if observed == path
     )));
 }

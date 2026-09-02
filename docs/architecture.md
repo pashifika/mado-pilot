@@ -622,12 +622,14 @@ It verifies:
 - with `--release-scope`, that CMake declares product version `0.4.0` and only
   the three approved imported/interface/alias library shapes, with no
   install/export/include/subdirectory/static packaging path;
-- with `--release-scope`, that the complete C ABI/CMake, public-header,
-  historical-evidence, G-014 fixture, and tiny ONNX model subtrees retain their
-  reviewed identities;
-  every tree entry has an approved mode, the sole symlink and three executable
-  scripts are exact, private/generated directory segments are absent, and
-  archive/model/native payload exceptions are exact paths and identities.
+- with `--release-scope`, that the complete `.cargo`, `.github`, `crates`,
+  `docs`, and `fixtures` subtrees retain their reviewed identities and the root
+  `.gitattributes` remains exact, so provider archives cannot silently omit
+  required source;
+- with `--release-scope`, that every tree entry has an approved mode, every
+  unpinned regular blob is UTF-8, the sole symlink and three executable scripts
+  retain exact object identities, private/generated directory segments are
+  absent, and archive/model/native payload exceptions are exact.
 
 ```sh
 cargo run --locked --package mado-pilot-dependency-check -- --release-scope
