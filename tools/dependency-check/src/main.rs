@@ -21,7 +21,7 @@ Usage:
 Options:
   --manifest-path <PATH>  Workspace manifest to inspect (default: discovered from
                           the current directory)
-  --release-scope         Validate tracked v0.4.0 release inputs and exclusions
+  --release-scope         Validate committed v0.4.0 release inputs and exclusions
   -q, --quiet             Print violations only
   -h, --help              Print this message
 
@@ -112,7 +112,7 @@ fn report_compliant(observation: &metadata::WorkspaceObservation, release_scope:
     }
     if release_scope {
         println!(
-            "  release scope: v{} tracked source-only inputs compliant",
+            "  release scope: v{} committed source-only inputs compliant",
             release::RELEASE_VERSION
         );
     }

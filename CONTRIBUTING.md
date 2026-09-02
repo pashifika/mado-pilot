@@ -327,7 +327,7 @@ each step returns a non-zero status with an actionable diagnostic when its polic
 is violated.
 
 ```sh
-# 1. Workspace architecture and tracked v0.4.0 release scope
+# 1. Workspace architecture and committed v0.4.0 release scope
 cargo run --locked --package mado-pilot-dependency-check -- --release-scope
 
 # 2. Formatting

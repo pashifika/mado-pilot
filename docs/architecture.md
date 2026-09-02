@@ -590,11 +590,11 @@ tooling is invoked, not linked.
 
 `tools/dependency-check` reads `cargo metadata` and the tracked manifests,
 normalizes the package graph, and fails with the offending package names, paths,
-and edges. Its opt-in release-scope mode also reads Git-tracked paths, the
-canonical release body, the CMake development-consumer surface, and both public
-foreign-language headers. Pure validators and synthetic mutation tests remain
-separate from Cargo, Git, and filesystem adapters, so architecture and release
-rules fail deterministically at their single enforcement point.
+and edges. Its opt-in release-scope mode reads the committed `HEAD` tree,
+including blob modes and identities, plus the canonical release body and CMake
+surface. Pure validators and synthetic mutation tests remain separate from
+Cargo, Git, and filesystem adapters, so architecture and release rules fail
+deterministically at their single enforcement point.
 
 It verifies:
 
@@ -616,13 +616,18 @@ It verifies:
   for that package and `-D warnings` cannot recover them. Only the root `[lints]`
   table counts: the same text written inside `[package]` sets an unrelated key and
   leaves the lints disabled.
-- with `--release-scope`, that `docs/releases/v0.4.0.md` is tracked and names the
-  accepted targets, watcher boundary, compatibility, privacy, and source-only
-  artifact exclusions;
-- with `--release-scope`, that CMake declares product version `0.4.0` without an
-  install/export/static command, the public C/C++ headers expose no watcher, and
-  tracked release inputs contain no private ephemera or unapproved native
-  payload.
+- with `--release-scope`, that committed `docs/releases/v0.4.0.md` names the
+  accepted targets, watcher boundary, compatibility, complete privacy
+  exclusions, and source-only artifact inventory;
+- with `--release-scope`, that CMake declares product version `0.4.0` and only
+  the three approved imported/interface/alias library shapes, with no
+  install/export/include/subdirectory/static packaging path;
+- with `--release-scope`, that the complete C ABI/CMake, public-header,
+  historical-evidence, G-014 fixture, and tiny ONNX model subtrees retain their
+  reviewed identities;
+  every tree entry has an approved mode, the sole symlink and three executable
+  scripts are exact, private/generated directory segments are absent, and
+  archive/model/native payload exceptions are exact paths and identities.
 
 ```sh
 cargo run --locked --package mado-pilot-dependency-check -- --release-scope
@@ -2733,10 +2738,10 @@ semantic contracts. They are not arbitrary application/template/ROI timing
 claims, service-level objectives, or real-time guarantees. Numeric timing
 remains withheld for the eight single-run gates and cadence-dependent aggregate
 mapping, work, and publication rates. OCR predicates, callbacks/subscriptions,
-Tokio/futures, C/C++, automatic input, target activation, packaging,
-crates.io/static artifacts, tags, and release remain unavailable. See
-[Native template watching from Rust](native-template-watch.md) and rejected
-ADR 0057.
+Tokio/futures, C/C++, automatic input, target activation, installable packaging,
+and crates.io/static artifacts remain unavailable. The `v0.4.0` source release
+publishes neither a binary artifact nor a C/C++ watcher. See
+[Native template watching from Rust](native-template-watch.md) and ADR 0064.
 
 The engine holds contracts only. It cannot observe which adapter is behind one,
 so no orchestration rule can come to depend on a concrete adapter, and there is

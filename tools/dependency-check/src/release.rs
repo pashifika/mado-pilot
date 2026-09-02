@@ -1,9 +1,8 @@
-//! Deterministic source-release scope validation and its Git/filesystem adapter.
+//! Deterministic committed source-release validation and its Git-tree adapter.
 
-use std::collections::BTreeSet;
+use std::collections::BTreeMap;
 use std::error::Error;
 use std::fmt;
-use std::fs;
 use std::path::{Path, PathBuf};
 use std::process::Command;
 
@@ -18,6 +17,28 @@ pub const C_HEADER_FILE: &str = "crates/bindings/capi/include/madopilot/madopilo
 /// Public C++ header relative to the workspace root.
 pub const CPP_HEADER_FILE: &str = "crates/bindings/capi/include/madopilot/madopilot.hpp";
 const CMAKE_VERSION_DECLARATION: &str = "VERSION 0.4.0";
+const PUBLIC_HEADER_DIR: &str = "crates/bindings/capi/include/madopilot";
+
+/// Git subtree identities frozen for the v0.4.0 source-release boundary.
+pub const REQUIRED_TREE_IDENTITIES: [(&str, &str); 5] = [
+    (
+        PUBLIC_HEADER_DIR,
+        "c669c070bc7064d79749ff45ecc5d4157552a87f",
+    ),
+    (
+        "crates/bindings/capi",
+        "090eb6c21e1f352fa6ce95f9e3f0cd680cef7d83",
+    ),
+    ("docs/evidence", "bbcbcc513f4b3bd3d6f1be5c32098860640df0ba"),
+    (
+        "fixtures/assets/g-014",
+        "581bb0cf200581029fd17e1185c9837a0824eee6",
+    ),
+    (
+        "fixtures/assets/ocr-public-surface/models",
+        "3fa3e0cbd381baf530a3e87cfe6d9f2ce629ccf2",
+    ),
+];
 
 const REQUIRED_RELEASE_FACTS: [(&str, &str); 12] = [
     ("release identity", "# MadoPilot v0.4.0"),
@@ -45,46 +66,122 @@ const REQUIRED_RELEASE_FACTS: [(&str, &str); 12] = [
     ),
     (
         "privacy exclusions",
-        "Ordinary diagnostics and release evidence exclude captured pixels",
+        "Ordinary diagnostics and release evidence exclude captured pixels, recognized text, caller template/model identities, input payloads, credentials, raw native identifiers, unrelated process/window inventories, and local paths.",
     ),
 ];
 
-const FOREIGN_WATCHER_TOKENS: [&str; 5] = [
+const FOREIGN_WATCHER_TOKENS: [&str; 7] = [
     "madopilot_template_watch",
     "madopilot_template_query",
     "start_template_watch",
-    "TemplateWatch",
-    "TemplateQuery",
+    "templatewatch",
+    "templatequery",
+    "watch_template",
+    "watch_query",
 ];
 
-const FORBIDDEN_PREFIXES: [(&str, &str); 10] = [
-    ("rasen/", "nested planning repository"),
-    (".rasen/", "local planning ephemera"),
-    ("local_docs/", "private local documentation"),
-    (".claude/", "contributor-local agent configuration"),
-    (".agents/", "contributor-local agent configuration"),
-    ("target/", "generated Cargo output"),
-    ("debug/", "generated build output"),
-    (".qualification/", "private qualification output"),
-    ("qualification-output/", "private qualification output"),
-    ("qualification_artifacts/", "private qualification output"),
+const ALLOWED_ADD_LIBRARY_COMMANDS: [&str; 3] = [
+    "add_library(MadoPilot::C SHARED IMPORTED GLOBAL)",
+    "add_library(madopilot_cpp INTERFACE)",
+    "add_library(MadoPilot::Cpp ALIAS madopilot_cpp)",
 ];
 
-const PAYLOAD_EXTENSIONS: [&str; 19] = [
-    "a", "bz2", "deb", "dll", "dmg", "exe", "gz", "lib", "msi", "onnx", "pdb", "pkg", "rpm", "so",
-    "tar", "tgz", "xz", "zip", "zst",
+const FORBIDDEN_SEGMENTS: [(&str, &str); 11] = [
+    ("rasen", "nested planning repository"),
+    (".rasen", "local planning ephemera"),
+    ("local_docs", "private local documentation"),
+    (".claude", "contributor-local agent configuration"),
+    (".agents", "contributor-local agent configuration"),
+    ("target", "generated Cargo output"),
+    ("debug", "generated build output"),
+    (".idea", "contributor-local IDE state"),
+    (".qualification", "private qualification output"),
+    ("qualification-output", "private qualification output"),
+    ("qualification_artifacts", "private qualification output"),
 ];
 
-const ALLOWED_ONNX_FIXTURES: [&str; 2] = [
-    "fixtures/assets/ocr-public-surface/models/detector.onnx",
-    "fixtures/assets/ocr-public-surface/models/recognizer.onnx",
+const PAYLOAD_EXTENSIONS: [&str; 24] = [
+    "a", "bz2", "deb", "dll", "dmg", "dylib", "exe", "gz", "key", "lib", "msi", "onnx", "p12",
+    "pdb", "pem", "pfx", "pkg", "rpm", "so", "tar", "tgz", "xz", "zip", "zst",
 ];
 
-/// Release inputs observed from the current checkout.
+const ALLOWED_G014_ZIPS: [&str; 24] = [
+    "fixtures/assets/g-014/adversarial/bomb-compression-ratio.zip",
+    "fixtures/assets/g-014/adversarial/bomb-entry-count-declared.zip",
+    "fixtures/assets/g-014/adversarial/bomb-entry-uncompressed-declared.zip",
+    "fixtures/assets/g-014/adversarial/bomb-total-uncompressed-declared.zip",
+    "fixtures/assets/g-014/adversarial/bomb-understated-declaration.zip",
+    "fixtures/assets/g-014/adversarial/entry-character-device.zip",
+    "fixtures/assets/g-014/adversarial/entry-directory-name-collision.zip",
+    "fixtures/assets/g-014/adversarial/entry-fifo.zip",
+    "fixtures/assets/g-014/adversarial/entry-symlink.zip",
+    "fixtures/assets/g-014/adversarial/hash-mismatch.zip",
+    "fixtures/assets/g-014/adversarial/manifest-malformed.zip",
+    "fixtures/assets/g-014/adversarial/manifest-missing.zip",
+    "fixtures/assets/g-014/adversarial/manifest-oversize.zip",
+    "fixtures/assets/g-014/adversarial/manifest-unsupported-schema.zip",
+    "fixtures/assets/g-014/adversarial/path-absolute-drive.zip",
+    "fixtures/assets/g-014/adversarial/path-absolute-posix.zip",
+    "fixtures/assets/g-014/adversarial/path-backslash-separator.zip",
+    "fixtures/assets/g-014/adversarial/path-duplicate-normalized.zip",
+    "fixtures/assets/g-014/adversarial/path-embedded-nul.zip",
+    "fixtures/assets/g-014/adversarial/path-non-utf8.zip",
+    "fixtures/assets/g-014/adversarial/path-traversal-inner.zip",
+    "fixtures/assets/g-014/adversarial/path-traversal.zip",
+    "fixtures/assets/g-014/adversarial/path-unc-root.zip",
+    "fixtures/assets/g-014/valid/valid-tiny.zip",
+];
+
+const ALLOWED_ONNX_FIXTURES: [(&str, &str); 2] = [
+    (
+        "fixtures/assets/ocr-public-surface/models/detector.onnx",
+        "cc6723e5145af0e74428c9056f84709dfd06661c",
+    ),
+    (
+        "fixtures/assets/ocr-public-surface/models/recognizer.onnx",
+        "b7c572ac50ba66d44439245d16926ef4a62baed3",
+    ),
+];
+
+const ALLOWED_EXECUTABLES: [&str; 3] = [
+    "docs/evidence/g-004/evaluate.py",
+    "docs/evidence/g-004/validate.py",
+    "fixtures/ocr/g-004/generate.py",
+];
+
+const ALLOWED_EXTENSIONLESS_FILES: [&str; 6] = [
+    "LICENSE",
+    "fixtures/assets/g-014/SHA256SUMS",
+    "fixtures/assets/phase1-slice/SHA256SUMS",
+    "fixtures/capture/replay-basic/SHA256SUMS",
+    "fixtures/change-detection/g-005/SHA256SUMS",
+    "fixtures/ocr/g-004/SHA256SUMS",
+];
+
+const ALLOWED_SYMLINK: (&str, &str, &str) = (
+    "AGENTS.md",
+    "CLAUDE.md",
+    "681311eb9cf453d0faddf3aacaec7357e97ba8e9",
+);
+
+/// One blob or gitlink emitted by the candidate Git tree.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct TrackedEntry {
+    /// Git tree mode, such as `100644`, `100755`, or `120000`.
+    pub mode: String,
+    /// Git object identity for the entry.
+    pub object_id: String,
+    /// Symlink target bytes decoded as UTF-8; absent for non-symlinks.
+    pub symlink_target: Option<String>,
+}
+
+/// Release inputs observed from the committed candidate tree.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct ReleaseScopeObservation {
-    /// Git-tracked workspace-relative paths.
-    pub tracked_paths: BTreeSet<String>,
+    /// Candidate-tree blobs and gitlinks keyed by workspace-relative path.
+    pub tracked_entries: BTreeMap<String, TrackedEntry>,
+    /// Frozen release-relevant subtree identities.
+    pub tree_oids: BTreeMap<String, String>,
     /// Canonical release body text.
     pub release_notes: String,
     /// Development-consumer CMake project text.
@@ -98,12 +195,17 @@ pub struct ReleaseScopeObservation {
 /// A release-scope rule violated by an observation.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum ReleaseViolation {
-    /// The canonical release body is not present in Git's index.
+    /// The canonical release body is not present in the candidate tree.
     UntrackedReleaseNotes,
     /// A required public release fact is absent from the canonical body.
     MissingReleaseFact {
         /// Stable description of the missing fact.
         fact: &'static str,
+    },
+    /// A frozen release-relevant subtree changed.
+    UnexpectedTreeIdentity {
+        /// Workspace-relative subtree whose identity changed.
+        tree: &'static str,
     },
     /// The development-consumer project does not declare the product version.
     UnexpectedCmakeVersion,
@@ -119,7 +221,7 @@ pub enum ReleaseViolation {
         /// Token that appeared.
         token: &'static str,
     },
-    /// A tracked path is private, generated, or an unapproved binary payload.
+    /// A tracked path, mode, target, or payload violates the release boundary.
     ForbiddenReleaseInput {
         /// Git-tracked path that violates the rule.
         path: String,
@@ -133,13 +235,16 @@ impl fmt::Display for ReleaseViolation {
         match self {
             Self::UntrackedReleaseNotes => write!(
                 formatter,
-                "canonical release body `{RELEASE_NOTES_FILE}` is not Git-tracked"
+                "canonical release body `{RELEASE_NOTES_FILE}` is absent from the candidate tree"
             ),
             Self::MissingReleaseFact { fact } => {
                 write!(
                     formatter,
                     "canonical release body omits required fact: {fact}"
                 )
+            }
+            Self::UnexpectedTreeIdentity { tree } => {
+                write!(formatter, "release-relevant Git subtree `{tree}` changed")
             }
             Self::UnexpectedCmakeVersion => write!(
                 formatter,
@@ -168,21 +273,29 @@ impl fmt::Display for ReleaseViolation {
 pub enum ReleaseScopeError {
     /// Git could not be started.
     GitSpawn(std::io::Error),
-    /// Git rejected the tracked-path query.
+    /// Git rejected a candidate-tree query.
     GitFailed {
         /// Git process status code when available.
         status: Option<i32>,
         /// Bounded diagnostic text emitted by Git.
         stderr: String,
     },
-    /// Git returned a tracked path that is not UTF-8.
+    /// Git returned a path that is not UTF-8.
     NonUtf8TrackedPath,
-    /// A required tracked source file could not be read.
-    ReadFile {
-        /// Workspace-relative source path.
+    /// A tracked text blob or symlink target is not UTF-8.
+    NonUtf8TrackedContent {
+        /// Workspace-relative path whose blob is not UTF-8.
+        path: String,
+    },
+    /// Git returned a malformed tree record.
+    MalformedGitOutput {
+        /// Stable operation name whose output was malformed.
+        operation: &'static str,
+    },
+    /// A required source file is absent from the candidate tree.
+    MissingTrackedInput {
+        /// Required workspace-relative source path.
         path: &'static str,
-        /// Filesystem failure.
-        source: std::io::Error,
     },
 }
 
@@ -192,15 +305,24 @@ impl fmt::Display for ReleaseScopeError {
             Self::GitSpawn(error) => write!(formatter, "could not start Git: {error}"),
             Self::GitFailed { status, stderr } => write!(
                 formatter,
-                "Git tracked-path query failed with status {}: {}",
+                "Git candidate-tree query failed with status {}: {}",
                 status.map_or_else(|| "unknown".to_owned(), |code| code.to_string()),
                 stderr.trim()
             ),
             Self::NonUtf8TrackedPath => {
-                formatter.write_str("Git tracked-path output contains a non-UTF-8 path")
+                formatter.write_str("Git candidate tree contains a non-UTF-8 path")
             }
-            Self::ReadFile { path, source } => {
-                write!(formatter, "could not read release input `{path}`: {source}")
+            Self::NonUtf8TrackedContent { path } => {
+                write!(formatter, "tracked release input `{path}` is not UTF-8")
+            }
+            Self::MalformedGitOutput { operation } => {
+                write!(formatter, "Git returned malformed output for `{operation}`")
+            }
+            Self::MissingTrackedInput { path } => {
+                write!(
+                    formatter,
+                    "candidate tree omits required release input `{path}`"
+                )
             }
         }
     }
@@ -209,47 +331,92 @@ impl fmt::Display for ReleaseScopeError {
 impl Error for ReleaseScopeError {
     fn source(&self) -> Option<&(dyn Error + 'static)> {
         match self {
-            Self::GitSpawn(error) | Self::ReadFile { source: error, .. } => Some(error),
-            Self::GitFailed { .. } | Self::NonUtf8TrackedPath => None,
+            Self::GitSpawn(error) => Some(error),
+            Self::GitFailed { .. }
+            | Self::NonUtf8TrackedPath
+            | Self::NonUtf8TrackedContent { .. }
+            | Self::MalformedGitOutput { .. }
+            | Self::MissingTrackedInput { .. } => None,
         }
     }
 }
 
-/// Reads the release-scope observation from a Git checkout.
+/// Reads the release-scope observation from the committed candidate tree.
 ///
 /// # Errors
 ///
-/// Returns [`ReleaseScopeError`] when Git cannot enumerate the index, a tracked
-/// path is not UTF-8, or one of the required release inputs cannot be read.
+/// Returns [`ReleaseScopeError`] when Git cannot enumerate `HEAD`, a tracked
+/// path or required text blob is not UTF-8, or a required input is absent.
 pub fn read_workspace(workspace_root: &Path) -> Result<ReleaseScopeObservation, ReleaseScopeError> {
-    let output = Command::new(git_program())
-        .arg("-C")
-        .arg(workspace_root)
-        .args(["ls-files", "-z"])
-        .output()
-        .map_err(ReleaseScopeError::GitSpawn)?;
+    let output = git_output(workspace_root, &["ls-tree", "-rz", "--full-tree", "HEAD"])?;
+    let tracked_output =
+        std::str::from_utf8(&output).map_err(|_| ReleaseScopeError::NonUtf8TrackedPath)?;
+    let mut tracked_entries = BTreeMap::new();
 
-    if !output.status.success() {
-        return Err(ReleaseScopeError::GitFailed {
-            status: output.status.code(),
-            stderr: String::from_utf8_lossy(&output.stderr).into_owned(),
-        });
+    for record in tracked_output
+        .split('\0')
+        .filter(|record| !record.is_empty())
+    {
+        let (metadata, path) =
+            record
+                .split_once('\t')
+                .ok_or(ReleaseScopeError::MalformedGitOutput {
+                    operation: "ls-tree",
+                })?;
+        let mut fields = metadata.split_whitespace();
+        let mode = fields.next().ok_or(ReleaseScopeError::MalformedGitOutput {
+            operation: "ls-tree",
+        })?;
+        let kind = fields.next().ok_or(ReleaseScopeError::MalformedGitOutput {
+            operation: "ls-tree",
+        })?;
+        let object_id = fields.next().ok_or(ReleaseScopeError::MalformedGitOutput {
+            operation: "ls-tree",
+        })?;
+        if fields.next().is_some() || !matches!(kind, "blob" | "commit") {
+            return Err(ReleaseScopeError::MalformedGitOutput {
+                operation: "ls-tree",
+            });
+        }
+
+        let symlink_target = if mode == "120000" {
+            Some(read_blob_text(workspace_root, object_id, path)?)
+        } else {
+            None
+        };
+        let previous = tracked_entries.insert(
+            path.to_owned(),
+            TrackedEntry {
+                mode: mode.to_owned(),
+                object_id: object_id.to_owned(),
+                symlink_target,
+            },
+        );
+        if previous.is_some() {
+            return Err(ReleaseScopeError::MalformedGitOutput {
+                operation: "ls-tree",
+            });
+        }
     }
 
-    let tracked_output =
-        std::str::from_utf8(&output.stdout).map_err(|_| ReleaseScopeError::NonUtf8TrackedPath)?;
-    let tracked_paths = tracked_output
-        .split('\0')
-        .filter(|path| !path.is_empty())
-        .map(str::to_owned)
-        .collect();
+    let release_notes = read_required_blob(workspace_root, &tracked_entries, RELEASE_NOTES_FILE)?;
+    let cmake_project = read_required_blob(workspace_root, &tracked_entries, CMAKE_PROJECT_FILE)?;
+    let c_header = read_required_blob(workspace_root, &tracked_entries, C_HEADER_FILE)?;
+    let cpp_header = read_required_blob(workspace_root, &tracked_entries, CPP_HEADER_FILE)?;
+    let tree_oids = REQUIRED_TREE_IDENTITIES
+        .iter()
+        .map(|(path, _)| {
+            read_tree_oid(workspace_root, path).map(|object_id| ((*path).to_owned(), object_id))
+        })
+        .collect::<Result<_, _>>()?;
 
     Ok(ReleaseScopeObservation {
-        tracked_paths,
-        release_notes: read_required(workspace_root, RELEASE_NOTES_FILE)?,
-        cmake_project: read_required(workspace_root, CMAKE_PROJECT_FILE)?,
-        c_header: read_required(workspace_root, C_HEADER_FILE)?,
-        cpp_header: read_required(workspace_root, CPP_HEADER_FILE)?,
+        tracked_entries,
+        tree_oids,
+        release_notes,
+        cmake_project,
+        c_header,
+        cpp_header,
     })
 }
 
@@ -258,13 +425,19 @@ pub fn read_workspace(workspace_root: &Path) -> Result<ReleaseScopeObservation, 
 pub fn validate(observation: &ReleaseScopeObservation) -> Vec<ReleaseViolation> {
     let mut violations = Vec::new();
 
-    if !observation.tracked_paths.contains(RELEASE_NOTES_FILE) {
+    if !observation.tracked_entries.contains_key(RELEASE_NOTES_FILE) {
         violations.push(ReleaseViolation::UntrackedReleaseNotes);
     }
 
     for (fact, needle) in REQUIRED_RELEASE_FACTS {
         if !observation.release_notes.contains(needle) {
             violations.push(ReleaseViolation::MissingReleaseFact { fact });
+        }
+    }
+
+    for (tree, expected) in REQUIRED_TREE_IDENTITIES {
+        if observation.tree_oids.get(tree).map(String::as_str) != Some(expected) {
+            violations.push(ReleaseViolation::UnexpectedTreeIdentity { tree });
         }
     }
 
@@ -276,10 +449,19 @@ pub fn validate(observation: &ReleaseScopeObservation) -> Vec<ReleaseViolation> 
         violations.push(ReleaseViolation::UnexpectedCmakeVersion);
     }
 
-    for command in ["install", "export"] {
+    for command in ["install", "export", "include", "add_subdirectory"] {
         if has_cmake_command(&observation.cmake_project, command) {
             violations.push(ReleaseViolation::ForbiddenCmakeSurface { surface: command });
         }
+    }
+    if cmake_command_lines(&observation.cmake_project, "add_library").any(|code| {
+        !ALLOWED_ADD_LIBRARY_COMMANDS
+            .iter()
+            .any(|allowed| code.eq_ignore_ascii_case(allowed))
+    }) {
+        violations.push(ReleaseViolation::ForbiddenCmakeSurface {
+            surface: "add_library",
+        });
     }
     if has_cmake_token(&observation.cmake_project, "STATIC") {
         violations.push(ReleaseViolation::ForbiddenCmakeSurface { surface: "STATIC" });
@@ -289,6 +471,7 @@ pub fn validate(observation: &ReleaseScopeObservation) -> Vec<ReleaseViolation> 
         (C_HEADER_FILE, observation.c_header.as_str()),
         (CPP_HEADER_FILE, observation.cpp_header.as_str()),
     ] {
+        let text = text.to_ascii_lowercase();
         for token in FOREIGN_WATCHER_TOKENS {
             if text.contains(token) {
                 violations.push(ReleaseViolation::ForeignWatcherSurface { header, token });
@@ -296,8 +479,10 @@ pub fn validate(observation: &ReleaseScopeObservation) -> Vec<ReleaseViolation> 
         }
     }
 
-    for path in &observation.tracked_paths {
-        if let Some(reason) = forbidden_release_input(path) {
+    for (path, entry) in &observation.tracked_entries {
+        let reason = forbidden_tracked_entry(path, entry, &observation.tracked_entries)
+            .or_else(|| forbidden_release_input(path, entry));
+        if let Some(reason) = reason {
             violations.push(ReleaseViolation::ForbiddenReleaseInput {
                 path: path.clone(),
                 reason,
@@ -312,24 +497,71 @@ fn git_program() -> PathBuf {
     std::env::var_os("GIT").map_or_else(|| PathBuf::from("git"), PathBuf::from)
 }
 
-fn read_required(
+fn git_output(workspace_root: &Path, arguments: &[&str]) -> Result<Vec<u8>, ReleaseScopeError> {
+    let output = Command::new(git_program())
+        .arg("-C")
+        .arg(workspace_root)
+        .args(arguments)
+        .output()
+        .map_err(ReleaseScopeError::GitSpawn)?;
+    if !output.status.success() {
+        return Err(ReleaseScopeError::GitFailed {
+            status: output.status.code(),
+            stderr: String::from_utf8_lossy(&output.stderr).into_owned(),
+        });
+    }
+    Ok(output.stdout)
+}
+
+fn read_required_blob(
     workspace_root: &Path,
-    relative_path: &'static str,
+    tracked_entries: &BTreeMap<String, TrackedEntry>,
+    path: &'static str,
 ) -> Result<String, ReleaseScopeError> {
-    fs::read_to_string(workspace_root.join(relative_path)).map_err(|source| {
-        ReleaseScopeError::ReadFile {
-            path: relative_path,
-            source,
-        }
+    let entry = tracked_entries
+        .get(path)
+        .ok_or(ReleaseScopeError::MissingTrackedInput { path })?;
+    read_blob_text(workspace_root, &entry.object_id, path)
+}
+
+fn read_blob_text(
+    workspace_root: &Path,
+    object_id: &str,
+    path: &str,
+) -> Result<String, ReleaseScopeError> {
+    let bytes = git_output(workspace_root, &["cat-file", "blob", object_id])?;
+    String::from_utf8(bytes).map_err(|_| ReleaseScopeError::NonUtf8TrackedContent {
+        path: path.to_owned(),
     })
 }
 
+fn read_tree_oid(workspace_root: &Path, path: &str) -> Result<String, ReleaseScopeError> {
+    let revision = format!("HEAD:{path}");
+    let output = git_output(workspace_root, &["rev-parse", "--verify", &revision])?;
+    let object_id =
+        std::str::from_utf8(&output).map_err(|_| ReleaseScopeError::MalformedGitOutput {
+            operation: "rev-parse",
+        })?;
+    let object_id = object_id.trim();
+    if object_id.is_empty() {
+        return Err(ReleaseScopeError::MalformedGitOutput {
+            operation: "rev-parse",
+        });
+    }
+    Ok(object_id.to_owned())
+}
+
 fn has_cmake_command(text: &str, command: &str) -> bool {
-    text.lines().any(|line| {
+    cmake_command_lines(text, command).next().is_some()
+}
+
+fn cmake_command_lines<'a>(text: &'a str, command: &'a str) -> impl Iterator<Item = &'a str> + 'a {
+    text.lines().filter_map(move |line| {
         let code = line.split_once('#').map_or(line, |(code, _)| code).trim();
-        code.get(..command.len())
-            .is_some_and(|prefix| prefix.eq_ignore_ascii_case(command))
-            && code[command.len()..].trim_start().starts_with('(')
+        let prefix = code.get(..command.len())?;
+        (prefix.eq_ignore_ascii_case(command)
+            && code[command.len()..].trim_start().starts_with('('))
+        .then_some(code)
     })
 }
 
@@ -341,16 +573,60 @@ fn has_cmake_token(text: &str, token: &str) -> bool {
     })
 }
 
-fn forbidden_release_input(path: &str) -> Option<&'static str> {
-    for (prefix, reason) in FORBIDDEN_PREFIXES {
-        if path == prefix.trim_end_matches('/') || path.starts_with(prefix) {
+fn forbidden_tracked_entry(
+    path: &str,
+    entry: &TrackedEntry,
+    tracked_entries: &BTreeMap<String, TrackedEntry>,
+) -> Option<&'static str> {
+    match (entry.mode.as_str(), entry.symlink_target.as_deref()) {
+        ("100644", None) => {
+            let file_name = path.rsplit('/').next().unwrap_or(path);
+            let has_extension = file_name.rsplit_once('.').is_some();
+            if !has_extension && !ALLOWED_EXTENSIONLESS_FILES.contains(&path) {
+                Some("unapproved extensionless file")
+            } else {
+                None
+            }
+        }
+        ("100755", None) if ALLOWED_EXECUTABLES.contains(&path) => None,
+        ("100755", None) => Some("unapproved executable file"),
+        ("120000", Some(target))
+            if path == ALLOWED_SYMLINK.0
+                && target == ALLOWED_SYMLINK.1
+                && entry.object_id == ALLOWED_SYMLINK.2
+                && tracked_entries.contains_key(target) =>
+        {
+            None
+        }
+        ("120000", _) => Some("unapproved symlink or symlink target"),
+        ("160000", _) => Some("Gitlink or nested repository"),
+        _ => Some("unsupported Git tree mode"),
+    }
+}
+
+fn forbidden_release_input(path: &str, entry: &TrackedEntry) -> Option<&'static str> {
+    for segment in path.split('/') {
+        if let Some((_, reason)) = FORBIDDEN_SEGMENTS
+            .iter()
+            .find(|(candidate, _)| *candidate == segment)
+        {
             return Some(reason);
         }
+    }
+
+    if path.starts_with("crates/bindings/capi/include/")
+        && path != C_HEADER_FILE
+        && path != CPP_HEADER_FILE
+    {
+        return Some("unapproved public foreign-language header");
     }
 
     let file_name = path.rsplit('/').next().unwrap_or(path);
     if file_name == ".DS_Store" || file_name.ends_with(".rs.bk") {
         return Some("generated editor or operating-system file");
+    }
+    if file_name == ".env" || file_name.starts_with(".env.") {
+        return Some("private environment file");
     }
     if path
         .split('/')
@@ -365,17 +641,16 @@ fn forbidden_release_input(path: &str) -> Option<&'static str> {
             .iter()
             .any(|candidate| extension.eq_ignore_ascii_case(candidate))
     });
-    if is_payload && !allowed_fixture_payload(path) {
-        return Some("unapproved archive, model, or native binary payload");
+    if is_payload && !allowed_fixture_payload(path, &entry.object_id) {
+        return Some("unapproved archive, model, credential, or native binary payload");
     }
 
     None
 }
 
-fn allowed_fixture_payload(path: &str) -> bool {
-    (path.starts_with("fixtures/assets/g-014/")
-        && path
-            .rsplit_once('.')
-            .is_some_and(|(_, extension)| extension.eq_ignore_ascii_case("zip")))
-        || ALLOWED_ONNX_FIXTURES.contains(&path)
+fn allowed_fixture_payload(path: &str, object_id: &str) -> bool {
+    ALLOWED_G014_ZIPS.contains(&path)
+        || ALLOWED_ONNX_FIXTURES
+            .iter()
+            .any(|(candidate, expected)| path == *candidate && object_id == *expected)
 }
