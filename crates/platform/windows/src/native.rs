@@ -40,6 +40,7 @@ use crate::storage::{
 
 const WGC_PRODUCER_POOL_SIZE: i32 = 2;
 const CALLBACK_POLL_INTERVAL: Duration = Duration::from_millis(2);
+const TARGET_LIVENESS_POLL_INTERVAL: Duration = Duration::from_millis(100);
 const TEARDOWN_START_TIMEOUT: Duration = Duration::from_secs(5);
 const TEARDOWN_QUEUE_CAPACITY: usize = 64;
 const TEARDOWN_WORKER_COUNT: usize = 4;
@@ -970,10 +971,32 @@ impl CaptureSession for NativeSession {
     }
 
     fn frame(&self, request: &FrameRequest, operation: &OperationContext) -> Result<Frame> {
-        if !self.core.key.is_present() {
-            self.core.fail_native(target_fault(self.core.target_kind));
+        loop {
+            if !self.core.key.is_present() {
+                self.core.fail_native(target_fault(self.core.target_kind));
+                return self.core.state.frame(request, operation);
+            }
+            // Closed remains authoritative, but target destruction can stop
+            // publication before its callback reaches this stream. Bound idle
+            // waits so native-key loss still becomes an observable terminal.
+            let mut bounded = operation
+                .clone()
+                .with_timeout(TARGET_LIVENESS_POLL_INTERVAL)?;
+            if let Some(caller_deadline) = operation.deadline() {
+                let bounded_deadline = bounded
+                    .deadline()
+                    .expect("target-liveness wait always has a deadline");
+                bounded = bounded.with_deadline(caller_deadline.min(bounded_deadline));
+            }
+            match self.core.state.frame(request, &bounded) {
+                Err(error) if error.status() == mado_pilot_core::Status::DeadlineExceeded => {
+                    if let Some(interruption) = operation.interruption() {
+                        return Err(interruption.into());
+                    }
+                }
+                result => return result,
+            }
         }
-        self.core.state.frame(request, operation)
     }
 
     fn close(&self, operation: &OperationContext) -> Result<()> {
