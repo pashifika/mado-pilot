@@ -541,33 +541,68 @@ fn wgc_reports_target_loss_after_acknowledged_fixture_destruction() {
     let first = session
         .frame(&FrameRequest::latest(), &timed(Duration::from_secs(5)))
         .expect("fixture first frame");
+    let first_stamp = first.stamp();
+    drop(first);
+
+    let (started_sender, started_receiver) = mpsc::sync_channel(0);
+    let (activity_sender, activity_receiver) = mpsc::channel();
+    let (terminal_sender, terminal_receiver) = mpsc::sync_channel(1);
+    let waiter_session = Arc::clone(&session);
+    let waiter = thread::spawn(move || {
+        started_sender.send(()).expect("start waiter");
+        let mut stamp = first_stamp;
+        loop {
+            match waiter_session.frame(&FrameRequest::newer_than(stamp), &OperationContext::new()) {
+                Ok(frame) => {
+                    stamp = frame.stamp();
+                    let _activity = activity_sender.send(());
+                }
+                Err(error) => {
+                    terminal_sender
+                        .send(error.status())
+                        .expect("report terminal frame status");
+                    return;
+                }
+            }
+        }
+    });
+    started_receiver
+        .recv_timeout(Duration::from_secs(5))
+        .expect("frame waiter starts");
+
+    let quiet_deadline = Instant::now() + Duration::from_secs(5);
+    loop {
+        let remaining = quiet_deadline.saturating_duration_since(Instant::now());
+        assert!(
+            !remaining.is_zero(),
+            "fixture never reached a 200 ms in-flight frame wait"
+        );
+        match activity_receiver.recv_timeout(remaining.min(Duration::from_millis(200))) {
+            Ok(()) => {}
+            Err(RecvTimeoutError::Timeout) => break,
+            Err(RecvTimeoutError::Disconnected) => {
+                let status = terminal_receiver
+                    .try_recv()
+                    .expect("frame waiter terminated without reporting status");
+                panic!("frame waiter terminated before fixture destruction with {status:?}");
+            }
+        }
+    }
 
     fixture.control(fixture.target(), CONTROL_DESTROY_TARGET, 0);
     assert_eq!(
         fixture.wait_for(TARGET_LOSS_ACKNOWLEDGEMENT, Duration::from_secs(5)),
         TARGET_LOSS_ACKNOWLEDGEMENT
     );
-
-    let deadline = Instant::now() + Duration::from_secs(5);
-    let mut stamp = first.stamp();
-    loop {
-        let remaining = deadline.saturating_duration_since(Instant::now());
-        assert!(
-            !remaining.is_zero(),
-            "acknowledged fixture destruction did not produce TargetLost within five seconds"
-        );
-        match session.frame(&FrameRequest::newer_than(stamp), &timed(remaining)) {
-            Ok(late) => stamp = late.stamp(),
-            Err(error) => {
-                assert_eq!(
-                    error.status(),
-                    Status::TargetLost,
-                    "acknowledged fixture destruction must terminate WGC as TargetLost"
-                );
-                break;
-            }
-        }
-    }
+    let status = terminal_receiver
+        .recv_timeout(Duration::from_secs(5))
+        .expect("in-flight frame wait terminates after acknowledged fixture destruction");
+    assert_eq!(
+        status,
+        Status::TargetLost,
+        "acknowledged fixture destruction must terminate the in-flight WGC wait as TargetLost"
+    );
+    waiter.join().expect("frame waiter joins");
 
     session
         .close(&timed(Duration::from_secs(20)))
