@@ -5,7 +5,11 @@ include!("native_template_watch_macos.rs");
 #[cfg(windows)]
 include!("native_template_watch_windows.rs");
 
+#[path = "native_template_watch_contract.rs"]
+mod native_contract;
+
 use std::cell::RefCell;
+use std::fmt;
 use std::ops::{Deref, DerefMut};
 use std::path::PathBuf;
 use std::rc::Rc;
@@ -28,17 +32,27 @@ use mado_pilot_backend_opencv::benchmark_instrumentation::{
 use mado_pilot_testkit::bench_harness::{
     self, Benchmark, Plan, Profile, QueryWorkMetrics, Sample, Workload, measure,
 };
+use mado_pilot_testkit::visual_token::{
+    VISUAL_TOKEN_CELL_COUNT, VISUAL_TOKEN_GRID_WIDTH, VisualMarkerState, VisualToken,
+    VisualTokenDecodeError,
+};
 use mado_pilot_testkit::{ManualClock, native_watch_report, png};
 
 const OPERATION_WAIT: Duration = Duration::from_secs(5);
 const FIXTURE_WAIT: Duration = Duration::from_secs(10);
 const FIXTURE_COMMAND_WAIT: Duration = Duration::from_secs(2);
+const TOKEN_OBSERVATION_SLICE: Duration = Duration::from_millis(25);
 const POLL_WAIT: Duration = Duration::from_millis(5);
 const STATIC_STABILITY: Duration = Duration::from_millis(25);
 const SLOW_BACKEND: Duration = Duration::from_millis(150);
 const MARKER_CELL_LOGICAL: f64 = 24.0;
 const MARKER_X_LOGICAL: f64 = 64.0;
 const MARKER_Y_LOGICAL: f64 = 48.0;
+const TOKEN_CELL_LOGICAL: f64 = 8.0;
+const TOKEN_X_LOGICAL: f64 = 176.0;
+const TOKEN_Y_LOGICAL: f64 = 48.0;
+const TOKEN_PIXEL_TOLERANCE: u8 = 12;
+const TOKEN_COLOR_SEPARATION: u8 = 32;
 const MARKER_PRIMARY: [u8; 3] = [0xf2, 0x6b, 0x38];
 const MARKER_SECONDARY: [u8; 3] = [0x2d, 0xd4, 0xbf];
 
@@ -46,6 +60,41 @@ const MARKER_SECONDARY: [u8; 3] = [0x2d, 0xd4, 0xbf];
 struct ControlAcknowledgement {
     generation: u64,
     revision: u64,
+    visual_token: Option<VisualToken>,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum NativeProcessLifetimeFact {
+    NotObserved,
+    Unknown,
+    Live,
+    Lost,
+    ObservationFailed,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum NativeCleanupDebtFact {
+    None,
+    Deferred,
+}
+
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+struct NativeResourceFacts {
+    baseline_observed: bool,
+    fixture_process_reaped: bool,
+    fixture_reader_joined: bool,
+    protocol_stop_acknowledged: Option<bool>,
+    authenticated_lifetime: Option<NativeProcessLifetimeFact>,
+    launched_lifetime: Option<NativeProcessLifetimeFact>,
+    bounded_containment: bool,
+    output_drained: bool,
+    executable_identity_unchanged: Option<bool>,
+    cleanup_debt: Option<NativeCleanupDebtFact>,
+    apple_launch_accepted_live: Option<bool>,
+    apple_cleanup_scheduled: Option<u64>,
+    apple_cleanup_active: Option<u64>,
+    apple_cleanup_completed: Option<u64>,
+    apple_cleanup_exhausted: Option<u64>,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -60,6 +109,528 @@ impl MarkerShape {
     const fn extent(self) -> PixelExtent {
         PixelExtent::new(self.cell_width * 3, self.cell_height * 2)
     }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+struct TokenShape {
+    cell_width: u32,
+    cell_height: u32,
+    origin_x: i32,
+    origin_y: i32,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum BoundedNativeStatus {
+    NotAttempted,
+    Published,
+    DeadlineExceeded,
+    Failed(Status),
+}
+
+impl fmt::Display for BoundedNativeStatus {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            Self::NotAttempted => formatter.write_str("not_attempted"),
+            Self::Published => formatter.write_str("published"),
+            Self::DeadlineExceeded => formatter.write_str("deadline_exceeded"),
+            Self::Failed(status) => write!(formatter, "{status}"),
+        }
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum PixelTokenDecodeFailure {
+    MappingNotAttempted,
+    MissingCell(usize),
+    ColorReferencesNotSeparated,
+    AmbiguousCell(usize),
+    Logical(VisualTokenDecodeError),
+}
+
+impl fmt::Display for PixelTokenDecodeFailure {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            Self::MappingNotAttempted => formatter.write_str("mapping_not_attempted"),
+            Self::MissingCell(index) => write!(formatter, "missing_cell_{index}"),
+            Self::ColorReferencesNotSeparated => {
+                formatter.write_str("color_references_not_separated")
+            }
+            Self::AmbiguousCell(index) => write!(formatter, "ambiguous_cell_{index}"),
+            Self::Logical(VisualTokenDecodeError::CellCount { .. }) => {
+                formatter.write_str("logical_cell_count")
+            }
+            Self::Logical(VisualTokenDecodeError::Sentinel) => {
+                formatter.write_str("logical_sentinel")
+            }
+            Self::Logical(VisualTokenDecodeError::Reserved) => {
+                formatter.write_str("logical_reserved")
+            }
+            Self::Logical(VisualTokenDecodeError::Inverse) => {
+                formatter.write_str("logical_inverse")
+            }
+            Self::Logical(VisualTokenDecodeError::Checksum) => {
+                formatter.write_str("logical_checksum")
+            }
+        }
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+struct SessionObservation {
+    last_frame: Option<FrameStamp>,
+    last_token: Option<VisualToken>,
+    last_decode_failure: Option<PixelTokenDecodeFailure>,
+    acquisition_attempt_count: u64,
+    publication_count: u64,
+    mapping_attempt_count: u64,
+    decode_attempt_count: u64,
+    remaining_micros_at_last_publication: Option<u64>,
+    last_status: BoundedNativeStatus,
+}
+
+impl Default for SessionObservation {
+    fn default() -> Self {
+        Self {
+            last_frame: None,
+            last_token: None,
+            last_decode_failure: None,
+            acquisition_attempt_count: 0,
+            publication_count: 0,
+            mapping_attempt_count: 0,
+            decode_attempt_count: 0,
+            remaining_micros_at_last_publication: None,
+            last_status: BoundedNativeStatus::NotAttempted,
+        }
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum TokenSynchronizationFailure {
+    Timeout,
+    Operation {
+        session: usize,
+        status: Status,
+    },
+    Protocol {
+        session: usize,
+        reason: &'static str,
+    },
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+struct SessionObservationDiagnostic {
+    session: usize,
+    last_frame: Option<FrameStamp>,
+    last_token: Option<VisualToken>,
+    last_decode_failure: Option<PixelTokenDecodeFailure>,
+    acquisition_attempt_count: u64,
+    publication_count: u64,
+    mapping_attempt_count: u64,
+    decode_attempt_count: u64,
+    remaining_micros_at_last_publication: Option<u64>,
+    last_status: BoundedNativeStatus,
+    closed: bool,
+}
+
+#[derive(Debug)]
+struct TokenSynchronizationError {
+    failure: TokenSynchronizationFailure,
+    expected: VisualToken,
+    sessions: Vec<SessionObservationDiagnostic>,
+    elapsed: Duration,
+}
+
+impl fmt::Display for TokenSynchronizationError {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self.failure {
+            TokenSynchronizationFailure::Timeout => formatter.write_str(
+                "typed_operation_failure:DeadlineExceeded:post_stimulus_producer_progress",
+            )?,
+            TokenSynchronizationFailure::Operation { session, status } => write!(
+                formatter,
+                "typed_operation_failure:{status:?}:post_stimulus_producer_progress:session={session}"
+            )?,
+            TokenSynchronizationFailure::Protocol { session, reason } => write!(
+                formatter,
+                "fixture_authority_failed:token_synchronization:session={session}:reason={reason}"
+            )?,
+        }
+        write!(
+            formatter,
+            ":expected_token={}:expected_marker={}:elapsed_micros={}",
+            self.expected.value(),
+            marker_state_name(self.expected.marker()),
+            self.elapsed.as_micros(),
+        )?;
+        for diagnostic in &self.sessions {
+            write!(
+                formatter,
+                ":observation[{}]={{last_token=",
+                diagnostic.session
+            )?;
+            match diagnostic.last_token {
+                Some(token) => write!(formatter, "{}", token.value())?,
+                None => formatter.write_str("none")?,
+            }
+            formatter.write_str(",last_frame=")?;
+            match diagnostic.last_frame {
+                Some(stamp) => write!(formatter, "{stamp}")?,
+                None => formatter.write_str("none")?,
+            }
+            formatter.write_str(",last_decode_failure=")?;
+            match diagnostic.last_decode_failure {
+                Some(failure) => write!(formatter, "{failure}")?,
+                None => formatter.write_str("none")?,
+            }
+            write!(
+                formatter,
+                ",lifecycle={},acquisition_attempts={},publications={},mapping_attempts={},decode_attempts={},remaining_micros_at_last_publication=",
+                if diagnostic.closed { "closed" } else { "open" },
+                diagnostic.acquisition_attempt_count,
+                diagnostic.publication_count,
+                diagnostic.mapping_attempt_count,
+                diagnostic.decode_attempt_count,
+            )?;
+            match diagnostic.remaining_micros_at_last_publication {
+                Some(value) => write!(formatter, "{value}")?,
+                None => formatter.write_str("none")?,
+            }
+            write!(formatter, ",last_status={}}}", diagnostic.last_status)?;
+        }
+        Ok(())
+    }
+}
+
+struct SessionSynchronization<'session, 'observation> {
+    session: &'session Session,
+    observation: &'observation mut SessionObservation,
+    frame: Option<Frame>,
+}
+
+impl<'session, 'observation> SessionSynchronization<'session, 'observation> {
+    fn new(session: &'session Session, observation: &'observation mut SessionObservation) -> Self {
+        Self {
+            session,
+            observation,
+            frame: None,
+        }
+    }
+}
+
+enum TokenObservationStep {
+    Pending,
+    Matched(Frame),
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum TokenObservationFailure {
+    Operation(Status),
+    Protocol(&'static str),
+}
+
+const fn marker_state_name(marker: VisualMarkerState) -> &'static str {
+    match marker {
+        VisualMarkerState::Absent => "absent",
+        VisualMarkerState::Visible => "visible",
+    }
+}
+
+fn colors_match(left: [u8; 3], right: [u8; 3], tolerance: u8) -> bool {
+    left.into_iter()
+        .zip(right)
+        .all(|(left, right)| left.abs_diff(right) <= tolerance)
+}
+
+fn token_cell_rgb(
+    mapping: &mado_pilot::CpuMapping,
+    shape: TokenShape,
+    index: usize,
+) -> Option<[u8; 3]> {
+    let row = index.checked_div(VISUAL_TOKEN_GRID_WIDTH)?;
+    let column = index.checked_rem(VISUAL_TOKEN_GRID_WIDTH)?;
+    let x_offset = u32::try_from(column)
+        .ok()?
+        .checked_mul(shape.cell_width)?
+        .checked_add(shape.cell_width / 2)?;
+    let y_offset = u32::try_from(row)
+        .ok()?
+        .checked_mul(shape.cell_height)?
+        .checked_add(shape.cell_height / 2)?;
+    let x = shape.origin_x.checked_add(i32::try_from(x_offset).ok()?)?;
+    let y = shape.origin_y.checked_add(i32::try_from(y_offset).ok()?)?;
+    let x = usize::try_from(x).ok()?;
+    let y = usize::try_from(y).ok()?;
+    let offset = y
+        .checked_mul(mapping.descriptor().stride())?
+        .checked_add(x.checked_mul(4)?)?;
+    let pixel = mapping.bytes().get(offset..offset.checked_add(3)?)?;
+    Some([pixel[0], pixel[1], pixel[2]])
+}
+
+fn decode_visual_token(
+    mapping: &mado_pilot::CpuMapping,
+    shape: TokenShape,
+) -> Result<VisualToken, PixelTokenDecodeFailure> {
+    let sampled = std::array::from_fn::<_, VISUAL_TOKEN_CELL_COUNT, _>(|index| {
+        token_cell_rgb(mapping, shape, index)
+    });
+    let primary = sampled[0].ok_or(PixelTokenDecodeFailure::MissingCell(0))?;
+    let secondary = sampled[1].ok_or(PixelTokenDecodeFailure::MissingCell(1))?;
+    if !primary
+        .into_iter()
+        .zip(secondary)
+        .any(|(primary, secondary)| primary.abs_diff(secondary) >= TOKEN_COLOR_SEPARATION)
+    {
+        return Err(PixelTokenDecodeFailure::ColorReferencesNotSeparated);
+    }
+    let mut cells = [false; VISUAL_TOKEN_CELL_COUNT];
+    for (index, color) in sampled.into_iter().enumerate() {
+        let color = color.ok_or(PixelTokenDecodeFailure::MissingCell(index))?;
+        match (
+            colors_match(color, primary, TOKEN_PIXEL_TOLERANCE),
+            colors_match(color, secondary, TOKEN_PIXEL_TOLERANCE),
+        ) {
+            (true, false) => cells[index] = true,
+            (false, true) => {}
+            _ => return Err(PixelTokenDecodeFailure::AmbiguousCell(index)),
+        }
+    }
+    VisualToken::decode(&cells).map_err(PixelTokenDecodeFailure::Logical)
+}
+
+fn observe_token_once(
+    session: &Session,
+    fixture: &NativeFixture,
+    observation: &mut SessionObservation,
+    expected: VisualToken,
+    mapping_divisor: u32,
+    phase_deadline: Instant,
+) -> Result<TokenObservationStep, TokenObservationFailure> {
+    let wait =
+        TOKEN_OBSERVATION_SLICE.min(phase_deadline.saturating_duration_since(Instant::now()));
+    if wait.is_zero() {
+        observation.last_status = BoundedNativeStatus::DeadlineExceeded;
+        return Ok(TokenObservationStep::Pending);
+    }
+    observation.acquisition_attempt_count =
+        observation.acquisition_attempt_count.checked_add(1).ok_or(
+            TokenObservationFailure::Protocol("acquisition_attempt_count_exhausted"),
+        )?;
+    let request = observation
+        .last_frame
+        .map_or_else(FrameRequest::latest, FrameRequest::newer_than);
+    let frame = match session.acquire_frame(&request, &bounded(wait)) {
+        Ok(frame) => frame,
+        Err(error) if error.status() == Status::DeadlineExceeded => {
+            observation.last_status = BoundedNativeStatus::DeadlineExceeded;
+            return Ok(TokenObservationStep::Pending);
+        }
+        Err(error) => {
+            let status = error.status();
+            observation.last_status = BoundedNativeStatus::Failed(status);
+            return Err(TokenObservationFailure::Operation(status));
+        }
+    };
+    let stamp = frame.stamp();
+    observation.publication_count =
+        observation
+            .publication_count
+            .checked_add(1)
+            .ok_or(TokenObservationFailure::Protocol(
+                "publication_count_exhausted",
+            ))?;
+    observation.last_status = BoundedNativeStatus::Published;
+    observation.last_decode_failure = Some(PixelTokenDecodeFailure::MappingNotAttempted);
+    observation.remaining_micros_at_last_publication = Some(
+        u64::try_from(
+            phase_deadline
+                .saturating_duration_since(Instant::now())
+                .as_micros(),
+        )
+        .unwrap_or(u64::MAX),
+    );
+    if stamp.stream() != session.stream() {
+        return Err(TokenObservationFailure::Protocol("stream_mismatch"));
+    }
+    if observation
+        .last_frame
+        .is_some_and(|prior| prior.order(&stamp) != Ok(FrameOrder::Before))
+    {
+        return Err(TokenObservationFailure::Protocol("non_monotonic_frame"));
+    }
+    observation.last_frame = Some(stamp);
+
+    let shape =
+        token_shape(&frame, fixture).ok_or(TokenObservationFailure::Protocol("wrong_transform"))?;
+    let marker = marker_shape(&frame, fixture)
+        .ok_or(TokenObservationFailure::Protocol("wrong_transform"))?;
+    let map_wait = phase_deadline
+        .saturating_duration_since(Instant::now())
+        .checked_div(mapping_divisor)
+        .unwrap_or(Duration::ZERO);
+    if map_wait.is_zero() {
+        observation.last_status = BoundedNativeStatus::DeadlineExceeded;
+        return Ok(TokenObservationStep::Pending);
+    }
+    observation.mapping_attempt_count = observation.mapping_attempt_count.checked_add(1).ok_or(
+        TokenObservationFailure::Protocol("mapping_attempt_count_exhausted"),
+    )?;
+    let mapping = session
+        .map_frame(&frame, PixelFormat::Rgba8, &bounded(map_wait))
+        .map_err(|error| {
+            let status = error.status();
+            observation.last_status = BoundedNativeStatus::Failed(status);
+            TokenObservationFailure::Operation(status)
+        })?;
+    observation.decode_attempt_count = observation.decode_attempt_count.checked_add(1).ok_or(
+        TokenObservationFailure::Protocol("decode_attempt_count_exhausted"),
+    )?;
+    let decoded = match decode_visual_token(&mapping, shape) {
+        Ok(decoded) => {
+            observation.last_token = Some(decoded);
+            observation.last_decode_failure = None;
+            Some(decoded)
+        }
+        Err(failure) => {
+            observation.last_decode_failure = Some(failure);
+            None
+        }
+    };
+    if decoded == Some(expected)
+        && marker_state(&mapping, marker) == Some(expected.marker().is_visible())
+    {
+        return Ok(TokenObservationStep::Matched(frame));
+    }
+    Ok(TokenObservationStep::Pending)
+}
+
+fn token_synchronization_error(
+    failure: TokenSynchronizationFailure,
+    expected: VisualToken,
+    synchronizations: &[SessionSynchronization<'_, '_>],
+    started: Instant,
+) -> TokenSynchronizationError {
+    let sessions = synchronizations
+        .iter()
+        .enumerate()
+        .map(|(session, synchronization)| SessionObservationDiagnostic {
+            session,
+            last_frame: synchronization.observation.last_frame,
+            last_token: synchronization.observation.last_token,
+            last_decode_failure: synchronization.observation.last_decode_failure,
+            acquisition_attempt_count: synchronization.observation.acquisition_attempt_count,
+            publication_count: synchronization.observation.publication_count,
+            mapping_attempt_count: synchronization.observation.mapping_attempt_count,
+            decode_attempt_count: synchronization.observation.decode_attempt_count,
+            remaining_micros_at_last_publication: synchronization
+                .observation
+                .remaining_micros_at_last_publication,
+            last_status: synchronization.observation.last_status,
+            closed: synchronization.session.is_closed(),
+        })
+        .collect();
+    TokenSynchronizationError {
+        failure,
+        expected,
+        sessions,
+        elapsed: started.elapsed(),
+    }
+}
+
+fn synchronize_sessions(
+    fixture: &NativeFixture,
+    target: TargetId,
+    expected: VisualToken,
+    synchronizations: &mut [SessionSynchronization<'_, '_>],
+    phase_deadline: Instant,
+) -> Result<(), TokenSynchronizationError> {
+    let started = Instant::now();
+    if synchronizations.is_empty() {
+        return Err(token_synchronization_error(
+            TokenSynchronizationFailure::Protocol {
+                session: 0,
+                reason: "empty_session_set",
+            },
+            expected,
+            synchronizations,
+            started,
+        ));
+    }
+    for (index, synchronization) in synchronizations.iter().enumerate() {
+        if synchronization.session.target() != target {
+            return Err(token_synchronization_error(
+                TokenSynchronizationFailure::Protocol {
+                    session: index,
+                    reason: "target_mismatch",
+                },
+                expected,
+                synchronizations,
+                started,
+            ));
+        }
+    }
+
+    let mut incomplete = synchronizations.len();
+    let mut round_start = 0;
+    while incomplete != 0 {
+        if Instant::now() >= phase_deadline {
+            return Err(token_synchronization_error(
+                TokenSynchronizationFailure::Timeout,
+                expected,
+                synchronizations,
+                started,
+            ));
+        }
+        for offset in 0..synchronizations.len() {
+            let index = (round_start + offset) % synchronizations.len();
+            if synchronizations[index].frame.is_some() {
+                continue;
+            }
+            let mapping_divisor = u32::try_from(incomplete).unwrap_or(u32::MAX);
+            let step = {
+                let synchronization = &mut synchronizations[index];
+                observe_token_once(
+                    synchronization.session,
+                    fixture,
+                    synchronization.observation,
+                    expected,
+                    mapping_divisor,
+                    phase_deadline,
+                )
+            };
+            match step {
+                Ok(TokenObservationStep::Pending) => {}
+                Ok(TokenObservationStep::Matched(frame)) => {
+                    synchronizations[index].frame = Some(frame);
+                    incomplete -= 1;
+                }
+                Err(TokenObservationFailure::Operation(status)) => {
+                    return Err(token_synchronization_error(
+                        TokenSynchronizationFailure::Operation {
+                            session: index,
+                            status,
+                        },
+                        expected,
+                        synchronizations,
+                        started,
+                    ));
+                }
+                Err(TokenObservationFailure::Protocol(reason)) => {
+                    return Err(token_synchronization_error(
+                        TokenSynchronizationFailure::Protocol {
+                            session: index,
+                            reason,
+                        },
+                        expected,
+                        synchronizations,
+                        started,
+                    ));
+                }
+            }
+        }
+        round_start = (round_start + 1) % synchronizations.len();
+    }
+    Ok(())
 }
 
 fn scaled_u32(value: f64, scale: f64) -> Option<u32> {
@@ -87,7 +658,7 @@ fn scaled_i32(value: f64, scale: f64) -> Option<i32> {
     Some(scaled as i32)
 }
 
-fn wait_marker_state<Fixture>(
+fn wait_marker_transition<Fixture>(
     run: &NativeRun<Fixture>,
     after: FrameStamp,
     visible: bool,
@@ -123,15 +694,7 @@ fn establish_absent<Fixture>(run: &mut NativeRun<Fixture>) -> Result<Frame, Stri
 where
     Fixture: Deref<Target = NativeFixture> + DerefMut,
 {
-    let prior = run
-        .session
-        .acquire_frame(&FrameRequest::latest(), &bounded(OPERATION_WAIT))
-        .map_err(|_| "wrong_source".to_owned())?
-        .stamp();
-    run.command_visible()?;
-    let visible = wait_marker_state(run, prior, true)?;
-    run.command_absent()?;
-    wait_marker_state(run, visible.stamp(), false)
+    run.command_absent()
 }
 
 fn settle_absent(run: &mut NativeRun) -> Result<mado_pilot::CpuMapping, String> {
@@ -145,31 +708,6 @@ fn settle_absent(run: &mut NativeRun) -> Result<mado_pilot::CpuMapping, String> 
         return Err("fixture_authority_failed".to_owned());
     }
     Ok(mapping)
-}
-
-fn wait_geometry_change(run: &NativeRun, after: FrameStamp) -> Result<Frame, String> {
-    let deadline = Instant::now() + OPERATION_WAIT;
-    let original = (after.epoch(), after.geometry());
-    let mut changed = None;
-    let mut stamp = after;
-    loop {
-        let remaining = deadline.saturating_duration_since(Instant::now());
-        if remaining.is_zero() {
-            return Err("wrong_transform".to_owned());
-        }
-        let frame = run
-            .session
-            .acquire_frame(&FrameRequest::newer_than(stamp), &bounded(remaining))
-            .map_err(|_| "typed_operation_failure:DeadlineExceeded".to_owned())?;
-        let current = (frame.stamp().epoch(), frame.stamp().geometry());
-        if current != original {
-            if changed == Some(current) {
-                return Ok(frame);
-            }
-            changed = Some(current);
-        }
-        stamp = frame.stamp();
-    }
 }
 
 fn wait_resize_change(run: &NativeRun, before: &Frame) -> Result<Frame, String> {
@@ -243,6 +781,12 @@ fn marker_state(mapping: &mado_pilot::CpuMapping, shape: MarkerShape) -> Option<
     visible.then_some(true)
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum ContractArgumentFailure {
+    Protocol,
+    FixtureUnavailable,
+}
+
 #[derive(Debug, Clone)]
 struct Arguments {
     fixture_executable: PathBuf,
@@ -251,10 +795,55 @@ struct Arguments {
     full_load_diagnostic: bool,
     retained_result_lifecycle_diagnostic: bool,
     enforce_budgets: bool,
+    native_contract: bool,
     workload_filter: Option<String>,
 }
 
 impl Arguments {
+    fn contract_requested() -> bool {
+        std::env::args().any(|argument| argument == "--native-contract")
+    }
+
+    fn parse_contract() -> Result<Self, ContractArgumentFailure> {
+        let raw = std::env::args().skip(1).collect::<Vec<_>>();
+        let fixture_prefix = "--fixture-executable=";
+        let contract_switches = raw
+            .iter()
+            .filter(|argument| argument.as_str() == "--native-contract")
+            .count();
+        let fixture_arguments = raw
+            .iter()
+            .filter(|argument| argument.starts_with(fixture_prefix))
+            .count();
+        if contract_switches != 1
+            || fixture_arguments > 1
+            || raw.iter().any(|argument| {
+                argument != "--native-contract"
+                    && (!argument.starts_with(fixture_prefix)
+                        || argument.len() == fixture_prefix.len())
+            })
+        {
+            return Err(ContractArgumentFailure::Protocol);
+        }
+        let fixture_executable = value(&raw, "--fixture-executable")
+            .map(PathBuf::from)
+            .or_else(default_fixture_executable)
+            .ok_or(ContractArgumentFailure::FixtureUnavailable)?;
+        if !fixture_executable.is_file() {
+            return Err(ContractArgumentFailure::FixtureUnavailable);
+        }
+        Ok(Self {
+            fixture_executable,
+            raw,
+            qualification: false,
+            full_load_diagnostic: false,
+            retained_result_lifecycle_diagnostic: false,
+            enforce_budgets: false,
+            workload_filter: None,
+            native_contract: true,
+        })
+    }
+
     fn parse() -> Self {
         let raw = std::env::args().skip(1).collect::<Vec<_>>();
         let fixture_executable = value(&raw, "--fixture-executable")
@@ -265,7 +854,7 @@ impl Arguments {
             fixture_executable.is_file(),
             "capability_unavailable:fixture_executable"
         );
-        let qualification = raw.iter().any(|argument| argument == "--bench");
+        let qualification = raw.iter().any(|argument| argument == "--lane-c-evidence");
         let full_load_diagnostic = raw
             .iter()
             .any(|argument| argument == "--full-load-diagnostic");
@@ -298,6 +887,7 @@ impl Arguments {
             enforce_budgets,
             workload_filter,
             fixture_executable,
+            native_contract: false,
             raw,
         };
         assert!(
@@ -390,13 +980,94 @@ struct NativeRun<Fixture = OwnedNativeFixture> {
     template: PreparedTemplate,
     shape: MarkerShape,
     last_ack: ControlAcknowledgement,
+    observation: SessionObservation,
+    startup_elapsed: Duration,
+    readiness_token: VisualToken,
+    readiness_stamp: FrameStamp,
+    readiness_scale_milli: Option<[u32; 2]>,
 }
 
 type DestructiveRun<'fixture> = NativeRun<&'fixture mut NativeFixture>;
 
+fn accept_control_acknowledgement(
+    last: &mut ControlAcknowledgement,
+    acknowledgement: ControlAcknowledgement,
+) -> Result<(), String> {
+    if acknowledgement.generation != last.generation || acknowledgement.revision <= last.revision {
+        return Err("fixture_authority_failed".to_owned());
+    }
+    *last = acknowledgement;
+    Ok(())
+}
+
+fn acknowledged_visual_token(
+    acknowledgement: ControlAcknowledgement,
+    marker: VisualMarkerState,
+) -> Result<VisualToken, String> {
+    acknowledgement
+        .visual_token
+        .filter(|token| token.marker() == marker)
+        .ok_or_else(|| "fixture_authority_failed".to_owned())
+}
+
+#[derive(Debug, Clone, Copy)]
+struct AcknowledgedVisualState {
+    token: VisualToken,
+    acknowledged_at: Instant,
+}
+
+fn issue_fixture_visual_state_timed(
+    fixture: &mut NativeFixture,
+    last_ack: &mut ControlAcknowledgement,
+    marker: VisualMarkerState,
+) -> Result<AcknowledgedVisualState, String> {
+    let acknowledgement = match marker {
+        VisualMarkerState::Absent => fixture.set_absent()?,
+        VisualMarkerState::Visible => fixture.set_visible()?,
+    };
+    let acknowledged_at = Instant::now();
+    let token = acknowledged_visual_token(acknowledgement, marker)?;
+    accept_control_acknowledgement(last_ack, acknowledgement)?;
+    Ok(AcknowledgedVisualState {
+        token,
+        acknowledged_at,
+    })
+}
+
+fn issue_fixture_visual_state(
+    fixture: &mut NativeFixture,
+    last_ack: &mut ControlAcknowledgement,
+    marker: VisualMarkerState,
+) -> Result<VisualToken, String> {
+    issue_fixture_visual_state_timed(fixture, last_ack, marker)
+        .map(|acknowledgement| acknowledgement.token)
+}
+
+fn synchronize_session_to_token(
+    fixture: &NativeFixture,
+    target: TargetId,
+    session: &Session,
+    observation: &mut SessionObservation,
+    expected: VisualToken,
+) -> Result<Frame, String> {
+    let mut synchronizations = [SessionSynchronization::new(session, observation)];
+    synchronize_sessions(
+        fixture,
+        target,
+        expected,
+        &mut synchronizations,
+        Instant::now() + OPERATION_WAIT,
+    )
+    .map_err(|error| error.to_string())?;
+    synchronizations[0]
+        .frame
+        .take()
+        .ok_or_else(|| "fixture_authority_failed".to_owned())
+}
+
 impl NativeRun {
     fn start(arguments: &Arguments) -> Result<Self, String> {
-        let fixture = NativeFixture::start(arguments)?;
+        let mut fixture = NativeFixture::start(arguments)?;
         let engine = native_engine().map_err(|_| "capability_unavailable:capture".to_owned())?;
         let target = fixture.authenticated_target(&engine)?;
         let session = engine
@@ -407,16 +1078,34 @@ impl NativeRun {
                     error.status()
                 )
             })?;
-        let frame = session
-            .acquire_frame(&FrameRequest::latest(), &bounded(OPERATION_WAIT))
-            .map_err(|error| {
-                format!(
-                    "typed_operation_failure:{:?}:native_run_start=first_acquire",
-                    error.status()
-                )
-            })?;
+        let startup_started = Instant::now();
+        let mut last_ack = ControlAcknowledgement {
+            generation: 1,
+            revision: 0,
+            visual_token: None,
+        };
+        let acknowledgement = fixture.set_absent()?;
+        let expected = acknowledged_visual_token(acknowledgement, VisualMarkerState::Absent)?;
+        accept_control_acknowledgement(&mut last_ack, acknowledgement)?;
+        let mut observation = SessionObservation::default();
+        let frame = {
+            let mut synchronizations = [SessionSynchronization::new(&session, &mut observation)];
+            synchronize_sessions(
+                &fixture,
+                target,
+                expected,
+                &mut synchronizations,
+                Instant::now() + OPERATION_WAIT,
+            )
+            .map_err(|error| error.to_string())?;
+            synchronizations[0]
+                .frame
+                .take()
+                .ok_or_else(|| "fixture_authority_failed".to_owned())?
+        };
+        let startup_elapsed = startup_started.elapsed();
         let shape = marker_shape(&frame, &fixture).ok_or_else(|| "wrong_transform".to_owned())?;
-        let template = prepare_marker(&engine, shape, "watch-marker-v1")?;
+        let template = prepare_marker(&engine, shape, "watch-marker-v2")?;
         Ok(Self {
             fixture: OwnedNativeFixture(fixture),
             engine,
@@ -424,10 +1113,12 @@ impl NativeRun {
             session,
             template,
             shape,
-            last_ack: ControlAcknowledgement {
-                generation: 1,
-                revision: 0,
-            },
+            last_ack,
+            observation,
+            startup_elapsed,
+            readiness_token: expected,
+            readiness_stamp: frame.stamp(),
+            readiness_scale_milli: target_scale_milli(&frame),
         })
     }
 }
@@ -436,16 +1127,69 @@ impl<Fixture> NativeRun<Fixture>
 where
     Fixture: Deref<Target = NativeFixture> + DerefMut,
 {
-    fn command_absent(&mut self) -> Result<ControlAcknowledgement, String> {
-        let acknowledgement = self.fixture.set_absent()?;
-        self.accept_acknowledgement(acknowledgement)?;
-        Ok(acknowledgement)
+    fn issue_visual_state(&mut self, marker: VisualMarkerState) -> Result<VisualToken, String> {
+        issue_fixture_visual_state(&mut self.fixture, &mut self.last_ack, marker)
     }
 
-    fn command_visible(&mut self) -> Result<ControlAcknowledgement, String> {
-        let acknowledgement = self.fixture.set_visible()?;
-        self.accept_acknowledgement(acknowledgement)?;
-        Ok(acknowledgement)
+    fn synchronize_visual_token(&mut self, expected: VisualToken) -> Result<Frame, String> {
+        let Self {
+            fixture,
+            target,
+            session,
+            observation,
+            ..
+        } = self;
+        synchronize_session_to_token(fixture.deref(), *target, session, observation, expected)
+    }
+
+    fn command_visual_state(&mut self, marker: VisualMarkerState) -> Result<Frame, String> {
+        let expected = self.issue_visual_state(marker)?;
+        self.synchronize_visual_token(expected)
+    }
+
+    fn command_absent(&mut self) -> Result<Frame, String> {
+        self.command_visual_state(VisualMarkerState::Absent)
+    }
+
+    fn command_visible(&mut self) -> Result<Frame, String> {
+        self.command_visual_state(VisualMarkerState::Visible)
+    }
+
+    fn command_visual_state_for_pair(
+        &mut self,
+        marker: VisualMarkerState,
+        second_session: &Session,
+        second_observation: &mut SessionObservation,
+    ) -> Result<(VisualToken, Frame, Frame), String> {
+        let expected = self.issue_visual_state(marker)?;
+        let Self {
+            fixture,
+            target,
+            session,
+            observation,
+            ..
+        } = self;
+        let mut synchronizations = [
+            SessionSynchronization::new(session, observation),
+            SessionSynchronization::new(second_session, second_observation),
+        ];
+        synchronize_sessions(
+            fixture.deref(),
+            *target,
+            expected,
+            &mut synchronizations,
+            Instant::now() + OPERATION_WAIT,
+        )
+        .map_err(|error| error.to_string())?;
+        let first = synchronizations[0]
+            .frame
+            .take()
+            .ok_or_else(|| "fixture_authority_failed".to_owned())?;
+        let second = synchronizations[1]
+            .frame
+            .take()
+            .ok_or_else(|| "fixture_authority_failed".to_owned())?;
+        Ok((expected, first, second))
     }
 
     fn command_visual_transition(&mut self) -> Result<ControlAcknowledgement, String> {
@@ -458,13 +1202,7 @@ where
         &mut self,
         acknowledgement: ControlAcknowledgement,
     ) -> Result<(), String> {
-        if acknowledgement.generation != self.last_ack.generation
-            || acknowledgement.revision <= self.last_ack.revision
-        {
-            return Err("fixture_authority_failed".to_owned());
-        }
-        self.last_ack = acknowledgement;
-        Ok(())
+        accept_control_acknowledgement(&mut self.last_ack, acknowledgement)
     }
 
     fn start_watch(&self, stability: TemplateStability) -> Result<TemplateQuery, String> {
@@ -493,6 +1231,28 @@ where
             .map_err(|error| format!("typed_operation_failure:{:?}", error.status()))
     }
 
+    fn matches_visual_token(
+        &self,
+        terminal: &TemplateTerminalOutcome,
+        session: &Session,
+        observations: u32,
+        newer_than: Option<FrameStamp>,
+        expected: VisualToken,
+    ) -> Result<bool, String> {
+        if !matched_target_exact(
+            terminal,
+            self.target,
+            self.template.id(),
+            self.shape,
+            observations,
+            newer_than,
+        ) {
+            return Ok(false);
+        }
+        let result = terminal_match(terminal).ok_or_else(|| "wrong_match".to_owned())?;
+        frame_has_visual_token(session, self.fixture.deref(), result.frame(), expected)
+    }
+
     fn refresh_template(&mut self, frame: &Frame, id: &str) -> Result<(), String> {
         self.shape =
             marker_shape(frame, &self.fixture).ok_or_else(|| "wrong_transform".to_owned())?;
@@ -500,16 +1260,38 @@ where
         Ok(())
     }
 
-    fn close(mut self) -> bool {
-        let session_closed = self.session.close(&bounded(OPERATION_WAIT)).is_ok()
-            && self.session.close(&bounded(OPERATION_WAIT)).is_ok();
-        drop(self.engine);
-        #[cfg(target_os = "macos")]
-        let fixture_finished = self.fixture.finish().is_accepted();
-        #[cfg(target_os = "windows")]
-        let fixture_finished = self.fixture.finish();
-        session_closed && fixture_finished
+    fn finalize(self) -> NativeRunFinalization {
+        let started = Instant::now();
+        let NativeRun {
+            mut fixture,
+            engine,
+            session,
+            template,
+            ..
+        } = self;
+        let session_closed = session.close(&bounded(OPERATION_WAIT)).is_ok()
+            && session.close(&bounded(OPERATION_WAIT)).is_ok();
+        drop(session);
+        drop(template);
+        drop(engine);
+        let fixture = fixture.finish();
+        NativeRunFinalization {
+            accepted: session_closed && fixture.is_accepted(),
+            elapsed: started.elapsed(),
+            resources: fixture.resources(),
+        }
     }
+
+    fn close(self) -> bool {
+        self.finalize().accepted
+    }
+}
+
+#[derive(Debug, Clone, Copy)]
+struct NativeRunFinalization {
+    accepted: bool,
+    elapsed: Duration,
+    resources: NativeResourceFacts,
 }
 
 struct Cohort {
@@ -557,6 +1339,10 @@ impl Cohort {
 }
 
 pub(super) fn run() {
+    if Arguments::contract_requested() {
+        native_contract::run();
+        return;
+    }
     let arguments = Arguments::parse();
     let sample_plan = if arguments.qualification
         || arguments.full_load_diagnostic
@@ -999,6 +1785,13 @@ fn project_marker_shape(
         origin_y: scaled_i32(display_origin.y(), 1.0)?,
     })
 }
+fn target_scale_milli(frame: &Frame) -> Option<[u32; 2]> {
+    let scale = frame.transform().target()?.scale();
+    Some([
+        scaled_u32(scale.x(), 1_000.0)?,
+        scaled_u32(scale.y(), 1_000.0)?,
+    ])
+}
 
 fn marker_shape_fits(frame: &Frame, shape: MarkerShape) -> bool {
     let Ok(left) = u32::try_from(shape.origin_x) else {
@@ -1140,12 +1933,16 @@ fn two_query_fairness(cohort: &Rc<RefCell<Cohort>>) -> Sample {
 
 fn two_session_fairness(cohort: &Rc<RefCell<Cohort>>) -> Sample {
     observed_sample(cohort, |run| {
-        run.command_absent()?;
         let second_session = run
             .engine
             .open(run.target, &OpenRequest::new(), &bounded(OPERATION_WAIT))
             .map_err(|_| "typed_operation_failure:CaptureFailed".to_owned())?;
-        prepare_two_session_readiness(run, &second_session)?;
+        let mut second_observation = SessionObservation::default();
+        let (_absent_token, _first_absent, _second_absent) = run.command_visual_state_for_pair(
+            VisualMarkerState::Absent,
+            &second_session,
+            &mut second_observation,
+        )?;
         let delay = install_find_delay(SLOW_BACKEND).ok_or_else(|| "protocol_drift".to_owned())?;
         let first = run.start_watch(TemplateStability::immediate())?;
         let second = second_session
@@ -1157,17 +1954,23 @@ fn two_session_fairness(cohort: &Rc<RefCell<Cohort>>) -> Sample {
             .map_err(|_| "typed_operation_failure:VisionFailed".to_owned())?;
         let first_before = wait_query_publication(&first)?;
         let second_before = wait_query_publication(&second)?;
-        run.command_visible()?;
+        let (visible_token, _first_visible, _second_visible) = run.command_visual_state_for_pair(
+            VisualMarkerState::Visible,
+            &second_session,
+            &mut second_observation,
+        )?;
         let (first_terminal, _) = wait_terminal(&first)?;
         let (second_terminal, _) = wait_terminal(&second)?;
         let first_saw_stimulus = first.benchmark_publication_count() > first_before;
         let second_saw_stimulus = second.benchmark_publication_count() > second_before;
         drop(delay);
         wait_for_backend_idle(OPERATION_WAIT)?;
+        let first_expected =
+            run.matches_visual_token(&first_terminal, &run.session, 1, None, visible_token)?;
+        let second_expected =
+            run.matches_visual_token(&second_terminal, &second_session, 1, None, visible_token)?;
         let closed = second_session.close(&bounded(OPERATION_WAIT)).is_ok();
         run.command_absent()?;
-        let first_expected = first_terminal.is_match();
-        let second_expected = second_terminal.is_match();
         let metrics = terminal_query_metrics(&first, first_expected)?
             .saturating_add(terminal_query_metrics(&second, second_expected)?);
         Ok((
@@ -1305,13 +2108,7 @@ fn queue_expiry_overload(cohort: &Rc<RefCell<Cohort>>) -> Sample {
 
 fn stale_generation(cohort: &Rc<RefCell<Cohort>>) -> Sample {
     observed_sample(cohort, |run| {
-        let prior = run
-            .session
-            .acquire_frame(&FrameRequest::latest(), &bounded(OPERATION_WAIT))
-            .map_err(|_| "wrong_source".to_owned())?
-            .stamp();
-        run.command_visible()?;
-        let old_frame = wait_marker_state(run, prior, true)?;
+        let old_frame = run.command_visible()?;
         let old_geometry = old_frame.stamp().geometry();
         let delay = install_find_delay(SLOW_BACKEND).ok_or_else(|| "protocol_drift".to_owned())?;
         let query = run.start_watch(TemplateStability::immediate())?;
@@ -1426,14 +2223,32 @@ fn session_engine_close(cohort: &Rc<RefCell<Cohort>>) -> Sample {
         let engine_session = run
             .engine
             .open(run.target, &OpenRequest::new(), &bounded(OPERATION_WAIT))
-            .map_err(|_| "typed_operation_failure:CaptureFailed".to_owned())?;
+            .map_err(|error| format!("typed_operation_failure:{:?}", error.status()))?;
+        let expected = run.issue_visual_state(VisualMarkerState::Absent)?;
+        let mut engine_observation = SessionObservation::default();
+        let mut synchronization = [SessionSynchronization::new(
+            &engine_session,
+            &mut engine_observation,
+        )];
+        synchronize_sessions(
+            run.fixture,
+            run.target,
+            expected,
+            &mut synchronization,
+            Instant::now() + OPERATION_WAIT,
+        )
+        .map_err(|error| error.to_string())?;
+        let _engine_frame = synchronization[0]
+            .frame
+            .take()
+            .ok_or_else(|| "fixture_authority_failed".to_owned())?;
         let engine_query = engine_session
             .start_template_watch(TemplateWatchRequest::new(
                 run.template.clone(),
                 MatchOptions::from_defaults(run.template.defaults()),
                 OperationContext::new(),
             ))
-            .map_err(|_| "typed_operation_failure:VisionFailed".to_owned())?;
+            .map_err(|error| format!("typed_operation_failure:{:?}", error.status()))?;
         prime_pending(&engine_query)?;
         drop(run.engine);
         let (engine_terminal, _) = wait_terminal(&engine_query)?;
@@ -1458,76 +2273,136 @@ fn retained_result_mapping(cohort: &Rc<RefCell<Cohort>>) -> Sample {
     destructive_sample(cohort, |mut run| {
         let _absent = establish_absent(&mut run)?;
         let query = run.start_watch(TemplateStability::immediate())?;
-        prime_pending(&query)?;
-        run.command_visible()?;
+        wait_query_publication(&query)?;
+        let visible = run.issue_visual_state(VisualMarkerState::Visible)?;
         let (terminal, _) = wait_terminal(&query)?;
-        let matched = terminal.is_match();
+        let matched = run.matches_visual_token(&terminal, &run.session, 1, None, visible)?;
         let metrics = terminal_query_metrics(&query, matched)?;
         let result = terminal_match(&terminal)
+            .filter(|_| matched)
             .ok_or_else(|| "wrong_match".to_owned())?
             .clone();
-        let mapping = run
-            .session
-            .map_frame(result.frame(), PixelFormat::Rgba8, &bounded(OPERATION_WAIT))
-            .map_err(|_| "ownership_pinned".to_owned())?;
-        let retained_stamp = mapping.stamp();
-        let retained_prefix = mapping
-            .bytes()
-            .get(..mapping.bytes().len().min(16))
-            .map(<[u8]>::to_vec)
-            .ok_or_else(|| "ownership_pinned".to_owned())?;
+        let retained_stamp = result.frame().stamp();
+        let mapping_observer = run.session.mapping_observer();
         run.session
             .close(&bounded(OPERATION_WAIT))
             .map_err(|_| "cleanup_failed".to_owned())?;
         drop(query);
         drop(terminal);
-        // A closed session still owns its native session allocation until dropped.
-        // The retained result and mapping, not that owner, must survive teardown.
         drop(run.session);
         drop(run.engine);
-        let retained =
-            mapping.stamp() == retained_stamp && mapping.bytes().starts_with(&retained_prefix);
+
         let fresh_engine =
             native_engine().map_err(|_| "capability_unavailable:capture".to_owned())?;
         let fresh_target = run.fixture.authenticated_target(&fresh_engine)?;
         let fresh_session = fresh_engine
             .open(fresh_target, &OpenRequest::new(), &bounded(OPERATION_WAIT))
             .map_err(|error| format!("producer_stalled:{:?}:fresh_engine_open", error.status()))?;
-        let progressed = fresh_session
-            .acquire_frame(&FrameRequest::latest(), &bounded(OPERATION_WAIT))
-            .map(|_| true)
-            .map_err(|error| {
-                format!("producer_stalled:{:?}:fresh_first_acquire", error.status())
-            })?;
+        let fresh_token =
+            issue_fixture_visual_state(run.fixture, &mut run.last_ack, VisualMarkerState::Absent)?;
+        let mut fresh_observation = SessionObservation::default();
+        let _fresh_frame = synchronize_session_to_token(
+            run.fixture,
+            fresh_target,
+            &fresh_session,
+            &mut fresh_observation,
+            fresh_token,
+        )?;
+        let retained_native_frame = result.frame().stamp() == retained_stamp;
+        let mapping = mapping_observer
+            .map_frame(result.frame(), PixelFormat::Rgba8, &bounded(OPERATION_WAIT))
+            .map_err(|_| "ownership_pinned".to_owned())?;
+        let mapping_stamp = mapping.stamp();
+        let mapping_prefix = mapping
+            .bytes()
+            .get(..mapping.bytes().len().min(16))
+            .map(<[u8]>::to_vec)
+            .ok_or_else(|| "ownership_pinned".to_owned())?;
+        drop(result);
+        drop(mapping_observer);
         let fresh_closed = fresh_session.close(&bounded(OPERATION_WAIT)).is_ok();
+        drop(fresh_session);
         drop(fresh_engine);
-        Ok((retained && progressed && fresh_closed, metrics))
+
+        let mapping_only_engine =
+            native_engine().map_err(|_| "capability_unavailable:capture".to_owned())?;
+        let mapping_only_target = run.fixture.authenticated_target(&mapping_only_engine)?;
+        let mapping_only_session = mapping_only_engine
+            .open(
+                mapping_only_target,
+                &OpenRequest::new(),
+                &bounded(OPERATION_WAIT),
+            )
+            .map_err(|error| {
+                format!(
+                    "producer_stalled:{:?}:mapping_only_engine_open",
+                    error.status()
+                )
+            })?;
+        let mapping_only_token =
+            issue_fixture_visual_state(run.fixture, &mut run.last_ack, VisualMarkerState::Absent)?;
+        let mut mapping_only_observation = SessionObservation::default();
+        let _mapping_only_frame = synchronize_session_to_token(
+            run.fixture,
+            mapping_only_target,
+            &mapping_only_session,
+            &mut mapping_only_observation,
+            mapping_only_token,
+        )?;
+        let retained_mapping =
+            mapping.stamp() == mapping_stamp && mapping.bytes().starts_with(&mapping_prefix);
+        let mapping_only_closed = mapping_only_session.close(&bounded(OPERATION_WAIT)).is_ok();
+        drop(mapping_only_session);
+        drop(mapping_only_engine);
+        Ok((
+            matched
+                && retained_native_frame
+                && retained_mapping
+                && fresh_closed
+                && mapping_only_closed,
+            metrics,
+        ))
     })
 }
 
 fn fresh_session(cohort: &Rc<RefCell<Cohort>>) -> Sample {
     destructive_sample(cohort, |mut run| {
-        let _absent = establish_absent(&mut run)?;
+        let _predecessor_absent = establish_absent(&mut run)?;
         run.session
             .close(&bounded(OPERATION_WAIT))
             .map_err(|_| "cleanup_failed".to_owned())?;
         let session = run
             .engine
             .open(run.target, &OpenRequest::new(), &bounded(OPERATION_WAIT))
-            .map_err(|_| "typed_operation_failure:CaptureFailed".to_owned())?;
+            .map_err(|error| format!("typed_operation_failure:{:?}", error.status()))?;
+        let absent_token = run.issue_visual_state(VisualMarkerState::Absent)?;
+        let mut observation = SessionObservation::default();
+        let mut synchronization = [SessionSynchronization::new(&session, &mut observation)];
+        synchronize_sessions(
+            run.fixture,
+            run.target,
+            absent_token,
+            &mut synchronization,
+            Instant::now() + OPERATION_WAIT,
+        )
+        .map_err(|error| error.to_string())?;
+        let _absent_frame = synchronization[0]
+            .frame
+            .take()
+            .ok_or_else(|| "fixture_authority_failed".to_owned())?;
         let query = session
             .start_template_watch(TemplateWatchRequest::new(
                 run.template.clone(),
                 MatchOptions::from_defaults(run.template.defaults()),
                 OperationContext::new(),
             ))
-            .map_err(|_| "typed_operation_failure:VisionFailed".to_owned())?;
-        prime_pending(&query)?;
-        run.command_visible()?;
+            .map_err(|error| format!("typed_operation_failure:{:?}", error.status()))?;
+        wait_query_publication(&query)?;
+        let visible_token = run.issue_visual_state(VisualMarkerState::Visible)?;
         let (terminal, _) = wait_terminal(&query)?;
+        let matched = run.matches_visual_token(&terminal, &session, 1, None, visible_token)?;
         let closed = session.close(&bounded(OPERATION_WAIT)).is_ok();
         wait_for_backend_idle(OPERATION_WAIT)?;
-        let matched = terminal.is_match();
         let metrics = terminal_query_metrics(&query, matched)?;
         Ok((matched && closed, metrics))
     })
@@ -1562,51 +2437,45 @@ enum GeometryAction {
 
 fn geometry_sample(cohort: &Rc<RefCell<Cohort>>, action: GeometryAction) -> Sample {
     observed_sample(cohort, |run| {
-        run.command_absent()?;
-        let before = run
-            .session
-            .acquire_frame(&FrameRequest::latest(), &bounded(OPERATION_WAIT))
-            .map_err(|_| "wrong_source".to_owned())?;
+        let before = run.command_absent()?;
         let acknowledgement = match action {
             GeometryAction::Move => run.fixture.move_target(),
             GeometryAction::Resize => run.fixture.resize_target(),
             GeometryAction::Topology => run.fixture.move_next_display(),
         }?;
         run.accept_acknowledgement(acknowledgement)?;
-        let after = match action {
-            GeometryAction::Resize => wait_resize_change(run, &before),
-            GeometryAction::Move | GeometryAction::Topology => {
-                wait_geometry_change(run, before.stamp())
-            }
-        }?;
-        run.refresh_template(&after, "watch-marker-v1-geometry")?;
+        let after = run.command_absent()?;
+        let geometry_changed = before.stamp().geometry() != after.stamp().geometry()
+            && after.stamp().order(&before.stamp()) == Ok(FrameOrder::After);
+        let action_geometry_matches = match action {
+            GeometryAction::Resize => resize_geometry_matches(&before, &after),
+            GeometryAction::Topology => topology_geometry_matches(&before, &after),
+            GeometryAction::Move => true,
+        };
+        run.refresh_template(&after, "watch-marker-v2-geometry")?;
         let query = run.start_watch(TemplateStability::immediate())?;
-        prime_pending(&query)?;
-        run.command_visible()?;
+        wait_query_publication(&query)?;
+        let visible_token = run.issue_visual_state(VisualMarkerState::Visible)?;
         let (terminal, _) = wait_terminal(&query)?;
-        let geometry_changed = before.stamp().geometry() != after.stamp().geometry();
-        let topology_changed = !matches!(action, GeometryAction::Topology)
-            || topology_geometry_matches(&before, &after);
-        let exact = matched_exact(&terminal, run, 1, Some(before.stamp()));
+        let exact = run.matches_visual_token(
+            &terminal,
+            &run.session,
+            1,
+            Some(before.stamp()),
+            visible_token,
+        )?;
         let restore = match action {
-            GeometryAction::Move => Some(run.fixture.move_target()),
-            GeometryAction::Resize => None,
-            GeometryAction::Topology => Some(run.fixture.restore_placement()),
-        };
-        let restored = if let Some(restore) = restore {
-            let restore = restore?;
-            run.accept_acknowledgement(restore)?;
-            let restored_frame = wait_geometry_change(run, after.stamp())?;
-            let restored = before.descriptor() == restored_frame.descriptor()
-                && before.transform().covers_target() == restored_frame.transform().covers_target()
-                && before.transform().target() == restored_frame.transform().target();
-            run.refresh_template(&restored_frame, "watch-marker-v1-restored")?;
-            restored
-        } else {
-            true
-        };
-        run.command_absent()?;
-        let correct = geometry_changed && topology_changed && exact && restored;
+            GeometryAction::Move => run.fixture.move_target(),
+            GeometryAction::Resize => run.fixture.resize_target(),
+            GeometryAction::Topology => run.fixture.restore_placement(),
+        }?;
+        run.accept_acknowledgement(restore)?;
+        let restored_frame = run.command_absent()?;
+        let restored = before.descriptor() == restored_frame.descriptor()
+            && before.transform().covers_target() == restored_frame.transform().covers_target()
+            && before.transform().target() == restored_frame.transform().target();
+        run.refresh_template(&restored_frame, "watch-marker-v2-restored")?;
+        let correct = geometry_changed && action_geometry_matches && exact && restored;
         Ok((correct, terminal_query_metrics(&query, correct)?))
     })
 }
@@ -1617,13 +2486,19 @@ fn matched_sample(cohort: &Rc<RefCell<Cohort>>, newer_than: Option<FrameStamp>) 
         let stability = TemplateStability::duration(STATIC_STABILITY)
             .map_err(|_| "protocol_drift".to_owned())?;
         let query = run.start_watch(stability)?;
-        run.command_visible()?;
+        wait_query_publication(&query)?;
+        let visible_token = run.issue_visual_state(VisualMarkerState::Visible)?;
         wait_progress(&query, |progress| progress.confirmed_observations() >= 1)?;
         thread::sleep(STATIC_STABILITY);
         run.command_visual_transition()?;
         let (terminal, _) = wait_terminal(&query)?;
-        let correct = matched_exact(&terminal, run, 1, newer_than)
-            && matches!(&*terminal, TemplateTerminalOutcome::Matched(result) if result.confirmed_duration() >= STATIC_STABILITY);
+        let correct = run.matches_visual_token(
+            &terminal,
+            &run.session,
+            1,
+            newer_than,
+            visible_token,
+        )? && matches!(&*terminal, TemplateTerminalOutcome::Matched(result) if result.confirmed_duration() >= STATIC_STABILITY);
         run.command_absent()?;
         Ok((correct, terminal_query_metrics(&query, correct)?))
     })
@@ -1688,8 +2563,7 @@ fn paired_query_sample(
             .then(|| install_find_delay(SLOW_BACKEND).ok_or_else(|| "protocol_drift".to_owned()))
             .transpose()?;
         let before = backend_snapshot();
-        run.command_visible()?;
-        let visible = wait_marker_state(run, baseline, true)?;
+        let visible = run.command_visible()?;
         if visible.stamp().geometry() != baseline.geometry() {
             return Err("wrong_transform".to_owned());
         }
@@ -1703,7 +2577,7 @@ fn paired_query_sample(
         // publish another visible frame first. Either way, both queries must
         // retain post-boundary visible work while rate-limited.
         run.command_visual_transition()?;
-        let visible = wait_marker_state(run, visible.stamp(), true)?;
+        let visible = wait_marker_transition(run, visible.stamp(), true)?;
         if visible.stamp().geometry() != baseline.geometry() {
             return Err("wrong_transform".to_owned());
         }
@@ -1767,6 +2641,11 @@ fn destructive_sample(
         template,
         shape,
         last_ack,
+        observation,
+        startup_elapsed,
+        readiness_token,
+        readiness_stamp,
+        readiness_scale_milli,
     } = cohort
         .borrow()
         .fresh()
@@ -1779,6 +2658,11 @@ fn destructive_sample(
         template,
         shape,
         last_ack,
+        observation,
+        startup_elapsed,
+        readiness_token,
+        readiness_stamp,
+        readiness_scale_milli,
     };
     let result = operation(run);
     #[cfg(target_os = "macos")]
@@ -1789,7 +2673,7 @@ fn destructive_sample(
         || started.elapsed(),
     );
     #[cfg(target_os = "windows")]
-    let fixture_finished = fixture.finish();
+    let fixture_finished = fixture.finish().is_accepted();
     #[cfg(target_os = "windows")]
     drop(fixture);
     #[cfg(target_os = "windows")]
@@ -2020,6 +2904,19 @@ fn matched_target_exact(
         && newer_than.is_none_or(|prior| stamp.order(&prior) == Ok(FrameOrder::After))
 }
 
+fn frame_has_visual_token(
+    session: &Session,
+    fixture: &NativeFixture,
+    frame: &Frame,
+    expected: VisualToken,
+) -> Result<bool, String> {
+    let shape = token_shape(frame, fixture).ok_or_else(|| "wrong_transform".to_owned())?;
+    let mapping = session
+        .map_frame(frame, PixelFormat::Rgba8, &bounded(OPERATION_WAIT))
+        .map_err(|error| format!("typed_operation_failure:{:?}", error.status()))?;
+    Ok(decode_visual_token(&mapping, shape).is_ok_and(|token| token == expected))
+}
+
 fn terminal_match(outcome: &TemplateTerminalOutcome) -> Option<&mado_pilot::TemplateWatchResult> {
     match outcome {
         TemplateTerminalOutcome::Matched(result) => Some(result),
@@ -2075,9 +2972,11 @@ fn bounded(wait: Duration) -> OperationContext {
 }
 
 fn privacy_tokens_are_bounded() -> bool {
-    const ALLOWLIST: [&str; 7] = [
+    const ALLOWLIST: [&str; 9] = [
         "native-watch-control-v1",
+        native_watch_report::CONTROL_PROTOCOL_V2,
         "watch-marker-v1",
+        "watch-marker-v2",
         "opencv-cpu",
         "aarch64-apple-darwin",
         "x86_64-pc-windows-msvc",
@@ -2103,20 +3002,21 @@ fn report(arguments: &Arguments, plan: Plan, workloads: &[Workload]) {
     let (hardware, os_version) = Profile::host(&arguments.raw);
     assert!(privacy_tokens_are_bounded(), "privacy_violation");
     let profile = Profile {
-        fixture: native_watch_report::FIXTURE_DESCRIPTION.to_owned(),
+        fixture: native_watch_report::FIXTURE_DESCRIPTION_V2.to_owned(),
         fixture_sha256: fixture,
         benchmark_executable_sha256: Some(executable),
         hardware,
         os_version,
         deployment_target: Some(target_name().to_owned()),
-        build_profile: native_watch_report::BUILD_PROFILE.to_owned(),
-        correctness_oracle: native_watch_report::CORRECTNESS_ORACLE,
+        build_profile: native_watch_report::BUILD_PROFILE_V2.to_owned(),
+        correctness_oracle: native_watch_report::CORRECTNESS_ORACLE_V2,
         queue_policy: native_watch_report::QUEUE_POLICY,
         notes: Some(format!(
-            "source {source}; tree {tree}; fixture-source {fixture_source}; backend {backend}; toolchain {toolchain}; host {host}; cohort {cohort}; process {process}; control native-watch-control-v1"
+            "source {source}; tree {tree}; fixture-source {fixture_source}; backend {backend}; toolchain {toolchain}; host {host}; cohort {cohort}; process {process}; control {}",
+            native_watch_report::CONTROL_PROTOCOL_V2,
         )),
     };
-    native_watch_report::validate(
+    native_watch_report::validate_v2(
         &profile,
         native_watch_report::Provenance {
             source: &source,
@@ -2132,8 +3032,8 @@ fn report(arguments: &Arguments, plan: Plan, workloads: &[Workload]) {
     .unwrap_or_else(|failure| panic!("{}", failure.token()));
     bench_harness::report(
         &Benchmark {
-            id: "phase-4-native-template-watch",
-            workload: "native Rust facade maintained-session template-watch matrix",
+            id: "phase-4-native-template-watch-v2-lane-c",
+            workload: "optional V2 native Rust facade template-watch evidence campaign",
             phase: "4",
         },
         &profile,

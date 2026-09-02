@@ -6,7 +6,7 @@
 //! best-effort `WindowMessage` route; its control messages are private test
 //! coordination and are never used by production delivery.
 
-use std::fmt;
+use std::{fmt, num::NonZeroU32};
 
 use mado_pilot_capture::TargetDescription;
 use mado_pilot_core::{CapabilitySupport, InputDelivery, InputOperationKind, TargetKind};
@@ -81,6 +81,18 @@ pub const WATCH_MARKER_CELL_SIZE: i32 = 24;
 pub const WATCH_MARKER_WIDTH: i32 = WATCH_MARKER_CELL_SIZE * 3;
 /// Height of the two-cell `watch-marker-v1` pattern.
 pub const WATCH_MARKER_HEIGHT: i32 = WATCH_MARKER_CELL_SIZE * 2;
+/// Client-space X origin of the qualification visual-token grid.
+pub const WATCH_TOKEN_X: i32 = 176;
+/// Client-space Y origin of the qualification visual-token grid.
+pub const WATCH_TOKEN_Y: i32 = 48;
+/// Width and height of one qualification visual-token cell.
+pub const WATCH_TOKEN_CELL_SIZE: i32 = 8;
+/// Logical width of the qualification visual-token grid.
+pub const WATCH_TOKEN_GRID_WIDTH: usize = 10;
+/// Logical height of the qualification visual-token grid.
+pub const WATCH_TOKEN_GRID_HEIGHT: usize = 9;
+/// Total logical cells in the qualification visual-token grid.
+pub const WATCH_TOKEN_CELL_COUNT: usize = WATCH_TOKEN_GRID_WIDTH * WATCH_TOKEN_GRID_HEIGHT;
 /// Per-channel tolerance used when a captured benchmark frame is checked.
 pub const FILL_TOLERANCE: u8 = 8;
 
@@ -119,12 +131,12 @@ pub enum FixtureVisualState {
 }
 
 impl FixtureVisualState {
-    /// Returns the exact bounded acknowledgement emitted after a successful repaint.
+    /// Returns the bounded acknowledgement label for this state.
     #[must_use]
-    pub const fn acknowledgement(self) -> &'static str {
+    pub const fn label(self) -> &'static str {
         match self {
-            Self::Absent => "control visual-state=absent",
-            Self::Visible => "control visual-state=visible",
+            Self::Absent => "absent",
+            Self::Visible => "visible",
         }
     }
 
@@ -135,14 +147,119 @@ impl FixtureVisualState {
     }
 }
 
-/// Decodes one exact watcher-fixture control message.
-#[must_use]
-pub const fn visual_state_for_control(message: u32) -> Option<FixtureVisualState> {
-    match message {
-        CONTROL_SET_VISUAL_ABSENT => Some(FixtureVisualState::Absent),
-        CONTROL_SET_VISUAL_VISIBLE => Some(FixtureVisualState::Visible),
-        _ => None,
+/// One atomically rendered private watcher-fixture visual command.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct FixtureVisualCommand {
+    state: FixtureVisualState,
+    token: NonZeroU32,
+}
+
+impl FixtureVisualCommand {
+    /// Creates one command from a validated nonzero token.
+    #[must_use]
+    pub const fn new(state: FixtureVisualState, token: NonZeroU32) -> Self {
+        Self { state, token }
     }
+
+    /// Returns the requested marker state.
+    #[must_use]
+    pub const fn state(self) -> FixtureVisualState {
+        self.state
+    }
+
+    /// Returns the exact token that must appear in captured pixels.
+    #[must_use]
+    pub const fn token(self) -> NonZeroU32 {
+        self.token
+    }
+
+    /// Formats the exact bounded acknowledgement emitted after repaint.
+    #[must_use]
+    pub fn acknowledgement(self) -> String {
+        format!(
+            "control visual-state={} token={}",
+            self.state.label(),
+            self.token
+        )
+    }
+
+    /// Packs the token and marker state for one atomic renderer snapshot.
+    #[must_use]
+    pub fn packed(self) -> u64 {
+        (u64::from(self.token.get()) << 1) | u64::from(self.state.marker_is_visible())
+    }
+
+    /// Restores one command from an atomic renderer snapshot.
+    #[must_use]
+    pub fn from_packed(packed: u64) -> Option<Self> {
+        let token = u32::try_from(packed >> 1).ok().and_then(NonZeroU32::new)?;
+        let state = if packed & 1 == 0 {
+            FixtureVisualState::Absent
+        } else {
+            FixtureVisualState::Visible
+        };
+        Some(Self { state, token })
+    }
+}
+
+/// Decodes one exact watcher-fixture control and its nonzero `wParam` token.
+#[must_use]
+pub fn visual_command_for_control(message: u32, raw_token: usize) -> Option<FixtureVisualCommand> {
+    let state = match message {
+        CONTROL_SET_VISUAL_ABSENT => FixtureVisualState::Absent,
+        CONTROL_SET_VISUAL_VISIBLE => FixtureVisualState::Visible,
+        _ => return None,
+    };
+    let token = u32::try_from(raw_token).ok().and_then(NonZeroU32::new)?;
+    Some(FixtureVisualCommand::new(state, token))
+}
+
+/// Returns one logical cell from the cross-platform qualification token encoding.
+#[must_use]
+pub fn visual_token_cell(command: FixtureVisualCommand, index: usize) -> Option<bool> {
+    const TOP: [bool; WATCH_TOKEN_GRID_WIDTH] = [
+        true, false, true, true, false, false, true, false, false, true,
+    ];
+    const BOTTOM: [bool; WATCH_TOKEN_GRID_WIDTH] = [
+        false, false, true, false, true, true, true, false, true, false,
+    ];
+    const PAYLOAD_START: usize = WATCH_TOKEN_GRID_WIDTH;
+    const PAYLOAD_END: usize = WATCH_TOKEN_CELL_COUNT - WATCH_TOKEN_GRID_WIDTH;
+
+    if index >= WATCH_TOKEN_CELL_COUNT {
+        return None;
+    }
+    if index < PAYLOAD_START {
+        return Some(TOP[index]);
+    }
+    if index >= PAYLOAD_END {
+        return Some(BOTTOM[index - PAYLOAD_END]);
+    }
+
+    let payload = index - PAYLOAD_START;
+    let token = command.token().get();
+    Some(match payload {
+        0..32 => token & (1_u32 << payload) != 0,
+        32..64 => !token & (1_u32 << (payload - 32)) != 0,
+        64 => command.state().marker_is_visible(),
+        65..70 => {
+            let bit = payload - 65;
+            visual_token_checksum(token, command.state()) & (1_u8 << bit) != 0
+        }
+        _ => unreachable!("10x9 visual-token layout has exactly 70 payload cells"),
+    })
+}
+
+fn visual_token_checksum(token: u32, state: FixtureVisualState) -> u8 {
+    let marker_salt = if state.marker_is_visible() {
+        0x15a5_3c6d
+    } else {
+        0x0a5a_c396
+    };
+    let mut mixed = token ^ token.rotate_left(7) ^ token.rotate_right(11) ^ marker_salt;
+    mixed ^= mixed >> 16;
+    mixed ^= mixed >> 8;
+    u8::try_from(mixed & 0x1f).expect("five checksum bits fit in u8")
 }
 /// Non-sensitive information the fixture retains about one accepted event.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -443,10 +560,10 @@ fn key_code(key: Key) -> Result<u32, InputFault> {
 mod tests {
     use super::{
         CONTROL_SET_VISUAL_ABSENT, CONTROL_SET_VISUAL_VISIBLE, CONTROL_TRANSITION_VISUAL,
-        EventSummary, FixtureSelectionError, FixtureVisualState, HEADER_BYTES,
-        VISUAL_TRANSITION_ACKNOWLEDGEMENT, encode_event, fixture_title, format_event_line,
-        is_query, parse_event_line, query_packet, select_unique_fixture, summarize,
-        visual_state_for_control,
+        EventSummary, FixtureSelectionError, FixtureVisualCommand, FixtureVisualState,
+        HEADER_BYTES, VISUAL_TRANSITION_ACKNOWLEDGEMENT, WATCH_TOKEN_CELL_COUNT, encode_event,
+        fixture_title, format_event_line, is_query, parse_event_line, query_packet,
+        select_unique_fixture, summarize, visual_command_for_control, visual_token_cell,
     };
     use mado_pilot_capture::{CoordinateSupport, PixelFormat, TargetDescription};
     use mado_pilot_core::{
@@ -454,6 +571,7 @@ mod tests {
         PixelExtent, ProviderId, SubmissionEvidence, TargetCapability, TargetKind,
     };
     use mado_pilot_input::{InputEvent, InputFault, Key};
+    use mado_pilot_testkit::visual_token::{VisualMarkerState, VisualToken};
 
     #[test]
     fn query_and_event_packets_are_versioned_and_bounded() {
@@ -486,28 +604,62 @@ mod tests {
         assert_eq!(parse_event_line("event kind=7 units=3 trailing"), None);
     }
     #[test]
-    fn watcher_visual_controls_decode_to_exact_bounded_acknowledgements() {
-        for (control, expected) in [
-            (CONTROL_SET_VISUAL_ABSENT, FixtureVisualState::Absent),
-            (CONTROL_SET_VISUAL_VISIBLE, FixtureVisualState::Visible),
+    fn watcher_visual_controls_bind_exact_tokens_to_shared_logical_cells() {
+        for (control, expected_state, expected_marker) in [
+            (
+                CONTROL_SET_VISUAL_ABSENT,
+                FixtureVisualState::Absent,
+                VisualMarkerState::Absent,
+            ),
+            (
+                CONTROL_SET_VISUAL_VISIBLE,
+                FixtureVisualState::Visible,
+                VisualMarkerState::Visible,
+            ),
         ] {
-            let state = visual_state_for_control(control).expect("known visual control");
-            assert_eq!(state, expected);
+            let command =
+                visual_command_for_control(control, 42).expect("known token-bearing control");
+            assert_eq!(command.state(), expected_state);
+            assert_eq!(command.token().get(), 42);
             assert_eq!(
-                state.acknowledgement(),
-                match expected {
-                    FixtureVisualState::Absent => "control visual-state=absent",
-                    FixtureVisualState::Visible => "control visual-state=visible",
-                }
+                command.acknowledgement(),
+                format!("control visual-state={} token=42", expected_state.label())
+            );
+            assert_eq!(
+                FixtureVisualCommand::from_packed(command.packed()),
+                Some(command)
+            );
+
+            let shared = VisualToken::new(42, expected_marker)
+                .expect("nonzero token")
+                .encode();
+            for (index, expected) in shared.into_iter().enumerate() {
+                assert_eq!(visual_token_cell(command, index), Some(expected));
+            }
+            assert_eq!(visual_token_cell(command, WATCH_TOKEN_CELL_COUNT), None);
+        }
+
+        assert_eq!(FixtureVisualCommand::from_packed(0), None);
+        assert_eq!(
+            visual_command_for_control(CONTROL_SET_VISUAL_ABSENT, 0),
+            None
+        );
+        assert_eq!(
+            visual_command_for_control(CONTROL_TRANSITION_VISUAL, 42),
+            None
+        );
+        if let Ok(overflow) = usize::try_from(u64::from(u32::MAX) + 1) {
+            assert_eq!(
+                visual_command_for_control(CONTROL_SET_VISUAL_VISIBLE, overflow),
+                None
             );
         }
         assert_eq!(
             VISUAL_TRANSITION_ACKNOWLEDGEMENT,
             "control visual-transition=ready"
         );
-        assert_eq!(visual_state_for_control(CONTROL_TRANSITION_VISUAL), None);
         assert_eq!(
-            visual_state_for_control(CONTROL_TRANSITION_VISUAL + 1),
+            visual_command_for_control(CONTROL_TRANSITION_VISUAL + 1, 42),
             None
         );
     }

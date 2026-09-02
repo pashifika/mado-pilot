@@ -13,9 +13,8 @@ test them, so that this document never describes behavior a reader cannot use.
 **Status: Phase 1, Phase 2 native capture/input/observation, and Phase 3
 singular/grouped OCR composition reach Rust, C, and C++. Phase 4 bounded
 template-presence queries are qualified at the Rust replay/OpenCV boundary and
-implemented at the native WGC/ScreenCaptureKit facade boundaries; native
-watcher support remains withheld after the final cross-host qualification ended
-Apple terminal red.** Platform-neutral contracts,
+at the native WGC/ScreenCaptureKit Rust facade boundaries on the named release
+targets under ADR 0064.** Platform-neutral contracts,
 deterministic replay, asset loading, OpenCV matching, bounded ONNX OCR with
 explicit initialization-time provider policy, finite template watcher
 scheduling, runtime orchestration, engine-scoped diagnostics, the Rust facade,
@@ -96,6 +95,36 @@ Integrated candidate `9cf746f` contains both repairs, but its sole authorized
 Apple and Windows builders terminated at apparatus controls before artifact
 authority or process 1. ADR 0063 retains both attempts without retry. No current
 integrated cohort exists, so native support remains withheld.
+ADR 0064 adopts Qualification V2 from PR #64's merge result without changing
+any PR #59–#64 record. Lane A retains deterministic replay/OpenCV scheduler and
+query authority; required Windows and macOS Lane B jobs own only the compact WGC
+and ScreenCaptureKit semantic contract driven by an acknowledged pixel-encoded
+post-open token; Lane C retains optional statistical, topology, resource, and
+endurance evidence. Source `318ad1c` passed all eight Apple Lane B semantic and
+cleanup scenarios on the approved Retina host. Windows execution source
+`3e3079f` passed all eight Lane B semantic and cleanup scenarios, the
+deterministic target-liveness precedence suite, its single-point mutation proof,
+and the hosted post-acknowledgement latency check on the approved mixed-DPI
+host. Test-only successor `53608af` additionally pins the earlier-caller-deadline
+clamp; all six focused tests and the Windows/macOS/repository CI jobs pass
+without changing a product artifact. The complete product diff from the Apple
+source through `53608af` contains runtime changes only for Windows; reviewed
+target-isolated applicability therefore carries the Apple result forward
+without attributing an unexecuted Apple process. Required Lane A also passes at
+the Windows execution source. Rust native watcher support is qualified on the
+named release targets. This successor protocol neither identifies nor repairs
+the historical ScreenCaptureKit suspension, and it does not promise an initial
+pixel frame for an unchanged target.
+
+```mermaid
+flowchart LR
+    A[Required Lane A replay/OpenCV] --> D{Native support decision}
+    W[Required Windows Lane B WGC] --> D
+    M[Required macOS Lane B ScreenCaptureKit] --> D
+    C[Optional Lane C evidence/endurance] -. separate authority .-> D
+    D --> Q[Qualified Rust native watcher]
+```
+
 OCR predicates, callbacks/subscriptions, C/C++, automatic input,
 target activation, arbitrary application/template/ROI compatibility or timing,
 real-time guarantees, packaging, artifacts, tags, and the `v0.4.0` release
@@ -107,8 +136,7 @@ See [Implementation status](#implementation-status).
 MadoPilot is a headless visual automation runtime for applications and agents.
 It discovers windows and displays, captures frame streams, maps coordinate
 spaces, performs template matching and one-shot OCR, waits for stable template
-presence through a bounded Rust query over replay or implemented native sessions
-whose native support remains withheld,
+presence through a bounded Rust query over replay or qualified native sessions,
 injects input through explicit platform capabilities, and reports structured
 outcomes. OCR watchers remain future work.
 
@@ -121,7 +149,7 @@ Version one targets two platforms, and each is verified natively:
 
 | Release target | Native verification host |
 |---|---|
-| `x86_64-pc-windows-msvc` | Windows 11 Pro 25H2 (26200.9168), SDK 10.0.26100.0; `windows-2025` CI remains supporting server evidence |
+| `x86_64-pc-windows-msvc` | Windows 11 Pro 25H2 build family 26200 (Qualification V2 host 26200.9278; earlier accepted evidence remains revision-bound), SDK 10.0.26100.0; `windows-2025` CI remains supporting server evidence |
 | `aarch64-apple-darwin` | Apple Silicon macOS 26.5.2 (25F84), SDK 26.5 |
 
 A cross-compiled result never stands in for native verification of the other
@@ -141,8 +169,8 @@ owns and where they genuinely differ.
 | Capture ownership | Windows Graphics Capture streams and Direct3D 11 resource lifetime (implemented) | ScreenCaptureKit streams and Core Video frame lifetime (implemented) |
 | Input ownership | System pointer/keyboard/text plus explicit exact-window `WindowMessage`: ordinary retained top-level windows are unknown-but-attemptable with target-queue evidence, while the dedicated fixture is supported with protocol acknowledgement (implemented in the platform package) | `CGEvent` system pointer/keyboard/text plus an explicitly selected owning-process `ProcessDirected` route. Final protocol-v11 candidate `dec43d7` passed the controlled profiles, and independent `single`, exact two-display non-mirrored `same-scale`, and `mixed-scale` matrices passed for all fourteen controlled pairs. Their release decision is 14 qualified, 0 rejected, and 0 unexecuted. No `WindowMessage` route exists |
 | Permission handling | Capture presents no permission UI; no permission probe exists; input compares target integrity and reports proven UIPI at route preflight | Screen Recording and event-post access reported separately without permission UI; `PermissionKind::InputControl` maps to the public `CGPreflightPostEventAccess` decision re-read before every irreversible event, regardless of the Privacy & Security pane label, while legacy Accessibility trust is only a separate focus input and paired qualification fact (implemented) |
-| Native Rust template watcher | Implemented through maintained WGC window/display sessions; historical source `f16591f` passed 5/5 with the corrected different-monitor 144-to-120-DPI scale oracle. Integrated candidate `9cf746f` includes ADR 0061's private report-admission repair, but its authorized builder terminated at a pre-namespace environment control before Cargo. ADR 0063 retains the attempt and cross-target support remains withheld | Implemented through maintained ScreenCaptureKit window/display sessions; historical source `f16591f` passed processes 1–4, then process 5 terminated red at `retained_result_mapping` after ScreenCaptureKit suspended the new stream. Integrated candidate `9cf746f` includes ADR 0062's exact retained-lifetime and typed-finalization repair, but its authorized builder terminated at a post-Cargo apparatus control before a complete artifact pair or process 1. ADR 0063 retains the attempt and support remains withheld |
-| Native verification host | Core i7-12700KF / RTX 4080 Windows 11 Pro 25H2 build family 26200, current canonical UBR, SDK 10.0.26100.0; `windows-2025` CI remains supporting server evidence. ADR 0061 treats UBR and bounded hardware text as diagnostic provenance while the exact approved host class remains compatibility authority | Apple Silicon macOS 26.5.2 (25F84), SDK 26.5 |
+| Native Rust template watcher | Implemented through maintained WGC window/display sessions; historical source `f16591f` passed 5/5 with the corrected different-monitor 144-to-120-DPI scale oracle. Integrated candidate `9cf746f` includes ADR 0061's private report-admission repair, but its authorized builder terminated at a pre-namespace environment control before Cargo. ADR 0063 retains the attempt. Qualification V2 Windows execution source `3e3079f` passed all eight compact semantic and cleanup scenarios, including acknowledged target loss and mixed-DPI token geometry; test-only successor `53608af` pins the earlier deadline clamp, and the boundary is supported on the qualified Windows floor | Implemented through maintained ScreenCaptureKit window/display sessions; historical source `f16591f` passed processes 1–4, then process 5 terminated red at `retained_result_mapping` after ScreenCaptureKit suspended the new stream. Integrated candidate `9cf746f` includes ADR 0062's exact retained-lifetime and typed-finalization repair, but its authorized builder terminated at a post-Cargo apparatus control before a complete artifact pair or process 1. ADR 0063 retains the attempt. Qualification V2 source `318ad1c` passed all eight compact semantic and cleanup scenarios with exact fixture finalization; reviewed target-isolated applicability carries that result through `53608af`, and the boundary is supported on the qualified macOS floor |
+| Native verification host | Core i7-12700KF / RTX 4080 Windows 11 Pro 25H2 build family 26200, Qualification V2 UBR 9278, SDK 10.0.26100.0; `windows-2025` CI remains supporting server evidence. ADR 0061 treats UBR and bounded hardware text as diagnostic provenance while the exact approved host class remains compatibility authority | Apple M1 Pro macOS 26.6.2 (25G83), SDK 26.5; `macos-26` CI remains compile and deterministic-contract evidence without Screen Recording authority |
 | Deployment floor | Windows 11 25H2 build family 26200 on a currently serviced x64 desktop installation; earlier versions unsupported | macOS 26.5.2; older versions unsupported |
 | Candidate verification | Windows Phase 1 reruns plus repository and release-target checks pass on the exact exit candidate; ADRs 0026, 0028, 0031, and 0032 retain their separate Windows workload sources | Apple Silicon Phase 1 runs remain attributed to `d8336be` and apply by reviewed complete diff; repository and release-target checks pass on the exact exit candidate; ADRs 0024, 0025, 0029, and 0030 retain their separate macOS workload sources |
 
@@ -928,16 +956,16 @@ responsibilities a later phase takes on.
 | Asset resolution into OCR model sources | Implemented in `mado-pilot-assets` with exact component length and SHA-256 validation and immutable shared ownership |
 | Deep search orchestration, result envelope, final operation commit | Implemented in `mado-pilot-runtime` |
 | Input composition: same-provider adapter pairing, required-versus-optional input admission with bounded release of committed capture, per-controller sequence serialization, the one-terminal-receipt rule, and two-sided close | Implemented in `mado-pilot-runtime`. Selecting a permitted route, arbitrating focus, resolving a coordinate against live geometry, revalidating before each irreversible event, and releasing what a stopped sequence pressed stay in `mado-pilot-input` and the Adapter implementing it |
-| Bounded template-presence query and scheduling | Implemented in `mado-pilot-runtime` for Rust replay/OpenCV and maintained native WGC/ScreenCaptureKit sessions: current-once then strictly newer frame acquisition, finite latest-wins work, exact change/rate admission, confirmed-only stability, exact coalescing, two-worker fair progress, stale-generation rejection, and idempotent query/session/engine-scheduler close. ADRs 0051 and 0052 accept deterministic replay/OpenCV profiles; ADR 0053 retains target-specific native regression budgets; ADR 0061 separates internal native qualification report privacy/schema admission from typed environment compatibility; ADR 0062 establishes exact Apple fixture lifetime before acceptance and requires explicit typed finalization. ADR 0063 retains both `9cf746f` builder attempts terminal red before process 1, so ADR 0057 still withholds native support |
+| Bounded template-presence query and scheduling | Implemented in `mado-pilot-runtime` for Rust replay/OpenCV and maintained native WGC/ScreenCaptureKit sessions: current-once then strictly newer frame acquisition, finite latest-wins work, exact change/rate admission, confirmed-only stability, exact coalescing, two-worker fair progress, stale-generation rejection, and idempotent query/session/engine-scheduler close. ADRs 0051 and 0052 retain deterministic replay/OpenCV authority; ADR 0053 retains historical target-specific native regression budgets. ADR 0064 adds the token-driven V2 split: Lane A owns deterministic behavior, each target has one compact Lane B integration job, and Lane C statistics are optional. Both exact Lane B host contracts pass, and reviewed target-isolated applicability carries the Apple result through the final Windows evidence source |
 | OCR coalescing and wait-for-text | Not implemented |
 | Public Rust operations for the deterministic replay workflow | Implemented in `mado-pilot`, including the blocking replay template watcher example with separate query/wait operation contexts |
-| Public Rust operations for native and replay workflows | Implemented in `mado-pilot`, including explicit optional backend wiring, accepted CPU default/profile constructors, owning provider-policy constructors, immutable provider descriptors, borrowed one-to-eight-zone scans, and Rust template query types over replay, WGC, and ScreenCaptureKit sessions. Replay/OpenCV watcher support is qualified; native watcher support remains withheld after ADR 0063 retained both integrated builder attempts terminal red before process 1. No platform-native, `ort`, worker, channel, Tokio, or callback type crosses the facade; C ABI/C++ watcher APIs remain absent |
+| Public Rust operations for native and replay workflows | Implemented in `mado-pilot`, including explicit optional backend wiring, accepted CPU default/profile constructors, owning provider-policy constructors, immutable provider descriptors, borrowed one-to-eight-zone scans, and Rust template query types over replay, WGC, and ScreenCaptureKit sessions. Replay/OpenCV and native WGC/ScreenCaptureKit watcher support is qualified on the named release targets under ADR 0064. No platform-native, `ort`, worker, channel, Tokio, or callback type crosses the facade; C ABI/C++ watcher APIs remain absent |
 | Default adapter wiring and backend rules | OpenCV matching remains required. Every pre-provider constructor preserves CPU behavior. `*_engine_with_ocr_provider` is the only integrated provider-policy path; automatic selection uses only a release-qualified target accelerator, preferred fallback is initialization-only, and required/provider inference failure never falls back |
 | C ABI functions, C header, dynamic library | Implemented through ABI 1.5. ABI 1.0, 1.2, 1.3, and 1.4 remain frozen complete 424-, 592-, 648-, and 720-byte prefixes. ABI 1.5 appends provider construction at offset 720 and engine-owned provider descriptor access at offset 728 for a complete 736-byte table under ADR 0046 |
 | C ABI static library and ABI-major release loader names | Not implemented; see [c-abi.md](c-abi.md) |
 | C++ RAII wrapper, `MadoPilot::C` and `MadoPilot::Cpp` CMake targets | Implemented through ABI 1.5 as a header-only adapter, including owning profile/zone/provider options with repaired projections, move-only grouped results, explicit clone, lvalue-only borrowed OCR/provider descriptor views, typed empty groups, and complete negotiated-suffix refusal |
 | CMake install and export set, pkg-config file | Not implemented; consumption is from the development tree |
-| Numeric performance budgets | Phase 1 and the accepted Phase 2 profiles remain revision-bound under ADRs 0008 and 0024–0032. ADR 0037 accepts target-specific Apple M1 Pro and Core i7-12700KF default-OCR profiles; Phase 3 default-OCR `G-013` is complete on both release targets. ADRs 0039–0041 accept separate exact-source bounded-v2 singular workload budgets. ADR 0044 accepts integrated grouped latency/resource/lifecycle ceilings; ADR 0045 corrects only the new Apple integrated startup value to 200 ms while preserving historical ADR 0041 profiles. ADR 0048 remains historical provider evidence; ADR 0049 adds exact successor Windows CUDA/fallback profiles. ADRs 0051 and 0052 accept replay/OpenCV watcher ceilings; ADR 0053 fixes independent native WGC and ScreenCaptureKit latency, heap, RSS, and growth budgets. ADR 0057 rejects the historical final native cohorts, so those budgets do not currently promote native watcher support |
+| Numeric performance budgets | Phase 1 and accepted Phase 2 profiles remain revision-bound under ADRs 0008 and 0024–0032. ADRs 0037, 0039–0041, 0044, 0045, 0048, and 0049 retain their exact OCR/provider evidence. ADRs 0051 and 0052 retain replay/OpenCV watcher ceilings, and ADR 0053 retains independent native WGC and ScreenCaptureKit latency, heap, RSS, and growth budgets. Qualification V2 does not reinterpret those measurements: target-specific statistical enforcement is optional Lane C evidence and cannot replace either required Lane B semantic result |
 | Native permission behavior | Implemented on macOS as non-prompting probes. Windows has no permission probe; its input path performs non-prompting integrity comparison and reports proven UIPI without elevation |
 | Release packaging | Not implemented |
 | ABI compatibility testing | Implemented for frozen ABI 1.0, 1.2, 1.3, and 1.4 headers against current ABI 1.5. Historical callers compile only against immutable headers, negotiate their exact extents, and execute against the current library; current C++ tests refuse partial 1.3, 1.4, and 1.5 operations before reading missing entries |
@@ -1612,6 +1640,17 @@ while still holding the mapping mutex, and removes any late assignment before
 it becomes observable. If a later Change proves recovery and adds a fresh
 device and stream epoch, leased old-generation storage still cannot be
 repurposed.
+
+On Windows, an in-flight frame acquisition with no qualifying publication
+derives an internal 100 ms deadline from the caller's clock, then rechecks the
+raw native key. This default avoids an unbounded WGC wait when publication stops
+before `GraphicsCaptureItem.Closed` reaches the stream while limiting idle
+liveness work to about ten probes per second. The caller's earlier deadline and
+cancellation keep precedence. The resulting detection latency is bounded to
+approximately 100 ms only when the raw key disappears: key presence does not
+prove identity, and an immediately recycled HWND still requires the
+authoritative `Closed` event or a caller deadline. A caller-supplied synthetic
+clock must advance for the derived interval to expire.
 
 WGC supplies no distinct positive provenance for an external explicit-stop
 outcome when an item or frame reports `RO_E_CLOSED`. The Adapter therefore
@@ -2625,10 +2664,11 @@ queue or `DiagnosticOperationId`; public `TemplateQueryId` issuance is
 unaffected.
 
 Supported and budget-qualified now: the fixed Rust replay/OpenCV profile shown by
-`crates/mado-pilot/examples/template-watch.rs`. The maintained Windows WGC and
+`crates/mado-pilot/examples/template-watch.rs` and the maintained Windows WGC and
 macOS ScreenCaptureKit Rust session boundary shown by
-`crates/mado-pilot/examples/native-template-watch.rs` is implemented but not
-support-qualified. Independent review rejected the historical final cohorts
+`crates/mado-pilot/examples/native-template-watch.rs` on the named release
+targets under ADR 0064.
+Independent review rejected the historical final cohorts
 because their engine-close and Windows topology oracles were incomplete.
 Replacement source `f16591f` corrected both semantics. Its fresh Windows cohort
 passed 5/5, including the different-monitor 144-to-120-DPI transition. Its fresh
@@ -2655,6 +2695,18 @@ terminated at a post-Cargo apparatus control and its sole authorized Windows
 builder terminated at a pre-namespace environment control. Neither host created
 an artifact authority or launched process 1. ADR 0063 retains both attempts
 without retry, and native support remains withheld.
+ADR 0064 selects token-driven Qualification V2 from PR #64's merge result and
+keeps every PR #59–#64 source, protocol, and result revision-bound. Required
+Lane A deterministic authority, separate Windows and macOS compact Lane B native
+semantics, and optional Lane C evidence/endurance authority are independent.
+Source `318ad1c` passes the Apple Lane B contract, and Windows execution source
+`3e3079f` passes the Windows contract, deterministic liveness precedence suite,
+single-point mutation proof, and hosted post-acknowledgement latency check.
+Test-only successor `53608af` pins the earlier-deadline clamp and passes all six
+focused tests and required CI. The intervening runtime changes are
+Windows-target-only, so reviewed complete-diff applicability joins the two exact
+results and cross-target Rust native watcher support is qualified. Neither
+result establishes a historical ScreenCaptureKit root cause.
 
 Source exhaustion refuses later query starts but lets an already acquired
 pending or in-flight final frame drain. Successfully drained work that leaves
@@ -2669,8 +2721,9 @@ source, deadline, rate/stability policy, or backend failure; no retry, fallback,
 automatic input, or capacity tuning is implied.
 
 The native target profiles remain revision-bound regression ceilings for
-repository fixtures and controlled scheduler boundaries; they do not currently
-promote native support and are not arbitrary application/template/ROI timing
+repository fixtures and controlled scheduler boundaries; they do not
+independently promote support, which instead rests on ADR 0064's compact
+semantic contracts. They are not arbitrary application/template/ROI timing
 claims, service-level objectives, or real-time guarantees. Numeric timing
 remains withheld for the eight single-run gates and cadence-dependent aggregate
 mapping, work, and publication rates. OCR predicates, callbacks/subscriptions,

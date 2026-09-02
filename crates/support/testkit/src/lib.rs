@@ -47,11 +47,13 @@ pub mod controlled_storage;
 pub mod fixture_checksums;
 pub mod input_contract;
 pub mod match_fixtures;
+pub mod native_watch_contract_report;
 pub mod native_watch_report;
 pub mod ocr_contract;
 pub mod png;
 pub mod scripted_permission;
 pub mod vision_contract;
+pub mod visual_token;
 
 pub use clock::ManualClock;
 pub use controlled_capture::ControlledCapture;

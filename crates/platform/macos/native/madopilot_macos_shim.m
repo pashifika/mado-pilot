@@ -4155,6 +4155,7 @@ static const MPShimKeyboardLayoutApi *mp_shim_keyboard_layout_api(void) {
 @end
 @protocol MPShimWorkspaceOpenConfiguration <NSObject>
 - (void)setArguments:(NSArray *)arguments;
+- (void)setEnvironment:(NSDictionary *)environment;
 - (void)setCreatesNewApplicationInstance:(BOOL)creates_new_instance;
 - (void)setPromptsUserIfNeeded:(BOOL)prompts_user;
 - (void)setAddsToRecentItems:(BOOL)add_to_recents;
@@ -4995,6 +4996,10 @@ mp_shim_status mp_shim_fixture_application_launch(
             return MP_SHIM_UNSUPPORTED;
         }
         [configuration setArguments:launch_arguments];
+        /* The qualification fixture receives authority only through explicit
+         * arguments and its authenticated control socket. Do not let ambient
+         * runner variables become an undeclared child input. */
+        [configuration setEnvironment:@{}];
         [configuration setCreatesNewApplicationInstance:YES];
         [configuration setPromptsUserIfNeeded:NO];
         [configuration setAddsToRecentItems:NO];
@@ -5263,6 +5268,9 @@ static void mp_shim_fixture_test_delayed_death_observation(
 @implementation MPShimFixtureTestConfiguration
 - (void)setArguments:(NSArray *)arguments {
     (void)arguments;
+}
+- (void)setEnvironment:(NSDictionary *)environment {
+    (void)environment;
 }
 - (void)setCreatesNewApplicationInstance:(BOOL)creates_new_instance {
     (void)creates_new_instance;

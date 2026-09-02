@@ -302,12 +302,43 @@ Neither host produced an artifact authority or launched process 1. ADR 0063
 retains both attempts without retry and classifies them as apparatus failures,
 not product-gate results. The required integrated Apple and Windows cohorts
 therefore do not exist, and the support decision remains withheld.
+
+ADR 0064 adopts Qualification V2 as a new identity from PR #64's merge result;
+it does not amend any PR #59–#64 record or claim a cause or repair for the
+historical ScreenCaptureKit suspension. V2 separates authority:
+
+- required Lane A replay/OpenCV suites own deterministic scheduler, query,
+  lifecycle, diagnostics, and complete-work semantics;
+- required Lane B host contracts own only the compact WGC and ScreenCaptureKit
+  integration boundary, using a unique acknowledged post-open visual token that
+  every required session must decode from a newer authoritative pixel frame;
+  and
+- optional Lane C owns statistical latency, resource, topology, provenance, and
+  endurance evidence without replacing or reinterpreting Lane B execution.
+
+Session open alone is not a first-pixel guarantee. Lane B has finite absolute
+startup, token-observation, operation, and teardown deadlines, reports semantic
+and cleanup facts independently, and classifies pre-execution apparatus failure
+as `INFRA` or `UNSUPPORTED` rather than product `FAIL`. Source `318ad1c` passes
+all eight Apple Lane B semantic and cleanup scenarios with exact 2× token
+capture and fixture finalization. Windows execution source `3e3079f` passes all
+eight Lane B semantic and cleanup scenarios on the approved mixed-DPI host, the
+deterministic liveness precedence suite and single-point mutation proof, and the
+hosted acknowledged-target-loss latency check. Test-only successor `53608af`
+pins the earlier caller deadline; all six focused tests and the Windows, macOS,
+and repository CI jobs pass. The runtime changes between the Apple source and
+that successor are Windows-target-only, so reviewed complete-diff applicability
+preserves the Apple result. Required Lane A also passes at the Windows execution
+source; cross-target Rust native watcher support is qualified on the named
+platform floors.
+
 OCR predicates, callbacks/subscriptions, C/C++, automatic input, target activation,
 arbitrary application/template/ROI compatibility or timing, real-time guarantees,
 packaging, and release remain unavailable.
-Any future false skip or fixture/report/policy drift keeps the native boundary
-withheld until a new additive fixture set, full both-target
-comparison, and reviewed ADR pass.
+Any future false skip or behavior-affecting fixture, report, or policy drift
+removes current authority until an affected-host rerun or reviewed complete-diff
+applicability and ADR pass restore it. Documentation-only changes receive no
+attributed execution.
 
 ## G-006
 

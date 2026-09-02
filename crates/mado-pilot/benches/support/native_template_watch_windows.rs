@@ -1,26 +1,33 @@
 // Windows transport and target-owner binding for the shared native watcher harness.
 
 #[cfg(windows)]
+#[path = "windows_monitor_topology.rs"]
+mod windows_monitor_topology;
+
+#[cfg(windows)]
 use std::collections::VecDeque;
 #[cfg(windows)]
 use std::io::Read;
 #[cfg(windows)]
 use std::mem::size_of;
 #[cfg(windows)]
+use std::num::NonZeroU32;
+#[cfg(windows)]
 use std::process::{Child, Command, Stdio};
 #[cfg(windows)]
-use std::sync::atomic::{AtomicU64, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 #[cfg(windows)]
 use std::sync::mpsc::{self, Receiver};
 
 #[cfg(windows)]
 use mado_pilot_platform_windows::fixture_protocol as protocol;
 #[cfg(windows)]
-use windows::Win32::Foundation::{HWND, LPARAM, POINT, RECT, WPARAM};
+use mado_pilot_testkit::visual_token::VisualTokenSequence;
+#[cfg(windows)]
+use windows::Win32::Foundation::{HWND, LPARAM, POINT, WPARAM};
 #[cfg(windows)]
 use windows::Win32::Graphics::Gdi::{
-    ClientToScreen, EnumDisplayMonitors, GetMonitorInfoW, HDC, HMONITOR,
-    MONITOR_DEFAULTTONEAREST, MONITORINFO, MonitorFromWindow,
+    ClientToScreen, MONITOR_DEFAULTTONEAREST, MonitorFromWindow,
 };
 #[cfg(windows)]
 use windows::Win32::System::ProcessStatus::{GetProcessMemoryInfo, PROCESS_MEMORY_COUNTERS};
@@ -33,7 +40,11 @@ use windows::Win32::UI::HiDpi::{
 #[cfg(windows)]
 use windows::Win32::UI::WindowsAndMessaging::{FindWindowW, PostMessageW};
 #[cfg(windows)]
-use windows::core::{BOOL, PCWSTR};
+use windows::core::PCWSTR;
+#[cfg(windows)]
+use self::windows_monitor_topology::{
+    monitor_facts, monitor_origin, monitor_scale_factor, next_monitor_origin,
+};
 
 #[cfg(windows)]
 static NEXT_FIXTURE_TOKEN: AtomicU64 = AtomicU64::new(1);
@@ -41,16 +52,55 @@ static NEXT_FIXTURE_TOKEN: AtomicU64 = AtomicU64::new(1);
 const MAX_OUTPUT_LINE_BYTES: usize = 1_024;
 
 #[cfg(windows)]
+#[must_use = "fixture finalization must be checked before accepting a scenario"]
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+struct NativeFixtureFinalization {
+    process_reaped: bool,
+    reader_joined: bool,
+    output_clean: bool,
+}
+
+#[cfg(windows)]
+impl NativeFixtureFinalization {
+    const fn is_accepted(self) -> bool {
+        self.process_reaped && self.reader_joined && self.output_clean
+    }
+
+    const fn resources(self) -> NativeResourceFacts {
+        NativeResourceFacts {
+            baseline_observed: true,
+            fixture_process_reaped: self.process_reaped,
+            fixture_reader_joined: self.reader_joined,
+            protocol_stop_acknowledged: None,
+            authenticated_lifetime: None,
+            launched_lifetime: None,
+            bounded_containment: self.process_reaped && self.reader_joined,
+            output_drained: self.output_clean,
+            executable_identity_unchanged: None,
+            cleanup_debt: None,
+            apple_launch_accepted_live: None,
+            apple_cleanup_scheduled: None,
+            apple_cleanup_active: None,
+            apple_cleanup_completed: None,
+            apple_cleanup_exhausted: None,
+        }
+    }
+}
+
+#[cfg(windows)]
 struct NativeFixture {
     child: Option<Child>,
     lines: Receiver<String>,
     reader: Option<thread::JoinHandle<()>>,
+    reader_failed: Arc<AtomicBool>,
     pending: VecDeque<String>,
     title: String,
     generation: u64,
     revision: u64,
     moved: bool,
     resized: bool,
+    visual_tokens: VisualTokenSequence,
+    finish_result: Option<NativeFixtureFinalization>,
 }
 
 #[cfg(windows)]
@@ -67,7 +117,14 @@ impl NativeFixture {
             NEXT_FIXTURE_TOKEN.fetch_add(1, Ordering::Relaxed)
         );
         let title = protocol::ordinary_fixture_title(&token);
-        let mut child = Command::new(&arguments.fixture_executable)
+        let mut command = Command::new(&arguments.fixture_executable);
+        command.env_clear();
+        for key in ["SystemRoot", "WINDIR"] {
+            if let Some(value) = std::env::var_os(key) {
+                command.env(key, value);
+            }
+        }
+        let mut child = command
             .arg(format!("--title-token={token}"))
             .stdin(Stdio::null())
             .stdout(Stdio::piped())
@@ -75,18 +132,25 @@ impl NativeFixture {
             .spawn()
             .map_err(|_| "fixture_authority_failed".to_owned())?;
         if !fixture_path_matches(arguments) {
-            let _ = child.kill();
-            let _ = child.wait();
+            let _reaped = terminate_child_bounded(
+                &mut child,
+                Instant::now() + FIXTURE_WAIT,
+            );
             return Err("fixture_authority_failed".to_owned());
         }
-        let output = child
-            .stdout
-            .take()
-            .ok_or_else(|| "fixture_authority_failed".to_owned())?;
+        let Some(output) = child.stdout.take() else {
+            let _reaped = terminate_child_bounded(
+                &mut child,
+                Instant::now() + FIXTURE_WAIT,
+            );
+            return Err("fixture_authority_failed".to_owned());
+        };
         let (sender, lines) = mpsc::sync_channel(64);
+        let reader_failed = Arc::new(AtomicBool::new(false));
+        let reader_failed_for_thread = Arc::clone(&reader_failed);
         // The receiver may stop draining before Drop joins this reader, so a
         // full channel must terminate the reader instead of blocking it.
-        let reader = thread::Builder::new()
+        let reader = match thread::Builder::new()
             .name("mado-pilot-native-watch-fixture".to_owned())
             .spawn(move || {
                 let mut stream = output;
@@ -96,27 +160,38 @@ impl NativeFixture {
                 loop {
                     match stream.read(&mut byte) {
                         Ok(0) => {
-                            if !overflow && !line.is_empty() {
+                            if overflow {
+                                reader_failed_for_thread.store(true, Ordering::Release);
+                            } else if !line.is_empty() {
                                 if line.last() == Some(&b'\r') {
                                     line.pop();
                                 }
-                                if let Ok(decoded) = String::from_utf8(std::mem::take(&mut line)) {
-                                    let _sent = sender.try_send(decoded);
+                                let Ok(decoded) =
+                                    String::from_utf8(std::mem::take(&mut line))
+                                else {
+                                    reader_failed_for_thread.store(true, Ordering::Release);
+                                    break;
+                                };
+                                if sender.try_send(decoded).is_err() {
+                                    reader_failed_for_thread.store(true, Ordering::Release);
                                 }
                             }
                             break;
                         }
                         Ok(_) if byte[0] == b'\n' => {
                             if overflow {
+                                reader_failed_for_thread.store(true, Ordering::Release);
                                 break;
                             }
                             if line.last() == Some(&b'\r') {
                                 line.pop();
                             }
                             let Ok(decoded) = String::from_utf8(std::mem::take(&mut line)) else {
+                                reader_failed_for_thread.store(true, Ordering::Release);
                                 break;
                             };
                             if sender.try_send(decoded).is_err() {
+                                reader_failed_for_thread.store(true, Ordering::Release);
                                 break;
                             }
                             line = Vec::with_capacity(MAX_OUTPUT_LINE_BYTES);
@@ -124,23 +199,41 @@ impl NativeFixture {
                         Ok(_) if !overflow && line.len() < MAX_OUTPUT_LINE_BYTES => {
                             line.push(byte[0]);
                         }
-                        Ok(_) => overflow = true,
+                        Ok(_) => {
+                            overflow = true;
+                            reader_failed_for_thread.store(true, Ordering::Release);
+                        }
                         Err(error) if error.kind() == std::io::ErrorKind::Interrupted => {}
-                        Err(_) => break,
+                        Err(_) => {
+                            reader_failed_for_thread.store(true, Ordering::Release);
+                            break;
+                        }
                     }
                 }
             })
-            .map_err(|_| "fixture_authority_failed".to_owned())?;
+        {
+            Ok(reader) => reader,
+            Err(_) => {
+                let _reaped = terminate_child_bounded(
+                    &mut child,
+                    Instant::now() + FIXTURE_WAIT,
+                );
+                return Err("fixture_authority_failed".to_owned());
+            }
+        };
         let mut fixture = Self {
             child: Some(child),
             lines,
             reader: Some(reader),
+            reader_failed,
             pending: VecDeque::new(),
             title,
             generation: 1,
             revision: 0,
             moved: false,
             resized: false,
+            visual_tokens: VisualTokenSequence::new(),
+            finish_result: None,
         };
         let ready = fixture.wait_for("fixture-ready ", FIXTURE_WAIT)?;
         let expected = format!(
@@ -249,17 +342,49 @@ impl NativeFixture {
         Ok(ControlAcknowledgement {
             generation: self.generation,
             revision: self.revision,
+            visual_token: None,
         })
     }
 
     fn set_visible(&mut self) -> Result<ControlAcknowledgement, String> {
-        self.post(protocol::CONTROL_SET_VISUAL_VISIBLE, 0, 0)?;
-        self.acknowledge(protocol::FixtureVisualState::Visible.acknowledgement())
+        self.set_visual(
+            protocol::CONTROL_SET_VISUAL_VISIBLE,
+            protocol::FixtureVisualState::Visible,
+            VisualMarkerState::Visible,
+        )
     }
 
     fn set_absent(&mut self) -> Result<ControlAcknowledgement, String> {
-        self.post(protocol::CONTROL_SET_VISUAL_ABSENT, 0, 0)?;
-        self.acknowledge(protocol::FixtureVisualState::Absent.acknowledgement())
+        self.set_visual(
+            protocol::CONTROL_SET_VISUAL_ABSENT,
+            protocol::FixtureVisualState::Absent,
+            VisualMarkerState::Absent,
+        )
+    }
+
+    fn set_visual(
+        &mut self,
+        message: u32,
+        state: protocol::FixtureVisualState,
+        marker: VisualMarkerState,
+    ) -> Result<ControlAcknowledgement, String> {
+        let token = self
+            .visual_tokens
+            .issue(marker)
+            .map_err(|_| "fixture_authority_failed".to_owned())?;
+        let command = protocol::FixtureVisualCommand::new(
+            state,
+            NonZeroU32::new(token.value()).expect("shared tokens are nonzero"),
+        );
+        self.post(
+            message,
+            usize::try_from(token.value())
+                .map_err(|_| "fixture_authority_failed".to_owned())?,
+            0,
+        )?;
+        let mut acknowledgement = self.acknowledge(&command.acknowledgement())?;
+        acknowledgement.visual_token = Some(token);
+        Ok(acknowledgement)
     }
 
     fn transition_visual(&mut self) -> Result<ControlAcknowledgement, String> {
@@ -304,8 +429,11 @@ impl NativeFixture {
         let current = unsafe { MonitorFromWindow(window, MONITOR_DEFAULTTONEAREST) };
         let current_origin =
             monitor_origin(current).ok_or_else(|| "capability_unavailable:topology".to_owned())?;
-        let (x, y) = next_monitor_origin(monitor_origins()?, current_origin)
+        let current_scale_factor = monitor_scale_factor(current)
             .ok_or_else(|| "capability_unavailable:topology".to_owned())?;
+        let (x, y) =
+            next_monitor_origin(monitor_facts()?, current_origin, current_scale_factor)
+                .ok_or_else(|| "capability_unavailable:topology".to_owned())?;
         let (width, height) = if self.resized { (480, 320) } else { (360, 240) };
         self.moved = true;
         self.set_geometry(x.saturating_add(80), y.saturating_add(80), width, height)
@@ -322,16 +450,48 @@ impl NativeFixture {
         self.acknowledge(protocol::TARGET_LOSS_ACKNOWLEDGEMENT)
     }
 
-    fn finish(&mut self) -> bool {
-        let mut complete = true;
-        if let Some(mut child) = self.child.take() {
-            let _ = child.kill();
-            complete &= child.wait().is_ok();
+    fn finish(&mut self) -> NativeFixtureFinalization {
+        if let Some(result) = self.finish_result {
+            return result;
         }
-        if let Some(reader) = self.reader.take() {
-            complete &= reader.join().is_ok();
+        let deadline = Instant::now() + FIXTURE_WAIT;
+        let process_reaped = self
+            .child
+            .take()
+            .is_none_or(|mut child| terminate_child_bounded(&mut child, deadline));
+        let reader_joined = self.reader.take().is_none_or(|reader| {
+            while !reader.is_finished() && Instant::now() < deadline {
+                thread::sleep(POLL_WAIT);
+            }
+            reader.is_finished() && reader.join().is_ok()
+        });
+        while let Ok(line) = self.lines.try_recv() {
+            if self.pending.len() == 64 {
+                self.reader_failed.store(true, Ordering::Release);
+                break;
+            }
+            self.pending.push_back(line);
         }
-        complete
+        let output_clean =
+            reader_joined && self.pending.is_empty() && !self.reader_failed.load(Ordering::Acquire);
+        let result = NativeFixtureFinalization {
+            process_reaped,
+            reader_joined,
+            output_clean,
+        };
+        self.finish_result = Some(result);
+        result
+    }
+}
+
+fn terminate_child_bounded(child: &mut Child, deadline: Instant) -> bool {
+    let _termination_requested = child.kill();
+    loop {
+        match child.try_wait() {
+            Ok(Some(_status)) => return true,
+            Ok(None) if Instant::now() < deadline => thread::sleep(POLL_WAIT),
+            Ok(None) | Err(_) => return false,
+        }
     }
 }
 
@@ -348,170 +508,8 @@ fn wide(value: &str) -> Vec<u16> {
 }
 
 #[cfg(windows)]
-unsafe extern "system" fn collect_monitor(
-    monitor: HMONITOR,
-    _display: HDC,
-    _rect: *mut RECT,
-    state: LPARAM,
-) -> BOOL {
-    // SAFETY: caller passes an exclusive Vec pointer for the synchronous enumeration.
-    let origins = unsafe {
-        &mut *std::ptr::with_exposed_provenance_mut::<Vec<(i32, i32)>>(state.0.cast_unsigned())
-    };
-    if let Some(origin) = monitor_origin(monitor) {
-        origins.push(origin);
-    }
-    true.into()
-}
-
-#[cfg(windows)]
-fn monitor_origin(monitor: HMONITOR) -> Option<(i32, i32)> {
-    let mut info = MONITORINFO {
-        cbSize: u32::try_from(size_of::<MONITORINFO>()).expect("MONITORINFO size fits u32"),
-        ..Default::default()
-    };
-    // SAFETY: `monitor` came from a Win32 monitor lookup and `info` is writable.
-    unsafe { GetMonitorInfoW(monitor, &raw mut info) }
-        .as_bool()
-        .then_some((info.rcMonitor.left, info.rcMonitor.top))
-}
-
-#[cfg(windows)]
-fn monitor_origins() -> Result<Vec<(i32, i32)>, String> {
-    let mut origins = Vec::new();
-    // SAFETY: enumeration is synchronous and receives the exclusive Vec pointer.
-    unsafe {
-        EnumDisplayMonitors(
-            None,
-            None,
-            Some(collect_monitor),
-            LPARAM(
-                isize::try_from((&raw mut origins).expose_provenance())
-                    .map_err(|_| "capability_unavailable:topology".to_owned())?,
-            ),
-        )
-    }
-    .ok()
-    .map_err(|_| "capability_unavailable:topology".to_owned())?;
-    Ok(origins)
-}
-
-#[cfg(windows)]
-fn next_monitor_origin(
-    mut origins: Vec<(i32, i32)>,
-    current: (i32, i32),
-) -> Option<(i32, i32)> {
-    origins.sort_unstable();
-    origins.dedup();
-    if !origins.contains(&current) {
-        return None;
-    }
-    origins.into_iter().find(|origin| *origin != current)
-}
-
-#[cfg(windows)]
-const WGC_READY_PROBE: Duration = Duration::from_millis(50);
-
-#[cfg(windows)]
 fn native_engine() -> mado_pilot::Result<Engine> {
     mado_pilot::windows_engine(NativeEngineRequest::new())
-}
-
-#[cfg(windows)]
-fn prepare_two_session_readiness(run: &mut NativeRun, second: &Session) -> Result<(), String> {
-    let deadline = Instant::now() + OPERATION_WAIT;
-    let mut first_cursor = None;
-    let mut second_cursor = None;
-    loop {
-        if Instant::now() >= deadline {
-            let _restored = run.command_absent();
-            return Err("typed_operation_failure:DeadlineExceeded".to_owned());
-        }
-
-        run.command_visible()?;
-        let visible = (|| {
-            let second_visible = try_observe_marker_state(
-                second,
-                &run.fixture,
-                &mut second_cursor,
-                true,
-                readiness_probe_wait(deadline),
-            )?;
-            let first_visible = try_observe_marker_state(
-                &run.session,
-                &run.fixture,
-                &mut first_cursor,
-                true,
-                readiness_probe_wait(deadline),
-            )?;
-            Ok((first_visible, second_visible))
-        })();
-        let restored = run.command_absent();
-        let (first_visible, second_visible) = match visible {
-            Ok(observed) => observed,
-            Err(error) => {
-                let _restored = restored;
-                return Err(error);
-            }
-        };
-        restored?;
-
-        let second_absent = try_observe_marker_state(
-            second,
-            &run.fixture,
-            &mut second_cursor,
-            false,
-            readiness_probe_wait(deadline),
-        )?;
-        let first_absent = try_observe_marker_state(
-            &run.session,
-            &run.fixture,
-            &mut first_cursor,
-            false,
-            readiness_probe_wait(deadline),
-        )?;
-        if first_visible && second_visible && first_absent && second_absent {
-            return Ok(());
-        }
-    }
-}
-
-#[cfg(windows)]
-fn readiness_probe_wait(deadline: Instant) -> Duration {
-    WGC_READY_PROBE.min(deadline.saturating_duration_since(Instant::now()))
-}
-
-#[cfg(windows)]
-fn try_observe_marker_state(
-    session: &Session,
-    fixture: &NativeFixture,
-    cursor: &mut Option<FrameStamp>,
-    expected_visible: bool,
-    wait: Duration,
-) -> Result<bool, String> {
-    let deadline = Instant::now() + wait;
-    loop {
-        let remaining = deadline.saturating_duration_since(Instant::now());
-        if remaining.is_zero() {
-            return Ok(false);
-        }
-        let request = cursor.map_or_else(FrameRequest::latest, FrameRequest::newer_than);
-        let frame = match session.acquire_frame(&request, &bounded(remaining)) {
-            Ok(frame) => frame,
-            Err(error) if error.status() == Status::DeadlineExceeded => return Ok(false),
-            Err(error) => {
-                return Err(format!("typed_operation_failure:{:?}", error.status()));
-            }
-        };
-        *cursor = Some(frame.stamp());
-        let shape = marker_shape(&frame, fixture).ok_or_else(|| "wrong_transform".to_owned())?;
-        let mapping = session
-            .map_frame(&frame, PixelFormat::Rgba8, &bounded(remaining))
-            .map_err(|_| "wrong_region".to_owned())?;
-        if marker_state(&mapping, shape) == Some(expected_visible) {
-            return Ok(true);
-        }
-    }
 }
 
 #[cfg(windows)]
@@ -561,19 +559,25 @@ fn topology_geometry_matches(before: &Frame, after: &Frame) -> bool {
 }
 
 #[cfg(windows)]
-fn marker_shape(frame: &Frame, fixture: &NativeFixture) -> Option<MarkerShape> {
+fn client_cell_shape(
+    frame: &Frame,
+    fixture: &NativeFixture,
+    logical_x: f64,
+    logical_y: f64,
+    logical_cell: f64,
+) -> Option<(u32, u32, i32, i32)> {
     let placement = frame.transform().target()?;
     let window = fixture.window().ok()?;
-    let marker_x = scaled_i32(MARKER_X_LOGICAL, 1.0)?;
-    let marker_y = scaled_i32(MARKER_Y_LOGICAL, 1.0)?;
-    let marker_cell = scaled_i32(MARKER_CELL_LOGICAL, 1.0)?;
+    let cell_x = scaled_i32(logical_x, 1.0)?;
+    let cell_y = scaled_i32(logical_y, 1.0)?;
+    let cell_size = scaled_i32(logical_cell, 1.0)?;
     let mut origin = POINT {
-        x: marker_x,
-        y: marker_y,
+        x: cell_x,
+        y: cell_y,
     };
     let mut far = POINT {
-        x: marker_x.checked_add(marker_cell)?,
-        y: marker_y.checked_add(marker_cell)?,
+        x: cell_x.checked_add(cell_size)?,
+        y: cell_y.checked_add(cell_size)?,
     };
     // SAFETY: the predefined context is valid on the approved Windows floor and
     // affects only this thread; the returned prior context is restored below
@@ -585,7 +589,7 @@ fn marker_shape(frame: &Frame, fixture: &NativeFixture) -> Option<MarkerShape> {
     }
     // SAFETY: both points are writable and `window` is the authenticated live fixture HWND.
     let origin_converted = unsafe { ClientToScreen(window, &raw mut origin) }.as_bool();
-    // SAFETY: same as above for the marker cell's far corner.
+    // SAFETY: same as above for the cell's far corner.
     let far_converted = unsafe { ClientToScreen(window, &raw mut far) }.as_bool();
     // SAFETY: `prior_dpi` came from the successful context change above.
     let restored = unsafe { SetThreadDpiAwarenessContext(prior_dpi) };
@@ -595,11 +599,45 @@ fn marker_shape(frame: &Frame, fixture: &NativeFixture) -> Option<MarkerShape> {
     let cell_width = u32::try_from(far.x.checked_sub(origin.x)?).ok()?;
     let cell_height = u32::try_from(far.y.checked_sub(origin.y)?).ok()?;
     let (desktop_x, desktop_y) = placement.desktop_origin();
+    Some((
+        cell_width,
+        cell_height,
+        scaled_i32(f64::from(origin.x) - desktop_x, 1.0)?,
+        scaled_i32(f64::from(origin.y) - desktop_y, 1.0)?,
+    ))
+}
+
+#[cfg(windows)]
+fn marker_shape(frame: &Frame, fixture: &NativeFixture) -> Option<MarkerShape> {
+    let (cell_width, cell_height, origin_x, origin_y) = client_cell_shape(
+        frame,
+        fixture,
+        MARKER_X_LOGICAL,
+        MARKER_Y_LOGICAL,
+        MARKER_CELL_LOGICAL,
+    )?;
     Some(MarkerShape {
         cell_width,
         cell_height,
-        origin_x: scaled_i32(f64::from(origin.x) - desktop_x, 1.0)?,
-        origin_y: scaled_i32(f64::from(origin.y) - desktop_y, 1.0)?,
+        origin_x,
+        origin_y,
+    })
+}
+
+#[cfg(windows)]
+fn token_shape(frame: &Frame, fixture: &NativeFixture) -> Option<TokenShape> {
+    let (cell_width, cell_height, origin_x, origin_y) = client_cell_shape(
+        frame,
+        fixture,
+        TOKEN_X_LOGICAL,
+        TOKEN_Y_LOGICAL,
+        TOKEN_CELL_LOGICAL,
+    )?;
+    Some(TokenShape {
+        cell_width,
+        cell_height,
+        origin_x,
+        origin_y,
     })
 }
 
@@ -624,46 +662,4 @@ fn peak_resident_bytes() -> Option<u64> {
     }
     .ok()?;
     u64::try_from(counters.PeakWorkingSetSize).ok()
-}
-
-#[cfg(all(test, windows))]
-mod tests {
-
-    #[test]
-    fn topology_uses_per_target_scale_on_the_physical_windows_desktop() {
-        let placement_with_target_scale = |scale| {
-            mado_pilot::TargetPlacement::new(
-                (0.0, 0.0),
-                (240.0, 160.0),
-                mado_pilot::Scale::new(scale, scale).expect("target scale"),
-            )
-            .expect("placement")
-            .with_desktop_scale(mado_pilot::Scale::new(1.0, 1.0).expect("desktop scale"))
-        };
-        let before = placement_with_target_scale(1.5);
-        let after = placement_with_target_scale(1.25);
-
-        assert_eq!(before.desktop_scale(), after.desktop_scale());
-        assert!(super::target_scale_changed(&before, &after));
-        assert!(!super::target_scale_changed(&before, &before));
-    }
-
-    #[test]
-    fn next_monitor_origin_never_selects_the_current_display() {
-        let origins = vec![(0, 0), (-3840, 0), (0, 0)];
-
-        assert_eq!(
-            super::next_monitor_origin(origins.clone(), (0, 0)),
-            Some((-3840, 0))
-        );
-        assert_eq!(
-            super::next_monitor_origin(origins, (-3840, 0)),
-            Some((0, 0))
-        );
-        assert_eq!(super::next_monitor_origin(vec![(0, 0)], (0, 0)), None);
-        assert_eq!(
-            super::next_monitor_origin(vec![(-3840, 0), (0, 0)], (10, 10)),
-            None
-        );
-    }
 }

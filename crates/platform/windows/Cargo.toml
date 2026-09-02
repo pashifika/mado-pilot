@@ -18,5 +18,8 @@ mado-pilot-capture = { path = "../../automation/capture" }
 mado-pilot-input = { path = "../../automation/input" }
 windows.workspace = true
 
+[target.'cfg(windows)'.dev-dependencies]
+mado-pilot-testkit = { path = "../../support/testkit" }
+
 [lints]
 workspace = true
