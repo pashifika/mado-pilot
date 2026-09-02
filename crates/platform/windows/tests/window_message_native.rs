@@ -30,7 +30,8 @@ use mado_pilot_platform_windows::fixture_protocol::{
     CONTROL_ALLOW_FOREGROUND, CONTROL_BLOCK_QUEUE, CONTROL_DESTROY_TARGET,
     CONTROL_DUPLICATE_METADATA, CONTROL_REPARENT_TARGET, CONTROL_REPORT, CONTROL_REUSE_STRESS,
     CONTROL_SET_GEOMETRY, CONTROL_SET_VISUAL_ABSENT, CONTROL_SET_VISUAL_VISIBLE,
-    FixtureVisualCommand, FixtureVisualState, ORDINARY_CLASS_NAME, ordinary_fixture_title,
+    FixtureVisualCommand, FixtureVisualState, ORDINARY_CLASS_NAME, TARGET_LOSS_ACKNOWLEDGEMENT,
+    ordinary_fixture_title,
 };
 use windows::Win32::Foundation::{HWND, LPARAM, POINT, RECT, WPARAM};
 use windows::Win32::Graphics::Gdi::{
@@ -512,6 +513,66 @@ fn watcher_visual_controls_acknowledge_before_fixture_cleanup() {
     fixture.terminate();
     assert!(fixture.child.is_none());
     assert!(fixture.reader.is_none());
+}
+
+#[test]
+#[ignore = "opens a real fixture window; run deliberately on an unlocked desktop"]
+fn wgc_reports_target_loss_after_acknowledged_fixture_destruction() {
+    let _serial = NATIVE_MATRIX.lock().expect("native matrix serialized");
+    let mut fixture = FixtureProcess::spawn("watcher-target-loss");
+    let issuer = Arc::new(IdentityIssuer::new());
+    let provider = WindowsCaptureProvider::new(issuer);
+    let targets = provider
+        .discover_matching(
+            &DiscoveryRequest::new()
+                .with_kind(TargetKind::Window)
+                .with_name_containing(fixture.title()),
+            &timed(Duration::from_secs(5)),
+        )
+        .expect("fixture target discovery");
+    let target = targets.first().expect("fixture target").id();
+    let session = CaptureProvider::open(
+        &provider,
+        target,
+        &OpenRequest::new().require_format(PixelFormat::Bgra8),
+        &timed(Duration::from_secs(5)),
+    )
+    .expect("fixture WGC session");
+    let first = session
+        .frame(&FrameRequest::latest(), &timed(Duration::from_secs(5)))
+        .expect("fixture first frame");
+
+    fixture.control(fixture.target(), CONTROL_DESTROY_TARGET, 0);
+    assert_eq!(
+        fixture.wait_for(TARGET_LOSS_ACKNOWLEDGEMENT, Duration::from_secs(5)),
+        TARGET_LOSS_ACKNOWLEDGEMENT
+    );
+
+    let deadline = Instant::now() + Duration::from_secs(5);
+    let mut stamp = first.stamp();
+    loop {
+        let remaining = deadline.saturating_duration_since(Instant::now());
+        assert!(
+            !remaining.is_zero(),
+            "acknowledged fixture destruction did not produce TargetLost within five seconds"
+        );
+        match session.frame(&FrameRequest::newer_than(stamp), &timed(remaining)) {
+            Ok(late) => stamp = late.stamp(),
+            Err(error) => {
+                assert_eq!(
+                    error.status(),
+                    Status::TargetLost,
+                    "acknowledged fixture destruction must terminate WGC as TargetLost"
+                );
+                break;
+            }
+        }
+    }
+
+    session
+        .close(&timed(Duration::from_secs(20)))
+        .expect("target-lost session close");
+    fixture.terminate();
 }
 
 #[test]
