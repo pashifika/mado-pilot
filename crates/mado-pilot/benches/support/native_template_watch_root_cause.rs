@@ -565,6 +565,7 @@ fn run_iteration(
                 .with_old_frame(last_old_stamp);
         }
     };
+    drop(absent_frame);
     let template = match prepare_marker(engine, shape, "root-cause-watch") {
         Ok(template) => template,
         Err(_) => {
