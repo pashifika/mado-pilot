@@ -302,6 +302,26 @@ Neither host produced an artifact authority or launched process 1. ADR 0063
 retains both attempts without retry and classifies them as apparatus failures,
 not product-gate results. The required integrated Apple and Windows cohorts
 therefore do not exist, and the support decision remains withheld.
+
+ADR 0064 adopts Qualification V2 as a new identity from PR #64's merge result;
+it does not amend any PR #59–#64 record or claim a cause or repair for the
+historical ScreenCaptureKit suspension. V2 separates authority:
+
+- required Lane A replay/OpenCV suites own deterministic scheduler, query,
+  lifecycle, diagnostics, and complete-work semantics;
+- required Lane B host contracts own only the compact WGC and ScreenCaptureKit
+  integration boundary, using a unique acknowledged post-open visual token that
+  every required session must decode from a newer authoritative pixel frame;
+  and
+- optional Lane C owns statistical latency, resource, topology, provenance, and
+  endurance evidence without replacing or reinterpreting Lane B execution.
+
+Session open alone is not a first-pixel guarantee. Lane B has finite absolute
+startup, token-observation, operation, and teardown deadlines, reports semantic
+and cleanup facts independently, and classifies pre-execution apparatus failure
+as `INFRA` or `UNSUPPORTED` rather than product `FAIL`. No V2 host result exists
+yet, so native support remains withheld.
+
 OCR predicates, callbacks/subscriptions, C/C++, automatic input, target activation,
 arbitrary application/template/ROI compatibility or timing, real-time guarantees,
 packaging, and release remain unavailable.

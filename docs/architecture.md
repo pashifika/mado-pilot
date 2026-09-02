@@ -96,6 +96,16 @@ Integrated candidate `9cf746f` contains both repairs, but its sole authorized
 Apple and Windows builders terminated at apparatus controls before artifact
 authority or process 1. ADR 0063 retains both attempts without retry. No current
 integrated cohort exists, so native support remains withheld.
+ADR 0064 adopts a new Qualification V2 identity from PR #64's merge result
+without changing any PR #59–#64 record. Lane A retains deterministic
+replay/OpenCV scheduler and query authority; Lane B becomes the required compact
+WGC and ScreenCaptureKit semantic contract driven by an acknowledged
+pixel-encoded post-open token; Lane C retains optional statistical, topology,
+resource, and endurance evidence. No V2 host result exists yet. This successor
+protocol neither identifies nor repairs the historical ScreenCaptureKit
+suspension, and it does not promise an initial pixel frame for an unchanged
+target.
+
 OCR predicates, callbacks/subscriptions, C/C++, automatic input,
 target activation, arbitrary application/template/ROI compatibility or timing,
 real-time guarantees, packaging, artifacts, tags, and the `v0.4.0` release
@@ -2655,6 +2665,12 @@ terminated at a post-Cargo apparatus control and its sole authorized Windows
 builder terminated at a pre-namespace environment control. Neither host created
 an artifact authority or launched process 1. ADR 0063 retains both attempts
 without retry, and native support remains withheld.
+ADR 0064 selects token-driven Qualification V2 from PR #64's merge result and
+keeps every PR #59–#64 source, protocol, and result revision-bound. Its Lane A
+deterministic authority, required compact Lane B native semantics, and optional
+Lane C evidence/endurance authority are independent. V2 implementation and both
+required host results remain incomplete, so this decision changes no support
+classification and establishes no historical ScreenCaptureKit root cause.
 
 Source exhaustion refuses later query starts but lets an already acquired
 pending or in-flight final frame drain. Successfully drained work that leaves

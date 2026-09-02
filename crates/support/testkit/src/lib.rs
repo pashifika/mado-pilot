@@ -52,6 +52,7 @@ pub mod ocr_contract;
 pub mod png;
 pub mod scripted_permission;
 pub mod vision_contract;
+pub mod visual_token;
 
 pub use clock::ManualClock;
 pub use controlled_capture::ControlledCapture;
