@@ -90,6 +90,33 @@ suspension. It also does not promise an initial frame for an unchanged target.
 Any capture bootstrap guarantee and any causal ScreenCaptureKit lifecycle repair
 require separate evidence and decisions.
 
+## Implementation and current evidence
+
+Product commit `0dabd9fc2a336824d1ba5779344b9affd527cff6`, tree
+`f8d983c063adaa8234ea2c2a92d636c20fb8f720`, implements the V2 token codec,
+both fixture renderers, fair exact-token session synchronization, the fixed
+eight-scenario Lane B runner, independent typed results, and explicit fixture
+finalization. The private Lane B schema is
+`mado-pilot.native-template-watch-contract.v2`; the former 24-workload registry
+and target-specific statistical enforcement require the separate
+`--lane-c-evidence` mode.
+
+The approved Apple M1 Pro host on macOS 26.6.2 build 25G83 with SDK 26.5 ran the
+exact release runner once. All eight semantic facts and all eight cleanup facts
+were `PASS`; captured target scale was exactly `[2000, 2000]` milli-scale units,
+and finalization reported the accepted-launch `Live` observation, Stop
+acknowledgement, both process lifetimes `Lost`, bounded containment, joined
+reader, drained output, unchanged executable identity, zero active cleanup, no
+exhaustion, and scheduled cleanup equal to completed cleanup. The report,
+runner, fixture, and codec source each have separately retained SHA-256
+identities.
+
+The required Windows Lane B result is pending. The Apple result therefore
+establishes only the Apple integration boundary and does not yet satisfy the
+cross-target support condition. Later source-tree changes need either affected
+scenario reruns or reviewed complete-diff applicability; documentation,
+workflow, or Lane A-only changes do not become attributed execution.
+
 ## Alternatives
 
 - Retain unstimulated first-frame acquisition and extend its timeout. Rejected

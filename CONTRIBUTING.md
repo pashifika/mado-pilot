@@ -33,11 +33,12 @@ rather than ambient, and what fails when the library is absent. This is a
 development prerequisite only: source releases bundle no native dependency and
 make no installable deployment-profile claim, which remains gate `G-007`.
 
-The supported macOS native host is Apple Silicon macOS 26.5.2 (25F84), SDK
-26.5; earlier macOS versions are unsupported investigation targets, not
-compatibility claims. Individual revision-bound feature gates can still be
-unexecuted on that host. `.cargo/config.toml` sets the final artifact deployment
-metadata to 26.5.2 and the native build repeats that floor. The macOS native shim
+The supported macOS native host is Apple Silicon macOS 26.6.2 (25G83), SDK
+26.5; the deployment floor remains macOS 26.5.2, and earlier versions are
+unsupported investigation targets rather than compatibility claims.
+Individual revision-bound feature gates can still be unexecuted on that host.
+`.cargo/config.toml` sets the final artifact deployment metadata to 26.5.2 and
+the native build repeats that floor. The macOS native shim
 `mado-pilot-platform-macos` compiles, links, and passes its tests with the **Xcode
 Command Line Tools alone**, on a host where full Xcode is not installed; its only
 Cargo addition is `cc`, declared as an unconditional build dependency so Cargo
@@ -263,7 +264,7 @@ covers the complete intervening diff. The accepted release matrices are:
   Rust, C, and C++ cases. Shared-display availability is an operational
   prerequisite, not a timing oracle.
 - macOS exactly two online non-mirrored displays with different effective
-  scales on the qualified Apple Silicon macOS 26.5.2 host, covering signed
+  scales on the qualified Apple Silicon macOS 26.6.2 host, covering signed
   placement, movement, capture, mapping, pointer-input, target-loss, Rust, C,
   and C++ cases regardless of physical connection method.
 
@@ -273,6 +274,50 @@ captured pixels, pixel hashes, input text, credentials, unrelated window titles,
 process paths, or desktop metadata. Record an unavailable host or topology as an
 explicit evidence gap. Never turn absence into a skip that passes the release
 claim.
+
+## Native template-watch qualification lanes
+
+Native template-watch verification has four independent jobs. Do not infer one
+job's authority from another:
+
+1. Required Lane A owns deterministic replay/OpenCV scheduler and query
+   semantics. Both hosted release-target jobs run
+   `cargo bench --locked --package mado-pilot --bench template-watch-query`.
+   This short plan enforces every semantic, accounting, mapped-byte, and bounded
+   growth oracle, but does not apply target-specific statistical ceilings.
+2. Required Windows Lane B owns the compact WGC integration contract on the
+   approved interactive mixed-DPI host.
+3. Required macOS Lane B owns the same compact ScreenCaptureKit integration
+   contract on the approved permissioned Retina host.
+4. Optional Lane C owns statistical, topology, resource, provenance, and
+   endurance evidence. Invoke the replay or native executable with
+   `--lane-c-evidence` and its exact source, tree, executable, fixture, process,
+   host, toolchain, and backend arguments. Add `--enforce-budgets` only in this
+   lane. A Lane C result cannot replace or reinterpret Lane B.
+
+Each Lane B host builds once:
+
+```sh
+cargo bench --locked --package mado-pilot --bench native-template-watch \
+  --features native-template-watch-qualification --no-run
+```
+
+Record the exact source tree and executable/fixture digests, then invoke the
+emitted executable once with `--native-contract`. Exit `0` is `PASS`, `1` is
+product `FAIL`, `2` is `INFRA`, and `3` is `UNSUPPORTED`; only `PASS` satisfies
+the required host job. Preserve the single JSON report even when it is red.
+
+Hosted Windows and macOS jobs compile both native modes but do not execute Lane
+B: hosted macOS has no Screen Recording grant, and neither hosted runner owns
+the approved interactive fixture topology. A green hosted job is therefore Lane
+A plus compile/contract evidence, not WGC or ScreenCaptureKit semantic evidence.
+Lane B session open starts no readiness timer by itself. Startup begins after
+accepted open and ends when the acknowledged absent token is decoded; watcher
+time begins at the visible-token acknowledgement and ends at the correlated
+terminal outcome; teardown begins at explicit close/finalize and ends only at
+the native and fixture resource baseline. No interval includes fixture launch,
+and no hidden retry, sleep, deadline extension, or replacement sample is
+permitted.
 
 ## Verification
 
@@ -323,7 +368,7 @@ cargo clippy --locked --target x86_64-pc-windows-msvc \
   -p mado-pilot-platform-macos --all-targets -- -D warnings
 
 # 10. macOS host only: the capture scenarios with the native shim instrumented.
-#     Run on the qualified 26.5.2 (25F84) Apple Silicon host. Needs Screen
+#     Run on the qualified 26.6.2 (25G83) Apple Silicon host. Needs Screen
 #     Recording granted, and fails rather than skips without it.
 MADO_PILOT_MACOS_ASAN=1 cargo test --locked \
   -p mado-pilot-platform-macos --target-dir target/asan --lib -- --test-threads=1
@@ -610,17 +655,19 @@ The stable check names are:
 |---|---|---|
 | `Validate branch flow` | `branch-policy.yml` | The source and target branches follow the pull request flow. |
 | `Repository policy` | `rust.yml` | Package inventory, dependency directions, formatting, and dependency policy. |
-| `Windows x86_64-pc-windows-msvc` | `rust.yml` | Native `windows-2025` inventory, lint, test, doctest, and documentation checks against the committed lockfile, and step 8's C ABI and C++ wrapper check. |
-| `macOS aarch64-apple-darwin` | `rust.yml` | Native `macos-26` Apple Silicon inventory, lint, test, doctest, and documentation checks against the committed lockfile, and step 8's C ABI and C++ wrapper check. |
+| `Windows x86_64-pc-windows-msvc` | `rust.yml` | Native `windows-2025` inventory, lint, test, doctest, documentation, C/C++ checks, the required Lane A semantic run, and compilation of Lane B/C. It does not execute approved-host WGC Lane B. |
+| `macOS aarch64-apple-darwin` | `rust.yml` | Native `macos-26` Apple Silicon inventory, lint, test, doctest, documentation, C/C++ checks, the required Lane A semantic run, and compilation of Lane B/C. It has no Screen Recording authority and does not execute ScreenCaptureKit Lane B. |
 
 The `Repository policy` job builds no product package, which is why
 documentation, lints, tests, and the C and C++ boundary are verified only in the
 two native jobs. Building any product package needs OpenCV and a loadable
 libclang, because `mado-pilot-backend-opencv` generates its bindings at build
 time, and that installation exists on the two release targets rather than on a
-host that is neither. Of the verification sequence above, steps 3 through 6 and
-step 8 therefore run only in the two native jobs, steps 2 and 7 run only in the
-repository-policy job, and step 1 runs in all three.
+host that is neither. Of the verification sequence above, steps 3 through 6,
+step 8, Lane A execution, and Lane B/C compilation therefore run only in the two
+native jobs; steps 2 and 7 run only in the repository-policy job, and step 1 runs
+in all three. The separate approved-host Lane B jobs are support evidence, not
+GitHub required-status names.
 
 A check is activated as a live required status only after that check has produced
 its first successful run on the branch it will guard, and only with separate

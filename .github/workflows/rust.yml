@@ -294,7 +294,14 @@ jobs:
         shell: bash
         run: cargo test --locked --workspace --all-targets
 
-      - name: Compile the native template-watch qualification benchmark
+      # Lane A owns deterministic scheduler/query behavior. Cargo's benchmark
+      # flag selects the short semantic plan; statistical enforcement is
+      # available only through the explicit optional Lane C mode.
+      - name: Run the required template-watch Lane A replay contract
+        shell: bash
+        run: cargo bench --locked --package mado-pilot --bench template-watch-query
+
+      - name: Compile the native template-watch Lane B and Lane C runners
         shell: bash
         run: cargo check --locked --package mado-pilot --bench native-template-watch --features native-template-watch-qualification
 
@@ -539,6 +546,17 @@ jobs:
       - name: Test the workspace
         shell: bash
         run: cargo test --locked --workspace --all-targets
+
+      # Hosted macOS has no Screen Recording grant, so this executes only Lane A.
+      # The approved interactive host runs Lane B separately; hosted CI still
+      # compiles both native modes below.
+      - name: Run the required template-watch Lane A replay contract
+        shell: bash
+        run: cargo bench --locked --package mado-pilot --bench template-watch-query
+
+      - name: Compile the native template-watch Lane B and Lane C runners
+        shell: bash
+        run: cargo check --locked --package mado-pilot --bench native-template-watch --features native-template-watch-qualification
 
       - name: Reproduce the frozen G-005 change-detection report
         shell: bash

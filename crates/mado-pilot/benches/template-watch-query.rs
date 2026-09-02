@@ -65,8 +65,17 @@ const ROI_ORIGINS: [(i32, i32); 1] = [(20, 12)];
 
 fn main() {
     let arguments: Vec<String> = std::env::args().skip(1).collect();
-    let qualification = arguments.iter().any(|argument| argument == "--bench");
-    let plan = if qualification {
+    let lane_c_evidence = arguments
+        .iter()
+        .any(|argument| argument == "--lane-c-evidence");
+    let enforce_statistical_budgets = arguments
+        .iter()
+        .any(|argument| argument == "--enforce-budgets");
+    assert!(
+        !enforce_statistical_budgets || lane_c_evidence,
+        "--enforce-budgets belongs to optional Lane C evidence"
+    );
+    let plan = if lane_c_evidence {
         Plan::new(3, 20)
     } else {
         Plan::new(3, 3)
@@ -188,7 +197,7 @@ fn main() {
         "qualification requires the frozen native OpenCV runtime"
     );
 
-    if qualification {
+    if lane_c_evidence {
         let source = required_identity(&arguments, "--source-revision", 40);
         let tree = required_identity(&arguments, "--source-tree", 40);
         let process = required_identity(&arguments, "--process-id", 1);
@@ -208,7 +217,7 @@ fn main() {
                 os_version,
                 deployment_target: Some(bench_harness::RELEASE_TARGET.to_owned()),
                 build_profile: format!(
-                    "cargo build --locked --release --package mado-pilot --bench template-watch-query; debug_assertions={}",
+                    "cargo build --locked --release --package mado-pilot --bench template-watch-query; execute with --lane-c-evidence; debug_assertions={}",
                     cfg!(debug_assertions)
                 ),
                 correctness_oracle: "every retained sample checks exact source, match, state, observed work/lifecycle outcomes, ownership, and producer progress",
@@ -230,10 +239,7 @@ fn main() {
         &bench_harness::PHASE4_TEMPLATE_WATCH_MAPPED_BYTES_BUDGETS,
     );
     enforce_qualification_oracles(&workloads, plan);
-    if arguments
-        .iter()
-        .any(|argument| argument == "--enforce-budgets")
-    {
+    if enforce_statistical_budgets {
         enforce_target_budgets(&workloads);
     }
 }
