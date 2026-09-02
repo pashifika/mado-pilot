@@ -1,16 +1,15 @@
-//! Architecture inventory and dependency-direction checking for the MadoPilot
+//! Architecture, dependency, and release-scope checking for the MadoPilot
 //! workspace.
 //!
-//! The checker separates its rules from its input acquisition so that the rules
-//! can be tested without running Cargo:
+//! The checker separates pure rules from process and filesystem adapters:
 //!
-//! - [`graph`] holds the normalized package-graph model, the required package
-//!   inventory, the deferred-package table, the Phase 0 metadata contract, and the
-//!   pure validator.
-//! - [`manifest`] reads the manifest-text facts Cargo metadata cannot report,
-//!   namely the lint opt-in and explicit workspace inheritance.
-//! - [`metadata`] holds the Cargo process adapter that turns `cargo metadata`
-//!   output and the on-disk manifests into a [`metadata::WorkspaceObservation`].
+//! - [`graph`] holds the normalized package graph, inventory, metadata contract,
+//!   and architecture validator.
+//! - [`manifest`] reads manifest-text facts Cargo metadata cannot report.
+//! - [`metadata`] adapts Cargo metadata and on-disk manifests into normalized
+//!   observations.
+//! - [`release`] validates the tracked source-release body, public foreign-
+//!   language surfaces, CMake development consumer, and artifact exclusions.
 //!
 //! This package is repository maintenance tooling. No product package may depend
 //! on it.
@@ -18,3 +17,4 @@
 pub mod graph;
 pub mod manifest;
 pub mod metadata;
+pub mod release;

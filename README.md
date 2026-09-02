@@ -5,12 +5,12 @@ A headless visual automation runtime for applications and agents.
 MadoPilot discovers windows and displays, captures frame streams, maps coordinate
 spaces, matches templates, performs one-shot OCR through an explicit backend,
 the accepted CPU profiles, or an explicit initialization-time provider policy,
-waits for stable template presence through a bounded Rust query over replay or
-implemented native sessions whose support remains withheld, and
-injects input through explicit platform capabilities while reporting structured
+waits for stable template presence through one bounded Rust query over
+replay/OpenCV or qualified native WGC/ScreenCaptureKit sessions, and injects
+input through explicit platform capabilities while reporting structured
 outcomes. OCR watchers remain future work. The runtime owns no GUI, tray,
-overlay, editor, updater, workflow catalog,
-general workflow/cron scheduler, or scripting language.
+overlay, editor, updater, workflow catalog, general workflow/cron scheduler, or
+scripting language.
 
 ## Status: deterministic, native, OCR, and Rust watcher workflows
 
@@ -27,23 +27,24 @@ crates/bindings/capi/examples/c/deterministic-slice.c
 crates/bindings/capi/examples/cpp/deterministic-slice.cpp
 ```
 
-Rust replay/OpenCV also exposes one bounded template-presence query with
-non-blocking poll, a blocking wait under separate caller authority, explicit
-cancel, confirmed-only stability, and immutable exact-frame results. Its
-deterministic replay/OpenCV correctness, latency, RSS, live-heap, and growth
-profiles are accepted on both release targets by ADR 0051. The example uses no
-caller frame-polling loop:
+Rust exposes one bounded template-presence query with non-blocking poll, a
+blocking wait under separate caller authority, explicit cancel, confirmed-only
+stability, and immutable exact-frame results. ADR 0051 accepts its deterministic
+replay/OpenCV correctness, latency, RSS, live-heap, and growth profiles on both
+release targets. The replay example uses no caller frame-polling loop:
 
 ```text
 crates/mado-pilot/examples/template-watch.rs
 ```
 
-The same Rust query API is implemented over maintained Windows WGC and macOS
-ScreenCaptureKit window/display sessions, but ADR 0057 currently withholds native
-watcher support after rejecting incomplete historical qualification oracles. The
-native example requires an explicit discovery index and caller asset package; it
-presents no permission UI, activates no target, injects no input, and prints no
-target title or native identifier:
+ADR 0064 qualifies the same Rust query API over maintained Windows WGC and
+macOS ScreenCaptureKit window/display sessions on the named release targets.
+Required Lane A retains deterministic scheduler/query authority; separate
+Windows and macOS Lane B jobs own the compact native semantic and cleanup
+contracts; optional Lane C statistics and endurance never replace either lane.
+The native example requires an explicit discovery index and caller asset
+package. It presents no permission UI, activates no target, injects no input,
+and prints no target title or native identifier:
 
 ```text
 crates/mado-pilot/examples/native-template-watch.rs
@@ -119,13 +120,13 @@ release targets.
 
 Released `v0.3.0` carries approved Windows 11 and Apple Silicon integrated
 42-region default-OCR quality plus separate target-native numeric profiles.
-The `v0.3.1` candidate adds an explicit non-default bounded profile,
-one-to-eight caller-owned grouped zones, initialization-time OCR provider policy,
-C ABI 1.5, and matching Rust/C++ ownership surfaces. CoreML qualification is
-rejected; explicit Windows CUDA and its fresh-CPU initialization fallback pass
-terminal provider enforcement, while automatic selection remains CPU on both
-targets because CUDA exceeded the fixed RSS ratio. Protected release delivery
-remains open.
+Released `v0.3.1` adds an explicit non-default bounded profile, one-to-eight
+caller-owned grouped zones, initialization-time OCR provider policy, C ABI 1.5,
+and matching Rust/C++ ownership surfaces. CoreML qualification is rejected;
+explicit Windows CUDA and its fresh-CPU initialization fallback pass terminal
+provider enforcement, while automatic selection remains CPU on both targets
+because CUDA exceeded the fixed RSS ratio. The `v0.4.0` source-release line adds
+the qualified bounded Rust template watcher without changing those contracts.
 
 macOS capture needs Screen Recording and input needs event-post access;
 MadoPilot probes both without prompting. Windows has no permission probe and
@@ -154,12 +155,12 @@ failed inference, switch provider after publication, or trigger input.
 | Native input submission | Implemented in both adapters and exposed through Rust, C ABI, and C++; system input, Windows exact-window delivery, and macOS owning-process delivery are explicit, receipts state submission evidence rather than application consumption, and fixture-scoped automatic checks send no uncontrolled desktop input |
 | Bounded diagnostic observation | Implemented through Rust, C ABI, and C++ with allocation-free `Off`, finite `Normal`/`Debug` streams, exact loss counts, and content-redacted OCR records; Rust-only watcher records add bounded query/source/region/state/stability/disposition/queue/elapsed/outcome facts without changing the released C ABI |
 | One-shot OCR public contract | Implemented through Rust, C ABI 1.5, and C++ over explicit backends, accepted ONNX CPU profiles, and explicit initialization-time provider policy; singular and one-to-eight-zone operations remain separate, with no OCR watcher, OCR scheduling, per-inference retry, bundling, or download |
-| Bounded template-presence query | Implemented and budget-qualified through the Rust replay/OpenCV facade. The same query types are implemented over maintained Windows WGC/macOS ScreenCaptureKit sessions, but ADR 0057 withholds native support pending corrected Windows and cross-target qualification. Current-once/strictly-newer frames, fixed finite latest-wins scheduling, separate query/wait authority, exact change/rate admission, confirmed-only stability, exact coalescing, fair two-worker progress, stale-result rejection, and one immutable terminal outcome remain mandatory. Callbacks/subscriptions, Tokio/futures, C/C++, OCR predicates, automatic input, target activation, arbitrary application/template/ROI compatibility or timing, and real-time guarantees remain unavailable |
+| Bounded template-presence query | Implemented and budget-qualified through the Rust replay/OpenCV facade, and qualified over maintained Windows WGC/macOS ScreenCaptureKit sessions on the named release targets under ADR 0064. Current-once/strictly-newer frames, fixed finite latest-wins scheduling, separate query/wait authority, exact change/rate admission, confirmed-only stability, exact coalescing, fair two-worker progress, stale-result rejection, and one immutable terminal outcome remain mandatory. Callbacks/subscriptions, Tokio/futures, C/C++, OCR predicates, automatic input, target activation, arbitrary application/template/ROI compatibility or timing, and real-time guarantees remain unavailable |
 | C ABI, tracked C header, dynamic library | Implemented through ABI 1.5 while preserving complete ABI 1.0, 1.2, 1.3, and 1.4 prefixes at 424, 592, 648, and 720 bytes; provider construction and engine-owned provider descriptors extend the table to 736 bytes; the unreleased 1.1 draft is intentionally unsupported |
 | Header-only C++ RAII wrapper and CMake targets | Implemented through ABI 1.5, including owning profile/zone/provider projections, move-only grouped results, explicit clone, and lvalue-only borrowed OCR/provider descriptor views |
 | C ABI static library, ABI-major loader names, pkg-config, CMake install | Not implemented |
-| Numeric performance budgets | Phase 1 and affected Phase 2 ceilings remain revision-bound and enforced. ADR 0037 accepts default-OCR target profiles; ADR 0041 accepts explicit bounded singular budgets. ADR 0044 accepts target-specific grouped-zone latency, lifecycle, and resource budgets for fixed non-overlapping layouts; ADR 0045 corrects only the new Apple integrated cache-cold startup ceiling after a retained failed source. ADR 0048 accepts explicit Windows CUDA and mixed-provider fallback profiles after retaining two stopped tail observations; automatic preference remains CPU. ADR 0051 accepts target-specific deterministic replay/OpenCV template-query latency, RSS, live-heap, and growth budgets; ADR 0052 corrects only the independently remediated Windows ROI maximum. ADR 0053 fixes independent native WGC and ScreenCaptureKit ceilings, while rejected ADR 0057 prevents those budgets from promoting native watcher support until corrected two-host qualification passes. Protected release delivery remains open |
-| Release packaging | Not implemented |
+| Numeric performance budgets | Phase 1 and affected Phase 2 ceilings remain revision-bound and enforced. ADR 0037 accepts default-OCR target profiles; ADR 0041 accepts explicit bounded singular budgets. ADR 0044 accepts target-specific grouped-zone latency, lifecycle, and resource budgets for fixed non-overlapping layouts; ADR 0045 corrects only the new Apple integrated cache-cold startup ceiling after a retained failed source. ADR 0048 accepts explicit Windows CUDA and mixed-provider fallback profiles after retaining two stopped tail observations; automatic preference remains CPU. ADR 0051 accepts target-specific deterministic replay/OpenCV template-query latency, RSS, live-heap, and growth budgets; ADR 0052 corrects only the independently remediated Windows ROI maximum. ADR 0053 retains target-specific native statistical budgets as Lane C history; ADR 0064 separately qualifies the required Lane A and Lane B semantic boundary without promoting those statistics to release gates |
+| Release artifacts | The v0.4.0 release is source-only; crates.io packages, prebuilt/static libraries, installers, CMake install/export, pkg-config, bundled native dependencies, and ABI-major decorated artifacts are not provided |
 
 The public Rust names have been reviewed and settled
 ([`G-009`](docs/validation-gates.md#g-009), resolved by
@@ -183,15 +184,16 @@ the full status table, the package inventory, and the dependency rules.
 
 ## Releases
 
-[`v0.1.0`](docs/releases/v0.1.0.md) is the published deterministic-workflow
-baseline. [`v0.2.1`](docs/releases/v0.2.1.md) is the published native
-capture/input/observation source release. [`v0.3.0`](docs/releases/v0.3.0.md) is
-the published default-OCR source release. [`v0.3.1`](docs/releases/v0.3.1.md) is
-the bounded-profile/grouped-zone release candidate and remains unpublished until
-its protected exact-source qualification and release flow complete. None
-publishes crates to crates.io or provides prebuilt libraries, installers, CMake
+[`v0.1.0`](docs/releases/v0.1.0.md) is the deterministic-workflow baseline.
+[`v0.2.1`](docs/releases/v0.2.1.md) adds native capture/input/observation.
+[`v0.3.0`](docs/releases/v0.3.0.md) adds default OCR, and
+[`v0.3.1`](docs/releases/v0.3.1.md) adds bounded/grouped/provider OCR.
+[`v0.4.0`](docs/releases/v0.4.0.md) adds the qualified bounded Rust template
+watcher over replay/OpenCV, WGC, and ScreenCaptureKit. These source releases
+publish no crates.io package, prebuilt or static library, installer, CMake
 install/export metadata, pkg-config metadata, or bundled OpenCV, ONNX Runtime,
-or model files. A tracked release-note file is the canonical release body.
+CUDA, cuDNN, or model file. Each tracked release-note file is its canonical
+release body.
 
 ## Release targets
 

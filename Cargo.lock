@@ -219,7 +219,7 @@ dependencies = [
 
 [[package]]
 name = "mado-pilot"
-version = "0.3.1"
+version = "0.4.0"
 dependencies = [
  "libc",
  "mado-pilot-adapter-replay",
@@ -234,7 +234,7 @@ dependencies = [
 
 [[package]]
 name = "mado-pilot-adapter-replay"
-version = "0.3.1"
+version = "0.4.0"
 dependencies = [
  "mado-pilot-capture",
  "mado-pilot-core",
@@ -245,7 +245,7 @@ dependencies = [
 
 [[package]]
 name = "mado-pilot-assets"
-version = "0.3.1"
+version = "0.4.0"
 dependencies = [
  "flate2",
  "mado-pilot-core",
@@ -259,7 +259,7 @@ dependencies = [
 
 [[package]]
 name = "mado-pilot-backend-onnx"
-version = "0.3.1"
+version = "0.4.0"
 dependencies = [
  "libc",
  "libloading",
@@ -277,7 +277,7 @@ dependencies = [
 
 [[package]]
 name = "mado-pilot-backend-opencv"
-version = "0.3.1"
+version = "0.4.0"
 dependencies = [
  "mado-pilot-capture",
  "mado-pilot-core",
@@ -288,7 +288,7 @@ dependencies = [
 
 [[package]]
 name = "mado-pilot-capi"
-version = "0.3.1"
+version = "0.4.0"
 dependencies = [
  "mado-pilot",
  "mado-pilot-runtime",
@@ -297,18 +297,18 @@ dependencies = [
 
 [[package]]
 name = "mado-pilot-capture"
-version = "0.3.1"
+version = "0.4.0"
 dependencies = [
  "mado-pilot-core",
 ]
 
 [[package]]
 name = "mado-pilot-core"
-version = "0.3.1"
+version = "0.4.0"
 
 [[package]]
 name = "mado-pilot-dependency-check"
-version = "0.3.1"
+version = "0.4.0"
 dependencies = [
  "serde",
  "serde_json",
@@ -316,14 +316,14 @@ dependencies = [
 
 [[package]]
 name = "mado-pilot-input"
-version = "0.3.1"
+version = "0.4.0"
 dependencies = [
  "mado-pilot-core",
 ]
 
 [[package]]
 name = "mado-pilot-ocr"
-version = "0.3.1"
+version = "0.4.0"
 dependencies = [
  "mado-pilot-capture",
  "mado-pilot-core",
@@ -333,7 +333,7 @@ dependencies = [
 
 [[package]]
 name = "mado-pilot-platform-macos"
-version = "0.3.1"
+version = "0.4.0"
 dependencies = [
  "cc",
  "mado-pilot-capture",
@@ -344,7 +344,7 @@ dependencies = [
 
 [[package]]
 name = "mado-pilot-platform-windows"
-version = "0.3.1"
+version = "0.4.0"
 dependencies = [
  "mado-pilot-capture",
  "mado-pilot-core",
@@ -355,7 +355,7 @@ dependencies = [
 
 [[package]]
 name = "mado-pilot-runtime"
-version = "0.3.1"
+version = "0.4.0"
 dependencies = [
  "mado-pilot-assets",
  "mado-pilot-capture",
@@ -368,7 +368,7 @@ dependencies = [
 
 [[package]]
 name = "mado-pilot-testkit"
-version = "0.3.1"
+version = "0.4.0"
 dependencies = [
  "mado-pilot-capture",
  "mado-pilot-core",
@@ -382,7 +382,7 @@ dependencies = [
 
 [[package]]
 name = "mado-pilot-vision"
-version = "0.3.1"
+version = "0.4.0"
 dependencies = [
  "mado-pilot-capture",
  "mado-pilot-core",

@@ -334,7 +334,7 @@ platform floors.
 
 OCR predicates, callbacks/subscriptions, C/C++, automatic input, target activation,
 arbitrary application/template/ROI compatibility or timing, real-time guarantees,
-packaging, and release remain unavailable.
+and installable packaging remain unavailable in the `v0.4.0` source release.
 Any future false skip or behavior-affecting fixture, report, or policy drift
 removes current authority until an affected-host rerun or reviewed complete-diff
 applicability and ADR pass restore it. Documentation-only changes receive no

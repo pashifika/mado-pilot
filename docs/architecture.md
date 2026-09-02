@@ -33,7 +33,7 @@ canonical model/runtime paths plus separate Apple M1 Pro and Core i7-12700KF
 regression profiles. Approved Apple Silicon and Windows 11 Pro hosts reproduce
 the same integrated 42-region quality boundary.
 
-The `v0.3.1` candidate adds a second closed, explicit, non-default profile over
+Released `v0.3.1` adds a second closed, explicit, non-default profile over
 the same immutable model components plus one-to-eight caller-owned OCR zones
 that share one mapped source envelope and detector scan. ADR 0040 replaces the
 rejected ADR 0038 tuple with bounded candidate v2; exact-source Apple and Windows
@@ -50,8 +50,8 @@ remains the historical explicit Windows CUDA acceptance. ADR 0049 bounds each
 CUDA recognizer submission to 128 MiB, retains the original arena/workspace and
 controlled preload configuration after measured alternatives fail, and passes
 the exact successor CUDA/fallback matrix. Automatic selection remains CPU
-because CUDA still fails the fixed RSS-ratio rule. Protected release acceptance
-remains open.
+because CUDA still fails the fixed RSS-ratio rule. The release remains
+source-only and changes no prior OCR contract.
 The OCR extension adds no bundling, download, ambient search, per-inference
 fallback, OCR scheduling, or automatic input.
 
@@ -127,8 +127,8 @@ flowchart LR
 
 OCR predicates, callbacks/subscriptions, C/C++, automatic input,
 target activation, arbitrary application/template/ROI compatibility or timing,
-real-time guarantees, packaging, artifacts, tags, and the `v0.4.0` release
-remain unavailable.
+real-time guarantees, and installable packaging remain unavailable. The
+`v0.4.0` source release publishes the qualified Rust watcher boundary only.
 See [Implementation status](#implementation-status).
 
 ## Product definition
@@ -381,7 +381,7 @@ prefix.
 | `crates/backend/onnx` | `mado-pilot-backend-onnx` | Bounded ONNX Runtime 1.29 OCR for the exact accepted native G-004 and explicit bounded-detector profiles, with CPU defaults and target-gated explicit provider policy |
 | `crates/bindings/capi` | `mado-pilot-capi` | Separately versioned C ABI and ownership boundary, and the header-only C++ wrapper and CMake targets over it |
 | `crates/support/testkit` | `mado-pilot-testkit` | Controlled capture, storage, permission, matching/OCR backend, and input doubles, synthetic clocks, gated completion scripts, allocation accounting, contract-fixture support, the deterministic offline `G-005` evaluator, and native watcher tracked-report privacy/schema plus typed environment admission |
-| `tools/dependency-check` | `mado-pilot-dependency-check` | Repository maintenance: workspace inventory and dependency-direction checking |
+| `tools/dependency-check` | `mado-pilot-dependency-check` | Repository maintenance: workspace inventory, dependency-direction, and release-scope checking |
 
 Every package in this table is `publish = false`. Publication is enabled for an
 individual package only by a change that implements, tests, and intends the
@@ -589,13 +589,12 @@ tooling is invoked, not linked.
 ### Enforcement
 
 `tools/dependency-check` reads `cargo metadata` and the tracked manifests,
-normalizes the package graph, and fails with the offending package names, paths, and
-edges. The rules live in pure modules with synthetic tests, separately from the
-Cargo process adapter, so every allowed adjacency group, every forbidden direction,
-and every metadata rule is covered deterministically without running Cargo. The
-adapter's own policies — path resolution, dependency source, `publish` decoding, and
-reserved directories — are covered against synthetic Cargo output over temporary
-directories.
+normalizes the package graph, and fails with the offending package names, paths,
+and edges. Its opt-in release-scope mode also reads Git-tracked paths, the
+canonical release body, the CMake development-consumer surface, and both public
+foreign-language headers. Pure validators and synthetic mutation tests remain
+separate from Cargo, Git, and filesystem adapters, so architecture and release
+rules fail deterministically at their single enforcement point.
 
 It verifies:
 
@@ -617,9 +616,16 @@ It verifies:
   for that package and `-D warnings` cannot recover them. Only the root `[lints]`
   table counts: the same text written inside `[package]` sets an unrelated key and
   leaves the lints disabled.
+- with `--release-scope`, that `docs/releases/v0.4.0.md` is tracked and names the
+  accepted targets, watcher boundary, compatibility, privacy, and source-only
+  artifact exclusions;
+- with `--release-scope`, that CMake declares product version `0.4.0` without an
+  install/export/static command, the public C/C++ headers expose no watcher, and
+  tracked release inputs contain no private ephemera or unapproved native
+  payload.
 
 ```sh
-cargo run --locked --package mado-pilot-dependency-check
+cargo run --locked --package mado-pilot-dependency-check -- --release-scope
 ```
 
 Changing a dependency direction means changing the allowlist, its tests, and this
@@ -632,7 +638,7 @@ document together, with an architecture decision record.
 | Cargo resolver | `3` |
 | Rust edition | `2024` |
 | Pinned toolchain and minimum supported Rust version | `1.97.1` |
-| Package version | `0.3.1` |
+| Package version | `0.4.0` |
 | Package license | `Apache-2.0` |
 | Repository | `https://github.com/pashifika/mado-pilot` |
 
@@ -817,12 +823,12 @@ artifact; see [ADR 0005](adr/0005-cpp-wrapper-shape-and-cmake-surface.md) and
 
 What the table marks reserved is withheld for three reasons. The `staticlib`
 kind is withheld because [`G-008`](validation-gates.md#g-008) has not recorded
-which static dependency combinations are supported; the decorated loader names are
-applied by release packaging, which is not implemented, so what is built
-today is the undecorated development artifact; and no pkg-config file is
-generated, for the same packaging reason. The CMake project likewise has no
-install or export set, so consumption is from the development tree with
-`add_subdirectory` rather than with `find_package`.
+which static dependency combinations are supported. ABI-major decorated loader
+names remain reserved for future installable packaging; the `v0.4.0` source
+release ships neither those names nor any prebuilt library. The current CMake
+project consumes the undecorated development artifact and has no install/export
+set or pkg-config file, so integration uses `add_subdirectory` rather than
+`find_package`.
 
 ## Version-one scope
 
@@ -967,7 +973,7 @@ responsibilities a later phase takes on.
 | CMake install and export set, pkg-config file | Not implemented; consumption is from the development tree |
 | Numeric performance budgets | Phase 1 and accepted Phase 2 profiles remain revision-bound under ADRs 0008 and 0024–0032. ADRs 0037, 0039–0041, 0044, 0045, 0048, and 0049 retain their exact OCR/provider evidence. ADRs 0051 and 0052 retain replay/OpenCV watcher ceilings, and ADR 0053 retains independent native WGC and ScreenCaptureKit latency, heap, RSS, and growth budgets. Qualification V2 does not reinterpret those measurements: target-specific statistical enforcement is optional Lane C evidence and cannot replace either required Lane B semantic result |
 | Native permission behavior | Implemented on macOS as non-prompting probes. Windows has no permission probe; its input path performs non-prompting integrity comparison and reports proven UIPI without elevation |
-| Release packaging | Not implemented |
+| Release artifacts | `v0.4.0` is source-only; installable packaging remains unimplemented |
 | ABI compatibility testing | Implemented for frozen ABI 1.0, 1.2, 1.3, and 1.4 headers against current ABI 1.5. Historical callers compile only against immutable headers, negotiate their exact extents, and execute against the current library; current C++ tests refuse partial 1.3, 1.4, and 1.5 operations before reading missing entries |
 
 The existence of a package is not evidence that its behavior exists. Each product

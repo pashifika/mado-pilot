@@ -82,9 +82,9 @@ jobs:
 
       # This step also prints the resolved workspace package inventory, so an
       # accidental workspace member is visible in the log as well as failing.
-      - name: Check the workspace inventory and dependency directions
+      - name: Check workspace architecture and release scope
         shell: bash
-        run: cargo run --locked --package mado-pilot-dependency-check
+        run: cargo run --locked --package mado-pilot-dependency-check -- --release-scope
 
       - name: Check G-004 OCR profile evidence
         shell: bash
@@ -282,9 +282,9 @@ jobs:
             echo "MADO_PILOT_G004_MODEL_ROOT=$(cygpath -m "${model_root}")"
           } >> "${GITHUB_ENV}"
 
-      - name: Check the workspace inventory and dependency directions
+      - name: Check workspace architecture and release scope
         shell: bash
-        run: cargo run --locked --package mado-pilot-dependency-check
+        run: cargo run --locked --package mado-pilot-dependency-check -- --release-scope
 
       - name: Lint the workspace
         shell: bash
@@ -535,9 +535,9 @@ jobs:
             echo "MADO_PILOT_G004_MODEL_ROOT=${model_root}"
           } >> "${GITHUB_ENV}"
 
-      - name: Check the workspace inventory and dependency directions
+      - name: Check workspace architecture and release scope
         shell: bash
-        run: cargo run --locked --package mado-pilot-dependency-check
+        run: cargo run --locked --package mado-pilot-dependency-check -- --release-scope
 
       - name: Lint the workspace
         shell: bash

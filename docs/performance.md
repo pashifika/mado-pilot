@@ -24,6 +24,13 @@ contract test covers cancellation, late-publication suppression, recovery, and
 close races without mixing that instrumentation into latency samples. Hosted
 Windows Server smoke enforces hard correctness and growth only; its timing and
 resident observations define no release-host budget.
+Phase 4 keeps three authorities separate. Required Lane A owns deterministic
+replay/OpenCV scheduler, query, ownership, and accounting semantics. Required
+target-specific Lane B owns the compact WGC and ScreenCaptureKit semantic and
+cleanup contracts. Optional Lane C owns statistical latency, resource, topology,
+and endurance evidence; it is not a release gate unless an explicit policy says
+otherwise. A correctness, cleanup, bounded-resource, or privacy failure remains
+terminal regardless of lane.
 
 Nothing in this document is itself a measured result. The numbers live in the
 profiles under [benchmarks/](benchmarks/), each naming the host it was measured
