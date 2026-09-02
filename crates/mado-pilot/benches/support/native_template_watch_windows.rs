@@ -43,7 +43,7 @@ use windows::Win32::UI::WindowsAndMessaging::{FindWindowW, PostMessageW};
 use windows::core::PCWSTR;
 #[cfg(windows)]
 use self::windows_monitor_topology::{
-    monitor_effective_dpi, monitor_facts, monitor_origin, next_monitor_origin,
+    monitor_facts, monitor_origin, monitor_scale_factor, next_monitor_origin,
 };
 
 #[cfg(windows)]
@@ -429,10 +429,10 @@ impl NativeFixture {
         let current = unsafe { MonitorFromWindow(window, MONITOR_DEFAULTTONEAREST) };
         let current_origin =
             monitor_origin(current).ok_or_else(|| "capability_unavailable:topology".to_owned())?;
-        let current_effective_dpi = monitor_effective_dpi(current)
+        let current_scale_factor = monitor_scale_factor(current)
             .ok_or_else(|| "capability_unavailable:topology".to_owned())?;
         let (x, y) =
-            next_monitor_origin(monitor_facts()?, current_origin, current_effective_dpi)
+            next_monitor_origin(monitor_facts()?, current_origin, current_scale_factor)
                 .ok_or_else(|| "capability_unavailable:topology".to_owned())?;
         let (width, height) = if self.resized { (480, 320) } else { (360, 240) };
         self.moved = true;

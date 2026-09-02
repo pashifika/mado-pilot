@@ -6,13 +6,13 @@ use windows::Win32::Foundation::{LPARAM, RECT};
 use windows::Win32::Graphics::Gdi::{
     EnumDisplayMonitors, GetMonitorInfoW, HDC, HMONITOR, MONITORINFO,
 };
-use windows::Win32::UI::HiDpi::{GetDpiForMonitor, MDT_EFFECTIVE_DPI};
+use windows::Win32::UI::Shell::GetScaleFactorForMonitor;
 use windows::core::BOOL;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
 pub(super) struct MonitorFact {
     pub(super) origin: (i32, i32),
-    pub(super) dpi: (u32, u32),
+    pub(super) scale_factor: u32,
 }
 
 unsafe extern "system" fn collect_monitor(
@@ -25,8 +25,13 @@ unsafe extern "system" fn collect_monitor(
     let monitors = unsafe {
         &mut *std::ptr::with_exposed_provenance_mut::<Vec<MonitorFact>>(state.0.cast_unsigned())
     };
-    if let (Some(origin), Some(dpi)) = (monitor_origin(monitor), monitor_effective_dpi(monitor)) {
-        monitors.push(MonitorFact { origin, dpi });
+    if let (Some(origin), Some(scale_factor)) =
+        (monitor_origin(monitor), monitor_scale_factor(monitor))
+    {
+        monitors.push(MonitorFact {
+            origin,
+            scale_factor,
+        });
     }
     true.into()
 }
@@ -42,14 +47,12 @@ pub(super) fn monitor_origin(monitor: HMONITOR) -> Option<(i32, i32)> {
         .then_some((info.rcMonitor.left, info.rcMonitor.top))
 }
 
-pub(super) fn monitor_effective_dpi(monitor: HMONITOR) -> Option<(u32, u32)> {
-    let mut dpi_x = 0;
-    let mut dpi_y = 0;
-    // SAFETY: `monitor` came from a Win32 monitor lookup and both outputs are writable.
-    unsafe { GetDpiForMonitor(monitor, MDT_EFFECTIVE_DPI, &raw mut dpi_x, &raw mut dpi_y) }
-        .is_ok()
-        .then_some((dpi_x, dpi_y))
-        .filter(|(dpi_x, dpi_y)| *dpi_x != 0 && *dpi_y != 0)
+pub(super) fn monitor_scale_factor(monitor: HMONITOR) -> Option<u32> {
+    // SAFETY: `monitor` came from a Win32 monitor lookup.
+    let scale_factor = unsafe { GetScaleFactorForMonitor(monitor) }.ok()?.0;
+    u32::try_from(scale_factor)
+        .ok()
+        .filter(|scale_factor| *scale_factor != 0)
 }
 
 pub(super) fn monitor_facts() -> Result<Vec<MonitorFact>, String> {
@@ -74,13 +77,15 @@ pub(super) fn monitor_facts() -> Result<Vec<MonitorFact>, String> {
 pub(super) fn next_monitor_origin(
     mut monitors: Vec<MonitorFact>,
     current_origin: (i32, i32),
-    current_dpi: (u32, u32),
+    current_scale_factor: u32,
 ) -> Option<(i32, i32)> {
     monitors.sort_unstable();
     monitors.dedup();
     monitors
         .into_iter()
-        .find(|monitor| monitor.origin != current_origin && monitor.dpi != current_dpi)
+        .find(|monitor| {
+            monitor.origin != current_origin && monitor.scale_factor != current_scale_factor
+        })
         .map(|monitor| monitor.origin)
 }
 
@@ -93,34 +98,31 @@ mod tests {
         let monitors = vec![
             MonitorFact {
                 origin: (0, 0),
-                dpi: (96, 96),
+                scale_factor: 100,
             },
             MonitorFact {
                 origin: (-3840, 0),
-                dpi: (144, 144),
+                scale_factor: 150,
             },
             MonitorFact {
                 origin: (0, 0),
-                dpi: (96, 96),
+                scale_factor: 100,
             },
         ];
 
         assert_eq!(
-            next_monitor_origin(monitors.clone(), (0, 0), (96, 96)),
+            next_monitor_origin(monitors.clone(), (0, 0), 100),
             Some((-3840, 0))
         );
-        assert_eq!(
-            next_monitor_origin(monitors, (-3840, 0), (144, 144)),
-            Some((0, 0))
-        );
+        assert_eq!(next_monitor_origin(monitors, (-3840, 0), 150), Some((0, 0)));
         assert_eq!(
             next_monitor_origin(
                 vec![MonitorFact {
                     origin: (0, 0),
-                    dpi: (96, 96),
+                    scale_factor: 100,
                 }],
                 (0, 0),
-                (96, 96),
+                100,
             ),
             None
         );
@@ -135,7 +137,9 @@ mod tests {
         let first = monitors.first().expect("at least one monitor");
 
         assert!(
-            monitors.iter().any(|monitor| monitor.dpi != first.dpi),
+            monitors
+                .iter()
+                .any(|monitor| monitor.scale_factor != first.scale_factor),
             "approved mixed-DPI host must expose distinct effective monitor scale"
         );
     }

@@ -454,9 +454,11 @@ fn geometry_generation_contract(arguments: &Arguments) -> ScenarioAttempt {
 #[cfg(windows)]
 fn qualification_geometry_available() -> bool {
     monitor_facts().is_ok_and(|monitors| {
-        monitors
-            .iter()
-            .any(|left| monitors.iter().any(|right| left.dpi != right.dpi))
+        monitors.iter().any(|left| {
+            monitors
+                .iter()
+                .any(|right| left.scale_factor != right.scale_factor)
+        })
     })
 }
 
