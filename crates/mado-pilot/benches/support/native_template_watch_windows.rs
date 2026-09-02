@@ -1,6 +1,10 @@
 // Windows transport and target-owner binding for the shared native watcher harness.
 
 #[cfg(windows)]
+#[path = "windows_monitor_topology.rs"]
+mod windows_monitor_topology;
+
+#[cfg(windows)]
 use std::collections::VecDeque;
 #[cfg(windows)]
 use std::io::Read;
@@ -20,11 +24,10 @@ use mado_pilot_platform_windows::fixture_protocol as protocol;
 #[cfg(windows)]
 use mado_pilot_testkit::visual_token::VisualTokenSequence;
 #[cfg(windows)]
-use windows::Win32::Foundation::{HWND, LPARAM, POINT, RECT, WPARAM};
+use windows::Win32::Foundation::{HWND, POINT, WPARAM};
 #[cfg(windows)]
 use windows::Win32::Graphics::Gdi::{
-    ClientToScreen, EnumDisplayMonitors, GetMonitorInfoW, HDC, HMONITOR,
-    MONITOR_DEFAULTTONEAREST, MONITORINFO, MonitorFromWindow,
+    ClientToScreen, MONITOR_DEFAULTTONEAREST, MonitorFromWindow,
 };
 #[cfg(windows)]
 use windows::Win32::System::ProcessStatus::{GetProcessMemoryInfo, PROCESS_MEMORY_COUNTERS};
@@ -32,25 +35,21 @@ use windows::Win32::System::ProcessStatus::{GetProcessMemoryInfo, PROCESS_MEMORY
 use windows::Win32::System::Threading::GetCurrentProcess;
 #[cfg(windows)]
 use windows::Win32::UI::HiDpi::{
-    DPI_AWARENESS_CONTEXT_PER_MONITOR_AWARE_V2, GetDpiForMonitor, MDT_EFFECTIVE_DPI,
-    SetThreadDpiAwarenessContext,
+    DPI_AWARENESS_CONTEXT_PER_MONITOR_AWARE_V2, SetThreadDpiAwarenessContext,
 };
 #[cfg(windows)]
 use windows::Win32::UI::WindowsAndMessaging::{FindWindowW, PostMessageW};
 #[cfg(windows)]
-use windows::core::{BOOL, PCWSTR};
+use windows::core::PCWSTR;
+#[cfg(windows)]
+use self::windows_monitor_topology::{
+    monitor_effective_dpi, monitor_facts, monitor_origin, next_monitor_origin,
+};
 
 #[cfg(windows)]
 static NEXT_FIXTURE_TOKEN: AtomicU64 = AtomicU64::new(1);
 #[cfg(windows)]
 const MAX_OUTPUT_LINE_BYTES: usize = 1_024;
-
-#[cfg(windows)]
-#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
-struct MonitorFact {
-    origin: (i32, i32),
-    dpi: (u32, u32),
-}
 
 #[cfg(windows)]
 #[must_use = "fixture finalization must be checked before accepting a scenario"]
@@ -430,10 +429,11 @@ impl NativeFixture {
         let current = unsafe { MonitorFromWindow(window, MONITOR_DEFAULTTONEAREST) };
         let current_origin =
             monitor_origin(current).ok_or_else(|| "capability_unavailable:topology".to_owned())?;
-        let current_dpi =
-            monitor_dpi(current).ok_or_else(|| "capability_unavailable:topology".to_owned())?;
-        let (x, y) = next_monitor_origin(monitor_facts()?, current_origin, current_dpi)
+        let current_effective_dpi = monitor_effective_dpi(current)
             .ok_or_else(|| "capability_unavailable:topology".to_owned())?;
+        let (x, y) =
+            next_monitor_origin(monitor_facts()?, current_origin, current_effective_dpi)
+                .ok_or_else(|| "capability_unavailable:topology".to_owned())?;
         let (width, height) = if self.resized { (480, 320) } else { (360, 240) };
         self.moved = true;
         self.set_geometry(x.saturating_add(80), y.saturating_add(80), width, height)
@@ -505,80 +505,6 @@ impl Drop for NativeFixture {
 #[cfg(windows)]
 fn wide(value: &str) -> Vec<u16> {
     value.encode_utf16().chain(Some(0)).collect()
-}
-
-#[cfg(windows)]
-unsafe extern "system" fn collect_monitor(
-    monitor: HMONITOR,
-    _display: HDC,
-    _rect: *mut RECT,
-    state: LPARAM,
-) -> BOOL {
-    // SAFETY: caller passes an exclusive Vec pointer for the synchronous enumeration.
-    let monitors = unsafe {
-        &mut *std::ptr::with_exposed_provenance_mut::<Vec<MonitorFact>>(state.0.cast_unsigned())
-    };
-    if let (Some(origin), Some(dpi)) = (monitor_origin(monitor), monitor_dpi(monitor)) {
-        monitors.push(MonitorFact { origin, dpi });
-    }
-    true.into()
-}
-
-#[cfg(windows)]
-fn monitor_origin(monitor: HMONITOR) -> Option<(i32, i32)> {
-    let mut info = MONITORINFO {
-        cbSize: u32::try_from(size_of::<MONITORINFO>()).expect("MONITORINFO size fits u32"),
-        ..Default::default()
-    };
-    // SAFETY: `monitor` came from a Win32 monitor lookup and `info` is writable.
-    unsafe { GetMonitorInfoW(monitor, &raw mut info) }
-        .as_bool()
-        .then_some((info.rcMonitor.left, info.rcMonitor.top))
-}
-
-#[cfg(windows)]
-fn monitor_dpi(monitor: HMONITOR) -> Option<(u32, u32)> {
-    let mut dpi_x = 0;
-    let mut dpi_y = 0;
-    // SAFETY: `monitor` came from a Win32 monitor lookup and both outputs are writable.
-    unsafe { GetDpiForMonitor(monitor, MDT_EFFECTIVE_DPI, &raw mut dpi_x, &raw mut dpi_y) }
-        .is_ok()
-        .then_some((dpi_x, dpi_y))
-        .filter(|(dpi_x, dpi_y)| *dpi_x != 0 && *dpi_y != 0)
-}
-
-#[cfg(windows)]
-fn monitor_facts() -> Result<Vec<MonitorFact>, String> {
-    let mut monitors = Vec::new();
-    // SAFETY: enumeration is synchronous and receives the exclusive Vec pointer.
-    unsafe {
-        EnumDisplayMonitors(
-            None,
-            None,
-            Some(collect_monitor),
-            LPARAM(
-                isize::try_from((&raw mut monitors).expose_provenance())
-                    .map_err(|_| "capability_unavailable:topology".to_owned())?,
-            ),
-        )
-    }
-    .ok()
-    .map_err(|_| "capability_unavailable:topology".to_owned())?;
-    Ok(monitors)
-}
-
-#[cfg(windows)]
-fn next_monitor_origin(
-    mut monitors: Vec<MonitorFact>,
-    current_origin: (i32, i32),
-    current_dpi: (u32, u32),
-) -> Option<(i32, i32)> {
-    monitors.sort_unstable();
-    monitors.dedup();
-    monitors
-        .into_iter()
-        .find(|monitor| monitor.origin != current_origin && monitor.dpi != current_dpi)
-        .map(|monitor| monitor.origin)
 }
 
 #[cfg(windows)]
@@ -736,79 +662,4 @@ fn peak_resident_bytes() -> Option<u64> {
     }
     .ok()?;
     u64::try_from(counters.PeakWorkingSetSize).ok()
-}
-
-#[cfg(all(test, windows))]
-mod tests {
-    use super::MonitorFact;
-
-
-    #[test]
-    fn topology_uses_per_target_scale_on_the_physical_windows_desktop() {
-        let placement_with_target_scale = |scale| {
-            mado_pilot::TargetPlacement::new(
-                (0.0, 0.0),
-                (240.0, 160.0),
-                mado_pilot::Scale::new(scale, scale).expect("target scale"),
-            )
-            .expect("placement")
-            .with_desktop_scale(mado_pilot::Scale::new(1.0, 1.0).expect("desktop scale"))
-        };
-        let before = placement_with_target_scale(1.5);
-        let after = placement_with_target_scale(1.25);
-
-        assert_eq!(before.desktop_scale(), after.desktop_scale());
-        assert!(super::target_scale_changed(&before, &after));
-        assert!(!super::target_scale_changed(&before, &before));
-    }
-
-    #[test]
-    fn next_monitor_origin_requires_a_different_origin_and_scale() {
-        let monitors = vec![
-            MonitorFact {
-                origin: (0, 0),
-                dpi: (96, 96),
-            },
-            MonitorFact {
-                origin: (-3840, 0),
-                dpi: (144, 144),
-            },
-            MonitorFact {
-                origin: (0, 0),
-                dpi: (96, 96),
-            },
-        ];
-
-        assert_eq!(
-            super::next_monitor_origin(monitors.clone(), (0, 0), (96, 96)),
-            Some((-3840, 0))
-        );
-        assert_eq!(
-            super::next_monitor_origin(monitors, (-3840, 0), (144, 144)),
-            Some((0, 0))
-        );
-        assert_eq!(
-            super::next_monitor_origin(
-                vec![MonitorFact {
-                    origin: (0, 0),
-                    dpi: (96, 96),
-                }],
-                (0, 0),
-                (96, 96),
-            ),
-            None
-        );
-    }
-
-    #[test]
-    #[ignore = "queries the approved mixed-DPI Windows qualification topology"]
-    fn approved_host_exposes_distinct_effective_monitor_scale() {
-        let monitors = super::monitor_facts().expect("monitor facts");
-        let first = monitors.first().expect("at least one monitor");
-
-        assert!(
-            monitors.iter().any(|monitor| monitor.dpi != first.dpi),
-            "approved mixed-DPI host must expose distinct effective monitor scale"
-        );
-    }
 }
