@@ -120,6 +120,101 @@ impl Stage {
 }
 
 #[derive(Debug)]
+enum WatchTokenObservation {
+    Matched,
+    Mismatched,
+    Failed(String),
+}
+
+impl fmt::Display for WatchTokenObservation {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            Self::Matched => formatter.write_str("matched"),
+            Self::Mismatched => formatter.write_str("mismatched"),
+            Self::Failed(error) => write!(formatter, "failed:{error}"),
+        }
+    }
+}
+
+#[derive(Debug)]
+enum FailureEvidence {
+    TokenSynchronization(TokenSynchronizationError),
+    WatchWait {
+        expected: VisualToken,
+        error: String,
+    },
+    WatchTerminal {
+        expected: VisualToken,
+        terminal: &'static str,
+        status: Option<Status>,
+        last_progress_frame: Option<FrameStamp>,
+        confirmed_observations: Option<u32>,
+    },
+    WatchMismatch {
+        expected: VisualToken,
+        frame: FrameStamp,
+        exact_source_match: bool,
+        token_observation: WatchTokenObservation,
+    },
+}
+
+impl fmt::Display for FailureEvidence {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            Self::TokenSynchronization(error) => {
+                write!(formatter, "token_synchronization{{{error}}}")
+            }
+            Self::WatchWait { expected, error } => write!(
+                formatter,
+                "watch_wait{{expected_token={},expected_marker={},error={error}}}",
+                expected.value(),
+                marker_state_name(expected.marker()),
+            ),
+            Self::WatchTerminal {
+                expected,
+                terminal,
+                status,
+                last_progress_frame,
+                confirmed_observations,
+            } => {
+                write!(
+                    formatter,
+                    "watch_terminal{{expected_token={},expected_marker={},terminal={terminal},status=",
+                    expected.value(),
+                    marker_state_name(expected.marker()),
+                )?;
+                match status {
+                    Some(status) => write!(formatter, "{status:?}")?,
+                    None => formatter.write_str("none")?,
+                }
+                formatter.write_str(",last_progress_frame=")?;
+                match last_progress_frame {
+                    Some(frame) => write!(formatter, "{frame}")?,
+                    None => formatter.write_str("none")?,
+                }
+                formatter.write_str(",confirmed_observations=")?;
+                match confirmed_observations {
+                    Some(observations) => write!(formatter, "{observations}")?,
+                    None => formatter.write_str("none")?,
+                }
+                formatter.write_str("}")
+            }
+            Self::WatchMismatch {
+                expected,
+                frame,
+                exact_source_match,
+                token_observation,
+            } => write!(
+                formatter,
+                "watch_mismatch{{expected_token={},expected_marker={},frame={frame},exact_source_match={exact_source_match},token_observation={token_observation}}}",
+                expected.value(),
+                marker_state_name(expected.marker()),
+            ),
+        }
+    }
+}
+
+#[derive(Debug)]
 struct Record {
     iteration: usize,
     stage: Stage,
@@ -127,6 +222,7 @@ struct Record {
     status: Option<Status>,
     old_frame: Option<FrameStamp>,
     fresh_frame: Option<FrameStamp>,
+    failure_evidence: Option<FailureEvidence>,
     elapsed_ms: u128,
 }
 
@@ -139,6 +235,7 @@ impl Record {
             status: None,
             old_frame: None,
             fresh_frame: None,
+            failure_evidence: None,
             elapsed_ms: 0,
         }
     }
@@ -149,6 +246,10 @@ impl Record {
 
     fn with_status(mut self, status: Status) -> Self {
         self.status = Some(status);
+        self
+    }
+    fn with_failure_evidence(mut self, evidence: FailureEvidence) -> Self {
+        self.failure_evidence = Some(evidence);
         self
     }
 
@@ -543,7 +644,7 @@ fn run_iteration(
         }
     };
     let mut old_observation = SessionObservation::default();
-    let absent_frame = match synchronize_session_to_token(
+    let absent_frame = match synchronize_session_to_token_diagnostic(
         &persistent.fixture,
         target,
         &old_session,
@@ -551,9 +652,10 @@ fn run_iteration(
         absent,
     ) {
         Ok(frame) => frame,
-        Err(_) => {
+        Err(error) => {
             let _ = close_twice(&old_session);
-            return Record::new(iteration, Stage::OldToken, Outcome::ProducerProgressFailure);
+            return Record::new(iteration, Stage::OldToken, Outcome::ProducerProgressFailure)
+                .with_failure_evidence(FailureEvidence::TokenSynchronization(error));
         }
     };
     let last_old_stamp = absent_frame.stamp();
@@ -611,27 +713,54 @@ fn run_iteration(
                 .with_old_frame(last_old_stamp);
         }
     };
-    let (terminal, _) = match wait_terminal_bounded(&query, OPERATION_WAIT) {
+    let (terminal, progress) = match wait_terminal_bounded(&query, OPERATION_WAIT) {
         Ok(terminal) => terminal,
-        Err(_) => {
+        Err(error) => {
             let _ = query.cancel();
             let _ = close_twice(&old_session);
             return Record::new(iteration, Stage::OldToken, Outcome::ProducerProgressFailure)
-                .with_old_frame(last_old_stamp);
+                .with_old_frame(last_old_stamp)
+                .with_failure_evidence(FailureEvidence::WatchWait {
+                    expected: visible,
+                    error,
+                });
         }
     };
     let Some(result) = terminal_match(&terminal).cloned() else {
+        let status = terminal.status();
+        let mut record = Record::new(iteration, Stage::OldToken, Outcome::ProducerProgressFailure)
+            .with_old_frame(last_old_stamp)
+            .with_failure_evidence(FailureEvidence::WatchTerminal {
+                expected: visible,
+                terminal: terminal_outcome_name(&terminal),
+                status,
+                last_progress_frame: progress.and_then(TemplateQueryProgress::last_frame),
+                confirmed_observations: progress.map(TemplateQueryProgress::confirmed_observations),
+            });
+        if let Some(status) = status {
+            record = record.with_status(status);
+        }
         let _ = close_twice(&old_session);
-        return Record::new(iteration, Stage::OldToken, Outcome::ProducerProgressFailure)
-            .with_old_frame(last_old_stamp);
+        return record;
     };
-    let matched = matched_target_exact(&terminal, target, template.id(), shape, 1, None)
-        && frame_has_visual_token(&old_session, &persistent.fixture, result.frame(), visible)
-            .unwrap_or(false);
-    if !matched {
+    let exact_source_match = matched_target_exact(&terminal, target, template.id(), shape, 1, None);
+    let token_observation =
+        match frame_has_visual_token(&old_session, &persistent.fixture, result.frame(), visible) {
+            Ok(true) => WatchTokenObservation::Matched,
+            Ok(false) => WatchTokenObservation::Mismatched,
+            Err(error) => WatchTokenObservation::Failed(error),
+        };
+    if !exact_source_match || !matches!(&token_observation, WatchTokenObservation::Matched) {
+        let result_frame = result.frame().stamp();
         let _ = close_twice(&old_session);
         return Record::new(iteration, Stage::OldToken, Outcome::ProducerProgressFailure)
-            .with_old_frame(last_old_stamp);
+            .with_old_frame(last_old_stamp)
+            .with_failure_evidence(FailureEvidence::WatchMismatch {
+                expected: visible,
+                frame: result_frame,
+                exact_source_match,
+                token_observation,
+            });
     }
 
     let old_stamp = result.frame().stamp();
@@ -692,7 +821,7 @@ fn run_iteration(
         }
     };
     let mut fresh_observation = SessionObservation::default();
-    let fresh_frame = match synchronize_session_to_token(
+    let fresh_frame = match synchronize_session_to_token_diagnostic(
         &persistent.fixture,
         target,
         &fresh_session,
@@ -700,14 +829,15 @@ fn run_iteration(
         fresh_token,
     ) {
         Ok(frame) => frame,
-        Err(_) => {
+        Err(error) => {
             let _ = close_twice(&fresh_session);
             return Record::new(
                 iteration,
                 Stage::FreshToken,
                 Outcome::ProducerProgressFailure,
             )
-            .with_old_frame(old_stamp);
+            .with_old_frame(old_stamp)
+            .with_failure_evidence(FailureEvidence::TokenSynchronization(error));
         }
     };
     let fresh_stamp = fresh_frame.stamp();
@@ -749,6 +879,20 @@ fn run_iteration(
     Record::new(iteration, Stage::FreshTeardown, Outcome::Clean).with_frames(old_stamp, fresh_stamp)
 }
 
+fn terminal_outcome_name(outcome: &TemplateTerminalOutcome) -> &'static str {
+    match outcome {
+        TemplateTerminalOutcome::Matched(_) => "matched",
+        TemplateTerminalOutcome::Cancelled => "cancelled",
+        TemplateTerminalOutcome::DeadlineExceeded => "deadline_exceeded",
+        TemplateTerminalOutcome::SessionClosed => "session_closed",
+        TemplateTerminalOutcome::SchedulerClosed => "scheduler_closed",
+        TemplateTerminalOutcome::TargetLost => "target_lost",
+        TemplateTerminalOutcome::Overloaded(_) => "overloaded",
+        TemplateTerminalOutcome::Failed(_) => "failed",
+        _ => "unknown",
+    }
+}
+
 fn close_twice(session: &Session) -> Result<(), Status> {
     let first = session
         .close(&bounded(OPERATION_WAIT))
@@ -768,28 +912,47 @@ fn push_record(ring: &mut VecDeque<Record>, record: Record) {
     ring.push_back(record);
 }
 
-fn print_record(event: &str, record: &Record) {
-    let status = record
-        .status
-        .as_ref()
-        .map_or_else(|| "none".to_owned(), |status| format!("{status:?}"));
-    let old_frame = record
-        .old_frame
-        .map_or_else(|| "none".to_owned(), |stamp| stamp.to_string());
-    let fresh_frame = record
-        .fresh_frame
-        .map_or_else(|| "none".to_owned(), |stamp| stamp.to_string());
-    println!(
-        "root_cause_version=1 event={} iteration={} stage={} outcome={} status={} old_frame={} fresh_frame={} elapsed_ms={}",
-        event,
-        record.iteration,
-        record.stage.as_str(),
-        record.outcome.as_str(),
-        status,
-        old_frame,
-        fresh_frame,
-        record.elapsed_ms,
-    );
+struct RecordOutput<'record> {
+    event: &'static str,
+    record: &'record Record,
+}
+
+impl fmt::Display for RecordOutput<'_> {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        let record = self.record;
+        write!(
+            formatter,
+            "root_cause_version=1 event={} iteration={} stage={} outcome={} status=",
+            self.event,
+            record.iteration,
+            record.stage.as_str(),
+            record.outcome.as_str(),
+        )?;
+        match record.status {
+            Some(status) => write!(formatter, "{status:?}")?,
+            None => formatter.write_str("none")?,
+        }
+        formatter.write_str(" old_frame=")?;
+        match record.old_frame {
+            Some(stamp) => write!(formatter, "{stamp}")?,
+            None => formatter.write_str("none")?,
+        }
+        formatter.write_str(" fresh_frame=")?;
+        match record.fresh_frame {
+            Some(stamp) => write!(formatter, "{stamp}")?,
+            None => formatter.write_str("none")?,
+        }
+        write!(formatter, " elapsed_ms={}", record.elapsed_ms)?;
+        formatter.write_str(" failure_evidence=")?;
+        match &record.failure_evidence {
+            Some(evidence) => write!(formatter, "{evidence}"),
+            None => formatter.write_str("none"),
+        }
+    }
+}
+
+fn print_record(event: &'static str, record: &Record) {
+    println!("{}", RecordOutput { event, record });
 }
 
 fn print_ring(ring: &VecDeque<Record>) {
@@ -816,4 +979,93 @@ fn print_final(completed: usize, failures: usize, outcome: Outcome) {
         outcome.as_str(),
         peak_resident_bytes,
     );
+}
+
+#[cfg(test)]
+#[allow(dead_code)]
+mod tests {
+    use super::*;
+    use mado_pilot_runtime::{FrameSequence, GeometryRevision, IdentityIssuer, StreamEpoch};
+
+    fn frame_stamp() -> FrameStamp {
+        let issuer = IdentityIssuer::new();
+        FrameStamp::new(
+            issuer.issue_stream().expect("issued stream"),
+            StreamEpoch::FIRST,
+            FrameSequence::FIRST,
+            GeometryRevision::FIRST,
+        )
+    }
+
+    #[test]
+    fn synchronization_failure_record_preserves_bounded_observation() {
+        let expected =
+            VisualToken::new(42, VisualMarkerState::Absent).expect("nonzero expected token");
+        let observed =
+            VisualToken::new(41, VisualMarkerState::Visible).expect("nonzero observed token");
+        let last_frame = frame_stamp();
+        let error = TokenSynchronizationError {
+            failure: TokenSynchronizationFailure::Timeout,
+            expected,
+            sessions: vec![SessionObservationDiagnostic {
+                session: 0,
+                last_frame: Some(last_frame),
+                last_token: Some(observed),
+                last_decode_failure: None,
+                acquisition_attempt_count: 7,
+                publication_count: 5,
+                mapping_attempt_count: 4,
+                decode_attempt_count: 3,
+                remaining_micros_at_last_publication: Some(17),
+                last_status: BoundedNativeStatus::DeadlineExceeded,
+                closed: false,
+            }],
+            elapsed: Duration::from_micros(23),
+        };
+        let record = Record::new(9, Stage::FreshToken, Outcome::ProducerProgressFailure)
+            .with_failure_evidence(FailureEvidence::TokenSynchronization(error));
+
+        let output = RecordOutput {
+            event: "failure",
+            record: &record,
+        }
+        .to_string();
+
+        assert!(output.contains("stage=fresh_token outcome=producer_progress_failure"));
+        assert!(output.contains("expected_token=42"));
+        assert!(output.contains(&format!("last_frame={last_frame}")));
+        assert!(output.contains("last_token=41"));
+        assert!(output.contains("acquisition_attempts=7,publications=5"));
+        assert!(output.contains("mapping_attempts=4,decode_attempts=3"));
+        assert!(output.contains("last_status=deadline_exceeded"));
+        assert!(!output.contains('\n'));
+        assert!(output.len() < 2_048);
+    }
+
+    #[test]
+    fn watch_mismatch_record_preserves_expected_token_and_frame() {
+        let expected =
+            VisualToken::new(43, VisualMarkerState::Visible).expect("nonzero expected token");
+        let frame = frame_stamp();
+        let record = Record::new(4, Stage::OldToken, Outcome::ProducerProgressFailure)
+            .with_failure_evidence(FailureEvidence::WatchMismatch {
+                expected,
+                frame,
+                exact_source_match: true,
+                token_observation: WatchTokenObservation::Mismatched,
+            });
+
+        let output = RecordOutput {
+            event: "failure",
+            record: &record,
+        }
+        .to_string();
+
+        assert!(output.contains("expected_token=43"));
+        assert!(output.contains(&format!("frame={frame}")));
+        assert!(output.contains("exact_source_match=true"));
+        assert!(output.contains("token_observation=mismatched"));
+        assert!(!output.contains('\n'));
+        assert!(output.len() < 1_024);
+    }
 }

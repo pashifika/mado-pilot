@@ -1065,13 +1065,14 @@ fn issue_fixture_visual_state(
         .map(|acknowledgement| acknowledgement.token)
 }
 
-fn synchronize_session_to_token(
+fn synchronize_session_to_token_diagnostic(
     fixture: &NativeFixture,
     target: TargetId,
     session: &Session,
     observation: &mut SessionObservation,
     expected: VisualToken,
-) -> Result<Frame, String> {
+) -> Result<Frame, TokenSynchronizationError> {
+    let started = Instant::now();
     let mut synchronizations = [SessionSynchronization::new(session, observation)];
     synchronize_sessions(
         fixture,
@@ -1079,12 +1080,30 @@ fn synchronize_session_to_token(
         expected,
         &mut synchronizations,
         Instant::now() + OPERATION_WAIT,
-    )
-    .map_err(|error| error.to_string())?;
-    synchronizations[0]
-        .frame
-        .take()
-        .ok_or_else(|| "fixture_authority_failed".to_owned())
+    )?;
+    match synchronizations[0].frame.take() {
+        Some(frame) => Ok(frame),
+        None => Err(token_synchronization_error(
+            TokenSynchronizationFailure::Protocol {
+                session: 0,
+                reason: "matched_frame_missing",
+            },
+            expected,
+            &synchronizations,
+            started,
+        )),
+    }
+}
+
+fn synchronize_session_to_token(
+    fixture: &NativeFixture,
+    target: TargetId,
+    session: &Session,
+    observation: &mut SessionObservation,
+    expected: VisualToken,
+) -> Result<Frame, String> {
+    synchronize_session_to_token_diagnostic(fixture, target, session, observation, expected)
+        .map_err(|error| error.to_string())
 }
 
 impl NativeRun {
