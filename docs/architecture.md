@@ -1632,6 +1632,17 @@ it becomes observable. If a later Change proves recovery and adds a fresh
 device and stream epoch, leased old-generation storage still cannot be
 repurposed.
 
+On Windows, an in-flight frame acquisition with no qualifying publication
+derives an internal 100 ms deadline from the caller's clock, then rechecks the
+raw native key. This default avoids an unbounded WGC wait when publication stops
+before `GraphicsCaptureItem.Closed` reaches the stream while limiting idle
+liveness work to about ten probes per second. The caller's earlier deadline and
+cancellation keep precedence. The resulting detection latency is bounded to
+approximately 100 ms only when the raw key disappears: key presence does not
+prove identity, and an immediately recycled HWND still requires the
+authoritative `Closed` event or a caller deadline. A caller-supplied synthetic
+clock must advance for the derived interval to expire.
+
 WGC supplies no distinct positive provenance for an external explicit-stop
 outcome when an item or frame reports `RO_E_CLOSED`. The Adapter therefore
 preserves the kind-specific target-loss result in that ambiguous path rather

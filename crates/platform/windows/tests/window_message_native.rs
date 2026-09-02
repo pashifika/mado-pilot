@@ -594,13 +594,19 @@ fn wgc_reports_target_loss_after_acknowledged_fixture_destruction() {
         fixture.wait_for(TARGET_LOSS_ACKNOWLEDGEMENT, Duration::from_secs(5)),
         TARGET_LOSS_ACKNOWLEDGEMENT
     );
+    let acknowledged_at = Instant::now();
     let status = terminal_receiver
         .recv_timeout(Duration::from_secs(5))
         .expect("in-flight frame wait terminates after acknowledged fixture destruction");
+    let detection_latency = acknowledged_at.elapsed();
     assert_eq!(
         status,
         Status::TargetLost,
         "acknowledged fixture destruction must terminate the in-flight WGC wait as TargetLost"
+    );
+    assert!(
+        detection_latency < Duration::from_secs(1),
+        "SystemClock latency from acknowledged destruction to TargetLost must stay below one second; observed {detection_latency:?}"
     );
     waiter.join().expect("frame waiter joins");
 

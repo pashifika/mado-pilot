@@ -146,7 +146,8 @@ pub trait CaptureSession: Debug + Send + Sync {
     ///
     /// # Errors
     ///
-    /// Returns a closed outcome once the session is closing, an
+    /// Returns a closed outcome once the session is closing, a target-lost
+    /// outcome when the Adapter observes that capture ended while waiting, an
     /// invalid-argument outcome for a stamp from another stream, and the
     /// operation's terminal outcome when cancellation or the deadline wins.
     fn frame(&self, request: &FrameRequest, operation: &OperationContext) -> Result<Frame>;
