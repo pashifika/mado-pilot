@@ -10,6 +10,10 @@ fn main() {
 }
 
 #[cfg(windows)]
+#[path = "support/ordinary_fixture_startup.rs"]
+mod ordinary_fixture_startup;
+
+#[cfg(windows)]
 fn main() {
     let options = match fixture::options() {
         Ok(options) => options,
@@ -19,7 +23,7 @@ fn main() {
         }
     };
     if let Err(error) = fixture::run(options) {
-        eprintln!("ordinary input fixture failed: {error}");
+        fixture::report_error(&error);
         std::process::exit(1);
     }
 }
@@ -33,6 +37,10 @@ mod fixture {
     use std::sync::atomic::{AtomicBool, AtomicU32, AtomicU64, AtomicUsize, Ordering};
     use std::time::Duration;
 
+    use super::ordinary_fixture_startup::{
+        Attach, Context, DpiBefore, Failure, Foreground, Stage, Status,
+    };
+
     use mado_pilot_platform_windows::fixture_protocol::{
         BENCHMARK_FILL_RGB, CONTROL_ALLOW_FOREGROUND, CONTROL_BLOCK_QUEUE, CONTROL_DESTROY_TARGET,
         CONTROL_DUPLICATE_METADATA, CONTROL_REPARENT_TARGET, CONTROL_REPLACE_TARGET,
@@ -45,7 +53,10 @@ mod fixture {
         WATCH_TOKEN_X, WATCH_TOKEN_Y, ordinary_fixture_title, visual_command_for_control,
         visual_token_cell,
     };
-    use windows::Win32::Foundation::{COLORREF, HINSTANCE, HWND, LPARAM, LRESULT, RECT, WPARAM};
+    use windows::Win32::Foundation::{
+        COLORREF, GetLastError, HINSTANCE, HWND, LPARAM, LRESULT, RECT, SetLastError, WIN32_ERROR,
+        WPARAM,
+    };
     use windows::Win32::Graphics::Gdi::{
         BeginPaint, CreateSolidBrush, DeleteObject, EndPaint, FillRect, HDC, HGDIOBJ,
         InvalidateRect, PAINTSTRUCT, UpdateWindow,
@@ -53,7 +64,10 @@ mod fixture {
     use windows::Win32::System::LibraryLoader::GetModuleHandleW;
     use windows::Win32::System::Threading::{AttachThreadInput, GetCurrentThreadId};
     use windows::Win32::UI::HiDpi::{
-        DPI_AWARENESS_CONTEXT_PER_MONITOR_AWARE_V2, SetProcessDpiAwarenessContext,
+        AreDpiAwarenessContextsEqual, DPI_AWARENESS_CONTEXT_PER_MONITOR_AWARE_V2,
+        DPI_AWARENESS_PER_MONITOR_AWARE, DPI_AWARENESS_SYSTEM_AWARE, DPI_AWARENESS_UNAWARE,
+        GetAwarenessFromDpiAwarenessContext, GetThreadDpiAwarenessContext,
+        SetProcessDpiAwarenessContext,
     };
     use windows::Win32::UI::Input::KeyboardAndMouse::{GetAsyncKeyState, VK_F6};
     use windows::Win32::UI::Input::{RAWINPUTDEVICE, RegisterRawInputDevices};
@@ -67,7 +81,7 @@ mod fixture {
         WM_MOUSEWHEEL, WM_NCDESTROY, WM_PAINT, WM_RBUTTONDOWN, WM_RBUTTONUP, WM_TIMER,
         WM_XBUTTONDOWN, WM_XBUTTONUP, WNDCLASSEXW, WS_CHILD, WS_OVERLAPPEDWINDOW, WS_VISIBLE,
     };
-    use windows::core::{Error, PCWSTR, Result};
+    use windows::core::{Error, PCWSTR, Result as WindowsResult};
 
     const STATE_TIMER: usize = 1;
     const STATE_POLL_INTERVAL_MS: u32 = 5;
@@ -97,14 +111,46 @@ mod fixture {
     static RAW_EVENTS: AtomicU32 = AtomicU32::new(0);
     static STATE_CHANGES: AtomicU32 = AtomicU32::new(0);
 
+    #[derive(Debug)]
+    pub(super) enum RunError {
+        Startup(Failure),
+        Runtime(Error),
+    }
+
+    impl From<Failure> for RunError {
+        fn from(failure: Failure) -> Self {
+            Self::Startup(failure)
+        }
+    }
+
+    pub(super) fn report_error(error: &RunError) {
+        match error {
+            RunError::Startup(failure) => print_line(&failure.to_string()),
+            RunError::Runtime(error) => eprintln!(
+                "ordinary input fixture runtime failed: status=0x{:08X}",
+                error.code().0.cast_unsigned()
+            ),
+        }
+    }
+
+    fn windows_status(error: Error) -> Status {
+        Status::WindowsHresult(error.code().0.cast_unsigned())
+    }
+
+    fn windows_failure(stage: Stage, error: Error, context: Context) -> Failure {
+        Failure::new(stage, windows_status(error), context)
+    }
+
     pub(super) struct Options {
         token: String,
         activate: bool,
+        fail_request: bool,
     }
 
-    pub(super) fn options() -> std::result::Result<Options, String> {
+    pub(super) fn options() -> Result<Options, String> {
         let mut token = None;
         let mut activate = false;
+        let mut fail_request = false;
         for argument in std::env::args().skip(1) {
             if argument == "--activate" {
                 if activate {
@@ -113,9 +159,16 @@ mod fixture {
                 activate = true;
                 continue;
             }
+            if argument == "--fail-stage=foreground-request" {
+                if fail_request {
+                    return Err("--fail-stage may be supplied only once".to_owned());
+                }
+                fail_request = true;
+                continue;
+            }
             let Some(value) = argument.strip_prefix("--title-token=") else {
                 return Err(format!(
-                    "unknown argument `{argument}`; expected --title-token=<token> or --activate"
+                    "unknown argument `{argument}`; expected --title-token=<token>, --activate, or --fail-stage=foreground-request"
                 ));
             };
             if value.is_empty() || value.chars().count() > 64 {
@@ -125,53 +178,148 @@ mod fixture {
                 return Err("--title-token may be supplied only once".to_owned());
             }
         }
+        if fail_request && !activate {
+            return Err("--fail-stage requires --activate".to_owned());
+        }
         Ok(Options {
             token: token.unwrap_or_else(|| std::process::id().to_string()),
             activate,
+            fail_request,
         })
     }
 
-    fn activate_for_fixture_setup(window: HWND) -> Result<()> {
-        // The native matrix must own its unrelated foreground application even
-        // when an unattended host's foreground lock rejects a direct request.
-        // Queue attachment is confined to this explicit fixture-startup mode
-        // and is detached before readiness or any delivery observation.
-        // SAFETY: both identifiers name desktop GUI threads with message queues,
-        // and every successful attachment is detached before this function exits.
+    fn activate_for_fixture_setup(
+        window: HWND,
+        context: Context,
+        fail_request: bool,
+    ) -> Result<(), Failure> {
+        // The native matrix owns one unrelated foreground fixture. Queue
+        // attachment exists only during setup and is detached before readiness.
+        // SAFETY: both identifiers name desktop GUI threads with message queues.
         unsafe {
             let current_thread = GetCurrentThreadId();
-            let foreground_thread = GetWindowThreadProcessId(GetForegroundWindow(), None);
+            let foreground = GetForegroundWindow();
+            let foreground_thread = GetWindowThreadProcessId(foreground, None);
+            let foreground_state = if foreground == HWND::default() || foreground_thread == 0 {
+                Foreground::Absent
+            } else if foreground_thread == current_thread {
+                Foreground::SelfThread
+            } else {
+                Foreground::Present
+            };
             let attached = foreground_thread != 0 && foreground_thread != current_thread;
+            let context = context.with_activation(
+                foreground_state,
+                if attached {
+                    Attach::Attempted
+                } else {
+                    Attach::Skipped
+                },
+            );
             if attached {
-                AttachThreadInput(current_thread, foreground_thread, true).ok()?;
+                AttachThreadInput(current_thread, foreground_thread, true)
+                    .ok()
+                    .map_err(|error| windows_failure(Stage::FOREGROUND_ATTACH, error, context))?;
             }
             let _was_visible = ShowWindow(window, SW_SHOW);
-            let activated = SetForegroundWindow(window).ok();
-            let detached = if attached {
-                AttachThreadInput(current_thread, foreground_thread, false).ok()
+            SetLastError(WIN32_ERROR(0));
+            let activated = !fail_request && SetForegroundWindow(window).as_bool();
+            let request_failure = (!activated).then(|| {
+                Failure::new(
+                    Stage::FOREGROUND_REQUEST,
+                    Status::Boolean,
+                    context.with_ambient_win32(GetLastError().0),
+                )
+            });
+            let detach_failure = if attached {
+                AttachThreadInput(current_thread, foreground_thread, false)
+                    .ok()
+                    .err()
             } else {
-                Ok(())
+                None
             };
-            activated?;
-            detached
+            match (request_failure, detach_failure) {
+                (Some(failure), Some(error)) => {
+                    Err(failure.with_cleanup(Stage::FOREGROUND_DETACH, windows_status(error)))
+                }
+                (Some(failure), None) => Err(failure),
+                (None, Some(error)) => {
+                    Err(windows_failure(Stage::FOREGROUND_DETACH, error, context))
+                }
+                (None, None) => Ok(()),
+            }
         }
     }
 
-    pub(super) fn run(options: Options) -> Result<()> {
+    pub(super) fn run(options: Options) -> Result<(), RunError> {
+        prepare(options)?;
+        print_line(&format!(
+            "fixture-ready class={ORDINARY_CLASS_NAME} title={} capacity={MAX_RECORDED_EVENTS}",
+            ordinary_title()
+        ));
+
+        let mut message = MSG::default();
+        loop {
+            // SAFETY: message is writable and this thread owns every fixture window.
+            let status = unsafe { GetMessageW(&raw mut message, None, 0, 0) };
+            if status.0 == -1 {
+                return Err(RunError::Runtime(Error::from_thread()));
+            }
+            if status.0 == 0 {
+                break;
+            }
+            // Deliberately do not call TranslateMessage: the production route
+            // posts every key and text unit explicitly and does not synthesize WM_CHAR.
+            // SAFETY: GetMessageW initialized the scalar message structure.
+            unsafe {
+                DispatchMessageW(&raw const message);
+            }
+        }
+        Ok(())
+    }
+
+    fn observe_dpi_before() -> DpiBefore {
+        // SAFETY: these calls only inspect the calling thread's DPI context.
+        unsafe {
+            let context = GetThreadDpiAwarenessContext();
+            if AreDpiAwarenessContextsEqual(context, DPI_AWARENESS_CONTEXT_PER_MONITOR_AWARE_V2)
+                .as_bool()
+            {
+                return DpiBefore::PerMonitorV2;
+            }
+            let awareness = GetAwarenessFromDpiAwarenessContext(context);
+            if awareness == DPI_AWARENESS_UNAWARE {
+                DpiBefore::Unaware
+            } else if awareness == DPI_AWARENESS_SYSTEM_AWARE {
+                DpiBefore::System
+            } else if awareness == DPI_AWARENESS_PER_MONITOR_AWARE {
+                DpiBefore::PerMonitor
+            } else {
+                DpiBefore::Unknown
+            }
+        }
+    }
+
+    fn prepare(options: Options) -> Result<(), Failure> {
+        let Options {
+            token,
+            activate,
+            fail_request,
+        } = options;
+        let context = Context::new(observe_dpi_before());
         // SAFETY: DPI awareness is selected before this fixture calls USER32.
         unsafe {
-            SetProcessDpiAwarenessContext(DPI_AWARENESS_CONTEXT_PER_MONITOR_AWARE_V2)?;
+            SetProcessDpiAwarenessContext(DPI_AWARENESS_CONTEXT_PER_MONITOR_AWARE_V2)
+                .map_err(|error| windows_failure(Stage::DPI_AWARENESS, error, context))?;
         }
-        TITLE_TOKEN.set(options.token).map_err(|_| {
-            Error::new(
-                windows::core::HRESULT(0x8000_4005u32.cast_signed()),
-                "title initialized twice",
-            )
-        })?;
+        TITLE_TOKEN
+            .set(token)
+            .map_err(|_| Failure::new(Stage::TITLE_TOKEN, Status::Hresult(0x8000_4005), context))?;
         ANIMATED.store(false, Ordering::Release);
         let class_name = wide(ORDINARY_CLASS_NAME);
         // SAFETY: null requests the current executable module.
-        let module = unsafe { GetModuleHandleW(None) }?;
+        let module = unsafe { GetModuleHandleW(None) }
+            .map_err(|error| windows_failure(Stage::MODULE_HANDLE, error, context))?;
         let class = WNDCLASSEXW {
             cbSize: u32::try_from(size_of::<WNDCLASSEXW>()).expect("WNDCLASSEXW fits u32"),
             lpfnWndProc: Some(window_proc),
@@ -181,16 +329,61 @@ mod fixture {
         };
         // SAFETY: registration copies the class name, and every field is initialized.
         if unsafe { RegisterClassExW(&raw const class) } == 0 {
-            return Err(Error::from_thread());
+            return Err(windows_failure(
+                Stage::CLASS_REGISTRATION,
+                Error::from_thread(),
+                context,
+            ));
         }
 
-        let target = create_top_level(&ordinary_title(), 120, 120)?;
-        let game = create_top_level(&role_title("Game"), 1_200, 120)?;
-        let sibling = create_top_level(&role_title("Sibling"), 800, 120)?;
-        let child = create_child(sibling, &role_title("Child"))?;
-        let foreground = create_top_level(&role_title("Foreground"), 800, 520)?;
-        let raw = create_top_level(&role_title("Raw"), 120, 560)?;
-        let state = create_top_level(&role_title("State"), 460, 560)?;
+        let target = create_startup_top_level(
+            Stage::WINDOW_CREATE_TARGET,
+            context,
+            &ordinary_title(),
+            120,
+            120,
+        )?;
+        let game = create_startup_top_level(
+            Stage::WINDOW_CREATE_GAME,
+            context,
+            &role_title("Game"),
+            1_200,
+            120,
+        )?;
+        let sibling = create_startup_top_level(
+            Stage::WINDOW_CREATE_SIBLING,
+            context,
+            &role_title("Sibling"),
+            800,
+            120,
+        )?;
+        let child = create_startup_child(
+            Stage::WINDOW_CREATE_CHILD,
+            context,
+            sibling,
+            &role_title("Child"),
+        )?;
+        let foreground = create_startup_top_level(
+            Stage::WINDOW_CREATE_FOREGROUND,
+            context,
+            &role_title("Foreground"),
+            800,
+            520,
+        )?;
+        let raw = create_startup_top_level(
+            Stage::WINDOW_CREATE_RAW,
+            context,
+            &role_title("Raw"),
+            120,
+            560,
+        )?;
+        let state = create_startup_top_level(
+            Stage::WINDOW_CREATE_STATE,
+            context,
+            &role_title("State"),
+            460,
+            560,
+        )?;
 
         TARGET.store(handle_value(target), Ordering::Release);
         GAME.store(handle_value(game), Ordering::Release);
@@ -206,9 +399,8 @@ mod fixture {
                 let _was_visible = ShowWindow(window, SW_SHOWNOACTIVATE);
             }
         }
-
-        if options.activate {
-            activate_for_fixture_setup(target)?;
+        if activate {
+            activate_for_fixture_setup(target, context, fail_request)?;
         }
 
         let devices = [
@@ -230,34 +422,16 @@ mod fixture {
             RegisterRawInputDevices(
                 &devices,
                 u32::try_from(size_of::<RAWINPUTDEVICE>()).expect("RAWINPUTDEVICE fits u32"),
-            )?;
+            )
+            .map_err(|error| windows_failure(Stage::RAW_INPUT_REGISTRATION, error, context))?;
         }
         // SAFETY: the state window is live on this thread; a null callback posts WM_TIMER.
         if unsafe { SetTimer(Some(state), STATE_TIMER, STATE_POLL_INTERVAL_MS, None) } == 0 {
-            return Err(Error::from_thread());
-        }
-
-        print_line(&format!(
-            "fixture-ready class={ORDINARY_CLASS_NAME} title={} capacity={MAX_RECORDED_EVENTS}",
-            ordinary_title()
-        ));
-
-        let mut message = MSG::default();
-        loop {
-            // SAFETY: message is writable and this thread owns every fixture window.
-            let status = unsafe { GetMessageW(&raw mut message, None, 0, 0) };
-            if status.0 == -1 {
-                return Err(Error::from_thread());
-            }
-            if status.0 == 0 {
-                break;
-            }
-            // Deliberately do not call TranslateMessage: the production route
-            // posts every key and text unit explicitly and does not synthesize WM_CHAR.
-            // SAFETY: GetMessageW initialized the scalar message structure.
-            unsafe {
-                DispatchMessageW(&raw const message);
-            }
+            return Err(windows_failure(
+                Stage::STATE_TIMER,
+                Error::from_thread(),
+                context,
+            ));
         }
         Ok(())
     }
@@ -709,12 +883,92 @@ mod fixture {
         });
     }
 
-    fn create_top_level(title: &str, x: i32, y: i32) -> Result<HWND> {
+    fn create_top_level(title: &str, x: i32, y: i32) -> WindowsResult<HWND> {
         create_window(title, x, y, 360, 240, None, WS_OVERLAPPEDWINDOW)
     }
 
-    fn create_child(parent: HWND, title: &str) -> Result<HWND> {
-        create_window(title, 20, 20, 160, 100, Some(parent), WS_CHILD | WS_VISIBLE)
+    #[derive(Clone, Copy)]
+    struct WindowSpec {
+        x: i32,
+        y: i32,
+        width: i32,
+        height: i32,
+        parent: Option<HWND>,
+        style: WINDOW_STYLE,
+    }
+
+    fn create_startup_top_level(
+        stage: Stage,
+        context: Context,
+        title: &str,
+        x: i32,
+        y: i32,
+    ) -> Result<HWND, Failure> {
+        create_startup_window(
+            stage,
+            context,
+            title,
+            WindowSpec {
+                x,
+                y,
+                width: 360,
+                height: 240,
+                parent: None,
+                style: WS_OVERLAPPEDWINDOW,
+            },
+        )
+    }
+
+    fn create_startup_child(
+        stage: Stage,
+        context: Context,
+        parent: HWND,
+        title: &str,
+    ) -> Result<HWND, Failure> {
+        create_startup_window(
+            stage,
+            context,
+            title,
+            WindowSpec {
+                x: 20,
+                y: 20,
+                width: 160,
+                height: 100,
+                parent: Some(parent),
+                style: WS_CHILD | WS_VISIBLE,
+            },
+        )
+    }
+
+    fn create_startup_window(
+        stage: Stage,
+        context: Context,
+        title: &str,
+        spec: WindowSpec,
+    ) -> Result<HWND, Failure> {
+        let class_name = wide(ORDINARY_CLASS_NAME);
+        let title = wide(title);
+        // SAFETY: null requests the current executable module.
+        let module = unsafe { GetModuleHandleW(None) }
+            .map_err(|error| windows_failure(Stage::MODULE_HANDLE, error, context))?;
+        // SAFETY: class and title buffers remain alive for this call; no payload is supplied.
+        unsafe {
+            CreateWindowExW(
+                Default::default(),
+                PCWSTR(class_name.as_ptr()),
+                PCWSTR(title.as_ptr()),
+                spec.style,
+                spec.x,
+                spec.y,
+                spec.width,
+                spec.height,
+                spec.parent,
+                None,
+                Some(HINSTANCE(module.0)),
+                None,
+            )
+        }
+        .map_err(|error| windows_failure(stage, error, context))
     }
 
     fn create_window(
@@ -725,7 +979,7 @@ mod fixture {
         height: i32,
         parent: Option<HWND>,
         style: WINDOW_STYLE,
-    ) -> Result<HWND> {
+    ) -> WindowsResult<HWND> {
         let class_name = wide(ORDINARY_CLASS_NAME);
         let title = wide(title);
         // SAFETY: null requests the current executable module.

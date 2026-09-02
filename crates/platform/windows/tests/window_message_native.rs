@@ -2,13 +2,16 @@
 #![cfg(windows)]
 //! Native ordinary-window delivery, authority, and isolation coverage.
 
+#[path = "../src/bin/support/ordinary_fixture_startup.rs"]
+mod ordinary_fixture_startup;
+
 use std::collections::VecDeque;
 use std::mem::size_of;
 use std::num::NonZeroU32;
-use std::process::{Child, Command, Stdio};
+use std::process::{Child, Command, ExitStatus, Stdio};
 use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
 use std::sync::mpsc::{self, Receiver, RecvTimeoutError};
-use std::sync::{Arc, Mutex};
+use std::sync::{Arc, Mutex, Once};
 use std::thread;
 use std::time::{Duration, Instant};
 
@@ -33,6 +36,7 @@ use mado_pilot_platform_windows::fixture_protocol::{
     FixtureVisualCommand, FixtureVisualState, ORDINARY_CLASS_NAME, TARGET_LOSS_ACKNOWLEDGEMENT,
     ordinary_fixture_title,
 };
+use ordinary_fixture_startup::{Failure as StartupFailure, PREFIX as STARTUP_ERROR_PREFIX};
 use windows::Win32::Foundation::{HWND, LPARAM, POINT, RECT, WPARAM};
 use windows::Win32::Graphics::Gdi::{
     EnumDisplayMonitors, GetMonitorInfoW, HDC, HMONITOR, MONITORINFO,
@@ -48,6 +52,8 @@ use windows::Win32::UI::WindowsAndMessaging::{
 use windows::core::{BOOL, PCWSTR};
 
 static NATIVE_MATRIX: Mutex<()> = Mutex::new(());
+static PROCESS_DPI: Once = Once::new();
+const STARTUP_FAILURE_INJECTION: &str = "MADOPILOT_WINDOWS_STARTUP_FAIL_STAGE";
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 struct ObservationReport {
@@ -74,20 +80,27 @@ struct FixtureProcess {
 
 impl FixtureProcess {
     fn spawn(token: impl Into<String>) -> Self {
-        Self::spawn_with_activation(token.into(), false)
+        Self::spawn_with_options(token.into(), false, false)
     }
 
     fn spawn_activated(token: impl Into<String>) -> Self {
-        Self::spawn_with_activation(token.into(), true)
+        Self::spawn_with_options(token.into(), true, false)
     }
 
-    fn spawn_with_activation(token: String, activate: bool) -> Self {
+    fn spawn_activated_with_injected_failure(token: impl Into<String>) -> Self {
+        Self::spawn_with_options(token.into(), true, true)
+    }
+
+    fn spawn_with_options(token: String, activate: bool, inject_failure: bool) -> Self {
         let mut command = Command::new(env!(
             "CARGO_BIN_EXE_mado-pilot-windows-window-message-fixture"
         ));
         command.arg(format!("--title-token={token}"));
         if activate {
             command.arg("--activate");
+        }
+        if inject_failure {
+            command.arg("--fail-stage=foreground-request");
         }
         let mut child = command
             .stdin(Stdio::null())
@@ -114,7 +127,7 @@ impl FixtureProcess {
             token,
             pending: VecDeque::new(),
         };
-        let ready = fixture.wait_for("fixture-ready ", Duration::from_secs(5));
+        let ready = fixture.wait_for_ready(Duration::from_secs(5));
         assert!(ready.contains(&format!("class={ORDINARY_CLASS_NAME}")));
         assert!(ready.contains(&format!("title={}", fixture.title())));
         fixture
@@ -155,6 +168,67 @@ impl FixtureProcess {
             )
         }
         .expect("posted fixture geometry control");
+    }
+
+    fn wait_for_ready(&mut self, timeout: Duration) -> String {
+        let deadline = Instant::now() + timeout;
+        loop {
+            let remaining = deadline.saturating_duration_since(Instant::now());
+            match self.lines.recv_timeout(remaining) {
+                Ok(line) if line.starts_with("fixture-ready ") => return line,
+                Ok(line) if line.starts_with(STARTUP_ERROR_PREFIX) => {
+                    let parsed = line.parse::<StartupFailure>();
+                    let exit = self.wait_for_child_exit();
+                    let failure = parsed.unwrap_or_else(|error| {
+                        panic!(
+                            "fixture startup record was invalid: {error}; exit={:?}",
+                            exit.code()
+                        )
+                    });
+                    assert_eq!(
+                        exit.code(),
+                        Some(1),
+                        "fixture startup record had mismatched exit={:?}",
+                        exit.code()
+                    );
+                    panic!("fixture startup failed: {failure}; exit=1");
+                }
+                Ok(line) => self.pending.push_back(line),
+                Err(RecvTimeoutError::Timeout) => {
+                    panic!("fixture readiness timed out before a bounded result")
+                }
+                Err(RecvTimeoutError::Disconnected) => {
+                    let exit = self
+                        .child
+                        .as_mut()
+                        .expect("fixture child retained")
+                        .try_wait()
+                        .expect("fixture child status observed")
+                        .and_then(|status| status.code());
+                    panic!("fixture disconnected before readiness: exit={exit:?}")
+                }
+            }
+        }
+    }
+
+    fn wait_for_child_exit(&mut self) -> ExitStatus {
+        let deadline = Instant::now() + Duration::from_secs(1);
+        loop {
+            if let Some(status) = self
+                .child
+                .as_mut()
+                .expect("fixture child retained")
+                .try_wait()
+                .expect("fixture child status observed")
+            {
+                return status;
+            }
+            assert!(
+                Instant::now() < deadline,
+                "fixture emitted a startup record but did not exit"
+            );
+            thread::sleep(Duration::from_millis(1));
+        }
     }
 
     fn wait_for(&mut self, prefix: &str, timeout: Duration) -> String {
@@ -473,6 +547,14 @@ impl Drop for OwnedForeground {
         }
     }
 }
+
+fn select_process_dpi_awareness() {
+    PROCESS_DPI.call_once(|| {
+        // SAFETY: the process default is fixed before these tests call USER32.
+        unsafe { SetProcessDpiAwarenessContext(DPI_AWARENESS_CONTEXT_PER_MONITOR_AWARE_V2) }
+            .expect("selected per-monitor-v2 DPI awareness");
+    });
+}
 #[test]
 #[ignore = "opens real fixture windows; run deliberately on an unlocked desktop"]
 fn watcher_visual_controls_acknowledge_before_fixture_cleanup() {
@@ -618,11 +700,28 @@ fn wgc_reports_target_loss_after_acknowledged_fixture_destruction() {
 
 #[test]
 #[ignore = "opens and activates real fixture windows; run deliberately on an unlocked desktop"]
+fn activated_ordinary_fixture_startup_reaches_ready() {
+    let _serial = NATIVE_MATRIX.lock().expect("native matrix serialized");
+    select_process_dpi_awareness();
+    match std::env::var(STARTUP_FAILURE_INJECTION) {
+        Ok(value) if value == "foreground-request" => {
+            let _fixture =
+                FixtureProcess::spawn_activated_with_injected_failure("startup-red-control");
+            panic!("injected startup failure unexpectedly reached readiness");
+        }
+        Ok(_) => panic!("{STARTUP_FAILURE_INJECTION} accepts only foreground-request"),
+        Err(std::env::VarError::NotUnicode(_)) => {
+            panic!("{STARTUP_FAILURE_INJECTION} must be valid Unicode")
+        }
+        Err(std::env::VarError::NotPresent) => OwnedForeground::establish().finish(),
+    }
+}
+
+#[test]
+#[ignore = "opens and activates real fixture windows; run deliberately on an unlocked desktop"]
 fn ordinary_window_message_native_matrix() {
     let _serial = NATIVE_MATRIX.lock().expect("native matrix serialized");
-    // SAFETY: DPI awareness is fixed before this test calls USER32.
-    unsafe { SetProcessDpiAwarenessContext(DPI_AWARENESS_CONTEXT_PER_MONITOR_AWARE_V2) }
-        .expect("selected per-monitor-v2 DPI awareness");
+    select_process_dpi_awareness();
     let mut foreground = OwnedForeground::establish();
 
     let mut delivery = FixtureProcess::spawn("delivery");
