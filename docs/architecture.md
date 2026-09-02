@@ -2664,10 +2664,11 @@ queue or `DiagnosticOperationId`; public `TemplateQueryId` issuance is
 unaffected.
 
 Supported and budget-qualified now: the fixed Rust replay/OpenCV profile shown by
-`crates/mado-pilot/examples/template-watch.rs`. The maintained Windows WGC and
+`crates/mado-pilot/examples/template-watch.rs` and the maintained Windows WGC and
 macOS ScreenCaptureKit Rust session boundary shown by
-`crates/mado-pilot/examples/native-template-watch.rs` is implemented but not
-support-qualified. Independent review rejected the historical final cohorts
+`crates/mado-pilot/examples/native-template-watch.rs` on the named release
+targets under ADR 0064.
+Independent review rejected the historical final cohorts
 because their engine-close and Windows topology oracles were incomplete.
 Replacement source `f16591f` corrected both semantics. Its fresh Windows cohort
 passed 5/5, including the different-monitor 144-to-120-DPI transition. Its fresh
