@@ -448,108 +448,8 @@ fn next_monitor_origin(
 }
 
 #[cfg(windows)]
-const WGC_READY_PROBE: Duration = Duration::from_millis(50);
-
-#[cfg(windows)]
 fn native_engine() -> mado_pilot::Result<Engine> {
     mado_pilot::windows_engine(NativeEngineRequest::new())
-}
-
-#[cfg(windows)]
-fn prepare_two_session_readiness(run: &mut NativeRun, second: &Session) -> Result<(), String> {
-    let deadline = Instant::now() + OPERATION_WAIT;
-    let mut first_cursor = None;
-    let mut second_cursor = None;
-    loop {
-        if Instant::now() >= deadline {
-            let _restored = run.command_absent();
-            return Err("typed_operation_failure:DeadlineExceeded".to_owned());
-        }
-
-        run.command_visible()?;
-        let visible = (|| {
-            let second_visible = try_observe_marker_state(
-                second,
-                &run.fixture,
-                &mut second_cursor,
-                true,
-                readiness_probe_wait(deadline),
-            )?;
-            let first_visible = try_observe_marker_state(
-                &run.session,
-                &run.fixture,
-                &mut first_cursor,
-                true,
-                readiness_probe_wait(deadline),
-            )?;
-            Ok((first_visible, second_visible))
-        })();
-        let restored = run.command_absent();
-        let (first_visible, second_visible) = match visible {
-            Ok(observed) => observed,
-            Err(error) => {
-                let _restored = restored;
-                return Err(error);
-            }
-        };
-        restored?;
-
-        let second_absent = try_observe_marker_state(
-            second,
-            &run.fixture,
-            &mut second_cursor,
-            false,
-            readiness_probe_wait(deadline),
-        )?;
-        let first_absent = try_observe_marker_state(
-            &run.session,
-            &run.fixture,
-            &mut first_cursor,
-            false,
-            readiness_probe_wait(deadline),
-        )?;
-        if first_visible && second_visible && first_absent && second_absent {
-            return Ok(());
-        }
-    }
-}
-
-#[cfg(windows)]
-fn readiness_probe_wait(deadline: Instant) -> Duration {
-    WGC_READY_PROBE.min(deadline.saturating_duration_since(Instant::now()))
-}
-
-#[cfg(windows)]
-fn try_observe_marker_state(
-    session: &Session,
-    fixture: &NativeFixture,
-    cursor: &mut Option<FrameStamp>,
-    expected_visible: bool,
-    wait: Duration,
-) -> Result<bool, String> {
-    let deadline = Instant::now() + wait;
-    loop {
-        let remaining = deadline.saturating_duration_since(Instant::now());
-        if remaining.is_zero() {
-            return Ok(false);
-        }
-        let request = cursor.map_or_else(FrameRequest::latest, FrameRequest::newer_than);
-        let frame = match session.acquire_frame(&request, &bounded(remaining)) {
-            Ok(frame) => frame,
-            Err(error) if error.status() == Status::DeadlineExceeded => return Ok(false),
-            Err(error) => {
-                return Err(format!("typed_operation_failure:{:?}", error.status()));
-            }
-        };
-        *cursor = Some(frame.stamp());
-        let shape = marker_shape(&frame, fixture).ok_or_else(|| "wrong_transform".to_owned())?;
-        let mapping = session
-            .map_frame(&frame, PixelFormat::Rgba8, &bounded(remaining))
-            .map_err(|_| "wrong_region".to_owned())?;
-        if marker_state(&mapping, shape) == Some(expected_visible) {
-            return Ok(true);
-        }
-    }
 }
 
 #[cfg(windows)]
@@ -599,19 +499,25 @@ fn topology_geometry_matches(before: &Frame, after: &Frame) -> bool {
 }
 
 #[cfg(windows)]
-fn marker_shape(frame: &Frame, fixture: &NativeFixture) -> Option<MarkerShape> {
+fn client_cell_shape(
+    frame: &Frame,
+    fixture: &NativeFixture,
+    logical_x: f64,
+    logical_y: f64,
+    logical_cell: f64,
+) -> Option<(u32, u32, i32, i32)> {
     let placement = frame.transform().target()?;
     let window = fixture.window().ok()?;
-    let marker_x = scaled_i32(MARKER_X_LOGICAL, 1.0)?;
-    let marker_y = scaled_i32(MARKER_Y_LOGICAL, 1.0)?;
-    let marker_cell = scaled_i32(MARKER_CELL_LOGICAL, 1.0)?;
+    let cell_x = scaled_i32(logical_x, 1.0)?;
+    let cell_y = scaled_i32(logical_y, 1.0)?;
+    let cell_size = scaled_i32(logical_cell, 1.0)?;
     let mut origin = POINT {
-        x: marker_x,
-        y: marker_y,
+        x: cell_x,
+        y: cell_y,
     };
     let mut far = POINT {
-        x: marker_x.checked_add(marker_cell)?,
-        y: marker_y.checked_add(marker_cell)?,
+        x: cell_x.checked_add(cell_size)?,
+        y: cell_y.checked_add(cell_size)?,
     };
     // SAFETY: the predefined context is valid on the approved Windows floor and
     // affects only this thread; the returned prior context is restored below
@@ -623,7 +529,7 @@ fn marker_shape(frame: &Frame, fixture: &NativeFixture) -> Option<MarkerShape> {
     }
     // SAFETY: both points are writable and `window` is the authenticated live fixture HWND.
     let origin_converted = unsafe { ClientToScreen(window, &raw mut origin) }.as_bool();
-    // SAFETY: same as above for the marker cell's far corner.
+    // SAFETY: same as above for the cell's far corner.
     let far_converted = unsafe { ClientToScreen(window, &raw mut far) }.as_bool();
     // SAFETY: `prior_dpi` came from the successful context change above.
     let restored = unsafe { SetThreadDpiAwarenessContext(prior_dpi) };
@@ -633,11 +539,45 @@ fn marker_shape(frame: &Frame, fixture: &NativeFixture) -> Option<MarkerShape> {
     let cell_width = u32::try_from(far.x.checked_sub(origin.x)?).ok()?;
     let cell_height = u32::try_from(far.y.checked_sub(origin.y)?).ok()?;
     let (desktop_x, desktop_y) = placement.desktop_origin();
+    Some((
+        cell_width,
+        cell_height,
+        scaled_i32(f64::from(origin.x) - desktop_x, 1.0)?,
+        scaled_i32(f64::from(origin.y) - desktop_y, 1.0)?,
+    ))
+}
+
+#[cfg(windows)]
+fn marker_shape(frame: &Frame, fixture: &NativeFixture) -> Option<MarkerShape> {
+    let (cell_width, cell_height, origin_x, origin_y) = client_cell_shape(
+        frame,
+        fixture,
+        MARKER_X_LOGICAL,
+        MARKER_Y_LOGICAL,
+        MARKER_CELL_LOGICAL,
+    )?;
     Some(MarkerShape {
         cell_width,
         cell_height,
-        origin_x: scaled_i32(f64::from(origin.x) - desktop_x, 1.0)?,
-        origin_y: scaled_i32(f64::from(origin.y) - desktop_y, 1.0)?,
+        origin_x,
+        origin_y,
+    })
+}
+
+#[cfg(windows)]
+fn token_shape(frame: &Frame, fixture: &NativeFixture) -> Option<TokenShape> {
+    let (cell_width, cell_height, origin_x, origin_y) = client_cell_shape(
+        frame,
+        fixture,
+        TOKEN_X_LOGICAL,
+        TOKEN_Y_LOGICAL,
+        TOKEN_CELL_LOGICAL,
+    )?;
+    Some(TokenShape {
+        cell_width,
+        cell_height,
+        origin_x,
+        origin_y,
     })
 }
 

@@ -181,11 +181,6 @@ fn native_engine() -> mado_pilot::Result<Engine> {
 }
 
 #[cfg(target_os = "macos")]
-fn prepare_two_session_readiness(_run: &mut NativeRun, _second: &Session) -> Result<(), String> {
-    Ok(())
-}
-
-#[cfg(target_os = "macos")]
 fn permission_oracle(engine: &Engine) -> bool {
     use mado_pilot::{PermissionKind, PermissionState};
 
@@ -229,7 +224,12 @@ fn topology_geometry_matches(before: &Frame, after: &Frame) -> bool {
 }
 
 #[cfg(target_os = "macos")]
-fn marker_shape(frame: &Frame, _fixture: &NativeFixture) -> Option<MarkerShape> {
+fn content_cell_shape(
+    frame: &Frame,
+    logical_x: f64,
+    logical_y: f64,
+    logical_cell: f64,
+) -> Option<(u32, u32, i32, i32)> {
     let placement = frame.transform().target()?;
     let scale = placement.scale();
     let (logical_width, logical_height) = placement.logical_size();
@@ -240,11 +240,35 @@ fn marker_shape(frame: &Frame, _fixture: &NativeFixture) -> Option<MarkerShape> 
     if horizontal_inset < 0.0 || top_inset < 0.0 {
         return None;
     }
+    Some((
+        scaled_u32(logical_cell, scale.x())?,
+        scaled_u32(logical_cell, scale.y())?,
+        scaled_i32(horizontal_inset + logical_x, scale.x())?,
+        scaled_i32(top_inset + logical_y, scale.y())?,
+    ))
+}
+
+#[cfg(target_os = "macos")]
+fn marker_shape(frame: &Frame, _fixture: &NativeFixture) -> Option<MarkerShape> {
+    let (cell_width, cell_height, origin_x, origin_y) =
+        content_cell_shape(frame, MARKER_X_LOGICAL, MARKER_Y_LOGICAL, MARKER_CELL_LOGICAL)?;
     Some(MarkerShape {
-        cell_width: scaled_u32(MARKER_CELL_LOGICAL, scale.x())?,
-        cell_height: scaled_u32(MARKER_CELL_LOGICAL, scale.y())?,
-        origin_x: scaled_i32(horizontal_inset + MARKER_X_LOGICAL, scale.x())?,
-        origin_y: scaled_i32(top_inset + MARKER_Y_LOGICAL, scale.y())?,
+        cell_width,
+        cell_height,
+        origin_x,
+        origin_y,
+    })
+}
+
+#[cfg(target_os = "macos")]
+fn token_shape(frame: &Frame, _fixture: &NativeFixture) -> Option<TokenShape> {
+    let (cell_width, cell_height, origin_x, origin_y) =
+        content_cell_shape(frame, TOKEN_X_LOGICAL, TOKEN_Y_LOGICAL, TOKEN_CELL_LOGICAL)?;
+    Some(TokenShape {
+        cell_width,
+        cell_height,
+        origin_x,
+        origin_y,
     })
 }
 
