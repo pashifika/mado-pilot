@@ -7,6 +7,9 @@ include!("native_template_watch_windows.rs");
 
 #[path = "native_template_watch_contract.rs"]
 mod native_contract;
+#[cfg(target_os = "macos")]
+#[path = "native_template_watch_root_cause.rs"]
+mod root_cause;
 
 use std::cell::RefCell;
 use std::fmt;
@@ -796,6 +799,7 @@ struct Arguments {
     retained_result_lifecycle_diagnostic: bool,
     enforce_budgets: bool,
     native_contract: bool,
+    root_cause_stress: bool,
     workload_filter: Option<String>,
 }
 
@@ -839,6 +843,7 @@ impl Arguments {
             full_load_diagnostic: false,
             retained_result_lifecycle_diagnostic: false,
             enforce_budgets: false,
+            root_cause_stress: false,
             workload_filter: None,
             native_contract: true,
         })
@@ -861,6 +866,12 @@ impl Arguments {
         let retained_result_lifecycle_diagnostic = raw
             .iter()
             .any(|argument| argument == "--retained-result-lifecycle-diagnostic");
+        let root_cause_stress = raw
+            .iter()
+            .filter(|argument| argument.as_str() == "--root-cause-stress")
+            .count();
+        assert!(root_cause_stress <= 1, "protocol_drift");
+        let root_cause_stress = root_cause_stress == 1;
         let enforce_budgets = raw.iter().any(|argument| argument == "--enforce-budgets");
         let workload_filter = value(&raw, "--workload").map(str::to_owned);
         assert!(
@@ -880,11 +891,21 @@ impl Arguments {
                     && workload_filter.as_deref() == Some("retained_result_mapping")),
             "protocol_drift"
         );
+        assert!(
+            !root_cause_stress
+                || (!qualification
+                    && !full_load_diagnostic
+                    && !retained_result_lifecycle_diagnostic
+                    && !enforce_budgets
+                    && workload_filter.is_none()),
+            "protocol_drift"
+        );
         let arguments = Self {
             qualification,
             retained_result_lifecycle_diagnostic,
             full_load_diagnostic,
             enforce_budgets,
+            root_cause_stress,
             workload_filter,
             fixture_executable,
             native_contract: false,
@@ -903,6 +924,7 @@ fn artifact_authority_required(arguments: &Arguments) -> bool {
         || arguments.full_load_diagnostic
         || arguments.retained_result_lifecycle_diagnostic
         || arguments.enforce_budgets
+        || arguments.root_cause_stress
 }
 
 fn fixture_bytes_match(arguments: &Arguments, bytes: &[u8]) -> bool {
@@ -1344,6 +1366,15 @@ pub(super) fn run() {
         return;
     }
     let arguments = Arguments::parse();
+    if arguments.root_cause_stress {
+        #[cfg(target_os = "macos")]
+        {
+            root_cause::run(arguments);
+            return;
+        }
+        #[cfg(not(target_os = "macos"))]
+        panic!("capability_unavailable:root_cause_stress");
+    }
     let sample_plan = if arguments.qualification
         || arguments.full_load_diagnostic
         || arguments.retained_result_lifecycle_diagnostic

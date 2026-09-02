@@ -134,15 +134,21 @@ fn the_fixture_control_archive_is_absent_from_a_production_shim_consumer() {
 }
 
 #[test]
-fn private_fixture_cleanup_accounting_is_absent_from_production_consumers() {
+fn private_fixture_shim_diagnostics_are_absent_from_production_consumers() {
     let symbols = linked_symbols();
 
-    assert!(
-        !symbols
-            .lines()
-            .any(|line| line.split_whitespace().last() == Some("_mp_shim_fixture_cleanup_counts")),
-        "private fixture cleanup accounting entered a production shim consumer"
-    );
+    for symbol in [
+        "_mp_shim_fixture_cleanup_counts",
+        "_mp_shim_sck_diagnostics_set_tier",
+        "_mp_shim_sck_diagnostics_dump",
+    ] {
+        assert!(
+            !symbols
+                .lines()
+                .any(|line| line.split_whitespace().last() == Some(symbol)),
+            "{symbol} entered a production shim consumer"
+        );
+    }
 }
 
 #[test]

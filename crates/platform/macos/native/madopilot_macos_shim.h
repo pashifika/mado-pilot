@@ -30,7 +30,7 @@ extern "C" {
 #endif
 
 /* The version of this internal surface. Rust asserts it at load. */
-#define MP_SHIM_ABI_VERSION 20u
+#define MP_SHIM_ABI_VERSION 21u
 
 /* The largest extent, budget, and default wait the shim will accept or apply. */
 #define MP_SHIM_MAX_PIXEL_EXTENT 32768u
@@ -1121,6 +1121,9 @@ void mp_shim_fixture_application_release(
 mp_shim_status mp_shim_fixture_cleanup_counts(
     uint64_t *out_scheduled, uint64_t *out_active,
     uint64_t *out_completed, uint64_t *out_exhausted);
+/* Private bounded ScreenCaptureKit lifecycle diagnostics. */
+mp_shim_status mp_shim_sck_diagnostics_set_tier(uint32_t tier);
+mp_shim_status mp_shim_sck_diagnostics_dump(void);
 #endif
 /* Deterministic scenarios for the production-shaped workspace launch helper. */
 #define MP_SHIM_TEST_FIXTURE_SEMAPHORE_ALLOCATION_FAILURE 0u
