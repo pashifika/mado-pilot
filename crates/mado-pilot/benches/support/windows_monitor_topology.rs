@@ -12,7 +12,7 @@ use windows::core::BOOL;
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
 pub(super) struct MonitorFact {
     pub(super) origin: (i32, i32),
-    pub(super) effective_dpi: (u32, u32),
+    pub(super) dpi: (u32, u32),
 }
 
 unsafe extern "system" fn collect_monitor(
@@ -25,13 +25,8 @@ unsafe extern "system" fn collect_monitor(
     let monitors = unsafe {
         &mut *std::ptr::with_exposed_provenance_mut::<Vec<MonitorFact>>(state.0.cast_unsigned())
     };
-    if let (Some(origin), Some(effective_dpi)) =
-        (monitor_origin(monitor), monitor_effective_dpi(monitor))
-    {
-        monitors.push(MonitorFact {
-            origin,
-            effective_dpi,
-        });
+    if let (Some(origin), Some(dpi)) = (monitor_origin(monitor), monitor_effective_dpi(monitor)) {
+        monitors.push(MonitorFact { origin, dpi });
     }
     true.into()
 }
@@ -79,36 +74,34 @@ pub(super) fn monitor_facts() -> Result<Vec<MonitorFact>, String> {
 pub(super) fn next_monitor_origin(
     mut monitors: Vec<MonitorFact>,
     current_origin: (i32, i32),
-    current_effective_dpi: (u32, u32),
+    current_dpi: (u32, u32),
 ) -> Option<(i32, i32)> {
     monitors.sort_unstable();
     monitors.dedup();
     monitors
         .into_iter()
-        .find(|monitor| {
-            monitor.origin != current_origin && monitor.effective_dpi != current_effective_dpi
-        })
+        .find(|monitor| monitor.origin != current_origin && monitor.dpi != current_dpi)
         .map(|monitor| monitor.origin)
 }
 
 #[cfg(test)]
 mod tests {
-    use super::{MonitorFact, monitor_facts, next_monitor_origin};
-
     #[test]
     fn next_monitor_requires_a_different_origin_and_scale() {
+        use super::{MonitorFact, next_monitor_origin};
+
         let monitors = vec![
             MonitorFact {
                 origin: (0, 0),
-                effective_dpi: (96, 96),
+                dpi: (96, 96),
             },
             MonitorFact {
                 origin: (-3840, 0),
-                effective_dpi: (144, 144),
+                dpi: (144, 144),
             },
             MonitorFact {
                 origin: (0, 0),
-                effective_dpi: (96, 96),
+                dpi: (96, 96),
             },
         ];
 
@@ -124,7 +117,7 @@ mod tests {
             next_monitor_origin(
                 vec![MonitorFact {
                     origin: (0, 0),
-                    effective_dpi: (96, 96),
+                    dpi: (96, 96),
                 }],
                 (0, 0),
                 (96, 96),
@@ -136,13 +129,13 @@ mod tests {
     #[test]
     #[ignore = "queries the approved mixed-DPI Windows qualification topology"]
     fn approved_host_exposes_distinct_effective_monitor_scale() {
+        use super::monitor_facts;
+
         let monitors = monitor_facts().expect("monitor facts");
         let first = monitors.first().expect("at least one monitor");
 
         assert!(
-            monitors
-                .iter()
-                .any(|monitor| monitor.effective_dpi != first.effective_dpi),
+            monitors.iter().any(|monitor| monitor.dpi != first.dpi),
             "approved mixed-DPI host must expose distinct effective monitor scale"
         );
     }

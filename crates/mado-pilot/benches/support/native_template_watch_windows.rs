@@ -24,7 +24,7 @@ use mado_pilot_platform_windows::fixture_protocol as protocol;
 #[cfg(windows)]
 use mado_pilot_testkit::visual_token::VisualTokenSequence;
 #[cfg(windows)]
-use windows::Win32::Foundation::{HWND, POINT, WPARAM};
+use windows::Win32::Foundation::{HWND, LPARAM, POINT, WPARAM};
 #[cfg(windows)]
 use windows::Win32::Graphics::Gdi::{
     ClientToScreen, MONITOR_DEFAULTTONEAREST, MonitorFromWindow,
