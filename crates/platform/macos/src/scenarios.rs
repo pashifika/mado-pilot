@@ -154,15 +154,20 @@ impl Harness {
         }
     }
 
-    /// Returns a harness for a display that is currently producing frames.
-    ///
-    /// The framework publishes when content changes and not otherwise, so a
-    /// display nobody is touching produces its first frame and then nothing. A
-    /// scenario whose subject is *what happens as frames arrive* would pass
-    /// vacuously against such a display, so liveness is established here — by
-    /// opening a throwaway session and requiring it to advance — rather than
-    /// assumed. `None` with a printed note means no attached display is changing.
+    /// Returns a harness whose throwaway session proved current producer liveness.
     fn acquire_producing(scenario: &str) -> Option<Self> {
+        let (harness, session, _frame) = Self::acquire_live_session(scenario)?;
+        let _closed = close(&session);
+        drop(session);
+        Some(harness)
+    }
+
+    /// Returns the exact session and frame that proved current producer liveness.
+    ///
+    /// The framework publishes when content changes and not otherwise. A scenario
+    /// that does not exercise session reopen retains this session so liveness
+    /// cannot disappear between admission and its first assertion.
+    fn acquire_live_session(scenario: &str) -> Option<(Self, Arc<NativeSession>, Frame)> {
         let candidates = discovered(scenario)?;
         let displays = candidates
             .iter()
@@ -173,13 +178,12 @@ impl Harness {
                 continue;
             };
             let advanced = next_frame(&session, FrameRequest::latest())
-                .and_then(|first| next_frame(&session, FrameRequest::newer_than(first.stamp())))
-                .is_ok();
+                .and_then(|first| next_frame(&session, FrameRequest::newer_than(first.stamp())));
+            if let Ok(frame) = advanced {
+                return Some((harness, session, frame));
+            }
             let _closed = close(&session);
             drop(session);
-            if advanced {
-                return Some(harness);
-            }
         }
         skipped(
             scenario,
@@ -1704,11 +1708,10 @@ fn contained_site(name: &str, site: u32, expectation: FrameExpectation) -> bool 
 #[test]
 fn a_long_producer_run_keeps_live_native_objects_bounded() {
     let _serial = serialized();
-    let Some(harness) = Harness::acquire_producing("autorelease bound") else {
+    let Some((_harness, session, first)) = Harness::acquire_live_session("autorelease bound")
+    else {
         return;
     };
-    let session = harness.open(0).expect("open");
-    let first = next_frame(&session, FrameRequest::latest()).expect("first frame");
     let after_first = shim::live_objects();
     let mut stamp = first.stamp();
     drop(first);
