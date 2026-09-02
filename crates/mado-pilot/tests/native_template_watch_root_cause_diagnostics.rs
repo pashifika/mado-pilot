@@ -1,5 +1,5 @@
-#![cfg(all(target_os = "macos", feature = "native-template-watch-qualification"))]
 //! Deterministic coverage for bounded native root-cause diagnostics.
+#![cfg(all(target_os = "macos", feature = "native-template-watch-qualification"))]
 
 #[allow(dead_code, unreachable_pub, unused_imports)]
 #[path = "../benches/support/macos_fixture.rs"]
