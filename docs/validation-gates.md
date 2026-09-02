@@ -321,15 +321,24 @@ startup, token-observation, operation, and teardown deadlines, reports semantic
 and cleanup facts independently, and classifies pre-execution apparatus failure
 as `INFRA` or `UNSUPPORTED` rather than product `FAIL`. Source `318ad1c` passes
 all eight Apple Lane B semantic and cleanup scenarios with exact 2× token
-capture and fixture finalization. Windows Lane B is pending, so cross-target
-native support remains withheld.
+capture and fixture finalization. Windows execution source `3e3079f` passes all
+eight Lane B semantic and cleanup scenarios on the approved mixed-DPI host, the
+deterministic liveness precedence suite and single-point mutation proof, and the
+hosted acknowledged-target-loss latency check. Test-only successor `53608af`
+pins the earlier caller deadline; all six focused tests and the Windows, macOS,
+and repository CI jobs pass. The runtime changes between the Apple source and
+that successor are Windows-target-only, so reviewed complete-diff applicability
+preserves the Apple result. Required Lane A also passes at the Windows execution
+source; cross-target Rust native watcher support is qualified on the named
+platform floors.
 
 OCR predicates, callbacks/subscriptions, C/C++, automatic input, target activation,
 arbitrary application/template/ROI compatibility or timing, real-time guarantees,
 packaging, and release remain unavailable.
-Any future false skip or fixture/report/policy drift keeps the native boundary
-withheld until a new additive fixture set, full both-target
-comparison, and reviewed ADR pass.
+Any future false skip or behavior-affecting fixture, report, or policy drift
+removes current authority until an affected-host rerun or reviewed complete-diff
+applicability and ADR pass restore it. Documentation-only changes receive no
+attributed execution.
 
 ## G-006
 

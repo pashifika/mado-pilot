@@ -122,11 +122,80 @@ active cleanup, no exhaustion, and scheduled cleanup equal to completed cleanup.
 The report, runner, fixture, and codec source each have separately retained
 SHA-256 identities.
 
-The required Windows Lane B result is pending. The Apple result therefore
-establishes only the Apple integration boundary and does not yet satisfy the
-cross-target support condition. Later source-tree changes need either affected
-scenario reruns or reviewed complete-diff applicability; documentation,
-workflow, or Lane A-only changes do not become attributed execution.
+The initial `318ad1c` Windows invocation was `UNSUPPORTED` because an
+awareness-dependent monitor-DPI probe incorrectly reported the approved
+mixed-DPI host as uniform. Source `936dde1` replaced that probe with
+awareness-independent monitor scale and passed scenarios one through six, then
+terminated red in `lifecycle_termination`: acknowledged fixture destruction did
+not reach the pending watcher as `TargetLost` within five seconds. A minimized
+platform regression at
+`5b4d74e89298b18d6c69bcc6a0bc841a6147ca5a` established a quiet in-flight
+frame wait before the same destruction acknowledgement and reproduced the
+missing terminal.
+
+Product source `bb412dc46fccadc2a23ab55c25248c9fda3874cd`, tree
+`731febdd8ad58fe9a9a5b40334a8894144e974f1`, bounds an idle Windows frame
+wait to a 100 ms interval and rechecks raw native-key presence. The interval
+limits idle liveness work to about ten probes per second while returning control
+to the existing target-loss mapping; it is a default, not a statistical
+qualification budget. It shares the caller's clock, never extends an earlier
+caller deadline, and preserves cancellation and first-terminal-fault
+precedence. The bound applies only when the raw key disappears: a present or
+immediately recycled HWND still requires authoritative `Closed` or a caller
+deadline, and a synthetic caller clock must advance.
+
+Independent review accepted that root fix but required a host-durable lock
+before support promotion. Windows execution source
+`3e3079f2d71243d1b25d5bda79e3672c0cd3df07`, tree
+`77f127c281e35b4475cb5e931ae10b969b6f1a64`, extracts a private deterministic
+liveness seam and covers missing-key recheck, already-expired caller deadline,
+cancellation during an admitted wait, first-terminal-fault precedence, and a
+frame arriving after one internal expiry. Mutating only
+`acquire_frame(&bounded)` to `acquire_frame(operation)` kept the code compiling
+and changed the named suite from five passes to three passes and two failures:
+the missing-key test observed `DeadlineExceeded` instead of `TargetLost`, and
+the arriving-frame test lost the retry to `DeadlineExceeded`. Restoring the
+single expression returned all five tests to green on the exact source tree.
+Test-only successor `53608af4aeb9f2cbdad3e7e22dc0408257304286`, tree
+`10d9f168f65844890e16d8a7fe14c8c43b349859`, documents each scripted clock-read
+sequence and separately asserts that a live earlier caller deadline, seven
+milliseconds from origin when the clock is at five milliseconds, clamps a
+100 ms liveness interval to that exact caller deadline. The approved Windows
+host passed all six focused tests once, and independent delta review returned
+`CLEAN`. Every added line is under `#[cfg(test)]`; no product artifact changed,
+so the five-test primary mutation proof remains bound to `3e3079f` and Lane B
+was not rerun for the test-only delta.
+
+The hosted regression also established a 200 ms quiet wait, observed destruction
+acknowledgement, returned `TargetLost`, passed the separate one-second
+SystemClock post-acknowledgement latency assertion under a five-second safety
+timeout, joined the waiter, and closed the session.
+
+The first `bb412dc` Windows runner build omitted the approved OpenCV environment
+and remains `INFRA` with zero `--native-contract` invocations. Corrected
+infrastructure then produced a passing intermediate contract without semantic
+retry. The `3e3079f` Windows execution run built once and invoked the contract
+once. All eight semantic facts and all eight cleanup facts were `PASS`, including
+mixed-DPI geometry, target/session/engine termination, fixture-process reaping,
+reader join, bounded containment, and output drain. The runner, fixture, codec,
+and report SHA-256 identities are respectively
+`bd827d1be2114145a1f7c436ef70adbe0a6047d4e1e1f5bfdfcbc66bcf92b714`,
+`5a50466c3fbf420df3d56ae466a6ae233254705f340098bca677a574ae9e8957`,
+`8b59a9cbc375e21ca39514a6c2f2ca16ebdaec47b82126d7c7d36c7809dc8f10`,
+and `a4b6800217f1f96872d7f25f0614c1ff2a3a6f1942293267f990193557a92fbe`.
+Branch-policy/Rust runs `33610306454`/`33610306322` passed at the execution
+source. Runs `33612368422`/`33612368443`, including repository, Windows, and
+macOS jobs, passed at test-only successor `53608af`.
+
+The complete product diff from accepted Apple source `318ad1c` through
+`53608af` contains runtime changes only for Windows; the final delta is
+test-only. Reviewed complete-diff applicability therefore preserves the Apple
+result without attributing an unexecuted process. Required Lane A and the
+complete hosted Windows/macOS jobs pass on their named evidence sources. The V2
+cross-target support condition is satisfied on the named platform floors.
+Later behavior-affecting changes still need affected-host execution or reviewed
+complete-diff applicability; documentation-only changes receive no attributed
+execution.
 
 ## Alternatives
 
@@ -145,9 +214,9 @@ workflow, or Lane A-only changes do not become attributed execution.
 
 ## Consequences
 
-- Native WGC and ScreenCaptureKit watcher support remains withheld until the
-  exact V2 candidate passes Lane A and both required Lane B host contracts with
-  bounded cleanup.
+- Native WGC and ScreenCaptureKit watcher support is qualified on the named
+  release targets by the exact V2 Lane A and two-host Lane B evidence above.
+  Later behavior-affecting source changes require fresh affected authority.
 - The V1 records and ADRs 0053, 0057, and 0060–0063 remain unchanged historical
   evidence. V2 adds evidence rather than mutating them.
 - Native fixtures and benchmark adapters gain a private token protocol; no public
@@ -164,12 +233,17 @@ workflow, or Lane A-only changes do not become attributed execution.
 - Platform-independent codec tests cover absent and visible round trips, reserved
   zero, every single-cell corruption, partial old/new transitions, stale tokens,
   orientation transforms, boundary values, and sequence exhaustion.
-- Windows fixture capture tests must decode the acknowledged token across the
-  approved DPI transition and reject stale or invalid intermediate states.
-- macOS fixture capture tests must decode the same logical token at Retina scale
-  and reject stale or invalid intermediate states.
-- Lane B must exercise the compact contract once on each approved host and record
-  exact source, codec, executable, fixture, host, semantic, cleanup, timing, and
-  classification identities.
-- Documentation and report-schema review must prove that no PR #59–#64 artifact
-  changed and that no V2 result is attributed to an earlier revision.
+- Windows execution source `3e3079f` decodes exact tokens through the approved
+  mixed-DPI geometry transition, passes the deterministic liveness precedence
+  suite and its single-point mutation proof, and passes the acknowledged
+  in-flight target-loss regression. Test-only successor `53608af` pins the
+  earlier caller deadline and passes all six focused tests and required CI.
+- macOS source `318ad1c` decodes the same logical token at Retina scale and
+  rejects stale or invalid intermediate states; reviewed Windows-only runtime
+  applicability carries that result through `53608af`.
+- Both Lane B reports record exact source, codec, executable, fixture, host,
+  semantic, cleanup, timing, and classification identities, and all sixteen
+  semantic/cleanup scenario pairs pass.
+- Historical baseline comparison proves that no PR #59–#64 artifact or frozen
+  prose section changed and that no V2 result is attributed to an earlier
+  revision.
