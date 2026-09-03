@@ -433,12 +433,26 @@ mod fixture {
                 let process_id =
                     u32::try_from(wparam.0).expect("foreground process identifier fits u32");
                 // SAFETY: the owned fixture is foreground and delegates only to its test host.
-                let delegated = unsafe { AllowSetForegroundWindow(process_id) }.is_ok();
-                print_line(if delegated {
-                    "control foreground-delegate=ready"
-                } else {
-                    "control foreground-delegate=failed"
-                });
+                match unsafe { AllowSetForegroundWindow(process_id) } {
+                    Ok(()) => print_line("control foreground-delegate=ready"),
+                    Err(error) => {
+                        // SAFETY: both calls observe the current GUI-thread relationship only.
+                        let foreground = unsafe { GetForegroundWindow() };
+                        let foreground_thread =
+                            unsafe { GetWindowThreadProcessId(foreground, None) };
+                        let authority = if foreground == HWND::default() || foreground_thread == 0 {
+                            "absent"
+                        } else if foreground_thread == unsafe { GetCurrentThreadId() } {
+                            "self"
+                        } else {
+                            "other"
+                        };
+                        print_line(&format!(
+                            "control foreground-delegate=failed primary-kind=windows-hresult primary-code=0x{:08X} foreground={authority}",
+                            error.code().0.cast_unsigned()
+                        ));
+                    }
+                }
                 LRESULT(0)
             }
             CONTROL_REPLACE_TARGET => {

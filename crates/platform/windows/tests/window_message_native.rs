@@ -435,7 +435,11 @@ impl OwnedForeground {
             CONTROL_ALLOW_FOREGROUND,
             usize::try_from(std::process::id()).expect("process identifier fits usize"),
         );
-        fixture.wait_for("control foreground-delegate=ready", Duration::from_secs(5));
+        let delegation = fixture.wait_for("control foreground-delegate=", Duration::from_secs(5));
+        assert_eq!(
+            delegation, "control foreground-delegate=ready",
+            "fixture foreground delegation failed"
+        );
 
         let cursor = original.cursor;
         let stop = Arc::new(AtomicBool::new(false));
