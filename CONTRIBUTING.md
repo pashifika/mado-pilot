@@ -608,10 +608,10 @@ tag, public notes, and native verification identify one final source revision:
    pull request and wait for every required check.
 4. Open the release pull request from `dev/x.y.z` to `main`. Verify that its head
    contains only the intended release history and that its checks pass.
-5. Merge the release pull request, record the full resulting `main` commit id, and
-   wait for the `main` push runs of Repository policy,
-   Windows `x86_64-pc-windows-msvc`, and macOS
-   `aarch64-apple-darwin` to pass on that exact commit.
+5. Merge the release pull request, record the full resulting `main` commit id,
+   and verify that `origin/main` contains the accepted development history. The
+   required Rust statuses are the release pull-request checks from step 4; they
+   are not rerun only because the protected merge created a new `main` commit.
 6. Create an annotated `vx.y.z` tag at that verified `main` commit and push that
    tag. Never tag the version-branch head before the release merge.
 7. Publish the release-provider record using the tracked
