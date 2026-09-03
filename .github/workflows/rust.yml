@@ -1,8 +1,8 @@
 name: Rust
 
-# Every job runs on every pull request and release-branch push rather than behind
-# a path filter, because these checks are intended to be required statuses and a
-# skipped required status blocks a pull request instead of passing it.
+# Every job runs on every pull request and development-branch push rather than
+# behind a path filter, because these checks are intended to be required statuses
+# and a skipped required status blocks a pull request instead of passing it.
 on:
   pull_request:
     branches:
@@ -10,7 +10,6 @@ on:
       - "dev/**"
   push:
     branches:
-      - main
       - "dev/**"
 
 permissions:
