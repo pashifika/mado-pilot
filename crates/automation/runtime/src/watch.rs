@@ -1233,6 +1233,28 @@ impl QueryShared {
         now: MonotonicInstant,
         expiry: Duration,
     ) -> bool {
+        // Use the expiry caller's time sample so an already-effective query
+        // interruption retains precedence without a clock call under locks.
+        let interruption = if self
+            .operation
+            .cancellation()
+            .is_some_and(mado_pilot_core::CancellationToken::is_cancelled)
+        {
+            Some(Interruption::Cancelled)
+        } else if self
+            .operation
+            .deadline()
+            .is_some_and(|deadline| now >= deadline)
+        {
+            Some(Interruption::DeadlineExceeded)
+        } else {
+            None
+        };
+        if let Some(interruption) = interruption {
+            self.terminate(interruption_outcome(interruption));
+            return true;
+        }
+
         let scheduler = self.scheduler.upgrade();
         let scheduler_authority = scheduler
             .as_ref()
@@ -3310,9 +3332,32 @@ fn lock<T>(mutex: &Mutex<T>) -> std::sync::MutexGuard<'_, T> {
 
 #[cfg(test)]
 mod tests {
+    use std::sync::atomic::{AtomicU64, Ordering};
     use std::sync::mpsc;
 
+    use mado_pilot_core::Clock;
+
     use super::*;
+
+    #[derive(Debug, Default)]
+    struct SettableClock {
+        nanos: AtomicU64,
+    }
+
+    impl SettableClock {
+        fn set(&self, now: Duration) {
+            self.nanos.store(
+                u64::try_from(now.as_nanos()).expect("test instant fits u64"),
+                Ordering::Release,
+            );
+        }
+    }
+
+    impl Clock for SettableClock {
+        fn now(&self) -> MonotonicInstant {
+            MonotonicInstant::from_origin(Duration::from_nanos(self.nanos.load(Ordering::Acquire)))
+        }
+    }
 
     #[test]
     fn owned_thread_join_is_deferred_until_external_owner_joins() {
@@ -3357,6 +3402,126 @@ mod tests {
         receive_dropped
             .recv_timeout(Duration::from_secs(2))
             .expect("managed thread detached its own handle during owner drop");
+    }
+
+    #[test]
+    fn query_interruption_precedes_queue_expiry_at_commit_sample() {
+        use mado_pilot_capture::{CaptureProvider as _, Continuity, OpenRequest, PixelFormat};
+        use mado_pilot_core::{CancellationToken, IdentityIssuer, OperationContext, PixelExtent};
+        use mado_pilot_testkit::{ControlledCapture, ControlledMatcher, match_fixtures};
+        use mado_pilot_vision::MatchBackend;
+
+        let issuer = Arc::new(IdentityIssuer::new());
+        let capture = Arc::new(
+            ControlledCapture::new(
+                Arc::clone(&issuer),
+                PixelExtent::new(32, 24),
+                PixelFormat::Rgba8,
+            )
+            .expect("controlled capture"),
+        );
+        let backend = Arc::new(ControlledMatcher::new(PixelFormat::Rgba8));
+        let matcher = Matcher::new(Arc::clone(&backend) as Arc<dyn MatchBackend>);
+        let template = matcher
+            .prepare(
+                &match_fixtures::planted_template("expiry-deadline"),
+                &OperationContext::new(),
+            )
+            .expect("prepared template");
+        let options = MatchOptions::from_defaults(template.defaults());
+        let clock = Arc::new(SettableClock::default());
+        let query_clock: Arc<dyn Clock> = clock.clone();
+        let operation = OperationContext::new()
+            .with_clock(query_clock)
+            .with_deadline(MonotonicInstant::from_origin(Duration::from_secs(31)));
+        let runtime = WatchRuntime::new(matcher, None);
+        // Keep expiry under this test's explicit commit call.
+        {
+            let mut threads = lock(&runtime._threads.state);
+            threads.workers = vec![thread::spawn(|| {}), thread::spawn(|| {})];
+            threads.supervisor = Some(thread::spawn(|| {}));
+        }
+        let capture_session = capture
+            .open(
+                capture.target(),
+                &OpenRequest::new(),
+                &OperationContext::new(),
+            )
+            .expect("opened controlled capture");
+        let session = runtime.register_session(capture_session);
+        let query = session
+            .start_query(TemplateWatchRequest::new(
+                template.clone(),
+                options,
+                operation,
+            ))
+            .expect("started query");
+        capture
+            .publish(0x40, Continuity::Continuous)
+            .expect("published frame");
+
+        let wait_deadline = std::time::Instant::now() + Duration::from_secs(2);
+        let candidate = loop {
+            if let Some(candidate) = query.shared.expiry_candidate() {
+                break candidate;
+            }
+            assert!(
+                std::time::Instant::now() < wait_deadline,
+                "query did not receive an expiry candidate"
+            );
+            thread::yield_now();
+        };
+        clock.set(Duration::from_secs(32));
+        let committed =
+            query
+                .shared
+                .expire_if_current(candidate, clock.now(), ELIGIBLE_QUEUE_EXPIRY);
+        let outcome = query.shared.terminal().expect("deadline terminal outcome");
+        assert!(committed);
+        assert!(matches!(
+            &*outcome,
+            TemplateTerminalOutcome::DeadlineExceeded
+        ));
+
+        let cancellation_clock = Arc::new(SettableClock::default());
+        let query_clock: Arc<dyn Clock> = cancellation_clock.clone();
+        let cancellation = CancellationToken::new();
+        let cancelled = session
+            .start_query(TemplateWatchRequest::new(
+                template,
+                options,
+                OperationContext::new()
+                    .with_clock(query_clock)
+                    .with_cancellation(cancellation.clone()),
+            ))
+            .expect("started cancellable query");
+        let wait_deadline = std::time::Instant::now() + Duration::from_secs(2);
+        let candidate = loop {
+            if let Some(candidate) = cancelled.shared.expiry_candidate() {
+                break candidate;
+            }
+            assert!(
+                std::time::Instant::now() < wait_deadline,
+                "cancellable query did not receive an expiry candidate"
+            );
+            thread::yield_now();
+        };
+        cancellation_clock.set(Duration::from_secs(31));
+        cancellation.cancel();
+        let committed = cancelled.shared.expire_if_current(
+            candidate,
+            cancellation_clock.now(),
+            ELIGIBLE_QUEUE_EXPIRY,
+        );
+        let outcome = cancelled
+            .shared
+            .terminal()
+            .expect("cancellation terminal outcome");
+        session.close(TemplateTerminalOutcome::SessionClosed);
+        runtime.close();
+
+        assert!(committed);
+        assert!(matches!(&*outcome, TemplateTerminalOutcome::Cancelled));
     }
 
     #[test]
