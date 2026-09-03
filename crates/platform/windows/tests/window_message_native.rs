@@ -79,24 +79,36 @@ struct FixtureProcess {
 
 impl FixtureProcess {
     fn spawn(token: impl Into<String>) -> Self {
-        Self::spawn_with_options(token.into(), false, false)
+        Self::spawn_with_options(token.into(), false, false, false)
     }
 
     fn spawn_activated(token: impl Into<String>) -> Self {
-        Self::spawn_with_options(token.into(), true, false)
+        Self::spawn_with_options(token.into(), true, false, false)
+    }
+
+    fn spawn_activated_without_attach(token: impl Into<String>) -> Self {
+        Self::spawn_with_options(token.into(), true, true, false)
     }
 
     fn spawn_activated_with_injected_failure(token: impl Into<String>) -> Self {
-        Self::spawn_with_options(token.into(), true, true)
+        Self::spawn_with_options(token.into(), true, false, true)
     }
 
-    fn spawn_with_options(token: String, activate: bool, inject_failure: bool) -> Self {
+    fn spawn_with_options(
+        token: String,
+        activate: bool,
+        direct_only: bool,
+        inject_failure: bool,
+    ) -> Self {
         let mut command = Command::new(env!(
             "CARGO_BIN_EXE_mado-pilot-windows-window-message-fixture"
         ));
         command.arg(format!("--title-token={token}"));
         if activate {
             command.arg("--activate");
+        }
+        if direct_only {
+            command.arg("--activation=direct");
         }
         if inject_failure {
             command.arg("--fail-stage=foreground-request");
@@ -361,8 +373,16 @@ struct OwnedForeground {
 
 impl OwnedForeground {
     fn establish() -> Self {
+        Self::establish_with(false)
+    }
+
+    fn establish_with(direct_only: bool) -> Self {
         let original = DesktopState::capture();
-        let mut fixture = FixtureProcess::spawn_activated("owned-unrelated-foreground");
+        let mut fixture = if direct_only {
+            FixtureProcess::spawn_activated_without_attach("owned-unrelated-foreground")
+        } else {
+            FixtureProcess::spawn_activated("owned-unrelated-foreground")
+        };
         let foreground = fixture.target();
         let deadline = Instant::now() + Duration::from_secs(5);
         loop {
@@ -691,6 +711,14 @@ fn activated_ordinary_fixture_startup_reaches_ready() {
     let _serial = NATIVE_MATRIX.lock().expect("native matrix serialized");
     select_process_dpi_awareness();
     OwnedForeground::establish().finish();
+}
+
+#[test]
+#[ignore = "opens and activates real fixture windows; run deliberately on an unlocked desktop"]
+fn activated_ordinary_fixture_startup_reaches_ready_without_attach() {
+    let _serial = NATIVE_MATRIX.lock().expect("native matrix serialized");
+    select_process_dpi_awareness();
+    OwnedForeground::establish_with(true).finish();
 }
 
 #[test]

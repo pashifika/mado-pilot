@@ -143,6 +143,7 @@ pub(crate) enum Attach {
     NotReached,
     Attempted,
     Skipped,
+    Disabled,
 }
 
 impl Attach {
@@ -151,6 +152,7 @@ impl Attach {
             Self::NotReached => "not-reached",
             Self::Attempted => "attempted",
             Self::Skipped => "skipped",
+            Self::Disabled => "disabled",
         }
     }
 
@@ -159,6 +161,7 @@ impl Attach {
             "not-reached" => Some(Self::NotReached),
             "attempted" => Some(Self::Attempted),
             "skipped" => Some(Self::Skipped),
+            "disabled" => Some(Self::Disabled),
             _ => None,
         }
     }
@@ -450,6 +453,16 @@ mod tests {
             context(Stage::ForegroundRequest),
         )
         .with_cleanup(Stage::ForegroundDetach, Status::WindowsHresult(0x8007_0006));
+        assert_eq!(failure.to_string().parse::<Failure>(), Ok(failure));
+    }
+
+    #[test]
+    fn disabled_attachment_context_round_trips() {
+        let failure = Failure::new(
+            Stage::ForegroundRequest,
+            Status::Boolean { ambient_win32: 0 },
+            Context::new().with_activation(Foreground::Present, Attach::Disabled),
+        );
         assert_eq!(failure.to_string().parse::<Failure>(), Ok(failure));
     }
 

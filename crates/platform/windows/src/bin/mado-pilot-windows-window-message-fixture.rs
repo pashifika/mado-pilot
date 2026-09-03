@@ -144,12 +144,14 @@ mod fixture {
     pub(super) struct Options {
         token: String,
         activate: bool,
+        direct_only: bool,
         fail_request: bool,
     }
 
     pub(super) fn options() -> Result<Options, String> {
         let mut token = None;
         let mut activate = false;
+        let mut direct_only = false;
         let mut fail_request = false;
         for argument in std::env::args().skip(1) {
             if argument == "--activate" {
@@ -157,6 +159,13 @@ mod fixture {
                     return Err("--activate may be supplied only once".to_owned());
                 }
                 activate = true;
+                continue;
+            }
+            if argument == "--activation=direct" {
+                if direct_only {
+                    return Err("--activation=direct may be supplied only once".to_owned());
+                }
+                direct_only = true;
                 continue;
             }
             if argument == "--fail-stage=foreground-request" {
@@ -168,7 +177,7 @@ mod fixture {
             }
             let Some(value) = argument.strip_prefix("--title-token=") else {
                 return Err(format!(
-                    "unknown argument `{argument}`; expected --title-token=<token>, --activate, or --fail-stage=foreground-request"
+                    "unknown argument `{argument}`; expected --title-token=<token>, --activate, --activation=direct, or --fail-stage=foreground-request"
                 ));
             };
             if value.is_empty() || value.chars().count() > 64 {
@@ -181,9 +190,16 @@ mod fixture {
         if fail_request && !activate {
             return Err("--fail-stage requires --activate".to_owned());
         }
+        if direct_only && !activate {
+            return Err("--activation=direct requires --activate".to_owned());
+        }
+        if direct_only && fail_request {
+            return Err("--activation=direct may not be combined with --fail-stage".to_owned());
+        }
         Ok(Options {
             token: token.unwrap_or_else(|| std::process::id().to_string()),
             activate,
+            direct_only,
             fail_request,
         })
     }
@@ -192,6 +208,7 @@ mod fixture {
         window: HWND,
         context: Context,
         fail_request: bool,
+        direct_only: bool,
     ) -> Result<Context, Failure> {
         // The native matrix owns one unrelated foreground fixture. Queue
         // attachment exists only during setup and is detached before readiness.
@@ -207,16 +224,17 @@ mod fixture {
             } else {
                 Foreground::Present
             };
-            let attached = foreground_thread != 0 && foreground_thread != current_thread;
-            let context = context.with_activation(
-                foreground_state,
-                if attached {
-                    Attach::Attempted
-                } else {
-                    Attach::Skipped
-                },
-            );
-            if attached {
+            let foreign_foreground = foreground_thread != 0 && foreground_thread != current_thread;
+            let should_attach = foreign_foreground && !direct_only;
+            let attach = if should_attach {
+                Attach::Attempted
+            } else if foreign_foreground && direct_only {
+                Attach::Disabled
+            } else {
+                Attach::Skipped
+            };
+            let context = context.with_activation(foreground_state, attach);
+            if should_attach {
                 AttachThreadInput(current_thread, foreground_thread, true)
                     .ok()
                     .map_err(|error| windows_failure(Stage::ForegroundAttach, error, context))?;
@@ -233,7 +251,7 @@ mod fixture {
                     context,
                 )
             });
-            let detach_failure = if attached {
+            let detach_failure = if should_attach {
                 AttachThreadInput(current_thread, foreground_thread, false)
                     .ok()
                     .err()
@@ -307,6 +325,7 @@ mod fixture {
         let Options {
             token,
             activate,
+            direct_only,
             fail_request,
         } = options;
         let mut context = Context::new();
@@ -369,7 +388,7 @@ mod fixture {
             }
         }
         if activate {
-            context = activate_for_fixture_setup(target, context, fail_request)?;
+            context = activate_for_fixture_setup(target, context, fail_request, direct_only)?;
         }
 
         let devices = [
