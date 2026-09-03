@@ -291,6 +291,8 @@ Provider-policy construction under ADR 0046 does not change redistribution:
 - Source releases bundle none of these native files. Product code performs no
   download, installation, license acceptance, registry mutation, privilege
   change, or ambient/Python/PyTorch provider preload.
+The source-only `v0.4.0` release preserves this boundary and adds no bundled
+native payload.
 
 Qualification does not turn every compiled provider feature into support.
 [ADR 0047](adr/0047-coreml-ocr-provider-qualification.md) rejects CoreML after

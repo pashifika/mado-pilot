@@ -24,7 +24,7 @@ applicability joins those results at the current V2 boundary.
 | C ABI or C++ watcher start/query APIs | Not implemented; ABI 1.5 remains unchanged |
 | Automatic input, target activation, or watcher-triggered actions | Not implemented |
 | Tokio/futures integration or real-time guarantees | Not implemented |
-| Packaged libraries, crates.io publication, static artifacts, installers, tags, or a `v0.4.0` release | Not available |
+| `v0.4.0` distribution | Source-only release; packaged libraries, crates.io publication, static artifacts, installers, and bundled native dependencies are not provided |
 
 The V2 native matrices use repository-owned token fixtures to prove exact producer progress, source/frame correlation, geometry generation, retained ownership, lifecycle outcomes, and bounded cleanup. The current Apple report is bound to commit `318ad1c49102d9fcd33448d12ee75d739bf04336`, tree `00fe097cb4b1ea4eaf58abc87f496584f50d3ae8`, runner SHA-256 `7a4720f3ca8b756b0f2757988921c901983a13ef6e67fd86926860e3d5e6ea87`, fixture SHA-256 `d7fe848cccaf2db829dafd538b36460d1c015d33d666ac4158e015d4e700e307`, codec SHA-256 `8b59a9cbc375e21ca39514a6c2f2ca16ebdaec47b82126d7c7d36c7809dc8f10`, and report SHA-256 `9518c00ec118b1e2f21027fd1c7bd811a3f176f79ef89752714ef27c65ce6289`. Earlier V1 Windows passes, Apple terminal failures, repairs, and consumed builders remain historical facts only; V2 neither relabels them nor claims a cause for the historical ScreenCaptureKit suspension. These fixtures are qualification apparatus, not a compatibility claim for arbitrary applications or caller content.
 
@@ -230,4 +230,4 @@ Application logs remain the caller's responsibility. Avoid formatting full nativ
 
 ## Explicit limitations
 
-Native Rust WGC/ScreenCaptureKit watcher support is qualified on the named release targets. Qualification does not promote OCR predicates, callbacks/subscriptions, C ABI/C++, automatic input, target activation, arbitrary application/template/ROI compatibility or timing, real-time behavior, packaging, crates.io/static artifacts, a release tag, or `v0.4.0`. Existing C and C++ compilation, ownership, diagnostics, and frozen-prefix checks remain regression proof only; they are not watcher API checks.
+Native Rust WGC/ScreenCaptureKit watcher support is qualified on the named release targets and included in the source-only `v0.4.0` boundary. Qualification does not promote OCR predicates, callbacks/subscriptions, C ABI/C++, automatic input, target activation, arbitrary application/template/ROI compatibility or timing, real-time behavior, installable packaging, or crates.io/static artifacts. Existing C and C++ compilation, ownership, diagnostics, and frozen-prefix checks remain regression proof only; they are not watcher API checks.

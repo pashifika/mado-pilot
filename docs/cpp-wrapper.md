@@ -28,6 +28,8 @@ provider facts through the complete 736-byte table under
 [ADR 0046](adr/0046-onnx-accelerator-provider-policy.md). The wrapper adds
 source compatibility only, governed by ADR 0006's reviewed Rust-side naming
 policy.
+The `v0.4.0` product version changes neither ABI 1.5 nor this wrapper and adds no
+C++ watcher surface.
 
 The wrapper is deliberately not a second place those values are written down.
 Its enumerated types are `using` aliases of the C types, so a caller writes
@@ -539,8 +541,8 @@ library. It defaults to `target/debug` relative to the repository, and configure
 fails with the `cargo build` command to run when the library is not there.
 
 There is **no install or export set**, so `find_package(MadoPilot)` does not
-work. Release packaging is not implemented — the ABI-major decorated loader
-names are part of it — and an export set would describe an installed layout the
+work. The source-only `v0.4.0` release provides no prebuilt or ABI-major
+decorated library, and an export set would describe an installed layout the
 project does not produce. Consumption is from the development tree.
 
 No generator is named. Ninja is not guaranteed on either release target's

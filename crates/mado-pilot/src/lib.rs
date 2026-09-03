@@ -114,7 +114,9 @@
 //! # Implementation status
 //!
 //! Phase 1 capture/matching, Phase 2 native input, Phase 3 singular/grouped
-//! OCR, and the Phase 4 Rust replay/OpenCV template watcher are reachable here.
+//! OCR, and the Phase 4 Rust template watcher are reachable here. The watcher
+//! is supported over replay/OpenCV and qualified native WGC/ScreenCaptureKit
+//! sessions on the release targets recorded by ADR 0064.
 //! Replay and native engine requests accept an injected `Arc<dyn OcrBackend>`;
 //! ordinary constructors without one expose no OCR. Separate
 //! `*_engine_with_default_ocr` constructors preserve native G-004;
@@ -125,12 +127,11 @@
 //! returns one independent caller-grouped result.
 //! [`Session::start_template_watch`] returns one owning poll/wait/cancel handle
 //! over fixed finite scheduling and separate query/wait operation contexts. See
-//! `examples/ocr-default.rs`, `examples/ocr-profile-zones.rs`, and
-//! `examples/template-watch.rs`.
+//! `examples/ocr-default.rs`, `examples/ocr-profile-zones.rs`,
+//! `examples/template-watch.rs`, and `examples/native-template-watch.rs`.
 //!
 //! The watcher adds no OCR predicate, callback, Tokio/future, C/C++, automatic
-//! input, arbitrary scheduler capacity, or native watcher qualification. No
-//! platform-native type is returned, accepted, or downcast through this API.
+//! input, arbitrary scheduler capacity, or platform-native public type.
 //!
 //! # Names, and what may change
 //!
@@ -145,7 +146,7 @@
 //! extend is already `#[non_exhaustive]`, so keep a fallback arm. Renaming or
 //! removing one of these names is a breaking change and needs an ADR and a
 //! version bump. The stability promise itself begins at 1.0; this package is
-//! at 0.3.1.
+//! at 0.4.0.
 //!
 //! The C ABI beneath this one is versioned separately. ABI 1.0, 1.2, and 1.3
 //! are frozen complete prefixes; ABI 1.4 appends explicit profile construction,

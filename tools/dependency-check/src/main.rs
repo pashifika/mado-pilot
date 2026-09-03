@@ -1,19 +1,19 @@
-//! Command-line entry point for the MadoPilot architecture checker.
+//! Command-line entry point for MadoPilot repository checks.
 //!
 //! Exit status:
 //!
-//! - `0`: the workspace inventory and dependency directions are compliant.
-//! - `1`: at least one architecture violation was found.
+//! - `0`: every requested check is compliant.
+//! - `1`: at least one policy violation was found.
 //! - `2`: the checker could not inspect the workspace.
 
 use std::path::PathBuf;
 use std::process::ExitCode;
 
 use mado_pilot_dependency_check::graph::{self, Violation};
-use mado_pilot_dependency_check::metadata;
+use mado_pilot_dependency_check::{metadata, release};
 
 const USAGE: &str = "\
-Check the MadoPilot workspace package inventory and dependency directions.
+Check the MadoPilot workspace architecture and optional release scope.
 
 Usage:
   mado-pilot-dependency-check [options]
@@ -21,12 +21,13 @@ Usage:
 Options:
   --manifest-path <PATH>  Workspace manifest to inspect (default: discovered from
                           the current directory)
+  --release-scope         Validate committed v0.4.0 release inputs and exclusions
   -q, --quiet             Print violations only
   -h, --help              Print this message
 
 Exit status:
   0  compliant
-  1  architecture violations found
+  1  policy violations found
   2  the workspace could not be inspected
 ";
 
@@ -62,18 +63,31 @@ fn main() -> ExitCode {
         &observation.workspace_root,
     ));
 
-    if violations.is_empty() {
+    let release_violations = if options.release_scope {
+        let release_observation = match release::read_workspace(&observation.workspace_root) {
+            Ok(observation) => observation,
+            Err(error) => {
+                eprintln!("error: {error}");
+                return ExitCode::from(2);
+            }
+        };
+        release::validate(&release_observation)
+    } else {
+        Vec::new()
+    };
+
+    if violations.is_empty() && release_violations.is_empty() {
         if !options.quiet {
-            report_compliant(&observation);
+            report_compliant(&observation, options.release_scope);
         }
         return ExitCode::SUCCESS;
     }
 
-    report_violations(&violations);
+    report_violations(&violations, &release_violations);
     ExitCode::from(1)
 }
 
-fn report_compliant(observation: &metadata::WorkspaceObservation) {
+fn report_compliant(observation: &metadata::WorkspaceObservation, release_scope: bool) {
     let packages = observation.graph.packages();
     let edges = observation.graph.edges();
     println!(
@@ -96,25 +110,41 @@ fn report_compliant(observation: &metadata::WorkspaceObservation) {
     for edge in edges {
         println!("  {} -> {} ({})", edge.from, edge.to, edge.kind);
     }
+    if release_scope {
+        println!(
+            "  release scope: v{} committed source-only inputs compliant",
+            release::RELEASE_VERSION
+        );
+    }
 }
 
-fn report_violations(violations: &[Violation]) {
+fn report_violations(violations: &[Violation], release_violations: &[release::ReleaseViolation]) {
     for violation in violations {
         eprintln!("error: {violation}");
     }
-    let count = violations.len();
+    for violation in release_violations {
+        eprintln!("error: {violation}");
+    }
+    let count = violations.len() + release_violations.len();
     let noun = if count == 1 {
         "violation"
     } else {
         "violations"
     };
-    eprintln!("architecture check failed: {count} {noun}");
-    eprintln!("see `docs/architecture.md` for the Phase 0 inventory and dependency allowlist");
+    let check = match (violations.is_empty(), release_violations.is_empty()) {
+        (false, true) => "architecture check",
+        (true, false) => "release scope check",
+        (false, false) => "repository check",
+        (true, true) => unreachable!("a compliant result is reported before this function"),
+    };
+    eprintln!("{check} failed: {count} {noun}");
+    eprintln!("see `docs/architecture.md` for the enforced repository contract");
 }
 
 #[derive(Debug, Default)]
 struct Options {
     manifest_path: Option<PathBuf>,
+    release_scope: bool,
     quiet: bool,
 }
 
@@ -128,6 +158,7 @@ impl Options {
             match argument.as_str() {
                 "-h" | "--help" => return Ok(None),
                 "-q" | "--quiet" => options.quiet = true,
+                "--release-scope" => options.release_scope = true,
                 "--manifest-path" => {
                     let value = arguments
                         .next()
