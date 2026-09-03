@@ -50,6 +50,21 @@ const MAX_IN_FLIGHT_ANALYSES: usize = 2;
 const MAPPED_CACHE_BYTES: usize = 64 * 1024 * 1024;
 const MAX_MAPPED_CACHE_ENTRIES: usize = 256;
 const ELIGIBLE_QUEUE_EXPIRY: Duration = Duration::from_secs(30);
+#[cfg(test)]
+std::thread_local! {
+    static PRE_ADMISSION_TEST_HOOK:
+        std::cell::RefCell<Option<Box<dyn FnOnce()>>> = std::cell::RefCell::new(None);
+}
+
+#[cfg(test)]
+fn run_pre_admission_test_hook() {
+    PRE_ADMISSION_TEST_HOOK.with(|slot| {
+        let hook = slot.borrow_mut().take();
+        if let Some(hook) = hook {
+            hook();
+        }
+    });
+}
 
 /// Immutable fixed limits and behavior of the engine template scheduler.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
@@ -1173,6 +1188,26 @@ impl QueryShared {
             stamp: pending.frame.stamp(),
             eligible_since: pending.eligible_since,
             rate_eligible_at: state.rate_eligible_at,
+        })
+    }
+
+    // A provisional claim may be released when publication invalidates its
+    // worker. Preserve that pending peer for admission-time revalidation.
+    fn potential_coalescing_candidate(&self) -> Option<(u64, CandidateSnapshot)> {
+        let state = lock(&self.state);
+        if state.terminal.is_some() || self.analysis_capacity_reached(&state) {
+            return None;
+        }
+        let generation = state.generation.checked_add(1)?;
+        state.pending.as_ref().map(|pending| {
+            (
+                generation,
+                CandidateSnapshot {
+                    stamp: pending.frame.stamp(),
+                    eligible_since: pending.eligible_since,
+                    rate_eligible_at: state.rate_eligible_at,
+                },
+            )
         })
     }
 
@@ -2782,6 +2817,8 @@ impl WatchScheduler {
                     continue;
                 };
                 let peers = self.eligible_coalescing_peers(&query, stamp, generation);
+                #[cfg(test)]
+                run_pre_admission_test_hook();
                 let _admission = lock(&self.admission);
                 if self.closed.load(Ordering::Acquire)
                     || self.publishing.load(Ordering::Acquire) != 0
@@ -2830,10 +2867,10 @@ impl WatchScheduler {
         generation: u64,
     ) -> Vec<Arc<QueryShared>> {
         let mut peers = Vec::new();
+        let expiry = self.descriptor.eligible_queue_expiry();
         for session in self.session_snapshot() {
             for query in session.query_snapshot() {
                 if Arc::ptr_eq(leader, &query)
-                    || query.next_generation() != Some(generation)
                     || query.template_instance != leader.template_instance
                 {
                     continue;
@@ -2842,22 +2879,27 @@ impl WatchScheduler {
                     query.terminate(interruption_outcome(interruption));
                     continue;
                 }
-                let Some(candidate) = query.candidate() else {
+                let Some((peer_generation, candidate)) = query.potential_coalescing_candidate()
+                else {
                     continue;
                 };
-                if candidate.stamp != stamp {
+                if peer_generation != generation || candidate.stamp != stamp {
                     continue;
                 }
                 let now = query.operation.now();
                 if candidate
                     .rate_eligible_at
                     .is_some_and(|eligible| now < eligible)
-                    || query.expire_if_current(
-                        candidate,
-                        now,
-                        self.descriptor.eligible_queue_expiry(),
-                    )
                 {
+                    continue;
+                }
+                if now.saturating_duration_since(
+                    candidate
+                        .rate_eligible_at
+                        .unwrap_or(candidate.eligible_since),
+                ) > expiry
+                {
+                    query.expire_if_current(candidate, now, expiry);
                     continue;
                 }
                 peers.push(query);
@@ -3315,5 +3357,116 @@ mod tests {
         receive_dropped
             .recv_timeout(Duration::from_secs(2))
             .expect("managed thread detached its own handle during owner drop");
+    }
+
+    #[test]
+    fn transient_claim_does_not_hide_coalescing_peer() {
+        use mado_pilot_capture::{CaptureProvider as _, Continuity, OpenRequest, PixelFormat};
+        use mado_pilot_core::{IdentityIssuer, OperationContext, PixelExtent};
+        use mado_pilot_testkit::{ControlledCapture, ControlledMatcher, match_fixtures};
+        use mado_pilot_vision::MatchBackend;
+
+        let issuer = Arc::new(IdentityIssuer::new());
+        let capture = Arc::new(
+            ControlledCapture::new(
+                Arc::clone(&issuer),
+                PixelExtent::new(32, 24),
+                PixelFormat::Rgba8,
+            )
+            .expect("controlled capture"),
+        );
+        let backend = Arc::new(ControlledMatcher::new(PixelFormat::Rgba8));
+        let matcher = Matcher::new(Arc::clone(&backend) as Arc<dyn MatchBackend>);
+        let template = matcher
+            .prepare(
+                &match_fixtures::planted_template("coalescing-admission"),
+                &OperationContext::new(),
+            )
+            .expect("prepared template");
+        let options = MatchOptions::from_defaults(template.defaults());
+        let runtime = WatchRuntime::new(matcher, None);
+        // Keep scheduler execution under this test's explicit `next_work` call.
+        {
+            let mut threads = lock(&runtime._threads.state);
+            threads.workers = vec![thread::spawn(|| {}), thread::spawn(|| {})];
+            threads.supervisor = Some(thread::spawn(|| {}));
+        }
+        let capture_session = capture
+            .open(
+                capture.target(),
+                &OpenRequest::new(),
+                &OperationContext::new(),
+            )
+            .expect("opened controlled capture");
+        let session = runtime.register_session(capture_session);
+        let first = session
+            .start_query(TemplateWatchRequest::new(
+                template.clone(),
+                options,
+                OperationContext::new(),
+            ))
+            .expect("started first query");
+        let second = session
+            .start_query(TemplateWatchRequest::new(
+                template,
+                options,
+                OperationContext::new(),
+            ))
+            .expect("started second query");
+        capture
+            .publish(0x40, Continuity::Continuous)
+            .expect("published shared frame");
+
+        let deadline = std::time::Instant::now() + Duration::from_secs(2);
+        let stamp = loop {
+            let first_stamp = lock(&first.shared.state)
+                .pending
+                .as_ref()
+                .map(|pending| pending.frame.stamp());
+            let second_stamp = lock(&second.shared.state)
+                .pending
+                .as_ref()
+                .map(|pending| pending.frame.stamp());
+            if let Some(first_stamp) = first_stamp
+                && Some(first_stamp) == second_stamp
+            {
+                break first_stamp;
+            }
+            assert!(
+                std::time::Instant::now() < deadline,
+                "both queries did not receive the shared frame"
+            );
+            thread::yield_now();
+        };
+
+        // Model a provisional peer claim that an invalidated worker releases.
+        lock(&first.shared.state).processing = Some(stamp);
+        let (reached, observed_reached) = mpsc::sync_channel(0);
+        let (resume, observed_resume) = mpsc::sync_channel(0);
+        let scheduler = Arc::clone(&runtime.scheduler);
+        let worker = thread::spawn(move || {
+            PRE_ADMISSION_TEST_HOOK.with(|slot| {
+                *slot.borrow_mut() = Some(Box::new(move || {
+                    reached.send(()).expect("reported pre-admission");
+                    observed_resume.recv().expect("resumed admission");
+                }));
+            });
+            scheduler.next_work().expect("claimed shared work")
+        });
+        observed_reached
+            .recv_timeout(Duration::from_secs(2))
+            .expect("worker reached admission boundary");
+        first.shared.release_claim(stamp);
+        resume.send(()).expect("released admission boundary");
+
+        let work = worker.join().expect("worker completed");
+        let leader = work.query.id;
+        let peers: Vec<_> = work.peers.iter().map(|(query, _)| query.id).collect();
+        release_work_claims(&work);
+        session.close(TemplateTerminalOutcome::SessionClosed);
+        runtime.close();
+
+        assert_eq!(leader, second.id());
+        assert_eq!(peers, [first.id()]);
     }
 }
