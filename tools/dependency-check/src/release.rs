@@ -23,7 +23,7 @@ const PUBLIC_HEADER_DIR: &str = "crates/bindings/capi/include/madopilot";
 pub const REQUIRED_TREE_IDENTITIES: [(&str, &str); 5] = [
     (".cargo", "46f2deca6a18229279e14433738418c4df501be9"),
     (".github", "492d3d33a6d94fc40013a1a7d0ac8e1790157a4b"),
-    ("crates", "f4e1476ccc19318aee47121d27a64226c06403b2"),
+    ("crates", "c518e8205cc9848c5cd9fb41685cb7897a1862aa"),
     ("docs", "a4b22fb0a9427a973a3bcfb445615232ac445f8e"),
     ("fixtures", "fbfc3e6eabd95b4bbae4926929f9ad593a170d99"),
 ];
