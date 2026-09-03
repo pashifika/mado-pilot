@@ -36,8 +36,6 @@ pub const CONTROL_BLOCK_QUEUE: u32 = 0x8206;
 pub const CONTROL_REUSE_STRESS: u32 = 0x8207;
 /// Moves, resizes, and repaints the ordinary fixture on its owning GUI thread.
 pub const CONTROL_SET_GEOMETRY: u32 = 0x8208;
-/// Allows the test host in `wParam` to restore the owned foreground fixture.
-pub const CONTROL_ALLOW_FOREGROUND: u32 = 0x8209;
 /// Removes the deterministic watcher marker from the retained target.
 pub const CONTROL_SET_VISUAL_ABSENT: u32 = 0x820a;
 /// Renders the deterministic watcher marker in the retained target.
