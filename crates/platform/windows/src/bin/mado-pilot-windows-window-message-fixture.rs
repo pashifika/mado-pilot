@@ -436,13 +436,18 @@ mod fixture {
                 match unsafe { AllowSetForegroundWindow(process_id) } {
                     Ok(()) => print_line("control foreground-delegate=ready"),
                     Err(error) => {
-                        // SAFETY: both calls observe the current GUI-thread relationship only.
-                        let foreground = unsafe { GetForegroundWindow() };
-                        let foreground_thread =
-                            unsafe { GetWindowThreadProcessId(foreground, None) };
+                        // SAFETY: these calls only observe the current GUI-thread relationship.
+                        let (foreground, foreground_thread, current_thread) = unsafe {
+                            let foreground = GetForegroundWindow();
+                            (
+                                foreground,
+                                GetWindowThreadProcessId(foreground, None),
+                                GetCurrentThreadId(),
+                            )
+                        };
                         let authority = if foreground == HWND::default() || foreground_thread == 0 {
                             "absent"
-                        } else if foreground_thread == unsafe { GetCurrentThreadId() } {
+                        } else if foreground_thread == current_thread {
                             "self"
                         } else {
                             "other"
