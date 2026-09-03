@@ -43,7 +43,7 @@ mod fixture {
     };
 
     use mado_pilot_platform_windows::fixture_protocol::{
-        BENCHMARK_FILL_RGB, CONTROL_ALLOW_FOREGROUND, CONTROL_BLOCK_QUEUE, CONTROL_DESTROY_TARGET,
+        BENCHMARK_FILL_RGB, CONTROL_BLOCK_QUEUE, CONTROL_DESTROY_TARGET,
         CONTROL_DUPLICATE_METADATA, CONTROL_REPARENT_TARGET, CONTROL_REPLACE_TARGET,
         CONTROL_REPORT, CONTROL_REUSE_STRESS, CONTROL_SET_GEOMETRY, CONTROL_SET_VISUAL_ABSENT,
         CONTROL_SET_VISUAL_VISIBLE, CONTROL_TRANSITION_VISUAL, FILL_RGB, FixtureVisualCommand,
@@ -73,8 +73,8 @@ mod fixture {
     use windows::Win32::UI::Input::KeyboardAndMouse::{GetAsyncKeyState, VK_F6};
     use windows::Win32::UI::Input::{RAWINPUTDEVICE, RegisterRawInputDevices};
     use windows::Win32::UI::WindowsAndMessaging::{
-        AllowSetForegroundWindow, CreateWindowExW, DefWindowProcW, DestroyWindow, DispatchMessageW,
-        GetClientRect, GetForegroundWindow, GetMessageW, GetWindowThreadProcessId, KillTimer, MSG,
+        CreateWindowExW, DefWindowProcW, DestroyWindow, DispatchMessageW, GetClientRect,
+        GetForegroundWindow, GetMessageW, GetWindowThreadProcessId, KillTimer, MSG,
         PostQuitMessage, RegisterClassExW, SW_SHOW, SW_SHOWNOACTIVATE, SWP_NOACTIVATE,
         SWP_NOZORDER, SetForegroundWindow, SetParent, SetTimer, SetWindowPos, SetWindowTextW,
         ShowWindow, WINDOW_STYLE, WM_CHAR, WM_CLOSE, WM_DESTROY, WM_INPUT, WM_KEYDOWN, WM_KEYUP,
@@ -427,37 +427,6 @@ mod fixture {
                 // valid successful return that the generated Result wrapper may reject.
                 let _previous = unsafe { SetParent(hwnd, Some(sibling)) };
                 print_line("control reparent=ready");
-                LRESULT(0)
-            }
-            CONTROL_ALLOW_FOREGROUND => {
-                let process_id =
-                    u32::try_from(wparam.0).expect("foreground process identifier fits u32");
-                // SAFETY: the owned fixture is foreground and delegates only to its test host.
-                match unsafe { AllowSetForegroundWindow(process_id) } {
-                    Ok(()) => print_line("control foreground-delegate=ready"),
-                    Err(error) => {
-                        // SAFETY: these calls only observe the current GUI-thread relationship.
-                        let (foreground, foreground_thread, current_thread) = unsafe {
-                            let foreground = GetForegroundWindow();
-                            (
-                                foreground,
-                                GetWindowThreadProcessId(foreground, None),
-                                GetCurrentThreadId(),
-                            )
-                        };
-                        let authority = if foreground == HWND::default() || foreground_thread == 0 {
-                            "absent"
-                        } else if foreground_thread == current_thread {
-                            "self"
-                        } else {
-                            "other"
-                        };
-                        print_line(&format!(
-                            "control foreground-delegate=failed primary-kind=windows-hresult primary-code=0x{:08X} foreground={authority}",
-                            error.code().0.cast_unsigned()
-                        ));
-                    }
-                }
                 LRESULT(0)
             }
             CONTROL_REPLACE_TARGET => {

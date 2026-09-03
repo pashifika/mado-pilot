@@ -30,11 +30,10 @@ use mado_pilot_input::{
 };
 use mado_pilot_platform_windows::WindowsCaptureProvider;
 use mado_pilot_platform_windows::fixture_protocol::{
-    CONTROL_ALLOW_FOREGROUND, CONTROL_BLOCK_QUEUE, CONTROL_DESTROY_TARGET,
-    CONTROL_DUPLICATE_METADATA, CONTROL_REPARENT_TARGET, CONTROL_REPORT, CONTROL_REUSE_STRESS,
-    CONTROL_SET_GEOMETRY, CONTROL_SET_VISUAL_ABSENT, CONTROL_SET_VISUAL_VISIBLE,
-    FixtureVisualCommand, FixtureVisualState, ORDINARY_CLASS_NAME, TARGET_LOSS_ACKNOWLEDGEMENT,
-    ordinary_fixture_title,
+    CONTROL_BLOCK_QUEUE, CONTROL_DESTROY_TARGET, CONTROL_DUPLICATE_METADATA,
+    CONTROL_REPARENT_TARGET, CONTROL_REPORT, CONTROL_REUSE_STRESS, CONTROL_SET_GEOMETRY,
+    CONTROL_SET_VISUAL_ABSENT, CONTROL_SET_VISUAL_VISIBLE, FixtureVisualCommand,
+    FixtureVisualState, ORDINARY_CLASS_NAME, TARGET_LOSS_ACKNOWLEDGEMENT, ordinary_fixture_title,
 };
 use ordinary_fixture_startup::{
     Failure as StartupFailure, PREFIX as STARTUP_ERROR_PREFIX, ParseError as StartupParseError,
@@ -414,7 +413,7 @@ struct OwnedForeground {
 impl OwnedForeground {
     fn establish() -> Self {
         let original = DesktopState::capture();
-        let mut fixture = FixtureProcess::spawn_activated("owned-unrelated-foreground");
+        let fixture = FixtureProcess::spawn_activated("owned-unrelated-foreground");
         let foreground = fixture.target();
         let deadline = Instant::now() + Duration::from_secs(5);
         loop {
@@ -430,16 +429,6 @@ impl OwnedForeground {
             );
             thread::sleep(Duration::from_millis(10));
         }
-        fixture.control(
-            foreground,
-            CONTROL_ALLOW_FOREGROUND,
-            usize::try_from(std::process::id()).expect("process identifier fits usize"),
-        );
-        let delegation = fixture.wait_for("control foreground-delegate=", Duration::from_secs(5));
-        assert_eq!(
-            delegation, "control foreground-delegate=ready",
-            "fixture foreground delegation failed"
-        );
 
         let cursor = original.cursor;
         let stop = Arc::new(AtomicBool::new(false));
