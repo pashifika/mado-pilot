@@ -5,12 +5,14 @@ A headless visual automation runtime for applications and agents.
 MadoPilot discovers windows and displays, captures frame streams, maps coordinate
 spaces, matches templates, performs one-shot OCR through an explicit backend,
 the accepted CPU profiles, or an explicit initialization-time provider policy,
-and injects input through explicit platform capabilities while reporting
-structured outcomes. Visual-condition watchers and their scheduling remain
-future work. The runtime owns no GUI, tray, overlay, editor, updater, workflow
-catalog, scheduler, or scripting language.
+waits for stable template presence through one bounded Rust query over
+replay/OpenCV or qualified native WGC/ScreenCaptureKit sessions, and injects
+input through explicit platform capabilities while reporting structured
+outcomes. OCR watchers remain future work. The runtime owns no GUI, tray,
+overlay, editor, updater, workflow catalog, general workflow/cron scheduler, or
+scripting language.
 
-## Status: deterministic, native, and OCR workflows from Rust, C, and C++
+## Status: deterministic, native, OCR, and Rust watcher workflows
 
 **MadoPilot is a developer-facing source runtime, not a packaged automation
 product.** One complete deterministic workflow runs over replayed frames:
@@ -23,6 +25,30 @@ and C++, and the three examples answer the same questions with the same numbers:
 crates/mado-pilot/examples/deterministic-slice.rs
 crates/bindings/capi/examples/c/deterministic-slice.c
 crates/bindings/capi/examples/cpp/deterministic-slice.cpp
+```
+
+Rust exposes one bounded template-presence query with non-blocking poll, a
+blocking wait under separate caller authority, explicit cancel, confirmed-only
+stability, and immutable exact-frame results. ADR 0051 accepts its deterministic
+replay/OpenCV correctness, latency, RSS, live-heap, and growth profiles on both
+release targets. The replay example uses no caller frame-polling loop:
+
+```text
+crates/mado-pilot/examples/template-watch.rs
+```
+
+ADR 0064 qualifies the same Rust query API over maintained Windows WGC and
+macOS ScreenCaptureKit window/display sessions on the named release targets.
+Required Lane A retains deterministic scheduler/query authority; separate
+Windows and macOS Lane B jobs own the compact native semantic and cleanup
+contracts; optional Lane C statistics and endurance never replace either lane.
+The native example requires an explicit discovery index and caller asset
+package. It presents no permission UI, activates no target, injects no input,
+and prints no target title or native identifier:
+
+```text
+crates/mado-pilot/examples/native-template-watch.rs
+docs/native-template-watch.md
 ```
 
 One-shot OCR over an exact retained replay/native frame is also exposed through
@@ -51,8 +77,9 @@ The same ownership flow over *real* windows and displays — including bounded
 input submission with explicit route evidence and a separate newer-frame visual
 observation — is implemented in the target adapters, composed by the runtime,
 and exposed through the Rust facade, C ABI, and header-only C++ wrapper.
-Optional finite engine-scoped diagnostics correlate those operations and OCR
-without captured pixels, recognized text, caller model identity, or input payloads.
+Optional finite engine-scoped diagnostics correlate those operations, OCR, and
+Rust template queries without captured pixels, recognized text, caller
+template/model identity, or input payloads.
 The native examples each require the operator to name one window exactly and refuse anything ambiguous,
 because the events they submit are real:
 
@@ -64,28 +91,44 @@ crates/bindings/capi/examples/c/macos-native-input.c
 crates/bindings/capi/examples/cpp/native-input.cpp
 ```
 
-Native release acceptance now covers all fourteen controlled macOS
+Native release acceptance still covers all fourteen controlled macOS
 owning-process pairs, the accepted macOS production capture and transition
 profiles, the qualified Windows 11 25H2 floor including its controlled native
 unsupported path, and the repaired Windows 1280×720 and mixed-DPI dual-4K
-production profiles. The dual profile includes 600 stationary samples per
-display and 300 moving-seam frame pairs with per-frame callback correlation.
-Each lineage remains bound to its own source, topology, stimulus, oracle, and
-target-specific budgets. Windows final-source Phase 1 and repository verification
-run on the exact exit candidate under unchanged ceilings. Apple Silicon Phase 1
-remains attributed to `d8336be` and applies by reviewed complete diff;
-exact-candidate hosted checks bind both release targets. Historical profiles and
-hosted CI never substitute for interactive native rows.
+production profiles. Independent review rejected the historical two-host native
+Rust watcher matrix because its engine-close and Windows cross-DPI topology
+oracles were incomplete. Replacement source `f16591f` corrected those semantics:
+the fresh Windows matrix passed 5/5, while the fresh Apple matrix terminated red
+in process 5 when ScreenCaptureKit suspended a newly opened stream during
+`retained_result_mapping`. That failure did not reproduce in 50 focused runs or
+an immediate full-load diagnostic, but neither diagnostic replaces the terminal
+qualification result. Native watcher support therefore remains withheld.
+Historical profiles and hosted CI never substitute for interactive native rows.
+Corrective successor `7139a68` serializes backend generation admission per query
+and bounds Windows fixture output before allocation. Those runtime and harness
+changes make every `f16591f` host cohort historical for the current
+implementation. Integrated successor `9cf746f` combines the ADR 0061 and ADR
+0062 repairs, but each host's sole authorized builder terminated at an apparatus
+control before artifact authority or process 1. ADR 0063 retains both attempts
+without retry, so native watcher support remains withheld.
+Those withholding statements are revision-bound history; ADR 0064 records the
+current Qualification V2 support boundary used by the `v0.4.0` line.
+The dual capture profile retains 600 stationary samples per display and 300
+moving-seam frame pairs with per-frame callback correlation. Windows
+final-source Phase 1 and repository verification run on the exact exit candidate
+under unchanged ceilings. Apple Silicon Phase 1 remains attributed to `d8336be`
+and applies by reviewed complete diff; exact-candidate hosted checks bind both
+release targets.
 
 Released `v0.3.0` carries approved Windows 11 and Apple Silicon integrated
 42-region default-OCR quality plus separate target-native numeric profiles.
-The `v0.3.1` candidate adds an explicit non-default bounded profile,
-one-to-eight caller-owned grouped zones, initialization-time OCR provider policy,
-C ABI 1.5, and matching Rust/C++ ownership surfaces. CoreML qualification is
-rejected; explicit Windows CUDA and its fresh-CPU initialization fallback pass
-terminal provider enforcement, while automatic selection remains CPU on both
-targets because CUDA exceeded the fixed RSS ratio. Protected release delivery
-remains open.
+Released `v0.3.1` adds an explicit non-default bounded profile, one-to-eight
+caller-owned grouped zones, initialization-time OCR provider policy, C ABI 1.5,
+and matching Rust/C++ ownership surfaces. CoreML qualification is rejected;
+explicit Windows CUDA and its fresh-CPU initialization fallback pass terminal
+provider enforcement, while automatic selection remains CPU on both targets
+because CUDA exceeded the fixed RSS ratio. The `v0.4.0` source-release line adds
+the qualified bounded Rust template watcher without changing those contracts.
 
 macOS capture needs Screen Recording and input needs event-post access;
 MadoPilot probes both without prompting. Windows has no permission probe and
@@ -112,14 +155,14 @@ failed inference, switch provider after publication, or trigger input.
 | Deterministic Rust workflow: discovery, capture, mapping, assets, matching, close | Implemented over replay input |
 | Native capture | Implemented in both adapters and exposed through Rust, C ABI, and C++; ADR 0030 accepts macOS production capture/transitions, ADR 0031 accepts Windows 1280×720 production capture/transitions, and ADR 0032 accepts Windows mixed-DPI dual-4K production capture |
 | Native input submission | Implemented in both adapters and exposed through Rust, C ABI, and C++; system input, Windows exact-window delivery, and macOS owning-process delivery are explicit, receipts state submission evidence rather than application consumption, and fixture-scoped automatic checks send no uncontrolled desktop input |
-| Bounded diagnostic observation | Implemented through Rust, C ABI, and C++ with allocation-free `Off`, finite `Normal`/`Debug` streams, exact loss counts, and content-redacted OCR records |
-| One-shot OCR public contract | Implemented through Rust, C ABI 1.5, and C++ over explicit backends, accepted ONNX CPU profiles, and explicit initialization-time provider policy; singular and one-to-eight-zone operations remain separate, with no watcher, scheduling, per-inference retry, bundling, or download |
-| Visual-condition watchers and OCR scheduling | Not implemented |
+| Bounded diagnostic observation | Implemented through Rust, C ABI, and C++ with allocation-free `Off`, finite `Normal`/`Debug` streams, exact loss counts, and content-redacted OCR records; Rust-only watcher records add bounded query/source/region/state/stability/disposition/queue/elapsed/outcome facts without changing the released C ABI |
+| One-shot OCR public contract | Implemented through Rust, C ABI 1.5, and C++ over explicit backends, accepted ONNX CPU profiles, and explicit initialization-time provider policy; singular and one-to-eight-zone operations remain separate, with no OCR watcher, OCR scheduling, per-inference retry, bundling, or download |
+| Bounded template-presence query | Implemented and budget-qualified through the Rust replay/OpenCV facade, and qualified over maintained Windows WGC/macOS ScreenCaptureKit sessions on the named release targets under ADR 0064. Current-once/strictly-newer frames, fixed finite latest-wins scheduling, separate query/wait authority, exact change/rate admission, confirmed-only stability, exact coalescing, fair two-worker progress, stale-result rejection, and one immutable terminal outcome remain mandatory. Callbacks/subscriptions, Tokio/futures, C/C++, OCR predicates, automatic input, target activation, arbitrary application/template/ROI compatibility or timing, and real-time guarantees remain unavailable |
 | C ABI, tracked C header, dynamic library | Implemented through ABI 1.5 while preserving complete ABI 1.0, 1.2, 1.3, and 1.4 prefixes at 424, 592, 648, and 720 bytes; provider construction and engine-owned provider descriptors extend the table to 736 bytes; the unreleased 1.1 draft is intentionally unsupported |
 | Header-only C++ RAII wrapper and CMake targets | Implemented through ABI 1.5, including owning profile/zone/provider projections, move-only grouped results, explicit clone, and lvalue-only borrowed OCR/provider descriptor views |
 | C ABI static library, ABI-major loader names, pkg-config, CMake install | Not implemented |
-| Numeric performance budgets | Phase 1 and affected Phase 2 ceilings remain revision-bound and enforced. ADR 0037 accepts default-OCR target profiles; ADR 0041 accepts explicit bounded singular budgets. ADR 0044 accepts target-specific grouped-zone latency, lifecycle, and resource budgets for fixed non-overlapping layouts; ADR 0045 corrects only the new Apple integrated cache-cold startup ceiling after a retained failed source. ADR 0048 accepts explicit Windows CUDA and mixed-provider fallback profiles after retaining two stopped tail observations; automatic preference remains CPU. Corrected Apple M1 Pro and Core i7-12700KF final enforcement passes; protected release delivery remains open |
-| Release packaging | Not implemented |
+| Numeric performance budgets | Phase 1 and affected Phase 2 ceilings remain revision-bound and enforced. ADR 0037 accepts default-OCR target profiles; ADR 0041 accepts explicit bounded singular budgets. ADR 0044 accepts target-specific grouped-zone latency, lifecycle, and resource budgets for fixed non-overlapping layouts; ADR 0045 corrects only the new Apple integrated cache-cold startup ceiling after a retained failed source. ADR 0048 accepts explicit Windows CUDA and mixed-provider fallback profiles after retaining two stopped tail observations; automatic preference remains CPU. ADR 0051 accepts target-specific deterministic replay/OpenCV template-query latency, RSS, live-heap, and growth budgets; ADR 0052 corrects only the independently remediated Windows ROI maximum. ADR 0053 retains target-specific native statistical budgets as Lane C history; ADR 0064 separately qualifies the required Lane A and Lane B semantic boundary without promoting those statistics to release gates |
+| Release artifacts | The v0.4.0 release is source-only; crates.io packages, prebuilt/static libraries, installers, CMake install/export, pkg-config, bundled native dependencies, and ABI-major decorated artifacts are not provided |
 
 The public Rust names have been reviewed and settled
 ([`G-009`](docs/validation-gates.md#g-009), resolved by
@@ -143,15 +186,16 @@ the full status table, the package inventory, and the dependency rules.
 
 ## Releases
 
-[`v0.1.0`](docs/releases/v0.1.0.md) is the published deterministic-workflow
-baseline. [`v0.2.1`](docs/releases/v0.2.1.md) is the published native
-capture/input/observation source release. [`v0.3.0`](docs/releases/v0.3.0.md) is
-the published default-OCR source release. [`v0.3.1`](docs/releases/v0.3.1.md) is
-the bounded-profile/grouped-zone release candidate and remains unpublished until
-its protected exact-source qualification and release flow complete. None
-publishes crates to crates.io or provides prebuilt libraries, installers, CMake
+[`v0.1.0`](docs/releases/v0.1.0.md) is the deterministic-workflow baseline.
+[`v0.2.1`](docs/releases/v0.2.1.md) adds native capture/input/observation.
+[`v0.3.0`](docs/releases/v0.3.0.md) adds default OCR, and
+[`v0.3.1`](docs/releases/v0.3.1.md) adds bounded/grouped/provider OCR.
+[`v0.4.0`](docs/releases/v0.4.0.md) adds the qualified bounded Rust template
+watcher over replay/OpenCV, WGC, and ScreenCaptureKit. These source releases
+publish no crates.io package, prebuilt or static library, installer, CMake
 install/export metadata, pkg-config metadata, or bundled OpenCV, ONNX Runtime,
-or model files. A tracked release-note file is the canonical release body.
+CUDA, cuDNN, or model file. Each tracked release-note file is its canonical
+release body.
 
 ## Release targets
 
@@ -228,12 +272,13 @@ cargo build --locked --workspace
 cargo test --locked --workspace --all-targets
 ```
 
-The deterministic and default OCR workflows are runnable. The latter reads its
-two paths from the example environment only; the library itself performs no
-environment lookup:
+The deterministic one-shot, bounded template watcher, and default OCR workflows
+are runnable. OCR reads its two paths from the example environment only; the
+library itself performs no environment lookup:
 
 ```sh
 cargo run --locked --package mado-pilot --example deterministic-slice
+cargo run --locked --package mado-pilot --example template-watch
 MADO_PILOT_G004_MODEL_ROOT=/canonical/model/root \
 MADO_PILOT_ONNX_RUNTIME=/canonical/path/libonnxruntime.1.29.0.dylib \
 cargo run --locked --package mado-pilot --example ocr-default

@@ -6,7 +6,7 @@
 //! best-effort `WindowMessage` route; its control messages are private test
 //! coordination and are never used by production delivery.
 
-use std::fmt;
+use std::{fmt, num::NonZeroU32};
 
 use mado_pilot_capture::TargetDescription;
 use mado_pilot_core::{CapabilitySupport, InputDelivery, InputOperationKind, TargetKind};
@@ -28,14 +28,22 @@ pub const CONTROL_REPARENT_TARGET: u32 = 0x8203;
 pub const CONTROL_REPLACE_TARGET: u32 = 0x8204;
 /// Destroys the retained target while keeping adversarial fixtures alive.
 pub const CONTROL_DESTROY_TARGET: u32 = 0x8205;
+/// Successful acknowledgement after destroying the retained target.
+pub const TARGET_LOSS_ACKNOWLEDGEMENT: &str = "control target-loss=ready";
 /// Blocks the fixture message pump for the duration carried in `wParam`.
 pub const CONTROL_BLOCK_QUEUE: u32 = 0x8206;
 /// Replaces a target repeatedly until its retained handle value recurs or the bound is exhausted.
 pub const CONTROL_REUSE_STRESS: u32 = 0x8207;
 /// Moves, resizes, and repaints the ordinary fixture on its owning GUI thread.
 pub const CONTROL_SET_GEOMETRY: u32 = 0x8208;
-/// Allows the test host in `wParam` to restore the owned foreground fixture.
-pub const CONTROL_ALLOW_FOREGROUND: u32 = 0x8209;
+/// Removes the deterministic watcher marker from the retained target.
+pub const CONTROL_SET_VISUAL_ABSENT: u32 = 0x820a;
+/// Renders the deterministic watcher marker in the retained target.
+pub const CONTROL_SET_VISUAL_VISIBLE: u32 = 0x820b;
+/// Changes the deterministic fill without changing the watcher marker state.
+pub const CONTROL_TRANSITION_VISUAL: u32 = 0x820c;
+/// Successful acknowledgement after one deterministic visual transition.
+pub const VISUAL_TRANSITION_ACKNOWLEDGEMENT: &str = "control visual-transition=ready";
 
 pub const COPYDATA_TAG: usize = 0x4d50_4946;
 pub const ACKNOWLEDGED: usize = 0x4d50_414b;
@@ -57,6 +65,32 @@ pub const BENCHMARK_RIGHT_MARKER_X: i32 = 1_200;
 pub const BENCHMARK_MARKER_Y: i32 = 352;
 /// Width and height of each square placement marker.
 pub const BENCHMARK_MARKER_SIZE: i32 = 16;
+/// Primary colour of the deterministic watcher marker, as `0xRRGGBB`.
+pub const WATCH_MARKER_PRIMARY_RGB: u32 = 0x00f2_6b38;
+/// Secondary colour of the deterministic watcher marker, as `0xRRGGBB`.
+pub const WATCH_MARKER_SECONDARY_RGB: u32 = 0x002d_d4bf;
+/// Client-space X origin of `watch-marker-v1`.
+pub const WATCH_MARKER_X: i32 = 64;
+/// Client-space Y origin of `watch-marker-v1`.
+pub const WATCH_MARKER_Y: i32 = 48;
+/// Width and height of one `watch-marker-v1` cell.
+pub const WATCH_MARKER_CELL_SIZE: i32 = 24;
+/// Width of the three-cell `watch-marker-v1` pattern.
+pub const WATCH_MARKER_WIDTH: i32 = WATCH_MARKER_CELL_SIZE * 3;
+/// Height of the two-cell `watch-marker-v1` pattern.
+pub const WATCH_MARKER_HEIGHT: i32 = WATCH_MARKER_CELL_SIZE * 2;
+/// Client-space X origin of the qualification visual-token grid.
+pub const WATCH_TOKEN_X: i32 = 176;
+/// Client-space Y origin of the qualification visual-token grid.
+pub const WATCH_TOKEN_Y: i32 = 48;
+/// Width and height of one qualification visual-token cell.
+pub const WATCH_TOKEN_CELL_SIZE: i32 = 8;
+/// Logical width of the qualification visual-token grid.
+pub const WATCH_TOKEN_GRID_WIDTH: usize = 10;
+/// Logical height of the qualification visual-token grid.
+pub const WATCH_TOKEN_GRID_HEIGHT: usize = 9;
+/// Total logical cells in the qualification visual-token grid.
+pub const WATCH_TOKEN_CELL_COUNT: usize = WATCH_TOKEN_GRID_WIDTH * WATCH_TOKEN_GRID_HEIGHT;
 /// Per-channel tolerance used when a captured benchmark frame is checked.
 pub const FILL_TOLERANCE: u8 = 8;
 
@@ -85,6 +119,146 @@ pub const EVENT_KEY_UP: u32 = KEY_RELEASE;
 /// The event kind a benchmark expects for one direct-text stimulus.
 pub const EVENT_TEXT: u32 = TEXT;
 
+/// Visual state requested by one private watcher-fixture control.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum FixtureVisualState {
+    /// The deterministic background is visible without `watch-marker-v1`.
+    Absent,
+    /// `watch-marker-v1` is rendered over the deterministic background.
+    Visible,
+}
+
+impl FixtureVisualState {
+    /// Returns the bounded acknowledgement label for this state.
+    #[must_use]
+    pub const fn label(self) -> &'static str {
+        match self {
+            Self::Absent => "absent",
+            Self::Visible => "visible",
+        }
+    }
+
+    /// Returns whether the marker must be rendered.
+    #[must_use]
+    pub const fn marker_is_visible(self) -> bool {
+        matches!(self, Self::Visible)
+    }
+}
+
+/// One atomically rendered private watcher-fixture visual command.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct FixtureVisualCommand {
+    state: FixtureVisualState,
+    token: NonZeroU32,
+}
+
+impl FixtureVisualCommand {
+    /// Creates one command from a validated nonzero token.
+    #[must_use]
+    pub const fn new(state: FixtureVisualState, token: NonZeroU32) -> Self {
+        Self { state, token }
+    }
+
+    /// Returns the requested marker state.
+    #[must_use]
+    pub const fn state(self) -> FixtureVisualState {
+        self.state
+    }
+
+    /// Returns the exact token that must appear in captured pixels.
+    #[must_use]
+    pub const fn token(self) -> NonZeroU32 {
+        self.token
+    }
+
+    /// Formats the exact bounded acknowledgement emitted after repaint.
+    #[must_use]
+    pub fn acknowledgement(self) -> String {
+        format!(
+            "control visual-state={} token={}",
+            self.state.label(),
+            self.token
+        )
+    }
+
+    /// Packs the token and marker state for one atomic renderer snapshot.
+    #[must_use]
+    pub fn packed(self) -> u64 {
+        (u64::from(self.token.get()) << 1) | u64::from(self.state.marker_is_visible())
+    }
+
+    /// Restores one command from an atomic renderer snapshot.
+    #[must_use]
+    pub fn from_packed(packed: u64) -> Option<Self> {
+        let token = u32::try_from(packed >> 1).ok().and_then(NonZeroU32::new)?;
+        let state = if packed & 1 == 0 {
+            FixtureVisualState::Absent
+        } else {
+            FixtureVisualState::Visible
+        };
+        Some(Self { state, token })
+    }
+}
+
+/// Decodes one exact watcher-fixture control and its nonzero `wParam` token.
+#[must_use]
+pub fn visual_command_for_control(message: u32, raw_token: usize) -> Option<FixtureVisualCommand> {
+    let state = match message {
+        CONTROL_SET_VISUAL_ABSENT => FixtureVisualState::Absent,
+        CONTROL_SET_VISUAL_VISIBLE => FixtureVisualState::Visible,
+        _ => return None,
+    };
+    let token = u32::try_from(raw_token).ok().and_then(NonZeroU32::new)?;
+    Some(FixtureVisualCommand::new(state, token))
+}
+
+/// Returns one logical cell from the cross-platform qualification token encoding.
+#[must_use]
+pub fn visual_token_cell(command: FixtureVisualCommand, index: usize) -> Option<bool> {
+    const TOP: [bool; WATCH_TOKEN_GRID_WIDTH] = [
+        true, false, true, true, false, false, true, false, false, true,
+    ];
+    const BOTTOM: [bool; WATCH_TOKEN_GRID_WIDTH] = [
+        false, false, true, false, true, true, true, false, true, false,
+    ];
+    const PAYLOAD_START: usize = WATCH_TOKEN_GRID_WIDTH;
+    const PAYLOAD_END: usize = WATCH_TOKEN_CELL_COUNT - WATCH_TOKEN_GRID_WIDTH;
+
+    if index >= WATCH_TOKEN_CELL_COUNT {
+        return None;
+    }
+    if index < PAYLOAD_START {
+        return Some(TOP[index]);
+    }
+    if index >= PAYLOAD_END {
+        return Some(BOTTOM[index - PAYLOAD_END]);
+    }
+
+    let payload = index - PAYLOAD_START;
+    let token = command.token().get();
+    Some(match payload {
+        0..32 => token & (1_u32 << payload) != 0,
+        32..64 => !token & (1_u32 << (payload - 32)) != 0,
+        64 => command.state().marker_is_visible(),
+        65..70 => {
+            let bit = payload - 65;
+            visual_token_checksum(token, command.state()) & (1_u8 << bit) != 0
+        }
+        _ => unreachable!("10x9 visual-token layout has exactly 70 payload cells"),
+    })
+}
+
+fn visual_token_checksum(token: u32, state: FixtureVisualState) -> u8 {
+    let marker_salt = if state.marker_is_visible() {
+        0x15a5_3c6d
+    } else {
+        0x0a5a_c396
+    };
+    let mut mixed = token ^ token.rotate_left(7) ^ token.rotate_right(11) ^ marker_salt;
+    mixed ^= mixed >> 16;
+    mixed ^= mixed >> 8;
+    u8::try_from(mixed & 0x1f).expect("five checksum bits fit in u8")
+}
 /// Non-sensitive information the fixture retains about one accepted event.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct EventSummary {
@@ -383,9 +557,11 @@ fn key_code(key: Key) -> Result<u32, InputFault> {
 #[cfg(test)]
 mod tests {
     use super::{
-        EventSummary, FixtureSelectionError, HEADER_BYTES, encode_event, fixture_title,
-        format_event_line, is_query, parse_event_line, query_packet, select_unique_fixture,
-        summarize,
+        CONTROL_SET_VISUAL_ABSENT, CONTROL_SET_VISUAL_VISIBLE, CONTROL_TRANSITION_VISUAL,
+        EventSummary, FixtureSelectionError, FixtureVisualCommand, FixtureVisualState,
+        HEADER_BYTES, VISUAL_TRANSITION_ACKNOWLEDGEMENT, WATCH_TOKEN_CELL_COUNT, encode_event,
+        fixture_title, format_event_line, is_query, parse_event_line, query_packet,
+        select_unique_fixture, summarize, visual_command_for_control, visual_token_cell,
     };
     use mado_pilot_capture::{CoordinateSupport, PixelFormat, TargetDescription};
     use mado_pilot_core::{
@@ -393,6 +569,7 @@ mod tests {
         PixelExtent, ProviderId, SubmissionEvidence, TargetCapability, TargetKind,
     };
     use mado_pilot_input::{InputEvent, InputFault, Key};
+    use mado_pilot_testkit::visual_token::{VisualMarkerState, VisualToken};
 
     #[test]
     fn query_and_event_packets_are_versioned_and_bounded() {
@@ -423,6 +600,66 @@ mod tests {
         assert_eq!(line, "event kind=7 units=3");
         assert_eq!(parse_event_line(&line), Some(summary));
         assert_eq!(parse_event_line("event kind=7 units=3 trailing"), None);
+    }
+    #[test]
+    fn watcher_visual_controls_bind_exact_tokens_to_shared_logical_cells() {
+        for (control, expected_state, expected_marker) in [
+            (
+                CONTROL_SET_VISUAL_ABSENT,
+                FixtureVisualState::Absent,
+                VisualMarkerState::Absent,
+            ),
+            (
+                CONTROL_SET_VISUAL_VISIBLE,
+                FixtureVisualState::Visible,
+                VisualMarkerState::Visible,
+            ),
+        ] {
+            let command =
+                visual_command_for_control(control, 42).expect("known token-bearing control");
+            assert_eq!(command.state(), expected_state);
+            assert_eq!(command.token().get(), 42);
+            assert_eq!(
+                command.acknowledgement(),
+                format!("control visual-state={} token=42", expected_state.label())
+            );
+            assert_eq!(
+                FixtureVisualCommand::from_packed(command.packed()),
+                Some(command)
+            );
+
+            let shared = VisualToken::new(42, expected_marker)
+                .expect("nonzero token")
+                .encode();
+            for (index, expected) in shared.into_iter().enumerate() {
+                assert_eq!(visual_token_cell(command, index), Some(expected));
+            }
+            assert_eq!(visual_token_cell(command, WATCH_TOKEN_CELL_COUNT), None);
+        }
+
+        assert_eq!(FixtureVisualCommand::from_packed(0), None);
+        assert_eq!(
+            visual_command_for_control(CONTROL_SET_VISUAL_ABSENT, 0),
+            None
+        );
+        assert_eq!(
+            visual_command_for_control(CONTROL_TRANSITION_VISUAL, 42),
+            None
+        );
+        if let Ok(overflow) = usize::try_from(u64::from(u32::MAX) + 1) {
+            assert_eq!(
+                visual_command_for_control(CONTROL_SET_VISUAL_VISIBLE, overflow),
+                None
+            );
+        }
+        assert_eq!(
+            VISUAL_TRANSITION_ACKNOWLEDGEMENT,
+            "control visual-transition=ready"
+        );
+        assert_eq!(
+            visual_command_for_control(CONTROL_TRANSITION_VISUAL + 1, 42),
+            None
+        );
     }
 
     #[test]

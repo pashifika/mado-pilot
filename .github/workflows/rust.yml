@@ -1,8 +1,8 @@
 name: Rust
 
-# Every job runs on every pull request and release-branch push rather than behind
-# a path filter, because these checks are intended to be required statuses and a
-# skipped required status blocks a pull request instead of passing it.
+# Every job runs on every pull request and development-branch push rather than
+# behind a path filter, because these checks are intended to be required statuses
+# and a skipped required status blocks a pull request instead of passing it.
 on:
   pull_request:
     branches:
@@ -10,7 +10,6 @@ on:
       - "dev/**"
   push:
     branches:
-      - main
       - "dev/**"
 
 permissions:
@@ -82,9 +81,9 @@ jobs:
 
       # This step also prints the resolved workspace package inventory, so an
       # accidental workspace member is visible in the log as well as failing.
-      - name: Check the workspace inventory and dependency directions
+      - name: Check workspace architecture and release scope
         shell: bash
-        run: cargo run --locked --package mado-pilot-dependency-check
+        run: cargo run --locked --package mado-pilot-dependency-check -- --release-scope
 
       - name: Check G-004 OCR profile evidence
         shell: bash
@@ -239,14 +238,39 @@ jobs:
           powershell.exe -NoProfile -Command \
             "Expand-Archive -LiteralPath '$(cygpath -w "${runtime_archive}")' -DestinationPath '$(cygpath -w "${root}")' -Force"
 
+          download_verified_model() {
+            local destination="$1"
+            local expected_sha256="$2"
+            shift 2
+            local candidate
+            local candidate_path="${destination}.download"
+            for candidate in "$@"; do
+              echo "Downloading reviewed model from ${candidate}"
+              if curl --fail --location --silent --show-error \
+                --connect-timeout 10 --max-time 120 \
+                --output "${candidate_path}" "${candidate}" \
+                && printf '%s  %s\n' "${expected_sha256}" "${candidate_path}" \
+                  | sha256sum --check -
+              then
+                mv "${candidate_path}" "${destination}"
+                return 0
+              fi
+              echo "::warning::model source failed download or exact SHA-256 verification"
+            done
+            echo "::error::no allowlisted source supplied the reviewed model bytes"
+            return 1
+          }
+
           detector="${profile_root}/ch_PP-OCRv4_det_mobile.onnx"
           recognizer="${profile_root}/PP-OCRv6_rec_small.onnx"
-          curl --fail --location --silent --show-error --output "${detector}" \
+          download_verified_model "${detector}" "${G004_DETECTOR_SHA256}" \
+            "https://huggingface.co/SWHL/RapidOCR/resolve/1cfba2e90fc938db55889873735088de210cc173/PP-OCRv4/ch_PP-OCRv4_det_infer.onnx" \
+            "https://hf-mirror.com/SWHL/RapidOCR/resolve/1cfba2e90fc938db55889873735088de210cc173/PP-OCRv4/ch_PP-OCRv4_det_infer.onnx" \
             "https://www.modelscope.cn/models/RapidAI/RapidOCR/resolve/v3.9.2/onnx/PP-OCRv4/det/ch_PP-OCRv4_det_mobile.onnx"
-          curl --fail --location --silent --show-error --output "${recognizer}" \
+          download_verified_model "${recognizer}" "${G004_RECOGNIZER_SHA256}" \
+            "https://huggingface.co/DjB314/RapidOCR/resolve/04e88d0483f0bfcdd0f29429594244c10bfc2867/v3.9.2/onnx/PP-OCRv6/rec/PP-OCRv6_rec_small.onnx" \
+            "https://hf-mirror.com/DjB314/RapidOCR/resolve/04e88d0483f0bfcdd0f29429594244c10bfc2867/v3.9.2/onnx/PP-OCRv6/rec/PP-OCRv6_rec_small.onnx" \
             "https://www.modelscope.cn/models/RapidAI/RapidOCR/resolve/v3.9.2/onnx/PP-OCRv6/rec/PP-OCRv6_rec_small.onnx"
-          echo "${G004_DETECTOR_SHA256}  ${detector}" | sha256sum --check -
-          echo "${G004_RECOGNIZER_SHA256}  ${recognizer}" | sha256sum --check -
 
           runtime="${root}/onnxruntime-win-x64-${ONNXRUNTIME_VERSION}/lib/onnxruntime.dll"
           [[ -f "${runtime}" ]]
@@ -257,9 +281,9 @@ jobs:
             echo "MADO_PILOT_G004_MODEL_ROOT=$(cygpath -m "${model_root}")"
           } >> "${GITHUB_ENV}"
 
-      - name: Check the workspace inventory and dependency directions
+      - name: Check workspace architecture and release scope
         shell: bash
-        run: cargo run --locked --package mado-pilot-dependency-check
+        run: cargo run --locked --package mado-pilot-dependency-check -- --release-scope
 
       - name: Lint the workspace
         shell: bash
@@ -268,6 +292,24 @@ jobs:
       - name: Test the workspace
         shell: bash
         run: cargo test --locked --workspace --all-targets
+
+      # Lane A owns deterministic scheduler/query behavior. Cargo's benchmark
+      # flag selects the short semantic plan; statistical enforcement is
+      # available only through the explicit optional Lane C mode.
+      - name: Run the required template-watch Lane A replay contract
+        shell: bash
+        run: cargo bench --locked --package mado-pilot --bench template-watch-query
+
+      - name: Compile the native template-watch Lane B and Lane C runners
+        shell: bash
+        run: cargo check --locked --package mado-pilot --bench native-template-watch --features native-template-watch-qualification
+
+      - name: Reproduce the frozen G-005 change-detection report
+        shell: bash
+        run: |
+          report="${RUNNER_TEMP}/g-005-change-detection-report.json"
+          cargo run --locked --package mado-pilot-testkit --example change-detection-evaluator > "${report}"
+          diff -u docs/evidence/g-005/accepted-report.json "${report}"
 
       - name: Test the accepted ONNX CPU OCR backend
         shell: bash
@@ -449,14 +491,39 @@ jobs:
           echo "${ONNXRUNTIME_OSX_ARM64_SHA256}  ${runtime_archive}" | shasum --algorithm 256 --check
           tar -xzf "${runtime_archive}" -C "${root}"
 
+          download_verified_model() {
+            local destination="$1"
+            local expected_sha256="$2"
+            shift 2
+            local candidate
+            local candidate_path="${destination}.download"
+            for candidate in "$@"; do
+              echo "Downloading reviewed model from ${candidate}"
+              if curl --fail --location --silent --show-error \
+                --connect-timeout 10 --max-time 120 \
+                --output "${candidate_path}" "${candidate}" \
+                && printf '%s  %s\n' "${expected_sha256}" "${candidate_path}" \
+                  | shasum --algorithm 256 --check
+              then
+                mv "${candidate_path}" "${destination}"
+                return 0
+              fi
+              echo "::warning::model source failed download or exact SHA-256 verification"
+            done
+            echo "::error::no allowlisted source supplied the reviewed model bytes"
+            return 1
+          }
+
           detector="${profile_root}/ch_PP-OCRv4_det_mobile.onnx"
           recognizer="${profile_root}/PP-OCRv6_rec_small.onnx"
-          curl --fail --location --silent --show-error --output "${detector}" \
+          download_verified_model "${detector}" "${G004_DETECTOR_SHA256}" \
+            "https://huggingface.co/SWHL/RapidOCR/resolve/1cfba2e90fc938db55889873735088de210cc173/PP-OCRv4/ch_PP-OCRv4_det_infer.onnx" \
+            "https://hf-mirror.com/SWHL/RapidOCR/resolve/1cfba2e90fc938db55889873735088de210cc173/PP-OCRv4/ch_PP-OCRv4_det_infer.onnx" \
             "https://www.modelscope.cn/models/RapidAI/RapidOCR/resolve/v3.9.2/onnx/PP-OCRv4/det/ch_PP-OCRv4_det_mobile.onnx"
-          curl --fail --location --silent --show-error --output "${recognizer}" \
+          download_verified_model "${recognizer}" "${G004_RECOGNIZER_SHA256}" \
+            "https://huggingface.co/DjB314/RapidOCR/resolve/04e88d0483f0bfcdd0f29429594244c10bfc2867/v3.9.2/onnx/PP-OCRv6/rec/PP-OCRv6_rec_small.onnx" \
+            "https://hf-mirror.com/DjB314/RapidOCR/resolve/04e88d0483f0bfcdd0f29429594244c10bfc2867/v3.9.2/onnx/PP-OCRv6/rec/PP-OCRv6_rec_small.onnx" \
             "https://www.modelscope.cn/models/RapidAI/RapidOCR/resolve/v3.9.2/onnx/PP-OCRv6/rec/PP-OCRv6_rec_small.onnx"
-          echo "${G004_DETECTOR_SHA256}  ${detector}" | shasum --algorithm 256 --check
-          echo "${G004_RECOGNIZER_SHA256}  ${recognizer}" | shasum --algorithm 256 --check
 
           runtime="${root}/onnxruntime-osx-arm64-${ONNXRUNTIME_VERSION}/lib/libonnxruntime.1.29.0.dylib"
           [[ -f "${runtime}" ]]
@@ -467,9 +534,9 @@ jobs:
             echo "MADO_PILOT_G004_MODEL_ROOT=${model_root}"
           } >> "${GITHUB_ENV}"
 
-      - name: Check the workspace inventory and dependency directions
+      - name: Check workspace architecture and release scope
         shell: bash
-        run: cargo run --locked --package mado-pilot-dependency-check
+        run: cargo run --locked --package mado-pilot-dependency-check -- --release-scope
 
       - name: Lint the workspace
         shell: bash
@@ -478,6 +545,24 @@ jobs:
       - name: Test the workspace
         shell: bash
         run: cargo test --locked --workspace --all-targets
+
+      # Hosted macOS has no Screen Recording grant, so this executes only Lane A.
+      # The approved interactive host runs Lane B separately; hosted CI still
+      # compiles both native modes below.
+      - name: Run the required template-watch Lane A replay contract
+        shell: bash
+        run: cargo bench --locked --package mado-pilot --bench template-watch-query
+
+      - name: Compile the native template-watch Lane B and Lane C runners
+        shell: bash
+        run: cargo check --locked --package mado-pilot --bench native-template-watch --features native-template-watch-qualification
+
+      - name: Reproduce the frozen G-005 change-detection report
+        shell: bash
+        run: |
+          report="${RUNNER_TEMP}/g-005-change-detection-report.json"
+          cargo run --locked --package mado-pilot-testkit --example change-detection-evaluator > "${report}"
+          diff -u docs/evidence/g-005/accepted-report.json "${report}"
 
       - name: Test the accepted ONNX CPU OCR backend
         shell: bash

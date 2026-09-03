@@ -40,6 +40,7 @@ use crate::storage::{
 
 const WGC_PRODUCER_POOL_SIZE: i32 = 2;
 const CALLBACK_POLL_INTERVAL: Duration = Duration::from_millis(2);
+const TARGET_LIVENESS_POLL_INTERVAL: Duration = Duration::from_millis(100);
 const TEARDOWN_START_TIMEOUT: Duration = Duration::from_secs(5);
 const TEARDOWN_QUEUE_CAPACITY: usize = 64;
 const TEARDOWN_WORKER_COUNT: usize = 4;
@@ -964,16 +965,54 @@ impl fmt::Debug for NativeSession {
     }
 }
 
+fn frame_with_target_liveness(
+    operation: &OperationContext,
+    poll_interval: Duration,
+    mut key_is_present: impl FnMut() -> bool,
+    mut record_key_loss: impl FnMut(),
+    mut acquire_frame: impl FnMut(&OperationContext) -> Result<Frame>,
+) -> Result<Frame> {
+    loop {
+        if !key_is_present() {
+            record_key_loss();
+            return acquire_frame(operation);
+        }
+        let mut bounded = operation.clone().with_timeout(poll_interval)?;
+        if let Some(caller_deadline) = operation.deadline() {
+            let bounded_deadline = bounded
+                .deadline()
+                .expect("target-liveness wait always has a deadline");
+            bounded = bounded.with_deadline(caller_deadline.min(bounded_deadline));
+        }
+        match acquire_frame(&bounded) {
+            // No CaptureFault maps to DeadlineExceeded. If that changes, this
+            // guard must distinguish the nested bound from a terminal fault.
+            Err(error) if error.status() == mado_pilot_core::Status::DeadlineExceeded => {
+                if let Some(interruption) = operation.interruption() {
+                    return Err(interruption.into());
+                }
+            }
+            result => return result,
+        }
+    }
+}
+
 impl CaptureSession for NativeSession {
     fn description(&self) -> SessionDescription {
         self.description.clone()
     }
 
     fn frame(&self, request: &FrameRequest, operation: &OperationContext) -> Result<Frame> {
-        if !self.core.key.is_present() {
-            self.core.fail_native(target_fault(self.core.target_kind));
-        }
-        self.core.state.frame(request, operation)
+        // Closed remains authoritative, but target destruction can stop
+        // publication before its callback reaches this stream. Bound idle
+        // waits so native-key loss still becomes an observable terminal.
+        frame_with_target_liveness(
+            operation,
+            TARGET_LIVENESS_POLL_INTERVAL,
+            || self.core.key.is_present(),
+            || self.core.fail_native(target_fault(self.core.target_kind)),
+            |bounded| self.core.state.frame(request, bounded),
+        )
     }
 
     fn close(&self, operation: &OperationContext) -> Result<()> {
@@ -1456,11 +1495,11 @@ mod tests {
 
     use mado_pilot_capture::{
         CaptureFault, Continuity, CoordinateSupport, CpuPixels, FrameDescriptor, FrameRequest,
-        OverflowPolicy, PixelFormat, Publication, RetainedStoragePolicy, SessionDescription,
-        StreamState,
+        Lifecycle, OverflowPolicy, PixelFormat, Publication, RetainedStoragePolicy,
+        SessionDescription, StreamState,
     };
     use mado_pilot_core::{
-        CancellationToken, IdentityIssuer, MonotonicInstant, Operation, OperationContext,
+        CancellationToken, Clock, IdentityIssuer, MonotonicInstant, Operation, OperationContext,
         PixelExtent, ProviderId, Scale, Status, TargetPlacement,
     };
     use windows::Graphics::SizeInt32;
@@ -1475,14 +1514,43 @@ mod tests {
     use super::{
         CallbackControl, GeometryRegistration, NativeOwnership, TEARDOWN_QUEUE_CAPACITY,
         TEARDOWN_WORKER_COUNT, TeardownExecutorSlot, TeardownPermits, TransitionState,
-        WGC_PRODUCER_POOL_SIZE, capture_already_ended_after_drain, frame_time, map_worker_start,
-        native_close_result, native_size, normalize_native_fault, positive_extent,
-        record_authoritative_native_end, session_queue_policy, start_teardown_executor_with,
-        target_fault, teardown_channel, teardown_executor_from_slot,
+        WGC_PRODUCER_POOL_SIZE, capture_already_ended_after_drain, frame_time,
+        frame_with_target_liveness, map_worker_start, native_close_result, native_size,
+        normalize_native_fault, positive_extent, record_authoritative_native_end,
+        session_queue_policy, start_teardown_executor_with, target_fault, teardown_channel,
+        teardown_executor_from_slot,
     };
 
     static STALLED_INITIALIZERS: AtomicUsize = AtomicUsize::new(0);
     static RELEASE_INITIALIZERS: AtomicBool = AtomicBool::new(false);
+
+    #[derive(Debug)]
+    struct ScriptedClock {
+        reads: AtomicUsize,
+        instants: Vec<Duration>,
+    }
+
+    impl ScriptedClock {
+        fn new(milliseconds: &[u64]) -> Self {
+            assert!(!milliseconds.is_empty(), "clock script must not be empty");
+            Self {
+                reads: AtomicUsize::new(0),
+                instants: milliseconds
+                    .iter()
+                    .copied()
+                    .map(Duration::from_millis)
+                    .collect(),
+            }
+        }
+    }
+
+    impl Clock for ScriptedClock {
+        fn now(&self) -> MonotonicInstant {
+            let index = self.reads.fetch_add(1, Ordering::AcqRel);
+            let index = index.min(self.instants.len() - 1);
+            MonotonicInstant::from_origin(self.instants[index])
+        }
+    }
 
     struct NativeDropProbe {
         memory: Arc<SessionMemory>,
@@ -1499,6 +1567,185 @@ mod tests {
             );
             self.observed.store(true, Ordering::Release);
         }
+    }
+
+    #[test]
+    fn r2_2_liveness_bound_rechecks_missing_key_without_native_terminal() {
+        let stream = IdentityIssuer::new().issue_stream().expect("issued stream");
+        let state = StreamState::with_target_extent(stream);
+        // Reads: derive at 0, bounded admission at 1, caller arbitration at 2,
+        // terminal admission at 3; 4 is a deliberate failure sentinel.
+        let clock = Arc::new(ScriptedClock::new(&[0, 1, 2, 3, 4]));
+        let operation = OperationContext::new()
+            .with_clock(clock)
+            .with_deadline(MonotonicInstant::from_origin(Duration::from_millis(4)));
+        let checks = AtomicUsize::new(0);
+
+        let error = frame_with_target_liveness(
+            &operation,
+            Duration::from_millis(1),
+            || {
+                let check = checks.fetch_add(1, Ordering::AcqRel);
+                assert_eq!(state.lifecycle(), Lifecycle::Open);
+                assert_eq!(state.terminal(), None);
+                check == 0
+            },
+            || state.terminate(CaptureFault::CaptureItemClosed),
+            |bounded| state.frame(&FrameRequest::latest(), bounded),
+        )
+        .expect_err("raw-key loss ends a stream with no frame or native terminal");
+
+        assert_eq!(error.status(), Status::TargetLost);
+        assert_eq!(state.terminal(), Some(CaptureFault::CaptureItemClosed));
+        assert_eq!(checks.load(Ordering::Acquire), 2);
+    }
+
+    #[test]
+    fn r2_2_liveness_bound_preserves_expired_caller_deadline() {
+        let stream = IdentityIssuer::new().issue_stream().expect("issued stream");
+        let state = StreamState::with_target_extent(stream);
+        let clock = Arc::new(ScriptedClock::new(&[0]));
+        let operation = OperationContext::new()
+            .with_clock(clock)
+            .with_deadline(MonotonicInstant::ORIGIN);
+        let checks = AtomicUsize::new(0);
+        let losses = AtomicUsize::new(0);
+
+        let error = frame_with_target_liveness(
+            &operation,
+            Duration::from_millis(1),
+            || {
+                checks.fetch_add(1, Ordering::AcqRel);
+                true
+            },
+            || {
+                losses.fetch_add(1, Ordering::AcqRel);
+            },
+            |bounded| state.frame(&FrameRequest::latest(), bounded),
+        )
+        .expect_err("the caller deadline wins on the first acquisition");
+
+        assert_eq!(error.status(), Status::DeadlineExceeded);
+        assert_eq!(checks.load(Ordering::Acquire), 1);
+        assert_eq!(losses.load(Ordering::Acquire), 0);
+        assert_eq!(state.terminal(), None);
+    }
+
+    #[test]
+    fn r2_2_liveness_bound_clamps_to_earlier_caller_deadline() {
+        let caller_deadline = MonotonicInstant::from_origin(Duration::from_millis(7));
+        let clock = Arc::new(ScriptedClock::new(&[5]));
+        let operation = OperationContext::new()
+            .with_clock(clock)
+            .with_deadline(caller_deadline);
+        let observed_deadline = Mutex::new(None);
+
+        let error = frame_with_target_liveness(
+            &operation,
+            Duration::from_millis(100),
+            || true,
+            || panic!("a present key cannot record target loss"),
+            |bounded| {
+                *observed_deadline.lock().expect("deadline lock") = bounded.deadline();
+                Err(CaptureFault::SourceInvalid.into())
+            },
+        )
+        .expect_err("the test acquisition returns its sentinel fault");
+
+        assert_eq!(error.status(), Status::CaptureFailed);
+        assert_eq!(
+            *observed_deadline.lock().expect("deadline lock"),
+            Some(caller_deadline),
+            "the internal liveness interval cannot extend an earlier caller deadline"
+        );
+    }
+
+    #[test]
+    fn r2_2_liveness_bound_preserves_cancellation_during_wait() {
+        let token = CancellationToken::new();
+        let operation = OperationContext::new().with_cancellation(token.clone());
+        let cancel_during_wait = token.clone();
+
+        let error = frame_with_target_liveness(
+            &operation,
+            Duration::from_secs(1),
+            || true,
+            || panic!("a present key cannot record target loss"),
+            |bounded| {
+                let mut wait = Operation::admit(bounded)?;
+                cancel_during_wait.cancel();
+                wait.checkpoint()?;
+                panic!("cancellation must interrupt the admitted wait");
+            },
+        )
+        .expect_err("caller cancellation wins during the wait");
+
+        assert_eq!(error.status(), Status::Cancelled);
+    }
+
+    #[test]
+    fn r2_2_liveness_bound_preserves_first_terminal_fault() {
+        let stream = IdentityIssuer::new().issue_stream().expect("issued stream");
+        let state = StreamState::with_target_extent(stream);
+        state.terminate(CaptureFault::SourceInvalid);
+
+        let error = frame_with_target_liveness(
+            &OperationContext::new(),
+            Duration::from_millis(1),
+            || false,
+            || state.terminate(CaptureFault::CaptureItemClosed),
+            |bounded| state.frame(&FrameRequest::latest(), bounded),
+        )
+        .expect_err("the first terminal fault outranks later key loss");
+
+        assert_eq!(error.status(), Status::CaptureFailed);
+        assert_eq!(state.terminal(), Some(CaptureFault::SourceInvalid));
+    }
+
+    #[test]
+    fn r2_2_liveness_bound_returns_frame_after_internal_expiry() {
+        let stream = IdentityIssuer::new().issue_stream().expect("issued stream");
+        let state = StreamState::with_target_extent(stream);
+        // Reads: derive at 0, bounded admission at 1, caller arbitration at 2,
+        // then re-derive/admit/commit at 2; 10 is a failure sentinel.
+        let clock = Arc::new(ScriptedClock::new(&[0, 1, 2, 2, 2, 2, 10]));
+        let operation = OperationContext::new()
+            .with_clock(clock)
+            .with_deadline(MonotonicInstant::from_origin(Duration::from_millis(10)));
+        let descriptor = FrameDescriptor::packed(PixelExtent::new(2, 2), PixelFormat::Bgra8)
+            .expect("descriptor");
+        let checks = AtomicUsize::new(0);
+        let expected = Mutex::new(None);
+
+        let frame = frame_with_target_liveness(
+            &operation,
+            Duration::from_millis(1),
+            || {
+                let check = checks.fetch_add(1, Ordering::AcqRel);
+                if check == 1 {
+                    let published = state
+                        .publish(Publication {
+                            captured_at: MonotonicInstant::ORIGIN,
+                            descriptor,
+                            placement: None,
+                            pixels: vec![0x55; descriptor.byte_len()].into_boxed_slice(),
+                            continuity: Continuity::Continuous,
+                        })
+                        .expect("frame published after the first internal expiry");
+                    *expected.lock().expect("expected stamp lock") = Some(published.stamp());
+                }
+                true
+            },
+            || panic!("a present key cannot record target loss"),
+            |bounded| state.frame(&FrameRequest::latest(), bounded),
+        )
+        .expect("the frame remains available after the internal retry");
+
+        assert_eq!(
+            Some(frame.stamp()),
+            *expected.lock().expect("expected stamp lock")
+        );
+        assert_eq!(checks.load(Ordering::Acquire), 2);
     }
 
     #[test]

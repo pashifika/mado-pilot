@@ -6,18 +6,21 @@
 //! then submits input only through the production Adapter route.
 //!
 //! Commands carry only a version, monotonic nonce, fixed action, and an optional
-//! row token accepted only by the event-reset command. Results carry the same
-//! identity, a bounded status, and before/after native window numbers. No command
-//! or observation contains typed text, pixels, a path, or another application's
-//! identity. The event receiver likewise reports only an event kind and UTF-16
+//! row token accepted only by the event-reset command. A visual command also
+//! renders its nonzero, `u32`-bounded nonce as the captured pixel token. Results
+//! carry the same identity, a bounded status, and before/after native window
+//! numbers. No command or observation contains typed text, pixels, a path, or
+//! another application's identity. The event receiver likewise reports only an
+//! event kind and UTF-16
 //! unit count.
 //!
 //! Selection never rests on a title alone. A candidate must be the only window
 //! with the exact title belonging to the owned child, advertise the qualified
 //! process-directed pairs, and match the fixture's deterministic content.
 
+use std::{fmt, num::NonZeroU32};
+
 use mado_pilot_capture::TargetDescription;
-use std::fmt;
 
 use mado_pilot_core::{
     CapabilitySupport, InputAddressScope, InputDelivery, InputOperationKind, PixelExtent,
@@ -42,6 +45,34 @@ pub const FILL_RGB: u32 = 0x002E_5FA3;
 /// It is deliberately farther than [`FILL_TOLERANCE`] from [`FILL_RGB`] in two
 /// channels, so an old retained filter publishing the successor is observable.
 pub const REPLACEMENT_FILL_RGB: u32 = 0x00C4_5B2E;
+/// Primary colour of the deterministic watcher marker, as `0xRRGGBB`.
+pub const WATCH_MARKER_PRIMARY_RGB: u32 = 0x00F2_6B38;
+/// Secondary colour of the deterministic watcher marker, as `0xRRGGBB`.
+pub const WATCH_MARKER_SECONDARY_RGB: u32 = 0x002D_D4BF;
+/// Client-space X origin of `watch-marker-v1`, in logical points.
+pub const WATCH_MARKER_X_POINTS: u32 = 64;
+/// Client-space top origin of `watch-marker-v1`, in logical points.
+pub const WATCH_MARKER_Y_POINTS: u32 = 48;
+/// Logical width and height of one `watch-marker-v1` cell.
+pub const WATCH_MARKER_CELL_POINTS: u32 = 24;
+/// Logical width of the three-cell `watch-marker-v1` pattern.
+pub const WATCH_MARKER_WIDTH_POINTS: u32 = WATCH_MARKER_CELL_POINTS * 3;
+/// Logical height of the two-cell `watch-marker-v1` pattern.
+pub const WATCH_MARKER_HEIGHT_POINTS: u32 = WATCH_MARKER_CELL_POINTS * 2;
+/// Secondary-colour cells in the otherwise primary-colour three-by-two pattern.
+pub const WATCH_MARKER_SECONDARY_CELLS: [(u32, u32); 2] = [(1, 0), (0, 1)];
+/// Client-space X origin of the qualification visual-token grid, in logical points.
+pub const WATCH_TOKEN_X_POINTS: u32 = 176;
+/// Client-space top origin of the qualification visual-token grid, in logical points.
+pub const WATCH_TOKEN_Y_POINTS: u32 = 48;
+/// Logical width and height of one qualification visual-token cell.
+pub const WATCH_TOKEN_CELL_POINTS: u32 = 8;
+/// Logical width of the qualification visual-token grid.
+pub const WATCH_TOKEN_GRID_WIDTH: usize = 10;
+/// Logical height of the qualification visual-token grid.
+pub const WATCH_TOKEN_GRID_HEIGHT: usize = 9;
+/// Total logical cells in the qualification visual-token grid.
+pub const WATCH_TOKEN_CELL_COUNT: usize = WATCH_TOKEN_GRID_WIDTH * WATCH_TOKEN_GRID_HEIGHT;
 
 /// The fixture window's content size, in points.
 pub const WINDOW_POINTS: (f64, f64) = (640.0, 420.0);
@@ -60,7 +91,7 @@ pub const MAX_EVENT_TEXT_UNITS: u32 = 256;
 pub const MAX_READY_LINE_BYTES: usize = 1_024;
 
 /// Version of the private harness-to-fixture control protocol.
-pub const FIXTURE_CONTROL_VERSION: u32 = 11;
+pub const FIXTURE_CONTROL_VERSION: u32 = 13;
 
 /// Largest command or result record accepted by either endpoint.
 pub const MAX_CONTROL_LINE_BYTES: usize = 512;
@@ -165,6 +196,10 @@ impl FixtureReadyFacts {
 /// One fixed, payload-free fixture transition.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum FixtureCommandKind {
+    /// Remove `watch-marker-v1` and repaint the deterministic background.
+    SetVisualAbsent,
+    /// Render `watch-marker-v1` over the deterministic background.
+    SetVisualVisible,
     /// Change the current window's deterministic fill without changing identity.
     Transition,
     /// Destroy the current window and create one same-process successor.
@@ -185,6 +220,8 @@ pub enum FixtureCommandKind {
     Close,
     /// Move the main window to the next deterministically ordered public display.
     MoveToNextDisplay,
+    /// Restore the exact placement saved by `MoveToNextDisplay`.
+    RestorePlacement,
     /// Move the main window wholly outside the current public display union.
     MoveOffscreen,
     /// Restore a window moved off-screen to its exact prior origin.
@@ -206,6 +243,8 @@ impl FixtureCommandKind {
     #[must_use]
     pub const fn as_str(self) -> &'static str {
         match self {
+            Self::SetVisualAbsent => "set-absent",
+            Self::SetVisualVisible => "set-visible",
             Self::Transition => "transition",
             Self::Replace => "replace",
             Self::Minimize => "minimize",
@@ -217,6 +256,7 @@ impl FixtureCommandKind {
             Self::CloseAuxiliary => "close-auxiliary",
             Self::Close => "close",
             Self::MoveToNextDisplay => "move-to-next-display",
+            Self::RestorePlacement => "restore-placement",
             Self::MoveOffscreen => "move-offscreen",
             Self::RestoreOnscreen => "restore-onscreen",
             Self::ResetEvents => "reset-events",
@@ -228,6 +268,8 @@ impl FixtureCommandKind {
 
     fn parse(value: &str) -> Option<Self> {
         match value {
+            "set-absent" => Some(Self::SetVisualAbsent),
+            "set-visible" => Some(Self::SetVisualVisible),
             "transition" => Some(Self::Transition),
             "replace" => Some(Self::Replace),
             "minimize" => Some(Self::Minimize),
@@ -238,6 +280,7 @@ impl FixtureCommandKind {
             "open-auxiliary" => Some(Self::OpenAuxiliary),
             "close-auxiliary" => Some(Self::CloseAuxiliary),
             "move-to-next-display" => Some(Self::MoveToNextDisplay),
+            "restore-placement" => Some(Self::RestorePlacement),
             "move-offscreen" => Some(Self::MoveOffscreen),
             "restore-onscreen" => Some(Self::RestoreOnscreen),
             "reset-events" => Some(Self::ResetEvents),
@@ -253,6 +296,8 @@ impl FixtureCommandKind {
     #[must_use]
     pub const fn as_raw(self) -> u32 {
         match self {
+            Self::SetVisualAbsent => 18,
+            Self::SetVisualVisible => 19,
             Self::Transition => 1,
             Self::Replace => 2,
             Self::Minimize => 3,
@@ -264,6 +309,7 @@ impl FixtureCommandKind {
             Self::OpenAuxiliary => 9,
             Self::CloseAuxiliary => 10,
             Self::MoveToNextDisplay => 12,
+            Self::RestorePlacement => 20,
             Self::MoveOffscreen => 15,
             Self::RestoreOnscreen => 16,
             Self::ResetEvents => 13,
@@ -272,6 +318,22 @@ impl FixtureCommandKind {
             Self::Close => 11,
         }
     }
+}
+
+/// Returns the pixel-encoded token carried by a visual command nonce.
+///
+/// Visual commands reserve zero and refuse values wider than the shared
+/// cross-platform `u32` encoding. Non-visual command nonces remain independent
+/// protocol identities and return `None`.
+#[must_use]
+pub fn visual_token_for_command(kind: FixtureCommandKind, nonce: u64) -> Option<NonZeroU32> {
+    if !matches!(
+        kind,
+        FixtureCommandKind::SetVisualAbsent | FixtureCommandKind::SetVisualVisible
+    ) {
+        return None;
+    }
+    u32::try_from(nonce).ok().and_then(NonZeroU32::new)
 }
 
 /// One decoded private fixture command.
@@ -582,6 +644,10 @@ pub fn parse_command_line(line: &str) -> Option<FixtureCommand> {
     if run_nonce == 0
         || nonce == 0
         || (event_payload_tag != 0 && kind != FixtureCommandKind::ResetEvents)
+        || (matches!(
+            kind,
+            FixtureCommandKind::SetVisualAbsent | FixtureCommandKind::SetVisualVisible
+        ) && visual_token_for_command(kind, nonce).is_none())
     {
         return None;
     }
@@ -883,7 +949,7 @@ mod tests {
         format_command_line, format_command_result_line, format_event_line,
         frame_is_fixture_content, frame_is_replacement_content, parse_command_line,
         parse_command_result_line, parse_event_line, parse_event_line_for_run,
-        select_unique_fixture, with_confirmed_fixture_content,
+        select_unique_fixture, visual_token_for_command, with_confirmed_fixture_content,
     };
     use crate::PROVIDER;
 
@@ -1173,7 +1239,7 @@ mod tests {
         let command_line = format_command_line(command);
         assert_eq!(
             command_line,
-            "fixture-command version=11 run=99 nonce=7 event-tag=0 action=transition"
+            "fixture-command version=13 run=99 nonce=7 event-tag=0 action=transition"
         );
         assert_eq!(parse_command_line(&command_line), Some(command));
 
@@ -1196,7 +1262,7 @@ mod tests {
         let result_line = format_command_result_line(result);
         assert_eq!(
             result_line,
-            "fixture-command-result version=11 run=99 nonce=7 status=0 before-window=17 \
+            "fixture-command-result version=13 run=99 nonce=7 status=0 before-window=17 \
              after-window=17 pointer-moves=1 pointer-presses=0 pointer-releases=0 \
              pointer-scrolls=0 key-downs=2 key-ups=2 flags-changed=0 text-units=6 saturated=0 \
              event-correlation=42 event-payload-matches=1"
@@ -1212,7 +1278,7 @@ mod tests {
         let topology_line = format_command_line(topology);
         assert_eq!(
             topology_line,
-            "fixture-command version=11 run=99 nonce=8 event-tag=0 \
+            "fixture-command version=13 run=99 nonce=8 event-tag=0 \
              action=move-to-next-display"
         );
         assert_eq!(parse_command_line(&topology_line), Some(topology));
@@ -1226,24 +1292,58 @@ mod tests {
         let prepare_line = format_command_line(prepare);
         assert_eq!(
             prepare_line,
-            "fixture-command version=11 run=99 nonce=9 event-tag=0 \
+            "fixture-command version=13 run=99 nonce=9 event-tag=0 \
              action=prepare-language-flow"
         );
         assert_eq!(parse_command_line(&prepare_line), Some(prepare));
+
+        for (nonce, kind, action) in [
+            (10, FixtureCommandKind::SetVisualVisible, "set-visible"),
+            (11, FixtureCommandKind::SetVisualAbsent, "set-absent"),
+            (
+                12,
+                FixtureCommandKind::RestorePlacement,
+                "restore-placement",
+            ),
+        ] {
+            let visual = FixtureCommand {
+                run_nonce: 99,
+                nonce,
+                event_payload_tag: 0,
+                kind,
+            };
+            let line = format_command_line(visual);
+            assert_eq!(
+                line,
+                format!(
+                    "fixture-command version=13 run=99 nonce={nonce} event-tag=0 action={action}"
+                )
+            );
+            assert_eq!(parse_command_line(&line), Some(visual));
+            let expected_token = matches!(
+                kind,
+                FixtureCommandKind::SetVisualAbsent | FixtureCommandKind::SetVisualVisible
+            )
+            .then(|| u32::try_from(nonce).expect("small visual nonce"));
+            assert_eq!(
+                visual_token_for_command(kind, nonce).map(|token| token.get()),
+                expected_token
+            );
+        }
     }
 
     #[test]
     fn malformed_or_unbounded_control_records_fail_closed() {
         for line in [
-            "fixture-command version=10 run=9 nonce=1 event-tag=0 action=transition",
-            "fixture-command run=9 version=11 nonce=1 event-tag=0 action=transition",
-            "fixture-command version=11 run=0 nonce=1 event-tag=0 action=transition",
-            "fixture-command version=11 run=9 nonce=0 event-tag=0 action=transition",
-            "fixture-command version=11 run=9 nonce=1 event-tag=1 action=transition",
-            "fixture-command version=11 run=9 nonce=1 event-tag=0 action=unknown",
-            "fixture-command version=11 run=9 nonce=1 event-tag=0 action=transition extra=1",
-            "fixture-command-result version=11 run=9 nonce=1 status=0 before-window=17",
-            "fixture-command-result version=11 run=9 nonce=1 status=0 before-window=17 after-window=17 extra=1",
+            "fixture-command version=12 run=9 nonce=1 event-tag=0 action=transition",
+            "fixture-command run=9 version=13 nonce=1 event-tag=0 action=transition",
+            "fixture-command version=13 run=0 nonce=1 event-tag=0 action=transition",
+            "fixture-command version=13 run=9 nonce=0 event-tag=0 action=transition",
+            "fixture-command version=13 run=9 nonce=1 event-tag=1 action=transition",
+            "fixture-command version=13 run=9 nonce=1 event-tag=0 action=unknown",
+            "fixture-command version=13 run=9 nonce=1 event-tag=0 action=transition extra=1",
+            "fixture-command-result version=13 run=9 nonce=1 status=0 before-window=17",
+            "fixture-command-result version=13 run=9 nonce=1 status=0 before-window=17 after-window=17 extra=1",
         ] {
             assert!(
                 parse_command_line(line).is_none() && parse_command_result_line(line).is_none(),
@@ -1253,6 +1353,24 @@ mod tests {
         assert!(parse_command_line(&"x".repeat(super::MAX_CONTROL_LINE_BYTES + 1)).is_none());
         assert!(
             parse_command_result_line(&"x".repeat(super::MAX_CONTROL_LINE_BYTES + 1)).is_none()
+        );
+        let oversized_visual = format!(
+            "fixture-command version=13 run=9 nonce={} event-tag=0 action=set-visible",
+            u64::from(u32::MAX) + 1
+        );
+        assert!(parse_command_line(&oversized_visual).is_none());
+        assert_eq!(
+            visual_token_for_command(FixtureCommandKind::SetVisualVisible, u64::from(u32::MAX))
+                .map(|token| token.get()),
+            Some(u32::MAX)
+        );
+        assert_eq!(
+            visual_token_for_command(FixtureCommandKind::SetVisualAbsent, u64::from(u32::MAX) + 1),
+            None
+        );
+        assert_eq!(
+            visual_token_for_command(FixtureCommandKind::Transition, 42),
+            None
         );
     }
 

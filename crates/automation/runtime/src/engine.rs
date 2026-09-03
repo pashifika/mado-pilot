@@ -28,6 +28,7 @@ use crate::diagnostic::{
     PermissionDiagnostic,
 };
 use crate::session::Session;
+use crate::watch::{TemplateSchedulerDescriptor, WatchRuntime};
 
 /// How long the release of an already-opened capture session or input
 /// controller may take when a later step of the same open refuses it.
@@ -180,6 +181,7 @@ pub struct Engine {
     permission: Option<Arc<dyn PermissionProbe>>,
     diagnostics: Option<DiagnosticSink>,
     diagnostic_reader: Mutex<Option<DiagnosticReader>>,
+    watcher: WatchRuntime,
 }
 
 impl Engine {
@@ -220,6 +222,7 @@ impl Engine {
             .as_ref()
             .zip(wiring.ocr.as_ref())
             .and_then(|(diagnostics, ocr)| diagnostics.ocr_model(&ocr.descriptor()));
+        let watcher = WatchRuntime::new(wiring.matcher.clone(), diagnostics.clone());
 
         Ok(Self {
             engine: wiring.engine,
@@ -232,6 +235,7 @@ impl Engine {
             permission: wiring.permission,
             diagnostics,
             diagnostic_reader: Mutex::new(reader),
+            watcher,
         })
     }
 
@@ -249,6 +253,12 @@ impl Engine {
     #[must_use]
     pub fn backend(&self) -> BackendDescriptor {
         self.matcher.descriptor()
+    }
+
+    /// Returns the fixed finite template watcher scheduler contract.
+    #[must_use]
+    pub fn template_scheduler(&self) -> TemplateSchedulerDescriptor {
+        self.watcher.descriptor()
     }
 
     /// Returns the configured OCR backend/model/profile descriptor, if any.
@@ -522,6 +532,7 @@ impl Engine {
                         self.ocr_diagnostic,
                         input,
                         self.diagnostics.clone(),
+                        self.watcher.clone(),
                     ));
                 }
                 Err(interruption) => interruption,
@@ -683,6 +694,12 @@ impl Engine {
             diagnostics.register_template(&prepared);
         }
         Ok(attempt.commit(prepared)?)
+    }
+}
+
+impl Drop for Engine {
+    fn drop(&mut self) {
+        self.watcher.close();
     }
 }
 

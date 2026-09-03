@@ -13,18 +13,102 @@
 
 use std::sync::Arc;
 
-use mado_pilot_capture::{Frame, FrameView};
+use mado_pilot_capture::{CpuMapping, Frame, FrameView};
 use mado_pilot_core::{
     ClipPolicy, Error, GeometryFault, Operation, OperationContext, PixelExtent, PixelRect, Result,
     TransformSnapshot,
 };
 
-use crate::backend::{BackendRequest, Candidate, MatchBackend, candidate_bounds};
+use crate::backend::{
+    BackendDescriptor, BackendRequest, Candidate, MatchBackend, candidate_bounds,
+};
 use crate::fault::VisionFault;
-use crate::prepared::PreparedTemplate;
+use crate::prepared::{PreparedTemplate, PreparedTemplateInstance};
 use crate::request::{MatchOptions, MatchRequest, RegionSelection, Suppression};
 use crate::result::{Match, MatchResult};
 use crate::template::TemplateSource;
+
+/// One exact resolved and mapped matching input.
+///
+/// This is an internal composition seam for runtimes that must inspect the same
+/// mapped bytes before deciding whether backend analysis is required. It owns
+/// the source frame and mapping, so a later capture publication cannot change
+/// either. It exposes no backend payload.
+#[doc(hidden)]
+#[derive(Debug)]
+pub struct MappedMatch {
+    frame: Frame,
+    transform: TransformSnapshot,
+    searched: PixelRect,
+    descriptor: BackendDescriptor,
+    template: PreparedTemplateInstance,
+    options: MatchOptions,
+    pixels: Option<CpuMapping>,
+}
+
+impl MappedMatch {
+    /// Returns the exact source frame.
+    #[doc(hidden)]
+    #[must_use]
+    pub const fn frame(&self) -> &Frame {
+        &self.frame
+    }
+
+    /// Returns the resolved capture-pixel region.
+    #[doc(hidden)]
+    #[must_use]
+    pub const fn searched(&self) -> PixelRect {
+        self.searched
+    }
+
+    /// Returns the backend descriptor used to map the region.
+    #[doc(hidden)]
+    #[must_use]
+    pub const fn descriptor(&self) -> &BackendDescriptor {
+        &self.descriptor
+    }
+
+    /// Returns the validated matching options.
+    #[doc(hidden)]
+    #[must_use]
+    pub const fn options(&self) -> MatchOptions {
+        self.options
+    }
+
+    /// Returns the mapped pixels, or `None` for a successful empty search.
+    #[doc(hidden)]
+    #[must_use]
+    pub const fn pixels(&self) -> Option<&CpuMapping> {
+        self.pixels.as_ref()
+    }
+
+    /// Reports whether `request` has the exact immutable analysis identity.
+    #[doc(hidden)]
+    #[must_use]
+    pub fn is_equivalent_request(&self, request: &MatchRequest<'_>) -> bool {
+        if request.frame().stamp() != self.frame.stamp()
+            || request.template().backend().as_str() != self.descriptor.id()
+            || !self
+                .template
+                .is_same(&request.template().diagnostic_instance())
+            || request.options() != self.options
+        {
+            return false;
+        }
+        let Ok(region) = resolve_region(request.frame().transform(), request.selection()) else {
+            return false;
+        };
+        let searched = match region {
+            Some(region) => region,
+            None => match empty_region() {
+                Ok(region) => region,
+                Err(_) => return false,
+            },
+        };
+        let has_pixels = !searched.is_empty() && fits(request.template().extent(), searched);
+        searched == self.searched && has_pixels == self.pixels.is_some()
+    }
+}
 
 /// Applies the public matching rules over one backend.
 ///
@@ -33,19 +117,61 @@ use crate::template::TemplateSource;
 #[derive(Debug, Clone)]
 pub struct Matcher {
     backend: Arc<dyn MatchBackend>,
+    descriptor: BackendDescriptor,
 }
 
 impl Matcher {
     /// Builds a matcher over `backend`.
     #[must_use]
     pub fn new(backend: Arc<dyn MatchBackend>) -> Self {
-        Self { backend }
+        let descriptor = backend.descriptor();
+        Self {
+            backend,
+            descriptor,
+        }
     }
 
     /// Returns the backend's public identity.
     #[must_use]
-    pub fn descriptor(&self) -> crate::backend::BackendDescriptor {
-        self.backend.descriptor()
+    pub fn descriptor(&self) -> BackendDescriptor {
+        self.descriptor.clone()
+    }
+
+    /// Reports whether two requests have one exact immutable analysis identity.
+    #[doc(hidden)]
+    #[must_use]
+    pub fn requests_are_equivalent(
+        &self,
+        left: &MatchRequest<'_>,
+        right: &MatchRequest<'_>,
+    ) -> bool {
+        let descriptor = &self.descriptor;
+        if left.frame().stamp() != right.frame().stamp()
+            || left.template().backend().as_str() != descriptor.id()
+            || right.template().backend().as_str() != descriptor.id()
+            || !left
+                .template()
+                .diagnostic_instance()
+                .is_same(&right.template().diagnostic_instance())
+            || left.options() != right.options()
+        {
+            return false;
+        }
+        let resolved = |request: &MatchRequest<'_>| {
+            let region = resolve_region(request.frame().transform(), request.selection()).ok()?;
+            let searched = match region {
+                Some(region) => region,
+                None => empty_region().ok()?,
+            };
+            Some((
+                searched,
+                !searched.is_empty() && fits(request.template().extent(), searched),
+            ))
+        };
+        match (resolved(left), resolved(right)) {
+            (Some(left), Some(right)) => left == right,
+            _ => false,
+        }
     }
 
     /// Compiles a template for this matcher's backend.
@@ -81,66 +207,101 @@ impl Matcher {
         request: MatchRequest<'_>,
         operation: &OperationContext,
     ) -> Result<MatchResult> {
-        let mut attempt = Operation::admit(operation)?;
+        let mapped = self.map_match(&request, operation)?;
+        self.find_mapped(&mapped, request.template(), operation)
+    }
 
-        let descriptor = self.backend.descriptor();
+    /// Resolves and maps one request without invoking the backend.
+    ///
+    /// Runtime orchestration uses this hidden seam to apply an accepted change
+    /// policy to the exact bytes the backend would otherwise map again.
+    #[doc(hidden)]
+    pub fn map_match(
+        &self,
+        request: &MatchRequest<'_>,
+        operation: &OperationContext,
+    ) -> Result<MappedMatch> {
+        let mut attempt = Operation::admit(operation)?;
+        let descriptor = self.descriptor.clone();
         if request.template().backend().as_str() != descriptor.id() {
             return Err(VisionFault::BackendMismatch.into());
         }
 
         let frame = request.frame();
         let transform = *frame.transform();
-        let template = request.template();
+        let searched = match resolve_region(&transform, request.selection())? {
+            Some(region) => region,
+            None => empty_region()?,
+        };
+        let pixels = if searched.is_empty() || !fits(request.template().extent(), searched) {
+            None
+        } else {
+            let view = FrameView::new(frame.clone(), searched)?;
+            let pixels = view.map(descriptor.format(), operation)?;
+            attempt.checkpoint()?;
+            Some(pixels)
+        };
+        let mapped = MappedMatch {
+            frame: frame.clone(),
+            transform,
+            searched,
+            descriptor,
+            template: request.template().diagnostic_instance(),
+            options: request.options(),
+            pixels,
+        };
+        attempt.commit(mapped).map_err(Error::from)
+    }
 
-        let Some(region) = resolve_region(&transform, request.selection())? else {
-            // A clip-permitted region that misses the frame entirely searched a
-            // well-formed nothing.
+    /// Runs backend matching over one exact mapped request.
+    ///
+    /// The prepared-template instance and backend are revalidated so a mapped
+    /// input cannot be paired with different compiled state.
+    #[doc(hidden)]
+    pub fn find_mapped(
+        &self,
+        mapped: &MappedMatch,
+        template: &PreparedTemplate,
+        operation: &OperationContext,
+    ) -> Result<MatchResult> {
+        let mut attempt = Operation::admit(operation)?;
+        let descriptor = &self.descriptor;
+        if template.backend().as_str() != descriptor.id()
+            || descriptor != &mapped.descriptor
+            || !mapped.template.is_same(&template.diagnostic_instance())
+        {
+            return Err(VisionFault::BackendMismatch.into());
+        }
+
+        let Some(pixels) = mapped.pixels.as_ref() else {
             return commit(
                 attempt,
-                frame,
-                &transform,
-                empty_region()?,
-                &descriptor,
-                request.options(),
+                &mapped.frame,
+                &mapped.transform,
+                mapped.searched,
+                &mapped.descriptor,
+                mapped.options,
                 Vec::new(),
             );
         };
-
-        if region.is_empty() || !fits(template.extent(), region) {
-            return commit(
-                attempt,
-                frame,
-                &transform,
-                region,
-                &descriptor,
-                request.options(),
-                Vec::new(),
-            );
-        }
-
-        let view = FrameView::new(frame.clone(), region)?;
-        let pixels = view.map(descriptor.format(), operation)?;
-        attempt.checkpoint()?;
-
         let candidates = self.backend.find(
             &BackendRequest {
                 template,
-                pixels: &pixels,
-                region,
-                options: request.options(),
+                pixels,
+                region: mapped.searched,
+                options: mapped.options,
             },
             operation,
         )?;
         attempt.checkpoint()?;
-
-        let matches = normalize(candidates, template, region, request.options())?;
+        let matches = normalize(candidates, template, mapped.searched, mapped.options)?;
         commit(
             attempt,
-            frame,
-            &transform,
-            region,
-            &descriptor,
-            request.options(),
+            &mapped.frame,
+            &mapped.transform,
+            mapped.searched,
+            &mapped.descriptor,
+            mapped.options,
             matches,
         )
     }
@@ -229,7 +390,7 @@ fn commit(
     frame: &Frame,
     transform: &TransformSnapshot,
     searched: PixelRect,
-    descriptor: &crate::backend::BackendDescriptor,
+    descriptor: &BackendDescriptor,
     options: MatchOptions,
     matches: Vec<Match>,
 ) -> Result<MatchResult> {

@@ -17,6 +17,8 @@ mado-pilot-vision = { path = "../../automation/vision" }
 
 # Verifying that a tracked fixture directory still matches its SHA256SUMS.
 sha2 = { workspace = true }
+serde = { workspace = true }
+serde_json = { workspace = true }
 
 [lints]
 workspace = true

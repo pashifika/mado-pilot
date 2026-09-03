@@ -941,12 +941,17 @@ fn bounded_child_output_with<C: PrimaryChildCleanup>(
 /// triple assembled from the parts that are available would be a guess printed
 /// where a measurement condition belongs. A budget is valid only for the target
 /// in its profile, so the wrong string here is worse than no string.
-pub const RELEASE_TARGET: &str = if cfg!(all(target_arch = "aarch64", target_os = "macos")) {
+pub const RELEASE_TARGET: &str = if cfg!(all(
+    target_arch = "aarch64",
+    target_os = "macos",
+    target_vendor = "apple"
+)) {
     "aarch64-apple-darwin"
 } else if cfg!(all(
     target_arch = "x86_64",
     target_os = "windows",
-    target_env = "msvc"
+    target_env = "msvc",
+    target_vendor = "pc"
 )) {
     "x86_64-pc-windows-msvc"
 } else {
@@ -1022,6 +1027,15 @@ fn record(gained: usize, lost: usize) {
 /// Live heap bytes now.
 fn live() -> usize {
     LIVE.load(Ordering::Relaxed)
+}
+
+/// Returns the current live bytes counted by [`Accounting`].
+///
+/// Qualification harnesses use this to wait for explicitly closed worker
+/// threads to release their heap before committing a retained sample.
+#[must_use]
+pub fn live_allocated_bytes() -> usize {
+    live()
 }
 
 // --- Running -----------------------------------------------------------------
@@ -1104,6 +1118,66 @@ pub struct CaptureResources {
     pub gpu_resources_peak: u64,
 }
 
+/// Query/scheduler work retained by one benchmark sample.
+#[derive(Debug, Default, Clone, Copy, PartialEq, Eq)]
+pub struct QueryWorkMetrics {
+    /// Backend calls that began.
+    pub backend_runs: u64,
+    /// Queries that committed their workload's expected terminal outcome.
+    pub query_completions: u64,
+    /// Queries that committed an unexpected terminal failure.
+    pub query_failures: u64,
+    /// Older backend generations discarded after losing authority.
+    pub stale_discards: u64,
+    /// Capture frames accepted while the sample exercised producer progress.
+    pub producer_publications: u64,
+    /// Work admitted to a backend slot.
+    pub admitted: u64,
+    /// Work skipped by the accepted change policy.
+    pub skipped_change: u64,
+    /// Work deferred by the query rate.
+    pub deferred_rate: u64,
+    /// Queries sharing one immutable analysis.
+    pub coalesced: u64,
+    /// Work displaced by newer work or authority.
+    pub superseded: u64,
+    /// Work refused before backend admission.
+    pub rejected: u64,
+    /// Eligible work that expired in the finite queue.
+    pub queue_expired: u64,
+    /// Backend work that completed successfully.
+    pub completed: u64,
+    /// Mapping or backend work that failed.
+    pub failed: u64,
+}
+
+impl QueryWorkMetrics {
+    /// Adds two independent workload observations without wrapping.
+    #[must_use]
+    pub fn saturating_add(self, other: Self) -> Self {
+        Self {
+            backend_runs: self.backend_runs.saturating_add(other.backend_runs),
+            query_completions: self
+                .query_completions
+                .saturating_add(other.query_completions),
+            query_failures: self.query_failures.saturating_add(other.query_failures),
+            stale_discards: self.stale_discards.saturating_add(other.stale_discards),
+            producer_publications: self
+                .producer_publications
+                .saturating_add(other.producer_publications),
+            admitted: self.admitted.saturating_add(other.admitted),
+            skipped_change: self.skipped_change.saturating_add(other.skipped_change),
+            deferred_rate: self.deferred_rate.saturating_add(other.deferred_rate),
+            coalesced: self.coalesced.saturating_add(other.coalesced),
+            superseded: self.superseded.saturating_add(other.superseded),
+            rejected: self.rejected.saturating_add(other.rejected),
+            queue_expired: self.queue_expired.saturating_add(other.queue_expired),
+            completed: self.completed.saturating_add(other.completed),
+            failed: self.failed.saturating_add(other.failed),
+        }
+    }
+}
+
 /// What one iteration of a workload reports.
 #[derive(Debug)]
 pub struct Sample {
@@ -1113,6 +1187,7 @@ pub struct Sample {
     peak_resident: Option<u64>,
     stale: Option<(u64, u64)>,
     capture_resources: Option<CaptureResources>,
+    query_work: Option<QueryWorkMetrics>,
 }
 
 impl Sample {
@@ -1126,6 +1201,7 @@ impl Sample {
             peak_resident: None,
             stale: None,
             capture_resources: None,
+            query_work: None,
         }
     }
 
@@ -1164,6 +1240,13 @@ impl Sample {
         self.capture_resources = Some(resources);
         self
     }
+
+    /// Associates exact query/scheduler work with this sample.
+    #[must_use]
+    pub const fn with_query_work(mut self, metrics: QueryWorkMetrics) -> Self {
+        self.query_work = Some(metrics);
+        self
+    }
 }
 
 /// One workload's samples, and what they cost besides time.
@@ -1186,6 +1269,7 @@ pub struct Workload {
     detached_textures_peak: Option<u64>,
     staging_textures_peak: Option<u64>,
     gpu_resources_peak: Option<u64>,
+    query_work: Option<QueryWorkMetrics>,
     growth_bytes: i64,
 }
 
@@ -1295,6 +1379,12 @@ impl Workload {
         self.gpu_resources_peak
     }
 
+    /// Exact query/scheduler work summed across retained samples.
+    #[must_use]
+    pub const fn query_work(&self) -> Option<QueryWorkMetrics> {
+        self.query_work
+    }
+
     /// Share of observed producer work skipped before a retained result.
     #[must_use]
     pub fn stale_work_ratio(&self) -> Option<f64> {
@@ -1321,6 +1411,7 @@ struct WorkloadAccumulator {
     gpu_resources_peak: Option<u64>,
     stale: u64,
     scheduled: u64,
+    query_work: Option<QueryWorkMetrics>,
 }
 
 impl WorkloadAccumulator {
@@ -1338,6 +1429,7 @@ impl WorkloadAccumulator {
             gpu_resources_peak: None,
             stale: 0,
             scheduled: 0,
+            query_work: None,
         }
     }
 
@@ -1379,6 +1471,9 @@ impl WorkloadAccumulator {
                     .max(resources.gpu_resources_peak),
             );
         }
+        if let Some(metrics) = sample.query_work {
+            self.query_work = Some(self.query_work.unwrap_or_default().saturating_add(metrics));
+        }
         self.elapsed.push(sample.elapsed);
     }
 
@@ -1406,6 +1501,7 @@ impl WorkloadAccumulator {
             detached_textures_peak: self.detached_textures_peak,
             staging_textures_peak: self.staging_textures_peak,
             gpu_resources_peak: self.gpu_resources_peak,
+            query_work: self.query_work,
             stale: self.stale,
             scheduled: self.scheduled,
             growth_bytes: i64::try_from(ending).unwrap_or(i64::MAX)
@@ -1682,6 +1778,22 @@ pub fn report(benchmark: &Benchmark, profile: &Profile, plan: Plan, workloads: &
         if let Some(ratio) = workload.stale_work_ratio() {
             println!("stale_work_ratio = {ratio:.9}");
         }
+        if let Some(metrics) = workload.query_work {
+            println!("backend_runs = {}", metrics.backend_runs);
+            println!("query_completions = {}", metrics.query_completions);
+            println!("query_failures = {}", metrics.query_failures);
+            println!("stale_discards = {}", metrics.stale_discards);
+            println!("producer_publications = {}", metrics.producer_publications);
+            println!("work_admitted = {}", metrics.admitted);
+            println!("work_skipped_change = {}", metrics.skipped_change);
+            println!("work_deferred_rate = {}", metrics.deferred_rate);
+            println!("work_coalesced = {}", metrics.coalesced);
+            println!("work_superseded = {}", metrics.superseded);
+            println!("work_rejected = {}", metrics.rejected);
+            println!("work_queue_expired = {}", metrics.queue_expired);
+            println!("work_completed = {}", metrics.completed);
+            println!("work_failed = {}", metrics.failed);
+        }
         println!("peak_allocated_bytes = {}", workload.peak_bytes);
         println!("steady_allocated_bytes = {}", workload.steady_bytes);
         println!("allocated_growth_bytes = {}", workload.growth_bytes);
@@ -1755,6 +1867,33 @@ impl LatencyBudget {
     #[must_use]
     pub const fn hard_max(self) -> Duration {
         self.hard_max
+    }
+}
+
+/// One exact mapped-byte gate for a named workload.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct MappedBytesBudget {
+    workload: &'static str,
+    bytes: u64,
+}
+
+impl MappedBytesBudget {
+    /// Builds one exact mapped-byte gate.
+    #[must_use]
+    pub const fn new(workload: &'static str, bytes: u64) -> Self {
+        Self { workload, bytes }
+    }
+
+    /// Returns the workload name this gate applies to.
+    #[must_use]
+    pub const fn workload(self) -> &'static str {
+        self.workload
+    }
+
+    /// Returns the exact mapped-byte value.
+    #[must_use]
+    pub const fn bytes(self) -> u64 {
+        self.bytes
     }
 }
 
@@ -2500,6 +2639,388 @@ pub const PHASE3_1_WINDOWS_BOUNDED_OCR_REOPEN_CLOSE_LIMIT: Duration = Duration::
 /// Phase 3.1 bounded profile's absolute rectangular detector tensor fact.
 pub const PHASE3_1_BOUNDED_OCR_MAX_DETECTOR_TENSOR_BYTES: u64 = 11_587_584;
 
+/// Phase 4 Apple deterministic template-watch latency ceilings from ADR 0051.
+pub const PHASE4_APPLE_TEMPLATE_WATCH_LATENCY_BUDGETS: [LatencyBudget; 10] = [
+    LatencyBudget::new(
+        "current_match",
+        Duration::from_micros(673),
+        Duration::from_micros(743),
+        Duration::from_micros(933),
+    ),
+    LatencyBudget::new(
+        "appearance_stable",
+        Duration::from_micros(1_920),
+        Duration::from_micros(2_135),
+        Duration::from_micros(2_270),
+    ),
+    LatencyBudget::new(
+        "disappearance_reset",
+        Duration::from_micros(2_530),
+        Duration::from_micros(2_652),
+        Duration::from_micros(2_994),
+    ),
+    LatencyBudget::new(
+        "roi_match",
+        Duration::from_micros(231),
+        Duration::from_micros(313),
+        Duration::from_micros(370),
+    ),
+    LatencyBudget::new(
+        "static_duration",
+        Duration::from_micros(1_951),
+        Duration::from_micros(2_710),
+        Duration::from_micros(2_850),
+    ),
+    LatencyBudget::new(
+        "coalesced_pair",
+        Duration::from_micros(214),
+        Duration::from_micros(266),
+        Duration::from_micros(309),
+    ),
+    LatencyBudget::new(
+        "saturation_latest_wins",
+        Duration::from_micros(30_526),
+        Duration::from_micros(60_634),
+        Duration::from_micros(86_239),
+    ),
+    LatencyBudget::new(
+        "two_session_fairness",
+        Duration::from_micros(729),
+        Duration::from_micros(30_338),
+        Duration::from_micros(30_722),
+    ),
+    LatencyBudget::new(
+        "cancel_in_flight",
+        Duration::from_micros(203),
+        Duration::from_micros(254),
+        Duration::from_micros(271),
+    ),
+    LatencyBudget::new(
+        "close_and_retain",
+        Duration::from_micros(360),
+        Duration::from_micros(437),
+        Duration::from_micros(467),
+    ),
+];
+
+/// Phase 4 Windows deterministic template-watch latency ceilings from ADR 0051.
+pub const PHASE4_WINDOWS_TEMPLATE_WATCH_LATENCY_BUDGETS: [LatencyBudget; 10] = [
+    LatencyBudget::new(
+        "current_match",
+        Duration::from_micros(756),
+        Duration::from_micros(896),
+        Duration::from_micros(1_006),
+    ),
+    LatencyBudget::new(
+        "appearance_stable",
+        Duration::from_micros(2_213),
+        Duration::from_micros(2_509),
+        Duration::from_micros(2_606),
+    ),
+    LatencyBudget::new(
+        "disappearance_reset",
+        Duration::from_micros(2_867),
+        Duration::from_micros(3_387),
+        Duration::from_micros(3_446),
+    ),
+    LatencyBudget::new(
+        "roi_match",
+        Duration::from_micros(246),
+        Duration::from_micros(331),
+        Duration::from_micros(348),
+    ),
+    LatencyBudget::new(
+        "static_duration",
+        Duration::from_micros(2_118),
+        Duration::from_micros(2_468),
+        Duration::from_micros(2_911),
+    ),
+    LatencyBudget::new(
+        "coalesced_pair",
+        Duration::from_micros(312),
+        Duration::from_micros(550),
+        Duration::from_micros(715),
+    ),
+    LatencyBudget::new(
+        "saturation_latest_wins",
+        Duration::from_micros(61_980),
+        Duration::from_micros(94_648),
+        Duration::from_micros(123_699),
+    ),
+    LatencyBudget::new(
+        "two_session_fairness",
+        Duration::from_micros(30_820),
+        Duration::from_micros(45_971),
+        Duration::from_micros(57_311),
+    ),
+    LatencyBudget::new(
+        "cancel_in_flight",
+        Duration::from_micros(1_544),
+        Duration::from_micros(2_458),
+        Duration::from_micros(2_749),
+    ),
+    LatencyBudget::new(
+        "close_and_retain",
+        Duration::from_micros(487),
+        Duration::from_micros(992),
+        Duration::from_micros(1_317),
+    ),
+];
+
+/// Phase 4 independently remediated Windows template-watch latency ceilings.
+///
+/// ADR 0052 supersedes only the ROI maximum; the predecessor array remains
+/// revision-bound to the original ADR 0051 profile.
+pub const PHASE4_WINDOWS_REMEDIATED_TEMPLATE_WATCH_LATENCY_BUDGETS: [LatencyBudget; 10] = {
+    let mut budgets = PHASE4_WINDOWS_TEMPLATE_WATCH_LATENCY_BUDGETS;
+    budgets[3] = LatencyBudget::new(
+        "roi_match",
+        Duration::from_micros(246),
+        Duration::from_micros(331),
+        Duration::from_micros(933),
+    );
+    budgets
+};
+
+/// Phase 4 Apple deterministic template-watch live-Rust-heap ceiling.
+pub const PHASE4_APPLE_TEMPLATE_WATCH_HEAP_LIMIT_BYTES: usize = 245_760;
+
+/// Phase 4 Windows deterministic template-watch live-Rust-heap ceiling.
+pub const PHASE4_WINDOWS_TEMPLATE_WATCH_HEAP_LIMIT_BYTES: usize = 245_760;
+
+/// Phase 4 Apple deterministic template-watch process peak-RSS ceiling.
+pub const PHASE4_APPLE_TEMPLATE_WATCH_RESIDENT_LIMIT_BYTES: u64 = 69_206_016;
+
+/// Phase 4 Windows deterministic template-watch process peak-RSS ceiling.
+pub const PHASE4_WINDOWS_TEMPLATE_WATCH_RESIDENT_LIMIT_BYTES: u64 = 19_922_944;
+
+/// Phase 4 deterministic template-watch exact mapped-byte gates.
+pub const PHASE4_TEMPLATE_WATCH_MAPPED_BYTES_BUDGETS: [MappedBytesBudget; 11] = [
+    MappedBytesBudget::new("engine_session_startup", 0),
+    MappedBytesBudget::new("current_match", 24_576),
+    MappedBytesBudget::new("appearance_stable", 24_576),
+    MappedBytesBudget::new("disappearance_reset", 24_576),
+    MappedBytesBudget::new("roi_match", 3_072),
+    MappedBytesBudget::new("static_duration", 24_576),
+    MappedBytesBudget::new("coalesced_pair", 3_072),
+    MappedBytesBudget::new("saturation_latest_wins", 3_072),
+    MappedBytesBudget::new("two_session_fairness", 3_072),
+    MappedBytesBudget::new("cancel_in_flight", 3_072),
+    MappedBytesBudget::new("close_and_retain", 3_072),
+];
+
+/// Phase 4 Apple native template-watch latency ceilings from ADR 0053.
+pub const PHASE4_APPLE_NATIVE_TEMPLATE_WATCH_LATENCY_BUDGETS: [LatencyBudget; 16] = [
+    LatencyBudget::new(
+        "window_absent_current",
+        Duration::from_micros(275_276),
+        Duration::from_micros(281_558),
+        Duration::from_micros(285_297),
+    ),
+    LatencyBudget::new(
+        "window_transient_appearance",
+        Duration::from_micros(674_163),
+        Duration::from_micros(680_820),
+        Duration::from_micros(683_207),
+    ),
+    LatencyBudget::new(
+        "window_persistent_appearance",
+        Duration::from_micros(408_569),
+        Duration::from_micros(415_749),
+        Duration::from_micros(417_577),
+    ),
+    LatencyBudget::new(
+        "window_disappearance_reset",
+        Duration::from_micros(938_330),
+        Duration::from_micros(945_140),
+        Duration::from_micros(945_798),
+    ),
+    LatencyBudget::new(
+        "window_strictly_newer",
+        Duration::from_micros(407_096),
+        Duration::from_micros(415_379),
+        Duration::from_micros(418_778),
+    ),
+    LatencyBudget::new(
+        "window_move",
+        Duration::from_micros(564_115),
+        Duration::from_micros(599_015),
+        Duration::from_micros(604_083),
+    ),
+    LatencyBudget::new(
+        "window_resize",
+        Duration::from_micros(574_458),
+        Duration::from_micros(598_536),
+        Duration::from_micros(609_132),
+    ),
+    LatencyBudget::new(
+        "native_high_rate_slow_backend",
+        Duration::from_micros(930_280),
+        Duration::from_micros(957_199),
+        Duration::from_micros(960_783),
+    ),
+    LatencyBudget::new(
+        "two_query_fairness",
+        Duration::from_micros(771_217),
+        Duration::from_micros(788_633),
+        Duration::from_micros(789_227),
+    ),
+    LatencyBudget::new(
+        "two_session_fairness",
+        Duration::from_micros(1_605_962),
+        Duration::from_micros(2_051_324),
+        Duration::from_micros(2_089_810),
+    ),
+    LatencyBudget::new(
+        "exact_coalescing",
+        Duration::from_micros(768_886),
+        Duration::from_micros(791_611),
+        Duration::from_micros(795_228),
+    ),
+    LatencyBudget::new(
+        "unequal_no_coalescing",
+        Duration::from_micros(777_984),
+        Duration::from_micros(791_200),
+        Duration::from_micros(795_291),
+    ),
+    LatencyBudget::new(
+        "stale_generation",
+        Duration::from_micros(797_568),
+        Duration::from_micros(805_454),
+        Duration::from_micros(809_258),
+    ),
+    LatencyBudget::new(
+        "wait_cancel_deadline",
+        Duration::from_micros(888_242),
+        Duration::from_micros(908_619),
+        Duration::from_micros(913_912),
+    ),
+    LatencyBudget::new(
+        "retained_result_mapping",
+        Duration::from_micros(4_541_716),
+        Duration::from_micros(7_221_614),
+        Duration::from_micros(7_343_780),
+    ),
+    LatencyBudget::new(
+        "fresh_session",
+        Duration::from_micros(4_357_265),
+        Duration::from_micros(7_209_869),
+        Duration::from_micros(7_328_993),
+    ),
+];
+
+/// Phase 4 Windows native template-watch latency ceilings from ADR 0053.
+pub const PHASE4_WINDOWS_NATIVE_TEMPLATE_WATCH_LATENCY_BUDGETS: [LatencyBudget; 16] = [
+    LatencyBudget::new(
+        "window_absent_current",
+        Duration::from_micros(11_094),
+        Duration::from_micros(22_476),
+        Duration::from_micros(23_093),
+    ),
+    LatencyBudget::new(
+        "window_transient_appearance",
+        Duration::from_micros(96_437),
+        Duration::from_micros(98_592),
+        Duration::from_micros(99_746),
+    ),
+    LatencyBudget::new(
+        "window_persistent_appearance",
+        Duration::from_micros(138_452),
+        Duration::from_micros(179_120),
+        Duration::from_micros(198_373),
+    ),
+    LatencyBudget::new(
+        "window_disappearance_reset",
+        Duration::from_micros(175_341),
+        Duration::from_micros(184_048),
+        Duration::from_micros(224_420),
+    ),
+    LatencyBudget::new(
+        "window_strictly_newer",
+        Duration::from_micros(138_245),
+        Duration::from_micros(191_042),
+        Duration::from_micros(193_623),
+    ),
+    LatencyBudget::new(
+        "window_move",
+        Duration::from_micros(291_923),
+        Duration::from_micros(336_501),
+        Duration::from_micros(359_500),
+    ),
+    LatencyBudget::new(
+        "window_resize",
+        Duration::from_micros(229_808),
+        Duration::from_micros(264_294),
+        Duration::from_micros(276_969),
+    ),
+    LatencyBudget::new(
+        "native_high_rate_slow_backend",
+        Duration::from_micros(364_648),
+        Duration::from_micros(372_833),
+        Duration::from_micros(375_238),
+    ),
+    LatencyBudget::new(
+        "two_query_fairness",
+        Duration::from_micros(528_941),
+        Duration::from_micros(572_854),
+        Duration::from_micros(583_992),
+    ),
+    LatencyBudget::new(
+        "two_session_fairness",
+        Duration::from_micros(721_416),
+        Duration::from_micros(763_108),
+        Duration::from_micros(814_845),
+    ),
+    LatencyBudget::new(
+        "exact_coalescing",
+        Duration::from_micros(528_717),
+        Duration::from_micros(576_195),
+        Duration::from_micros(578_013),
+    ),
+    LatencyBudget::new(
+        "unequal_no_coalescing",
+        Duration::from_micros(530_719),
+        Duration::from_micros(563_713),
+        Duration::from_micros(608_426),
+    ),
+    LatencyBudget::new(
+        "stale_generation",
+        Duration::from_micros(638_692),
+        Duration::from_micros(683_712),
+        Duration::from_micros(694_482),
+    ),
+    LatencyBudget::new(
+        "wait_cancel_deadline",
+        Duration::from_micros(704_086),
+        Duration::from_micros(721_262),
+        Duration::from_micros(735_515),
+    ),
+    LatencyBudget::new(
+        "retained_result_mapping",
+        Duration::from_micros(462_957),
+        Duration::from_micros(569_525),
+        Duration::from_micros(578_660),
+    ),
+    LatencyBudget::new(
+        "fresh_session",
+        Duration::from_micros(405_649),
+        Duration::from_micros(472_422),
+        Duration::from_micros(509_762),
+    ),
+];
+
+/// Phase 4 Apple native template-watch live-Rust-heap ceiling.
+pub const PHASE4_APPLE_NATIVE_TEMPLATE_WATCH_HEAP_LIMIT_BYTES: usize = 364_232_704;
+
+/// Phase 4 Windows native template-watch live-Rust-heap ceiling.
+pub const PHASE4_WINDOWS_NATIVE_TEMPLATE_WATCH_HEAP_LIMIT_BYTES: usize = 205_737_984;
+
+/// Phase 4 Apple native template-watch process peak-RSS ceiling.
+pub const PHASE4_APPLE_NATIVE_TEMPLATE_WATCH_RESIDENT_LIMIT_BYTES: u64 = 3_581_935_616;
+
+/// Phase 4 Windows native template-watch process peak-RSS ceiling.
+pub const PHASE4_WINDOWS_NATIVE_TEMPLATE_WATCH_RESIDENT_LIMIT_BYTES: u64 = 1_379_926_016;
+
 /// Enforces frozen p50, p95, and per-scenario latency ceilings.
 ///
 /// A missing or duplicated workload is a harness error rather than a skipped
@@ -2560,6 +3081,44 @@ pub fn enforce_latency_budgets(workloads: &[Workload], budgets: &[LatencyBudget]
             budget.workload,
             hard_max.as_secs_f64() * 1_000.0,
             budget.hard_max.as_secs_f64() * 1_000.0
+        );
+    }
+}
+
+/// Enforces exact per-workload mapped-byte gates.
+///
+/// # Panics
+///
+/// Panics when a gate is duplicated, names no unique workload, or differs from
+/// the retained measurement.
+pub fn enforce_mapped_bytes(workloads: &[Workload], budgets: &[MappedBytesBudget]) {
+    for (index, budget) in budgets.iter().enumerate() {
+        assert!(
+            budgets[..index]
+                .iter()
+                .all(|earlier| earlier.workload != budget.workload),
+            "mapped-byte budget for {} is duplicated",
+            budget.workload
+        );
+        let mut matching = workloads
+            .iter()
+            .filter(|workload| workload.name() == budget.workload);
+        let workload = matching.next().unwrap_or_else(|| {
+            panic!(
+                "mapped-byte budget names unmeasured workload {}",
+                budget.workload
+            )
+        });
+        assert!(
+            matching.next().is_none(),
+            "measured workload {} is duplicated",
+            budget.workload
+        );
+        assert_eq!(
+            workload.mapped_bytes_per_result(),
+            budget.bytes,
+            "{} mapped bytes drifted",
+            budget.workload
         );
     }
 }
@@ -2711,10 +3270,10 @@ fn escape(value: &str) -> String {
 mod tests {
     use super::{
         ChildContainment, ChildExitObservation, LatencyBudget, PipeReaderEvent, PipeStream, Plan,
-        PrefixedLineMatch, PrimaryChildCleanup, Sample, Workload, bounded_child_output,
-        bounded_child_output_checked, bounded_child_output_with, classify_prefixed_line,
-        enforce_latency_budgets, measure, measure_pair, nonzero_at_most, process_is_live,
-        wait_for_child_exit,
+        PrefixedLineMatch, PrimaryChildCleanup, QueryWorkMetrics, Sample, Workload,
+        bounded_child_output, bounded_child_output_checked, bounded_child_output_with,
+        classify_prefixed_line, enforce_latency_budgets, measure, measure_pair, nonzero_at_most,
+        process_is_live, wait_for_child_exit,
     };
     use std::cell::Cell;
     use std::fs::{self, OpenOptions};
@@ -3136,6 +3695,40 @@ mod tests {
         assert_eq!(workload.stale_work_ratio(), Some(0.25));
     }
 
+    fn query_work_sample(_: &()) -> Sample {
+        Sample::unmapped(Duration::from_micros(1), true).with_query_work(QueryWorkMetrics {
+            backend_runs: 1,
+            query_completions: 2,
+            admitted: 1,
+            coalesced: 1,
+            completed: 1,
+            ..QueryWorkMetrics::default()
+        })
+    }
+
+    #[test]
+    fn query_work_counts_sum_only_retained_samples() {
+        let workload = measure(
+            "query-work",
+            "one backend result completes two coalesced queries",
+            Plan::new(1, 2),
+            fixture,
+            query_work_sample,
+        );
+
+        assert_eq!(
+            workload.query_work(),
+            Some(QueryWorkMetrics {
+                backend_runs: 2,
+                query_completions: 4,
+                admitted: 2,
+                coalesced: 2,
+                completed: 2,
+                ..QueryWorkMetrics::default()
+            })
+        );
+    }
+
     struct PairedFixture {
         iterations: Cell<u64>,
     }
@@ -3191,6 +3784,7 @@ mod tests {
             detached_textures_peak: None,
             staging_textures_peak: None,
             gpu_resources_peak: None,
+            query_work: None,
             growth_bytes: 0,
         }
     }
@@ -3329,6 +3923,7 @@ mod tests {
             detached_textures_peak: None,
             staging_textures_peak: None,
             gpu_resources_peak: None,
+            query_work: None,
             growth_bytes: 0,
         };
 

@@ -72,6 +72,29 @@ static const uint32_t MPFixtureGLColorBufferBit = 0x00004000u;
 static const NSTimeInterval MPFixtureOpenGLDrawableWait = 0.01;
 /* Fixed ceiling for the public NSScreen snapshot used by one topology command. */
 enum { MPFixtureMaxScreens = 16 };
+/* NSBoxCustom, NSNoBorder, and NSNoTitle without importing AppKit. */
+static const NSUInteger MPFixtureBoxCustom = 4;
+static const NSUInteger MPFixtureNoBorder = 0;
+static const NSUInteger MPFixtureNoTitle = 0;
+/* `watch-marker-v1`: a bounded asymmetric three-by-two cell pattern. */
+static const CGFloat MPFixtureWatchMarkerX = 64.0;
+static const CGFloat MPFixtureWatchMarkerTop = 48.0;
+static const CGFloat MPFixtureWatchMarkerCell = 24.0;
+static const uint32_t MPFixtureWatchMarkerPrimary = 0x00f26b38u;
+static const uint32_t MPFixtureWatchMarkerSecondary = 0x002dd4bfu;
+
+/* Qualification V2's token grid is disjoint from `watch-marker-v1`. */
+static const CGFloat MPFixtureWatchTokenX = 176.0;
+static const CGFloat MPFixtureWatchTokenTop = 48.0;
+static const CGFloat MPFixtureWatchTokenCell = 8.0;
+enum {
+    MPFixtureWatchTokenGridWidth = 10,
+    MPFixtureWatchTokenGridHeight = 9,
+    MPFixtureWatchTokenCellCount =
+        MPFixtureWatchTokenGridWidth * MPFixtureWatchTokenGridHeight,
+};
+_Static_assert(MPFixtureWatchTokenCellCount == 90,
+               "qualification visual-token layout must remain 10x9");
 
 /* AppKit event types this fixture classifies. */
 static const NSUInteger MPFixtureLeftMouseDown = 1;
@@ -149,6 +172,24 @@ static const NSUInteger MPFixtureOtherMouseDragged = 27;
 - (void)setFrameOrigin:(CGPoint)origin;
 - (void)close;
 - (NSInteger)windowNumber;
+@end
+
+@protocol MPFixtureView <NSObject>
+- (CGRect)frame;
+- (void)setFrame:(CGRect)frame;
+- (void)addSubview:(id)view;
+- (void)removeFromSuperview;
+- (void)setHidden:(BOOL)hidden;
+@end
+
+@protocol MPFixtureBox <MPFixtureView>
+- (instancetype)initWithFrame:(CGRect)frame;
+- (void)setBoxType:(NSUInteger)box_type;
+- (void)setBorderType:(NSUInteger)border_type;
+- (void)setFillColor:(id)color;
+- (void)setTitlePosition:(NSUInteger)title_position;
+- (void)setTransparent:(BOOL)transparent;
+- (void)setContentViewMargins:(CGSize)margins;
 @end
 
 @protocol MPFixtureOpenGLPixelFormat <NSObject>
@@ -405,16 +446,26 @@ static Class mp_fixture_window_class = Nil;
 static Class mp_fixture_color_class = Nil;
 static Class mp_fixture_opengl_pixel_format_class = Nil;
 static Class mp_fixture_opengl_view_class = Nil;
+static Class mp_fixture_box_class = Nil;
 static uint32_t mp_fixture_renderer = MP_FIXTURE_RENDERER_APPKIT_BACKGROUND;
 static uint32_t mp_fixture_fill = 0;
 static uint32_t mp_fixture_replacement_fill = 0;
 static double mp_fixture_width = 0.0;
 static double mp_fixture_height = 0.0;
+static __strong id<MPFixtureBox> mp_fixture_marker_primary = nil;
+static __strong id<MPFixtureBox> mp_fixture_marker_top_middle = nil;
+static __strong id<MPFixtureBox> mp_fixture_marker_bottom_left = nil;
+static __strong id<MPFixtureBox>
+    mp_fixture_token_cells[MPFixtureWatchTokenCellCount] = {nil};
+static bool mp_fixture_marker_visible = false;
+static uint32_t mp_fixture_visual_token = 0;
 static bool mp_fixture_alternate_fill = false;
 static bool mp_fixture_moved = false;
 static bool mp_fixture_resized = false;
 static bool mp_fixture_offscreen = false;
 static CGPoint mp_fixture_onscreen_origin = {0.0, 0.0};
+static bool mp_fixture_placement_saved = false;
+static CGPoint mp_fixture_saved_placement = {0.0, 0.0};
 static bool mp_fixture_activate = false;
 static void *mp_fixture_control_context = NULL;
 static MPFixtureControlledCallback mp_fixture_controlled = NULL;
@@ -434,6 +485,213 @@ static id mp_fixture_color(Class color_class, uint32_t fill) {
                    green:(CGFloat)((fill >> 8) & 0xFFu) / 255.0
                     blue:(CGFloat)(fill & 0xFFu) / 255.0
                    alpha:1.0];
+}
+
+static id<MPFixtureBox> mp_fixture_create_visual_box(uint32_t fill) {
+    if (mp_fixture_box_class == Nil || mp_fixture_color_class == Nil) {
+        return nil;
+    }
+    id<MPFixtureBox> box =
+        [[(id)mp_fixture_box_class alloc] initWithFrame:CGRectMake(0.0, 0.0, 1.0, 1.0)];
+    id color = mp_fixture_color(mp_fixture_color_class, fill);
+    if (box == nil || color == nil) {
+        return nil;
+    }
+    [box setBoxType:MPFixtureBoxCustom];
+    [box setBorderType:MPFixtureNoBorder];
+    [box setFillColor:color];
+    [box setTitlePosition:MPFixtureNoTitle];
+    [box setTransparent:NO];
+    [box setContentViewMargins:CGSizeMake(0.0, 0.0)];
+    [box setHidden:YES];
+    return box;
+}
+
+static uint8_t mp_fixture_visual_token_checksum(uint32_t token, bool visible) {
+    uint32_t marker_salt = visible ? 0x15a53c6du : 0x0a5ac396u;
+    uint32_t rotated_left = (token << 7) | (token >> 25);
+    uint32_t rotated_right = (token >> 11) | (token << 21);
+    uint32_t mixed = token ^ rotated_left ^ rotated_right ^ marker_salt;
+    mixed ^= mixed >> 16;
+    mixed ^= mixed >> 8;
+    return (uint8_t)(mixed & 0x1fu);
+}
+
+static bool mp_fixture_visual_token_cell(uint32_t token, bool visible,
+                                         size_t index) {
+    static const bool top[MPFixtureWatchTokenGridWidth] = {
+        true, false, true, true, false, false, true, false, false, true,
+    };
+    static const bool bottom[MPFixtureWatchTokenGridWidth] = {
+        false, false, true, false, true, true, true, false, true, false,
+    };
+    if (index < MPFixtureWatchTokenGridWidth) {
+        return top[index];
+    }
+    if (index >=
+        MPFixtureWatchTokenCellCount - MPFixtureWatchTokenGridWidth) {
+        return bottom[index -
+                      (MPFixtureWatchTokenCellCount -
+                       MPFixtureWatchTokenGridWidth)];
+    }
+
+    size_t payload = index - MPFixtureWatchTokenGridWidth;
+    if (payload < 32) {
+        return ((token >> payload) & 1u) != 0;
+    }
+    if (payload < 64) {
+        return (((~token) >> (payload - 32)) & 1u) != 0;
+    }
+    if (payload == 64) {
+        return visible;
+    }
+    size_t checksum_bit = payload - 65;
+    return ((mp_fixture_visual_token_checksum(token, visible) >>
+             checksum_bit) &
+            1u) != 0;
+}
+
+static void mp_fixture_remove_visual_views(void) {
+    for (size_t index = 0; index < MPFixtureWatchTokenCellCount; index += 1) {
+        [mp_fixture_token_cells[index] removeFromSuperview];
+        mp_fixture_token_cells[index] = nil;
+    }
+    [mp_fixture_marker_bottom_left removeFromSuperview];
+    [mp_fixture_marker_top_middle removeFromSuperview];
+    [mp_fixture_marker_primary removeFromSuperview];
+    mp_fixture_marker_bottom_left = nil;
+    mp_fixture_marker_top_middle = nil;
+    mp_fixture_marker_primary = nil;
+}
+
+static bool mp_fixture_layout_visual_views(id<MPFixtureWindow> window,
+                                           bool visible, uint32_t token) {
+    id<MPFixtureView> content = (id<MPFixtureView>)[window contentView];
+    if (window == nil || content == nil || mp_fixture_marker_primary == nil ||
+        mp_fixture_marker_top_middle == nil ||
+        mp_fixture_marker_bottom_left == nil) {
+        return false;
+    }
+    for (size_t index = 0; index < MPFixtureWatchTokenCellCount; index += 1) {
+        if (mp_fixture_token_cells[index] == nil) {
+            return false;
+        }
+    }
+
+    CGRect content_frame = [content frame];
+    CGFloat marker_width = MPFixtureWatchMarkerCell * 3.0;
+    CGFloat marker_height = MPFixtureWatchMarkerCell * 2.0;
+    CGFloat marker_bottom =
+        content_frame.size.height - MPFixtureWatchMarkerTop - marker_height;
+    CGFloat token_width =
+        MPFixtureWatchTokenCell * (CGFloat)MPFixtureWatchTokenGridWidth;
+    CGFloat token_height =
+        MPFixtureWatchTokenCell * (CGFloat)MPFixtureWatchTokenGridHeight;
+    CGFloat token_bottom =
+        content_frame.size.height - MPFixtureWatchTokenTop - token_height;
+    if (!isfinite(content_frame.size.width) ||
+        !isfinite(content_frame.size.height) || MPFixtureWatchMarkerX < 0.0 ||
+        marker_bottom < 0.0 ||
+        MPFixtureWatchMarkerX + marker_width > content_frame.size.width ||
+        MPFixtureWatchTokenX < 0.0 || token_bottom < 0.0 ||
+        MPFixtureWatchTokenX + token_width > content_frame.size.width) {
+        return false;
+    }
+
+    [mp_fixture_marker_primary
+        setFrame:CGRectMake(MPFixtureWatchMarkerX, marker_bottom, marker_width,
+                            marker_height)];
+    [mp_fixture_marker_top_middle
+        setFrame:CGRectMake(MPFixtureWatchMarkerX + MPFixtureWatchMarkerCell,
+                            marker_bottom + MPFixtureWatchMarkerCell,
+                            MPFixtureWatchMarkerCell,
+                            MPFixtureWatchMarkerCell)];
+    [mp_fixture_marker_bottom_left
+        setFrame:CGRectMake(MPFixtureWatchMarkerX, marker_bottom,
+                            MPFixtureWatchMarkerCell,
+                            MPFixtureWatchMarkerCell)];
+    [mp_fixture_marker_primary setHidden:!visible];
+    [mp_fixture_marker_top_middle setHidden:!visible];
+    [mp_fixture_marker_bottom_left setHidden:!visible];
+
+    id primary =
+        mp_fixture_color(mp_fixture_color_class, MPFixtureWatchMarkerPrimary);
+    id secondary =
+        mp_fixture_color(mp_fixture_color_class, MPFixtureWatchMarkerSecondary);
+    if (primary == nil || secondary == nil) {
+        return false;
+    }
+    for (size_t index = 0; index < MPFixtureWatchTokenCellCount; index += 1) {
+        size_t row = index / MPFixtureWatchTokenGridWidth;
+        size_t column = index % MPFixtureWatchTokenGridWidth;
+        CGFloat left =
+            MPFixtureWatchTokenX + (CGFloat)column * MPFixtureWatchTokenCell;
+        CGFloat bottom =
+            content_frame.size.height - MPFixtureWatchTokenTop -
+            ((CGFloat)row + 1.0) * MPFixtureWatchTokenCell;
+        id<MPFixtureBox> cell = mp_fixture_token_cells[index];
+        [cell setFrame:CGRectMake(left, bottom, MPFixtureWatchTokenCell,
+                                  MPFixtureWatchTokenCell)];
+        if (token != 0) {
+            [cell setFillColor:mp_fixture_visual_token_cell(token, visible, index)
+                                   ? primary
+                                   : secondary];
+        }
+        [cell setHidden:token == 0];
+    }
+    [window displayIfNeeded];
+    return true;
+}
+
+static bool mp_fixture_install_visual_views(id<MPFixtureWindow> window) {
+    id<MPFixtureView> content = (id<MPFixtureView>)[window contentView];
+    if (window == nil || content == nil) {
+        return false;
+    }
+    mp_fixture_remove_visual_views();
+    mp_fixture_marker_primary =
+        mp_fixture_create_visual_box(MPFixtureWatchMarkerPrimary);
+    mp_fixture_marker_top_middle =
+        mp_fixture_create_visual_box(MPFixtureWatchMarkerSecondary);
+    mp_fixture_marker_bottom_left =
+        mp_fixture_create_visual_box(MPFixtureWatchMarkerSecondary);
+    if (mp_fixture_marker_primary == nil ||
+        mp_fixture_marker_top_middle == nil ||
+        mp_fixture_marker_bottom_left == nil) {
+        mp_fixture_remove_visual_views();
+        return false;
+    }
+    [content addSubview:mp_fixture_marker_primary];
+    [content addSubview:mp_fixture_marker_top_middle];
+    [content addSubview:mp_fixture_marker_bottom_left];
+
+    for (size_t index = 0; index < MPFixtureWatchTokenCellCount; index += 1) {
+        id<MPFixtureBox> cell =
+            mp_fixture_create_visual_box(MPFixtureWatchMarkerSecondary);
+        if (cell == nil) {
+            mp_fixture_remove_visual_views();
+            return false;
+        }
+        mp_fixture_token_cells[index] = cell;
+        [content addSubview:cell];
+    }
+    return mp_fixture_layout_visual_views(window, false, 0);
+}
+
+static bool mp_fixture_set_visual_state(id<MPFixtureWindow> window,
+                                        bool visible, uint32_t token) {
+    if (token == 0 ||
+        !mp_fixture_layout_visual_views(window, visible, token)) {
+        return false;
+    }
+    mp_fixture_marker_visible = visible;
+    mp_fixture_visual_token = token;
+    return true;
+}
+
+static bool mp_fixture_layout_current_visual(id<MPFixtureWindow> window) {
+    return mp_fixture_layout_visual_views(
+        window, mp_fixture_marker_visible, mp_fixture_visual_token);
 }
 
 static bool mp_fixture_install_opengl_content(id<MPFixtureWindow> window, double width,
@@ -694,11 +952,32 @@ static uint32_t mp_fixture_move_to_next_display(void) {
     CGPoint destination_origin =
         CGPointMake(destination_x,
                     destination.origin.y + fmin(fmax(relative_y, 0.0), max_y));
+    if (!mp_fixture_placement_saved) {
+        mp_fixture_saved_placement = window_frame.origin;
+        mp_fixture_placement_saved = true;
+    }
     [mp_fixture_window setFrameOrigin:destination_origin];
-    if (mp_fixture_renderer == MP_FIXTURE_RENDERER_OPENGL &&
-        !mp_fixture_apply_fill(mp_fixture_window, mp_fixture_current_fill())) {
+    if ((mp_fixture_renderer == MP_FIXTURE_RENDERER_OPENGL &&
+         !mp_fixture_apply_fill(mp_fixture_window, mp_fixture_current_fill())) ||
+        !mp_fixture_layout_current_visual(mp_fixture_window)) {
         return MP_FIXTURE_PLATFORM_FAILURE;
     }
+    return MP_FIXTURE_OK;
+}
+
+static uint32_t mp_fixture_restore_placement(void) {
+    if (mp_fixture_window == nil || !mp_fixture_placement_saved ||
+        mp_fixture_offscreen) {
+        return MP_FIXTURE_INVALID_ARGUMENT;
+    }
+    [mp_fixture_window setFrameOrigin:mp_fixture_saved_placement];
+    if ((mp_fixture_renderer == MP_FIXTURE_RENDERER_OPENGL &&
+         !mp_fixture_apply_fill(mp_fixture_window, mp_fixture_current_fill())) ||
+        !mp_fixture_layout_current_visual(mp_fixture_window)) {
+        return MP_FIXTURE_PLATFORM_FAILURE;
+    }
+    mp_fixture_placement_saved = false;
+    mp_fixture_saved_placement = CGPointMake(0.0, 0.0);
     return MP_FIXTURE_OK;
 }
 
@@ -743,8 +1022,9 @@ static uint32_t mp_fixture_move_offscreen(void) {
     mp_fixture_onscreen_origin = window_frame.origin;
     [mp_fixture_window orderOut:nil];
     [mp_fixture_window setFrameOrigin:destination];
-    if (mp_fixture_renderer == MP_FIXTURE_RENDERER_OPENGL &&
-        !mp_fixture_apply_fill(mp_fixture_window, mp_fixture_current_fill())) {
+    if ((mp_fixture_renderer == MP_FIXTURE_RENDERER_OPENGL &&
+         !mp_fixture_apply_fill(mp_fixture_window, mp_fixture_current_fill())) ||
+        !mp_fixture_layout_current_visual(mp_fixture_window)) {
         [mp_fixture_window setFrameOrigin:mp_fixture_onscreen_origin];
         [mp_fixture_window orderFrontRegardless];
         return MP_FIXTURE_PLATFORM_FAILURE;
@@ -759,8 +1039,9 @@ static uint32_t mp_fixture_restore_onscreen(void) {
     }
     [mp_fixture_window setFrameOrigin:mp_fixture_onscreen_origin];
     [mp_fixture_window orderFrontRegardless];
-    if (mp_fixture_renderer == MP_FIXTURE_RENDERER_OPENGL &&
-        !mp_fixture_apply_fill(mp_fixture_window, mp_fixture_current_fill())) {
+    if ((mp_fixture_renderer == MP_FIXTURE_RENDERER_OPENGL &&
+         !mp_fixture_apply_fill(mp_fixture_window, mp_fixture_current_fill())) ||
+        !mp_fixture_layout_current_visual(mp_fixture_window)) {
         return MP_FIXTURE_PLATFORM_FAILURE;
     }
     mp_fixture_offscreen = false;
@@ -769,6 +1050,7 @@ static uint32_t mp_fixture_restore_onscreen(void) {
 
 static void mp_fixture_reset_state(void) {
     atomic_store_explicit(&mp_fixture_control_active, false, memory_order_release);
+    mp_fixture_remove_visual_views();
     mp_fixture_window = nil;
     mp_fixture_auxiliary_window = nil;
     mp_fixture_application = nil;
@@ -779,16 +1061,21 @@ static void mp_fixture_reset_state(void) {
     mp_fixture_color_class = Nil;
     mp_fixture_opengl_pixel_format_class = Nil;
     mp_fixture_opengl_view_class = Nil;
+    mp_fixture_box_class = Nil;
     mp_fixture_renderer = MP_FIXTURE_RENDERER_APPKIT_BACKGROUND;
     mp_fixture_fill = 0;
     mp_fixture_replacement_fill = 0;
     mp_fixture_width = 0.0;
     mp_fixture_height = 0.0;
+    mp_fixture_marker_visible = false;
+    mp_fixture_visual_token = 0;
     mp_fixture_alternate_fill = false;
     mp_fixture_moved = false;
     mp_fixture_resized = false;
     mp_fixture_offscreen = false;
     mp_fixture_onscreen_origin = CGPointMake(0.0, 0.0);
+    mp_fixture_placement_saved = false;
+    mp_fixture_saved_placement = CGPointMake(0.0, 0.0);
     mp_fixture_activate = false;
     mp_fixture_control_context = NULL;
     mp_fixture_controlled = NULL;
@@ -906,7 +1193,7 @@ static void mp_fixture_complete_control(MPFixtureControlTesting *testing,
 
 static bool mp_fixture_valid_command(uint32_t command) {
     return command >= MP_FIXTURE_COMMAND_TRANSITION &&
-           command <= MP_FIXTURE_COMMAND_PREPARE_LANGUAGE_FLOW;
+           command <= MP_FIXTURE_COMMAND_RESTORE_PLACEMENT;
 }
 
 static void mp_fixture_run_control_block(uint64_t run_nonce, uint64_t nonce,
@@ -971,14 +1258,25 @@ static void mp_fixture_run_control_block(uint64_t run_nonce, uint64_t nonce,
             MPFixtureTestingBeforeWindow);
         mp_fixture_testing_raise_control(
             testing, MP_FIXTURE_TEST_CONTROL_COMMAND_EXCEPTION);
-        if (command == MP_FIXTURE_COMMAND_TRANSITION) {
+        if (command == MP_FIXTURE_COMMAND_SET_VISUAL_ABSENT ||
+            command == MP_FIXTURE_COMMAND_SET_VISUAL_VISIBLE) {
+            bool visible = command == MP_FIXTURE_COMMAND_SET_VISUAL_VISIBLE;
+            if (nonce > UINT32_MAX) {
+                status = MP_FIXTURE_INVALID_ARGUMENT;
+            } else if (mp_fixture_window == nil ||
+                       !mp_fixture_set_visual_state(
+                           mp_fixture_window, visible, (uint32_t)nonce)) {
+                status = MP_FIXTURE_PLATFORM_FAILURE;
+            }
+        } else if (command == MP_FIXTURE_COMMAND_TRANSITION) {
             if (mp_fixture_window == nil) {
                 status = MP_FIXTURE_PLATFORM_FAILURE;
             } else {
                 bool alternate_fill = !mp_fixture_alternate_fill;
                 uint32_t fill =
                     alternate_fill ? mp_fixture_replacement_fill : mp_fixture_fill;
-                if (!mp_fixture_apply_fill(mp_fixture_window, fill)) {
+                if (!mp_fixture_apply_fill(mp_fixture_window, fill) ||
+                    !mp_fixture_layout_current_visual(mp_fixture_window)) {
                     status = MP_FIXTURE_PLATFORM_FAILURE;
                 } else {
                     mp_fixture_alternate_fill = alternate_fill;
@@ -990,6 +1288,11 @@ static void mp_fixture_run_control_block(uint64_t run_nonce, uint64_t nonce,
                 status = MP_FIXTURE_PLATFORM_FAILURE;
             } else {
                 id<MPFixtureWindow> old_window = mp_fixture_window;
+                mp_fixture_remove_visual_views();
+                mp_fixture_marker_visible = false;
+                mp_fixture_visual_token = 0;
+                mp_fixture_placement_saved = false;
+                mp_fixture_saved_placement = CGPointMake(0.0, 0.0);
                 [old_window close];
                 mp_fixture_window = nil;
                 id<MPFixtureWindow> replacement =
@@ -1000,7 +1303,13 @@ static void mp_fixture_run_control_block(uint64_t run_nonce, uint64_t nonce,
                     status = MP_FIXTURE_PLATFORM_FAILURE;
                 } else {
                     mp_fixture_window = replacement;
-                    mp_fixture_alternate_fill = true;
+                    if (!mp_fixture_install_visual_views(replacement)) {
+                        [replacement close];
+                        mp_fixture_window = nil;
+                        status = MP_FIXTURE_PLATFORM_FAILURE;
+                    } else {
+                        mp_fixture_alternate_fill = true;
+                    }
                 }
             }
         } else if (command == MP_FIXTURE_COMMAND_MINIMIZE) {
@@ -1015,8 +1324,10 @@ static void mp_fixture_run_control_block(uint64_t run_nonce, uint64_t nonce,
             } else {
                 [mp_fixture_window deminiaturize:nil];
                 [mp_fixture_window orderFrontRegardless];
-                if (mp_fixture_renderer == MP_FIXTURE_RENDERER_OPENGL &&
-                    !mp_fixture_apply_fill(mp_fixture_window, mp_fixture_current_fill())) {
+                if ((mp_fixture_renderer == MP_FIXTURE_RENDERER_OPENGL &&
+                     !mp_fixture_apply_fill(mp_fixture_window,
+                                            mp_fixture_current_fill())) ||
+                    !mp_fixture_layout_current_visual(mp_fixture_window)) {
                     status = MP_FIXTURE_PLATFORM_FAILURE;
                 }
             }
@@ -1034,8 +1345,10 @@ static void mp_fixture_run_control_block(uint64_t run_nonce, uint64_t nonce,
                 [mp_fixture_window
                     setFrameOrigin:CGPointMake(frame.origin.x + offset,
                                               frame.origin.y + offset)];
-                if (mp_fixture_renderer == MP_FIXTURE_RENDERER_OPENGL &&
-                    !mp_fixture_apply_fill(mp_fixture_window, mp_fixture_current_fill())) {
+                if ((mp_fixture_renderer == MP_FIXTURE_RENDERER_OPENGL &&
+                     !mp_fixture_apply_fill(mp_fixture_window,
+                                            mp_fixture_current_fill())) ||
+                    !mp_fixture_layout_current_visual(mp_fixture_window)) {
                     status = MP_FIXTURE_PLATFORM_FAILURE;
                 } else {
                     mp_fixture_moved = !mp_fixture_moved;
@@ -1050,8 +1363,10 @@ static void mp_fixture_run_control_block(uint64_t run_nonce, uint64_t nonce,
                                   : CGSizeMake(mp_fixture_width + 48.0,
                                                mp_fixture_height + 32.0);
                 [mp_fixture_window setContentSize:size];
-                if (mp_fixture_renderer == MP_FIXTURE_RENDERER_OPENGL &&
-                    !mp_fixture_apply_fill(mp_fixture_window, mp_fixture_current_fill())) {
+                if ((mp_fixture_renderer == MP_FIXTURE_RENDERER_OPENGL &&
+                     !mp_fixture_apply_fill(mp_fixture_window,
+                                            mp_fixture_current_fill())) ||
+                    !mp_fixture_layout_current_visual(mp_fixture_window)) {
                     status = MP_FIXTURE_PLATFORM_FAILURE;
                 } else {
                     mp_fixture_resized = !mp_fixture_resized;
@@ -1077,11 +1392,18 @@ static void mp_fixture_run_control_block(uint64_t run_nonce, uint64_t nonce,
             if (mp_fixture_window == nil) {
                 status = MP_FIXTURE_PLATFORM_FAILURE;
             } else {
+                mp_fixture_remove_visual_views();
+                mp_fixture_marker_visible = false;
+                mp_fixture_visual_token = 0;
+                mp_fixture_placement_saved = false;
+                mp_fixture_saved_placement = CGPointMake(0.0, 0.0);
                 [mp_fixture_window close];
                 mp_fixture_window = nil;
             }
         } else if (command == MP_FIXTURE_COMMAND_MOVE_TO_NEXT_DISPLAY) {
             status = mp_fixture_move_to_next_display();
+        } else if (command == MP_FIXTURE_COMMAND_RESTORE_PLACEMENT) {
+            status = mp_fixture_restore_placement();
         } else if (command == MP_FIXTURE_COMMAND_MOVE_OFFSCREEN) {
             status = mp_fixture_move_offscreen();
         } else if (command == MP_FIXTURE_COMMAND_RESTORE_ONSCREEN) {
@@ -1094,7 +1416,8 @@ static void mp_fixture_run_control_block(uint64_t run_nonce, uint64_t nonce,
                 status = MP_FIXTURE_PLATFORM_FAILURE;
             } else {
                 mp_fixture_alternate_fill = false;
-                if (!mp_fixture_apply_fill(mp_fixture_window, mp_fixture_fill)) {
+                if (!mp_fixture_apply_fill(mp_fixture_window, mp_fixture_fill) ||
+                    !mp_fixture_layout_current_visual(mp_fixture_window)) {
                     status = MP_FIXTURE_PLATFORM_FAILURE;
                 } else {
                     atomic_store_explicit(&mp_fixture_event_payload_tag, event_payload_tag,
@@ -1147,8 +1470,12 @@ static void mp_fixture_run_control_block(uint64_t run_nonce, uint64_t nonce,
 uint32_t mp_fixture_control(uint32_t version, uint64_t run_nonce,
                             uint64_t nonce, uint32_t command,
                             uint64_t event_payload_tag) {
+    bool visual_command =
+        command == MP_FIXTURE_COMMAND_SET_VISUAL_ABSENT ||
+        command == MP_FIXTURE_COMMAND_SET_VISUAL_VISIBLE;
     if (version != MP_FIXTURE_CONTROL_VERSION || run_nonce == 0 || nonce == 0 ||
         !mp_fixture_valid_command(command) ||
+        (visual_command && nonce > UINT32_MAX) ||
         (event_payload_tag != 0 && command != MP_FIXTURE_COMMAND_RESET_EVENTS &&
          command != MP_FIXTURE_COMMAND_PREPARE_LANGUAGE_FLOW)) {
         return MP_FIXTURE_INVALID_ARGUMENT;
@@ -1298,11 +1625,12 @@ uint32_t mp_fixture_run(const char *title, uint64_t run_nonce, uint32_t fill,
     Class workspace_class = NSClassFromString(@"NSWorkspace");
     Class window_class = NSClassFromString(@"NSWindow");
     Class color_class = NSClassFromString(@"NSColor");
+    Class box_class = NSClassFromString(@"NSBox");
     Class event_class = NSClassFromString(@"NSEvent");
     Class running_application_class = NSClassFromString(@"NSRunningApplication");
     if (application_class == Nil || workspace_class == Nil ||
         running_application_class == Nil || window_class == Nil ||
-        color_class == Nil || event_class == Nil) {
+        color_class == Nil || box_class == Nil || event_class == Nil) {
         return MP_FIXTURE_UNSUPPORTED;
     }
 
@@ -1336,6 +1664,7 @@ uint32_t mp_fixture_run(const char *title, uint64_t run_nonce, uint32_t fill,
     mp_fixture_window_title = window_title;
     mp_fixture_window_class = window_class;
     mp_fixture_color_class = color_class;
+    mp_fixture_box_class = box_class;
     mp_fixture_opengl_pixel_format_class = opengl_pixel_format_class;
     mp_fixture_opengl_view_class = opengl_view_class;
     mp_fixture_activate = activate != 0u;
@@ -1349,7 +1678,10 @@ uint32_t mp_fixture_run(const char *title, uint64_t run_nonce, uint32_t fill,
     mp_fixture_controlled = controlled;
     mp_fixture_window =
         mp_fixture_create_window(window_class, window_title, fill, width, height);
-    if (mp_fixture_window == nil) {
+    if (mp_fixture_window == nil ||
+        !mp_fixture_install_visual_views(mp_fixture_window)) {
+        [mp_fixture_window close];
+        mp_fixture_window = nil;
         return MP_FIXTURE_PLATFORM_FAILURE;
     }
     if (activate == 0u &&
@@ -1428,8 +1760,11 @@ uint32_t mp_fixture_run(const char *title, uint64_t run_nonce, uint32_t fill,
                                                            : true;
                                                    uint32_t benchmark_fill =
                                                        next_fill ? replacement_fill : fill;
-                                                   if (mp_fixture_apply_fill(mp_fixture_window,
-                                                                             benchmark_fill)) {
+                                                   if (mp_fixture_apply_fill(
+                                                           mp_fixture_window,
+                                                           benchmark_fill) &&
+                                                       mp_fixture_layout_current_visual(
+                                                           mp_fixture_window)) {
                                                        mp_fixture_alternate_fill = next_fill;
                                                        if (tagged_visual_event) {
                                                            visualized_correlation = correlation;
@@ -1449,11 +1784,13 @@ uint32_t mp_fixture_run(const char *title, uint64_t run_nonce, uint32_t fill,
                                                                         height + 120.0)
                                                            : CGSizeMake(width, height);
                                                    [mp_fixture_window setContentSize:size];
-                                                   if (mp_fixture_renderer ==
-                                                           MP_FIXTURE_RENDERER_OPENGL &&
-                                                       !mp_fixture_apply_fill(
-                                                           mp_fixture_window,
-                                                           mp_fixture_current_fill())) {
+                                                   if ((mp_fixture_renderer ==
+                                                            MP_FIXTURE_RENDERER_OPENGL &&
+                                                        !mp_fixture_apply_fill(
+                                                            mp_fixture_window,
+                                                            mp_fixture_current_fill())) ||
+                                                       !mp_fixture_layout_current_visual(
+                                                           mp_fixture_window)) {
                                                        alternate_size = !alternate_size;
                                                    }
                                                }
@@ -1463,6 +1800,7 @@ uint32_t mp_fixture_run(const char *title, uint64_t run_nonce, uint32_t fill,
                                        return event;
                                      }];
     if (monitor == nil) {
+        mp_fixture_remove_visual_views();
         mp_fixture_window = nil;
         return MP_FIXTURE_PLATFORM_FAILURE;
     }
@@ -1483,6 +1821,9 @@ uint32_t mp_fixture_run(const char *title, uint64_t run_nonce, uint32_t fill,
                   return;
               }
               old_window_number = (uint64_t)[old_window windowNumber];
+              mp_fixture_remove_visual_views();
+              mp_fixture_marker_visible = false;
+              mp_fixture_visual_token = 0;
               [old_window close];
               mp_fixture_window = nil;
 
@@ -1494,6 +1835,12 @@ uint32_t mp_fixture_run(const char *title, uint64_t run_nonce, uint32_t fill,
                   return;
               }
               mp_fixture_window = replacement;
+              if (!mp_fixture_install_visual_views(replacement)) {
+                  [replacement close];
+                  mp_fixture_window = nil;
+                  replaced(context, MP_FIXTURE_PLATFORM_FAILURE, old_window_number, 0);
+                  return;
+              }
               replaced(context, MP_FIXTURE_OK, old_window_number,
                        (uint64_t)[replacement windowNumber]);
           } @catch (NSException *exception) {

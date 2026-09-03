@@ -1,0 +1,105 @@
+{
+  "schema": "mado-pilot-change-expected-v1",
+  "fixture_set": "g-005-v1",
+  "rows": [
+    {
+      "ordinal": 0,
+      "transition_id": "no-change/0",
+      "sequence_id": "no-change",
+      "from_frame": "no-change-0",
+      "to_frame": "no-change-1",
+      "compatibility": "compatible",
+      "expected": "unchanged_allowed",
+      "reason": "no_change",
+      "must_detect": false
+    },
+    {
+      "ordinal": 1,
+      "transition_id": "outside-roi/0",
+      "sequence_id": "outside-roi",
+      "from_frame": "outside-roi-0",
+      "to_frame": "outside-roi-1",
+      "compatibility": "compatible",
+      "expected": "unchanged_allowed",
+      "reason": "outside_roi_change",
+      "must_detect": false
+    },
+    {
+      "ordinal": 2,
+      "transition_id": "low-area/0",
+      "sequence_id": "low-area",
+      "from_frame": "low-area-0",
+      "to_frame": "low-area-1",
+      "compatibility": "compatible",
+      "expected": "analysis_required",
+      "reason": "low_area_change",
+      "must_detect": true
+    },
+    {
+      "ordinal": 3,
+      "transition_id": "transient-appearance/0",
+      "sequence_id": "transient-appearance",
+      "from_frame": "transient-0",
+      "to_frame": "transient-1",
+      "compatibility": "compatible",
+      "expected": "analysis_required",
+      "reason": "transient_appearance",
+      "must_detect": true
+    },
+    {
+      "ordinal": 4,
+      "transition_id": "transient-appearance/1",
+      "sequence_id": "transient-appearance",
+      "from_frame": "transient-1",
+      "to_frame": "transient-2",
+      "compatibility": "compatible",
+      "expected": "analysis_required",
+      "reason": "disappearance",
+      "must_detect": true
+    },
+    {
+      "ordinal": 5,
+      "transition_id": "persistent-appearance/0",
+      "sequence_id": "persistent-appearance",
+      "from_frame": "persistent-0",
+      "to_frame": "persistent-1",
+      "compatibility": "compatible",
+      "expected": "analysis_required",
+      "reason": "persistent_appearance",
+      "must_detect": true
+    },
+    {
+      "ordinal": 6,
+      "transition_id": "persistent-appearance/1",
+      "sequence_id": "persistent-appearance",
+      "from_frame": "persistent-1",
+      "to_frame": "persistent-2",
+      "compatibility": "compatible",
+      "expected": "unchanged_allowed",
+      "reason": "repeated_pixels",
+      "must_detect": false
+    },
+    {
+      "ordinal": 7,
+      "transition_id": "geometry-change/0",
+      "sequence_id": "geometry-change",
+      "from_frame": "geometry-0",
+      "to_frame": "geometry-1",
+      "compatibility": "geometry_changed",
+      "expected": "analysis_required",
+      "reason": "geometry_change",
+      "must_detect": true
+    },
+    {
+      "ordinal": 8,
+      "transition_id": "stream-discontinuity/0",
+      "sequence_id": "stream-discontinuity",
+      "from_frame": "discontinuity-0",
+      "to_frame": "discontinuity-1",
+      "compatibility": "stream_discontinuous",
+      "expected": "analysis_required",
+      "reason": "stream_discontinuity",
+      "must_detect": true
+    }
+  ]
+}

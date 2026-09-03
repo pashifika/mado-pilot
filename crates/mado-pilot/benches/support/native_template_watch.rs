@@ -1,0 +1,3216 @@
+//! Shared production-session orchestration for native template-watch qualification.
+
+#[cfg(target_os = "macos")]
+include!("native_template_watch_macos.rs");
+#[cfg(windows)]
+include!("native_template_watch_windows.rs");
+
+#[path = "native_template_watch_contract.rs"]
+mod native_contract;
+#[cfg(target_os = "macos")]
+#[path = "native_template_watch_root_cause.rs"]
+mod root_cause;
+
+use std::cell::RefCell;
+use std::fmt;
+use std::ops::{Deref, DerefMut};
+use std::path::PathBuf;
+use std::rc::Rc;
+use std::sync::Arc;
+use std::thread;
+use std::time::{Duration, Instant};
+
+use mado_pilot::{
+    ChangeDetectionPolicy, CoordinateSpace, Engine, Frame, FrameOrder, FrameRequest, FrameStamp,
+    MatchDefaults, MatchOptions, NativeEngineRequest, OpenRequest, OperationContext, PixelExtent,
+    PixelFormat, Point, PreparedTemplate, Session, Status, TargetId, TargetKind,
+    TemplateAnalysisRate, TemplateEncoding, TemplateId, TemplateOverload, TemplateQuery,
+    TemplateQueryOutcome, TemplateQueryProgress, TemplateSchedulerDescriptor, TemplateSource,
+    TemplateSourceRequest, TemplateStability, TemplateTerminalOutcome, TemplateWatchRequest,
+    TemplateWorkDisposition,
+};
+use mado_pilot_backend_opencv::benchmark_instrumentation::{
+    Snapshot as BackendSnapshot, install_find_delay, snapshot as backend_snapshot,
+};
+use mado_pilot_testkit::bench_harness::{
+    self, Benchmark, Plan, Profile, QueryWorkMetrics, Sample, Workload, measure,
+};
+use mado_pilot_testkit::visual_token::{
+    VISUAL_TOKEN_CELL_COUNT, VISUAL_TOKEN_GRID_WIDTH, VisualMarkerState, VisualToken,
+    VisualTokenDecodeError,
+};
+use mado_pilot_testkit::{ManualClock, native_watch_report, png};
+
+const OPERATION_WAIT: Duration = Duration::from_secs(5);
+const FIXTURE_WAIT: Duration = Duration::from_secs(10);
+const FIXTURE_COMMAND_WAIT: Duration = Duration::from_secs(2);
+const TOKEN_OBSERVATION_SLICE: Duration = Duration::from_millis(25);
+const POLL_WAIT: Duration = Duration::from_millis(5);
+const STATIC_STABILITY: Duration = Duration::from_millis(25);
+const SLOW_BACKEND: Duration = Duration::from_millis(150);
+const MARKER_CELL_LOGICAL: f64 = 24.0;
+const MARKER_X_LOGICAL: f64 = 64.0;
+const MARKER_Y_LOGICAL: f64 = 48.0;
+const TOKEN_CELL_LOGICAL: f64 = 8.0;
+const TOKEN_X_LOGICAL: f64 = 176.0;
+const TOKEN_Y_LOGICAL: f64 = 48.0;
+const TOKEN_PIXEL_TOLERANCE: u8 = 12;
+const TOKEN_COLOR_SEPARATION: u8 = 32;
+const MARKER_PRIMARY: [u8; 3] = [0xf2, 0x6b, 0x38];
+const MARKER_SECONDARY: [u8; 3] = [0x2d, 0xd4, 0xbf];
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+struct ControlAcknowledgement {
+    generation: u64,
+    revision: u64,
+    visual_token: Option<VisualToken>,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum NativeProcessLifetimeFact {
+    NotObserved,
+    Unknown,
+    Live,
+    Lost,
+    ObservationFailed,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum NativeCleanupDebtFact {
+    None,
+    Deferred,
+}
+
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+struct NativeResourceFacts {
+    baseline_observed: bool,
+    fixture_process_reaped: bool,
+    fixture_reader_joined: bool,
+    protocol_stop_acknowledged: Option<bool>,
+    authenticated_lifetime: Option<NativeProcessLifetimeFact>,
+    launched_lifetime: Option<NativeProcessLifetimeFact>,
+    bounded_containment: bool,
+    output_drained: bool,
+    executable_identity_unchanged: Option<bool>,
+    cleanup_debt: Option<NativeCleanupDebtFact>,
+    apple_launch_accepted_live: Option<bool>,
+    apple_cleanup_scheduled: Option<u64>,
+    apple_cleanup_active: Option<u64>,
+    apple_cleanup_completed: Option<u64>,
+    apple_cleanup_exhausted: Option<u64>,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+struct MarkerShape {
+    cell_width: u32,
+    cell_height: u32,
+    origin_x: i32,
+    origin_y: i32,
+}
+
+impl MarkerShape {
+    const fn extent(self) -> PixelExtent {
+        PixelExtent::new(self.cell_width * 3, self.cell_height * 2)
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+struct TokenShape {
+    cell_width: u32,
+    cell_height: u32,
+    origin_x: i32,
+    origin_y: i32,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum BoundedNativeStatus {
+    NotAttempted,
+    Published,
+    DeadlineExceeded,
+    Failed(Status),
+}
+
+impl fmt::Display for BoundedNativeStatus {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            Self::NotAttempted => formatter.write_str("not_attempted"),
+            Self::Published => formatter.write_str("published"),
+            Self::DeadlineExceeded => formatter.write_str("deadline_exceeded"),
+            Self::Failed(status) => write!(formatter, "{status}"),
+        }
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum PixelTokenDecodeFailure {
+    MappingNotAttempted,
+    MissingCell(usize),
+    ColorReferencesNotSeparated,
+    AmbiguousCell(usize),
+    Logical(VisualTokenDecodeError),
+}
+
+impl fmt::Display for PixelTokenDecodeFailure {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            Self::MappingNotAttempted => formatter.write_str("mapping_not_attempted"),
+            Self::MissingCell(index) => write!(formatter, "missing_cell_{index}"),
+            Self::ColorReferencesNotSeparated => {
+                formatter.write_str("color_references_not_separated")
+            }
+            Self::AmbiguousCell(index) => write!(formatter, "ambiguous_cell_{index}"),
+            Self::Logical(VisualTokenDecodeError::CellCount { .. }) => {
+                formatter.write_str("logical_cell_count")
+            }
+            Self::Logical(VisualTokenDecodeError::Sentinel) => {
+                formatter.write_str("logical_sentinel")
+            }
+            Self::Logical(VisualTokenDecodeError::Reserved) => {
+                formatter.write_str("logical_reserved")
+            }
+            Self::Logical(VisualTokenDecodeError::Inverse) => {
+                formatter.write_str("logical_inverse")
+            }
+            Self::Logical(VisualTokenDecodeError::Checksum) => {
+                formatter.write_str("logical_checksum")
+            }
+        }
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+struct SessionObservation {
+    last_frame: Option<FrameStamp>,
+    last_token: Option<VisualToken>,
+    last_decode_failure: Option<PixelTokenDecodeFailure>,
+    acquisition_attempt_count: u64,
+    publication_count: u64,
+    mapping_attempt_count: u64,
+    decode_attempt_count: u64,
+    remaining_micros_at_last_publication: Option<u64>,
+    last_status: BoundedNativeStatus,
+}
+
+impl Default for SessionObservation {
+    fn default() -> Self {
+        Self {
+            last_frame: None,
+            last_token: None,
+            last_decode_failure: None,
+            acquisition_attempt_count: 0,
+            publication_count: 0,
+            mapping_attempt_count: 0,
+            decode_attempt_count: 0,
+            remaining_micros_at_last_publication: None,
+            last_status: BoundedNativeStatus::NotAttempted,
+        }
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum TokenSynchronizationFailure {
+    Timeout,
+    Operation {
+        session: usize,
+        status: Status,
+    },
+    Protocol {
+        session: usize,
+        reason: &'static str,
+    },
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+struct SessionObservationDiagnostic {
+    session: usize,
+    last_frame: Option<FrameStamp>,
+    last_token: Option<VisualToken>,
+    last_decode_failure: Option<PixelTokenDecodeFailure>,
+    acquisition_attempt_count: u64,
+    publication_count: u64,
+    mapping_attempt_count: u64,
+    decode_attempt_count: u64,
+    remaining_micros_at_last_publication: Option<u64>,
+    last_status: BoundedNativeStatus,
+    closed: bool,
+}
+
+#[derive(Debug)]
+struct TokenSynchronizationError {
+    failure: TokenSynchronizationFailure,
+    expected: VisualToken,
+    sessions: Vec<SessionObservationDiagnostic>,
+    elapsed: Duration,
+}
+
+impl fmt::Display for TokenSynchronizationError {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self.failure {
+            TokenSynchronizationFailure::Timeout => formatter.write_str(
+                "typed_operation_failure:DeadlineExceeded:post_stimulus_producer_progress",
+            )?,
+            TokenSynchronizationFailure::Operation { session, status } => write!(
+                formatter,
+                "typed_operation_failure:{status:?}:post_stimulus_producer_progress:session={session}"
+            )?,
+            TokenSynchronizationFailure::Protocol { session, reason } => write!(
+                formatter,
+                "fixture_authority_failed:token_synchronization:session={session}:reason={reason}"
+            )?,
+        }
+        write!(
+            formatter,
+            ":expected_token={}:expected_marker={}:elapsed_micros={}",
+            self.expected.value(),
+            marker_state_name(self.expected.marker()),
+            self.elapsed.as_micros(),
+        )?;
+        for diagnostic in &self.sessions {
+            write!(
+                formatter,
+                ":observation[{}]={{last_token=",
+                diagnostic.session
+            )?;
+            match diagnostic.last_token {
+                Some(token) => write!(formatter, "{}", token.value())?,
+                None => formatter.write_str("none")?,
+            }
+            formatter.write_str(",last_frame=")?;
+            match diagnostic.last_frame {
+                Some(stamp) => write!(formatter, "{stamp}")?,
+                None => formatter.write_str("none")?,
+            }
+            formatter.write_str(",last_decode_failure=")?;
+            match diagnostic.last_decode_failure {
+                Some(failure) => write!(formatter, "{failure}")?,
+                None => formatter.write_str("none")?,
+            }
+            write!(
+                formatter,
+                ",lifecycle={},acquisition_attempts={},publications={},mapping_attempts={},decode_attempts={},remaining_micros_at_last_publication=",
+                if diagnostic.closed { "closed" } else { "open" },
+                diagnostic.acquisition_attempt_count,
+                diagnostic.publication_count,
+                diagnostic.mapping_attempt_count,
+                diagnostic.decode_attempt_count,
+            )?;
+            match diagnostic.remaining_micros_at_last_publication {
+                Some(value) => write!(formatter, "{value}")?,
+                None => formatter.write_str("none")?,
+            }
+            write!(formatter, ",last_status={}}}", diagnostic.last_status)?;
+        }
+        Ok(())
+    }
+}
+
+struct SessionSynchronization<'session, 'observation> {
+    session: &'session Session,
+    observation: &'observation mut SessionObservation,
+    frame: Option<Frame>,
+}
+
+impl<'session, 'observation> SessionSynchronization<'session, 'observation> {
+    fn new(session: &'session Session, observation: &'observation mut SessionObservation) -> Self {
+        Self {
+            session,
+            observation,
+            frame: None,
+        }
+    }
+}
+
+enum TokenObservationStep {
+    Pending,
+    Matched(Frame),
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum TokenObservationFailure {
+    Operation(Status),
+    Protocol(&'static str),
+}
+
+const fn marker_state_name(marker: VisualMarkerState) -> &'static str {
+    match marker {
+        VisualMarkerState::Absent => "absent",
+        VisualMarkerState::Visible => "visible",
+    }
+}
+
+fn colors_match(left: [u8; 3], right: [u8; 3], tolerance: u8) -> bool {
+    left.into_iter()
+        .zip(right)
+        .all(|(left, right)| left.abs_diff(right) <= tolerance)
+}
+
+fn token_cell_rgb(
+    mapping: &mado_pilot::CpuMapping,
+    shape: TokenShape,
+    index: usize,
+) -> Option<[u8; 3]> {
+    let row = index.checked_div(VISUAL_TOKEN_GRID_WIDTH)?;
+    let column = index.checked_rem(VISUAL_TOKEN_GRID_WIDTH)?;
+    let x_offset = u32::try_from(column)
+        .ok()?
+        .checked_mul(shape.cell_width)?
+        .checked_add(shape.cell_width / 2)?;
+    let y_offset = u32::try_from(row)
+        .ok()?
+        .checked_mul(shape.cell_height)?
+        .checked_add(shape.cell_height / 2)?;
+    let x = shape.origin_x.checked_add(i32::try_from(x_offset).ok()?)?;
+    let y = shape.origin_y.checked_add(i32::try_from(y_offset).ok()?)?;
+    let x = usize::try_from(x).ok()?;
+    let y = usize::try_from(y).ok()?;
+    let offset = y
+        .checked_mul(mapping.descriptor().stride())?
+        .checked_add(x.checked_mul(4)?)?;
+    let pixel = mapping.bytes().get(offset..offset.checked_add(3)?)?;
+    Some([pixel[0], pixel[1], pixel[2]])
+}
+
+fn decode_visual_token(
+    mapping: &mado_pilot::CpuMapping,
+    shape: TokenShape,
+) -> Result<VisualToken, PixelTokenDecodeFailure> {
+    let sampled = std::array::from_fn::<_, VISUAL_TOKEN_CELL_COUNT, _>(|index| {
+        token_cell_rgb(mapping, shape, index)
+    });
+    let primary = sampled[0].ok_or(PixelTokenDecodeFailure::MissingCell(0))?;
+    let secondary = sampled[1].ok_or(PixelTokenDecodeFailure::MissingCell(1))?;
+    if !primary
+        .into_iter()
+        .zip(secondary)
+        .any(|(primary, secondary)| primary.abs_diff(secondary) >= TOKEN_COLOR_SEPARATION)
+    {
+        return Err(PixelTokenDecodeFailure::ColorReferencesNotSeparated);
+    }
+    let mut cells = [false; VISUAL_TOKEN_CELL_COUNT];
+    for (index, color) in sampled.into_iter().enumerate() {
+        let color = color.ok_or(PixelTokenDecodeFailure::MissingCell(index))?;
+        match (
+            colors_match(color, primary, TOKEN_PIXEL_TOLERANCE),
+            colors_match(color, secondary, TOKEN_PIXEL_TOLERANCE),
+        ) {
+            (true, false) => cells[index] = true,
+            (false, true) => {}
+            _ => return Err(PixelTokenDecodeFailure::AmbiguousCell(index)),
+        }
+    }
+    VisualToken::decode(&cells).map_err(PixelTokenDecodeFailure::Logical)
+}
+
+fn observe_token_once(
+    session: &Session,
+    fixture: &NativeFixture,
+    observation: &mut SessionObservation,
+    expected: VisualToken,
+    mapping_divisor: u32,
+    phase_deadline: Instant,
+) -> Result<TokenObservationStep, TokenObservationFailure> {
+    let wait =
+        TOKEN_OBSERVATION_SLICE.min(phase_deadline.saturating_duration_since(Instant::now()));
+    if wait.is_zero() {
+        observation.last_status = BoundedNativeStatus::DeadlineExceeded;
+        return Ok(TokenObservationStep::Pending);
+    }
+    observation.acquisition_attempt_count =
+        observation.acquisition_attempt_count.checked_add(1).ok_or(
+            TokenObservationFailure::Protocol("acquisition_attempt_count_exhausted"),
+        )?;
+    let request = observation
+        .last_frame
+        .map_or_else(FrameRequest::latest, FrameRequest::newer_than);
+    let frame = match session.acquire_frame(&request, &bounded(wait)) {
+        Ok(frame) => frame,
+        Err(error) if error.status() == Status::DeadlineExceeded => {
+            observation.last_status = BoundedNativeStatus::DeadlineExceeded;
+            return Ok(TokenObservationStep::Pending);
+        }
+        Err(error) => {
+            let status = error.status();
+            observation.last_status = BoundedNativeStatus::Failed(status);
+            return Err(TokenObservationFailure::Operation(status));
+        }
+    };
+    let stamp = frame.stamp();
+    observation.publication_count =
+        observation
+            .publication_count
+            .checked_add(1)
+            .ok_or(TokenObservationFailure::Protocol(
+                "publication_count_exhausted",
+            ))?;
+    observation.last_status = BoundedNativeStatus::Published;
+    observation.last_decode_failure = Some(PixelTokenDecodeFailure::MappingNotAttempted);
+    observation.remaining_micros_at_last_publication = Some(
+        u64::try_from(
+            phase_deadline
+                .saturating_duration_since(Instant::now())
+                .as_micros(),
+        )
+        .unwrap_or(u64::MAX),
+    );
+    if stamp.stream() != session.stream() {
+        return Err(TokenObservationFailure::Protocol("stream_mismatch"));
+    }
+    if observation
+        .last_frame
+        .is_some_and(|prior| prior.order(&stamp) != Ok(FrameOrder::Before))
+    {
+        return Err(TokenObservationFailure::Protocol("non_monotonic_frame"));
+    }
+    observation.last_frame = Some(stamp);
+
+    let shape =
+        token_shape(&frame, fixture).ok_or(TokenObservationFailure::Protocol("wrong_transform"))?;
+    let marker = marker_shape(&frame, fixture)
+        .ok_or(TokenObservationFailure::Protocol("wrong_transform"))?;
+    let map_wait = phase_deadline
+        .saturating_duration_since(Instant::now())
+        .checked_div(mapping_divisor)
+        .unwrap_or(Duration::ZERO);
+    if map_wait.is_zero() {
+        observation.last_status = BoundedNativeStatus::DeadlineExceeded;
+        return Ok(TokenObservationStep::Pending);
+    }
+    observation.mapping_attempt_count = observation.mapping_attempt_count.checked_add(1).ok_or(
+        TokenObservationFailure::Protocol("mapping_attempt_count_exhausted"),
+    )?;
+    let mapping = session
+        .map_frame(&frame, PixelFormat::Rgba8, &bounded(map_wait))
+        .map_err(|error| {
+            let status = error.status();
+            observation.last_status = BoundedNativeStatus::Failed(status);
+            TokenObservationFailure::Operation(status)
+        })?;
+    observation.decode_attempt_count = observation.decode_attempt_count.checked_add(1).ok_or(
+        TokenObservationFailure::Protocol("decode_attempt_count_exhausted"),
+    )?;
+    let decoded = match decode_visual_token(&mapping, shape) {
+        Ok(decoded) => {
+            observation.last_token = Some(decoded);
+            observation.last_decode_failure = None;
+            Some(decoded)
+        }
+        Err(failure) => {
+            observation.last_decode_failure = Some(failure);
+            None
+        }
+    };
+    if decoded == Some(expected)
+        && marker_state(&mapping, marker) == Some(expected.marker().is_visible())
+    {
+        return Ok(TokenObservationStep::Matched(frame));
+    }
+    Ok(TokenObservationStep::Pending)
+}
+
+fn token_synchronization_error(
+    failure: TokenSynchronizationFailure,
+    expected: VisualToken,
+    synchronizations: &[SessionSynchronization<'_, '_>],
+    started: Instant,
+) -> TokenSynchronizationError {
+    let sessions = synchronizations
+        .iter()
+        .enumerate()
+        .map(|(session, synchronization)| SessionObservationDiagnostic {
+            session,
+            last_frame: synchronization.observation.last_frame,
+            last_token: synchronization.observation.last_token,
+            last_decode_failure: synchronization.observation.last_decode_failure,
+            acquisition_attempt_count: synchronization.observation.acquisition_attempt_count,
+            publication_count: synchronization.observation.publication_count,
+            mapping_attempt_count: synchronization.observation.mapping_attempt_count,
+            decode_attempt_count: synchronization.observation.decode_attempt_count,
+            remaining_micros_at_last_publication: synchronization
+                .observation
+                .remaining_micros_at_last_publication,
+            last_status: synchronization.observation.last_status,
+            closed: synchronization.session.is_closed(),
+        })
+        .collect();
+    TokenSynchronizationError {
+        failure,
+        expected,
+        sessions,
+        elapsed: started.elapsed(),
+    }
+}
+
+fn synchronize_sessions(
+    fixture: &NativeFixture,
+    target: TargetId,
+    expected: VisualToken,
+    synchronizations: &mut [SessionSynchronization<'_, '_>],
+    phase_deadline: Instant,
+) -> Result<(), TokenSynchronizationError> {
+    let started = Instant::now();
+    if synchronizations.is_empty() {
+        return Err(token_synchronization_error(
+            TokenSynchronizationFailure::Protocol {
+                session: 0,
+                reason: "empty_session_set",
+            },
+            expected,
+            synchronizations,
+            started,
+        ));
+    }
+    for (index, synchronization) in synchronizations.iter().enumerate() {
+        if synchronization.session.target() != target {
+            return Err(token_synchronization_error(
+                TokenSynchronizationFailure::Protocol {
+                    session: index,
+                    reason: "target_mismatch",
+                },
+                expected,
+                synchronizations,
+                started,
+            ));
+        }
+    }
+
+    let mut incomplete = synchronizations.len();
+    let mut round_start = 0;
+    while incomplete != 0 {
+        if Instant::now() >= phase_deadline {
+            return Err(token_synchronization_error(
+                TokenSynchronizationFailure::Timeout,
+                expected,
+                synchronizations,
+                started,
+            ));
+        }
+        for offset in 0..synchronizations.len() {
+            let index = (round_start + offset) % synchronizations.len();
+            if synchronizations[index].frame.is_some() {
+                continue;
+            }
+            let mapping_divisor = u32::try_from(incomplete).unwrap_or(u32::MAX);
+            let step = {
+                let synchronization = &mut synchronizations[index];
+                observe_token_once(
+                    synchronization.session,
+                    fixture,
+                    synchronization.observation,
+                    expected,
+                    mapping_divisor,
+                    phase_deadline,
+                )
+            };
+            match step {
+                Ok(TokenObservationStep::Pending) => {}
+                Ok(TokenObservationStep::Matched(frame)) => {
+                    synchronizations[index].frame = Some(frame);
+                    incomplete -= 1;
+                }
+                Err(TokenObservationFailure::Operation(status)) => {
+                    return Err(token_synchronization_error(
+                        TokenSynchronizationFailure::Operation {
+                            session: index,
+                            status,
+                        },
+                        expected,
+                        synchronizations,
+                        started,
+                    ));
+                }
+                Err(TokenObservationFailure::Protocol(reason)) => {
+                    return Err(token_synchronization_error(
+                        TokenSynchronizationFailure::Protocol {
+                            session: index,
+                            reason,
+                        },
+                        expected,
+                        synchronizations,
+                        started,
+                    ));
+                }
+            }
+        }
+        round_start = (round_start + 1) % synchronizations.len();
+    }
+    Ok(())
+}
+
+fn scaled_u32(value: f64, scale: f64) -> Option<u32> {
+    let scaled = (value * scale).round();
+    if !scaled.is_finite() || scaled < 1.0 || scaled > f64::from(u32::MAX) {
+        return None;
+    }
+    #[expect(
+        clippy::cast_possible_truncation,
+        clippy::cast_sign_loss,
+        reason = "finite rounded value was range-checked above"
+    )]
+    Some(scaled as u32)
+}
+
+fn scaled_i32(value: f64, scale: f64) -> Option<i32> {
+    let scaled = (value * scale).round();
+    if !scaled.is_finite() || scaled < f64::from(i32::MIN) || scaled > f64::from(i32::MAX) {
+        return None;
+    }
+    #[expect(
+        clippy::cast_possible_truncation,
+        reason = "finite rounded value was range-checked above"
+    )]
+    Some(scaled as i32)
+}
+
+fn wait_marker_transition<Fixture>(
+    run: &NativeRun<Fixture>,
+    after: FrameStamp,
+    visible: bool,
+) -> Result<Frame, String>
+where
+    Fixture: Deref<Target = NativeFixture>,
+{
+    let deadline = Instant::now() + OPERATION_WAIT;
+    let mut stamp = after;
+    loop {
+        let remaining = deadline.saturating_duration_since(Instant::now());
+        if remaining.is_zero() {
+            return Err("fixture_authority_failed".to_owned());
+        }
+        let frame = run
+            .session
+            .acquire_frame(&FrameRequest::newer_than(stamp), &bounded(remaining))
+            .map_err(|_| "typed_operation_failure:DeadlineExceeded".to_owned())?;
+        let shape =
+            marker_shape(&frame, &run.fixture).ok_or_else(|| "wrong_transform".to_owned())?;
+        let mapping = run
+            .session
+            .map_frame(&frame, PixelFormat::Rgba8, &bounded(remaining))
+            .map_err(|_| "wrong_region".to_owned())?;
+        if marker_state(&mapping, shape) == Some(visible) {
+            return Ok(frame);
+        }
+        stamp = frame.stamp();
+    }
+}
+
+fn establish_absent<Fixture>(run: &mut NativeRun<Fixture>) -> Result<Frame, String>
+where
+    Fixture: Deref<Target = NativeFixture> + DerefMut,
+{
+    run.command_absent()
+}
+
+fn settle_absent(run: &mut NativeRun) -> Result<mado_pilot::CpuMapping, String> {
+    let absent = establish_absent(run)?;
+    let shape = marker_shape(&absent, &run.fixture).ok_or_else(|| "wrong_transform".to_owned())?;
+    let mapping = run
+        .session
+        .map_frame(&absent, PixelFormat::Rgba8, &bounded(OPERATION_WAIT))
+        .map_err(|_| "wrong_region".to_owned())?;
+    if marker_state(&mapping, shape) != Some(false) {
+        return Err("fixture_authority_failed".to_owned());
+    }
+    Ok(mapping)
+}
+
+fn wait_resize_change(run: &NativeRun, before: &Frame) -> Result<Frame, String> {
+    let deadline = Instant::now() + OPERATION_WAIT;
+    let original = (before.stamp().epoch(), before.stamp().geometry());
+    let mut confirmed = None;
+    let mut stamp = before.stamp();
+    loop {
+        let remaining = deadline.saturating_duration_since(Instant::now());
+        if remaining.is_zero() {
+            return Err("wrong_transform".to_owned());
+        }
+        let frame = run
+            .session
+            .acquire_frame(&FrameRequest::newer_than(stamp), &bounded(remaining))
+            .map_err(|_| "typed_operation_failure:DeadlineExceeded".to_owned())?;
+        let current = (frame.stamp().epoch(), frame.stamp().geometry());
+        if current != original && resize_geometry_matches(before, &frame) {
+            if confirmed == Some(current) {
+                return Ok(frame);
+            }
+            confirmed = Some(current);
+        } else {
+            confirmed = None;
+        }
+        stamp = frame.stamp();
+    }
+}
+fn marker_state(mapping: &mado_pilot::CpuMapping, shape: MarkerShape) -> Option<bool> {
+    let stride = mapping.descriptor().stride();
+    let bytes = mapping.bytes();
+    let mut cells = [[0_u8; 3]; 6];
+    for row in 0..2 {
+        for column in 0..3 {
+            let x = shape
+                .origin_x
+                .checked_add(i32::try_from(column * shape.cell_width).ok()?)?
+                .checked_add(i32::try_from(shape.cell_width / 2).ok()?)?;
+            let y = shape
+                .origin_y
+                .checked_add(i32::try_from(row * shape.cell_height).ok()?)?
+                .checked_add(i32::try_from(shape.cell_height / 2).ok()?)?;
+            let x = usize::try_from(x).ok()?;
+            let y = usize::try_from(y).ok()?;
+            let offset = y.checked_mul(stride)?.checked_add(x.checked_mul(4)?)?;
+            let pixel = bytes.get(offset..offset.checked_add(3)?)?;
+            cells[usize::try_from(row * 3 + column).ok()?].copy_from_slice(pixel);
+        }
+    }
+    let same_color = |left: [u8; 3], right: [u8; 3]| {
+        left.into_iter()
+            .zip(right)
+            .all(|(left, right)| left.abs_diff(right) <= 8)
+    };
+    if cells.iter().copied().all(|cell| same_color(cell, cells[0])) {
+        return Some(false);
+    }
+    let primary = cells[0];
+    let secondary = cells[1];
+    let separated = primary
+        .into_iter()
+        .zip(secondary)
+        .any(|(left, right)| left.abs_diff(right) >= 32);
+    let visible = [0, 2, 4, 5]
+        .into_iter()
+        .all(|index| same_color(cells[index], primary))
+        && [1, 3]
+            .into_iter()
+            .all(|index| same_color(cells[index], secondary))
+        && separated;
+    visible.then_some(true)
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum ContractArgumentFailure {
+    Protocol,
+    FixtureUnavailable,
+}
+
+#[derive(Debug, Clone)]
+struct Arguments {
+    fixture_executable: PathBuf,
+    raw: Vec<String>,
+    qualification: bool,
+    full_load_diagnostic: bool,
+    retained_result_lifecycle_diagnostic: bool,
+    enforce_budgets: bool,
+    native_contract: bool,
+    root_cause_stress: bool,
+    workload_filter: Option<String>,
+}
+
+impl Arguments {
+    fn contract_requested() -> bool {
+        std::env::args().any(|argument| argument == "--native-contract")
+    }
+
+    fn parse_contract() -> Result<Self, ContractArgumentFailure> {
+        let raw = std::env::args().skip(1).collect::<Vec<_>>();
+        let fixture_prefix = "--fixture-executable=";
+        let contract_switches = raw
+            .iter()
+            .filter(|argument| argument.as_str() == "--native-contract")
+            .count();
+        let fixture_arguments = raw
+            .iter()
+            .filter(|argument| argument.starts_with(fixture_prefix))
+            .count();
+        if contract_switches != 1
+            || fixture_arguments > 1
+            || raw.iter().any(|argument| {
+                argument != "--native-contract"
+                    && (!argument.starts_with(fixture_prefix)
+                        || argument.len() == fixture_prefix.len())
+            })
+        {
+            return Err(ContractArgumentFailure::Protocol);
+        }
+        let fixture_executable = value(&raw, "--fixture-executable")
+            .map(PathBuf::from)
+            .or_else(default_fixture_executable)
+            .ok_or(ContractArgumentFailure::FixtureUnavailable)?;
+        if !fixture_executable.is_file() {
+            return Err(ContractArgumentFailure::FixtureUnavailable);
+        }
+        Ok(Self {
+            fixture_executable,
+            raw,
+            qualification: false,
+            full_load_diagnostic: false,
+            retained_result_lifecycle_diagnostic: false,
+            enforce_budgets: false,
+            root_cause_stress: false,
+            workload_filter: None,
+            native_contract: true,
+        })
+    }
+
+    fn parse() -> Self {
+        let raw = std::env::args().skip(1).collect::<Vec<_>>();
+        let fixture_executable = value(&raw, "--fixture-executable")
+            .map(PathBuf::from)
+            .or_else(default_fixture_executable)
+            .unwrap_or_else(|| panic!("capability_unavailable:fixture_executable"));
+        assert!(
+            fixture_executable.is_file(),
+            "capability_unavailable:fixture_executable"
+        );
+        let qualification = raw.iter().any(|argument| argument == "--lane-c-evidence");
+        let full_load_diagnostic = raw
+            .iter()
+            .any(|argument| argument == "--full-load-diagnostic");
+        let retained_result_lifecycle_diagnostic = raw
+            .iter()
+            .any(|argument| argument == "--retained-result-lifecycle-diagnostic");
+        let root_cause_stress = raw
+            .iter()
+            .filter(|argument| argument.as_str() == "--root-cause-stress")
+            .count();
+        assert!(root_cause_stress <= 1, "protocol_drift");
+        let root_cause_stress = root_cause_stress == 1;
+        let enforce_budgets = raw.iter().any(|argument| argument == "--enforce-budgets");
+        let workload_filter = value(&raw, "--workload").map(str::to_owned);
+        assert!(
+            !qualification || workload_filter.is_none(),
+            "protocol_drift"
+        );
+        assert!(
+            !full_load_diagnostic
+                || (!qualification && workload_filter.is_none() && !enforce_budgets),
+            "protocol_drift"
+        );
+        assert!(
+            !retained_result_lifecycle_diagnostic
+                || (!qualification
+                    && !full_load_diagnostic
+                    && !enforce_budgets
+                    && workload_filter.as_deref() == Some("retained_result_mapping")),
+            "protocol_drift"
+        );
+        assert!(
+            !root_cause_stress
+                || (!qualification
+                    && !full_load_diagnostic
+                    && !retained_result_lifecycle_diagnostic
+                    && !enforce_budgets
+                    && workload_filter.is_none()),
+            "protocol_drift"
+        );
+        let arguments = Self {
+            qualification,
+            retained_result_lifecycle_diagnostic,
+            full_load_diagnostic,
+            enforce_budgets,
+            root_cause_stress,
+            workload_filter,
+            fixture_executable,
+            native_contract: false,
+            raw,
+        };
+        assert!(
+            artifact_identities_match(&arguments),
+            "artifact_identity_drift"
+        );
+        arguments
+    }
+}
+
+fn artifact_authority_required(arguments: &Arguments) -> bool {
+    arguments.qualification
+        || arguments.full_load_diagnostic
+        || arguments.retained_result_lifecycle_diagnostic
+        || arguments.enforce_budgets
+        || arguments.root_cause_stress
+}
+
+fn fixture_bytes_match(arguments: &Arguments, bytes: &[u8]) -> bool {
+    !artifact_authority_required(arguments)
+        || value(&arguments.raw, "--fixture-sha256").is_some_and(|expected| {
+            native_watch_report::qualification_bytes_sha256(bytes) == expected
+        })
+}
+
+#[cfg(windows)]
+fn fixture_path_matches(arguments: &Arguments) -> bool {
+    !artifact_authority_required(arguments)
+        || value(&arguments.raw, "--fixture-sha256").is_some_and(|expected| {
+            native_watch_report::artifact_sha256_matches(&arguments.fixture_executable, expected)
+        })
+}
+
+fn artifact_identities_match(arguments: &Arguments) -> bool {
+    if !artifact_authority_required(arguments) {
+        return true;
+    }
+    let Some(executable) = value(&arguments.raw, "--executable-sha256") else {
+        return false;
+    };
+    let Some(fixture) = value(&arguments.raw, "--fixture-sha256") else {
+        return false;
+    };
+    std::env::current_exe()
+        .ok()
+        .is_some_and(|path| native_watch_report::artifact_sha256_matches(&path, executable))
+        && native_watch_report::artifact_sha256_matches(&arguments.fixture_executable, fixture)
+}
+
+fn value<'a>(arguments: &'a [String], name: &str) -> Option<&'a str> {
+    let prefix = format!("{name}=");
+    arguments
+        .iter()
+        .find_map(|argument| argument.strip_prefix(&prefix))
+}
+
+fn default_fixture_executable() -> Option<PathBuf> {
+    #[cfg(target_os = "macos")]
+    {
+        Some(PathBuf::from(
+            "target/mado-pilot-fixtures/MadoPilotWatchFixture.app/Contents/MacOS/mado-pilot-macos-input-fixture",
+        ))
+    }
+    #[cfg(windows)]
+    {
+        std::env::var_os("MADOPILOT_WINDOWS_WATCH_FIXTURE").map(PathBuf::from)
+    }
+}
+
+struct OwnedNativeFixture(NativeFixture);
+
+impl Deref for OwnedNativeFixture {
+    type Target = NativeFixture;
+
+    fn deref(&self) -> &Self::Target {
+        &self.0
+    }
+}
+
+impl DerefMut for OwnedNativeFixture {
+    fn deref_mut(&mut self) -> &mut Self::Target {
+        &mut self.0
+    }
+}
+
+struct NativeRun<Fixture = OwnedNativeFixture> {
+    fixture: Fixture,
+    engine: Engine,
+    target: TargetId,
+    session: Session,
+    template: PreparedTemplate,
+    shape: MarkerShape,
+    last_ack: ControlAcknowledgement,
+    observation: SessionObservation,
+    startup_elapsed: Duration,
+    readiness_token: VisualToken,
+    readiness_stamp: FrameStamp,
+    readiness_scale_milli: Option<[u32; 2]>,
+}
+
+type DestructiveRun<'fixture> = NativeRun<&'fixture mut NativeFixture>;
+
+fn accept_control_acknowledgement(
+    last: &mut ControlAcknowledgement,
+    acknowledgement: ControlAcknowledgement,
+) -> Result<(), String> {
+    if acknowledgement.generation != last.generation || acknowledgement.revision <= last.revision {
+        return Err("fixture_authority_failed".to_owned());
+    }
+    *last = acknowledgement;
+    Ok(())
+}
+
+fn acknowledged_visual_token(
+    acknowledgement: ControlAcknowledgement,
+    marker: VisualMarkerState,
+) -> Result<VisualToken, String> {
+    acknowledgement
+        .visual_token
+        .filter(|token| token.marker() == marker)
+        .ok_or_else(|| "fixture_authority_failed".to_owned())
+}
+
+#[derive(Debug, Clone, Copy)]
+struct AcknowledgedVisualState {
+    token: VisualToken,
+    acknowledged_at: Instant,
+}
+
+fn issue_fixture_visual_state_timed(
+    fixture: &mut NativeFixture,
+    last_ack: &mut ControlAcknowledgement,
+    marker: VisualMarkerState,
+) -> Result<AcknowledgedVisualState, String> {
+    let acknowledgement = match marker {
+        VisualMarkerState::Absent => fixture.set_absent()?,
+        VisualMarkerState::Visible => fixture.set_visible()?,
+    };
+    let acknowledged_at = Instant::now();
+    let token = acknowledged_visual_token(acknowledgement, marker)?;
+    accept_control_acknowledgement(last_ack, acknowledgement)?;
+    Ok(AcknowledgedVisualState {
+        token,
+        acknowledged_at,
+    })
+}
+
+fn issue_fixture_visual_state(
+    fixture: &mut NativeFixture,
+    last_ack: &mut ControlAcknowledgement,
+    marker: VisualMarkerState,
+) -> Result<VisualToken, String> {
+    issue_fixture_visual_state_timed(fixture, last_ack, marker)
+        .map(|acknowledgement| acknowledgement.token)
+}
+
+fn synchronize_session_to_token_diagnostic(
+    fixture: &NativeFixture,
+    target: TargetId,
+    session: &Session,
+    observation: &mut SessionObservation,
+    expected: VisualToken,
+) -> Result<Frame, TokenSynchronizationError> {
+    let started = Instant::now();
+    let mut synchronizations = [SessionSynchronization::new(session, observation)];
+    synchronize_sessions(
+        fixture,
+        target,
+        expected,
+        &mut synchronizations,
+        Instant::now() + OPERATION_WAIT,
+    )?;
+    match synchronizations[0].frame.take() {
+        Some(frame) => Ok(frame),
+        None => Err(token_synchronization_error(
+            TokenSynchronizationFailure::Protocol {
+                session: 0,
+                reason: "matched_frame_missing",
+            },
+            expected,
+            &synchronizations,
+            started,
+        )),
+    }
+}
+
+fn synchronize_session_to_token(
+    fixture: &NativeFixture,
+    target: TargetId,
+    session: &Session,
+    observation: &mut SessionObservation,
+    expected: VisualToken,
+) -> Result<Frame, String> {
+    synchronize_session_to_token_diagnostic(fixture, target, session, observation, expected)
+        .map_err(|error| error.to_string())
+}
+
+impl NativeRun {
+    fn start(arguments: &Arguments) -> Result<Self, String> {
+        let mut fixture = NativeFixture::start(arguments)?;
+        let engine = native_engine().map_err(|_| "capability_unavailable:capture".to_owned())?;
+        let target = fixture.authenticated_target(&engine)?;
+        let session = engine
+            .open(target, &OpenRequest::new(), &bounded(OPERATION_WAIT))
+            .map_err(|error| {
+                format!(
+                    "typed_operation_failure:{:?}:native_run_start=engine_open",
+                    error.status()
+                )
+            })?;
+        let startup_started = Instant::now();
+        let mut last_ack = ControlAcknowledgement {
+            generation: 1,
+            revision: 0,
+            visual_token: None,
+        };
+        let acknowledgement = fixture.set_absent()?;
+        let expected = acknowledged_visual_token(acknowledgement, VisualMarkerState::Absent)?;
+        accept_control_acknowledgement(&mut last_ack, acknowledgement)?;
+        let mut observation = SessionObservation::default();
+        let frame = {
+            let mut synchronizations = [SessionSynchronization::new(&session, &mut observation)];
+            synchronize_sessions(
+                &fixture,
+                target,
+                expected,
+                &mut synchronizations,
+                Instant::now() + OPERATION_WAIT,
+            )
+            .map_err(|error| error.to_string())?;
+            synchronizations[0]
+                .frame
+                .take()
+                .ok_or_else(|| "fixture_authority_failed".to_owned())?
+        };
+        let startup_elapsed = startup_started.elapsed();
+        let shape = marker_shape(&frame, &fixture).ok_or_else(|| "wrong_transform".to_owned())?;
+        let template = prepare_marker(&engine, shape, "watch-marker-v2")?;
+        Ok(Self {
+            fixture: OwnedNativeFixture(fixture),
+            engine,
+            target,
+            session,
+            template,
+            shape,
+            last_ack,
+            observation,
+            startup_elapsed,
+            readiness_token: expected,
+            readiness_stamp: frame.stamp(),
+            readiness_scale_milli: target_scale_milli(&frame),
+        })
+    }
+}
+
+impl<Fixture> NativeRun<Fixture>
+where
+    Fixture: Deref<Target = NativeFixture> + DerefMut,
+{
+    fn issue_visual_state(&mut self, marker: VisualMarkerState) -> Result<VisualToken, String> {
+        issue_fixture_visual_state(&mut self.fixture, &mut self.last_ack, marker)
+    }
+
+    fn synchronize_visual_token(&mut self, expected: VisualToken) -> Result<Frame, String> {
+        let Self {
+            fixture,
+            target,
+            session,
+            observation,
+            ..
+        } = self;
+        synchronize_session_to_token(fixture.deref(), *target, session, observation, expected)
+    }
+
+    fn command_visual_state(&mut self, marker: VisualMarkerState) -> Result<Frame, String> {
+        let expected = self.issue_visual_state(marker)?;
+        self.synchronize_visual_token(expected)
+    }
+
+    fn command_absent(&mut self) -> Result<Frame, String> {
+        self.command_visual_state(VisualMarkerState::Absent)
+    }
+
+    fn command_visible(&mut self) -> Result<Frame, String> {
+        self.command_visual_state(VisualMarkerState::Visible)
+    }
+
+    fn command_visual_state_for_pair(
+        &mut self,
+        marker: VisualMarkerState,
+        second_session: &Session,
+        second_observation: &mut SessionObservation,
+    ) -> Result<(VisualToken, Frame, Frame), String> {
+        let expected = self.issue_visual_state(marker)?;
+        let Self {
+            fixture,
+            target,
+            session,
+            observation,
+            ..
+        } = self;
+        let mut synchronizations = [
+            SessionSynchronization::new(session, observation),
+            SessionSynchronization::new(second_session, second_observation),
+        ];
+        synchronize_sessions(
+            fixture.deref(),
+            *target,
+            expected,
+            &mut synchronizations,
+            Instant::now() + OPERATION_WAIT,
+        )
+        .map_err(|error| error.to_string())?;
+        let first = synchronizations[0]
+            .frame
+            .take()
+            .ok_or_else(|| "fixture_authority_failed".to_owned())?;
+        let second = synchronizations[1]
+            .frame
+            .take()
+            .ok_or_else(|| "fixture_authority_failed".to_owned())?;
+        Ok((expected, first, second))
+    }
+
+    fn command_visual_transition(&mut self) -> Result<ControlAcknowledgement, String> {
+        let acknowledgement = self.fixture.transition_visual()?;
+        self.accept_acknowledgement(acknowledgement)?;
+        Ok(acknowledgement)
+    }
+
+    fn accept_acknowledgement(
+        &mut self,
+        acknowledgement: ControlAcknowledgement,
+    ) -> Result<(), String> {
+        accept_control_acknowledgement(&mut self.last_ack, acknowledgement)
+    }
+
+    fn start_watch(&self, stability: TemplateStability) -> Result<TemplateQuery, String> {
+        self.start_watch_with(self.template.clone(), stability, OperationContext::new())
+    }
+
+    fn start_watch_with(
+        &self,
+        template: PreparedTemplate,
+        stability: TemplateStability,
+        operation: OperationContext,
+    ) -> Result<TemplateQuery, String> {
+        let options = MatchOptions::from_defaults(template.defaults());
+        self.session
+            .start_template_watch(
+                TemplateWatchRequest::new(template, options, operation)
+                    .with_stability(stability)
+                    .with_change_policy(ChangeDetectionPolicy::default()),
+            )
+            .map_err(|error| format!("typed_operation_failure:{:?}", error.status()))
+    }
+
+    fn acquire_newer(&self, stamp: FrameStamp) -> Result<Frame, String> {
+        self.session
+            .acquire_frame(&FrameRequest::newer_than(stamp), &bounded(OPERATION_WAIT))
+            .map_err(|error| format!("typed_operation_failure:{:?}", error.status()))
+    }
+
+    fn matches_visual_token(
+        &self,
+        terminal: &TemplateTerminalOutcome,
+        session: &Session,
+        observations: u32,
+        newer_than: Option<FrameStamp>,
+        expected: VisualToken,
+    ) -> Result<bool, String> {
+        if !matched_target_exact(
+            terminal,
+            self.target,
+            self.template.id(),
+            self.shape,
+            observations,
+            newer_than,
+        ) {
+            return Ok(false);
+        }
+        let result = terminal_match(terminal).ok_or_else(|| "wrong_match".to_owned())?;
+        frame_has_visual_token(session, self.fixture.deref(), result.frame(), expected)
+    }
+
+    fn refresh_template(&mut self, frame: &Frame, id: &str) -> Result<(), String> {
+        self.shape =
+            marker_shape(frame, &self.fixture).ok_or_else(|| "wrong_transform".to_owned())?;
+        self.template = prepare_marker(&self.engine, self.shape, id)?;
+        Ok(())
+    }
+
+    fn finalize(self) -> NativeRunFinalization {
+        let started = Instant::now();
+        let NativeRun {
+            mut fixture,
+            engine,
+            session,
+            template,
+            ..
+        } = self;
+        let session_closed = session.close(&bounded(OPERATION_WAIT)).is_ok()
+            && session.close(&bounded(OPERATION_WAIT)).is_ok();
+        drop(session);
+        drop(template);
+        drop(engine);
+        let fixture = fixture.finish();
+        NativeRunFinalization {
+            accepted: session_closed && fixture.is_accepted(),
+            elapsed: started.elapsed(),
+            resources: fixture.resources(),
+        }
+    }
+
+    fn close(self) -> bool {
+        self.finalize().accepted
+    }
+}
+
+#[derive(Debug, Clone, Copy)]
+struct NativeRunFinalization {
+    accepted: bool,
+    elapsed: Duration,
+    resources: NativeResourceFacts,
+}
+
+struct Cohort {
+    arguments: Arguments,
+    run: Option<NativeRun>,
+    settled_mapping: Option<mado_pilot::CpuMapping>,
+}
+
+impl Cohort {
+    fn new(arguments: Arguments) -> Self {
+        Self {
+            arguments,
+            run: None,
+            settled_mapping: None,
+        }
+    }
+
+    fn run(&mut self) -> Result<&mut NativeRun, String> {
+        if self.run.is_none() {
+            self.run = Some(NativeRun::start(&self.arguments)?);
+        }
+        self.run.as_mut().ok_or_else(|| "cleanup_failed".to_owned())
+    }
+
+    fn fresh(&self) -> Result<NativeRun, String> {
+        NativeRun::start(&self.arguments)
+    }
+
+    fn settle(&mut self) -> Result<(), String> {
+        let mapping = {
+            let run = self.run()?;
+            run.session
+                .benchmark_wait_template_watcher_idle(&bounded(OPERATION_WAIT))
+                .map_err(|error| format!("typed_operation_failure:{:?}", error.status()))?;
+            settle_absent(run)?
+        };
+        self.settled_mapping = Some(mapping);
+        Ok(())
+    }
+
+    fn finish(&mut self) -> bool {
+        self.settled_mapping = None;
+        self.run.take().is_none_or(NativeRun::close)
+    }
+}
+
+pub(super) fn run() {
+    if Arguments::contract_requested() {
+        native_contract::run();
+        return;
+    }
+    let arguments = Arguments::parse();
+    if arguments.root_cause_stress {
+        #[cfg(target_os = "macos")]
+        {
+            root_cause::run(arguments);
+            return;
+        }
+        #[cfg(not(target_os = "macos"))]
+        panic!("capability_unavailable:root_cause_stress");
+    }
+    let sample_plan = if arguments.qualification
+        || arguments.full_load_diagnostic
+        || arguments.retained_result_lifecycle_diagnostic
+    {
+        Plan::new(3, 20)
+    } else {
+        Plan::new(1, 1)
+    };
+    let gate_plan = Plan::new(0, 1);
+    let cohort = Rc::new(RefCell::new(Cohort::new(arguments.clone())));
+    let mut workloads = Vec::with_capacity(24);
+
+    add_workload(
+        &mut workloads,
+        "environment_identity",
+        "facade/native/fixture identities, availability, and owner binding are exact",
+        gate_plan,
+        &cohort,
+        environment_identity,
+    );
+    add_workload(
+        &mut workloads,
+        "window_absent_current",
+        "acknowledged absent current frame remains pending without false stability",
+        sample_plan,
+        &cohort,
+        window_absent_current,
+    );
+    add_workload(
+        &mut workloads,
+        "window_transient_appearance",
+        "one confirmed visible frame followed by acknowledged absence remains nonterminal",
+        sample_plan,
+        &cohort,
+        window_transient_appearance,
+    );
+    add_workload(
+        &mut workloads,
+        "window_persistent_appearance",
+        "persistent marker completes only after confirmed duration on authoritative frames",
+        sample_plan,
+        &cohort,
+        window_persistent_appearance,
+    );
+    add_workload(
+        &mut workloads,
+        "window_disappearance_reset",
+        "absence resets prior confirmation before persistent reappearance",
+        sample_plan,
+        &cohort,
+        window_disappearance_reset,
+    );
+    add_workload(
+        &mut workloads,
+        "window_strictly_newer",
+        "completion excludes the named absent source and returns a strictly newer frame",
+        sample_plan,
+        &cohort,
+        window_strictly_newer,
+    );
+    add_workload(
+        &mut workloads,
+        "window_move",
+        "movement changes geometry authority and only post-move work may commit",
+        sample_plan,
+        &cohort,
+        window_move,
+    );
+    add_workload(
+        &mut workloads,
+        "window_resize",
+        "resize changes extent and geometry before a later exact match commits",
+        sample_plan,
+        &cohort,
+        window_resize,
+    );
+    add_workload(
+        &mut workloads,
+        "window_topology_scale",
+        "target scale/topology transition selects the exact new marker realization",
+        gate_plan,
+        &cohort,
+        window_topology_scale,
+    );
+    add_workload(
+        &mut workloads,
+        "display_current_newer",
+        "one owned-fixture display session finds the marker on a strictly newer source",
+        gate_plan,
+        &cohort,
+        display_current_newer,
+    );
+    add_workload(
+        &mut workloads,
+        "permission_availability",
+        "non-prompting native capability facts are available before capture work",
+        gate_plan,
+        &cohort,
+        permission_availability,
+    );
+    add_workload(
+        &mut workloads,
+        "native_high_rate_slow_backend",
+        "controlled slow production OpenCV work stays finite and producer publication advances",
+        sample_plan,
+        &cohort,
+        native_high_rate_slow_backend,
+    );
+    add_workload(
+        &mut workloads,
+        "two_query_fairness",
+        "two eligible queries both receive a terminal result without thread-order assumptions",
+        sample_plan,
+        &cohort,
+        two_query_fairness,
+    );
+    add_workload(
+        &mut workloads,
+        "two_session_fairness",
+        "two maintained production sessions independently complete",
+        sample_plan,
+        &cohort,
+        two_session_fairness,
+    );
+    add_workload(
+        &mut workloads,
+        "exact_coalescing",
+        "equal immutable query facts share exactly one backend execution",
+        sample_plan,
+        &cohort,
+        exact_coalescing,
+    );
+    add_workload(
+        &mut workloads,
+        "unequal_no_coalescing",
+        "distinct preparation instances execute independent backend work",
+        sample_plan,
+        &cohort,
+        unequal_no_coalescing,
+    );
+    add_workload(
+        &mut workloads,
+        "queue_expiry_overload",
+        "finite scheduler overload is observable and no query is silently lost",
+        gate_plan,
+        &cohort,
+        queue_expiry_overload,
+    );
+    add_workload(
+        &mut workloads,
+        "stale_generation",
+        "pre-geometry backend completion cannot commit after generation change",
+        sample_plan,
+        &cohort,
+        stale_generation,
+    );
+    add_workload(
+        &mut workloads,
+        "wait_cancel_deadline",
+        "caller wait, query cancellation, and query deadline retain separate authority",
+        sample_plan,
+        &cohort,
+        wait_cancel_deadline,
+    );
+    add_workload(
+        &mut workloads,
+        "native_stop_target_loss",
+        "owned target close terminates pending native watcher with target loss",
+        gate_plan,
+        &cohort,
+        native_stop_target_loss,
+    );
+    add_workload(
+        &mut workloads,
+        "session_engine_close",
+        "session and engine close are idempotent and wake pending queries exactly once",
+        gate_plan,
+        &cohort,
+        session_engine_close,
+    );
+    add_workload(
+        &mut workloads,
+        "retained_result_mapping",
+        "retained result/frame/mapping survive parent release without stopping a fresh producer",
+        sample_plan,
+        &cohort,
+        retained_result_mapping,
+    );
+    add_workload(
+        &mut workloads,
+        "fresh_session",
+        "a fresh production session watches successfully after predecessor teardown",
+        sample_plan,
+        &cohort,
+        fresh_session,
+    );
+    add_workload(
+        &mut workloads,
+        "producer_progress_cleanup_privacy",
+        "producer progress, bounded cleanup, and allowlisted aggregate output all pass",
+        gate_plan,
+        &cohort,
+        producer_progress_cleanup_privacy,
+    );
+
+    let cleanup_ok = cohort.borrow_mut().finish();
+    assert!(cleanup_ok, "cleanup_failed");
+    if arguments.workload_filter.is_some() {
+        assert_eq!(workloads.len(), 1, "protocol_drift");
+    } else {
+        assert!(
+            workloads
+                .iter()
+                .map(Workload::name)
+                .eq(native_watch_report::WORKLOADS),
+            "protocol_drift"
+        );
+    }
+    assert!(
+        workloads.iter().all(|workload| workload.incorrect() == 0),
+        "semantic_oracle_failed: {}",
+        workloads
+            .iter()
+            .filter(|workload| workload.incorrect() != 0)
+            .map(|workload| workload.name())
+            .collect::<Vec<_>>()
+            .join(",")
+    );
+
+    assert!(
+        artifact_identities_match(&arguments),
+        "artifact_identity_drift"
+    );
+    if arguments.qualification || arguments.retained_result_lifecycle_diagnostic {
+        report(&arguments, sample_plan, &workloads);
+    } else {
+        bench_harness::summarize("native-template-watch", sample_plan, &workloads);
+    }
+    for workload in &workloads {
+        if sampled_workload(workload.name()) {
+            bench_harness::enforce_hard_budgets(std::slice::from_ref(workload));
+        }
+    }
+    if arguments.enforce_budgets {
+        enforce_accepted_budgets(&workloads);
+    }
+    assert!(
+        artifact_identities_match(&arguments),
+        "artifact_identity_drift"
+    );
+}
+
+fn add_workload(
+    workloads: &mut Vec<Workload>,
+    name: &'static str,
+    oracle: &'static str,
+    plan: Plan,
+    cohort: &Rc<RefCell<Cohort>>,
+    operation: fn(&Rc<RefCell<Cohort>>) -> Sample,
+) {
+    if cohort
+        .borrow()
+        .arguments
+        .workload_filter
+        .as_deref()
+        .is_some_and(|filter| filter != name)
+    {
+        return;
+    }
+    let shared = Rc::clone(cohort);
+    workloads.push(measure(
+        name,
+        oracle,
+        plan,
+        move || Rc::clone(&shared),
+        operation,
+    ));
+}
+
+fn sampled_workload(name: &str) -> bool {
+    native_watch_report::SAMPLED_WORKLOADS.contains(&name)
+}
+fn environment_identity(cohort: &Rc<RefCell<Cohort>>) -> Sample {
+    measured(
+        || {
+            let mut cohort = cohort.borrow_mut();
+            let Ok(run) = cohort.run() else { return false };
+            run.target == run.session.target()
+                && run.session.stream() == run.session.description().stream()
+                && run.shape.extent() == run.template.extent()
+                && run.template.backend().as_str() == "opencv-cpu"
+                && permission_oracle(&run.engine)
+                && run.fixture.process_id() != 0
+        },
+        None,
+    )
+}
+
+fn window_absent_current(cohort: &Rc<RefCell<Cohort>>) -> Sample {
+    observed_sample(cohort, |run| {
+        run.command_absent()?;
+        let query = run.start_watch(TemplateStability::immediate())?;
+        prime_pending(&query)?;
+        let terminal = query.cancel();
+        let expected = matches!(&*terminal, TemplateTerminalOutcome::Cancelled);
+        Ok((expected, terminal_query_metrics(&query, expected)?))
+    })
+}
+
+fn window_transient_appearance(cohort: &Rc<RefCell<Cohort>>) -> Sample {
+    observed_sample(cohort, |run| {
+        run.command_absent()?;
+        // Freeze query time: host scheduling between the visible and absent
+        // acknowledgements must not turn this transient into a duration match.
+        let stability = TemplateStability::duration(Duration::from_secs(1))
+            .map_err(|_| "protocol_drift".to_owned())?;
+        let query = run.start_watch_with(
+            run.template.clone(),
+            stability,
+            OperationContext::new().with_clock(Arc::new(ManualClock::new())),
+        )?;
+        run.command_visible()?;
+        let visible = wait_progress(&query, |progress| progress.confirmed_observations() >= 1)?;
+        run.command_absent()?;
+        wait_progress(&query, |progress| {
+            progress
+                .last_frame()
+                .is_some_and(|stamp| visible.last_frame().is_none_or(|old| stamp != old))
+                && progress.confirmed_observations() == 0
+        })?;
+        let terminal = query.cancel();
+        let expected = matches!(&*terminal, TemplateTerminalOutcome::Cancelled);
+        Ok((expected, terminal_query_metrics(&query, expected)?))
+    })
+}
+
+fn window_persistent_appearance(cohort: &Rc<RefCell<Cohort>>) -> Sample {
+    matched_sample(cohort, None)
+}
+
+fn window_disappearance_reset(cohort: &Rc<RefCell<Cohort>>) -> Sample {
+    observed_sample(cohort, |run| {
+        run.command_absent()?;
+        let clock = Arc::new(ManualClock::new());
+        let stability = TemplateStability::duration(STATIC_STABILITY)
+            .map_err(|_| "protocol_drift".to_owned())?;
+        let query = run.start_watch_with(
+            run.template.clone(),
+            stability,
+            OperationContext::new().with_clock(clock.clone()),
+        )?;
+        run.command_visible()?;
+        let first = wait_progress(&query, |progress| progress.confirmed_observations() >= 1)?;
+        run.command_absent()?;
+        let reset = wait_progress(&query, |progress| {
+            progress.confirmed_observations() == 0
+                && progress
+                    .last_frame()
+                    .is_some_and(|stamp| first.last_frame().is_none_or(|old| stamp != old))
+        })?;
+        run.command_visible()?;
+        let second = wait_progress(&query, |progress| progress.confirmed_observations() >= 1)?;
+        clock.advance(STATIC_STABILITY);
+        run.command_visual_transition()?;
+        let (terminal, _) = wait_terminal(&query)?;
+        let correct = matched_exact(&terminal, run, 1, reset.last_frame())
+            && second.last_frame().is_some()
+            && matches!(&*terminal, TemplateTerminalOutcome::Matched(result) if result.confirmed_duration() >= STATIC_STABILITY);
+        Ok((correct, terminal_query_metrics(&query, correct)?))
+    })
+}
+
+fn window_strictly_newer(cohort: &Rc<RefCell<Cohort>>) -> Sample {
+    let baseline = {
+        let mut cohort = cohort.borrow_mut();
+        let Ok(run) = cohort.run() else {
+            return Sample::unmapped(Duration::ZERO, false);
+        };
+        if run.command_absent().is_err() {
+            return Sample::unmapped(Duration::ZERO, false);
+        }
+        run.session
+            .acquire_frame(&FrameRequest::latest(), &bounded(OPERATION_WAIT))
+            .ok()
+            .map(|frame| frame.stamp())
+    };
+    matched_sample(cohort, baseline)
+}
+
+fn window_move(cohort: &Rc<RefCell<Cohort>>) -> Sample {
+    geometry_sample(cohort, GeometryAction::Move)
+}
+
+fn window_resize(cohort: &Rc<RefCell<Cohort>>) -> Sample {
+    geometry_sample(cohort, GeometryAction::Resize)
+}
+
+fn window_topology_scale(cohort: &Rc<RefCell<Cohort>>) -> Sample {
+    geometry_sample(cohort, GeometryAction::Topology)
+}
+
+fn project_marker_shape(
+    target_frame: &Frame,
+    display_frame: &Frame,
+    target_shape: MarkerShape,
+) -> Option<MarkerShape> {
+    let target_origin = Point::new(
+        CoordinateSpace::CapturePixels,
+        f64::from(target_shape.origin_x),
+        f64::from(target_shape.origin_y),
+    )
+    .ok()?;
+    let target_cell_end = Point::new(
+        CoordinateSpace::CapturePixels,
+        f64::from(target_shape.origin_x) + f64::from(target_shape.cell_width),
+        f64::from(target_shape.origin_y) + f64::from(target_shape.cell_height),
+    )
+    .ok()?;
+    let desktop_origin = target_frame
+        .transform()
+        .convert_point(target_origin, CoordinateSpace::DesktopLogical)
+        .ok()?;
+    let desktop_cell_end = target_frame
+        .transform()
+        .convert_point(target_cell_end, CoordinateSpace::DesktopLogical)
+        .ok()?;
+    let display_origin = display_frame
+        .transform()
+        .convert_point(desktop_origin, CoordinateSpace::CapturePixels)
+        .ok()?;
+    let display_cell_end = display_frame
+        .transform()
+        .convert_point(desktop_cell_end, CoordinateSpace::CapturePixels)
+        .ok()?;
+    Some(MarkerShape {
+        cell_width: scaled_u32(display_cell_end.x() - display_origin.x(), 1.0)?,
+        cell_height: scaled_u32(display_cell_end.y() - display_origin.y(), 1.0)?,
+        origin_x: scaled_i32(display_origin.x(), 1.0)?,
+        origin_y: scaled_i32(display_origin.y(), 1.0)?,
+    })
+}
+fn target_scale_milli(frame: &Frame) -> Option<[u32; 2]> {
+    let scale = frame.transform().target()?.scale();
+    Some([
+        scaled_u32(scale.x(), 1_000.0)?,
+        scaled_u32(scale.y(), 1_000.0)?,
+    ])
+}
+
+fn marker_shape_fits(frame: &Frame, shape: MarkerShape) -> bool {
+    let Ok(left) = u32::try_from(shape.origin_x) else {
+        return false;
+    };
+    let Ok(top) = u32::try_from(shape.origin_y) else {
+        return false;
+    };
+    let expected = shape.extent();
+    let actual = frame.descriptor().extent();
+    left.checked_add(expected.width())
+        .is_some_and(|right| right <= actual.width())
+        && top
+            .checked_add(expected.height())
+            .is_some_and(|bottom| bottom <= actual.height())
+}
+
+fn display_current_newer(cohort: &Rc<RefCell<Cohort>>) -> Sample {
+    observed_sample(cohort, |run| {
+        run.command_absent()?;
+        let target_frame = run
+            .session
+            .acquire_frame(&FrameRequest::latest(), &bounded(OPERATION_WAIT))
+            .map_err(|_| "typed_operation_failure:CaptureFailed".to_owned())?;
+        let target_shape = marker_shape(&target_frame, &run.fixture)
+            .ok_or_else(|| "wrong_transform".to_owned())?;
+        let displays = run
+            .engine
+            .discover(&bounded(OPERATION_WAIT))
+            .map_err(|_| "capability_unavailable:capture".to_owned())?
+            .into_iter()
+            .filter(|target| target.capability().kind() == Some(TargetKind::Display));
+
+        for display in displays {
+            let display_id = display.id();
+            let Ok(session) =
+                run.engine
+                    .open(display_id, &OpenRequest::new(), &bounded(OPERATION_WAIT))
+            else {
+                continue;
+            };
+            let Ok(frame) =
+                session.acquire_frame(&FrameRequest::latest(), &bounded(OPERATION_WAIT))
+            else {
+                session
+                    .close(&bounded(OPERATION_WAIT))
+                    .map_err(|_| "cleanup_failed".to_owned())?;
+                continue;
+            };
+            let Some(shape) = project_marker_shape(&target_frame, &frame, target_shape) else {
+                session
+                    .close(&bounded(OPERATION_WAIT))
+                    .map_err(|_| "cleanup_failed".to_owned())?;
+                continue;
+            };
+            if !marker_shape_fits(&frame, shape) {
+                session
+                    .close(&bounded(OPERATION_WAIT))
+                    .map_err(|_| "cleanup_failed".to_owned())?;
+                continue;
+            }
+
+            let result = (|| {
+                let template = prepare_marker(&run.engine, shape, "watch-marker-v1-display")?;
+                let template_id = template.id().clone();
+                let options = MatchOptions::from_defaults(template.defaults());
+                let query = session
+                    .start_template_watch(TemplateWatchRequest::new(
+                        template,
+                        options,
+                        OperationContext::new(),
+                    ))
+                    .map_err(|_| "typed_operation_failure:VisionFailed".to_owned())?;
+                let baseline = prime_pending(&query)?;
+                let newer_than = baseline.last_frame();
+                run.command_visible()?;
+                // Full-display matching uses the predeclared operation bound.
+                // A shorter wall-clock wait would measure host scheduling and
+                // cancel valid high-resolution work before it can commit.
+                let terminal = wait_terminal(&query);
+                if terminal.is_err() {
+                    let _ = query.cancel();
+                }
+                let (terminal, _) = terminal?;
+                let correct =
+                    matched_target_exact(&terminal, display_id, &template_id, shape, 1, newer_than);
+                Ok((correct, terminal_query_metrics(&query, correct)?))
+            })();
+            let closed = session.close(&bounded(OPERATION_WAIT)).is_ok();
+            let hidden = run.command_absent();
+            if !closed {
+                return Err("cleanup_failed".to_owned());
+            }
+            hidden?;
+            return result;
+        }
+
+        run.command_absent()?;
+        Err("capability_unavailable:display_target".to_owned())
+    })
+}
+
+fn permission_availability(cohort: &Rc<RefCell<Cohort>>) -> Sample {
+    measured(
+        || {
+            let mut cohort = cohort.borrow_mut();
+            cohort.run().is_ok_and(|run| permission_oracle(&run.engine))
+        },
+        None,
+    )
+}
+
+fn native_high_rate_slow_backend(cohort: &Rc<RefCell<Cohort>>) -> Sample {
+    observed_sample(cohort, |run| {
+        run.command_absent()?;
+        let baseline = run
+            .session
+            .acquire_frame(&FrameRequest::latest(), &bounded(OPERATION_WAIT))
+            .map_err(|_| "wrong_source".to_owned())?
+            .stamp();
+        let delay = install_find_delay(SLOW_BACKEND).ok_or_else(|| "protocol_drift".to_owned())?;
+        let query = run.start_watch(TemplateStability::immediate())?;
+        wait_progress(&query, TemplateQueryProgress::is_in_flight)?;
+        run.command_visible()?;
+        run.command_absent()?;
+        run.command_visible()?;
+        let (terminal, _) = wait_terminal(&query)?;
+        drop(delay);
+        wait_for_backend_idle(OPERATION_WAIT)?;
+        let later = run.acquire_newer(baseline).is_ok();
+        let correct = terminal.is_match() && later;
+        Ok((correct, terminal_query_metrics(&query, correct)?))
+    })
+}
+
+fn two_query_fairness(cohort: &Rc<RefCell<Cohort>>) -> Sample {
+    paired_query_sample(cohort, true, false)
+}
+
+fn two_session_fairness(cohort: &Rc<RefCell<Cohort>>) -> Sample {
+    observed_sample(cohort, |run| {
+        let second_session = run
+            .engine
+            .open(run.target, &OpenRequest::new(), &bounded(OPERATION_WAIT))
+            .map_err(|_| "typed_operation_failure:CaptureFailed".to_owned())?;
+        let mut second_observation = SessionObservation::default();
+        let (_absent_token, _first_absent, _second_absent) = run.command_visual_state_for_pair(
+            VisualMarkerState::Absent,
+            &second_session,
+            &mut second_observation,
+        )?;
+        let delay = install_find_delay(SLOW_BACKEND).ok_or_else(|| "protocol_drift".to_owned())?;
+        let first = run.start_watch(TemplateStability::immediate())?;
+        let second = second_session
+            .start_template_watch(TemplateWatchRequest::new(
+                run.template.clone(),
+                MatchOptions::from_defaults(run.template.defaults()),
+                OperationContext::new(),
+            ))
+            .map_err(|_| "typed_operation_failure:VisionFailed".to_owned())?;
+        let first_before = wait_query_publication(&first)?;
+        let second_before = wait_query_publication(&second)?;
+        let (visible_token, _first_visible, _second_visible) = run.command_visual_state_for_pair(
+            VisualMarkerState::Visible,
+            &second_session,
+            &mut second_observation,
+        )?;
+        let (first_terminal, _) = wait_terminal(&first)?;
+        let (second_terminal, _) = wait_terminal(&second)?;
+        let first_saw_stimulus = first.benchmark_publication_count() > first_before;
+        let second_saw_stimulus = second.benchmark_publication_count() > second_before;
+        drop(delay);
+        wait_for_backend_idle(OPERATION_WAIT)?;
+        let first_expected =
+            run.matches_visual_token(&first_terminal, &run.session, 1, None, visible_token)?;
+        let second_expected =
+            run.matches_visual_token(&second_terminal, &second_session, 1, None, visible_token)?;
+        let closed = second_session.close(&bounded(OPERATION_WAIT)).is_ok();
+        run.command_absent()?;
+        let metrics = terminal_query_metrics(&first, first_expected)?
+            .saturating_add(terminal_query_metrics(&second, second_expected)?);
+        Ok((
+            first_expected
+                && second_expected
+                && first_saw_stimulus
+                && second_saw_stimulus
+                && closed,
+            metrics,
+        ))
+    })
+}
+
+fn exact_coalescing(cohort: &Rc<RefCell<Cohort>>) -> Sample {
+    paired_query_sample(cohort, true, false)
+}
+
+fn unequal_no_coalescing(cohort: &Rc<RefCell<Cohort>>) -> Sample {
+    paired_query_sample(cohort, true, true)
+}
+
+fn queue_expiry_overload(cohort: &Rc<RefCell<Cohort>>) -> Sample {
+    const QUERY_COUNT: usize = 32;
+
+    observed_sample(cohort, |run| {
+        run.command_absent()?;
+        let descriptor = TemplateSchedulerDescriptor::selected_default();
+        let expiry = descriptor.eligible_queue_expiry();
+        let mut templates = Vec::with_capacity(QUERY_COUNT);
+        for index in 0..QUERY_COUNT {
+            templates.push(prepare_marker(
+                &run.engine,
+                run.shape,
+                &format!("watch-marker-v1-overload-{index}"),
+            )?);
+        }
+        let before_delay = expiry
+            .checked_add(Duration::from_secs(1))
+            .ok_or_else(|| "protocol_drift".to_owned())?;
+        let delay = install_find_delay(before_delay).ok_or_else(|| "protocol_drift".to_owned())?;
+        let before = backend_snapshot();
+        let mut queries = Vec::with_capacity(templates.len());
+        for template in templates {
+            queries.push(run.start_watch_with(
+                template,
+                TemplateStability::immediate(),
+                OperationContext::new(),
+            )?);
+        }
+        if queries.len() != QUERY_COUNT {
+            return Err("unbounded_queue".to_owned());
+        }
+
+        let admission_deadline = Instant::now() + OPERATION_WAIT;
+        loop {
+            if queries.iter().any(|query| {
+                matches!(
+                    query.poll(),
+                    TemplateQueryOutcome::Pending(progress) if progress.is_in_flight()
+                )
+            }) {
+                break;
+            }
+            if Instant::now() >= admission_deadline {
+                return Err("typed_operation_failure:DeadlineExceeded".to_owned());
+            }
+            thread::sleep(POLL_WAIT);
+        }
+
+        thread::sleep(
+            expiry
+                .checked_add(Duration::from_millis(100))
+                .ok_or_else(|| "protocol_drift".to_owned())?,
+        );
+        let overload_deadline = Instant::now() + OPERATION_WAIT;
+        loop {
+            if queries.iter().any(|query| {
+                matches!(
+                    query.poll(),
+                    TemplateQueryOutcome::Terminal(terminal)
+                        if matches!(
+                            &*terminal,
+                            TemplateTerminalOutcome::Overloaded(
+                                TemplateOverload::QueueExpired
+                            )
+                        )
+                )
+            }) {
+                break;
+            }
+            if Instant::now() >= overload_deadline {
+                return Err("typed_operation_failure:DeadlineExceeded".to_owned());
+            }
+            thread::sleep(POLL_WAIT);
+        }
+
+        let mut metrics = QueryWorkMetrics::default();
+        for query in &queries {
+            let terminal = query.cancel();
+            let expected = matches!(
+                &*terminal,
+                TemplateTerminalOutcome::Cancelled
+                    | TemplateTerminalOutcome::Overloaded(TemplateOverload::QueueExpired)
+            );
+            let query_metrics = terminal_query_metrics(query, expected)?;
+            let publications = metrics
+                .producer_publications
+                .max(query_metrics.producer_publications);
+            metrics = metrics.saturating_add(query_metrics);
+            metrics.producer_publications = publications;
+        }
+        drop(delay);
+        wait_for_backend_idle(OPERATION_WAIT)?;
+        let delta = backend_snapshot()
+            .checked_delta(before)
+            .ok_or_else(|| "unaccounted_work".to_owned())?;
+        let expected_queries = u64::try_from(QUERY_COUNT).expect("query count fits");
+        let correct = metrics.query_completions == expected_queries
+            && metrics.query_failures == 0
+            && metrics.producer_publications != 0
+            && metrics.queue_expired != 0
+            && metrics.admitted == delta.find_calls
+            && metrics.admitted != 0
+            && metrics.admitted <= u64::from(descriptor.max_in_flight_analyses())
+            && metrics.coalesced == 0
+            && metrics.rejected == 0
+            && metrics.completed == 0
+            && metrics.failed == 0
+            && metrics.superseded >= metrics.admitted
+            && delta.find_completions == delta.find_calls
+            && delta.find_failures == 0;
+        Ok((correct, metrics))
+    })
+}
+
+fn stale_generation(cohort: &Rc<RefCell<Cohort>>) -> Sample {
+    observed_sample(cohort, |run| {
+        let old_frame = run.command_visible()?;
+        let old_geometry = old_frame.stamp().geometry();
+        let delay = install_find_delay(SLOW_BACKEND).ok_or_else(|| "protocol_drift".to_owned())?;
+        let query = run.start_watch(TemplateStability::immediate())?;
+        wait_progress(&query, TemplateQueryProgress::is_in_flight)?;
+        let resize = run.fixture.resize_target()?;
+        run.accept_acknowledgement(resize)?;
+        let moved_frame = wait_resize_change(run, &old_frame)?;
+        let moved_geometry = moved_frame.stamp().geometry();
+        drop(delay);
+        run.command_visual_transition()?;
+        let (terminal, _) = wait_terminal(&query)?;
+        wait_for_backend_idle(OPERATION_WAIT)?;
+        let new_geometry =
+            terminal_match(&terminal).map(|result| result.frame().stamp().geometry());
+        let restore = run.fixture.resize_target()?;
+        run.accept_acknowledgement(restore)?;
+        let restored_frame = wait_resize_change(run, &moved_frame)?;
+        let restored_placement = restored_frame.transform().target()
+            == old_frame.transform().target()
+            && restored_frame.descriptor().extent() == old_frame.descriptor().extent();
+        let correct = terminal.is_match()
+            && old_geometry != moved_geometry
+            && new_geometry == Some(moved_geometry)
+            && restored_placement;
+        Ok((correct, terminal_query_metrics(&query, correct)?))
+    })
+}
+
+fn wait_cancel_deadline(cohort: &Rc<RefCell<Cohort>>) -> Sample {
+    observed_sample(cohort, |run| {
+        let _absent = establish_absent(run)?;
+        let wait_query = run.start_watch(TemplateStability::immediate())?;
+        let wait_baseline = prime_pending(&wait_query)?;
+        let wait_status = wait_query
+            .wait(&bounded(Duration::from_millis(25)))
+            .expect_err("caller wait expires")
+            .status();
+        let still_pending = matches!(wait_query.poll(), TemplateQueryOutcome::Pending(_));
+        let cancelled_terminal = wait_query.cancel();
+        let cancelled = matches!(&*cancelled_terminal, TemplateTerminalOutcome::Cancelled);
+
+        let deadline_query = run.start_watch_with(
+            run.template.clone(),
+            TemplateStability::immediate(),
+            OperationContext::new()
+                .with_timeout(Duration::from_millis(250))
+                .map_err(|_| "protocol_drift".to_owned())?,
+        )?;
+        prime_pending(&deadline_query)?;
+        let deadline_terminal = wait_terminal(&deadline_query)?.0;
+        let deadline = matches!(
+            &*deadline_terminal,
+            TemplateTerminalOutcome::DeadlineExceeded
+        );
+        wait_for_backend_idle(OPERATION_WAIT)?;
+        let mut metrics = terminal_query_metrics(&wait_query, cancelled)?
+            .saturating_add(terminal_query_metrics(&deadline_query, deadline)?);
+        metrics.producer_publications = u64::from(metrics.producer_publications != 0);
+        Ok((
+            wait_status == Status::DeadlineExceeded
+                && still_pending
+                && cancelled
+                && deadline
+                && wait_baseline.confirmed_observations() == 0,
+            metrics,
+        ))
+    })
+}
+
+fn native_stop_target_loss(cohort: &Rc<RefCell<Cohort>>) -> Sample {
+    destructive_sample(cohort, |mut run| {
+        let _absent = establish_absent(&mut run)?;
+        let query = run.start_watch(TemplateStability::immediate())?;
+        prime_pending(&query)?;
+        #[cfg(target_os = "windows")]
+        let source_lost = {
+            let close = run.fixture.close_target()?;
+            run.accept_acknowledgement(close)?;
+            run.session
+                .acquire_frame(&FrameRequest::latest(), &bounded(OPERATION_WAIT))
+                .is_err_and(|error| error.status() == Status::TargetLost)
+        };
+        #[cfg(target_os = "macos")]
+        let source_lost = {
+            // A destroyed-window ScreenCaptureKit filter can remain quiescent
+            // without a terminal callback. Ending the authenticated fixture
+            // process exercises the stream authority required by this row.
+            if !run.fixture.finish().is_accepted() {
+                return Err("fixture_authority_failed".to_owned());
+            }
+            true
+        };
+        let (terminal, _) = wait_terminal(&query)?;
+        wait_for_backend_idle(OPERATION_WAIT)?;
+        let expected = source_lost && matches!(&*terminal, TemplateTerminalOutcome::TargetLost);
+        Ok((expected, terminal_query_metrics(&query, expected)?))
+    })
+}
+
+fn session_engine_close(cohort: &Rc<RefCell<Cohort>>) -> Sample {
+    destructive_sample(cohort, |mut run| {
+        let _absent = establish_absent(&mut run)?;
+        let session_query = run.start_watch(TemplateStability::immediate())?;
+        prime_pending(&session_query)?;
+        let first = run.session.close(&bounded(OPERATION_WAIT)).is_ok();
+        let second = run.session.close(&bounded(OPERATION_WAIT)).is_ok();
+        let (session_terminal, _) = wait_terminal(&session_query)?;
+        let session_stable = Arc::ptr_eq(&session_terminal, &wait_terminal(&session_query)?.0);
+        let session_closed = matches!(&*session_terminal, TemplateTerminalOutcome::SessionClosed);
+        let session_metrics = terminal_query_metrics(&session_query, session_closed)?;
+
+        let engine_session = run
+            .engine
+            .open(run.target, &OpenRequest::new(), &bounded(OPERATION_WAIT))
+            .map_err(|error| format!("typed_operation_failure:{:?}", error.status()))?;
+        let expected = run.issue_visual_state(VisualMarkerState::Absent)?;
+        let mut engine_observation = SessionObservation::default();
+        let mut synchronization = [SessionSynchronization::new(
+            &engine_session,
+            &mut engine_observation,
+        )];
+        synchronize_sessions(
+            run.fixture,
+            run.target,
+            expected,
+            &mut synchronization,
+            Instant::now() + OPERATION_WAIT,
+        )
+        .map_err(|error| error.to_string())?;
+        let _engine_frame = synchronization[0]
+            .frame
+            .take()
+            .ok_or_else(|| "fixture_authority_failed".to_owned())?;
+        let engine_query = engine_session
+            .start_template_watch(TemplateWatchRequest::new(
+                run.template.clone(),
+                MatchOptions::from_defaults(run.template.defaults()),
+                OperationContext::new(),
+            ))
+            .map_err(|error| format!("typed_operation_failure:{:?}", error.status()))?;
+        prime_pending(&engine_query)?;
+        drop(run.engine);
+        let (engine_terminal, _) = wait_terminal(&engine_query)?;
+        let engine_stable = Arc::ptr_eq(&engine_terminal, &wait_terminal(&engine_query)?.0);
+        let scheduler_closed =
+            matches!(&*engine_terminal, TemplateTerminalOutcome::SchedulerClosed);
+        let engine_metrics = terminal_query_metrics(&engine_query, scheduler_closed)?;
+        let engine_session_closed = engine_session.close(&bounded(OPERATION_WAIT)).is_ok();
+        wait_for_backend_idle(OPERATION_WAIT)?;
+        let correct = first
+            && second
+            && session_stable
+            && session_closed
+            && engine_stable
+            && scheduler_closed
+            && engine_session_closed;
+        Ok((correct, session_metrics.saturating_add(engine_metrics)))
+    })
+}
+
+fn retained_result_mapping(cohort: &Rc<RefCell<Cohort>>) -> Sample {
+    destructive_sample(cohort, |mut run| {
+        let _absent = establish_absent(&mut run)?;
+        let query = run.start_watch(TemplateStability::immediate())?;
+        wait_query_publication(&query)?;
+        let visible = run.issue_visual_state(VisualMarkerState::Visible)?;
+        let (terminal, _) = wait_terminal(&query)?;
+        let matched = run.matches_visual_token(&terminal, &run.session, 1, None, visible)?;
+        let metrics = terminal_query_metrics(&query, matched)?;
+        let result = terminal_match(&terminal)
+            .filter(|_| matched)
+            .ok_or_else(|| "wrong_match".to_owned())?
+            .clone();
+        let retained_stamp = result.frame().stamp();
+        let mapping_observer = run.session.mapping_observer();
+        run.session
+            .close(&bounded(OPERATION_WAIT))
+            .map_err(|_| "cleanup_failed".to_owned())?;
+        drop(query);
+        drop(terminal);
+        drop(run.session);
+        drop(run.engine);
+
+        let fresh_engine =
+            native_engine().map_err(|_| "capability_unavailable:capture".to_owned())?;
+        let fresh_target = run.fixture.authenticated_target(&fresh_engine)?;
+        let fresh_session = fresh_engine
+            .open(fresh_target, &OpenRequest::new(), &bounded(OPERATION_WAIT))
+            .map_err(|error| format!("producer_stalled:{:?}:fresh_engine_open", error.status()))?;
+        let fresh_token =
+            issue_fixture_visual_state(run.fixture, &mut run.last_ack, VisualMarkerState::Absent)?;
+        let mut fresh_observation = SessionObservation::default();
+        let _fresh_frame = synchronize_session_to_token(
+            run.fixture,
+            fresh_target,
+            &fresh_session,
+            &mut fresh_observation,
+            fresh_token,
+        )?;
+        let retained_native_frame = result.frame().stamp() == retained_stamp;
+        let mapping = mapping_observer
+            .map_frame(result.frame(), PixelFormat::Rgba8, &bounded(OPERATION_WAIT))
+            .map_err(|_| "ownership_pinned".to_owned())?;
+        let mapping_stamp = mapping.stamp();
+        let mapping_prefix = mapping
+            .bytes()
+            .get(..mapping.bytes().len().min(16))
+            .map(<[u8]>::to_vec)
+            .ok_or_else(|| "ownership_pinned".to_owned())?;
+        drop(result);
+        drop(mapping_observer);
+        let fresh_closed = fresh_session.close(&bounded(OPERATION_WAIT)).is_ok();
+        drop(fresh_session);
+        drop(fresh_engine);
+
+        let mapping_only_engine =
+            native_engine().map_err(|_| "capability_unavailable:capture".to_owned())?;
+        let mapping_only_target = run.fixture.authenticated_target(&mapping_only_engine)?;
+        let mapping_only_session = mapping_only_engine
+            .open(
+                mapping_only_target,
+                &OpenRequest::new(),
+                &bounded(OPERATION_WAIT),
+            )
+            .map_err(|error| {
+                format!(
+                    "producer_stalled:{:?}:mapping_only_engine_open",
+                    error.status()
+                )
+            })?;
+        let mapping_only_token =
+            issue_fixture_visual_state(run.fixture, &mut run.last_ack, VisualMarkerState::Absent)?;
+        let mut mapping_only_observation = SessionObservation::default();
+        let _mapping_only_frame = synchronize_session_to_token(
+            run.fixture,
+            mapping_only_target,
+            &mapping_only_session,
+            &mut mapping_only_observation,
+            mapping_only_token,
+        )?;
+        let retained_mapping =
+            mapping.stamp() == mapping_stamp && mapping.bytes().starts_with(&mapping_prefix);
+        let mapping_only_closed = mapping_only_session.close(&bounded(OPERATION_WAIT)).is_ok();
+        drop(mapping_only_session);
+        drop(mapping_only_engine);
+        Ok((
+            matched
+                && retained_native_frame
+                && retained_mapping
+                && fresh_closed
+                && mapping_only_closed,
+            metrics,
+        ))
+    })
+}
+
+fn fresh_session(cohort: &Rc<RefCell<Cohort>>) -> Sample {
+    destructive_sample(cohort, |mut run| {
+        let _predecessor_absent = establish_absent(&mut run)?;
+        run.session
+            .close(&bounded(OPERATION_WAIT))
+            .map_err(|_| "cleanup_failed".to_owned())?;
+        let session = run
+            .engine
+            .open(run.target, &OpenRequest::new(), &bounded(OPERATION_WAIT))
+            .map_err(|error| format!("typed_operation_failure:{:?}", error.status()))?;
+        let absent_token = run.issue_visual_state(VisualMarkerState::Absent)?;
+        let mut observation = SessionObservation::default();
+        let mut synchronization = [SessionSynchronization::new(&session, &mut observation)];
+        synchronize_sessions(
+            run.fixture,
+            run.target,
+            absent_token,
+            &mut synchronization,
+            Instant::now() + OPERATION_WAIT,
+        )
+        .map_err(|error| error.to_string())?;
+        let _absent_frame = synchronization[0]
+            .frame
+            .take()
+            .ok_or_else(|| "fixture_authority_failed".to_owned())?;
+        let query = session
+            .start_template_watch(TemplateWatchRequest::new(
+                run.template.clone(),
+                MatchOptions::from_defaults(run.template.defaults()),
+                OperationContext::new(),
+            ))
+            .map_err(|error| format!("typed_operation_failure:{:?}", error.status()))?;
+        wait_query_publication(&query)?;
+        let visible_token = run.issue_visual_state(VisualMarkerState::Visible)?;
+        let (terminal, _) = wait_terminal(&query)?;
+        let matched = run.matches_visual_token(&terminal, &session, 1, None, visible_token)?;
+        let closed = session.close(&bounded(OPERATION_WAIT)).is_ok();
+        wait_for_backend_idle(OPERATION_WAIT)?;
+        let metrics = terminal_query_metrics(&query, matched)?;
+        Ok((matched && closed, metrics))
+    })
+}
+
+fn producer_progress_cleanup_privacy(cohort: &Rc<RefCell<Cohort>>) -> Sample {
+    measured(
+        || {
+            let mut cohort = cohort.borrow_mut();
+            let Ok(run) = cohort.run() else {
+                return false;
+            };
+            let before = bench_harness::live_allocated_bytes();
+            let progressed = run.command_absent().is_ok()
+                && run
+                    .session
+                    .acquire_frame(&FrameRequest::latest(), &bounded(OPERATION_WAIT))
+                    .is_ok();
+            let after = bench_harness::live_allocated_bytes();
+            progressed && after.saturating_sub(before) <= 4_096 && privacy_tokens_are_bounded()
+        },
+        peak_resident_bytes(),
+    )
+}
+
+#[derive(Debug, Clone, Copy)]
+enum GeometryAction {
+    Move,
+    Resize,
+    Topology,
+}
+
+fn geometry_sample(cohort: &Rc<RefCell<Cohort>>, action: GeometryAction) -> Sample {
+    observed_sample(cohort, |run| {
+        let before = run.command_absent()?;
+        let acknowledgement = match action {
+            GeometryAction::Move => run.fixture.move_target(),
+            GeometryAction::Resize => run.fixture.resize_target(),
+            GeometryAction::Topology => run.fixture.move_next_display(),
+        }?;
+        run.accept_acknowledgement(acknowledgement)?;
+        let after = run.command_absent()?;
+        let geometry_changed = before.stamp().geometry() != after.stamp().geometry()
+            && after.stamp().order(&before.stamp()) == Ok(FrameOrder::After);
+        let action_geometry_matches = match action {
+            GeometryAction::Resize => resize_geometry_matches(&before, &after),
+            GeometryAction::Topology => topology_geometry_matches(&before, &after),
+            GeometryAction::Move => true,
+        };
+        run.refresh_template(&after, "watch-marker-v2-geometry")?;
+        let query = run.start_watch(TemplateStability::immediate())?;
+        wait_query_publication(&query)?;
+        let visible_token = run.issue_visual_state(VisualMarkerState::Visible)?;
+        let (terminal, _) = wait_terminal(&query)?;
+        let exact = run.matches_visual_token(
+            &terminal,
+            &run.session,
+            1,
+            Some(before.stamp()),
+            visible_token,
+        )?;
+        let restore = match action {
+            GeometryAction::Move => run.fixture.move_target(),
+            GeometryAction::Resize => run.fixture.resize_target(),
+            GeometryAction::Topology => run.fixture.restore_placement(),
+        }?;
+        run.accept_acknowledgement(restore)?;
+        let restored_frame = run.command_absent()?;
+        let restored = before.descriptor() == restored_frame.descriptor()
+            && before.transform().covers_target() == restored_frame.transform().covers_target()
+            && before.transform().target() == restored_frame.transform().target();
+        run.refresh_template(&restored_frame, "watch-marker-v2-restored")?;
+        let correct = geometry_changed && action_geometry_matches && exact && restored;
+        Ok((correct, terminal_query_metrics(&query, correct)?))
+    })
+}
+
+fn matched_sample(cohort: &Rc<RefCell<Cohort>>, newer_than: Option<FrameStamp>) -> Sample {
+    observed_sample(cohort, |run| {
+        run.command_absent()?;
+        let stability = TemplateStability::duration(STATIC_STABILITY)
+            .map_err(|_| "protocol_drift".to_owned())?;
+        let query = run.start_watch(stability)?;
+        wait_query_publication(&query)?;
+        let visible_token = run.issue_visual_state(VisualMarkerState::Visible)?;
+        wait_progress(&query, |progress| progress.confirmed_observations() >= 1)?;
+        thread::sleep(STATIC_STABILITY);
+        run.command_visual_transition()?;
+        let (terminal, _) = wait_terminal(&query)?;
+        let correct = run.matches_visual_token(
+            &terminal,
+            &run.session,
+            1,
+            newer_than,
+            visible_token,
+        )? && matches!(&*terminal, TemplateTerminalOutcome::Matched(result) if result.confirmed_duration() >= STATIC_STABILITY);
+        run.command_absent()?;
+        Ok((correct, terminal_query_metrics(&query, correct)?))
+    })
+}
+
+fn paired_query_sample(
+    cohort: &Rc<RefCell<Cohort>>,
+    controlled_delay: bool,
+    distinct_preparation: bool,
+) -> Sample {
+    observed_sample(cohort, |run| {
+        let _absent = establish_absent(run)?;
+        let second_template = if distinct_preparation {
+            prepare_marker(&run.engine, run.shape, "watch-marker-v1-distinct")?
+        } else {
+            run.template.clone()
+        };
+        let clock = Arc::new(ManualClock::new());
+        let rate = TemplateAnalysisRate::at_most_every(Duration::from_secs(1))
+            .map_err(|_| "protocol_drift".to_owned())?;
+        let first = run
+            .session
+            .start_template_watch(
+                TemplateWatchRequest::new(
+                    run.template.clone(),
+                    MatchOptions::from_defaults(run.template.defaults()),
+                    OperationContext::new().with_clock(clock.clone()),
+                )
+                .with_rate(rate),
+            )
+            .map_err(|_| "typed_operation_failure:VisionFailed".to_owned())?;
+        let second = run
+            .session
+            .start_template_watch(
+                TemplateWatchRequest::new(
+                    second_template.clone(),
+                    MatchOptions::from_defaults(second_template.defaults()),
+                    OperationContext::new().with_clock(clock.clone()),
+                )
+                .with_rate(rate),
+            )
+            .map_err(|_| "typed_operation_failure:VisionFailed".to_owned())?;
+        let initial = |progress: TemplateQueryProgress| {
+            progress.confirmed_observations() == 0
+                && progress.work().get(TemplateWorkDisposition::Completed) >= 1
+                && progress.in_flight_count() == 0
+        };
+        let first_initial = wait_progress(&first, initial)?;
+        let second_initial = wait_progress(&second, initial)?;
+        let first_stamp = first_initial
+            .last_frame()
+            .ok_or_else(|| "wrong_source".to_owned())?;
+        let second_stamp = second_initial
+            .last_frame()
+            .ok_or_else(|| "wrong_source".to_owned())?;
+        let baseline = if first_stamp.order(&second_stamp) == Ok(FrameOrder::Before) {
+            second_stamp
+        } else {
+            first_stamp
+        };
+        let delay = controlled_delay
+            .then(|| install_find_delay(SLOW_BACKEND).ok_or_else(|| "protocol_drift".to_owned()))
+            .transpose()?;
+        let before = backend_snapshot();
+        let visible = run.command_visible()?;
+        if visible.stamp().geometry() != baseline.geometry() {
+            return Err("wrong_transform".to_owned());
+        }
+        let first_before = first.benchmark_work_snapshot();
+        let second_before = second.benchmark_work_snapshot();
+        let first_publications = first.benchmark_publication_count();
+        let second_publications = second.benchmark_publication_count();
+        // A pixel-changing transition creates a controlled visible boundary
+        // after the snapshots above without changing the marker. Change-driven
+        // sources publish the new pixels directly; continuous sources may
+        // publish another visible frame first. Either way, both queries must
+        // retain post-boundary visible work while rate-limited.
+        run.command_visual_transition()?;
+        let visible = wait_marker_transition(run, visible.stamp(), true)?;
+        if visible.stamp().geometry() != baseline.geometry() {
+            return Err("wrong_transform".to_owned());
+        }
+        wait_progress(&first, |progress| {
+            progress.confirmed_observations() == 0
+                && progress.work().get(TemplateWorkDisposition::DeferredRate)
+                    > first_before
+                        .work()
+                        .get(TemplateWorkDisposition::DeferredRate)
+                && first.benchmark_publication_count() > first_publications
+                && progress.pending_count() == 1
+                && progress.in_flight_count() == 0
+        })?;
+        wait_progress(&second, |progress| {
+            progress.confirmed_observations() == 0
+                && progress.work().get(TemplateWorkDisposition::DeferredRate)
+                    > second_before
+                        .work()
+                        .get(TemplateWorkDisposition::DeferredRate)
+                && second.benchmark_publication_count() > second_publications
+                && progress.pending_count() == 1
+                && progress.in_flight_count() == 0
+        })?;
+        clock.advance(Duration::from_secs(1));
+        let (first_terminal, _) = wait_terminal(&first)?;
+        let (second_terminal, _) = wait_terminal(&second)?;
+        drop(delay);
+        wait_for_backend_idle(OPERATION_WAIT)?;
+        let delta = backend_snapshot()
+            .checked_delta(before)
+            .ok_or_else(|| "unaccounted_work".to_owned())?;
+        let expected_calls = if distinct_preparation { 2 } else { 1 };
+        let exact_calls = delta.find_calls == expected_calls
+            && delta.find_completions == expected_calls
+            && delta.find_failures == 0;
+        run.command_absent()?;
+        let first_expected = first_terminal.is_match();
+        let second_expected = second_terminal.is_match();
+        let first_metrics = terminal_query_metrics(&first, first_expected)?;
+        let second_metrics = terminal_query_metrics(&second, second_expected)?;
+        let publications = first_metrics
+            .producer_publications
+            .max(second_metrics.producer_publications);
+        let mut metrics = first_metrics.saturating_add(second_metrics);
+        metrics.producer_publications = publications;
+        Ok((first_expected && second_expected && exact_calls, metrics))
+    })
+}
+
+fn destructive_sample(
+    cohort: &Rc<RefCell<Cohort>>,
+    operation: impl FnOnce(DestructiveRun<'_>) -> Result<(bool, QueryWorkMetrics), String>,
+) -> Sample {
+    let before = backend_snapshot();
+    let started = Instant::now();
+    let NativeRun {
+        fixture: OwnedNativeFixture(mut fixture),
+        engine,
+        target,
+        session,
+        template,
+        shape,
+        last_ack,
+        observation,
+        startup_elapsed,
+        readiness_token,
+        readiness_stamp,
+        readiness_scale_milli,
+    } = cohort
+        .borrow()
+        .fresh()
+        .unwrap_or_else(|code| panic!("{code}"));
+    let run = DestructiveRun {
+        fixture: &mut fixture,
+        engine,
+        target,
+        session,
+        template,
+        shape,
+        last_ack,
+        observation,
+        startup_elapsed,
+        readiness_token,
+        readiness_stamp,
+        readiness_scale_milli,
+    };
+    let result = operation(run);
+    #[cfg(target_os = "macos")]
+    let (result, fixture_finished, elapsed) = crate::macos_fixture::finalize_drop_then_observe(
+        result,
+        fixture,
+        |fixture| fixture.finish().is_accepted(),
+        || started.elapsed(),
+    );
+    #[cfg(target_os = "windows")]
+    let fixture_finished = fixture.finish().is_accepted();
+    #[cfg(target_os = "windows")]
+    drop(fixture);
+    #[cfg(target_os = "windows")]
+    let elapsed = started.elapsed();
+    let (correct, metrics) = result.unwrap_or_else(|code| panic!("{code}"));
+    finish_observed_sample(elapsed, correct && fixture_finished, metrics, before)
+}
+
+fn observed_sample(
+    cohort: &Rc<RefCell<Cohort>>,
+    operation: impl FnOnce(&mut NativeRun) -> Result<(bool, QueryWorkMetrics), String>,
+) -> Sample {
+    let before = backend_snapshot();
+    let started = Instant::now();
+    let (correct, metrics) = {
+        let mut cohort = cohort.borrow_mut();
+        cohort
+            .run()
+            .and_then(operation)
+            .unwrap_or_else(|code| panic!("{code}"))
+    };
+    // Terminal authority is already fixed; this bounded wait closes only the
+    // cumulative work interval and fails if late work does not release.
+    wait_for_backend_idle(OPERATION_WAIT).unwrap_or_else(|code| panic!("{code}"));
+    let elapsed = started.elapsed();
+    // Excluded from latency and query/backend accounting, this fence joins the
+    // watcher acquisition worker, then forces and retains one authoritative
+    // absent mapping so native producer state cannot cross the allocator endpoint.
+    cohort
+        .borrow_mut()
+        .settle()
+        .unwrap_or_else(|code| panic!("{code}"));
+    finish_observed_sample(elapsed, correct, metrics, before)
+}
+
+fn finish_observed_sample(
+    elapsed: Duration,
+    correct: bool,
+    mut metrics: QueryWorkMetrics,
+    before: BackendSnapshot,
+) -> Sample {
+    let after = backend_snapshot();
+    let delta = after.checked_delta(before);
+    if let Some(delta) = delta {
+        metrics.backend_runs = delta.find_calls;
+    }
+    let accounted = delta.is_some_and(|delta| {
+        metrics.admitted == delta.find_calls
+            && delta.find_calls == delta.find_completions.saturating_add(delta.find_failures)
+            && delta.active_finds == 0
+    });
+    let mapped = delta.map_or(0, |value| value.mapped_bytes);
+    let sample = Sample::new(elapsed, correct && accounted, mapped).with_query_work(metrics);
+    match peak_resident_bytes() {
+        Some(bytes) => sample.with_peak_resident_bytes(bytes),
+        None => sample,
+    }
+}
+
+fn terminal_query_metrics(
+    query: &TemplateQuery,
+    expected_terminal: bool,
+) -> Result<QueryWorkMetrics, String> {
+    if !matches!(query.poll(), TemplateQueryOutcome::Terminal(_)) {
+        return Err("silent_query_loss".to_owned());
+    }
+    let progress = query.benchmark_work_snapshot();
+    if progress.pending_count() != 0 || progress.in_flight_count() != 0 {
+        return Err("unaccounted_work".to_owned());
+    }
+    let work = progress.work();
+    Ok(QueryWorkMetrics {
+        query_completions: u64::from(expected_terminal),
+        query_failures: u64::from(!expected_terminal),
+        stale_discards: work.get(TemplateWorkDisposition::Superseded),
+        producer_publications: query.benchmark_publication_count(),
+        admitted: work.get(TemplateWorkDisposition::Admitted),
+        skipped_change: work.get(TemplateWorkDisposition::SkippedChange),
+        deferred_rate: work.get(TemplateWorkDisposition::DeferredRate),
+        coalesced: work.get(TemplateWorkDisposition::Coalesced),
+        superseded: work.get(TemplateWorkDisposition::Superseded),
+        rejected: work.get(TemplateWorkDisposition::Rejected),
+        queue_expired: work.get(TemplateWorkDisposition::QueueExpired),
+        completed: work.get(TemplateWorkDisposition::Completed),
+        failed: work.get(TemplateWorkDisposition::Failed),
+        ..QueryWorkMetrics::default()
+    })
+}
+
+fn measured(operation: impl FnOnce() -> bool, resident: Option<u64>) -> Sample {
+    let started = Instant::now();
+    let correct = operation();
+    let sample = Sample::unmapped(started.elapsed(), correct);
+    match resident {
+        Some(bytes) => sample.with_peak_resident_bytes(bytes),
+        None => sample,
+    }
+}
+
+fn wait_progress(
+    query: &TemplateQuery,
+    predicate: impl Fn(TemplateQueryProgress) -> bool,
+) -> Result<TemplateQueryProgress, String> {
+    let deadline = Instant::now() + OPERATION_WAIT;
+    loop {
+        match query.poll() {
+            TemplateQueryOutcome::Pending(progress) if predicate(progress) => return Ok(progress),
+            TemplateQueryOutcome::Pending(_) => {}
+            TemplateQueryOutcome::Terminal(_) => return Err("authority_violation".to_owned()),
+        }
+        if Instant::now() >= deadline {
+            return Err("typed_operation_failure:DeadlineExceeded".to_owned());
+        }
+        thread::sleep(POLL_WAIT);
+    }
+}
+
+fn prime_pending(query: &TemplateQuery) -> Result<TemplateQueryProgress, String> {
+    wait_progress(query, |progress| {
+        progress.confirmed_observations() == 0
+            && progress.last_frame().is_some()
+            && progress.work().get(TemplateWorkDisposition::Completed) >= 1
+            && progress.pending_count() <= 1
+            && progress.in_flight_count() <= 2
+    })
+}
+
+fn wait_query_publication(query: &TemplateQuery) -> Result<u64, String> {
+    let deadline = Instant::now() + OPERATION_WAIT;
+    loop {
+        let publications = query.benchmark_publication_count();
+        match query.poll() {
+            TemplateQueryOutcome::Pending(progress)
+                if publications != 0 && progress.confirmed_observations() == 0 =>
+            {
+                return Ok(publications);
+            }
+            TemplateQueryOutcome::Pending(_) => {}
+            TemplateQueryOutcome::Terminal(_) => return Err("authority_violation".to_owned()),
+        }
+        if Instant::now() >= deadline {
+            return Err("typed_operation_failure:DeadlineExceeded".to_owned());
+        }
+        thread::sleep(POLL_WAIT);
+    }
+}
+
+fn wait_terminal(
+    query: &TemplateQuery,
+) -> Result<(Arc<TemplateTerminalOutcome>, Option<TemplateQueryProgress>), String> {
+    wait_terminal_bounded(query, OPERATION_WAIT)
+}
+
+fn wait_terminal_bounded(
+    query: &TemplateQuery,
+    wait: Duration,
+) -> Result<(Arc<TemplateTerminalOutcome>, Option<TemplateQueryProgress>), String> {
+    let deadline = Instant::now() + wait;
+    let mut last = None;
+    loop {
+        match query.poll() {
+            TemplateQueryOutcome::Pending(progress) => last = Some(progress),
+            TemplateQueryOutcome::Terminal(terminal) => return Ok((terminal, last)),
+        }
+        if Instant::now() >= deadline {
+            return Err("typed_operation_failure:DeadlineExceeded".to_owned());
+        }
+        thread::sleep(POLL_WAIT);
+    }
+}
+
+fn wait_for_backend_idle(wait: Duration) -> Result<(), String> {
+    let deadline = Instant::now() + wait;
+    while Instant::now() < deadline {
+        if backend_snapshot().active_finds == 0 {
+            return Ok(());
+        }
+        thread::sleep(POLL_WAIT);
+    }
+    Err("unaccounted_work".to_owned())
+}
+
+fn matched_exact(
+    terminal: &TemplateTerminalOutcome,
+    run: &NativeRun,
+    observations: u32,
+    newer_than: Option<FrameStamp>,
+) -> bool {
+    matched_target_exact(
+        terminal,
+        run.target,
+        run.template.id(),
+        run.shape,
+        observations,
+        newer_than,
+    )
+}
+
+fn matched_target_exact(
+    terminal: &TemplateTerminalOutcome,
+    target: TargetId,
+    template: &TemplateId,
+    shape: MarkerShape,
+    observations: u32,
+    newer_than: Option<FrameStamp>,
+) -> bool {
+    let TemplateTerminalOutcome::Matched(result) = terminal else {
+        return false;
+    };
+    let match_result = result.result();
+    let stamp = result.frame().stamp();
+    let bounds = match_result.best().map(|candidate| candidate.bounds());
+    let expected = shape.extent();
+    result.target() == target
+        && result.template() == template
+        && result.confirmed_observations() >= observations
+        && match_result.stamp() == stamp
+        && match_result.transform() == result.frame().transform()
+        && match_result.backend().id() == "opencv-cpu"
+        && match_result.matches().len() == 1
+        && bounds.is_some_and(|bounds| {
+            bounds.left() == shape.origin_x
+                && bounds.top() == shape.origin_y
+                && bounds.width() == expected.width()
+                && bounds.height() == expected.height()
+                && match_result.searched().contains_rect(bounds)
+        })
+        && newer_than.is_none_or(|prior| stamp.order(&prior) == Ok(FrameOrder::After))
+}
+
+fn frame_has_visual_token(
+    session: &Session,
+    fixture: &NativeFixture,
+    frame: &Frame,
+    expected: VisualToken,
+) -> Result<bool, String> {
+    let shape = token_shape(frame, fixture).ok_or_else(|| "wrong_transform".to_owned())?;
+    let mapping = session
+        .map_frame(frame, PixelFormat::Rgba8, &bounded(OPERATION_WAIT))
+        .map_err(|error| format!("typed_operation_failure:{:?}", error.status()))?;
+    Ok(decode_visual_token(&mapping, shape).is_ok_and(|token| token == expected))
+}
+
+fn terminal_match(outcome: &TemplateTerminalOutcome) -> Option<&mado_pilot::TemplateWatchResult> {
+    match outcome {
+        TemplateTerminalOutcome::Matched(result) => Some(result),
+        _ => None,
+    }
+}
+
+fn prepare_marker(
+    engine: &Engine,
+    shape: MarkerShape,
+    id: &str,
+) -> Result<PreparedTemplate, String> {
+    let width = shape.cell_width * 3;
+    let height = shape.cell_height * 2;
+    let capacity = usize::try_from(width)
+        .ok()
+        .and_then(|width| {
+            usize::try_from(height)
+                .ok()
+                .and_then(|height| width.checked_mul(height))
+        })
+        .and_then(|pixels| pixels.checked_mul(3))
+        .ok_or_else(|| "wrong_region".to_owned())?;
+    let mut rgb = Vec::with_capacity(capacity);
+    for y in 0..height {
+        for x in 0..width {
+            let cell = (x / shape.cell_width, y / shape.cell_height);
+            rgb.extend_from_slice(if matches!(cell, (1, 0) | (0, 1)) {
+                &MARKER_SECONDARY
+            } else {
+                &MARKER_PRIMARY
+            });
+        }
+    }
+    let source = TemplateSource::new(TemplateSourceRequest {
+        id: TemplateId::new(id).map_err(|_| "protocol_drift".to_owned())?,
+        encoding: TemplateEncoding::Png,
+        extent: shape.extent(),
+        space: CoordinateSpace::CapturePixels,
+        defaults: MatchDefaults::new(0.95, 1).map_err(|_| "protocol_drift".to_owned())?,
+        content: Arc::from(png::encode_rgb(width, height, &rgb)),
+    })
+    .map_err(|_| "protocol_drift".to_owned())?;
+    engine
+        .prepare_template(&source, &bounded(OPERATION_WAIT))
+        .map_err(|_| "typed_operation_failure:VisionFailed".to_owned())
+}
+
+fn bounded(wait: Duration) -> OperationContext {
+    OperationContext::new()
+        .with_timeout(wait)
+        .expect("positive qualification bound")
+}
+
+fn privacy_tokens_are_bounded() -> bool {
+    const ALLOWLIST: [&str; 9] = [
+        "native-watch-control-v1",
+        native_watch_report::CONTROL_PROTOCOL_V2,
+        "watch-marker-v1",
+        "watch-marker-v2",
+        "opencv-cpu",
+        "aarch64-apple-darwin",
+        "x86_64-pc-windows-msvc",
+        "precursor",
+        "final",
+    ];
+    ALLOWLIST
+        .iter()
+        .all(|value| value.len() <= 64 && !value.contains('/') && !value.contains('\\'))
+}
+
+fn report(arguments: &Arguments, plan: Plan, workloads: &[Workload]) {
+    let source = required_identity(&arguments.raw, "--source-revision", 40);
+    let tree = required_identity(&arguments.raw, "--source-tree", 40);
+    let executable = required_identity(&arguments.raw, "--executable-sha256", 64);
+    let fixture = required_identity(&arguments.raw, "--fixture-sha256", 64);
+    let fixture_source = required_identity(&arguments.raw, "--fixture-source-sha256", 64);
+    let process = required_identity(&arguments.raw, "--process-index", 1);
+    let cohort = required_enum(&arguments.raw, "--cohort", &["precursor", "final"]);
+    let host = required_argument(&arguments.raw, "--host-class");
+    let backend = required_argument(&arguments.raw, "--backend");
+    let toolchain = required_argument(&arguments.raw, "--toolchain");
+    let (hardware, os_version) = Profile::host(&arguments.raw);
+    assert!(privacy_tokens_are_bounded(), "privacy_violation");
+    let profile = Profile {
+        fixture: native_watch_report::FIXTURE_DESCRIPTION_V2.to_owned(),
+        fixture_sha256: fixture,
+        benchmark_executable_sha256: Some(executable),
+        hardware,
+        os_version,
+        deployment_target: Some(target_name().to_owned()),
+        build_profile: native_watch_report::BUILD_PROFILE_V2.to_owned(),
+        correctness_oracle: native_watch_report::CORRECTNESS_ORACLE_V2,
+        queue_policy: native_watch_report::QUEUE_POLICY,
+        notes: Some(format!(
+            "source {source}; tree {tree}; fixture-source {fixture_source}; backend {backend}; toolchain {toolchain}; host {host}; cohort {cohort}; process {process}; control {}",
+            native_watch_report::CONTROL_PROTOCOL_V2,
+        )),
+    };
+    native_watch_report::validate_v2(
+        &profile,
+        native_watch_report::Provenance {
+            source: &source,
+            tree: &tree,
+            fixture_source: &fixture_source,
+            backend: &backend,
+            toolchain: &toolchain,
+            host: &host,
+            cohort: &cohort,
+            process_index: &process,
+        },
+    )
+    .unwrap_or_else(|failure| panic!("{}", failure.token()));
+    bench_harness::report(
+        &Benchmark {
+            id: "phase-4-native-template-watch-v2-lane-c",
+            workload: "optional V2 native Rust facade template-watch evidence campaign",
+            phase: "4",
+        },
+        &profile,
+        plan,
+        workloads,
+    );
+
+    let accounting = backend_snapshot();
+    assert!(
+        accounting.active_finds == 0
+            && accounting.find_calls
+                == accounting
+                    .find_completions
+                    .saturating_add(accounting.find_failures),
+        "unaccounted_work"
+    );
+    println!("[backend_accounting]");
+    println!("runs = {}", accounting.find_calls);
+    println!("successful_completions = {}", accounting.find_completions);
+    println!("typed_failures = {}", accounting.find_failures);
+    println!("active = {}", accounting.active_finds);
+
+    #[cfg(target_os = "macos")]
+    {
+        let cleanup = fixture_cleanup_counts().unwrap_or_else(|_| panic!("cleanup_failed"));
+        assert!(
+            cleanup.active == 0
+                && cleanup.exhausted == 0
+                && cleanup.scheduled == cleanup.completed.saturating_add(cleanup.exhausted),
+            "cleanup_failed"
+        );
+        println!("[fixture_cleanup_accounting]");
+        println!("scheduled = {}", cleanup.scheduled);
+        println!("active = {}", cleanup.active);
+        println!("completed = {}", cleanup.completed);
+        println!("exhausted = {}", cleanup.exhausted);
+    }
+}
+
+fn required_identity(arguments: &[String], name: &str, length: usize) -> String {
+    let value = value(arguments, name).unwrap_or_else(|| panic!("identity_mismatch"));
+    assert!(
+        value.len() >= length
+            && value.len() <= 96
+            && value
+                .bytes()
+                .all(|byte| byte.is_ascii_hexdigit() || byte.is_ascii_digit()),
+        "identity_mismatch"
+    );
+    value.to_owned()
+}
+
+fn required_argument(arguments: &[String], name: &str) -> String {
+    value(arguments, name)
+        .unwrap_or_else(|| panic!("identity_mismatch"))
+        .to_owned()
+}
+
+fn required_enum(arguments: &[String], name: &str, accepted: &[&str]) -> String {
+    let value = value(arguments, name).unwrap_or_else(|| panic!("identity_mismatch"));
+    assert!(accepted.contains(&value), "identity_mismatch");
+    value.to_owned()
+}
+
+fn enforce_resource_budgets(workloads: &[Workload], heap_limit: usize, resident_limit: u64) {
+    for workload in workloads {
+        assert!(
+            workload.peak_allocated_bytes() <= heap_limit,
+            "{} exceeded the accepted live-Rust-heap ceiling: {} > {heap_limit}",
+            workload.name(),
+            workload.peak_allocated_bytes()
+        );
+        match workload.peak_resident_bytes() {
+            Some(resident) => assert!(
+                resident <= resident_limit,
+                "{} exceeded the accepted process peak-RSS ceiling: {resident} > {resident_limit}",
+                workload.name()
+            ),
+            None => assert!(
+                !sampled_workload(workload.name()),
+                "{} omitted peak resident memory",
+                workload.name()
+            ),
+        }
+    }
+}
+
+#[cfg(all(target_arch = "aarch64", target_os = "macos", target_vendor = "apple"))]
+fn enforce_accepted_budgets(workloads: &[Workload]) {
+    bench_harness::enforce_latency_budgets(
+        workloads,
+        &bench_harness::PHASE4_APPLE_NATIVE_TEMPLATE_WATCH_LATENCY_BUDGETS,
+    );
+    enforce_resource_budgets(
+        workloads,
+        bench_harness::PHASE4_APPLE_NATIVE_TEMPLATE_WATCH_HEAP_LIMIT_BYTES,
+        bench_harness::PHASE4_APPLE_NATIVE_TEMPLATE_WATCH_RESIDENT_LIMIT_BYTES,
+    );
+}
+
+#[cfg(all(
+    target_arch = "x86_64",
+    target_os = "windows",
+    target_env = "msvc",
+    target_vendor = "pc"
+))]
+fn enforce_accepted_budgets(workloads: &[Workload]) {
+    bench_harness::enforce_latency_budgets(
+        workloads,
+        &bench_harness::PHASE4_WINDOWS_NATIVE_TEMPLATE_WATCH_LATENCY_BUDGETS,
+    );
+    enforce_resource_budgets(
+        workloads,
+        bench_harness::PHASE4_WINDOWS_NATIVE_TEMPLATE_WATCH_HEAP_LIMIT_BYTES,
+        bench_harness::PHASE4_WINDOWS_NATIVE_TEMPLATE_WATCH_RESIDENT_LIMIT_BYTES,
+    );
+}
+
+#[cfg(not(any(
+    all(target_arch = "aarch64", target_os = "macos", target_vendor = "apple"),
+    all(
+        target_arch = "x86_64",
+        target_os = "windows",
+        target_env = "msvc",
+        target_vendor = "pc"
+    )
+)))]
+fn enforce_accepted_budgets(_workloads: &[Workload]) {
+    panic!("native template-watch qualification budgets exist only for release targets");
+}

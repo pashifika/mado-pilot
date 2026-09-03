@@ -16,15 +16,15 @@
 #   add_subdirectory(<repo>/crates/bindings/capi madopilot)
 #   target_link_libraries(my-app PRIVATE MadoPilot::Cpp)
 #
-# There is no install or export set yet. Release packaging is not implemented —
-# the ABI-major decorated loader names are a packaging step this phase does not
-# take — so consumption is from the development tree only. See `docs/c-abi.md`.
+# There is no install or export set. The v0.4.0 release is source-only, so
+# consumption remains from the development tree; ABI-major decorated loader
+# names belong to a future installable-packaging decision. See `docs/c-abi.md`.
 
 cmake_minimum_required(VERSION 3.22)
 
 project(
   MadoPilot
-  VERSION 0.3.1
+  VERSION 0.4.0
   DESCRIPTION "Headless visual automation runtime — C ABI and C++ wrapper"
   LANGUAGES C CXX
 )

@@ -30,7 +30,7 @@ extern "C" {
 #endif
 
 /* The version of this internal surface. Rust asserts it at load. */
-#define MP_SHIM_ABI_VERSION 19u
+#define MP_SHIM_ABI_VERSION 21u
 
 /* The largest extent, budget, and default wait the shim will accept or apply. */
 #define MP_SHIM_MAX_PIXEL_EXTENT 32768u
@@ -75,13 +75,14 @@ extern "C" {
 #define MP_SHIM_RAISE_AFTER_CALLBACK 4u
 #define MP_SHIM_RAISE_AT_TEARDOWN 8u
 #define MP_SHIM_RAISE_IN_START_COMPLETION 16u
+#define MP_SHIM_RAISE_AT_START_SUBMISSION 2048u
+#define MP_SHIM_FAIL_IN_START_COMPLETION 4096u
 /* Rust-only companion seam: the Rust trampoline panics before processing. */
 #define MP_SHIM_PANIC_IN_RUST_CALLBACK 32u
 #define MP_SHIM_RAISE_IN_STOP_COMPLETION 64u
 /* Rust-only companion seam: one callback outlives the default fence wait. */
 #define MP_SHIM_DELAY_IN_RUST_CALLBACK 128u
 /* Native allocation-failure seams; zero in every product request. */
-#define MP_SHIM_FAIL_START_SEMAPHORE_ALLOCATION 256u
 #define MP_SHIM_FAIL_START_HOLD_ALLOCATION 512u
 #define MP_SHIM_FAIL_RECONFIGURE_SEMAPHORE_ALLOCATION 1024u
 
@@ -412,6 +413,15 @@ mp_shim_status mp_shim_testing_gate_retries(
     uint64_t completion_delay_nanos, uint64_t first_wait_nanos, uint64_t second_wait_nanos,
     mp_shim_status *out_start_first, mp_shim_status *out_start_second,
     mp_shim_status *out_stop_first, mp_shim_status *out_stop_second);
+
+mp_shim_status mp_shim_testing_start_gate_outcome(
+    uint64_t completion_delay_nanos, mp_shim_status completion_status,
+    uint64_t first_wait_nanos, uint64_t second_wait_nanos,
+    mp_shim_status *out_first, mp_shim_status *out_second,
+    uint32_t *out_submissions);
+
+mp_shim_status mp_shim_testing_capture_lifecycle_counts(
+    uint64_t *out_start_submissions, uint64_t *out_stop_submissions);
 
 /*
  * Runs the production stop-completion trampoline with an injected exception.
@@ -1080,24 +1090,41 @@ mp_shim_status mp_shim_input_environment(int64_t *out_process,
  * A submitted application that cannot be returned remains retained through a
  * bounded graceful-then-force termination sequence and an exact-object lifecycle
  * observation, including when completion arrives after the caller's wait expires.
- * If that bounded attempt cannot verify exit, delayed reaper ownership persists
- * across bounded retries until the exact application is observed terminated.
+ * If that bounded attempt cannot verify exit, a delayed reaper observes the
+ * exact lifetime up to its finite bound; setup failure is reported as exhaustion.
  */
 mp_shim_status mp_shim_fixture_application_launch(
     const char *bundle_path, const char *const *arguments,
     size_t argument_count, mp_shim_fixture_application **out_application,
     uint32_t *out_process_id);
-mp_shim_status mp_shim_fixture_application_is_live(
-    const mp_shim_fixture_application *application, uint32_t *out_live);
+#define MP_SHIM_FIXTURE_LIFETIME_LOST 0u
+#define MP_SHIM_FIXTURE_LIFETIME_LIVE 1u
+#define MP_SHIM_FIXTURE_LIFETIME_UNKNOWN 2u
+/*
+ * UNKNOWN means the retained launch identity has not yet appeared in the
+ * workspace process registry. It is not authority to relaunch or terminate.
+ */
+mp_shim_status mp_shim_fixture_application_lifetime(
+    mp_shim_fixture_application *application, uint32_t *out_lifetime);
 mp_shim_status mp_shim_fixture_application_terminate(
     mp_shim_fixture_application *application, uint32_t force);
 /*
- * Releases the opaque owner only after the exact application is observed
- * terminated or retained reaper ownership has accepted the handoff.
+ * Runs bounded exact-lifetime containment before releasing the opaque owner.
+ * Unconfirmed exit is handed to the finite reaper or reported as cleanup
+ * exhaustion when delayed state cannot be allocated.
  */
 void mp_shim_fixture_application_release(
     mp_shim_fixture_application *application);
 
+
+#if defined(MP_SHIM_PRIVATE_FIXTURE)
+mp_shim_status mp_shim_fixture_cleanup_counts(
+    uint64_t *out_scheduled, uint64_t *out_active,
+    uint64_t *out_completed, uint64_t *out_exhausted);
+/* Private bounded ScreenCaptureKit lifecycle diagnostics. */
+mp_shim_status mp_shim_sck_diagnostics_set_tier(uint32_t tier);
+mp_shim_status mp_shim_sck_diagnostics_dump(void);
+#endif
 /* Deterministic scenarios for the production-shaped workspace launch helper. */
 #define MP_SHIM_TEST_FIXTURE_SEMAPHORE_ALLOCATION_FAILURE 0u
 #define MP_SHIM_TEST_FIXTURE_COMPLETION_EXCEPTION 1u
@@ -1107,6 +1134,15 @@ void mp_shim_fixture_application_release(
 #define MP_SHIM_TEST_FIXTURE_HANDLE_ALLOCATION_FAILURE 5u
 #define MP_SHIM_TEST_FIXTURE_REAPER_HANDOFF 6u
 #define MP_SHIM_TEST_FIXTURE_RELEASE_REAPER_HANDOFF 7u
+#define MP_SHIM_TEST_FIXTURE_STALE_TERMINATION_AFTER_EXACT_DEATH 8u
+#define MP_SHIM_TEST_FIXTURE_PID_REUSE 9u
+#define MP_SHIM_TEST_FIXTURE_EXACT_PROBE_FAILURE 10u
+#define MP_SHIM_TEST_FIXTURE_DELAYED_DEATH 11u
+#define MP_SHIM_TEST_FIXTURE_OVERLAPPING_RELEASES 12u
+#define MP_SHIM_TEST_FIXTURE_TRANSIENT_LIFETIME_REGISTRATION 13u
+#define MP_SHIM_TEST_FIXTURE_CLEANUP_RECORD_ALLOCATION_FAILURE 14u
+#define MP_SHIM_TEST_FIXTURE_RELEASE_CLEANUP_RECORD_ALLOCATION_FAILURE 15u
+#define MP_SHIM_TEST_FIXTURE_ADVISORY_TERMINATED_WHILE_EXACT_LIVE 16u
 
 /*
  * Exercises fixture launch submission, asynchronous completion containment,
@@ -1118,8 +1154,11 @@ mp_shim_status mp_shim_testing_fixture_application_launch(
     uint32_t *out_submission_calls,
     uint32_t *out_graceful_termination_calls,
     uint32_t *out_force_termination_calls, uint32_t *out_terminated,
-    uint64_t *out_live_during_handle,
-    uint64_t *out_live_after_release);
+    uint64_t *out_live_during_handle, uint64_t *out_live_after_release,
+    uint64_t *out_cleanup_scheduled, uint64_t *out_cleanup_active,
+    uint64_t *out_cleanup_completed, uint64_t *out_cleanup_exhausted,
+    uint64_t *out_cleanup_observations,
+    uint32_t *out_cleanup_max_observer_concurrency);
 
 /*
  * Activates the application retained by `target`, without presenting UI.

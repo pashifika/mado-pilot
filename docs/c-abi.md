@@ -30,6 +30,9 @@ bytes; ADR 0043 freezes ABI 1.4's explicit profile/grouped OCR surface at 720
 bytes. ABI 1.5 appends `engine_create_with_ocr_provider` at offset 720 and
 `engine_ocr_provider_descriptor` at offset 728 for a complete 736-byte table
 under [ADR 0046](adr/0046-onnx-accelerator-provider-policy.md).
+The `v0.4.0` product version leaves this separately versioned ABI unchanged and
+adds no watcher entry.
+
 The unreleased 1.1 draft remains intentionally unsupported. Within ABI major 1:
 
 - no released numeric value changes its number;
@@ -736,11 +739,10 @@ the receipt nor diagnostics synthesize that causal conclusion.
 | `aarch64-apple-darwin` | `libmadopilot.dylib` | `libmadopilot.1.dylib` |
 | `x86_64-pc-windows-msvc` | `madopilot.dll`, `madopilot.dll.lib` | `madopilot-1.dll`, `madopilot-1.lib` |
 
-The ABI-major decorated names in the right column are what a release ships, so
-that an incompatible ABI is a different library rather than a silent breakage.
-Applying them is a release-packaging step — an install name on macOS, a linked
-file name and matching import library on Windows — and is not implemented yet.
-What is built today is the undecorated development artifact.
+The ABI-major decorated names in the right column are reserved for a future
+installable-packaging decision. Applying them requires a macOS install name or a
+Windows linked file and matching import library. The source-only `v0.4.0`
+release provides neither; development-tree builds remain undecorated.
 
 No `staticlib` is produced. Gate [`G-008`](validation-gates.md#g-008) has not
 recorded which static dependency combinations are supported, and emitting the

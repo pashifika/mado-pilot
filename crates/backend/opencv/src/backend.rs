@@ -149,6 +149,17 @@ impl MatchBackend for OpenCvBackend {
         request: &BackendRequest<'_>,
         operation: &OperationContext,
     ) -> Result<Vec<Candidate>> {
+        #[cfg(feature = "benchmark-instrumentation")]
+        let observation =
+            crate::benchmark_instrumentation::FindObservation::begin(request.pixels.bytes().len());
+        #[cfg(feature = "benchmark-instrumentation")]
+        {
+            let delay = crate::benchmark_instrumentation::configured_find_delay();
+            if !delay.is_zero() {
+                std::thread::sleep(delay);
+            }
+        }
+
         checkpoint(operation)?;
 
         let template = request
@@ -193,14 +204,17 @@ impl MatchBackend for OpenCvBackend {
         // is the caller's own `u32` result limit, so this is the one stage of a
         // search whose length the caller sets. It reads the context as it goes
         // rather than at its end.
-        peaks(values, search, operation)?
+        let result: Result<Vec<Candidate>> = peaks(values, search, operation)?
             .into_iter()
             .map(|peak| {
                 let left = i32::try_from(peak.left).map_err(|_| unrepresentable())?;
                 let top = i32::try_from(peak.top).map_err(|_| unrepresentable())?;
                 Ok(Candidate::new(left, top, peak.score))
             })
-            .collect()
+            .collect();
+        #[cfg(feature = "benchmark-instrumentation")]
+        observation.finish(result.is_ok());
+        result
     }
 }
 

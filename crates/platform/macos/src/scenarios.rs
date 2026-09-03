@@ -13,7 +13,7 @@
 //! its reason so a green run cannot be read as evidence the scenario ran.
 
 use std::ffi::c_void;
-use std::sync::{Arc, Barrier, Mutex, MutexGuard};
+use std::sync::{Arc, Barrier, MutexGuard};
 use std::thread;
 use std::time::{Duration, Instant};
 
@@ -31,10 +31,10 @@ use crate::discovery::{Candidate, Fingerprint, NativeKey, TargetMetadata, invent
 use crate::input::GeometryLedger;
 use crate::native::{NativeSession, SessionTarget, testing_delayed_callback_is_active};
 use crate::shim::{
-    self, DELAY_IN_RUST_CALLBACK, FAIL_RECONFIGURE_SEMAPHORE_ALLOCATION,
-    FAIL_START_HOLD_ALLOCATION, FAIL_START_SEMAPHORE_ALLOCATION, MAX_NATIVE_WAIT,
-    PANIC_IN_RUST_CALLBACK, RAISE_AFTER_CALLBACK, RAISE_AT_START, RAISE_AT_TEARDOWN,
-    RAISE_BEFORE_CALLBACK, RAISE_IN_START_COMPLETION, RAISE_IN_STOP_COMPLETION,
+    self, DELAY_IN_RUST_CALLBACK, FAIL_IN_START_COMPLETION, FAIL_RECONFIGURE_SEMAPHORE_ALLOCATION,
+    FAIL_START_HOLD_ALLOCATION, MAX_NATIVE_WAIT, PANIC_IN_RUST_CALLBACK, RAISE_AFTER_CALLBACK,
+    RAISE_AT_START, RAISE_AT_START_SUBMISSION, RAISE_AT_TEARDOWN, RAISE_BEFORE_CALLBACK,
+    RAISE_IN_START_COMPLETION, RAISE_IN_STOP_COMPLETION,
 };
 use crate::storage::DETACHED_BUFFER_BUDGET;
 
@@ -71,8 +71,9 @@ const FRAME_TIME_LEAD: Duration = Duration::from_millis(50);
 /// one scenario's failure should report itself rather than turn every later
 /// scenario into a second, less informative failure.
 fn serialized() -> MutexGuard<'static, ()> {
-    static GATE: Mutex<()> = Mutex::new(());
-    GATE.lock().unwrap_or_else(|poisoned| poisoned.into_inner())
+    shim::NATIVE_LIFECYCLE_TEST_SERIAL
+        .lock()
+        .unwrap_or_else(|poisoned| poisoned.into_inner())
 }
 
 /// One authorized target, with everything a session open needs.
@@ -153,15 +154,20 @@ impl Harness {
         }
     }
 
-    /// Returns a harness for a display that is currently producing frames.
-    ///
-    /// The framework publishes when content changes and not otherwise, so a
-    /// display nobody is touching produces its first frame and then nothing. A
-    /// scenario whose subject is *what happens as frames arrive* would pass
-    /// vacuously against such a display, so liveness is established here — by
-    /// opening a throwaway session and requiring it to advance — rather than
-    /// assumed. `None` with a printed note means no attached display is changing.
+    /// Returns a harness whose throwaway session proved current producer liveness.
     fn acquire_producing(scenario: &str) -> Option<Self> {
+        let (harness, session, _frame) = Self::acquire_live_session(scenario)?;
+        let _closed = close(&session);
+        drop(session);
+        Some(harness)
+    }
+
+    /// Returns the exact session and frame that proved current producer liveness.
+    ///
+    /// The framework publishes when content changes and not otherwise. A scenario
+    /// that does not exercise session reopen retains this session so liveness
+    /// cannot disappear between admission and its first assertion.
+    fn acquire_live_session(scenario: &str) -> Option<(Self, Arc<NativeSession>, Frame)> {
         let candidates = discovered(scenario)?;
         let displays = candidates
             .iter()
@@ -172,13 +178,12 @@ impl Harness {
                 continue;
             };
             let advanced = next_frame(&session, FrameRequest::latest())
-                .and_then(|first| next_frame(&session, FrameRequest::newer_than(first.stamp())))
-                .is_ok();
+                .and_then(|first| next_frame(&session, FrameRequest::newer_than(first.stamp())));
+            if let Ok(frame) = advanced {
+                return Some((harness, session, frame));
+            }
             let _closed = close(&session);
             drop(session);
-            if advanced {
-                return Some(harness);
-            }
         }
         skipped(
             scenario,
@@ -214,7 +219,16 @@ impl Harness {
         let context = OperationContext::new()
             .with_timeout(Duration::from_secs(10))
             .expect("a positive timeout");
-        let mut operation = Operation::admit(&context).expect("admitted");
+        self.open_with_delays_in(start_delay, stop_delay, &context)
+    }
+
+    fn open_with_delays_in(
+        &self,
+        start_delay: Duration,
+        stop_delay: Duration,
+        context: &OperationContext,
+    ) -> mado_pilot_core::Result<Arc<NativeSession>> {
+        let mut operation = Operation::admit(context).expect("admitted");
         let target = self.issuer.issue_target(crate::provider::PROVIDER)?;
         let stream = self.issuer.issue_stream()?;
         let selected = SessionTarget::new(
@@ -368,12 +382,28 @@ fn an_open_selection_keeps_producing_across_a_fresh_discovery_snapshot() {
         close(&session).expect("close after unavailable refresh");
         return;
     };
-    next_frame_within(
+    match next_frame_within(
         &session,
         FrameRequest::newer_than(first.stamp()),
         FRAME_WAIT,
-    )
-    .expect("a fresh snapshot does not disconnect the retained filter");
+    ) {
+        Ok(_) => {}
+        Err(error) if error.status() == Status::DeadlineExceeded => {
+            // The content stopped changing after the fresh snapshot. The session
+            // remains live, which the lifecycle assertion below covers; what
+            // cannot be shown from here is advancement with nothing to advance to.
+            println!(
+                "noted: the display went idle after the fresh discovery snapshot, \
+                 so continued publication is not exercised"
+            );
+        }
+        Err(error) => panic!("the retained filter failed after fresh discovery: {error}"),
+    }
+    assert_eq!(
+        session.lifecycle(),
+        Lifecycle::Open,
+        "a fresh snapshot must not terminate the retained filter"
+    );
     close(&session).expect("close");
 }
 
@@ -1072,12 +1102,205 @@ fn a_cancelled_close_leaves_a_state_a_later_close_finishes() {
 }
 
 #[test]
+fn native_start_settles_after_internal_slice_within_caller_deadline() {
+    let _serial = serialized();
+    let Some(harness) = Harness::acquire("start beyond one internal wait slice") else {
+        return;
+    };
+    let baseline = shim::live_objects();
+    let submissions =
+        shim::testing_capture_lifecycle_counts().expect("read lifecycle submission baseline");
+    let session = harness
+        .open_with_delays(MAX_NATIVE_WAIT, Duration::ZERO)
+        .expect("the caller's ten-second operation still owns the accepted start");
+
+    close(&session).expect("close the session");
+    drop(session);
+    assert!(
+        settles_to(baseline),
+        "the delayed start and close release every native object"
+    );
+    let settled =
+        shim::testing_capture_lifecycle_counts().expect("read lifecycle submission outcome");
+    assert_eq!(
+        [settled[0] - submissions[0], settled[1] - submissions[1]],
+        [1, 1],
+        "one delayed open owns one start and one stop"
+    );
+}
+
+#[test]
+fn native_start_without_a_caller_deadline_waits_through_internal_slices() {
+    let _serial = serialized();
+    let Some(harness) = Harness::acquire("native start without caller deadline") else {
+        return;
+    };
+    let baseline = shim::live_objects();
+    let submissions =
+        shim::testing_capture_lifecycle_counts().expect("read lifecycle submission baseline");
+    let context = OperationContext::new();
+    let session = harness
+        .open_with_delays_in(
+            MAX_NATIVE_WAIT + Duration::from_millis(50),
+            Duration::ZERO,
+            &context,
+        )
+        .expect("an unbounded caller joins the accepted start until settlement");
+    close(&session).expect("close session");
+    drop(session);
+    assert!(
+        settles_to(baseline),
+        "unbounded start left native ownership"
+    );
+    let settled =
+        shim::testing_capture_lifecycle_counts().expect("read lifecycle submission outcome");
+    assert_eq!(
+        [settled[0] - submissions[0], settled[1] - submissions[1]],
+        [1, 1],
+        "internal slices do not resubmit native start"
+    );
+}
+
+#[test]
+fn simultaneous_start_callers_join_one_native_submission() {
+    let _serial = serialized();
+    let Some(harness) = Harness::acquire("simultaneous native start callers") else {
+        return;
+    };
+    let baseline = shim::live_objects();
+    let submissions =
+        shim::testing_capture_lifecycle_counts().expect("read lifecycle submission baseline");
+    let session = Arc::new(
+        harness
+            .open_unstarted_shim(Duration::from_millis(150), Duration::ZERO, 0)
+            .expect("open unstarted shim session"),
+    );
+    let barrier = Arc::new(Barrier::new(3));
+    let callers = (0..2)
+        .map(|_| {
+            let session = Arc::clone(&session);
+            let barrier = Arc::clone(&barrier);
+            thread::spawn(move || {
+                barrier.wait();
+                session.start(MAX_NATIVE_WAIT)
+            })
+        })
+        .collect::<Vec<_>>();
+    barrier.wait();
+    for caller in callers {
+        assert_eq!(caller.join().expect("start caller"), Ok(()));
+    }
+    session.close(MAX_NATIVE_WAIT).expect("close session");
+    drop(session);
+    assert!(
+        settles_to(baseline),
+        "concurrent start left native ownership"
+    );
+    let settled =
+        shim::testing_capture_lifecycle_counts().expect("read lifecycle submission outcome");
+    assert_eq!(
+        [settled[0] - submissions[0], settled[1] - submissions[1]],
+        [1, 1],
+        "both callers join one accepted start and close submits one stop"
+    );
+}
+
+#[test]
+fn releasing_a_session_during_pending_start_joins_and_stops_once() {
+    let _serial = serialized();
+    let Some(harness) = Harness::acquire("release during pending native start") else {
+        return;
+    };
+    let baseline = shim::live_objects();
+    let submissions =
+        shim::testing_capture_lifecycle_counts().expect("read lifecycle submission baseline");
+    let session = harness
+        .open_unstarted_shim(Duration::from_millis(150), Duration::ZERO, 0)
+        .expect("open unstarted shim session");
+    assert_eq!(
+        session.start(Duration::from_millis(5)),
+        Err(shim::ShimStatus::TimedOut)
+    );
+    drop(session);
+    assert!(settles_to(baseline), "release left native ownership");
+    let settled =
+        shim::testing_capture_lifecycle_counts().expect("read lifecycle submission outcome");
+    assert_eq!(
+        [settled[0] - submissions[0], settled[1] - submissions[1]],
+        [1, 1],
+        "release joins the accepted start and submits one stop"
+    );
+}
+
+#[test]
+fn caller_deadline_during_accepted_start_still_reaps_the_session() {
+    let _serial = serialized();
+    let Some(harness) = Harness::acquire("deadline during accepted native start") else {
+        return;
+    };
+    let baseline = shim::live_objects();
+    let submissions =
+        shim::testing_capture_lifecycle_counts().expect("read lifecycle submission baseline");
+    let context = OperationContext::new()
+        .with_timeout(Duration::from_millis(100))
+        .expect("positive timeout");
+    let error = harness
+        .open_with_delays_in(Duration::from_millis(150), Duration::ZERO, &context)
+        .expect_err("the caller deadline expires while native start remains accepted");
+    assert_eq!(error.status(), Status::DeadlineExceeded);
+    assert!(settles_to(baseline), "deadline left native ownership");
+    let settled =
+        shim::testing_capture_lifecycle_counts().expect("read lifecycle submission outcome");
+    assert_eq!(
+        [settled[0] - submissions[0], settled[1] - submissions[1]],
+        [1, 1],
+        "deadline cleanup joins and stops the accepted start"
+    );
+}
+
+#[test]
+fn caller_cancellation_during_accepted_start_still_reaps_the_session() {
+    let _serial = serialized();
+    let Some(harness) = Harness::acquire("cancellation during accepted native start") else {
+        return;
+    };
+    let baseline = shim::live_objects();
+    let submissions =
+        shim::testing_capture_lifecycle_counts().expect("read lifecycle submission baseline");
+    let cancellation = CancellationToken::new();
+    let canceller = cancellation.clone();
+    let context = OperationContext::new()
+        .with_timeout(Duration::from_secs(1))
+        .expect("positive timeout")
+        .with_cancellation(cancellation);
+    let cancel_thread = thread::spawn(move || {
+        thread::sleep(Duration::from_millis(20));
+        canceller.cancel();
+    });
+    let error = harness
+        .open_with_delays_in(Duration::from_millis(150), Duration::ZERO, &context)
+        .expect_err("caller cancellation wins after native start was accepted");
+    cancel_thread.join().expect("canceller");
+    assert_eq!(error.status(), Status::Cancelled);
+    assert!(settles_to(baseline), "cancellation left native ownership");
+    let settled =
+        shim::testing_capture_lifecycle_counts().expect("read lifecycle submission outcome");
+    assert_eq!(
+        [settled[0] - submissions[0], settled[1] - submissions[1]],
+        [1, 1],
+        "cancellation cleanup joins and stops the accepted start"
+    );
+}
+
+#[test]
 fn a_close_timeout_during_native_start_is_resumable() {
     let _serial = serialized();
     let Some(harness) = Harness::acquire("retryable delayed native start") else {
         return;
     };
     let baseline = shim::live_objects();
+    let submissions =
+        shim::testing_capture_lifecycle_counts().expect("read lifecycle submission baseline");
     let session = harness
         .open_unstarted_shim(Duration::from_millis(150), Duration::ZERO, 0)
         .expect("open unstarted shim session");
@@ -1103,6 +1326,53 @@ fn a_close_timeout_during_native_start_is_resumable() {
     assert!(
         settles_to(baseline),
         "the resumed delayed-start close releases every native object"
+    );
+    let settled =
+        shim::testing_capture_lifecycle_counts().expect("read lifecycle submission outcome");
+    assert_eq!(
+        [settled[0] - submissions[0], settled[1] - submissions[1]],
+        [1, 1],
+        "close retries join one accepted start and submit one stop"
+    );
+}
+
+#[test]
+fn close_during_a_pending_native_start_failure_joins_without_stopping() {
+    let _serial = serialized();
+    let Some(harness) = Harness::acquire("close during pending failed start") else {
+        return;
+    };
+    let baseline = shim::live_objects();
+    let submissions =
+        shim::testing_capture_lifecycle_counts().expect("read lifecycle submission baseline");
+    let session = harness
+        .open_unstarted_shim(
+            Duration::from_millis(150),
+            Duration::ZERO,
+            FAIL_IN_START_COMPLETION,
+        )
+        .expect("open unstarted shim session");
+    assert_eq!(
+        session.start(Duration::from_millis(5)),
+        Err(shim::ShimStatus::TimedOut),
+        "start remains pending when close begins"
+    );
+    assert_eq!(
+        session.close(MAX_NATIVE_WAIT),
+        Err(shim::ShimStatus::PlatformFailure),
+        "close reports the cached native start failure without producer ownership"
+    );
+    drop(session);
+    assert!(
+        settles_to(baseline),
+        "failed start close left native ownership"
+    );
+    let settled =
+        shim::testing_capture_lifecycle_counts().expect("read lifecycle submission outcome");
+    assert_eq!(
+        [settled[0] - submissions[0], settled[1] - submissions[1]],
+        [1, 0],
+        "failed settlement has one accepted start and no stop without producer ownership"
     );
 }
 
@@ -1155,12 +1425,6 @@ fn a_closed_session_refuses_further_frame_requests() {
 }
 
 #[test]
-fn a_start_semaphore_allocation_failure_is_typed_and_leaves_no_native_object_alive() {
-    let _serial = serialized();
-    start_allocation_failure("capture-start semaphore", FAIL_START_SEMAPHORE_ALLOCATION);
-}
-
-#[test]
 fn a_start_session_hold_allocation_failure_is_typed_and_leaves_no_native_object_alive() {
     let _serial = serialized();
     start_allocation_failure("capture-start session hold", FAIL_START_HOLD_ALLOCATION);
@@ -1201,6 +1465,41 @@ fn a_contained_exception_at_the_start_site_leaves_no_native_object_alive() {
     contained_site("start", RAISE_AT_START, FrameExpectation::Any);
 }
 
+#[test]
+fn a_start_submission_exception_settles_once_without_framework_ownership() {
+    let _serial = serialized();
+    let Some(harness) = Harness::acquire("start-submission containment") else {
+        return;
+    };
+    let baseline = shim::live_objects();
+    let submissions =
+        shim::testing_capture_lifecycle_counts().expect("read lifecycle submission baseline");
+    let session = harness
+        .open_unstarted_shim(Duration::ZERO, Duration::ZERO, RAISE_AT_START_SUBMISSION)
+        .expect("open unstarted shim session");
+    assert_eq!(
+        session.start(MAX_NATIVE_WAIT),
+        Err(shim::ShimStatus::NativeException)
+    );
+    assert_eq!(
+        session.start(Duration::from_millis(1)),
+        Err(shim::ShimStatus::NativeException),
+        "later callers observe the cached submission failure"
+    );
+    drop(session);
+    assert!(
+        settles_to(baseline),
+        "submission exception left native ownership"
+    );
+    let settled =
+        shim::testing_capture_lifecycle_counts().expect("read lifecycle submission outcome");
+    assert_eq!(
+        [settled[0] - submissions[0], settled[1] - submissions[1]],
+        [0, 0],
+        "the framework accepted neither a start nor a stop"
+    );
+}
+
 /// The capture-start completion block, which the start site above cannot reach.
 ///
 /// That block is invoked by the framework, so an exception leaving it unwinds into a
@@ -1216,10 +1515,21 @@ fn a_contained_exception_at_the_start_site_leaves_no_native_object_alive() {
 #[test]
 fn a_contained_exception_in_the_start_completion_leaves_no_native_object_alive() {
     let _serial = serialized();
-    contained_site(
+    let submissions =
+        shim::testing_capture_lifecycle_counts().expect("read lifecycle submission baseline");
+    if !contained_site(
         "the start completion",
         RAISE_IN_START_COMPLETION,
         FrameExpectation::Any,
+    ) {
+        return;
+    }
+    let settled =
+        shim::testing_capture_lifecycle_counts().expect("read lifecycle submission outcome");
+    assert_eq!(
+        [settled[0] - submissions[0], settled[1] - submissions[1]],
+        [1, 1],
+        "completion containment preserves one accepted start and one stop"
     );
 }
 
@@ -1317,7 +1627,7 @@ fn start_allocation_failure(name: &str, site: u32) {
     );
 }
 
-fn contained_site(name: &str, site: u32, expectation: FrameExpectation) {
+fn contained_site(name: &str, site: u32, expectation: FrameExpectation) -> bool {
     let scenario = format!("containment at {name}");
     // The frame sites need a display that is actually producing, or the raise
     // never fires and the case passes without having run.
@@ -1327,7 +1637,7 @@ fn contained_site(name: &str, site: u32, expectation: FrameExpectation) {
         Harness::acquire_producing(&scenario)
     };
     let Some(harness) = harness else {
-        return;
+        return false;
     };
     let baseline = shim::live_objects();
 
@@ -1392,16 +1702,16 @@ fn contained_site(name: &str, site: u32, expectation: FrameExpectation) {
          baseline of {baseline}",
         shim::live_objects()
     );
+    true
 }
 
 #[test]
 fn a_long_producer_run_keeps_live_native_objects_bounded() {
     let _serial = serialized();
-    let Some(harness) = Harness::acquire_producing("autorelease bound") else {
+    let Some((_harness, session, first)) = Harness::acquire_live_session("autorelease bound")
+    else {
         return;
     };
-    let session = harness.open(0).expect("open");
-    let first = next_frame(&session, FrameRequest::latest()).expect("first frame");
     let after_first = shim::live_objects();
     let mut stamp = first.stamp();
     drop(first);

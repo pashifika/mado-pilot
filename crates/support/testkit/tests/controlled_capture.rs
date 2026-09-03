@@ -68,6 +68,38 @@ fn a_session_that_exists_before_its_first_frame_still_starts_at_epoch_zero() {
 }
 
 #[test]
+fn caller_supplied_pixels_are_exact_and_wrong_lengths_are_refused() {
+    let capture = provider();
+    let operation = bounded();
+    let target = capture.discover(&operation).expect("discovered")[0].id();
+    let session = capture
+        .open(target, &OpenRequest::new(), &operation)
+        .expect("opened");
+    let pixels: Vec<u8> = (0..8 * 6 * 4)
+        .map(|index| u8::try_from(index).expect("fixture fits u8"))
+        .collect();
+
+    capture
+        .publish_pixels(&pixels, Continuity::Continuous)
+        .expect("published exact pixels");
+    let frame = session
+        .frame(&FrameRequest::latest(), &operation)
+        .expect("frame");
+    assert_eq!(
+        frame
+            .map(PixelFormat::Rgba8, &operation)
+            .expect("mapped")
+            .bytes(),
+        pixels
+    );
+
+    let error = capture
+        .publish_pixels(&pixels[..pixels.len() - 1], Continuity::Continuous)
+        .expect_err("a partial frame is refused");
+    assert_eq!(error.status(), Status::InvalidArgument);
+}
+
+#[test]
 fn a_waiting_request_is_satisfied_by_a_later_publication() {
     let capture = provider();
     let operation = bounded();

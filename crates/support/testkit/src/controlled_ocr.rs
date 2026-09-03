@@ -51,6 +51,7 @@ impl OcrBehavior {
 struct GateState {
     entered: bool,
     released: bool,
+    completed: bool,
 }
 
 /// A one-call completion gate for deterministic late and out-of-order tests.
@@ -83,6 +84,22 @@ impl CompletionGate {
         state.entered
     }
 
+    /// Waits until the released backend call reports completion.
+    ///
+    /// Returns `false` on timeout so a broken test fails instead of hanging.
+    #[must_use]
+    pub fn wait_until_completed(&self, timeout: Duration) -> bool {
+        let state = self
+            .state
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        let (state, _) = self
+            .changed
+            .wait_timeout_while(state, timeout, |state| !state.completed)
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        state.completed
+    }
+
     /// Releases the blocked backend call. Idempotent.
     pub fn release(&self) {
         let mut state = self
@@ -93,7 +110,20 @@ impl CompletionGate {
         self.changed.notify_all();
     }
 
-    fn enter_and_wait(&self) {
+    /// Returns a scope guard that releases this gate when dropped.
+    ///
+    /// A controller keeps this guard alive while it performs assertions around a
+    /// blocked backend call. Panic unwinding then opens the gate before owners
+    /// join backend worker threads, preventing a failed test from deadlocking
+    /// during teardown. Explicit [`Self::release`] remains idempotent.
+    #[must_use = "keep the guard alive for every scope that can leave the gate closed"]
+    pub fn release_guard(self: &Arc<Self>) -> CompletionGateReleaseGuard {
+        CompletionGateReleaseGuard {
+            gate: Arc::clone(self),
+        }
+    }
+
+    pub(crate) fn enter_and_wait(&self) {
         let mut state = self
             .state
             .lock()
@@ -105,6 +135,36 @@ impl CompletionGate {
                 .changed
                 .wait(state)
                 .unwrap_or_else(std::sync::PoisonError::into_inner);
+        }
+    }
+    pub(crate) fn complete(&self) {
+        let mut state = self
+            .state
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        state.completed = true;
+        self.changed.notify_all();
+    }
+}
+
+/// Releases one [`CompletionGate`] when controller scope exits.
+#[derive(Debug)]
+pub struct CompletionGateReleaseGuard {
+    gate: Arc<CompletionGate>,
+}
+
+impl Drop for CompletionGateReleaseGuard {
+    fn drop(&mut self) {
+        self.gate.release();
+    }
+}
+
+struct GateCompletion<'gate>(Option<&'gate CompletionGate>);
+
+impl Drop for GateCompletion<'_> {
+    fn drop(&mut self) {
+        if let Some(gate) = self.0 {
+            gate.complete();
         }
     }
 }
@@ -556,6 +616,7 @@ impl OcrBackend for ControlledOcr {
         if let Some(gate) = &call.gate {
             gate.enter_and_wait();
         }
+        let _completion = GateCompletion(call.gate.as_deref());
         if let Some(clock) = &self.clock {
             clock.advance(call.latency);
         }
@@ -605,5 +666,26 @@ impl OcrBackend for ControlledOcr {
             token.cancel();
         }
         self.script().close.apply()
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn release_guard_opens_gate_on_scope_exit() {
+        let gate = Arc::new(CompletionGate::new());
+        let worker_gate = Arc::clone(&gate);
+        let worker = std::thread::spawn(move || {
+            worker_gate.enter_and_wait();
+            worker_gate.complete();
+        });
+        let release = gate.release_guard();
+
+        assert!(gate.wait_until_entered(Duration::from_secs(2)));
+        drop(release);
+        assert!(gate.wait_until_completed(Duration::from_secs(2)));
+        worker.join().expect("gate worker completed");
     }
 }

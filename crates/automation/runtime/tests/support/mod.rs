@@ -54,6 +54,17 @@ impl Harness {
         Self::new(ControlledMatcher::new(PixelFormat::Rgba8))
     }
 
+    /// Wires a capture-only engine with finite debug diagnostics.
+    pub(crate) fn with_diagnostics(matcher: ControlledMatcher, capacity: usize) -> Self {
+        Self::build_with_options(
+            matcher,
+            false,
+            EngineOptions::new().with_diagnostics(
+                DiagnosticOptions::debug(capacity).expect("valid diagnostic capacity"),
+            ),
+        )
+    }
+
     /// Wires the same engine with the capture provider's own input double.
     pub(crate) fn with_input() -> Self {
         Self::build(ControlledMatcher::new(PixelFormat::Rgba8), true)

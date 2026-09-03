@@ -16,6 +16,10 @@ use mado_pilot_input::{
 };
 use windows::Foundation::TypedEventHandler;
 use windows::Graphics::Capture::GraphicsCaptureItem;
+#[cfg(feature = "benchmark-instrumentation")]
+use windows::Win32::Foundation::HWND;
+#[cfg(feature = "benchmark-instrumentation")]
+use windows::Win32::UI::WindowsAndMessaging::GetWindowThreadProcessId;
 use windows::core::IInspectable;
 
 use crate::availability::ensure_capture_available;
@@ -58,7 +62,7 @@ pub(crate) struct TargetRecord {
     lost: Arc<AtomicBool>,
     geometry: Arc<GeometryLedger>,
     authority: Option<RetainedWindowAuthority>,
-    _closed_token: Option<i64>,
+    closed_token: Option<i64>,
 }
 
 struct PreparedSnapshot {
@@ -75,6 +79,26 @@ impl WindowsCaptureProvider {
             discovery_gate: Mutex::new(()),
             registry: Mutex::new(Registry::default()),
         }
+    }
+
+    #[cfg(feature = "benchmark-instrumentation")]
+    pub(crate) fn fixture_target_has_process(&self, target: TargetId, process_id: u32) -> bool {
+        let registry = self.registry();
+        let Some(record) = registry.records.get(&target) else {
+            return false;
+        };
+        let NativeKey::Window(raw) = record.key else {
+            return false;
+        };
+        let window = HWND(std::ptr::with_exposed_provenance_mut::<core::ffi::c_void>(
+            raw,
+        ));
+        let mut observed_process = 0;
+        // SAFETY: `window` is reconstructed only as the opaque HWND captured by
+        // this provider's retained discovery record. USER32 validates it and
+        // writes to the live local `observed_process` scalar.
+        unsafe { GetWindowThreadProcessId(window, Some(&raw mut observed_process)) };
+        observed_process != 0 && observed_process == process_id
     }
 
     fn discover_with<F>(
@@ -174,7 +198,7 @@ impl WindowsCaptureProvider {
             lost,
             geometry: Arc::new(GeometryLedger::default()),
             authority,
-            _closed_token: closed_token,
+            closed_token,
         }))
     }
 
@@ -401,6 +425,14 @@ impl TargetRecord {
             Err(InputFault::TargetLost)
         } else {
             Ok(())
+        }
+    }
+}
+
+impl Drop for TargetRecord {
+    fn drop(&mut self) {
+        if let (CaptureItem::Native(item), Some(token)) = (&self.item, self.closed_token.take()) {
+            let _removed = item.RemoveClosed(token);
         }
     }
 }

@@ -44,7 +44,7 @@ registry is itself a Phase 0 deliverable.
 | [`G-002`](#g-002) | Windows capture producer-pool and frame-detachment strategy | Before Phase 2 implementation | Windows capture ownership | Resolved by [ADR 0013](adr/0013-windows-capture-frame-detachment.md) |
 | [`G-003`](#g-003) | macOS shim language | Before Phase 2 implementation | macOS shim implementation | Resolved by [ADR 0012](adr/0012-macos-shim-language-and-containment.md) |
 | [`G-004`](#g-004) | Default OCR model profile | Before Phase 3 implementation | Default OCR profile identity | Resolved by [ADR 0033](adr/0033-default-ocr-model-profile.md) |
-| [`G-005`](#g-005) | Default change-detection algorithm and threshold | Before Phase 4 implementation | Default watcher policy | Open |
+| [`G-005`](#g-005) | Default change-detection algorithm and threshold | Before Phase 4 watcher implementation | Default watcher policy | Resolved by [ADR 0050](adr/0050-change-detection-default.md) |
 | [`G-006`](#g-006) | Acceleration candidates and provider ordering | Before Phase 5 implementation | Acceleration defaults | Open per future accelerator; v0.3.1 OCR resolved by ADRs 0046–0048 |
 | [`G-007`](#g-007) | Native dependency bundling profiles | Before Phase 5 implementation | Release packaging | Open |
 | [`G-008`](#g-008) | Static-library feasibility | Before Phase 5 exit | Static artifact claim only | Open |
@@ -233,20 +233,112 @@ approved Windows desktop row.
 
 ## G-005
 
-**Unresolved decision.** The default change-detection algorithm and its threshold
-for watcher scheduling.
+**Decision.** [ADR 0050](adr/0050-change-detection-default.md) selects
+`exact-rgba-v1` for compatible already-mapped RGBA8 regions and keeps
+`analysis-always-v1` as the explicit fail-safe. Evaluation-only changed-pixel
+thresholds and fixed-grid sampling are not runtime options.
 
-**Required evidence.** A false-skip evaluation over recorded frame sequences,
-showing how often a real change would be skipped at the chosen threshold.
+**Required evidence.** Repository-owned Apache-2.0 sequences freeze nine ordered
+transitions: no change, outside-ROI change, one-pixel must-detect change,
+transient and persistent appearance, disappearance, repeated pixels, geometry
+change, and stream discontinuity. The pre-observation contract fixes seven
+candidate/threshold rows, false-skip and admitted-work metrics, comparison order,
+privacy, and no-post-observation rewrite. The canonical report selects exact RGBA
+with zero false skips, six admitted analyses, and three compatible skips. Every
+lower-admitted-work candidate is rejected by at least one false skip.
 
-**Due.** Before Phase 4 implementation.
+**Due.** Before Phase 4 watcher implementation.
 
-**Blocks.** The default watcher policy.
+**Blocks.** The default watcher policy, not the offline evaluator or closed
+platform-neutral descriptor seam.
 
-**Status.** Open.
+**Status.** Resolved. Local deterministic, bounded-input privacy,
+descriptor-parity, and drift gates pass. On exact revision
+`3bb191d2221608774d4bb07cabc34b9ec92f6936`, protected run `33036793853`
+passed `Repository policy`, Windows `x86_64-pc-windows-msvc`, and macOS
+`aarch64-apple-darwin`; both native jobs reproduced canonical report v2 byte for
+byte without retry or mismatch. Independent correctness, security/privacy, and
+specification re-review returned CLEAN on the same revision.
 
-**Resolution.** An ADR recording the evaluation and the chosen default, plus the
-recorded sequences kept as regression fixtures.
+**Resolution.** ADR 0050 accepts exact RGBA. The bounded Rust template watcher
+consumes that policy; ADR 0051 accepts deterministic replay/OpenCV watcher
+correctness and target-specific latency/resource budgets, and ADR 0052 corrects
+only the independently remediated Windows ROI maximum after retaining its failed
+cohort. ADR 0051 engine/session startup latency remains reported but explicitly
+withheld; every non-time startup gate remains enforced. ADR 0053 accepts
+target-specific native sampled latency, RSS, live-heap, and growth budgets,
+including sampled fresh-session latency, while withholding single-run gate
+timing and cadence-dependent aggregate mapping, work, and publication ceilings.
+ADR 0057 rejects the historical final WGC and ScreenCaptureKit cohorts after
+independent review found unexercised engine-close and Windows cross-DPI topology
+contracts. Replacement source `f16591f` corrected both semantics. Its fresh
+Windows cohort passed 5/5, including the different-monitor 144-to-120-DPI
+transition. Its fresh Apple cohort passed processes 1–4, then process 5
+terminated red at `retained_result_mapping` after ScreenCaptureKit suspended the
+newly opened stream. Fifty focused runs and one immediate full-load diagnostic
+passed without reproducing the suspension, but neither result replaces the
+terminal-red qualification process. The native Rust query API remains
+implemented, but support is withheld.
+Corrective successor `7139a68` serializes backend generation admission per
+query and bounds Windows fixture output before allocation. The `f16591f` host
+cohorts do not qualify those changed runtime and harness semantics, so a future
+support decision requires a fresh complete protocol on both approved hosts.
+
+ADR 0060 separately retains current-source `030398e` Apple cleanup/latency and
+Windows report-admission terminal-red results without assigning either to the
+historical `f16591f` suspension. ADR 0061 repairs only the internal Windows
+report gate: finite canonical UBR and hardware provenance remains distinct from
+typed host-class, build-family, SDK, target, toolchain, and backend
+compatibility. ADR 0062 selects the Apple exact-lifetime and typed-finalization
+repair from cleanup localization and exact-sample correlation bound to
+`030398e`. The accepted timer observes elapsed only after operation-local
+resources, explicit finalization, and the complete fixture ownership chain are
+dropped. Neither repair changes a budget or public watcher contract.
+
+Integrated candidate `9cf746f` contains both repairs. Its sole authorized Apple
+builder terminated at a post-Cargo controlled-home check, and its sole
+authorized Windows builder terminated at a pre-namespace environment check.
+Neither host produced an artifact authority or launched process 1. ADR 0063
+retains both attempts without retry and classifies them as apparatus failures,
+not product-gate results. The required integrated Apple and Windows cohorts
+therefore do not exist, and the support decision remains withheld.
+
+ADR 0064 adopts Qualification V2 as a new identity from PR #64's merge result;
+it does not amend any PR #59–#64 record or claim a cause or repair for the
+historical ScreenCaptureKit suspension. V2 separates authority:
+
+- required Lane A replay/OpenCV suites own deterministic scheduler, query,
+  lifecycle, diagnostics, and complete-work semantics;
+- required Lane B host contracts own only the compact WGC and ScreenCaptureKit
+  integration boundary, using a unique acknowledged post-open visual token that
+  every required session must decode from a newer authoritative pixel frame;
+  and
+- optional Lane C owns statistical latency, resource, topology, provenance, and
+  endurance evidence without replacing or reinterpreting Lane B execution.
+
+Session open alone is not a first-pixel guarantee. Lane B has finite absolute
+startup, token-observation, operation, and teardown deadlines, reports semantic
+and cleanup facts independently, and classifies pre-execution apparatus failure
+as `INFRA` or `UNSUPPORTED` rather than product `FAIL`. Source `318ad1c` passes
+all eight Apple Lane B semantic and cleanup scenarios with exact 2× token
+capture and fixture finalization. Windows execution source `3e3079f` passes all
+eight Lane B semantic and cleanup scenarios on the approved mixed-DPI host, the
+deterministic liveness precedence suite and single-point mutation proof, and the
+hosted acknowledged-target-loss latency check. Test-only successor `53608af`
+pins the earlier caller deadline; all six focused tests and the Windows, macOS,
+and repository CI jobs pass. The runtime changes between the Apple source and
+that successor are Windows-target-only, so reviewed complete-diff applicability
+preserves the Apple result. Required Lane A also passes at the Windows execution
+source; cross-target Rust native watcher support is qualified on the named
+platform floors.
+
+OCR predicates, callbacks/subscriptions, C/C++, automatic input, target activation,
+arbitrary application/template/ROI compatibility or timing, real-time guarantees,
+and installable packaging remain unavailable in the `v0.4.0` source release.
+Any future false skip or behavior-affecting fixture, report, or policy drift
+removes current authority until an affected-host rerun or reviewed complete-diff
+applicability and ADR pass restore it. Documentation-only changes receive no
+attributed execution.
 
 ## G-006
 

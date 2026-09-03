@@ -41,7 +41,7 @@ use mado_pilot_capture::CaptureFault;
 use mado_pilot_core::{OperationContext, PermissionState, PixelExtent};
 
 /// The internal surface version this build was written against.
-pub(crate) const ABI_VERSION: u32 = 19;
+pub(crate) const ABI_VERSION: u32 = 21;
 
 /// Largest wait the shim is ever asked for, so one native call cannot consume a
 /// caller's whole budget.
@@ -94,6 +94,12 @@ pub(crate) const RAISE_AT_TEARDOWN: u32 = 8;
 /// it fires after the wait that block signals. See [`RAISE_AT_START`].
 #[cfg(test)]
 pub(crate) const RAISE_IN_START_COMPLETION: u32 = 16;
+/// Simulates an accepted native start whose completion fails without a producer.
+#[cfg(test)]
+pub(crate) const FAIL_IN_START_COMPLETION: u32 = 4096;
+/// Raises before the framework can accept the native start completion.
+#[cfg(test)]
+pub(crate) const RAISE_AT_START_SUBMISSION: u32 = 2048;
 /// Makes the Rust frame body panic so the returned non-OK status traverses the
 /// complete native terminal trampoline.
 #[cfg(test)]
@@ -105,15 +111,15 @@ pub(crate) const RAISE_IN_STOP_COMPLETION: u32 = 64;
 /// Keeps one Rust frame callback admitted beyond the implicit-drop fence wait.
 #[cfg(test)]
 pub(crate) const DELAY_IN_RUST_CALLBACK: u32 = 128;
-/// Refuses the capture-start semaphore factory before framework submission.
-#[cfg(test)]
-pub(crate) const FAIL_START_SEMAPHORE_ALLOCATION: u32 = 256;
 /// Refuses the retained session hold before framework submission.
 #[cfg(test)]
 pub(crate) const FAIL_START_HOLD_ALLOCATION: u32 = 512;
 /// Refuses the reconfiguration semaphore factory before framework submission.
 #[cfg(test)]
 pub(crate) const FAIL_RECONFIGURE_SEMAPHORE_ALLOCATION: u32 = 1024;
+
+#[cfg(test)]
+pub(crate) static NATIVE_LIFECYCLE_TEST_SERIAL: std::sync::Mutex<()> = std::sync::Mutex::new(());
 
 #[cfg(test)]
 const TEST_FIXTURE_SEMAPHORE_ALLOCATION_FAILURE: u32 = 0;
@@ -131,6 +137,24 @@ const TEST_FIXTURE_HANDLE_ALLOCATION_FAILURE: u32 = 5;
 const TEST_FIXTURE_REAPER_HANDOFF: u32 = 6;
 #[cfg(test)]
 const TEST_FIXTURE_RELEASE_REAPER_HANDOFF: u32 = 7;
+#[cfg(test)]
+const TEST_FIXTURE_STALE_TERMINATION_AFTER_EXACT_DEATH: u32 = 8;
+#[cfg(test)]
+const TEST_FIXTURE_PID_REUSE: u32 = 9;
+#[cfg(test)]
+const TEST_FIXTURE_EXACT_PROBE_FAILURE: u32 = 10;
+#[cfg(test)]
+const TEST_FIXTURE_DELAYED_DEATH: u32 = 11;
+#[cfg(test)]
+const TEST_FIXTURE_OVERLAPPING_RELEASES: u32 = 12;
+#[cfg(test)]
+const TEST_FIXTURE_TRANSIENT_LIFETIME_REGISTRATION: u32 = 13;
+#[cfg(test)]
+const TEST_FIXTURE_CLEANUP_RECORD_ALLOCATION_FAILURE: u32 = 14;
+#[cfg(test)]
+const TEST_FIXTURE_RELEASE_CLEANUP_RECORD_ALLOCATION_FAILURE: u32 = 15;
+#[cfg(test)]
+const TEST_FIXTURE_ADVISORY_TERMINATED_WHILE_EXACT_LIVE: u32 = 16;
 
 #[repr(C)]
 struct OpaqueInventory {
@@ -1221,6 +1245,21 @@ pub(crate) fn live_objects() -> u64 {
     } else {
         0
     }
+}
+
+#[cfg(test)]
+pub(crate) fn testing_capture_lifecycle_counts() -> Result<[u64; 2], ShimStatus> {
+    let mut start_submissions = u64::MAX;
+    let mut stop_submissions = u64::MAX;
+    // SAFETY: both outputs point to writable `u64` values.
+    let status = unsafe {
+        mp_shim_testing_capture_lifecycle_counts(
+            &raw mut start_submissions,
+            &raw mut stop_submissions,
+        )
+    };
+    ShimStatus::from_raw(status).into_result()?;
+    Ok([start_submissions, stop_submissions])
 }
 
 /// One pointer button, as the native surface numbers them.
@@ -2479,6 +2518,37 @@ fn testing_gate_retries(
 }
 
 #[cfg(test)]
+fn testing_start_gate_outcome(
+    completion_delay: Duration,
+    completion_status: ShimStatus,
+    first_wait: Duration,
+    second_wait: Duration,
+) -> Result<(ShimStatus, ShimStatus, u32), ShimStatus> {
+    let mut first = u32::MAX;
+    let mut second = u32::MAX;
+    let mut submissions = u32::MAX;
+    // SAFETY: every output is writable and all statuses and durations use the
+    // fixed-width representation declared by the native shim.
+    let status = unsafe {
+        mp_shim_testing_start_gate_outcome(
+            nanos(completion_delay),
+            completion_status.as_raw(),
+            nanos(first_wait),
+            nanos(second_wait),
+            &raw mut first,
+            &raw mut second,
+            &raw mut submissions,
+        )
+    };
+    ShimStatus::from_raw(status).into_result()?;
+    Ok((
+        ShimStatus::from_raw(first),
+        ShimStatus::from_raw(second),
+        submissions,
+    ))
+}
+
+#[cfg(test)]
 fn testing_stop_completion_exception() -> Result<(ShimStatus, bool), ShimStatus> {
     let mut completion = u32::MAX;
     let mut started = true;
@@ -2551,6 +2621,12 @@ struct FixtureLaunchObservation {
     terminated: bool,
     live_during_handle: u64,
     live_after_release: u64,
+    cleanup_scheduled: u64,
+    cleanup_active: u64,
+    cleanup_completed: u64,
+    cleanup_exhausted: u64,
+    cleanup_observations: u64,
+    cleanup_max_observer_concurrency: u32,
 }
 
 #[cfg(test)]
@@ -2564,6 +2640,12 @@ fn testing_fixture_application_launch(
     let mut terminated = u32::MAX;
     let mut live_during_handle = u64::MAX;
     let mut live_after_release = u64::MAX;
+    let mut cleanup_scheduled = u64::MAX;
+    let mut cleanup_active = u64::MAX;
+    let mut cleanup_completed = u64::MAX;
+    let mut cleanup_exhausted = u64::MAX;
+    let mut cleanup_observations = u64::MAX;
+    let mut cleanup_max_observer_concurrency = u32::MAX;
     // SAFETY: every output points to one writable scalar. The native seam drives
     // the production launch helper with retained Objective-C test objects and
     // joins its asynchronous completion before returning.
@@ -2577,6 +2659,12 @@ fn testing_fixture_application_launch(
             &raw mut terminated,
             &raw mut live_during_handle,
             &raw mut live_after_release,
+            &raw mut cleanup_scheduled,
+            &raw mut cleanup_active,
+            &raw mut cleanup_completed,
+            &raw mut cleanup_exhausted,
+            &raw mut cleanup_observations,
+            &raw mut cleanup_max_observer_concurrency,
         )
     };
     ShimStatus::from_raw(status).into_result()?;
@@ -2588,6 +2676,12 @@ fn testing_fixture_application_launch(
         terminated: terminated != 0,
         live_during_handle,
         live_after_release,
+        cleanup_scheduled,
+        cleanup_active,
+        cleanup_completed,
+        cleanup_exhausted,
+        cleanup_observations,
+        cleanup_max_observer_concurrency,
     })
 }
 
@@ -3109,6 +3203,11 @@ unsafe extern "C" {
     #[cfg(test)]
     fn mp_shim_live_objects(out_live: *mut u64) -> u32;
     #[cfg(test)]
+    fn mp_shim_testing_capture_lifecycle_counts(
+        out_start_submissions: *mut u64,
+        out_stop_submissions: *mut u64,
+    ) -> u32;
+    #[cfg(test)]
     fn mp_shim_testing_terminalize_twice(
         context: *mut c_void,
         stopped_callback: Option<StoppedCallback>,
@@ -3132,6 +3231,16 @@ unsafe extern "C" {
         out_start_second: *mut u32,
         out_stop_first: *mut u32,
         out_stop_second: *mut u32,
+    ) -> u32;
+    #[cfg(test)]
+    fn mp_shim_testing_start_gate_outcome(
+        completion_delay_nanos: u64,
+        completion_status: u32,
+        first_wait_nanos: u64,
+        second_wait_nanos: u64,
+        out_first: *mut u32,
+        out_second: *mut u32,
+        out_submissions: *mut u32,
     ) -> u32;
     #[cfg(test)]
     fn mp_shim_testing_stop_completion_exception(
@@ -3174,6 +3283,12 @@ unsafe extern "C" {
         out_terminated: *mut u32,
         out_live_during_handle: *mut u64,
         out_live_after_release: *mut u64,
+        out_cleanup_scheduled: *mut u64,
+        out_cleanup_active: *mut u64,
+        out_cleanup_completed: *mut u64,
+        out_cleanup_exhausted: *mut u64,
+        out_cleanup_observations: *mut u64,
+        out_cleanup_max_observer_concurrency: *mut u32,
     ) -> u32;
     #[cfg(test)]
     fn mp_shim_testing_input_activation_lifetime_loss(
@@ -3414,10 +3529,15 @@ mod tests {
         LaunchContext, MAX_NATIVE_WAIT, MAX_SURFACE_EXTENT, OpaqueFrame, OpenRequest,
         ProcessAuthorization, ProcessCancellationFence, ProcessEventSource,
         ProcessFocusObservation, ProcessOperationCheckpoint, SessionSyncInit, ShimStatus,
-        SignatureMode, TEST_FIXTURE_COMPLETION_EXCEPTION, TEST_FIXTURE_HANDLE_ALLOCATION_FAILURE,
-        TEST_FIXTURE_LATE_COMPLETION, TEST_FIXTURE_REAPER_HANDOFF,
+        SignatureMode, TEST_FIXTURE_ADVISORY_TERMINATED_WHILE_EXACT_LIVE,
+        TEST_FIXTURE_CLEANUP_RECORD_ALLOCATION_FAILURE, TEST_FIXTURE_COMPLETION_EXCEPTION,
+        TEST_FIXTURE_DELAYED_DEATH, TEST_FIXTURE_EXACT_PROBE_FAILURE,
+        TEST_FIXTURE_HANDLE_ALLOCATION_FAILURE, TEST_FIXTURE_LATE_COMPLETION,
+        TEST_FIXTURE_OVERLAPPING_RELEASES, TEST_FIXTURE_PID_REUSE, TEST_FIXTURE_REAPER_HANDOFF,
+        TEST_FIXTURE_RELEASE_CLEANUP_RECORD_ALLOCATION_FAILURE,
         TEST_FIXTURE_RELEASE_REAPER_HANDOFF, TEST_FIXTURE_SEMAPHORE_ALLOCATION_FAILURE,
-        TEST_FIXTURE_SUCCESSFUL_RELEASE, TEST_FIXTURE_VALIDATION_FAILURE,
+        TEST_FIXTURE_STALE_TERMINATION_AFTER_EXACT_DEATH, TEST_FIXTURE_SUCCESSFUL_RELEASE,
+        TEST_FIXTURE_TRANSIENT_LIFETIME_REGISTRATION, TEST_FIXTURE_VALIDATION_FAILURE,
         TEST_INPUT_ENVIRONMENT_APPLICATION_CHANGE, TEST_INPUT_ENVIRONMENT_COMPLETE_TRACE,
         TEST_INPUT_ENVIRONMENT_LAUNCH_TIME_CHANGE, TEST_INPUT_ENVIRONMENT_PID_CHANGE,
         TEST_INPUT_ENVIRONMENT_POINTER_FAILURE, TEST_INPUT_ENVIRONMENT_POINTER_FAILURE_TRACE,
@@ -3439,15 +3559,43 @@ mod tests {
         testing_process_event_source_allocation_failure,
         testing_process_event_source_release_exception, testing_process_post,
         testing_required_ax_error_status, testing_resource_allocation_failures,
-        testing_seconds_to_nanos, testing_session_sync_init, testing_stop_callback_exception,
-        testing_stop_completion_exception, testing_surface_recommendation,
-        testing_target_release_exception, testing_target_without_process_lifetime,
-        testing_terminalize_twice, testing_validate_process_post, validate_open_shape_and_metadata,
+        testing_seconds_to_nanos, testing_session_sync_init, testing_start_gate_outcome,
+        testing_stop_callback_exception, testing_stop_completion_exception,
+        testing_surface_recommendation, testing_target_release_exception,
+        testing_target_without_process_lifetime, testing_terminalize_twice,
+        testing_validate_process_post, validate_open_shape_and_metadata,
     };
     use mado_pilot_capture::CaptureFault;
     use mado_pilot_core::{
         CancellationToken, Clock, MonotonicInstant, OperationContext, PixelExtent,
     };
+
+    fn serialized_fixture_test() -> std::sync::MutexGuard<'static, ()> {
+        super::NATIVE_LIFECYCLE_TEST_SERIAL
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+    }
+
+    fn assert_cleanup_counts(
+        observed: &super::FixtureLaunchObservation,
+        scheduled: u64,
+        completed: u64,
+        exhausted: u64,
+        observations: u64,
+    ) {
+        assert_eq!(observed.cleanup_scheduled, scheduled);
+        assert_eq!(observed.cleanup_active, 0);
+        assert_eq!(observed.cleanup_completed, completed);
+        assert_eq!(observed.cleanup_exhausted, exhausted);
+        assert_eq!(observed.cleanup_observations, observations);
+        assert!(observed.cleanup_max_observer_concurrency <= 1);
+        assert_eq!(
+            observed.cleanup_scheduled,
+            observed
+                .cleanup_completed
+                .saturating_add(observed.cleanup_exhausted)
+        );
+    }
 
     /// Runs `body` with panic reporting suppressed, so a deliberately panicking
     /// callback does not print a backtrace over the test output.
@@ -4612,6 +4760,32 @@ mod tests {
     }
 
     #[test]
+    fn start_gate_joiners_observe_one_submission_and_the_cached_terminal_status() {
+        let (first, second, submissions) = testing_start_gate_outcome(
+            Duration::from_millis(30),
+            ShimStatus::Ok,
+            Duration::from_millis(1),
+            Duration::from_secs(1),
+        )
+        .expect("native start gate outcome");
+        assert_eq!(
+            (first, second, submissions),
+            (ShimStatus::TimedOut, ShimStatus::Ok, 1)
+        );
+
+        for settled in [ShimStatus::PlatformFailure, ShimStatus::NativeException] {
+            let (first, second, submissions) = testing_start_gate_outcome(
+                Duration::from_millis(1),
+                settled,
+                Duration::from_secs(1),
+                Duration::from_millis(1),
+            )
+            .expect("native start gate failure outcome");
+            assert_eq!((first, second, submissions), (settled, settled, 1));
+        }
+    }
+
+    #[test]
     fn a_stop_completion_exception_is_contained_and_settles_its_gate() {
         let (status, started) = testing_stop_completion_exception()
             .expect("the deterministic native stop-completion seam runs");
@@ -4668,6 +4842,7 @@ mod tests {
 
     #[test]
     fn fixture_launcher_allocation_failure_precedes_workspace_submission() {
+        let _serial = serialized_fixture_test();
         let observed =
             testing_fixture_application_launch(TEST_FIXTURE_SEMAPHORE_ALLOCATION_FAILURE)
                 .expect("the native fixture-launch seam runs");
@@ -4678,17 +4853,18 @@ mod tests {
         assert_eq!(observed.force_termination_calls, 0);
         assert!(!observed.terminated);
         assert_eq!(observed.live_after_release, observed.live_during_handle);
+        assert_cleanup_counts(&observed, 0, 0, 0, 0);
     }
 
     #[test]
-    fn fixture_launcher_contains_completion_and_reaps_every_unpublished_application() {
+    fn fixture_launcher_contains_each_exact_unpublished_application_once() {
+        let _serial = serialized_fixture_test();
         for (scenario, expected_status) in [
             (
                 TEST_FIXTURE_COMPLETION_EXCEPTION,
                 ShimStatus::NativeException,
             ),
             (TEST_FIXTURE_LATE_COMPLETION, ShimStatus::TimedOut),
-            (TEST_FIXTURE_VALIDATION_FAILURE, ShimStatus::PlatformFailure),
             (
                 TEST_FIXTURE_HANDLE_ALLOCATION_FAILURE,
                 ShimStatus::PlatformFailure,
@@ -4712,24 +4888,43 @@ mod tests {
                 observed.live_after_release, observed.live_during_handle,
                 "scenario {scenario}"
             );
+            assert_cleanup_counts(&observed, 0, 0, 0, 0);
         }
     }
 
     #[test]
+    fn fixture_launcher_reports_invalid_identity_without_messaging_it() {
+        let _serial = serialized_fixture_test();
+        let observed = testing_fixture_application_launch(TEST_FIXTURE_VALIDATION_FAILURE)
+            .expect("the native fixture-launch seam joins its invalid completion");
+
+        assert_eq!(observed.launch_status, ShimStatus::PlatformFailure);
+        assert_eq!(observed.submission_calls, 1);
+        assert_eq!(observed.graceful_termination_calls, 0);
+        assert_eq!(observed.force_termination_calls, 0);
+        assert!(!observed.terminated);
+        assert_eq!(observed.live_after_release, observed.live_during_handle);
+        assert_cleanup_counts(&observed, 1, 0, 1, 0);
+    }
+
+    #[test]
     fn fixture_launcher_transfers_unverified_force_exit_to_a_retained_reaper() {
+        let _serial = serialized_fixture_test();
         let observed = testing_fixture_application_launch(TEST_FIXTURE_REAPER_HANDOFF)
             .expect("the native fixture-launch seam joins its retained reaper");
 
         assert_eq!(observed.launch_status, ShimStatus::PlatformFailure);
         assert_eq!(observed.submission_calls, 1);
-        assert_eq!(observed.graceful_termination_calls, 2);
-        assert_eq!(observed.force_termination_calls, 2);
-        assert!(observed.terminated);
+        assert_eq!(observed.graceful_termination_calls, 1);
+        assert_eq!(observed.force_termination_calls, 1);
+        assert!(!observed.terminated);
         assert_eq!(observed.live_after_release, observed.live_during_handle);
+        assert_cleanup_counts(&observed, 1, 0, 1, 20);
     }
 
     #[test]
     fn fixture_launcher_release_returns_the_native_live_count_to_baseline() {
+        let _serial = serialized_fixture_test();
         let observed = testing_fixture_application_launch(TEST_FIXTURE_SUCCESSFUL_RELEASE)
             .expect("the native fixture-launch seam releases its successful handle");
 
@@ -4739,19 +4934,163 @@ mod tests {
         assert_eq!(observed.force_termination_calls, 1);
         assert!(observed.terminated);
         assert_eq!(observed.live_during_handle, observed.live_after_release + 1);
+        assert_cleanup_counts(&observed, 0, 0, 0, 0);
+    }
+
+    #[test]
+    fn fixture_launch_accepts_callback_identity_before_workspace_registration_catches_up() {
+        let _serial = serialized_fixture_test();
+        let observed =
+            testing_fixture_application_launch(TEST_FIXTURE_TRANSIENT_LIFETIME_REGISTRATION)
+                .expect("the transient workspace-registration scenario runs");
+
+        assert_eq!(observed.launch_status, ShimStatus::Ok);
+        assert_eq!(observed.submission_calls, 1);
+        assert_eq!(observed.graceful_termination_calls, 1);
+        assert_eq!(observed.force_termination_calls, 1);
+        assert!(observed.terminated);
+        assert_eq!(observed.live_during_handle, observed.live_after_release + 1);
+        assert_cleanup_counts(&observed, 0, 0, 0, 0);
+    }
+
+    #[test]
+    fn fixture_cleanup_ignores_advisory_termination_when_exact_lifetime_is_live() {
+        let _serial = serialized_fixture_test();
+        let observed =
+            testing_fixture_application_launch(TEST_FIXTURE_ADVISORY_TERMINATED_WHILE_EXACT_LIVE)
+                .expect("the stale advisory-termination scenario runs");
+
+        assert_eq!(observed.launch_status, ShimStatus::Ok);
+        assert_eq!(observed.submission_calls, 1);
+        assert_eq!(observed.graceful_termination_calls, 1);
+        assert_eq!(observed.force_termination_calls, 1);
+        assert!(observed.terminated);
+        assert_eq!(observed.live_during_handle, observed.live_after_release + 1);
+        assert_cleanup_counts(&observed, 0, 0, 0, 0);
+    }
+
+    #[test]
+    fn cleanup_record_allocation_failure_is_observable_after_bounded_containment() {
+        let _serial = serialized_fixture_test();
+        let observed =
+            testing_fixture_application_launch(TEST_FIXTURE_CLEANUP_RECORD_ALLOCATION_FAILURE)
+                .expect("the cleanup-record allocation failure scenario runs");
+
+        assert_eq!(observed.launch_status, ShimStatus::PlatformFailure);
+        assert_eq!(observed.submission_calls, 1);
+        assert_eq!(observed.graceful_termination_calls, 1);
+        assert_eq!(observed.force_termination_calls, 1);
+        assert!(!observed.terminated);
+        assert_eq!(observed.live_after_release, observed.live_during_handle);
+        assert_cleanup_counts(&observed, 1, 0, 1, 0);
+    }
+
+    #[test]
+    fn release_cleanup_record_allocation_failure_is_observable_after_bounded_containment() {
+        let _serial = serialized_fixture_test();
+        let observed = testing_fixture_application_launch(
+            TEST_FIXTURE_RELEASE_CLEANUP_RECORD_ALLOCATION_FAILURE,
+        )
+        .expect("the release cleanup-record allocation failure scenario runs");
+
+        assert_eq!(observed.launch_status, ShimStatus::Ok);
+        assert_eq!(observed.submission_calls, 1);
+        assert_eq!(observed.graceful_termination_calls, 1);
+        assert_eq!(observed.force_termination_calls, 1);
+        assert!(!observed.terminated);
+        assert_eq!(observed.live_during_handle, observed.live_after_release + 1);
+        assert_cleanup_counts(&observed, 1, 0, 1, 0);
     }
 
     #[test]
     fn fixture_launcher_release_hands_unverified_force_exit_to_the_reaper() {
+        let _serial = serialized_fixture_test();
         let observed = testing_fixture_application_launch(TEST_FIXTURE_RELEASE_REAPER_HANDOFF)
             .expect("fixture handle release joins its retained reaper");
 
         assert_eq!(observed.launch_status, ShimStatus::Ok);
         assert_eq!(observed.submission_calls, 1);
+        assert_eq!(observed.graceful_termination_calls, 1);
+        assert_eq!(observed.force_termination_calls, 1);
+        assert!(!observed.terminated);
+        assert_eq!(observed.live_during_handle, observed.live_after_release + 1);
+        assert_cleanup_counts(&observed, 1, 0, 1, 20);
+    }
+
+    #[test]
+    fn fixture_cleanup_does_not_message_stale_object_after_exact_process_death() {
+        let _serial = serialized_fixture_test();
+        let observed =
+            testing_fixture_application_launch(TEST_FIXTURE_STALE_TERMINATION_AFTER_EXACT_DEATH)
+                .expect("the native exact-lifetime fixture scenario runs");
+
+        assert_eq!(observed.launch_status, ShimStatus::Ok);
+        assert_eq!(observed.submission_calls, 1);
+        assert_eq!(observed.graceful_termination_calls, 0);
+        assert_eq!(observed.force_termination_calls, 0);
+        assert!(!observed.terminated);
+        assert_eq!(observed.live_during_handle, observed.live_after_release + 1);
+        assert_cleanup_counts(&observed, 0, 0, 0, 0);
+    }
+
+    #[test]
+    fn fixture_cleanup_rejects_pid_reuse_without_messaging_stale_object() {
+        let _serial = serialized_fixture_test();
+        let observed = testing_fixture_application_launch(TEST_FIXTURE_PID_REUSE)
+            .expect("the native PID-reuse fixture scenario runs");
+
+        assert_eq!(observed.launch_status, ShimStatus::Ok);
+        assert_eq!(observed.submission_calls, 1);
+        assert_eq!(observed.graceful_termination_calls, 0);
+        assert_eq!(observed.force_termination_calls, 0);
+        assert!(!observed.terminated);
+        assert_eq!(observed.live_during_handle, observed.live_after_release + 1);
+        assert_cleanup_counts(&observed, 0, 0, 0, 0);
+    }
+
+    #[test]
+    fn fixture_cleanup_bounds_exact_probe_failure_without_termination() {
+        let _serial = serialized_fixture_test();
+        let observed = testing_fixture_application_launch(TEST_FIXTURE_EXACT_PROBE_FAILURE)
+            .expect("the native exact-probe failure scenario runs");
+
+        assert_eq!(observed.launch_status, ShimStatus::Ok);
+        assert_eq!(observed.graceful_termination_calls, 0);
+        assert_eq!(observed.force_termination_calls, 0);
+        assert!(!observed.terminated);
+        assert_eq!(observed.live_during_handle, observed.live_after_release + 1);
+        assert_cleanup_counts(&observed, 1, 0, 1, 20);
+    }
+
+    #[test]
+    fn fixture_cleanup_stops_after_observing_delayed_exact_death() {
+        let _serial = serialized_fixture_test();
+        let observed = testing_fixture_application_launch(TEST_FIXTURE_DELAYED_DEATH)
+            .expect("the native delayed-death fixture scenario runs");
+
+        assert_eq!(observed.launch_status, ShimStatus::Ok);
+        assert_eq!(observed.graceful_termination_calls, 1);
+        assert_eq!(observed.force_termination_calls, 1);
+        assert!(!observed.terminated);
+        assert_eq!(observed.live_during_handle, observed.live_after_release + 1);
+        assert!(observed.cleanup_observations > 0);
+        assert!(observed.cleanup_observations < 20);
+        assert_cleanup_counts(&observed, 1, 1, 0, observed.cleanup_observations);
+    }
+
+    #[test]
+    fn fixture_cleanup_serializes_overlapping_release_observers() {
+        let _serial = serialized_fixture_test();
+        let observed = testing_fixture_application_launch(TEST_FIXTURE_OVERLAPPING_RELEASES)
+            .expect("the native overlapping-release fixture scenario runs");
+
+        assert_eq!(observed.launch_status, ShimStatus::Ok);
         assert_eq!(observed.graceful_termination_calls, 2);
         assert_eq!(observed.force_termination_calls, 2);
-        assert!(observed.terminated);
-        assert_eq!(observed.live_during_handle, observed.live_after_release + 1);
+        assert!(!observed.terminated);
+        assert_eq!(observed.live_during_handle, observed.live_after_release + 2);
+        assert_cleanup_counts(&observed, 2, 0, 2, 40);
+        assert_eq!(observed.cleanup_max_observer_concurrency, 1);
     }
 
     #[test]

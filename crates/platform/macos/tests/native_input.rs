@@ -1852,17 +1852,50 @@ fn ready_record_pid_must_match_the_authenticated_peer() {
     assert_eq!(ready_process_id_for_peer(&line, 43), None);
 }
 
+fn spawn_owner_bound_idle_child(owner_process_id: u32) -> Child {
+    Command::new("/bin/sh")
+        .arg("-c")
+        .arg(
+            "while kill -0 \"$MADO_PILOT_TEST_OWNER_PID\" 2>/dev/null; \
+             do /bin/sleep 1; done",
+        )
+        .env("MADO_PILOT_TEST_OWNER_PID", owner_process_id.to_string())
+        .stdin(Stdio::null())
+        .stdout(Stdio::null())
+        .stderr(Stdio::inherit())
+        .spawn()
+        .expect("the owner-bound idle child starts")
+}
+
+#[test]
+fn owner_bound_idle_child_exits_after_its_owner() {
+    let mut owner = Command::new("/bin/sleep")
+        .arg("0.1")
+        .spawn()
+        .expect("the short-lived owner starts");
+    let mut child = spawn_owner_bound_idle_child(owner.id());
+    owner.wait().expect("the short-lived owner is reaped");
+
+    let deadline = Instant::now() + Duration::from_secs(2);
+    while Instant::now() < deadline {
+        if child
+            .try_wait()
+            .expect("the owner-bound child remains observable")
+            .is_some()
+        {
+            return;
+        }
+        thread::sleep(Duration::from_millis(10));
+    }
+    let _killed = child.kill();
+    let _reaped = child.wait();
+    panic!("the owner-bound child survived its owner");
+}
+
 #[test]
 fn invalid_execution_context_output_reaps_the_owned_child() {
     let (input, mut output) = UnixStream::pair().expect("the private test channel opens");
-    let child = FixtureChild::new(
-        Command::new("/bin/sh")
-            .arg("-c")
-            .arg("while :; do :; done")
-            .stderr(Stdio::inherit())
-            .spawn()
-            .expect("the non-interactive child starts"),
-    );
+    let child = FixtureChild::new(spawn_owner_bound_idle_child(std::process::id()));
     let process_id = child.process_id();
     writeln!(
         output,

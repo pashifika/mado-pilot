@@ -26,13 +26,18 @@
 //!
 //! Phase 1 and Phase 2 support remains complete. Capture, storage, vision, OCR,
 //! permission, and input doubles, manual and controlled clocks, shared contract
-//! suites, fixture writers, and the benchmark harness exist. `ControlledOcr`
-//! scripts candidates, failures, latency, cancellation, close, and completion
-//! gates so deadline and out-of-order behavior are deterministic. Target
-//! lifecycle scripts do not exist.
+//! suites, fixture writers, allocation accounting, and the benchmark harness
+//! exist. `ControlledOcr` and `ControlledMatcher` script candidates, failures,
+//! latency, cancellation, exact admission/completion gates, and completion
+//! counters so deadline, close, coalescing, fairness, stale-generation, and
+//! out-of-order behavior are deterministic. Phase 4 also provides the strict,
+//! bounded, content-redacted offline `G-005` recorded-sequence evaluator; all of
+//! this remains test/evidence support and is never a production dependency.
+//! Target lifecycle scripts do not exist.
 
 pub mod bench_harness;
 pub mod capture_contract;
+pub mod change_detection;
 pub mod clock;
 pub mod controlled_capture;
 pub mod controlled_input;
@@ -42,18 +47,22 @@ pub mod controlled_storage;
 pub mod fixture_checksums;
 pub mod input_contract;
 pub mod match_fixtures;
+pub mod native_watch_contract_report;
+pub mod native_watch_report;
 pub mod ocr_contract;
 pub mod png;
 pub mod scripted_permission;
 pub mod vision_contract;
+pub mod visual_token;
 
 pub use clock::ManualClock;
 pub use controlled_capture::ControlledCapture;
 pub use controlled_input::ControlledInput;
-pub use controlled_matcher::{Behavior, ControlledMatcher};
+pub use controlled_matcher::{Behavior, ControlledMatcher, ObservedMatcher, ScriptedMatchCall};
 pub use controlled_ocr::{
     CONTROLLED_OCR_BACKEND, CONTROLLED_OCR_MODEL, CONTROLLED_OCR_PROFILE, CompletionGate,
-    ControlledOcr, OcrBehavior, ScriptedOcrCall, ScriptedOcrCandidate,
+    CompletionGateReleaseGuard, ControlledOcr, OcrBehavior, ScriptedOcrCall, ScriptedOcrCandidate,
 };
 pub use controlled_storage::{ControlledProducer, Conversion};
+pub use mado_pilot_vision::{Candidate, MatchBackend};
 pub use scripted_permission::{Answer, ScriptedPermissionProbe};

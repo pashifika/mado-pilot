@@ -39,16 +39,16 @@ impl fmt::Display for BackendId {
     }
 }
 
-/// A non-owning identity for one compiled-template payload.
+/// A non-owning identity for one prepared-template instance.
 ///
-/// This token exists for bounded diagnostic metadata. It identifies every
-/// prepared-template clone or wrapper that shares one backend payload without
-/// retaining that payload. The payload allocation cannot be reused while this
-/// weak token can still report it as live.
+/// This token identifies every clone or wrapper of one preparation without
+/// retaining its compiled payload. A backend may legally reuse one payload Arc
+/// across distinct preparations, so payload pointer identity is not sufficient
+/// for coalescing or diagnostics.
 #[doc(hidden)]
 #[derive(Clone)]
 pub struct PreparedTemplateInstance {
-    token: Weak<dyn TemplatePayload>,
+    token: Weak<()>,
 }
 
 impl PreparedTemplateInstance {
@@ -77,9 +77,7 @@ impl Eq for PreparedTemplateInstance {}
 
 impl Hash for PreparedTemplateInstance {
     fn hash<H: Hasher>(&self, state: &mut H) {
-        // `Weak::ptr_eq` compares allocation addresses and ignores wide-pointer
-        // metadata, so the hash must do the same.
-        self.token.as_ptr().cast::<()>().hash(state);
+        self.token.as_ptr().hash(state);
     }
 }
 
@@ -103,6 +101,7 @@ pub struct PreparedTemplate {
     backend: BackendId,
     extent: PixelExtent,
     defaults: MatchDefaults,
+    instance: Arc<()>,
     payload: Arc<dyn TemplatePayload>,
 }
 impl PreparedTemplate {
@@ -122,6 +121,7 @@ impl PreparedTemplate {
             backend,
             extent: source.extent(),
             defaults: source.defaults(),
+            instance: Arc::new(()),
             payload,
         }
     }
@@ -156,7 +156,7 @@ impl PreparedTemplate {
         self.payload.as_ref()
     }
 
-    /// Returns a weak, clone-stable token for bounded diagnostic metadata.
+    /// Returns a weak, clone-stable token for this preparation.
     ///
     /// The token owns no compiled state and cannot expose or recover the
     /// backend payload.
@@ -164,7 +164,7 @@ impl PreparedTemplate {
     #[must_use]
     pub fn diagnostic_instance(&self) -> PreparedTemplateInstance {
         PreparedTemplateInstance {
-            token: Arc::downgrade(&self.payload),
+            token: Arc::downgrade(&self.instance),
         }
     }
 }
@@ -249,7 +249,7 @@ mod tests {
     }
 
     #[test]
-    fn diagnostic_instances_are_clone_stable_weak_and_payload_distinct() {
+    fn diagnostic_instances_are_clone_stable_weak_and_preparation_distinct() {
         let payload: Arc<dyn TemplatePayload> = Arc::new(Payload(7));
         let prepared = PreparedTemplate::new(
             BackendId::new("controlled"),
@@ -264,7 +264,7 @@ mod tests {
             &source(),
             Arc::clone(&payload),
         );
-        let shared = same_payload.diagnostic_instance();
+        let separate = same_payload.diagnostic_instance();
         let other = PreparedTemplate::new(
             BackendId::new("controlled"),
             &source(),
@@ -273,14 +273,16 @@ mod tests {
         let second = other.diagnostic_instance();
 
         assert_eq!(first, cloned);
-        assert_eq!(first, shared);
+        assert_ne!(first, separate);
         assert_ne!(first, second);
         drop(payload);
         drop(prepared);
-        assert!(first.is_live(), "the clone still owns the compiled payload");
+        assert!(
+            first.is_live(),
+            "the clone still owns the preparation token"
+        );
         drop(clone);
-        drop(same_payload);
-        assert!(!first.is_live(), "the token does not retain the payload");
+        assert!(!first.is_live(), "the token retains no preparation state");
     }
 
     #[test]
