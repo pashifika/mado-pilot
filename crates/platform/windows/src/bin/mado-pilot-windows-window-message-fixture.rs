@@ -38,7 +38,8 @@ mod fixture {
     use std::time::Duration;
 
     use super::ordinary_fixture_startup::{
-        Attach, Context, DpiAfterFailure, Failure, Foreground, Stage, Status,
+        ActivationPath, Context, DpiAfterFailure, Failure, Foreground, Stage, Status,
+        activate_with_fallback, ready_record,
     };
 
     use mado_pilot_platform_windows::fixture_protocol::{
@@ -144,14 +145,12 @@ mod fixture {
     pub(super) struct Options {
         token: String,
         activate: bool,
-        direct_only: bool,
         fail_request: bool,
     }
 
     pub(super) fn options() -> Result<Options, String> {
         let mut token = None;
         let mut activate = false;
-        let mut direct_only = false;
         let mut fail_request = false;
         for argument in std::env::args().skip(1) {
             if argument == "--activate" {
@@ -159,13 +158,6 @@ mod fixture {
                     return Err("--activate may be supplied only once".to_owned());
                 }
                 activate = true;
-                continue;
-            }
-            if argument == "--activation=direct" {
-                if direct_only {
-                    return Err("--activation=direct may be supplied only once".to_owned());
-                }
-                direct_only = true;
                 continue;
             }
             if argument == "--fail-stage=foreground-request" {
@@ -177,7 +169,7 @@ mod fixture {
             }
             let Some(value) = argument.strip_prefix("--title-token=") else {
                 return Err(format!(
-                    "unknown argument `{argument}`; expected --title-token=<token>, --activate, --activation=direct, or --fail-stage=foreground-request"
+                    "unknown argument `{argument}`; expected --title-token=<token>, --activate, or --fail-stage=foreground-request"
                 ));
             };
             if value.is_empty() || value.chars().count() > 64 {
@@ -190,16 +182,9 @@ mod fixture {
         if fail_request && !activate {
             return Err("--fail-stage requires --activate".to_owned());
         }
-        if direct_only && !activate {
-            return Err("--activation=direct requires --activate".to_owned());
-        }
-        if direct_only && fail_request {
-            return Err("--activation=direct may not be combined with --fail-stage".to_owned());
-        }
         Ok(Options {
             token: token.unwrap_or_else(|| std::process::id().to_string()),
             activate,
-            direct_only,
             fail_request,
         })
     }
@@ -208,11 +193,11 @@ mod fixture {
         window: HWND,
         context: Context,
         fail_request: bool,
-        direct_only: bool,
-    ) -> Result<Context, Failure> {
-        // The native matrix owns one unrelated foreground fixture. Queue
-        // attachment exists only during setup and is detached before readiness.
-        // SAFETY: both identifiers name desktop GUI threads with message queues.
+    ) -> Result<(Context, ActivationPath), Failure> {
+        // The matrix owns one unrelated foreground fixture. Attachment follows
+        // only a refused direct request and is balanced before readiness.
+        // SAFETY: window is live. Attachment closures run only when both thread
+        // identifiers name distinct desktop GUI threads with message queues.
         unsafe {
             let current_thread = GetCurrentThreadId();
             let foreground = GetForegroundWindow();
@@ -224,58 +209,44 @@ mod fixture {
             } else {
                 Foreground::Present
             };
-            let foreign_foreground = foreground_thread != 0 && foreground_thread != current_thread;
-            let should_attach = foreign_foreground && !direct_only;
-            let attach = if should_attach {
-                Attach::Attempted
-            } else if foreign_foreground && direct_only {
-                Attach::Disabled
-            } else {
-                Attach::Skipped
-            };
-            let context = context.with_activation(foreground_state, attach);
-            if should_attach {
-                AttachThreadInput(current_thread, foreground_thread, true)
-                    .ok()
-                    .map_err(|error| windows_failure(Stage::ForegroundAttach, error, context))?;
-            }
+            let may_attach = foreground_thread != 0 && foreground_thread != current_thread;
+            let context = context.with_foreground(foreground_state);
             let _was_visible = ShowWindow(window, SW_SHOW);
-            SetLastError(WIN32_ERROR(0));
-            let activated = !fail_request && SetForegroundWindow(window).as_bool();
-            let request_failure = (!activated).then(|| {
-                Failure::new(
-                    Stage::ForegroundRequest,
-                    Status::Boolean {
-                        ambient_win32: GetLastError().0,
-                    },
-                    context,
-                )
-            });
-            let detach_failure = if should_attach {
-                AttachThreadInput(current_thread, foreground_thread, false)
-                    .ok()
-                    .err()
-            } else {
-                None
-            };
-            match (request_failure, detach_failure) {
-                (Some(failure), Some(error)) => {
-                    Err(failure.with_cleanup(Stage::ForegroundDetach, windows_status(error)))
-                }
-                (Some(failure), None) => Err(failure),
-                (None, Some(error)) => {
-                    Err(windows_failure(Stage::ForegroundDetach, error, context))
-                }
-                (None, None) => Ok(context),
-            }
+            // The diagnostic injection refuses every direct or attached request.
+            activate_with_fallback(
+                context,
+                may_attach,
+                || {
+                    SetLastError(WIN32_ERROR(0));
+                    if !fail_request && SetForegroundWindow(window).as_bool() {
+                        Ok(())
+                    } else {
+                        Err(Status::Boolean {
+                            ambient_win32: GetLastError().0,
+                        })
+                    }
+                },
+                || {
+                    AttachThreadInput(current_thread, foreground_thread, true)
+                        .ok()
+                        .map_err(windows_status)
+                },
+                || {
+                    AttachThreadInput(current_thread, foreground_thread, false)
+                        .ok()
+                        .map_err(windows_status)
+                },
+            )
         }
     }
 
     pub(super) fn run(options: Options) -> Result<(), RunError> {
-        prepare(options)?;
-        print_line(&format!(
-            "fixture-ready class={ORDINARY_CLASS_NAME} title={} capacity={MAX_RECORDED_EVENTS}",
-            ordinary_title()
+        let activation = prepare(options)?;
+        print_line(&ready_record(
+            ORDINARY_CLASS_NAME,
+            &ordinary_title(),
+            MAX_RECORDED_EVENTS,
+            activation,
         ));
 
         let mut message = MSG::default();
@@ -321,11 +292,10 @@ mod fixture {
         }
     }
 
-    fn prepare(options: Options) -> Result<(), Failure> {
+    fn prepare(options: Options) -> Result<Option<ActivationPath>, Failure> {
         let Options {
             token,
             activate,
-            direct_only,
             fail_request,
         } = options;
         let mut context = Context::new();
@@ -387,9 +357,13 @@ mod fixture {
                 let _was_visible = ShowWindow(window, SW_SHOWNOACTIVATE);
             }
         }
-        if activate {
-            context = activate_for_fixture_setup(target, context, fail_request, direct_only)?;
-        }
+        let activation = if activate {
+            let (next_context, path) = activate_for_fixture_setup(target, context, fail_request)?;
+            context = next_context;
+            Some(path)
+        } else {
+            None
+        };
 
         let devices = [
             RAWINPUTDEVICE {
@@ -421,7 +395,7 @@ mod fixture {
                 context,
             ));
         }
-        Ok(())
+        Ok(activation)
     }
 
     unsafe extern "system" fn window_proc(

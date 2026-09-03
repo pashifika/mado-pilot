@@ -1,4 +1,4 @@
-//! Closed, redacted startup-failure record shared by the ordinary fixture and test.
+//! Closed startup records and activation sequencing shared by the ordinary fixture and test.
 
 use std::fmt;
 use std::str::FromStr;
@@ -143,7 +143,6 @@ pub(crate) enum Attach {
     NotReached,
     Attempted,
     Skipped,
-    Disabled,
 }
 
 impl Attach {
@@ -152,7 +151,6 @@ impl Attach {
             Self::NotReached => "not-reached",
             Self::Attempted => "attempted",
             Self::Skipped => "skipped",
-            Self::Disabled => "disabled",
         }
     }
 
@@ -161,9 +159,64 @@ impl Attach {
             "not-reached" => Some(Self::NotReached),
             "attempted" => Some(Self::Attempted),
             "skipped" => Some(Self::Skipped),
-            "disabled" => Some(Self::Disabled),
             _ => None,
         }
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum DirectRequest {
+    NotReached,
+    Accepted,
+    Refused,
+}
+
+impl DirectRequest {
+    fn as_str(self) -> &'static str {
+        match self {
+            Self::NotReached => "not-reached",
+            Self::Accepted => "accepted",
+            Self::Refused => "refused",
+        }
+    }
+
+    fn parse(value: &str) -> Option<Self> {
+        match value {
+            "not-reached" => Some(Self::NotReached),
+            "accepted" => Some(Self::Accepted),
+            "refused" => Some(Self::Refused),
+            _ => None,
+        }
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum ActivationPath {
+    Direct,
+    Attached,
+}
+
+impl ActivationPath {
+    pub(crate) const fn as_str(self) -> &'static str {
+        match self {
+            Self::Direct => "direct",
+            Self::Attached => "attached",
+        }
+    }
+}
+
+pub(crate) fn ready_record(
+    class: &str,
+    title: &str,
+    capacity: usize,
+    activation: Option<ActivationPath>,
+) -> String {
+    match activation {
+        Some(path) => format!(
+            "fixture-ready class={class} title={title} capacity={capacity} activation={}",
+            path.as_str()
+        ),
+        None => format!("fixture-ready class={class} title={title} capacity={capacity}"),
     }
 }
 
@@ -171,6 +224,7 @@ impl Attach {
 pub(crate) struct Context {
     dpi_after_failure: DpiAfterFailure,
     foreground: Foreground,
+    direct_request: DirectRequest,
     attach: Attach,
 }
 
@@ -179,6 +233,7 @@ impl Context {
         Self {
             dpi_after_failure: DpiAfterFailure::NotObserved,
             foreground: Foreground::Unknown,
+            direct_request: DirectRequest::NotReached,
             attach: Attach::NotReached,
         }
     }
@@ -188,8 +243,17 @@ impl Context {
         self
     }
 
-    pub(crate) const fn with_activation(mut self, foreground: Foreground, attach: Attach) -> Self {
+    pub(crate) const fn with_foreground(mut self, foreground: Foreground) -> Self {
         self.foreground = foreground;
+        self
+    }
+
+    const fn with_direct_request(mut self, direct_request: DirectRequest) -> Self {
+        self.direct_request = direct_request;
+        self
+    }
+
+    const fn with_attach(mut self, attach: Attach) -> Self {
         self.attach = attach;
         self
     }
@@ -248,6 +312,56 @@ impl Failure {
     }
 }
 
+pub(crate) fn activate_with_fallback(
+    context: Context,
+    may_attach: bool,
+    mut request: impl FnMut() -> Result<(), Status>,
+    attach_input: impl FnOnce() -> Result<(), Status>,
+    detach_input: impl FnOnce() -> Result<(), Status>,
+) -> Result<(Context, ActivationPath), Failure> {
+    let direct_failure = match request() {
+        Ok(()) => {
+            return Ok((
+                context
+                    .with_direct_request(DirectRequest::Accepted)
+                    .with_attach(Attach::Skipped),
+                ActivationPath::Direct,
+            ));
+        }
+        Err(status) => status,
+    };
+    let context = context.with_direct_request(DirectRequest::Refused);
+    if !may_attach {
+        return Err(Failure::new(
+            Stage::ForegroundRequest,
+            direct_failure,
+            context.with_attach(Attach::Skipped),
+        ));
+    }
+
+    let context = context.with_attach(Attach::Attempted);
+    attach_input().map_err(|status| Failure::new(Stage::ForegroundAttach, status, context))?;
+    let request_failure = request().err();
+    let detach_failure = detach_input().err();
+    complete_attached_activation(context, request_failure, detach_failure)
+}
+
+fn complete_attached_activation(
+    context: Context,
+    request_failure: Option<Status>,
+    detach_failure: Option<Status>,
+) -> Result<(Context, ActivationPath), Failure> {
+    match (request_failure, detach_failure) {
+        (Some(primary), Some(cleanup)) => {
+            Err(Failure::new(Stage::ForegroundRequest, primary, context)
+                .with_cleanup(Stage::ForegroundDetach, cleanup))
+        }
+        (Some(primary), None) => Err(Failure::new(Stage::ForegroundRequest, primary, context)),
+        (None, Some(status)) => Err(Failure::new(Stage::ForegroundDetach, status, context)),
+        (None, None) => Ok((context, ActivationPath::Attached)),
+    }
+}
+
 impl fmt::Display for Failure {
     fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
         let (cleanup_stage, cleanup_kind, cleanup_code) = self
@@ -257,12 +371,13 @@ impl fmt::Display for Failure {
             });
         write!(
             formatter,
-            "{PREFIX}version=1 stage={} primary-kind={} primary-code={} foreground={} attach={} dpi-after-failure={} ambient-win32={} cleanup-stage={cleanup_stage} cleanup-kind={cleanup_kind} cleanup-code={}",
+            "{PREFIX}version=2 stage={} primary-kind={} primary-code={} foreground={} attach={} direct-request={} dpi-after-failure={} ambient-win32={} cleanup-stage={cleanup_stage} cleanup-kind={cleanup_kind} cleanup-code={}",
             self.stage,
             self.status.kind(),
             Code(self.status.code()),
             self.context.foreground.as_str(),
             self.context.attach.as_str(),
+            self.context.direct_request.as_str(),
             self.context.dpi_after_failure.as_str(),
             Code(self.status.ambient_win32()),
             Code(cleanup_code),
@@ -293,7 +408,7 @@ impl FromStr for Failure {
         if fields.next() != Some(PREFIX.trim_end()) {
             return Err(ParseError("record prefix is invalid"));
         }
-        if field(&mut fields, "version=")? != "1" {
+        if field(&mut fields, "version=")? != "2" {
             return Err(ParseError("record version is unsupported"));
         }
         let stage = Stage::parse(field(&mut fields, "stage=")?)
@@ -304,6 +419,8 @@ impl FromStr for Failure {
             .ok_or(ParseError("foreground condition is invalid"))?;
         let attach = Attach::parse(field(&mut fields, "attach=")?)
             .ok_or(ParseError("attach condition is invalid"))?;
+        let direct_request = DirectRequest::parse(field(&mut fields, "direct-request=")?)
+            .ok_or(ParseError("direct-request condition is invalid"))?;
         let dpi_after_failure = DpiAfterFailure::parse(field(&mut fields, "dpi-after-failure=")?)
             .ok_or(ParseError("DPI condition is invalid"))?;
         let ambient_win32 = field(&mut fields, "ambient-win32=")?;
@@ -330,12 +447,43 @@ impl FromStr for Failure {
             ("foreground-detach", Some(status)) => Some((Stage::ForegroundDetach, status)),
             _ => return Err(ParseError("cleanup status is invalid")),
         };
+        let activation_context_valid = match (direct_request, attach) {
+            (DirectRequest::NotReached, Attach::NotReached) => foreground == Foreground::Unknown,
+            (DirectRequest::Accepted, Attach::Skipped) => foreground != Foreground::Unknown,
+            (DirectRequest::Refused, Attach::Skipped) => {
+                matches!(foreground, Foreground::Absent | Foreground::SelfThread)
+            }
+            (DirectRequest::Refused, Attach::Attempted) => foreground == Foreground::Present,
+            _ => false,
+        };
+        if !activation_context_valid {
+            return Err(ParseError("activation context is invalid"));
+        }
+        let activation_stage_valid = match stage {
+            Stage::ForegroundAttach | Stage::ForegroundDetach => {
+                direct_request == DirectRequest::Refused && attach == Attach::Attempted
+            }
+            Stage::ForegroundRequest => {
+                direct_request == DirectRequest::Refused
+                    && matches!(attach, Attach::Skipped | Attach::Attempted)
+            }
+            _ => true,
+        };
+        if !activation_stage_valid
+            || (cleanup.is_some()
+                && (direct_request != DirectRequest::Refused
+                    || attach != Attach::Attempted
+                    || foreground != Foreground::Present))
+        {
+            return Err(ParseError("activation stage is invalid"));
+        }
         Ok(Self {
             stage,
             status,
             context: Context {
                 dpi_after_failure,
                 foreground,
+                direct_request,
                 attach,
             },
             cleanup,
@@ -421,13 +569,39 @@ mod tests {
         Stage::StateTimer,
     ];
 
+    fn fallback_context() -> Context {
+        Context::new()
+            .with_foreground(Foreground::Present)
+            .with_direct_request(DirectRequest::Refused)
+            .with_attach(Attach::Attempted)
+    }
+
     fn context(stage: Stage) -> Context {
-        let context = Context::new().with_activation(Foreground::Present, Attach::Attempted);
-        if stage == Stage::DpiAwareness {
-            context.with_dpi_after_failure(DpiAfterFailure::Unaware)
-        } else {
-            context
+        match stage {
+            Stage::DpiAwareness => Context::new().with_dpi_after_failure(DpiAfterFailure::Unaware),
+            Stage::ForegroundAttach | Stage::ForegroundRequest | Stage::ForegroundDetach => {
+                fallback_context()
+            }
+            Stage::RawInputRegistration | Stage::StateTimer => Context::new()
+                .with_foreground(Foreground::Present)
+                .with_direct_request(DirectRequest::Accepted)
+                .with_attach(Attach::Skipped),
+            _ => Context::new(),
         }
+    }
+
+    #[test]
+    fn ready_records_preserve_nonactivated_output_and_attribute_activation() {
+        let expected = "fixture-ready class=ordinary title=fixture capacity=512";
+        assert_eq!(ready_record("ordinary", "fixture", 512, None), expected);
+        assert_eq!(
+            ready_record("ordinary", "fixture", 512, Some(ActivationPath::Direct)),
+            format!("{expected} activation=direct")
+        );
+        assert_eq!(
+            ready_record("ordinary", "fixture", 512, Some(ActivationPath::Attached)),
+            format!("{expected} activation=attached")
+        );
     }
 
     #[test]
@@ -457,13 +631,250 @@ mod tests {
     }
 
     #[test]
-    fn disabled_attachment_context_round_trips() {
+    fn refused_direct_request_context_round_trips() {
+        assert_eq!(ActivationPath::Direct.as_str(), "direct");
+        assert_eq!(ActivationPath::Attached.as_str(), "attached");
+
         let failure = Failure::new(
-            Stage::ForegroundRequest,
-            Status::Boolean { ambient_win32: 0 },
-            Context::new().with_activation(Foreground::Present, Attach::Disabled),
+            Stage::ForegroundAttach,
+            Status::WindowsHresult(0x8007_0005),
+            Context::new()
+                .with_foreground(Foreground::Present)
+                .with_direct_request(DirectRequest::Refused)
+                .with_attach(Attach::Attempted),
         );
         assert_eq!(failure.to_string().parse::<Failure>(), Ok(failure));
+    }
+
+    #[test]
+    fn accepted_direct_request_bypasses_failing_attachment() {
+        let calls = std::cell::RefCell::new(Vec::new());
+        let result = activate_with_fallback(
+            Context::new().with_foreground(Foreground::Present),
+            true,
+            || {
+                calls.borrow_mut().push("request");
+                Ok(())
+            },
+            || {
+                calls.borrow_mut().push("attach");
+                Err(Status::WindowsHresult(0x8007_0005))
+            },
+            || {
+                calls.borrow_mut().push("detach");
+                Ok(())
+            },
+        );
+
+        assert_eq!(calls.into_inner(), ["request"]);
+        assert_eq!(
+            result,
+            Ok((
+                Context::new()
+                    .with_foreground(Foreground::Present)
+                    .with_direct_request(DirectRequest::Accepted)
+                    .with_attach(Attach::Skipped),
+                ActivationPath::Direct,
+            ))
+        );
+    }
+
+    #[test]
+    fn refused_direct_request_uses_one_balanced_attachment() {
+        let calls = std::cell::RefCell::new(Vec::new());
+        let mut requests = [Err(Status::Boolean { ambient_win32: 5 }), Ok(())].into_iter();
+        let result = activate_with_fallback(
+            Context::new().with_foreground(Foreground::Present),
+            true,
+            || {
+                calls.borrow_mut().push("request");
+                requests.next().expect("two foreground requests")
+            },
+            || {
+                calls.borrow_mut().push("attach");
+                Ok(())
+            },
+            || {
+                calls.borrow_mut().push("detach");
+                Ok(())
+            },
+        );
+
+        assert_eq!(
+            calls.into_inner(),
+            ["request", "attach", "request", "detach"]
+        );
+        assert_eq!(result, Ok((fallback_context(), ActivationPath::Attached)));
+    }
+
+    #[test]
+    fn attachment_failure_preserves_refused_direct_request() {
+        let calls = std::cell::RefCell::new(Vec::new());
+        let result = activate_with_fallback(
+            Context::new().with_foreground(Foreground::Present),
+            true,
+            || {
+                calls.borrow_mut().push("request");
+                Err(Status::Boolean { ambient_win32: 5 })
+            },
+            || {
+                calls.borrow_mut().push("attach");
+                Err(Status::WindowsHresult(0x8007_0005))
+            },
+            || {
+                calls.borrow_mut().push("detach");
+                Ok(())
+            },
+        );
+
+        assert_eq!(calls.into_inner(), ["request", "attach"]);
+        assert_eq!(
+            result,
+            Err(Failure::new(
+                Stage::ForegroundAttach,
+                Status::WindowsHresult(0x8007_0005),
+                fallback_context(),
+            ))
+        );
+    }
+
+    #[test]
+    fn attached_request_failure_preserves_detach_cleanup() {
+        let calls = std::cell::RefCell::new(Vec::new());
+        let mut requests = [
+            Err(Status::Boolean { ambient_win32: 5 }),
+            Err(Status::Boolean { ambient_win32: 6 }),
+        ]
+        .into_iter();
+        let result = activate_with_fallback(
+            Context::new().with_foreground(Foreground::Present),
+            true,
+            || {
+                calls.borrow_mut().push("request");
+                requests.next().expect("two foreground requests")
+            },
+            || {
+                calls.borrow_mut().push("attach");
+                Ok(())
+            },
+            || {
+                calls.borrow_mut().push("detach");
+                Err(Status::WindowsHresult(0x8007_0006))
+            },
+        );
+
+        assert_eq!(
+            calls.into_inner(),
+            ["request", "attach", "request", "detach"]
+        );
+        assert_eq!(
+            result,
+            Err(Failure::new(
+                Stage::ForegroundRequest,
+                Status::Boolean { ambient_win32: 6 },
+                fallback_context(),
+            )
+            .with_cleanup(Stage::ForegroundDetach, Status::WindowsHresult(0x8007_0006),))
+        );
+    }
+
+    #[test]
+    fn attached_request_success_still_reports_detach_failure() {
+        let mut requests = [Err(Status::Boolean { ambient_win32: 5 }), Ok(())].into_iter();
+        let result = activate_with_fallback(
+            Context::new().with_foreground(Foreground::Present),
+            true,
+            || requests.next().expect("two foreground requests"),
+            || Ok(()),
+            || Err(Status::WindowsHresult(0x8007_0006)),
+        );
+
+        assert_eq!(
+            result,
+            Err(Failure::new(
+                Stage::ForegroundDetach,
+                Status::WindowsHresult(0x8007_0006),
+                fallback_context(),
+            ))
+        );
+    }
+
+    #[test]
+    fn refused_direct_request_without_attach_stays_boolean() {
+        let result = activate_with_fallback(
+            Context::new().with_foreground(Foreground::Absent),
+            false,
+            || Err(Status::Boolean { ambient_win32: 5 }),
+            || panic!("attachment is unavailable"),
+            || panic!("detachment requires a successful attachment"),
+        );
+
+        assert_eq!(
+            result,
+            Err(Failure::new(
+                Stage::ForegroundRequest,
+                Status::Boolean { ambient_win32: 5 },
+                Context::new()
+                    .with_foreground(Foreground::Absent)
+                    .with_direct_request(DirectRequest::Refused)
+                    .with_attach(Attach::Skipped),
+            ))
+        );
+    }
+
+    #[test]
+    fn parser_rejects_activation_context_stage_and_cleanup_drift() {
+        let accepted_with_attachment = Failure::new(
+            Stage::ForegroundAttach,
+            Status::WindowsHresult(0x8007_0005),
+            Context::new()
+                .with_foreground(Foreground::Present)
+                .with_direct_request(DirectRequest::Accepted)
+                .with_attach(Attach::Attempted),
+        );
+        assert_eq!(
+            accepted_with_attachment.to_string().parse::<Failure>(),
+            Err(ParseError("activation context is invalid"))
+        );
+
+        let skipped_foreign_attachment = Failure::new(
+            Stage::ForegroundRequest,
+            Status::Boolean { ambient_win32: 0 },
+            Context::new()
+                .with_foreground(Foreground::Present)
+                .with_direct_request(DirectRequest::Refused)
+                .with_attach(Attach::Skipped),
+        );
+        assert_eq!(
+            skipped_foreign_attachment.to_string().parse::<Failure>(),
+            Err(ParseError("activation context is invalid"))
+        );
+
+        let attachment_stage_without_attachment = Failure::new(
+            Stage::ForegroundAttach,
+            Status::WindowsHresult(0x8007_0005),
+            Context::new()
+                .with_foreground(Foreground::Absent)
+                .with_direct_request(DirectRequest::Refused)
+                .with_attach(Attach::Skipped),
+        );
+        assert_eq!(
+            attachment_stage_without_attachment
+                .to_string()
+                .parse::<Failure>(),
+            Err(ParseError("activation stage is invalid"))
+        );
+
+        let cleanup_without_attachment = Failure::new(
+            Stage::RawInputRegistration,
+            Status::WindowsHresult(0x8007_0005),
+            context(Stage::RawInputRegistration),
+        )
+        .with_cleanup(Stage::ForegroundDetach, Status::WindowsHresult(0x8007_0006));
+        assert_eq!(
+            cleanup_without_attachment.to_string().parse::<Failure>(),
+            Err(ParseError("activation stage is invalid"))
+        );
     }
 
     #[test]

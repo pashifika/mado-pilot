@@ -36,7 +36,9 @@ use mado_pilot_platform_windows::fixture_protocol::{
     FixtureVisualCommand, FixtureVisualState, ORDINARY_CLASS_NAME, TARGET_LOSS_ACKNOWLEDGEMENT,
     ordinary_fixture_title,
 };
-use ordinary_fixture_startup::{Failure as StartupFailure, PREFIX as STARTUP_ERROR_PREFIX};
+use ordinary_fixture_startup::{
+    Failure as StartupFailure, PREFIX as STARTUP_ERROR_PREFIX, ParseError as StartupParseError,
+};
 use windows::Win32::Foundation::{HWND, LPARAM, POINT, RECT, WPARAM};
 use windows::Win32::Graphics::Gdi::{
     EnumDisplayMonitors, GetMonitorInfoW, HDC, HMONITOR, MONITORINFO,
@@ -68,6 +70,43 @@ struct ObservationReport {
     state: u32,
 }
 
+#[derive(Debug, PartialEq, Eq)]
+enum StartupObservation {
+    Ready(String),
+    Failure(StartupFailure),
+    Pending(String),
+    Malformed {
+        error: StartupParseError,
+        byte_len: usize,
+        field_count: usize,
+    },
+    Timeout,
+    Disconnected,
+}
+
+fn classify_startup_observation(
+    observation: Result<String, RecvTimeoutError>,
+) -> StartupObservation {
+    match observation {
+        Ok(line) if line.starts_with("fixture-ready ") => StartupObservation::Ready(line),
+        Ok(line) if line.starts_with(STARTUP_ERROR_PREFIX) => {
+            let byte_len = line.len();
+            let field_count = line.split_ascii_whitespace().count();
+            match line.parse() {
+                Ok(failure) => StartupObservation::Failure(failure),
+                Err(error) => StartupObservation::Malformed {
+                    error,
+                    byte_len,
+                    field_count,
+                },
+            }
+        }
+        Ok(line) => StartupObservation::Pending(line),
+        Err(RecvTimeoutError::Timeout) => StartupObservation::Timeout,
+        Err(RecvTimeoutError::Disconnected) => StartupObservation::Disconnected,
+    }
+}
+
 #[derive(Debug)]
 struct FixtureProcess {
     child: Option<Child>,
@@ -79,36 +118,24 @@ struct FixtureProcess {
 
 impl FixtureProcess {
     fn spawn(token: impl Into<String>) -> Self {
-        Self::spawn_with_options(token.into(), false, false, false)
+        Self::spawn_with_options(token.into(), false, false)
     }
 
     fn spawn_activated(token: impl Into<String>) -> Self {
-        Self::spawn_with_options(token.into(), true, false, false)
-    }
-
-    fn spawn_activated_without_attach(token: impl Into<String>) -> Self {
-        Self::spawn_with_options(token.into(), true, true, false)
+        Self::spawn_with_options(token.into(), true, false)
     }
 
     fn spawn_activated_with_injected_failure(token: impl Into<String>) -> Self {
-        Self::spawn_with_options(token.into(), true, false, true)
+        Self::spawn_with_options(token.into(), true, true)
     }
 
-    fn spawn_with_options(
-        token: String,
-        activate: bool,
-        direct_only: bool,
-        inject_failure: bool,
-    ) -> Self {
+    fn spawn_with_options(token: String, activate: bool, inject_failure: bool) -> Self {
         let mut command = Command::new(env!(
             "CARGO_BIN_EXE_mado-pilot-windows-window-message-fixture"
         ));
         command.arg(format!("--title-token={token}"));
         if activate {
             command.arg("--activate");
-        }
-        if direct_only {
-            command.arg("--activation=direct");
         }
         if inject_failure {
             command.arg("--fail-stage=foreground-request");
@@ -141,6 +168,17 @@ impl FixtureProcess {
         let ready = fixture.wait_for_ready(Duration::from_secs(5));
         assert!(ready.contains(&format!("class={ORDINARY_CLASS_NAME}")));
         assert!(ready.contains(&format!("title={}", fixture.title())));
+        if activate {
+            assert!(
+                ready.ends_with(" activation=direct") || ready.ends_with(" activation=attached"),
+                "activated fixture must attribute its readiness path"
+            );
+        } else {
+            assert!(
+                !ready.ends_with(" activation=direct") && !ready.ends_with(" activation=attached"),
+                "non-activated fixture readiness must remain unchanged"
+            );
+        }
         fixture
     }
 
@@ -185,24 +223,26 @@ impl FixtureProcess {
         let deadline = Instant::now() + timeout;
         loop {
             let remaining = deadline.saturating_duration_since(Instant::now());
-            match self.lines.recv_timeout(remaining) {
-                Ok(line) if line.starts_with("fixture-ready ") => return line,
-                Ok(line) if line.starts_with(STARTUP_ERROR_PREFIX) => {
-                    let byte_len = line.len();
-                    let field_count = line.split_ascii_whitespace().count();
-                    let failure = line.parse::<StartupFailure>().unwrap_or_else(|error| {
-                        panic!(
-                            "fixture startup record was invalid: {error}; bytes={byte_len} fields={field_count}"
-                        )
-                    });
+            match classify_startup_observation(self.lines.recv_timeout(remaining)) {
+                StartupObservation::Ready(line) => return line,
+                StartupObservation::Failure(failure) => {
                     let exit = self.wait_for_child_exit().and_then(|status| status.code());
                     panic!("fixture startup failed: {failure}; exit={exit:?}");
                 }
-                Ok(line) => self.pending.push_back(line),
-                Err(RecvTimeoutError::Timeout) => {
+                StartupObservation::Pending(line) => self.pending.push_back(line),
+                StartupObservation::Malformed {
+                    error,
+                    byte_len,
+                    field_count,
+                } => {
+                    panic!(
+                        "fixture startup record was invalid: {error}; bytes={byte_len} fields={field_count}"
+                    )
+                }
+                StartupObservation::Timeout => {
                     panic!("fixture readiness timed out before a bounded result")
                 }
-                Err(RecvTimeoutError::Disconnected) => {
+                StartupObservation::Disconnected => {
                     let pending = self.pending.len();
                     let exit = self.wait_for_child_exit().and_then(|status| status.code());
                     panic!("fixture disconnected before readiness: exit={exit:?} pending={pending}")
@@ -373,16 +413,8 @@ struct OwnedForeground {
 
 impl OwnedForeground {
     fn establish() -> Self {
-        Self::establish_with(false)
-    }
-
-    fn establish_with(direct_only: bool) -> Self {
         let original = DesktopState::capture();
-        let mut fixture = if direct_only {
-            FixtureProcess::spawn_activated_without_attach("owned-unrelated-foreground")
-        } else {
-            FixtureProcess::spawn_activated("owned-unrelated-foreground")
-        };
+        let mut fixture = FixtureProcess::spawn_activated("owned-unrelated-foreground");
         let foreground = fixture.target();
         let deadline = Instant::now() + Duration::from_secs(5);
         loop {
@@ -706,19 +738,49 @@ fn wgc_reports_target_loss_after_acknowledged_fixture_destruction() {
 }
 
 #[test]
+fn startup_observation_classifies_ready_failure_malformed_timeout_and_disconnect() {
+    let ready = "fixture-ready class=ordinary title=fixture capacity=512".to_owned();
+    assert_eq!(
+        classify_startup_observation(Ok(ready.clone())),
+        StartupObservation::Ready(ready)
+    );
+
+    let failure = "fixture-startup-error version=2 stage=foreground-request primary-kind=boolean primary-code=none foreground=absent attach=skipped direct-request=refused dpi-after-failure=not-observed ambient-win32=0x00000000 cleanup-stage=none cleanup-kind=none cleanup-code=none";
+    match classify_startup_observation(Ok(failure.to_owned())) {
+        StartupObservation::Failure(parsed) => assert_eq!(parsed.to_string(), failure),
+        observation => panic!("expected startup failure, got {observation:?}"),
+    }
+
+    let malformed = format!("{STARTUP_ERROR_PREFIX}version=1");
+    match classify_startup_observation(Ok(malformed.clone())) {
+        StartupObservation::Malformed {
+            error,
+            byte_len,
+            field_count,
+        } => {
+            assert_eq!(error.to_string(), "record version is unsupported");
+            assert_eq!(byte_len, malformed.len());
+            assert_eq!(field_count, 2);
+        }
+        observation => panic!("expected malformed startup record, got {observation:?}"),
+    }
+
+    assert_eq!(
+        classify_startup_observation(Err(RecvTimeoutError::Timeout)),
+        StartupObservation::Timeout
+    );
+    assert_eq!(
+        classify_startup_observation(Err(RecvTimeoutError::Disconnected)),
+        StartupObservation::Disconnected
+    );
+}
+
+#[test]
 #[ignore = "opens and activates real fixture windows; run deliberately on an unlocked desktop"]
 fn activated_ordinary_fixture_startup_reaches_ready() {
     let _serial = NATIVE_MATRIX.lock().expect("native matrix serialized");
     select_process_dpi_awareness();
     OwnedForeground::establish().finish();
-}
-
-#[test]
-#[ignore = "opens and activates real fixture windows; run deliberately on an unlocked desktop"]
-fn activated_ordinary_fixture_startup_reaches_ready_without_attach() {
-    let _serial = NATIVE_MATRIX.lock().expect("native matrix serialized");
-    select_process_dpi_awareness();
-    OwnedForeground::establish_with(true).finish();
 }
 
 #[test]
@@ -735,10 +797,17 @@ fn injected_foreground_request_failure_is_reported() {
         .map(String::as_str)
         .or_else(|| panic.downcast_ref::<&str>().copied())
         .expect("startup failure panic carries text");
+    let request_failure = message
+        .contains("version=2 stage=foreground-request primary-kind=boolean primary-code=none")
+        && message.contains("ambient-win32=0x00000000");
+    let environmental_attach_failure = message
+        .contains("version=2 stage=foreground-attach primary-kind=windows-hresult")
+        && message.contains("foreground=present attach=attempted direct-request=refused")
+        && message.contains("ambient-win32=none");
     assert!(
-        message.contains("stage=foreground-request primary-kind=boolean")
-            && message.contains("ambient-win32=0x00000000")
-            && message.contains("exit=Some(1)"),
+        message.contains("direct-request=refused")
+            && message.contains("exit=Some(1)")
+            && (request_failure || environmental_attach_failure),
         "unexpected bounded startup failure: {message}"
     );
 }
