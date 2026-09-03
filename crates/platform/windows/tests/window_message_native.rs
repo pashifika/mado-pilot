@@ -53,7 +53,6 @@ use windows::core::{BOOL, PCWSTR};
 
 static NATIVE_MATRIX: Mutex<()> = Mutex::new(());
 static PROCESS_DPI: Once = Once::new();
-const STARTUP_FAILURE_INJECTION: &str = "MADOPILOT_WINDOWS_STARTUP_FAIL_STAGE";
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 struct ObservationReport {
@@ -177,41 +176,30 @@ impl FixtureProcess {
             match self.lines.recv_timeout(remaining) {
                 Ok(line) if line.starts_with("fixture-ready ") => return line,
                 Ok(line) if line.starts_with(STARTUP_ERROR_PREFIX) => {
-                    let parsed = line.parse::<StartupFailure>();
-                    let exit = self.wait_for_child_exit();
-                    let failure = parsed.unwrap_or_else(|error| {
+                    let byte_len = line.len();
+                    let field_count = line.split_ascii_whitespace().count();
+                    let failure = line.parse::<StartupFailure>().unwrap_or_else(|error| {
                         panic!(
-                            "fixture startup record was invalid: {error}; exit={:?}",
-                            exit.code()
+                            "fixture startup record was invalid: {error}; bytes={byte_len} fields={field_count}"
                         )
                     });
-                    assert_eq!(
-                        exit.code(),
-                        Some(1),
-                        "fixture startup record had mismatched exit={:?}",
-                        exit.code()
-                    );
-                    panic!("fixture startup failed: {failure}; exit=1");
+                    let exit = self.wait_for_child_exit().and_then(|status| status.code());
+                    panic!("fixture startup failed: {failure}; exit={exit:?}");
                 }
                 Ok(line) => self.pending.push_back(line),
                 Err(RecvTimeoutError::Timeout) => {
                     panic!("fixture readiness timed out before a bounded result")
                 }
                 Err(RecvTimeoutError::Disconnected) => {
-                    let exit = self
-                        .child
-                        .as_mut()
-                        .expect("fixture child retained")
-                        .try_wait()
-                        .expect("fixture child status observed")
-                        .and_then(|status| status.code());
-                    panic!("fixture disconnected before readiness: exit={exit:?}")
+                    let pending = self.pending.len();
+                    let exit = self.wait_for_child_exit().and_then(|status| status.code());
+                    panic!("fixture disconnected before readiness: exit={exit:?} pending={pending}")
                 }
             }
         }
     }
 
-    fn wait_for_child_exit(&mut self) -> ExitStatus {
+    fn wait_for_child_exit(&mut self) -> Option<ExitStatus> {
         let deadline = Instant::now() + Duration::from_secs(1);
         loop {
             if let Some(status) = self
@@ -221,12 +209,11 @@ impl FixtureProcess {
                 .try_wait()
                 .expect("fixture child status observed")
             {
-                return status;
+                return Some(status);
             }
-            assert!(
-                Instant::now() < deadline,
-                "fixture emitted a startup record but did not exit"
-            );
+            if Instant::now() >= deadline {
+                return None;
+            }
             thread::sleep(Duration::from_millis(1));
         }
     }
@@ -703,18 +690,29 @@ fn wgc_reports_target_loss_after_acknowledged_fixture_destruction() {
 fn activated_ordinary_fixture_startup_reaches_ready() {
     let _serial = NATIVE_MATRIX.lock().expect("native matrix serialized");
     select_process_dpi_awareness();
-    match std::env::var(STARTUP_FAILURE_INJECTION) {
-        Ok(value) if value == "foreground-request" => {
-            let _fixture =
-                FixtureProcess::spawn_activated_with_injected_failure("startup-red-control");
-            panic!("injected startup failure unexpectedly reached readiness");
-        }
-        Ok(_) => panic!("{STARTUP_FAILURE_INJECTION} accepts only foreground-request"),
-        Err(std::env::VarError::NotUnicode(_)) => {
-            panic!("{STARTUP_FAILURE_INJECTION} must be valid Unicode")
-        }
-        Err(std::env::VarError::NotPresent) => OwnedForeground::establish().finish(),
-    }
+    OwnedForeground::establish().finish();
+}
+
+#[test]
+#[ignore = "opens and activates real fixture windows; run deliberately on an unlocked desktop"]
+fn injected_foreground_request_failure_is_reported() {
+    let _serial = NATIVE_MATRIX.lock().expect("native matrix serialized");
+    select_process_dpi_awareness();
+    let panic = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+        FixtureProcess::spawn_activated_with_injected_failure("startup-red-control")
+    }))
+    .expect_err("injected startup failure must not reach readiness");
+    let message = panic
+        .downcast_ref::<String>()
+        .map(String::as_str)
+        .or_else(|| panic.downcast_ref::<&str>().copied())
+        .expect("startup failure panic carries text");
+    assert!(
+        message.contains("stage=foreground-request primary-kind=boolean")
+            && message.contains("ambient-win32=0x00000000")
+            && message.contains("exit=Some(1)"),
+        "unexpected bounded startup failure: {message}"
+    );
 }
 
 #[test]

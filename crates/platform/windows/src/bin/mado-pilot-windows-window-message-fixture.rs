@@ -38,7 +38,7 @@ mod fixture {
     use std::time::Duration;
 
     use super::ordinary_fixture_startup::{
-        Attach, Context, DpiBefore, Failure, Foreground, Stage, Status,
+        Attach, Context, DpiAfterFailure, Failure, Foreground, Stage, Status,
     };
 
     use mado_pilot_platform_windows::fixture_protocol::{
@@ -192,7 +192,7 @@ mod fixture {
         window: HWND,
         context: Context,
         fail_request: bool,
-    ) -> Result<(), Failure> {
+    ) -> Result<Context, Failure> {
         // The native matrix owns one unrelated foreground fixture. Queue
         // attachment exists only during setup and is detached before readiness.
         // SAFETY: both identifiers name desktop GUI threads with message queues.
@@ -219,16 +219,18 @@ mod fixture {
             if attached {
                 AttachThreadInput(current_thread, foreground_thread, true)
                     .ok()
-                    .map_err(|error| windows_failure(Stage::FOREGROUND_ATTACH, error, context))?;
+                    .map_err(|error| windows_failure(Stage::ForegroundAttach, error, context))?;
             }
             let _was_visible = ShowWindow(window, SW_SHOW);
             SetLastError(WIN32_ERROR(0));
             let activated = !fail_request && SetForegroundWindow(window).as_bool();
             let request_failure = (!activated).then(|| {
                 Failure::new(
-                    Stage::FOREGROUND_REQUEST,
-                    Status::Boolean,
-                    context.with_ambient_win32(GetLastError().0),
+                    Stage::ForegroundRequest,
+                    Status::Boolean {
+                        ambient_win32: GetLastError().0,
+                    },
+                    context,
                 )
             });
             let detach_failure = if attached {
@@ -240,13 +242,13 @@ mod fixture {
             };
             match (request_failure, detach_failure) {
                 (Some(failure), Some(error)) => {
-                    Err(failure.with_cleanup(Stage::FOREGROUND_DETACH, windows_status(error)))
+                    Err(failure.with_cleanup(Stage::ForegroundDetach, windows_status(error)))
                 }
                 (Some(failure), None) => Err(failure),
                 (None, Some(error)) => {
-                    Err(windows_failure(Stage::FOREGROUND_DETACH, error, context))
+                    Err(windows_failure(Stage::ForegroundDetach, error, context))
                 }
-                (None, None) => Ok(()),
+                (None, None) => Ok(context),
             }
         }
     }
@@ -278,24 +280,25 @@ mod fixture {
         Ok(())
     }
 
-    fn observe_dpi_before() -> DpiBefore {
-        // SAFETY: these calls only inspect the calling thread's DPI context.
+    fn observe_dpi_after_failure() -> DpiAfterFailure {
+        // SAFETY: the process-default set has already failed; these calls only
+        // classify the resulting DPI context and cannot confound that failure.
         unsafe {
             let context = GetThreadDpiAwarenessContext();
             if AreDpiAwarenessContextsEqual(context, DPI_AWARENESS_CONTEXT_PER_MONITOR_AWARE_V2)
                 .as_bool()
             {
-                return DpiBefore::PerMonitorV2;
+                return DpiAfterFailure::PerMonitorV2;
             }
             let awareness = GetAwarenessFromDpiAwarenessContext(context);
             if awareness == DPI_AWARENESS_UNAWARE {
-                DpiBefore::Unaware
+                DpiAfterFailure::Unaware
             } else if awareness == DPI_AWARENESS_SYSTEM_AWARE {
-                DpiBefore::System
+                DpiAfterFailure::System
             } else if awareness == DPI_AWARENESS_PER_MONITOR_AWARE {
-                DpiBefore::PerMonitor
+                DpiAfterFailure::PerMonitor
             } else {
-                DpiBefore::Unknown
+                DpiAfterFailure::Unknown
             }
         }
     }
@@ -306,20 +309,20 @@ mod fixture {
             activate,
             fail_request,
         } = options;
-        let context = Context::new(observe_dpi_before());
-        // SAFETY: DPI awareness is selected before this fixture calls USER32.
-        unsafe {
-            SetProcessDpiAwarenessContext(DPI_AWARENESS_CONTEXT_PER_MONITOR_AWARE_V2)
-                .map_err(|error| windows_failure(Stage::DPI_AWARENESS, error, context))?;
+        let mut context = Context::new();
+        // SAFETY: this is the fixture's first DPI-dependent call.
+        let dpi_result =
+            unsafe { SetProcessDpiAwarenessContext(DPI_AWARENESS_CONTEXT_PER_MONITOR_AWARE_V2) };
+        if let Err(error) = dpi_result {
+            context = context.with_dpi_after_failure(observe_dpi_after_failure());
+            return Err(windows_failure(Stage::DpiAwareness, error, context));
         }
-        TITLE_TOKEN
-            .set(token)
-            .map_err(|_| Failure::new(Stage::TITLE_TOKEN, Status::Hresult(0x8000_4005), context))?;
+        TITLE_TOKEN.set(token).expect("title token set once");
         ANIMATED.store(false, Ordering::Release);
         let class_name = wide(ORDINARY_CLASS_NAME);
         // SAFETY: null requests the current executable module.
         let module = unsafe { GetModuleHandleW(None) }
-            .map_err(|error| windows_failure(Stage::MODULE_HANDLE, error, context))?;
+            .map_err(|error| windows_failure(Stage::ModuleHandle, error, context))?;
         let class = WNDCLASSEXW {
             cbSize: u32::try_from(size_of::<WNDCLASSEXW>()).expect("WNDCLASSEXW fits u32"),
             lpfnWndProc: Some(window_proc),
@@ -330,60 +333,26 @@ mod fixture {
         // SAFETY: registration copies the class name, and every field is initialized.
         if unsafe { RegisterClassExW(&raw const class) } == 0 {
             return Err(windows_failure(
-                Stage::CLASS_REGISTRATION,
+                Stage::ClassRegistration,
                 Error::from_thread(),
                 context,
             ));
         }
 
-        let target = create_startup_top_level(
-            Stage::WINDOW_CREATE_TARGET,
-            context,
-            &ordinary_title(),
-            120,
-            120,
-        )?;
-        let game = create_startup_top_level(
-            Stage::WINDOW_CREATE_GAME,
-            context,
-            &role_title("Game"),
-            1_200,
-            120,
-        )?;
-        let sibling = create_startup_top_level(
-            Stage::WINDOW_CREATE_SIBLING,
-            context,
-            &role_title("Sibling"),
-            800,
-            120,
-        )?;
-        let child = create_startup_child(
-            Stage::WINDOW_CREATE_CHILD,
-            context,
-            sibling,
-            &role_title("Child"),
-        )?;
-        let foreground = create_startup_top_level(
-            Stage::WINDOW_CREATE_FOREGROUND,
-            context,
-            &role_title("Foreground"),
-            800,
-            520,
-        )?;
-        let raw = create_startup_top_level(
-            Stage::WINDOW_CREATE_RAW,
-            context,
-            &role_title("Raw"),
-            120,
-            560,
-        )?;
-        let state = create_startup_top_level(
-            Stage::WINDOW_CREATE_STATE,
-            context,
-            &role_title("State"),
-            460,
-            560,
-        )?;
+        let target = create_top_level(&ordinary_title(), 120, 120)
+            .map_err(|error| windows_failure(Stage::WindowCreateTarget, error, context))?;
+        let game = create_top_level(&role_title("Game"), 1_200, 120)
+            .map_err(|error| windows_failure(Stage::WindowCreateGame, error, context))?;
+        let sibling = create_top_level(&role_title("Sibling"), 800, 120)
+            .map_err(|error| windows_failure(Stage::WindowCreateSibling, error, context))?;
+        let child = create_child(sibling, &role_title("Child"))
+            .map_err(|error| windows_failure(Stage::WindowCreateChild, error, context))?;
+        let foreground = create_top_level(&role_title("Foreground"), 800, 520)
+            .map_err(|error| windows_failure(Stage::WindowCreateForeground, error, context))?;
+        let raw = create_top_level(&role_title("Raw"), 120, 560)
+            .map_err(|error| windows_failure(Stage::WindowCreateRaw, error, context))?;
+        let state = create_top_level(&role_title("State"), 460, 560)
+            .map_err(|error| windows_failure(Stage::WindowCreateState, error, context))?;
 
         TARGET.store(handle_value(target), Ordering::Release);
         GAME.store(handle_value(game), Ordering::Release);
@@ -400,7 +369,7 @@ mod fixture {
             }
         }
         if activate {
-            activate_for_fixture_setup(target, context, fail_request)?;
+            context = activate_for_fixture_setup(target, context, fail_request)?;
         }
 
         let devices = [
@@ -423,12 +392,12 @@ mod fixture {
                 &devices,
                 u32::try_from(size_of::<RAWINPUTDEVICE>()).expect("RAWINPUTDEVICE fits u32"),
             )
-            .map_err(|error| windows_failure(Stage::RAW_INPUT_REGISTRATION, error, context))?;
+            .map_err(|error| windows_failure(Stage::RawInputRegistration, error, context))?;
         }
         // SAFETY: the state window is live on this thread; a null callback posts WM_TIMER.
         if unsafe { SetTimer(Some(state), STATE_TIMER, STATE_POLL_INTERVAL_MS, None) } == 0 {
             return Err(windows_failure(
-                Stage::STATE_TIMER,
+                Stage::StateTimer,
                 Error::from_thread(),
                 context,
             ));
@@ -887,88 +856,8 @@ mod fixture {
         create_window(title, x, y, 360, 240, None, WS_OVERLAPPEDWINDOW)
     }
 
-    #[derive(Clone, Copy)]
-    struct WindowSpec {
-        x: i32,
-        y: i32,
-        width: i32,
-        height: i32,
-        parent: Option<HWND>,
-        style: WINDOW_STYLE,
-    }
-
-    fn create_startup_top_level(
-        stage: Stage,
-        context: Context,
-        title: &str,
-        x: i32,
-        y: i32,
-    ) -> Result<HWND, Failure> {
-        create_startup_window(
-            stage,
-            context,
-            title,
-            WindowSpec {
-                x,
-                y,
-                width: 360,
-                height: 240,
-                parent: None,
-                style: WS_OVERLAPPEDWINDOW,
-            },
-        )
-    }
-
-    fn create_startup_child(
-        stage: Stage,
-        context: Context,
-        parent: HWND,
-        title: &str,
-    ) -> Result<HWND, Failure> {
-        create_startup_window(
-            stage,
-            context,
-            title,
-            WindowSpec {
-                x: 20,
-                y: 20,
-                width: 160,
-                height: 100,
-                parent: Some(parent),
-                style: WS_CHILD | WS_VISIBLE,
-            },
-        )
-    }
-
-    fn create_startup_window(
-        stage: Stage,
-        context: Context,
-        title: &str,
-        spec: WindowSpec,
-    ) -> Result<HWND, Failure> {
-        let class_name = wide(ORDINARY_CLASS_NAME);
-        let title = wide(title);
-        // SAFETY: null requests the current executable module.
-        let module = unsafe { GetModuleHandleW(None) }
-            .map_err(|error| windows_failure(Stage::MODULE_HANDLE, error, context))?;
-        // SAFETY: class and title buffers remain alive for this call; no payload is supplied.
-        unsafe {
-            CreateWindowExW(
-                Default::default(),
-                PCWSTR(class_name.as_ptr()),
-                PCWSTR(title.as_ptr()),
-                spec.style,
-                spec.x,
-                spec.y,
-                spec.width,
-                spec.height,
-                spec.parent,
-                None,
-                Some(HINSTANCE(module.0)),
-                None,
-            )
-        }
-        .map_err(|error| windows_failure(stage, error, context))
+    fn create_child(parent: HWND, title: &str) -> WindowsResult<HWND> {
+        create_window(title, 20, 20, 160, 100, Some(parent), WS_CHILD | WS_VISIBLE)
     }
 
     fn create_window(
