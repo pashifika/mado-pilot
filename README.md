@@ -111,6 +111,8 @@ implementation. Integrated successor `9cf746f` combines the ADR 0061 and ADR
 0062 repairs, but each host's sole authorized builder terminated at an apparatus
 control before artifact authority or process 1. ADR 0063 retains both attempts
 without retry, so native watcher support remains withheld.
+Those withholding statements are revision-bound history; ADR 0064 records the
+current Qualification V2 support boundary used by the `v0.4.0` line.
 The dual capture profile retains 600 stationary samples per display and 300
 moving-seam frame pairs with per-frame callback correlation. Windows
 final-source Phase 1 and repository verification run on the exact exit candidate
