@@ -64,26 +64,62 @@ static void report_modules(void)
     puts("MADO_PROFILE_MODULES=complete");
 }
 
+#ifdef _WIN32
+static int runtime_path(const wchar_t* variable, wchar_t* full)
+{
+    wchar_t wide[32768];
+    DWORD supplied = GetEnvironmentVariableW(variable, wide, 32768);
+    if (supplied < 3 || supplied >= 32768 ||
+        !((wide[1] == L':' && (wide[2] == L'/' || wide[2] == L'\\')) ||
+          (wide[0] == L'\\' && wide[1] == L'\\'))) return 0;
+    DWORD length = GetFullPathNameW(wide, 32768, full, NULL);
+    return length != 0 && length < 32768;
+}
+#endif
+
 static int load_candidate(void)
 {
     if (library != NULL) return 1;
 #ifdef _WIN32
-    wchar_t wide[32768];
+    static int observer_registered;
+    if (!observer_registered) {
+        if (atexit(report_modules) != 0) {
+            puts("MADO_PROFILE_LOAD=observer-failed");
+            return 0;
+        }
+        observer_registered = 1;
+    }
+    wchar_t opencv[32768];
     wchar_t full[32768];
-    DWORD supplied = GetEnvironmentVariableW(L"MADO_PROFILE_LIBRARY", wide, 32768);
-    if (supplied < 3 || supplied >= 32768 ||
-        !((wide[1] == L':' && (wide[2] == L'/' || wide[2] == L'\\')) ||
-          (wide[0] == L'\\' && wide[1] == L'\\'))) {
+    if (!runtime_path(L"MADO_PROFILE_OPENCV_RUNTIME", opencv)) {
+        puts("MADO_PROFILE_PRELOAD=invalid-path");
+        return 0;
+    }
+    if (!runtime_path(L"MADO_PROFILE_LIBRARY", full)) {
         puts("MADO_PROFILE_LOAD=invalid-path");
         return 0;
     }
-    DWORD length = GetFullPathNameW(wide, 32768, full, NULL);
-    if (length == 0 || length >= 32768) {
-        puts("MADO_PROFILE_LOAD=invalid-path");
+    HMODULE preload = LoadLibraryExW(opencv, NULL,
+        LOAD_LIBRARY_SEARCH_DLL_LOAD_DIR | LOAD_LIBRARY_SEARCH_SYSTEM32);
+    if (preload == NULL) {
+        puts("MADO_PROFILE_PRELOAD=unavailable");
         return 0;
     }
+    wchar_t observed[32768];
+    DWORD length = GetModuleFileNameW(preload, observed, 32768);
+    if (length == 0 || length >= 32768 || _wcsicmp(opencv, observed) != 0) {
+        FreeLibrary(preload);
+        puts("MADO_PROFILE_PRELOAD=identity-mismatch");
+        return 0;
+    }
+    puts("MADO_PROFILE_PRELOAD=loaded");
     library = LoadLibraryExW(full, NULL,
         LOAD_LIBRARY_SEARCH_DLL_LOAD_DIR | LOAD_LIBRARY_SEARCH_SYSTEM32);
+    /* A loaded candidate owns its import reference; failure needs no preload either. */
+    if (!FreeLibrary(preload)) {
+        puts("MADO_PROFILE_PRELOAD=release-failed");
+        return 0;
+    }
 #else
     const char* path = getenv("MADO_PROFILE_LIBRARY");
     char canonical[PATH_MAX];
@@ -102,10 +138,12 @@ static int load_candidate(void)
         return 0;
     }
     /* Process-long API/ORT pointers forbid unloading the prototype underneath them. */
+#ifndef _WIN32
     if (atexit(report_modules) != 0) {
         puts("MADO_PROFILE_LOAD=observer-failed");
         return 0;
     }
+#endif
     puts("MADO_PROFILE_LOAD=loaded");
     return 1;
 }

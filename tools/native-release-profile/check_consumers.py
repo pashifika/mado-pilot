@@ -15,7 +15,7 @@ from qualify import digest_file, native_target, private_directory, write_bytes, 
 
 def checked(argv: list[str], *, cwd: Path, environment: dict, output: Path, label: str,
             rows: list[dict], marker: str | None = None, expected_exit: int = 0,
-            observe_modules: bool = False) -> dict:
+            observe_modules: bool = False, missing_preload: bool = False) -> dict:
     executable_digest = digest_file(Path(argv[0]))
     loaded = environment.get("MADO_PROFILE_LIBRARY")
     loaded_identity = digest_file(Path(loaded)) if loaded and Path(loaded).is_file() else None
@@ -37,18 +37,36 @@ def checked(argv: list[str], *, cwd: Path, environment: dict, output: Path, labe
                     and "MADO_PROFILE_MODULES=incomplete" not in result["stdout"].splitlines())
         row["module_observation"] = "complete" if observed else "incomplete"
         passed = passed and observed
+    if missing_preload:
+        lines = result["stdout"].splitlines()
+        modules = [line.removeprefix("MADO_PROFILE_MODULE=") for line in lines
+                   if line.startswith("MADO_PROFILE_MODULE=")]
+        refused = ("MADO_PROFILE_LOAD=loaded" not in lines
+                   and "MADO_PROFILE_PRELOAD=loaded" not in lines
+                   and all(os.path.normcase(path) != os.path.normcase(loaded) for path in modules))
+        row["preload_refused_before_candidate"] = refused
+        passed = passed and refused
     if not passed:
         raise ValueError(f"{label} failed; see bounded attempt logs")
     row["status"] = "passed"
     return result
 
 
-def build_and_run(root: Path, libraries: Path, output: Path, model_root: Path, runtime: Path) -> dict:
+def build_and_run(root: Path, libraries: Path, output: Path, model_root: Path, runtime: Path,
+                  opencv_runtime: Path | None = None) -> dict:
     root, libraries = root.resolve(strict=True), libraries.resolve(strict=True)
     model_root, runtime = model_root.resolve(strict=True), runtime.resolve(strict=True)
+    windows = sys.platform == "win32"
+    if windows:
+        if opencv_runtime is None or not opencv_runtime.is_absolute():
+            raise ValueError("--opencv-runtime requires an absolute Windows DLL path")
+        opencv_runtime = opencv_runtime.resolve(strict=True)
+        if not opencv_runtime.is_file():
+            raise ValueError("--opencv-runtime requires a file")
+    elif opencv_runtime is not None:
+        raise ValueError("--opencv-runtime is supported only on Windows")
     private_directory(output)  # Never replace a previous consumer attempt.
     output = output.resolve(strict=True)
-    windows = sys.platform == "win32"
     if native_target() == "unsupported":
         raise ValueError("external consumers require a native release target")
     environment = dict(os.environ)
@@ -69,6 +87,9 @@ def build_and_run(root: Path, libraries: Path, output: Path, model_root: Path, r
     record = {"schema_version": 1, "target": native_target(), "admission": "development-host",
               "qualification": "not-selected", "library_sha256": digest_file(library),
               "library_bytes": library.stat().st_size, "rows": rows, "status": "failed"}
+    if windows:
+        record["opencv_runtime"] = {"bytes": opencv_runtime.stat().st_size,
+                                    "sha256": digest_file(opencv_runtime)}
     inputs = [sources / name for name in ("rust_facade.rs", "c_abi.c", "cpp_wrapper.cpp")]
     inputs += [root / "tools/native-release-profile/host_load.c", include / "madopilot/madopilot.h",
                include / "madopilot/madopilot.hpp", scene / "deterministic-scene.h"]
@@ -166,6 +187,8 @@ def build_and_run(root: Path, libraries: Path, output: Path, model_root: Path, r
             ("rust-deferred", output / ("rust-bootstrap" + suffix), rust_module),
         ]
         common_args = ["--package", str(package), "--model-root", str(model_root), "--runtime", str(runtime)]
+        if windows:
+            environment["MADO_PROFILE_OPENCV_RUNTIME"] = str(opencv_runtime)
         for name, binary, loaded_library in prototype_consumers:
             environment["MADO_PROFILE_LIBRARY"] = str(loaded_library)
             checked([str(binary)] + common_args, cwd=output, environment=environment, output=output,
@@ -173,6 +196,14 @@ def build_and_run(root: Path, libraries: Path, output: Path, model_root: Path, r
             environment["MADO_PROFILE_LIBRARY"] = str(output / "absent-library")
             checked([str(binary)] + common_args, cwd=output, environment=environment, output=output,
                     label="missing-" + name, rows=rows, marker="MADO_PROFILE_LOAD=unavailable", expected_exit=1)
+            if windows:
+                environment["MADO_PROFILE_LIBRARY"] = str(loaded_library)
+                environment["MADO_PROFILE_OPENCV_RUNTIME"] = str(output / "absent-opencv.dll")
+                checked([str(binary)] + common_args, cwd=output, environment=environment, output=output,
+                        label="missing-preload-" + name, rows=rows,
+                        marker="MADO_PROFILE_PRELOAD=unavailable", expected_exit=1,
+                        observe_modules=True, missing_preload=True)
+                environment["MADO_PROFILE_OPENCV_RUNTIME"] = str(opencv_runtime)
         record["status"] = "passed"
     finally:
         write_record(output / "result.json", record)
@@ -183,9 +214,11 @@ def main() -> int:
     parser = argparse.ArgumentParser(description=__doc__)
     for name in ("root", "library-dir", "output", "model-root", "runtime"):
         parser.add_argument("--" + name, type=Path, required=True)
+    parser.add_argument("--opencv-runtime", type=Path, required=sys.platform == "win32")
     args = parser.parse_args()
     try:
-        record = build_and_run(args.root, args.library_dir, args.output, args.model_root, args.runtime)
+        record = build_and_run(args.root, args.library_dir, args.output, args.model_root, args.runtime,
+                               args.opencv_runtime)
         print(json.dumps({key: record[key] for key in ("status", "target", "admission", "qualification")}))
         return 0
     except (OSError, ValueError) as error:
