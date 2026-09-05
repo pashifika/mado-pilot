@@ -86,7 +86,7 @@ def build_and_run(root: Path, libraries: Path, output: Path, model_root: Path, r
         binary = output / (name + suffix)
         driver = cpp_compiler if cpp else compiler
         if windows:
-            args = [driver, "/nologo", "/W3", "/WX", "/EHsc", "/std:c++17" if cpp else "/std:c11",
+            args = [driver, "/nologo", "/W3", "/WX", "/utf-8", "/EHsc", "/std:c++17" if cpp else "/std:c11",
                     "/I" + str(headers), "/I" + str(scene), str(source), "/Fe:" + str(binary)]
             args.append("/FI" + str(utf8_entry))
             if host_load:
@@ -107,9 +107,9 @@ def build_and_run(root: Path, libraries: Path, output: Path, model_root: Path, r
     try:
         shim = root / "tools/native-release-profile/host_load.c"
         if windows:
-            shim_args = [compiler, "/nologo", "/W3", "/WX", "/std:c11", "/c", str(shim),
+            shim_args = [compiler, "/nologo", "/W3", "/WX", "/utf-8", "/std:c11", "/c", str(shim),
                          "/I" + str(include), "/Fo:" + str(output / "host_load.obj")]
-            bootstrap_args = [compiler, "/nologo", "/W3", "/WX", "/std:c11", str(shim),
+            bootstrap_args = [compiler, "/nologo", "/W3", "/WX", "/utf-8", "/std:c11", str(shim),
                               "/DPROFILE_RUST_MAIN", "/I" + str(include), "psapi.lib",
                               "/Fe:" + str(output / ("rust-bootstrap" + suffix))]
         else:
