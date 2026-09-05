@@ -139,9 +139,11 @@ python3 tools/native-release-profile/check_consumers.py \
 ```
 
 On Windows, run inside the MSVC x64 developer environment and replace the shell
-variable notation with the native shell's equivalent. The Python driver invokes
-`cl` directly. This lane builds external Rust facade, current C/C++, and immutable
-ABI 1.0/1.2/1.3/1.4 consumers. It performs offline matching and accepted CPU OCR,
+variable notation with the native shell's equivalent. Also pass `--opencv-runtime`
+with the controlled `opencv_world4140.dll` path; this option is Windows-only.
+The driver invokes `cl /utf-8` directly and builds external Rust facade, current
+C/C++, and immutable ABI 1.0/1.2/1.3/1.4 consumers. It exercises offline matching,
+blank-image CPU OCR,
 frame correlation, interruption, and ownership checks. Its development-host
 results are supporting evidence only. CI runs the deterministic procedure tests
 on all three policy/native hosts and the consumer lane on both release targets.
@@ -152,8 +154,12 @@ actual loading as unobserved. PE imports do not enumerate all dynamic CUDA
 requirements. Mach-O load commands alone do not exclude runtime substitution.
 
 `host_load.c` is a private comparison mechanism, not a changed product API. It
-loads the exact `MADO_PROFILE_LIBRARY` with immediate local resolution on macOS
-or DLL-directory/System32-only resolution on Windows. C/C++ probes can use its
+loads the exact `MADO_PROFILE_LIBRARY` with immediate local resolution on macOS.
+On Windows it first loads the explicit `MADO_PROFILE_OPENCV_RUNTIME`, then the
+candidate, using only DLL-directory/System32 resolution for both. Missing preload
+inputs refuse before candidate loading. The temporary preload reference is
+released after candidate loading; the candidate retains its own dependency.
+C/C++ probes use
 `qualification_get_api`; the host, not MadoPilot, owns a failed load's
 `UNSUPPORTED` status. Its optional Rust bootstrap invokes the same direct-facade
 consumer work inside a private deferred module, with no Rust object crossing the

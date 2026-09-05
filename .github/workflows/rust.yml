@@ -443,7 +443,7 @@ jobs:
           if not defined VSROOT exit /b 1
           call "%VSROOT%\VC\Auxiliary\Build\vcvars64.bat" || exit /b 1
           cargo build --locked --release -p mado-pilot -p mado-pilot-capi || exit /b 1
-          python tools/native-release-profile/check_consumers.py --root . --library-dir target/release --output target/profile-consumers-ci --model-root "%MADO_PILOT_G004_MODEL_ROOT%" --runtime "%MADO_PILOT_ONNX_RUNTIME%" || exit /b 1
+          python tools/native-release-profile/check_consumers.py --root . --library-dir target/release --output target/profile-consumers-ci --model-root "%MADO_PILOT_G004_MODEL_ROOT%" --runtime "%MADO_PILOT_ONNX_RUNTIME%" --opencv-runtime "C:\opencv\build\x64\vc16\bin\opencv_world%OPENCV_VERSION:.=%.dll" || exit /b 1
 
       # This asserts nothing about the scores. It names the OpenCV build the run
       # actually used and prints what that build matched, so a provisioning drift

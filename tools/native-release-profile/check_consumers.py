@@ -15,7 +15,8 @@ from qualify import digest_file, native_target, private_directory, write_bytes, 
 
 def checked(argv: list[str], *, cwd: Path, environment: dict, output: Path, label: str,
             rows: list[dict], marker: str | None = None, expected_exit: int = 0,
-            observe_modules: bool = False, missing_preload: bool = False) -> dict:
+            observe_modules: bool = False, missing_preload: bool = False,
+            required_modules: tuple[Path, ...] = ()) -> dict:
     executable_digest = digest_file(Path(argv[0]))
     loaded = environment.get("MADO_PROFILE_LIBRARY")
     loaded_identity = digest_file(Path(loaded)) if loaded and Path(loaded).is_file() else None
@@ -37,6 +38,12 @@ def checked(argv: list[str], *, cwd: Path, environment: dict, output: Path, labe
                     and "MADO_PROFILE_MODULES=incomplete" not in result["stdout"].splitlines())
         row["module_observation"] = "complete" if observed else "incomplete"
         passed = passed and observed
+    if required_modules:
+        modules = {os.path.normcase(line.removeprefix("MADO_PROFILE_MODULE="))
+                   for line in result["stdout"].splitlines() if line.startswith("MADO_PROFILE_MODULE=")}
+        retained = all(os.path.normcase(str(path)) in modules for path in required_modules)
+        row["required_modules_retained"] = retained
+        passed = passed and retained
     if missing_preload:
         lines = result["stdout"].splitlines()
         modules = [line.removeprefix("MADO_PROFILE_MODULE=") for line in lines
@@ -192,8 +199,10 @@ def build_and_run(root: Path, libraries: Path, output: Path, model_root: Path, r
             environment["MADO_PROFILE_OPENCV_RUNTIME"] = str(opencv_runtime)
         for name, binary, loaded_library in prototype_consumers:
             environment["MADO_PROFILE_LIBRARY"] = str(loaded_library)
+            required_modules = (loaded_library, opencv_runtime) if windows else (loaded_library,)
             checked([str(binary)] + common_args, cwd=output, environment=environment, output=output,
-                    label="run-" + name, rows=rows, marker="MADO_PROFILE_RESULT=passed", observe_modules=True)
+                    label="run-" + name, rows=rows, marker="MADO_PROFILE_RESULT=passed",
+                    observe_modules=True, required_modules=required_modules)
             environment["MADO_PROFILE_LIBRARY"] = str(output / "absent-library")
             checked([str(binary)] + common_args, cwd=output, environment=environment, output=output,
                     label="missing-" + name, rows=rows, marker="MADO_PROFILE_LOAD=unavailable", expected_exit=1)
