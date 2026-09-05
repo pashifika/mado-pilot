@@ -1,6 +1,6 @@
 """Guard setup failure boundaries and child/CI environment precedence without native dependencies."""
 
-from contextlib import redirect_stderr, redirect_stdout
+from contextlib import chdir, redirect_stderr, redirect_stdout
 import importlib.util
 import io
 import json
@@ -238,6 +238,29 @@ class SetupNativeTests(unittest.TestCase):
         self.environment["DYLD_LIBRARY_PATH"] = ":".join((libraries + "/", str(alias), libraries))
         self.assertEqual(self.invoke(), 0)
         self.assertNotIn(str(caller), self.env_file.read_text(encoding="utf-8"))
+
+    @unittest.skipIf(os.name == "nt", "macOS library search")
+    def test_relative_library_paths_survive_probe_directory_changes(self):
+        caller = self.base / "private-caller-libraries"
+        self.file(caller / "caller-required.dylib", "caller dependency")
+        self.environment["DYLD_LIBRARY_PATH"] = "./private-caller-libraries"
+        lookup = (
+            "import os, pathlib; "
+            "paths = [pathlib.Path(path) for path in os.environ['DYLD_LIBRARY_PATH'].split(':') if path]; "
+            "assert any((path / 'caller-required.dylib').is_file() "
+            "and (path / 'caller-required.dylib').read_text() == 'caller dependency' for path in paths)"
+        )
+        run_process = setup_native.run_process
+        probe = self.probe
+
+        def probe_with_caller_dependency(argv, **kwargs):
+            result = run_process([sys.executable, "-I", "-c", lookup], **kwargs)
+            if result["exit_code"] != 0 or not result["cleanup_ok"]:
+                return result
+            return probe(argv, **kwargs)
+
+        with chdir(self.base), mock.patch.object(self, "probe", side_effect=probe_with_caller_dependency):
+            self.assertEqual(self.invoke([sys.executable, "-I", "-c", lookup], exports=False), 0)
 
     def test_export_injection_does_not_append_either_file(self):
         self.file(self.env_file, "EXISTING=value\n")

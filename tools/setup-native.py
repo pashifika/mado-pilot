@@ -166,6 +166,13 @@ def prepare(opencv_root: Path | None, libclang_path: Path | None,
     target = native_target()
     windows = target == "x86_64-pc-windows-msvc"
     environment = dict(base_environment)
+    if not windows:
+        # Probes change directory; resolve inherited paths from the caller first.
+        inherited_library_paths = [
+            Path(path).resolve()
+            for path in base_environment.get("DYLD_LIBRARY_PATH", "").split(":") if path
+        ]
+        environment["DYLD_LIBRARY_PATH"] = ":".join(map(str, inherited_library_paths))
     settings = {key: "" for key in OPENCV_DISCOVERY}
     settings.update(OPENCV_PACKAGE_NAME="opencv4", OPENCV_PKGCONFIG_NAME="opencv4",
                     OPENCV_CMAKE_NAME="OpenCV", OPENCV_VCPKG_NAME="opencv4")
@@ -262,12 +269,10 @@ def prepare(opencv_root: Path | None, libclang_path: Path | None,
         if not windows:
             library_paths = [str(libraries)]
             library_identities = {libraries.resolve()}
-            for path in base_environment.get("DYLD_LIBRARY_PATH", "").split(":"):
-                if path:
-                    identity = Path(path).resolve()
-                    if identity not in library_identities:
-                        library_identities.add(identity)
-                        library_paths.append(path)
+            for identity in inherited_library_paths:
+                if identity not in library_identities:
+                    library_identities.add(identity)
+                    library_paths.append(str(identity))
             environment["DYLD_LIBRARY_PATH"] = ":".join(library_paths)
             def pkg(*arguments: str) -> str:
                 return checked([str(pkg_config), *arguments, "opencv4"], scratch, environment,

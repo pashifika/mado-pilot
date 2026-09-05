@@ -56,7 +56,9 @@ CI steps retain the compiler context without exporting the whole inherited envir
 The script does not download, install, elevate, or edit global shell settings.
 
 On macOS, command mode keeps inherited `DYLD_LIBRARY_PATH` entries after the
-selected OpenCV library directory. JSON reports only selected settings/additions.
+selected OpenCV library directory. Relative entries resolve from the caller's
+working directory before any native probe, so probes and commands use the same
+locations. JSON reports only selected settings/additions.
 Explicit GitHub export refuses additional inherited loader entries before writing
 either file or running a command: the environment-file format cannot prepend them
 without disclosing them. Use `-- COMMAND` without export options in that case.
