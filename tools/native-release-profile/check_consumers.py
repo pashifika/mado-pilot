@@ -132,6 +132,7 @@ def build_and_run(root: Path, libraries: Path, output: Path, model_root: Path, r
                          "/I" + str(include), "/Fo:" + str(output / "host_load.obj")]
             bootstrap_args = [compiler, "/nologo", "/W3", "/WX", "/utf-8", "/std:c11", str(shim),
                               "/DPROFILE_RUST_MAIN", "/I" + str(include), "psapi.lib",
+                              "/Fo:" + str(output / "rust-bootstrap.obj"),
                               "/Fe:" + str(output / ("rust-bootstrap" + suffix))]
         else:
             shim_args = [compiler, "-std=c11", "-Wall", "-Wextra", "-Werror", "-I", str(include),
