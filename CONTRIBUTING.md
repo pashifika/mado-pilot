@@ -55,6 +55,12 @@ Windows exports include the selected MSVC include/library search paths, so later
 CI steps retain the compiler context without exporting the whole inherited environment.
 The script does not download, install, elevate, or edit global shell settings.
 
+On macOS, command mode keeps inherited `DYLD_LIBRARY_PATH` entries after the
+selected OpenCV library directory. JSON reports only selected settings/additions.
+Explicit GitHub export refuses additional inherited loader entries before writing
+either file or running a command: the environment-file format cannot prepend them
+without disclosing them. Use `-- COMMAND` without export options in that case.
+
 Missing or incompatible OpenCV, libclang, or toolchain inputs may fail setup or
 the build. Removing an eagerly linked OpenCV library after setup invalidates the
 environment and can prevent process entry; no deferred-load bridge or static-link
@@ -315,7 +321,8 @@ job's authority from another:
 
 1. Required Lane A owns deterministic replay/OpenCV scheduler and query
    semantics. Both hosted release-target jobs run
-   `cargo bench --locked --package mado-pilot --bench template-watch-query`.
+   `cargo bench --locked --package mado-pilot --bench template-watch-query` after
+   the setup CI export.
    This short plan enforces every semantic, accounting, mapped-byte, and bounded
    growth oracle, but does not apply target-specific statistical ceilings.
 2. Required Windows Lane B owns the compact WGC integration contract on the
@@ -328,11 +335,11 @@ job's authority from another:
    host, toolchain, and backend arguments. Add `--enforce-budgets` only in this
    lane. A Lane C result cannot replace or reinterpret Lane B.
 
-Each Lane B host builds once:
+Each Lane B host builds once through setup (macOS form below; use the Windows
+root arguments from [native setup](#native-development-prerequisites) on Windows):
 
 ```sh
-cargo bench --locked --package mado-pilot --bench native-template-watch \
-  --features native-template-watch-qualification --no-run
+python3 tools/setup-native.py -- cargo bench --locked --package mado-pilot --bench native-template-watch --features native-template-watch-qualification --no-run
 ```
 
 Record the exact source tree and executable/fixture digests, then invoke the
@@ -358,6 +365,13 @@ Run this sequence from the repository root before opening a pull request. The
 steps are ordered so that the cheapest structural failure is reported first, and
 each step returns a non-zero status with an actionable diagnostic when its policy
 is violated.
+The OpenCV-dependent commands below use macOS setup discovery. On Windows, replace
+`python3 tools/setup-native.py --` with
+`python tools/setup-native.py --opencv-root DIR --libclang-path DIR --` from an
+x64 MSVC developer prompt, using the installed roots. Do not run OpenCV-dependent
+Cargo commands unwrapped after check-only setup; it does not change the shell.
+This block uses POSIX shell syntax; use the Windows shell forms of step 6 below
+instead of its `RUSTDOCFLAGS=...` assignment. Steps 9 and 10 are macOS-only.
 
 ```sh
 # 1. Workspace architecture
@@ -367,17 +381,17 @@ cargo run --locked --package mado-pilot-dependency-check
 cargo fmt --all --check
 
 # 3. Lints, with warnings promoted to failures
-cargo clippy --locked --workspace --all-targets -- -D warnings
+python3 tools/setup-native.py -- cargo clippy --locked --workspace --all-targets -- -D warnings
 
 # 4. Tests
-cargo test --locked --workspace --all-targets
+python3 tools/setup-native.py -- cargo test --locked --workspace --all-targets
 
 # 5. Documentation examples. `--all-targets` above deliberately excludes doctests,
 #    so they need their own run.
-cargo test --locked --workspace --doc
+python3 tools/setup-native.py -- cargo test --locked --workspace --doc
 
 # 6. Documentation, with rustdoc warnings promoted to failures
-RUSTDOCFLAGS="-D warnings" cargo doc --locked --workspace --no-deps
+RUSTDOCFLAGS="-D warnings" python3 tools/setup-native.py -- cargo doc --locked --workspace --no-deps
 
 # 7. Dependency licenses, advisories, sources, and duplicate versions
 cargo deny --locked check
@@ -386,13 +400,12 @@ cargo deny --locked check
 #    1.0/1.2/1.3/1.4 callers, current examples, and CMake consumers. The
 #    private-fixture run additionally compiles/runs local OCR fixtures; its
 #    constructor is absent from release builds and the public table.
-cargo build --locked --package mado-pilot-capi
-cargo check --locked --package mado-pilot-capi --all-targets --all-features
-cargo run --locked --package mado-pilot-capi --example c-abi-check -- --label "<host>"
-cargo run --locked --package mado-pilot --example ocr-fixture
-cargo build --locked --package mado-pilot-capi --features private-fixture
-cargo run --locked --package mado-pilot-capi --features private-fixture \
-  --example c-abi-check -- --label "<host>"
+python3 tools/setup-native.py -- cargo build --locked --package mado-pilot-capi
+python3 tools/setup-native.py -- cargo check --locked --package mado-pilot-capi --all-targets --all-features
+python3 tools/setup-native.py -- cargo run --locked --package mado-pilot-capi --example c-abi-check -- --label "<host>"
+python3 tools/setup-native.py -- cargo run --locked --package mado-pilot --example ocr-fixture
+python3 tools/setup-native.py -- cargo build --locked --package mado-pilot-capi --features private-fixture
+python3 tools/setup-native.py -- cargo run --locked --package mado-pilot-capi --features private-fixture --example c-abi-check -- --label "<host>"
 
 # 9. macOS host only: the macOS adapter as the *other* release target sees it.
 #    Step 3 above cannot reach that configuration here, because on this host the
@@ -403,7 +416,7 @@ cargo clippy --locked --target x86_64-pc-windows-msvc \
 # 10. macOS host only: the capture scenarios with the native shim instrumented.
 #     Run on the qualified 26.6.2 (25G83) Apple Silicon host. Needs Screen
 #     Recording granted, and fails rather than skips without it.
-MADO_PILOT_MACOS_ASAN=1 cargo test --locked \
+MADO_PILOT_MACOS_ASAN=1 python3 tools/setup-native.py -- cargo test --locked \
   -p mado-pilot-platform-macos --target-dir target/asan --lib -- --test-threads=1
 ```
 
@@ -523,11 +536,13 @@ Running with `-- --skip a_symlinked_` gets the rest of the suite through on a ho
 without the privilege. That run is not a verification: it is exactly the silent
 gap the two tests were changed to expose, so record it as what it is.
 
-Step 8 is the only check in this repository that is not `cargo` alone. It needs a
+Step 8 additionally compiles non-Rust consumers. It needs a
 C compiler, a C++ compiler, and CMake 3.22 or later. On both release targets the
 compilers are the ones the platform already has — MSVC on Windows, the Xcode
 Command Line Tools on macOS — and both CI runners and both verification hosts
-already have a CMake. Set `CC`, `CXX`, or `CMAKE` to choose a different one.
+already have a CMake. Setup selects `CC` and `CXX` from the native toolchain; set
+`CMAKE` to choose a different CMake. The ABI checker also accepts `CC`/`CXX`
+overrides when invoked directly from an already configured environment.
 
 [docs/c-abi.md](docs/c-abi.md) records what it compiles and why the header is
 verified this way rather than generated;
@@ -543,7 +558,7 @@ comes first:
 
 ```bat
 set "RUSTDOCFLAGS=-D warnings"
-cargo doc --locked --workspace --no-deps
+python tools/setup-native.py --opencv-root DIR --libclang-path DIR -- cargo doc --locked --workspace --no-deps
 set "RUSTDOCFLAGS="
 ```
 
@@ -552,10 +567,10 @@ marks *inside* the value, and rustdoc is then passed an argument it does not
 recognize. The third line clears it again: `set` outlives the command, and a
 `RUSTDOCFLAGS` left behind applies to every later `cargo doc` in that window.
 
-On Windows PowerShell, step 6 is:
+In PowerShell with the x64 MSVC environment already imported, step 6 is:
 
 ```powershell
-$env:RUSTDOCFLAGS = "-D warnings"; cargo doc --locked --workspace --no-deps
+$env:RUSTDOCFLAGS = "-D warnings"; python tools/setup-native.py --opencv-root DIR --libclang-path DIR -- cargo doc --locked --workspace --no-deps
 ```
 
 Step 7 needs `cargo-deny`, which is not part of the toolchain, and needs network

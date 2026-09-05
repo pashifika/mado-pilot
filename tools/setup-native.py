@@ -260,6 +260,15 @@ def prepare(opencv_root: Path | None, libclang_path: Path | None,
         environment.update(settings)
         environment["PATH"] = separator.join(dict.fromkeys(paths + [environment.get("PATH", os.defpath)]))
         if not windows:
+            library_paths = [str(libraries)]
+            library_identities = {libraries.resolve()}
+            for path in base_environment.get("DYLD_LIBRARY_PATH", "").split(":"):
+                if path:
+                    identity = Path(path).resolve()
+                    if identity not in library_identities:
+                        library_identities.add(identity)
+                        library_paths.append(path)
+            environment["DYLD_LIBRARY_PATH"] = ":".join(library_paths)
             def pkg(*arguments: str) -> str:
                 return checked([str(pkg_config), *arguments, "opencv4"], scratch, environment,
                                "OpenCV pkg-config probe", "select matching OpenCV 4 development metadata and dependencies")
@@ -339,6 +348,10 @@ def main(argv: list[str] | None = None) -> int:
             if sys.platform == "win32" and program.suffix.lower() in (".bat", ".cmd"):
                 raise ValueError("commands after -- must be executables, not .bat/.cmd files; invoke a shell explicitly if needed")
         if args.github_env is not None:
+            if ("DYLD_LIBRARY_PATH" in report["environment"]
+                    and environment["DYLD_LIBRARY_PATH"] != report["environment"]["DYLD_LIBRARY_PATH"]):
+                raise ValueError("GitHub export cannot retain inherited DYLD_LIBRARY_PATH entries without disclosing them; "
+                                 "use -- COMMAND without GitHub export options")
             export_github(report, args.github_env, args.github_path)
         if command:
             status = subprocess.call([str(program), *command[1:]], env=environment)

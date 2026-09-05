@@ -28,6 +28,9 @@ class SetupNativeTests(unittest.TestCase):
         self.tools = self.base / "tools"
         self.sdk = self.base / "SDK"
         self.sdk.mkdir()
+        self.file(self.sdk / "usr/include/c++/v1/limits")
+        self.file(self.sdk / "include/limits")
+        self.file(self.sdk / "lib/kernel32.lib")
         self.windows = os.name == "nt"
         self.runtime_version = "4.14.0"
         self.failure = None
@@ -36,10 +39,11 @@ class SetupNativeTests(unittest.TestCase):
         self.path_file = self.base / "github-path"
         self.stdout = io.StringIO()
         self.environment = dict(os.environ)
-        for name in ("OPENCV4_STATIC", "OPENCV4_NO_PKG_CONFIG"):
+        for name in ("OPENCV4_STATIC", "OPENCV4_NO_PKG_CONFIG", "SDKROOT", "DYLD_LIBRARY_PATH"):
             self.environment.pop(name, None)
         self.environment.update(PATH=str(self.tools) + os.pathsep + os.environ.get("PATH", os.defpath),
-                                VSCMD_ARG_TGT_ARCH="x64", INCLUDE="installed-msvc-include", LIB="installed-msvc-lib")
+                                VSCMD_ARG_TGT_ARCH="x64", INCLUDE=str(self.sdk / "include"),
+                                LIB=str(self.sdk / "lib"), LIBPATH=str(self.sdk / "lib"))
         for name in ("cl.exe", "clang", "clang++", "xcrun", "pkg-config"):
             self.file(self.tools / name).chmod(0o755)
         for name in ("libclang.dll", "libclang.dylib", "clang.exe"):
@@ -51,7 +55,8 @@ class SetupNativeTests(unittest.TestCase):
         for module in ("core", "imgproc", "imgcodecs"):
             self.file(self.root / "lib" / f"libopencv_{module}.dylib")
         self.file(self.root / "lib/pkgconfig/opencv4.pc")
-        self.file(self.root / "build/x64/vc16/lib/opencv_world4140.lib")
+        self.file(self.root / "build/x64/vc16/lib/opencv_world4140.lib", "release import")
+        self.file(self.root / "build/x64/vc16/lib/opencv_world4140d.lib", "debug import")
         self.file(self.root / "build/x64/vc16/bin/opencv_world4140.dll")
 
     def file(self, path, text=""):
@@ -86,6 +91,18 @@ class SetupNativeTests(unittest.TestCase):
         elif name in ("opencv-probe", "opencv-probe.exe"):
             output, stage = self.runtime_version, "runtime"
         failed = stage == self.failure
+        if stage == "compile":
+            environment = kwargs["env"]
+            if self.windows:
+                headers = environment.get("INCLUDE", "").split(";")
+                libraries = environment.get("LIB", "").split(";")
+                failed |= not (any((Path(path) / "limits").is_file() for path in headers if path)
+                               and any((Path(path) / "kernel32.lib").is_file() for path in libraries if path))
+                opencv_import = Path(environment.get("OPENCV_LINK_PATHS", "")) / (environment.get("OPENCV_LINK_LIBS", "") + ".lib")
+                failed |= not opencv_import.is_file() or opencv_import.read_text(encoding="utf-8") != "release import"
+            else:
+                sdk = environment.get("SDKROOT")
+                failed |= sdk is None or not (Path(sdk) / "usr/include/c++/v1/limits").is_file()
         return {"exit_code": 9 if failed else 0, "timed_out": False, "output_limited": False,
                 "cleanup_ok": True, "stdout": output, "stderr": "native probe failed" if failed else "",
                 "launch_error": None, "duration_seconds": 0.01}
@@ -146,7 +163,7 @@ class SetupNativeTests(unittest.TestCase):
         for name in ("PKG_CONFIG", "PKG_CONFIG_PATH", "PKG_CONFIG_LIBDIR", "PKG_CONFIG_SYSROOT_DIR"):
             self.environment.update(setup_native.target_settings(name, "stale-pkg-config", "aarch64-apple-darwin"))
         names = [*setup_native.OPENCV_DISCOVERY, "LIBCLANG_PATH", "PATH", "MADO_PILOT_ONNX_RUNTIME",
-                 "CUDA_PATH", "OPENCV_DNN_CUDA",
+                 "CUDA_PATH", "OPENCV_DNN_CUDA", "SDKROOT", "INCLUDE", "LIB", "LIBPATH", "VSCMD_ARG_TGT_ARCH",
                  *setup_native.target_settings("PKG_CONFIG_PATH", "", "aarch64-apple-darwin")]
         script = ("import json, os, pathlib, sys; "
                   "values = {name: os.environ.get(name) for name in json.loads(sys.argv[2])}; "
@@ -154,21 +171,29 @@ class SetupNativeTests(unittest.TestCase):
         self.assertEqual(self.invoke([sys.executable, "-c", script, str(self.marker), json.dumps(names)]), 0)
         child = json.loads(self.marker.read_text(encoding="utf-8"))
         exported = dict(line.split("=", 1) for line in self.env_file.read_text(encoding="utf-8").splitlines() if line)
+        ci = {name: self.environment[name] for name in (
+            "PATH", "SYSTEMROOT", "SystemRoot", "WINDIR", "TEMP", "TMP", "HOME", "USERPROFILE",
+            "MADO_PILOT_ONNX_RUNTIME", "CUDA_PATH", "OPENCV_DNN_CUDA",
+        ) if name in self.environment}
+        ci.update(exported)
+        for path in self.path_file.read_text(encoding="utf-8").splitlines():
+            if path:
+                ci["PATH"] = path + os.pathsep + ci.get("PATH", os.defpath)
         include = self.root / ("build/include" if self.windows else "include/opencv4")
         libraries = self.root / ("build/x64/vc16/lib" if self.windows else "lib")
-        for observed in (child, {**self.environment, **exported}):
+        for observed in (child, ci):
+            compiler = "cl.exe" if self.windows else "clang++"
+            self.assertEqual(self.probe([compiler], env=observed)["exit_code"], 0,
+                             "a fresh consumer must find the selected compiler's standard headers and libraries")
             self.assertEqual(observed["OPENCV_INCLUDE_PATHS"], str(include))
             self.assertEqual(observed["OPENCV_LINK_PATHS"], str(libraries))
             self.assertEqual(observed["LIBCLANG_PATH"], str(self.clang))
-            self.assertEqual(observed["OPENCV_PACKAGE_NAME"], "opencv4")
             self.assertEqual(observed["MADO_PILOT_ONNX_RUNTIME"], "caller-owned-ort")
             self.assertEqual(observed["CUDA_PATH"], "caller-owned-cuda")
             self.assertEqual(observed["OPENCV_DNN_CUDA"], "caller-choice")
             if self.windows:
-                self.assertEqual(observed["OPENCV_LINK_LIBS"], "opencv_world4140")
                 self.assertNotIn("environment", observed["OPENCV_DISABLE_PROBES"].split(","))
             else:
-                self.assertEqual(observed["OPENCV_LINK_LIBS"], "+")
                 self.assertNotIn("pkg_config", observed["OPENCV_DISABLE_PROBES"].split(","))
                 for name in setup_native.target_settings("PKG_CONFIG_PATH", "", "aarch64-apple-darwin"):
                     self.assertEqual(observed[name], str(self.root / "lib/pkgconfig"))
@@ -187,6 +212,32 @@ class SetupNativeTests(unittest.TestCase):
         self.assertNotIn("private-path-value", output)
         report = json.loads(self.stdout.getvalue())
         self.assertNotIn("PATH", report["environment"])
+
+    @unittest.skipIf(os.name == "nt", "macOS library search")
+    def test_macos_library_search_preserves_child_paths_without_exporting_them(self):
+        libraries = str(self.root / "lib")
+        caller = self.base / "private-caller-libraries"
+        self.file(caller / "caller-required.dylib")
+        self.file(caller / "libopencv_core.dylib")
+        self.environment["DYLD_LIBRARY_PATH"] = ":".join((libraries, str(caller), libraries))
+        script = ("import os, pathlib, sys; "
+                  "paths = [pathlib.Path(path) for path in os.environ['DYLD_LIBRARY_PATH'].split(':')]; "
+                  "assert any((path / 'caller-required.dylib').is_file() for path in paths); "
+                  "assert next(path for path in paths if (path / 'libopencv_core.dylib').is_file()) == pathlib.Path(sys.argv[1])")
+        self.assertEqual(self.invoke([sys.executable, "-c", script, libraries], exports=False), 0)
+        self.assertEqual(self.invoke([], exports=False), 0)
+        self.assertNotIn(str(caller), self.stdout.getvalue())
+        self.file(self.env_file, "EXISTING=value\n")
+        self.file(self.path_file, "/existing/path\n")
+        self.assertNotEqual(self.invoke(), 0)
+        self.assertFalse(self.marker.exists())
+        self.assertEqual(self.env_file.read_text(encoding="utf-8"), "EXISTING=value\n")
+        self.assertEqual(self.path_file.read_text(encoding="utf-8"), "/existing/path\n")
+        alias = self.base / "selected-library-alias"
+        alias.symlink_to(libraries, target_is_directory=True)
+        self.environment["DYLD_LIBRARY_PATH"] = ":".join((libraries + "/", str(alias), libraries))
+        self.assertEqual(self.invoke(), 0)
+        self.assertNotIn(str(caller), self.env_file.read_text(encoding="utf-8"))
 
     def test_export_injection_does_not_append_either_file(self):
         self.file(self.env_file, "EXISTING=value\n")

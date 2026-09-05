@@ -252,13 +252,13 @@ The repository pins Rust 1.97.1 through `rust-toolchain.toml`, so a clean checko
 with `rustup` available selects the tested compiler. The single committed root
 `Cargo.lock` is used with `--locked`.
 
-Building also needs an **OpenCV 4 development installation** and a **libclang**,
-because the OpenCV matching adapter generates its bindings at build time:
-`brew install opencv@4` on macOS, or the official prebuilt release plus LLVM on
-Windows. This is a development prerequisite and not a statement about what a
-release ships; the exact versions, the Windows discovery variables, and the failure
-modes are in
-[docs/third-party-dependencies.md](docs/third-party-dependencies.md#opencv).
+Building needs developer-owned **OpenCV 4**, **libclang**, and a native compiler/SDK.
+Acquire them separately, then explicitly run `tools/setup-native.py` with Python
+3.13+. Setup checks existing installations; it does not download, install, or
+change the parent shell. Missing or incompatible prerequisites may fail setup or
+build. See [native development setup](CONTRIBUTING.md#native-development-prerequisites)
+for acquisition and Windows root arguments, and
+[dependency policy](docs/third-party-dependencies.md#opencv) for scope and failures.
 
 Running integrated OCR requires the accepted model files under one
 caller-selected root and one canonical absolute ONNX Runtime 1.29.0 path.
@@ -267,9 +267,16 @@ ORT/CUDA/cuBLAS/cuDNN/NVRTC root described by ADR 0048. MadoPilot never bundles,
 downloads, installs, or searches for these files; see
 [docs/third-party-dependencies.md](docs/third-party-dependencies.md#implemented-onnx-runtime-prerequisite).
 
+The examples below use macOS discovery and POSIX shell syntax. For one-line
+commands in a Windows x64 MSVC developer prompt, replace
+`python3 tools/setup-native.py --` with
+`python tools/setup-native.py --opencv-root DIR --libclang-path DIR --`, using
+the installed OpenCV and LLVM roots. Every OpenCV-dependent command needs the
+configured child environment; check-only setup does not prepare the next command.
+
 ```sh
-cargo build --locked --workspace
-cargo test --locked --workspace --all-targets
+python3 tools/setup-native.py -- cargo build --locked --workspace
+python3 tools/setup-native.py -- cargo test --locked --workspace --all-targets
 ```
 
 The deterministic one-shot, bounded template watcher, and default OCR workflows
@@ -277,11 +284,20 @@ are runnable. OCR reads its two paths from the example environment only; the
 library itself performs no environment lookup:
 
 ```sh
-cargo run --locked --package mado-pilot --example deterministic-slice
-cargo run --locked --package mado-pilot --example template-watch
+python3 tools/setup-native.py -- cargo run --locked --package mado-pilot --example deterministic-slice
+python3 tools/setup-native.py -- cargo run --locked --package mado-pilot --example template-watch
 MADO_PILOT_G004_MODEL_ROOT=/canonical/model/root \
 MADO_PILOT_ONNX_RUNTIME=/canonical/path/libonnxruntime.1.29.0.dylib \
-cargo run --locked --package mado-pilot --example ocr-default
+python3 tools/setup-native.py -- cargo run --locked --package mado-pilot --example ocr-default
+```
+
+For the OCR example in Windows `cmd.exe`, use the Windows model/runtime paths
+and assignment syntax instead:
+
+```bat
+set "MADO_PILOT_G004_MODEL_ROOT=C:\native\models"
+set "MADO_PILOT_ONNX_RUNTIME=C:\native\onnxruntime-win-x64-1.29.0\lib\onnxruntime.dll"
+python tools/setup-native.py --opencv-root DIR --libclang-path DIR -- cargo run --locked --package mado-pilot --example ocr-default
 ```
 
 The full verification sequence — architecture check, formatting, lints,
@@ -302,13 +318,12 @@ cannot compile them. It needs a C and C++ toolchain and CMake, and it compares t
 measured ABI layout against current and frozen headers, compiles the frozen ABI
 1.0 and 1.2 callers against the current library, and runs consumer programs:
 ```sh
-cargo build --locked --package mado-pilot-capi
-cargo run --locked --package mado-pilot-capi --example c-abi-check -- --label "<host>"
-cargo run --locked --package mado-pilot --example ocr-fixture
-cargo run --locked --package mado-pilot --example ocr-default
-cargo build --locked --package mado-pilot-capi --features private-fixture
-cargo run --locked --package mado-pilot-capi --features private-fixture \
-  --example c-abi-check -- --label "<host>"
+python3 tools/setup-native.py -- cargo build --locked --package mado-pilot-capi
+python3 tools/setup-native.py -- cargo run --locked --package mado-pilot-capi --example c-abi-check -- --label "<host>"
+python3 tools/setup-native.py -- cargo run --locked --package mado-pilot --example ocr-fixture
+python3 tools/setup-native.py -- cargo run --locked --package mado-pilot --example ocr-default
+python3 tools/setup-native.py -- cargo build --locked --package mado-pilot-capi --features private-fixture
+python3 tools/setup-native.py -- cargo run --locked --package mado-pilot-capi --features private-fixture --example c-abi-check -- --label "<host>"
 ```
 
 ## Documentation

@@ -36,6 +36,11 @@ Windows requires both roots and an x64 MSVC developer prompt. Chosen roots take
 precedence over conflicting OpenCV discovery inputs. Explicit GitHub exports
 require both file options, successful validation, and safe environment-file
 values.
+macOS command mode prepends selected OpenCV libraries while retaining unrelated
+inherited loader paths. JSON/CI output does not disclose those inherited entries.
+An explicit GitHub export refuses additional inherited `DYLD_LIBRARY_PATH`
+entries rather than erase or publish them; use child-command mode without export
+options. Repeated entries naming only the selected directory remain admissible.
 
 Neither setup nor product runtime downloads, installs, elevates, or changes the
 registry or global shell configuration. Existing ORT/model caller-selected
