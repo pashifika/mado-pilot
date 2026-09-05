@@ -167,8 +167,23 @@ module boundary. Neither arrangement makes an ordinary directly linked Rust
 executable safely load without OpenCV. Qualification must keep that distinction
 and reject any approach that merely substitutes the helper for a required public
 consumer. Loaded-module paths are private attempt logs, not public diagnostics.
-Successful probes require a complete process-exit module snapshot. It does not
-observe modules unloaded earlier or by itself prove the entire runtime closure.
+Successful probes require a complete process-exit snapshot containing the
+candidate and, on Windows, the requested OpenCV module after the temporary
+reference is released. This does not observe earlier unloads or prove the whole
+runtime closure.
+
+## Supporting execution checkpoint
+
+[`supporting-execution-01.json`](supporting-execution-01.json) binds the green CI
+and native consumer results to `c34fcc01c2c76e605272a6d3dd22cc817d6d5030`,
+retains earlier failures, and records the explicit preload and Nix experiments.
+The Windows lanes passed 28 rows each; macOS passed 26. A wrong retained-library
+requirement rejects an otherwise successful child.
+
+The Nix C++ run passed with Homebrew reads denied, but remains development-host
+evidence. Adding weak-library flags to the ordinary Rust consumer left strong
+load commands intact and still aborted before entry when OpenCV was unavailable.
+Neither result completes the backend-only deferred bridge or admits a profile.
 
 ## Remaining acceptance
 
