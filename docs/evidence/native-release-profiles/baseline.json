@@ -1,0 +1,26 @@
+{
+  "schema_version": 1,
+  "change": "phase-5-native-release-profile-selection-and-validation",
+  "product_base_commit": "2c80d4eb87a658069514cb0e83353e830a705882",
+  "product_base_tree": "9a18817221c78450f7af076504095d2aa902c28b",
+  "planning_proposal_commit": "2536311308f1537b6d9d0d5f17997d8414b3a8f8",
+  "direction_input_commit": "443b9eea2d99b1ce55a46fdeb0cdc1e0075d688a",
+  "branch": "feat/phase-5-native-release-profiles",
+  "external_change_dependencies": [],
+  "builder": {
+    "target": "aarch64-apple-darwin",
+    "os_version": "26.6.2",
+    "os_build": "25G83",
+    "sdk": "26.5",
+    "rustc": "1.97.1",
+    "rustc_commit": "8bab26f4f68e0e26f0bb7960be334d5b520ea452",
+    "rustc_llvm": "22.1.6",
+    "clang": "21.0.0 (clang-2100.1.1.101)",
+    "python": "3.14.7",
+    "opencv_pkg_config_version": "4.14.0",
+    "consumer_admission": "not-admitted-development-host"
+  },
+  "production_changes": false,
+  "qualification_result": "unexecuted",
+  "gates": {"G-007": "open", "G-012": "open"}
+}

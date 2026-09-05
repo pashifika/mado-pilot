@@ -366,11 +366,14 @@ fallback evidence plus an ADR.
 
 ## G-007
 
-**Unresolved decision.** Whether OpenCV and ONNX Runtime are bundled or consumed
-from a controlled host-provided installation, and which release profiles exist.
+**Unresolved decision.** Which broader native deployment profiles can be
+published, with complete dependency ownership, controlled loading, and
+license/notice obligations. The current source-only project redistributes no
+native libraries; its developer-prerequisite policy is decided separately below.
 
-**Required evidence.** Clean-system package prototypes for each candidate profile
-on both release targets, plus a license review of every redistributed artifact.
+**Required evidence.** Any future deployment-profile claim needs clean-system
+package prototypes on both release targets and a license review of every
+redistributed artifact. Development setup or hosted CI cannot supply this proof.
 
 **Due.** Before Phase 5 implementation.
 
@@ -378,16 +381,31 @@ on both release targets, plus a license review of every redistributed artifact.
 
 **Status.** Open.
 
-**Phase 1 input.** Phase 1 links OpenCV 4.14.0 as a *development prerequisite* and
-claims nothing about a release. Two facts it established belong to this gate. The
-library is Apache-2.0, the same licence as this project, so bundling it would add
-an attribution obligation and no new term. And because OpenCV is linked dynamically
-at load time, an absent library stops the process before any MadoPilot code runs,
-so it cannot be reported as an actionable status — the adapter reports an
-unsupported *version* and nothing more. Closing that gap is part of this gate's
-controlled library search paths; it is not `G-008`, whose scope is static-link
-feasibility. See
-[third-party-dependencies.md](third-party-dependencies.md#opencv).
+**Developer-prerequisite decision.**
+[ADR 0066](adr/0066-developer-owned-native-prerequisites.md) records the
+user-approved 2026-09-05 scope amendment: developers acquire OpenCV 4, libclang,
+and their compiler/SDK, then explicitly run `tools/setup-native.py` to configure
+and check those existing installations. Missing or incompatible prerequisites
+may fail setup or build. Removing eagerly linked OpenCV afterwards invalidates
+the environment and can prevent process entry; no private deferred-load bridge
+or static-link workaround is required for that case. Existing ORT/model
+canonical-path, length/hash, typed runtime-refusal, and platform capability
+checks remain mandatory. Neither setup nor product runtime installs or downloads
+dependencies. This policy decision does not close this gate.
+
+**Historical investigation.** The original
+[five-candidate protocol and supporting results](evidence/native-release-profiles/README.md)
+remain frozen, including development-host inventories, failed attempts, and the
+direct-linked missing-OpenCV pre-entry failure. They are superseded as acceptance
+for the amended setup Change, not converted to passing release evidence.
+Private host loading never repaired the ordinary direct Rust consumer.
+
+**Phase 1 input.** OpenCV 4.14.0 was a development prerequisite, not a release
+profile. Its Apache-2.0 license does not approve its whole transitive closure.
+The eagerly linked missing-library failure occurred before MadoPilot could
+produce a status; the adapter could refuse an unsupported loaded version only.
+ADR 0066 changes the development obligation, not that historical observation.
+See [the dependency policy](third-party-dependencies.md#opencv).
 
 **Resolution.** An ADR recording the profile matrix, the controlled library search
 paths, and the license and notice obligations, followed by updates to
@@ -537,6 +555,19 @@ binary-size measurements for each profile.
 **Blocks.** The release capability matrix.
 
 **Status.** Open.
+
+**Developer-prerequisite decision.** ADR 0066 and
+`tools/setup-native.py` configure the existing native development build; they
+select no new Cargo/C profile and change no CPU default, provider scope, Rust
+API, or ABI 1.5 contract. A passing setup/build is not the published
+feature/capability/size matrix required by this gate.
+
+**Historical investigation.** The
+[original five-candidate protocol](evidence/native-release-profiles/protocol.json)
+and its results are frozen evidence, superseded as acceptance for the current
+setup Change. Neither those supporting CI consumers nor the new setup decision
+closes `G-007`/`G-012`, qualifies clean/minimum hosts or signing, or establishes
+full Direction Slice acceptance or merge readiness.
 
 **Resolution.** An ADR recording the matrix and the chosen defaults, plus a
 build-profile capability table published with the release.

@@ -489,16 +489,22 @@ change that adds, links, or bundles one must document, in the same change:
 - whether MadoPilot bundles the artifact or consumes a controlled host-provided
   installation, and how the loading path is restricted rather than relying on an
   unrestricted ambient library search;
-- the failure mode when the artifact is absent or unloadable, which must be an
-  actionable status rather than a crash or an eager-link failure;
+- whether the artifact is a developer-owned build prerequisite or an explicitly
+  selected runtime input, and its failure mode. An incomplete development
+  environment may fail setup, build, or eager process loading; existing
+  ORT/model runtime validation and typed refusal contracts must not be weakened;
 - the resulting minimum operating-system requirement and release-package size
   impact;
 - for a model file, its source, hash, language coverage, preprocessing metadata,
   and license compatibility with redistribution.
 
-Notices for bundled artifacts are collected in the release package. Native
-dependency packaging and static-link feasibility remain unresolved decisions; see
-gates `G-007` and `G-008` in [validation-gates.md](validation-gates.md).
+This source-only project redistributes no native libraries or models. A future
+redistribution decision must collect the required notices in its release package.
+Native deployment profiles, published build profiles, and static-link feasibility
+remain open under `G-007`, `G-012`, and `G-008` in
+[validation-gates.md](validation-gates.md).
+[ADR 0066](adr/0066-developer-owned-native-prerequisites.md) fixes development
+prerequisite ownership without closing those gates.
 
 ## OpenCV
 
@@ -532,12 +538,20 @@ it.
 
 ### Bundled or host-provided
 
-**Host-provided for development-tree consumers, not a released deployment
-profile.** OpenCV is a *development prerequisite*: the source releases document
-how to build and test the tree but bundle no OpenCV library and ship no
-installer. `G-007` (bundling, deployment profiles, notices) and `G-008`
-(static-link feasibility, controlled loading) are both open, and no statement
-here should be read as settling either.
+**Developer-owned, with no native redistribution.** Developers obtain OpenCV,
+libclang, and their native compiler/SDK from upstream distributions or package
+managers, then explicitly run `tools/setup-native.py` to configure and check the
+existing installations. The script and product runtime install or download
+nothing. There is no installer, private deferred-load bridge, static-link
+change, or native release in this scope.
+
+**Scope amendment (2026-09-05).** The user replaced the Phase 5 bundled/host
+candidate and bridge-comparison obligations with explicit development setup.
+The [original five-candidate protocol and results](evidence/native-release-profiles/README.md)
+remain frozen historical evidence, not acceptance for the new scope. Prior
+eager-link failures are not reclassified as passing. `G-007` and `G-012` still
+withhold broader deployment/build-profile claims; any future redistributed
+closure requires an artifact-level license and notice review.
 
 ### Development installation
 
@@ -546,45 +560,50 @@ here should be read as settling either.
 | macOS `aarch64-apple-darwin` | `brew install opencv@4` | Xcode Command Line Tools |
 | Windows `x86_64-pc-windows-msvc` | Official prebuilt release, extracted | LLVM 22.1.8 |
 
-On macOS the formula is **`opencv@4`, not `opencv`**. Homebrew's unversioned
-formula is OpenCV 5, which the adapter refuses as an unsupported major version,
-so installing the obvious name produces a `BackendUnavailable` at run time rather
-than a build failure.
+These are acquisition instructions, not work performed by setup. On macOS use
+**`opencv@4`, not `opencv`**: the unversioned Homebrew formula is OpenCV 5,
+outside this project's supported major version. The Command Line Tools supply
+the required `libclang.dylib`; a separate Homebrew LLVM is not required.
 
-No Homebrew LLVM is needed: the Command Line Tools' `libclang.dylib` is what the
-binding generator loads, and that was measured rather than assumed.
-
-`PKG_CONFIG_PATH` may or may not be needed, and the difference is worth knowing.
-`opencv@4` is keg-only, but Homebrew still links it — including its
-`opencv4.pc` — when no conflicting unversioned `opencv` is installed, which is
-why `pkg-config --modversion opencv4` answers `4.14.0` on a host that never
-configured anything. On a host that also has OpenCV 5 installed, that link belongs
-to the other version or is absent. Setting it explicitly is therefore the
-deterministic arrangement, and it is what CI does:
+Run the script with Python 3.13 or newer:
 
 ```sh
-export PKG_CONFIG_PATH="$(brew --prefix opencv@4)/lib/pkgconfig"
+python3 tools/setup-native.py
+python3 tools/setup-native.py -- cargo build --locked
 ```
 
-On Windows the official prebuilt archive has no pkg-config or CMake metadata, so
-the discovery variables are set explicitly at the user level. `<OPENCV_ROOT>` is
-wherever the archive was extracted, and the toolset directory is `vc16`:
+macOS discovery uses `brew --prefix opencv@4` and the toolchain selected by
+`xcrun --find clang`. `--opencv-root DIR` and `--libclang-path DIR` override
+those choices. Setup configures the selected OpenCV 4 installation rather than
+relying on Homebrew's optional ambient `opencv4.pc` link or another OpenCV
+installation's discovery variables.
 
-```text
-OPENCV_INCLUDE_PATHS  = <OPENCV_ROOT>\build\include
-OPENCV_LINK_PATHS     = <OPENCV_ROOT>\build\x64\vc16\lib
-OPENCV_LINK_LIBS      = opencv_world4140
-OPENCV_DISABLE_PROBES = pkg_config,cmake,vcpkg_cmake,vcpkg
-PATH                 += <OPENCV_ROOT>\build\x64\vc16\bin
+On Windows both directories are explicit, and setup runs inside an **x64 MSVC
+developer command prompt**. The OpenCV root contains `build\include` and
+`build\x64\vc16\lib`/`bin`; the libclang directory contains LLVM's loadable DLL:
+
+```bat
+python tools/setup-native.py --opencv-root C:\native\opencv --libclang-path "C:\Program Files\LLVM\bin"
+python tools/setup-native.py --opencv-root C:\native\opencv --libclang-path "C:\Program Files\LLVM\bin" -- cargo build --locked
 ```
 
-`OPENCV_LINK_LIBS` names the release import library. `opencv_world4140d.lib` is
-the debug-CRT build, and Rust's MSVC target uses `/MD` even in a debug profile, so
-the release library is correct for every profile this repository builds.
+The documented 4.14.0 archive uses the release `opencv_world4140` import library.
+Its `opencv_world4140d.lib` is the debug-CRT build; Rust's MSVC target uses `/MD`
+even in a debug profile. Setup selects the release library, configures explicit
+include/link paths and `LIBCLANG_PATH`, puts the chosen runtime directory first
+in the child's `PATH`, and disables competing OpenCV discovery probes. Existing
+conflicting OpenCV discovery inputs must not override the chosen root.
 
-`OPENCV_DISABLE_PROBES` is what makes the discovery *controlled* rather than
-ambient: without it the build script also tries pkg-config, CMake, and vcpkg, any
-of which could silently find a different OpenCV than the one the variables name.
+The complete interface is `tools/setup-native.py [--opencv-root DIR]
+[--libclang-path DIR] [--github-env FILE --github-path FILE]
+[-- COMMAND ARG...]`. Without a command it checks prerequisites and prints JSON
+describing the target, version, selected roots, and environment. With a command,
+it executes the argument array in a configured child environment and propagates
+failure; it does not evaluate shell text or change the parent shell.
+GitHub Actions export requires both explicit file options and occurs only after
+successful validation, with unsafe environment-file values rejected. There is
+no global environment, registry, system-directory, privilege, or shell-profile
+mutation. Setup does not acquire or configure ORT, models, or provider assets.
 
 ### libclang, and why `clang-runtime`
 
@@ -603,27 +622,29 @@ from the build.
 
 ### Failure when the library is absent
 
-**Phase 1 cannot make this an actionable status, and says so.** OpenCV is linked
-dynamically at load time, so a missing or unloadable library stops the process
-before any MadoPilot code runs — the eager-link failure the policy above asks
-changes to avoid. `OpenCvBackend::new` probes the *runtime* version and refuses an
-unsupported one with `VisionFault::BackendUnavailable`, which covers a wrong
-version but cannot cover an absent one.
+OpenCV is eagerly dynamically linked. Missing or incompatible OpenCV, libclang,
+or toolchain inputs may fail setup or the build. If a developer removes a required
+OpenCV library after setup, process loading may stop before any MadoPilot code
+runs. That is an invalid development environment, not a supported typed-recovery
+path. ADR 0066 does not require a private deferred-load bridge or a static-link
+workaround to change that behavior.
 
-Turning absence into a status needs deferred or weak dynamic loading. That
-belongs with `G-007`, whose resolution includes the controlled library search
-paths, and not with `G-008`, which is about whether a static library is feasible.
-Recording the gap here is the honest position: `docs/architecture.md` requires a
-loadable unsupported capability to fail with a clear status, and Phase 1 satisfies
-that for a version mismatch only.
+When the process can load, `OpenCvBackend::new` still refuses an unsupported
+runtime version with `VisionFault::BackendUnavailable`. The ownership decision
+does not remove that check, existing platform capability checks, or any ORT/model
+runtime safeguards: caller-selected canonical paths, exact accepted identities,
+model length/SHA-256 validation, restricted ORT/provider loading, and typed
+absence/mismatch outcomes remain mandatory. Product runtime never downloads,
+installs, searches for substitutes, or escalates privileges to repair an input.
 
 ### Operating-system requirement and package size
 
-No new minimum operating-system version, because nothing is bundled and the
-adapter calls no OpenCV API newer than 4.x. No release-package size impact for the
-same reason. Both become real questions at `G-007`, where the bundled artifact set
-is chosen: `opencv_world4140.dll` alone is tens of megabytes, which is the
-material fact that decision will have to weigh.
+No native payload is redistributed by this source-only project. A developer's
+installation footprint is not a shipped-package measurement. This setup change
+makes no new minimum-host, clean-host, signing, notarization, package-size, or
+installability claim and does not alter the existing supported-target policy.
+Broader deployment and published build-profile evidence remain `G-007`/`G-012`
+work; static feasibility remains `G-008`.
 
 ## Verification
 

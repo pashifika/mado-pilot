@@ -17,21 +17,62 @@ change in the same pull request whenever a manifest requirement changes.
 
 ## Native development prerequisites
 
-Building the workspace needs an **OpenCV 4 development installation** and a
-**libclang** the binding generator can load. `mado-pilot-backend-opencv` generates
-its bindings at build time, so this is a prerequisite for `cargo build`, not only
-for running the matching tests.
+Developers acquire and maintain the native prerequisites; this source-only
+project redistributes no native library or model. Building the workspace needs
+an **OpenCV 4 development installation**, a loadable **libclang**, and the native
+compiler/SDK. The binding generator needs them for `cargo build`, not only tests.
 
-| Host | Install |
+Acquire these separately before running setup:
+
+| Host | Developer-owned installation |
 |---|---|
-| macOS | `brew install opencv@4`. Xcode Command Line Tools supply libclang; no Homebrew LLVM and no `PKG_CONFIG_PATH` are needed. |
-| Windows | Extract the official OpenCV prebuilt release, install LLVM, and set the discovery variables. |
+| macOS | Xcode Command Line Tools, Homebrew, and `brew install opencv@4` (not `opencv`). The Command Line Tools supply libclang; Homebrew LLVM is not required. |
+| Windows | The official OpenCV 4.14.0 prebuilt archive, LLVM 22.1.8, and Visual Studio C++ build tools with a Windows SDK. Open an **x64 MSVC developer command prompt**. |
 
-[docs/third-party-dependencies.md](docs/third-party-dependencies.md) records the
-exact versions, the Windows environment variables, why the discovery is restricted
-rather than ambient, and what fails when the library is absent. This is a
-development prerequisite only: source releases bundle no native dependency and
-make no installable deployment-profile claim, which remains gate `G-007`.
+With **Python 3.13+**, explicitly configure and check the existing installations:
+
+```sh
+# macOS: discover opencv@4 and the selected Xcode Command Line Tools
+python3 tools/setup-native.py
+python3 tools/setup-native.py -- cargo build --locked
+```
+
+```bat
+rem Windows: OPENCV_ROOT contains build\include and build\x64\vc16\{lib,bin}
+python tools/setup-native.py --opencv-root C:\native\opencv --libclang-path "C:\Program Files\LLVM\bin"
+python tools/setup-native.py --opencv-root C:\native\opencv --libclang-path "C:\Program Files\LLVM\bin" -- cargo build --locked
+```
+
+The CLI is `tools/setup-native.py [--opencv-root DIR] [--libclang-path DIR]
+[--github-env FILE --github-path FILE] [-- COMMAND ARG...]`. Both root options
+are required on Windows; macOS permits explicit overrides. Without a command it
+validates and prints JSON describing the target, version, selected roots, and
+configured environment; it does not modify the calling shell. Command mode runs
+one executable with that child-scoped environment and propagates its failure.
+Use it around subsequent native build/check commands too. CI may explicitly pass
+both GitHub environment files; setup writes them only after validation succeeds.
+Windows exports include the selected MSVC include/library search paths, so later
+CI steps retain the compiler context without exporting the whole inherited environment.
+The script does not download, install, elevate, or edit global shell settings.
+
+On macOS, command mode keeps inherited `DYLD_LIBRARY_PATH` entries after the
+selected OpenCV library directory. Relative entries resolve from the caller's
+working directory before any native probe, so probes and commands use the same
+locations. JSON reports only selected settings/additions.
+Explicit GitHub export refuses additional inherited loader entries before writing
+either file or running a command: the environment-file format cannot prepend them
+without disclosing them. Use `-- COMMAND` without export options in that case.
+
+Missing or incompatible OpenCV, libclang, or toolchain inputs may fail setup or
+the build. Removing an eagerly linked OpenCV library after setup invalidates the
+environment and can prevent process entry; no deferred-load bridge or static-link
+workaround is promised. Existing caller-selected ORT/model canonical-path,
+length/hash, and typed runtime-refusal checks remain mandatory, as do platform
+capability checks. Product runtime never acquires dependencies.
+See [the dependency policy](docs/third-party-dependencies.md#opencv) and
+[ADR 0066](docs/adr/0066-developer-owned-native-prerequisites.md).
+This is not an installable profile or a clean/minimum-host/signing qualification;
+`G-007` and `G-012` remain open.
 
 The supported macOS native host is Apple Silicon macOS 26.6.2 (25G83), SDK
 26.5; the deployment floor remains macOS 26.5.2, and earlier versions are
@@ -282,7 +323,8 @@ job's authority from another:
 
 1. Required Lane A owns deterministic replay/OpenCV scheduler and query
    semantics. Both hosted release-target jobs run
-   `cargo bench --locked --package mado-pilot --bench template-watch-query`.
+   `cargo bench --locked --package mado-pilot --bench template-watch-query` after
+   the setup CI export.
    This short plan enforces every semantic, accounting, mapped-byte, and bounded
    growth oracle, but does not apply target-specific statistical ceilings.
 2. Required Windows Lane B owns the compact WGC integration contract on the
@@ -295,17 +337,22 @@ job's authority from another:
    host, toolchain, and backend arguments. Add `--enforce-budgets` only in this
    lane. A Lane C result cannot replace or reinterpret Lane B.
 
-Each Lane B host builds once:
+Each Lane B host builds once through setup (macOS form below; use the Windows
+root arguments from [native setup](#native-development-prerequisites) on Windows):
 
 ```sh
-cargo bench --locked --package mado-pilot --bench native-template-watch \
-  --features native-template-watch-qualification --no-run
+python3 tools/setup-native.py -- cargo bench --locked --package mado-pilot --bench native-template-watch --features native-template-watch-qualification --no-run
 ```
 
 Record the exact source tree and executable/fixture digests, then invoke the
-emitted executable once with `--native-contract`. Exit `0` is `PASS`, `1` is
+emitted executable once through setup with `--native-contract`, for example
+`python3 tools/setup-native.py -- /absolute/emitted-executable --native-contract`
+(use the Windows setup form on Windows). The earlier build does not configure
+the parent shell for this process. Exit `0` is `PASS`, `1` is
 product `FAIL`, `2` is `INFRA`, and `3` is `UNSUPPORTED`; only `PASS` satisfies
 the required host job. Preserve the single JSON report even when it is red.
+These exit meanings apply to the emitted executable and its report; setup refusal
+is a prerequisite failure, not a Lane B product result.
 
 Hosted Windows and macOS jobs compile both native modes but do not execute Lane
 B: hosted macOS has no Screen Recording grant, and neither hosted runner owns
@@ -325,26 +372,33 @@ Run this sequence from the repository root before opening a pull request. The
 steps are ordered so that the cheapest structural failure is reported first, and
 each step returns a non-zero status with an actionable diagnostic when its policy
 is violated.
+The OpenCV-dependent commands below use macOS setup discovery. On Windows, replace
+`python3 tools/setup-native.py --` with
+`python tools/setup-native.py --opencv-root DIR --libclang-path DIR --` from an
+x64 MSVC developer prompt, using the installed roots. Do not run OpenCV-dependent
+Cargo commands unwrapped after check-only setup; it does not change the shell.
+This block uses POSIX shell syntax; use the Windows shell forms of step 6 below
+instead of its `RUSTDOCFLAGS=...` assignment. Steps 9 and 10 are macOS-only.
 
 ```sh
-# 1. Workspace architecture and committed v0.4.0 release scope
-cargo run --locked --package mado-pilot-dependency-check -- --release-scope
+# 1. Workspace architecture
+cargo run --locked --package mado-pilot-dependency-check
 
 # 2. Formatting
 cargo fmt --all --check
 
 # 3. Lints, with warnings promoted to failures
-cargo clippy --locked --workspace --all-targets -- -D warnings
+python3 tools/setup-native.py -- cargo clippy --locked --workspace --all-targets -- -D warnings
 
 # 4. Tests
-cargo test --locked --workspace --all-targets
+python3 tools/setup-native.py -- cargo test --locked --workspace --all-targets
 
 # 5. Documentation examples. `--all-targets` above deliberately excludes doctests,
 #    so they need their own run.
-cargo test --locked --workspace --doc
+python3 tools/setup-native.py -- cargo test --locked --workspace --doc
 
 # 6. Documentation, with rustdoc warnings promoted to failures
-RUSTDOCFLAGS="-D warnings" cargo doc --locked --workspace --no-deps
+RUSTDOCFLAGS="-D warnings" python3 tools/setup-native.py -- cargo doc --locked --workspace --no-deps
 
 # 7. Dependency licenses, advisories, sources, and duplicate versions
 cargo deny --locked check
@@ -353,13 +407,12 @@ cargo deny --locked check
 #    1.0/1.2/1.3/1.4 callers, current examples, and CMake consumers. The
 #    private-fixture run additionally compiles/runs local OCR fixtures; its
 #    constructor is absent from release builds and the public table.
-cargo build --locked --package mado-pilot-capi
-cargo check --locked --package mado-pilot-capi --all-targets --all-features
-cargo run --locked --package mado-pilot-capi --example c-abi-check -- --label "<host>"
-cargo run --locked --package mado-pilot --example ocr-fixture
-cargo build --locked --package mado-pilot-capi --features private-fixture
-cargo run --locked --package mado-pilot-capi --features private-fixture \
-  --example c-abi-check -- --label "<host>"
+python3 tools/setup-native.py -- cargo build --locked --package mado-pilot-capi
+python3 tools/setup-native.py -- cargo check --locked --package mado-pilot-capi --all-targets --all-features
+python3 tools/setup-native.py -- cargo run --locked --package mado-pilot-capi --example c-abi-check -- --label "<host>"
+python3 tools/setup-native.py -- cargo run --locked --package mado-pilot --example ocr-fixture
+python3 tools/setup-native.py -- cargo build --locked --package mado-pilot-capi --features private-fixture
+python3 tools/setup-native.py -- cargo run --locked --package mado-pilot-capi --features private-fixture --example c-abi-check -- --label "<host>"
 
 # 9. macOS host only: the macOS adapter as the *other* release target sees it.
 #    Step 3 above cannot reach that configuration here, because on this host the
@@ -370,9 +423,15 @@ cargo clippy --locked --target x86_64-pc-windows-msvc \
 # 10. macOS host only: the capture scenarios with the native shim instrumented.
 #     Run on the qualified 26.6.2 (25G83) Apple Silicon host. Needs Screen
 #     Recording granted, and fails rather than skips without it.
-MADO_PILOT_MACOS_ASAN=1 cargo test --locked \
+MADO_PILOT_MACOS_ASAN=1 python3 tools/setup-native.py -- cargo test --locked \
   -p mado-pilot-platform-macos --target-dir target/asan --lib -- --test-threads=1
 ```
+
+The opt-in `--release-scope` check validates the immutable v0.4.0 source-release
+tree, not later development changes. Run it separately from a checkout of the
+source-release candidate. Its historical tree/blob identities remain frozen;
+never refresh them to make a feature branch pass. See
+[ADR 0065](docs/adr/0065-historical-source-release-gate-scope.md).
 
 Both platform adapters are workspace members on both targets, so step 3 lints each of
 them with the *other* platform's code compiled away — which is a configuration neither
@@ -484,11 +543,13 @@ Running with `-- --skip a_symlinked_` gets the rest of the suite through on a ho
 without the privilege. That run is not a verification: it is exactly the silent
 gap the two tests were changed to expose, so record it as what it is.
 
-Step 8 is the only check in this repository that is not `cargo` alone. It needs a
+Step 8 additionally compiles non-Rust consumers. It needs a
 C compiler, a C++ compiler, and CMake 3.22 or later. On both release targets the
 compilers are the ones the platform already has — MSVC on Windows, the Xcode
 Command Line Tools on macOS — and both CI runners and both verification hosts
-already have a CMake. Set `CC`, `CXX`, or `CMAKE` to choose a different one.
+already have a CMake. Setup selects `CC` and `CXX` from the native toolchain; set
+`CMAKE` to choose a different CMake. The ABI checker also accepts `CC`/`CXX`
+overrides when invoked directly from an already configured environment.
 
 [docs/c-abi.md](docs/c-abi.md) records what it compiles and why the header is
 verified this way rather than generated;
@@ -504,7 +565,7 @@ comes first:
 
 ```bat
 set "RUSTDOCFLAGS=-D warnings"
-cargo doc --locked --workspace --no-deps
+python tools/setup-native.py --opencv-root DIR --libclang-path DIR -- cargo doc --locked --workspace --no-deps
 set "RUSTDOCFLAGS="
 ```
 
@@ -513,10 +574,10 @@ marks *inside* the value, and rustdoc is then passed an argument it does not
 recognize. The third line clears it again: `set` outlives the command, and a
 `RUSTDOCFLAGS` left behind applies to every later `cargo doc` in that window.
 
-On Windows PowerShell, step 6 is:
+In PowerShell with the x64 MSVC environment already imported, step 6 is:
 
 ```powershell
-$env:RUSTDOCFLAGS = "-D warnings"; cargo doc --locked --workspace --no-deps
+$env:RUSTDOCFLAGS = "-D warnings"; python tools/setup-native.py --opencv-root DIR --libclang-path DIR -- cargo doc --locked --workspace --no-deps
 ```
 
 Step 7 needs `cargo-deny`, which is not part of the toolchain, and needs network

@@ -77,9 +77,22 @@ jobs:
       - name: Check out the repository
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
 
+      - name: Install qualification Python
+        uses: actions/setup-python@ece7cb06caefa5fff74198d8649806c4678c61a1 # v6
+        with:
+          python-version: "3.14"
+
       - name: Test dev push selection
         shell: bash
         run: python3 -m unittest discover -s .github/tests -v
+
+      - name: Test native profile procedure
+        shell: bash
+        run: python3 -m unittest discover -s tools/native-release-profile/tests -v
+
+      - name: Test native development setup
+        shell: bash
+        run: python3 -m unittest discover -s tools/tests -v
 
       - name: Install the pinned toolchain
         shell: bash
@@ -110,9 +123,9 @@ jobs:
 
       # This step also prints the resolved workspace package inventory, so an
       # accidental workspace member is visible in the log as well as failing.
-      - name: Check workspace architecture and release scope
+      - name: Check workspace architecture
         shell: bash
-        run: cargo run --locked --package mado-pilot-dependency-check -- --release-scope
+        run: cargo run --locked --package mado-pilot-dependency-check
 
       - name: Check G-004 OCR profile evidence
         shell: bash
@@ -154,6 +167,11 @@ jobs:
     steps:
       - name: Check out the repository
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+
+      - name: Install qualification Python
+        uses: actions/setup-python@ece7cb06caefa5fff74198d8649806c4678c61a1 # v6
+        with:
+          python-version: "3.14"
 
       - name: Install the pinned toolchain
         shell: bash
@@ -212,21 +230,10 @@ jobs:
           ./opencv-installer.exe -o"C:\\" -y
           rm -f opencv-installer.exe
 
-      # Discovery is restricted to the directory above. Without
-      # OPENCV_DISABLE_PROBES the build script would also try pkg-config, CMake, and
-      # vcpkg, any of which could find a different OpenCV than the one named here.
-      - name: Configure the OpenCV and libclang discovery
+      - name: Locate the CI libclang installation
         shell: bash
         run: |
           set -euo pipefail
-          root="C:/opencv/build"
-          if [[ ! -d "${root}/x64/vc16/lib" ]]; then
-            echo "::error::expected ${root}/x64/vc16/lib; the archive layout changed"
-            exit 1
-          fi
-          # The runner image ships LLVM, but a job that depended on that silently
-          # would fail with a binding-generator error rather than a named cause, so
-          # the location is searched and installed explicitly.
           libclang=""
           for candidate in "C:/Program Files/LLVM/bin" "C:/ProgramData/chocolatey/lib/llvm/tools/LLVM/bin"; do
             if [[ -f "${candidate}/libclang.dll" ]]; then
@@ -244,14 +251,15 @@ jobs:
             exit 1
           fi
           echo "using libclang from ${libclang}"
-          {
-            echo "OPENCV_INCLUDE_PATHS=${root}/include"
-            echo "OPENCV_LINK_PATHS=${root}/x64/vc16/lib"
-            echo "OPENCV_LINK_LIBS=opencv_world${OPENCV_VERSION//./}"
-            echo "OPENCV_DISABLE_PROBES=pkg_config,cmake,vcpkg_cmake,vcpkg"
-            echo "LIBCLANG_PATH=${libclang}"
-          } >> "${GITHUB_ENV}"
-          echo "${root}/x64/vc16/bin" >> "${GITHUB_PATH}"
+          echo "MADO_SETUP_LIBCLANG_PATH=${libclang}" >> "${GITHUB_ENV}"
+
+      - name: Configure and check native development prerequisites
+        shell: cmd
+        run: |
+          for /f "usebackq tokens=*" %%i in (`"%ProgramFiles(x86)%\Microsoft Visual Studio\Installer\vswhere.exe" -latest -products * -requires Microsoft.VisualStudio.Component.VC.Tools.x86.x64 -property installationPath`) do set "VSROOT=%%i"
+          if not defined VSROOT exit /b 1
+          call "%VSROOT%\VC\Auxiliary\Build\vcvars64.bat" || exit /b 1
+          python tools/setup-native.py --opencv-root C:\opencv --libclang-path "%MADO_SETUP_LIBCLANG_PATH%" --github-env "%GITHUB_ENV%" --github-path "%GITHUB_PATH%" || exit /b 1
 
       - name: Provision the reviewed ONNX runtime and G-004 models
         shell: bash
@@ -312,9 +320,9 @@ jobs:
             echo "MADO_PILOT_G004_MODEL_ROOT=$(cygpath -m "${model_root}")"
           } >> "${GITHUB_ENV}"
 
-      - name: Check workspace architecture and release scope
+      - name: Check workspace architecture
         shell: bash
-        run: cargo run --locked --package mado-pilot-dependency-check -- --release-scope
+        run: cargo run --locked --package mado-pilot-dependency-check
 
       - name: Lint the workspace
         shell: bash
@@ -421,6 +429,17 @@ jobs:
           cargo run --locked --package mado-pilot-capi --example c-abi-check -- --label "CI ${{ runner.os }} ${{ runner.arch }}" --windows-native-fixture || exit /b 1
           certutil -hashfile target\debug\madopilot.dll SHA256 || exit /b 1
 
+      - name: Check native profile procedure and external consumers
+        shell: cmd
+        run: |
+          python -m unittest discover -s tools/native-release-profile/tests -v || exit /b 1
+          python -m unittest discover -s tools/tests -v || exit /b 1
+          for /f "usebackq tokens=*" %%i in (`"%ProgramFiles(x86)%\Microsoft Visual Studio\Installer\vswhere.exe" -latest -products * -requires Microsoft.VisualStudio.Component.VC.Tools.x86.x64 -property installationPath`) do set "VSROOT=%%i"
+          if not defined VSROOT exit /b 1
+          call "%VSROOT%\VC\Auxiliary\Build\vcvars64.bat" || exit /b 1
+          cargo build --locked --release -p mado-pilot -p mado-pilot-capi || exit /b 1
+          python tools/native-release-profile/check_consumers.py --root . --library-dir target/release --output target/profile-consumers-ci --model-root "%MADO_PILOT_G004_MODEL_ROOT%" --runtime "%MADO_PILOT_ONNX_RUNTIME%" --opencv-runtime "C:\opencv\build\x64\vc16\bin\opencv_world%OPENCV_VERSION:.=%.dll" || exit /b 1
+
       # This asserts nothing about the scores. It names the OpenCV build the run
       # actually used and prints what that build matched, so a provisioning drift
       # is visible in the log rather than only in some later failing tolerance.
@@ -443,6 +462,11 @@ jobs:
     steps:
       - name: Check out the repository
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+
+      - name: Install qualification Python
+        uses: actions/setup-python@ece7cb06caefa5fff74198d8649806c4678c61a1 # v6
+        with:
+          python-version: "3.14"
 
       - name: Install the pinned toolchain
         shell: bash
@@ -493,22 +517,12 @@ jobs:
         run: |
           set -euo pipefail
           brew install opencv@4
-          prefix="$(brew --prefix opencv@4)"
-          # Set explicitly rather than relying on the formula being linked: it is
-          # keg-only, and whether its pkg-config file reaches the default search path
-          # depends on what else the image has installed.
-          echo "PKG_CONFIG_PATH=${prefix}/lib/pkgconfig" >> "${GITHUB_ENV}"
 
-      - name: Confirm the OpenCV the build will find
+      - name: Configure and check native development prerequisites
         shell: bash
         run: |
           set -euo pipefail
-          found="$(pkg-config --modversion opencv4)"
-          echo "pkg-config reports opencv4 ${found}"
-          if [[ "${found%%.*}" != "4" ]]; then
-            echo "::error::expected an OpenCV 4 installation but found ${found}"
-            exit 1
-          fi
+          python3 tools/setup-native.py --github-env "${GITHUB_ENV}" --github-path "${GITHUB_PATH}"
 
       - name: Provision the reviewed ONNX runtime and G-004 models
         shell: bash
@@ -568,9 +582,9 @@ jobs:
             echo "MADO_PILOT_G004_MODEL_ROOT=${model_root}"
           } >> "${GITHUB_ENV}"
 
-      - name: Check workspace architecture and release scope
+      - name: Check workspace architecture
         shell: bash
-        run: cargo run --locked --package mado-pilot-dependency-check -- --release-scope
+        run: cargo run --locked --package mado-pilot-dependency-check
 
       - name: Lint the workspace
         shell: bash
@@ -663,6 +677,17 @@ jobs:
           cargo run --locked --package mado-pilot-capi --example c-abi-check -- \
             --label "CI ${{ runner.os }} ${{ runner.arch }}"
           shasum -a 256 target/debug/libmadopilot.dylib
+
+      - name: Check native profile procedure and external consumers
+        shell: bash
+        run: |
+          set -euo pipefail
+          python3 -m unittest discover -s tools/native-release-profile/tests -v
+          python3 -m unittest discover -s tools/tests -v
+          cargo build --locked --release -p mado-pilot -p mado-pilot-capi
+          python3 tools/native-release-profile/check_consumers.py \
+            --root . --library-dir target/release --output target/profile-consumers-ci \
+            --model-root "${MADO_PILOT_G004_MODEL_ROOT}" --runtime "${MADO_PILOT_ONNX_RUNTIME}"
 
       # This asserts nothing about the scores. It names the OpenCV build the run
       # actually used and prints what that build matched, so a provisioning drift
