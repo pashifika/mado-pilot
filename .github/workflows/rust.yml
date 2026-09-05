@@ -77,9 +77,18 @@ jobs:
       - name: Check out the repository
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
 
+      - name: Install qualification Python
+        uses: actions/setup-python@ece7cb06caefa5fff74198d8649806c4678c61a1 # v6
+        with:
+          python-version: "3.14"
+
       - name: Test dev push selection
         shell: bash
         run: python3 -m unittest discover -s .github/tests -v
+
+      - name: Test native profile procedure
+        shell: bash
+        run: python3 -m unittest discover -s tools/native-release-profile/tests -v
 
       - name: Install the pinned toolchain
         shell: bash
@@ -110,9 +119,9 @@ jobs:
 
       # This step also prints the resolved workspace package inventory, so an
       # accidental workspace member is visible in the log as well as failing.
-      - name: Check workspace architecture and release scope
+      - name: Check workspace architecture
         shell: bash
-        run: cargo run --locked --package mado-pilot-dependency-check -- --release-scope
+        run: cargo run --locked --package mado-pilot-dependency-check
 
       - name: Check G-004 OCR profile evidence
         shell: bash
@@ -154,6 +163,11 @@ jobs:
     steps:
       - name: Check out the repository
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+
+      - name: Install qualification Python
+        uses: actions/setup-python@ece7cb06caefa5fff74198d8649806c4678c61a1 # v6
+        with:
+          python-version: "3.14"
 
       - name: Install the pinned toolchain
         shell: bash
@@ -312,9 +326,9 @@ jobs:
             echo "MADO_PILOT_G004_MODEL_ROOT=$(cygpath -m "${model_root}")"
           } >> "${GITHUB_ENV}"
 
-      - name: Check workspace architecture and release scope
+      - name: Check workspace architecture
         shell: bash
-        run: cargo run --locked --package mado-pilot-dependency-check -- --release-scope
+        run: cargo run --locked --package mado-pilot-dependency-check
 
       - name: Lint the workspace
         shell: bash
@@ -421,6 +435,16 @@ jobs:
           cargo run --locked --package mado-pilot-capi --example c-abi-check -- --label "CI ${{ runner.os }} ${{ runner.arch }}" --windows-native-fixture || exit /b 1
           certutil -hashfile target\debug\madopilot.dll SHA256 || exit /b 1
 
+      - name: Check native profile procedure and external consumers
+        shell: cmd
+        run: |
+          python -m unittest discover -s tools/native-release-profile/tests -v || exit /b 1
+          for /f "usebackq tokens=*" %%i in (`"%ProgramFiles(x86)%\Microsoft Visual Studio\Installer\vswhere.exe" -latest -products * -requires Microsoft.VisualStudio.Component.VC.Tools.x86.x64 -property installationPath`) do set "VSROOT=%%i"
+          if not defined VSROOT exit /b 1
+          call "%VSROOT%\VC\Auxiliary\Build\vcvars64.bat" || exit /b 1
+          cargo build --locked --release -p mado-pilot -p mado-pilot-capi || exit /b 1
+          python tools/native-release-profile/check_consumers.py --root . --library-dir target/release --output target/profile-consumers-ci --model-root "%MADO_PILOT_G004_MODEL_ROOT%" --runtime "%MADO_PILOT_ONNX_RUNTIME%" || exit /b 1
+
       # This asserts nothing about the scores. It names the OpenCV build the run
       # actually used and prints what that build matched, so a provisioning drift
       # is visible in the log rather than only in some later failing tolerance.
@@ -443,6 +467,11 @@ jobs:
     steps:
       - name: Check out the repository
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+
+      - name: Install qualification Python
+        uses: actions/setup-python@ece7cb06caefa5fff74198d8649806c4678c61a1 # v6
+        with:
+          python-version: "3.14"
 
       - name: Install the pinned toolchain
         shell: bash
@@ -568,9 +597,9 @@ jobs:
             echo "MADO_PILOT_G004_MODEL_ROOT=${model_root}"
           } >> "${GITHUB_ENV}"
 
-      - name: Check workspace architecture and release scope
+      - name: Check workspace architecture
         shell: bash
-        run: cargo run --locked --package mado-pilot-dependency-check -- --release-scope
+        run: cargo run --locked --package mado-pilot-dependency-check
 
       - name: Lint the workspace
         shell: bash
@@ -663,6 +692,16 @@ jobs:
           cargo run --locked --package mado-pilot-capi --example c-abi-check -- \
             --label "CI ${{ runner.os }} ${{ runner.arch }}"
           shasum -a 256 target/debug/libmadopilot.dylib
+
+      - name: Check native profile procedure and external consumers
+        shell: bash
+        run: |
+          set -euo pipefail
+          python3 -m unittest discover -s tools/native-release-profile/tests -v
+          cargo build --locked --release -p mado-pilot -p mado-pilot-capi
+          python3 tools/native-release-profile/check_consumers.py \
+            --root . --library-dir target/release --output target/profile-consumers-ci \
+            --model-root "${MADO_PILOT_G004_MODEL_ROOT}" --runtime "${MADO_PILOT_ONNX_RUNTIME}"
 
       # This asserts nothing about the scores. It names the OpenCV build the run
       # actually used and prints what that build matched, so a provisioning drift

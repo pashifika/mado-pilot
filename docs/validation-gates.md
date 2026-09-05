@@ -378,6 +378,13 @@ on both release targets, plus a license review of every redistributed artifact.
 
 **Status.** Open.
 
+**Phase 5 investigation.** The [native-profile procedure](evidence/native-release-profiles/README.md)
+adds bounded staging, public-language consumers, and private loader comparisons.
+Its development-host inventories and CI results are supporting evidence only:
+clean-consumer admission, complete redistribution review, and a selected profile
+remain outstanding. The ordinary direct-linked missing-OpenCV failure remains a
+negative control; private host loading is not a public API repair.
+
 **Phase 1 input.** Phase 1 links OpenCV 4.14.0 as a *development prerequisite* and
 claims nothing about a release. Two facts it established belong to this gate. The
 library is Apache-2.0, the same licence as this project, so bundling it would add
@@ -537,6 +544,12 @@ binary-size measurements for each profile.
 **Blocks.** The release capability matrix.
 
 **Status.** Open.
+
+**Phase 5 investigation.** The [candidate protocol](evidence/native-release-profiles/protocol.json)
+keeps CPU defaults, ABI 1.5, host-provided models, and existing provider scope.
+Neither a small dylib nor a successful CI consumer selects a published profile;
+complete package and host-supplied accounting and both native qualifications remain
+required.
 
 **Resolution.** An ADR recording the matrix and the chosen defaults, plus a
 build-profile capability table published with the release.

@@ -632,8 +632,13 @@ It verifies:
   absent, and archive/model/native payload exceptions are exact.
 
 ```sh
-cargo run --locked --package mado-pilot-dependency-check -- --release-scope
+cargo run --locked --package mado-pilot-dependency-check
 ```
+
+Normal branch CI runs the current architecture policy. The optional
+`--release-scope` check belongs to the frozen v0.4.0 source-release checkout,
+not later development heads; its historical identities are not refreshed for
+new features ([ADR 0065](adr/0065-historical-source-release-gate-scope.md)).
 
 Changing a dependency direction means changing the allowlist, its tests, and this
 document together, with an architecture decision record.

@@ -539,6 +539,15 @@ installer. `G-007` (bundling, deployment profiles, notices) and `G-008`
 (static-link feasibility, controlled loading) are both open, and no statement
 here should be read as settling either.
 
+The [Phase 5 native-profile investigation](evidence/native-release-profiles/README.md)
+compares exact controlled-host and app-private closures without selecting a
+release profile. Its source-only tooling ships no native library or model.
+The OpenCV license above does not approve the other libraries in a development
+installation's transitive closure: every proposed bundled file still needs its
+own identity, license, notice, and redistribution disposition. Local relocation
+and ad-hoc signing are supporting experiments, not clean-host or distribution
+qualification.
+
 ### Development installation
 
 | Host | OpenCV | libclang |

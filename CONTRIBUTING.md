@@ -327,8 +327,8 @@ each step returns a non-zero status with an actionable diagnostic when its polic
 is violated.
 
 ```sh
-# 1. Workspace architecture and committed v0.4.0 release scope
-cargo run --locked --package mado-pilot-dependency-check -- --release-scope
+# 1. Workspace architecture
+cargo run --locked --package mado-pilot-dependency-check
 
 # 2. Formatting
 cargo fmt --all --check
@@ -373,6 +373,12 @@ cargo clippy --locked --target x86_64-pc-windows-msvc \
 MADO_PILOT_MACOS_ASAN=1 cargo test --locked \
   -p mado-pilot-platform-macos --target-dir target/asan --lib -- --test-threads=1
 ```
+
+The opt-in `--release-scope` check validates the immutable v0.4.0 source-release
+tree, not later development changes. Run it separately from a checkout of the
+source-release candidate. Its historical tree/blob identities remain frozen;
+never refresh them to make a feature branch pass. See
+[ADR 0065](docs/adr/0065-historical-source-release-gate-scope.md).
 
 Both platform adapters are workspace members on both targets, so step 3 lints each of
 them with the *other* platform's code compiled away — which is a configuration neither
