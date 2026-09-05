@@ -11,6 +11,7 @@ import tempfile
 import textwrap
 import time
 import unittest
+import warnings
 from pathlib import Path
 from unittest import mock
 
@@ -446,8 +447,11 @@ class ProcessRunnerTests(unittest.TestCase):
             ctypes.set_last_error(6)
             return 0
 
-        with mock.patch.object(_windows_process._kernel32, "TerminateJobObject", refuse):
-            record = self.run_child("hang", str(pid_file), timeout=3.0, cleanup=0.5)
+        with warnings.catch_warnings(record=True) as observed:
+            warnings.simplefilter("always", ResourceWarning)
+            with mock.patch.object(_windows_process._kernel32, "TerminateJobObject", refuse):
+                record = self.run_child("hang", str(pid_file), timeout=3.0, cleanup=0.5)
+        self.assertFalse([warning for warning in observed if issubclass(warning.category, ResourceWarning)])
         self.assert_record(record)
         self.assertTrue(record["timed_out"])
         self.assertFalse(record["cleanup_ok"])

@@ -229,7 +229,12 @@ class JobTree:
             return False
         return True
     def terminate(self) -> bool:
-        return bool(_kernel32.TerminateJobObject(self._job, TERMINATED_EXIT_CODE))
+        if _kernel32.TerminateJobObject(self._job, TERMINATED_EXIT_CODE):
+            return True
+        # Kill-on-close must run before the reap deadline, not after it.
+        if _kernel32.CloseHandle(self._job):
+            self._job = None
+        return False
 
     def await_cleanup(self, deadline) -> bool:
         try:
@@ -240,6 +245,8 @@ class JobTree:
         # CPython owns this handle after Popen discards the primary-thread handle.
         # Cache returncode before closing it: Job accounting can retain its process reference.
         self._proc._handle.Close()
+        if self._job is None:
+            return False
         while time.monotonic() < deadline:
             counts = _JobAccounting()
             if not _kernel32.QueryInformationJobObject(self._job, 1, ctypes.byref(counts), ctypes.sizeof(counts), None):
@@ -249,9 +256,8 @@ class JobTree:
             time.sleep(min(0.01, max(0.0, deadline - time.monotonic())))
         return False
 
-    @staticmethod
-    def is_kill_status(status) -> bool:
-        return (status & 0xFFFFFFFF) == TERMINATED_EXIT_CODE
+    def is_kill_status(self, status) -> bool:
+        return self._job is None or (status & 0xFFFFFFFF) == TERMINATED_EXIT_CODE
 
     def close(self):
         if self._job is not None:
@@ -260,5 +266,6 @@ class JobTree:
                     self.terminate()
                     self.await_cleanup(time.monotonic() + self._cleanup_seconds)
             finally:
-                _kernel32.CloseHandle(self._job)
-                self._job = None
+                if self._job is not None:
+                    _kernel32.CloseHandle(self._job)
+                    self._job = None
