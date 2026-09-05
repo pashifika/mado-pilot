@@ -22,7 +22,7 @@ const PUBLIC_HEADER_DIR: &str = "crates/bindings/capi/include/madopilot";
 /// Git subtree identities frozen for the v0.4.0 source-release boundary.
 pub const REQUIRED_TREE_IDENTITIES: [(&str, &str); 5] = [
     (".cargo", "46f2deca6a18229279e14433738418c4df501be9"),
-    (".github", "9ea02fb5851e6ab15818fc3de36456f6de074d94"),
+    (".github", "fb6bf866f4184bcd64d941b256e6294609aa6ba7"),
     ("crates", "509f827d161243d574adf5b24ecf856a2143525b"),
     ("docs", "a4b22fb0a9427a973a3bcfb445615232ac445f8e"),
     ("fixtures", "fbfc3e6eabd95b4bbae4926929f9ad593a170d99"),

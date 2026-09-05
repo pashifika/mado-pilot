@@ -1,8 +1,7 @@
 name: Rust
 
-# Every job runs on every pull request and development-branch push rather than
-# behind a path filter, because these checks are intended to be required statuses
-# and a skipped required status blocks a pull request instead of passing it.
+# Required PR checks have no path filter. Development pushes retain post-merge
+# verification unless an open release PR covers that exact head.
 on:
   pull_request:
     branches:
@@ -43,14 +42,44 @@ env:
   G004_RECOGNIZER_SHA256: 6f327246b50388f3c176ae304bd95767ea6dc0c9ae92153ef8cbe210b3c14884
 
 jobs:
+  dev-push-policy:
+    name: Select dev push checks
+    if: github.event_name == 'push'
+    runs-on: ubuntu-latest
+    timeout-minutes: 2
+    permissions:
+      contents: read
+      pull-requests: read
+    outputs:
+      skip-checks: ${{ steps.release-pr.outputs.skip-checks }}
+    steps:
+      - name: Check out the repository
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+
+      - name: Check for a covering release PR
+        id: release-pr
+        env:
+          GH_TOKEN: ${{ github.token }}
+        shell: bash
+        run: bash .github/scripts/select-dev-push-checks.sh
+
+  # Push checks use distinct names: a skipped push job must never satisfy a
+  # required PR status on the head commit. PR checks also run when the selector
+  # is skipped or fails; only an explicit push-only decision suppresses work.
   repository-policy:
-    name: Repository policy
+    name: Repository policy${{ github.event_name == 'push' && ' (dev push)' || '' }}
+    needs: dev-push-policy
+    if: ${{ !cancelled() && (github.event_name == 'pull_request' || needs.dev-push-policy.outputs.skip-checks != 'true') }}
     runs-on: ubuntu-latest
     env:
       CARGO_DENY_VERSION: 0.20.2
     steps:
       - name: Check out the repository
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+
+      - name: Test dev push selection
+        shell: bash
+        run: python3 -m unittest discover -s .github/tests -v
 
       - name: Install the pinned toolchain
         shell: bash
@@ -118,7 +147,9 @@ jobs:
           cargo deny --locked check
 
   windows:
-    name: Windows x86_64-pc-windows-msvc
+    name: Windows x86_64-pc-windows-msvc${{ github.event_name == 'push' && ' (dev push)' || '' }}
+    needs: dev-push-policy
+    if: ${{ !cancelled() && (github.event_name == 'pull_request' || needs.dev-push-policy.outputs.skip-checks != 'true') }}
     runs-on: windows-2025
     steps:
       - name: Check out the repository
@@ -337,8 +368,9 @@ jobs:
       - name: Run the bounded detector and grouped-zone smoke gates
         shell: bash
         run: |
-          export MADO_PILOT_BOUNDED_SOURCE_REVISION="$(git rev-parse HEAD)"
-          export MADO_PILOT_BOUNDED_SOURCE_TREE="$(git rev-parse 'HEAD^{tree}')"
+          MADO_PILOT_BOUNDED_SOURCE_REVISION="$(git rev-parse HEAD)"
+          MADO_PILOT_BOUNDED_SOURCE_TREE="$(git rev-parse 'HEAD^{tree}')"
+          export MADO_PILOT_BOUNDED_SOURCE_REVISION MADO_PILOT_BOUNDED_SOURCE_TREE
           export MADO_PILOT_BOUNDED_HOST_ID="hosted-ci"
           export MADO_PILOT_BOUNDED_PROCESS_INDEX="smoke"
           cargo bench --locked --package mado-pilot-backend-onnx --features benchmark-instrumentation --bench bounded-detector -- --smoke --profile=native
@@ -404,7 +436,9 @@ jobs:
             --example match-report -- --label "CI ${{ runner.os }} ${{ runner.arch }}"
 
   macos:
-    name: macOS aarch64-apple-darwin
+    name: macOS aarch64-apple-darwin${{ github.event_name == 'push' && ' (dev push)' || '' }}
+    needs: dev-push-policy
+    if: ${{ !cancelled() && (github.event_name == 'pull_request' || needs.dev-push-policy.outputs.skip-checks != 'true') }}
     runs-on: macos-26
     steps:
       - name: Check out the repository
@@ -590,8 +624,9 @@ jobs:
       - name: Run the bounded detector and grouped-zone smoke gates
         shell: bash
         run: |
-          export MADO_PILOT_BOUNDED_SOURCE_REVISION="$(git rev-parse HEAD)"
-          export MADO_PILOT_BOUNDED_SOURCE_TREE="$(git rev-parse 'HEAD^{tree}')"
+          MADO_PILOT_BOUNDED_SOURCE_REVISION="$(git rev-parse HEAD)"
+          MADO_PILOT_BOUNDED_SOURCE_TREE="$(git rev-parse 'HEAD^{tree}')"
+          export MADO_PILOT_BOUNDED_SOURCE_REVISION MADO_PILOT_BOUNDED_SOURCE_TREE
           export MADO_PILOT_BOUNDED_HOST_ID="hosted-ci"
           export MADO_PILOT_BOUNDED_PROCESS_INDEX="smoke"
           cargo bench --locked --package mado-pilot-backend-onnx --features benchmark-instrumentation --bench bounded-detector -- --smoke --profile=native

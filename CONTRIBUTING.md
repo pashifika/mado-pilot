@@ -649,7 +649,7 @@ maintainer is available to review changes.
 the branch rulesets. They are not applied automatically, so editing them does not
 change the live repository configuration.
 
-The stable check names are:
+The stable required pull-request check names are:
 
 | Check | Workflow | What it verifies |
 |---|---|---|
@@ -657,6 +657,30 @@ The stable check names are:
 | `Repository policy` | `rust.yml` | Package inventory, dependency directions, formatting, and dependency policy. |
 | `Windows x86_64-pc-windows-msvc` | `rust.yml` | Native `windows-2025` inventory, lint, test, doctest, documentation, C/C++ checks, the required Lane A semantic run, and compilation of Lane B/C. It does not execute approved-host WGC Lane B. |
 | `macOS aarch64-apple-darwin` | `rust.yml` | Native `macos-26` Apple Silicon inventory, lint, test, doctest, documentation, C/C++ checks, the required Lane A semantic run, and compilation of Lane B/C. It has no Screen Recording authority and does not execute ScreenCaptureKit Lane B. |
+
+Every pull request targeting `main` or `dev/**` runs these checks without a path
+filter. A `dev/**` push normally runs Repository policy and both native jobs
+again after integration. Before those push jobs start, a lightweight
+`Select dev push checks` job looks for an open `dev/x.y.z` → `main` release PR
+in this repository whose head branch and commit exactly match the push.
+Only a confirmed match suppresses the three duplicate push jobs; draft release
+PRs count because their PR checks also run. A closed PR, another repository,
+another branch, or a different head commit does not suppress verification.
+API errors, unreadable responses, or a failed selector leave push checks enabled.
+
+The lookup needs only `pull-requests: read`, scoped to the selector job in
+addition to its checkout permission. Pull-request jobs do not perform this lookup
+and retain their existing permissions and required names. Push job names append
+` (dev push)`, so their skipped statuses cannot satisfy a required PR check.
+The small selector run and skipped push jobs remain visible in Actions; this
+avoids duplicate builds, not every extra workflow entry.
+
+The decision uses the PR state observed by the selector, not an atomic snapshot
+with PR creation or closure. Opening a release PR after the selector has decided
+to run does not cancel that push run; closing it after a skip does not replay
+the skipped push. Subsequent pushes without a covering release PR run normally.
+Superseded PR runs still cancel only earlier runs of that same PR. `main` pushes
+remain disabled; release-PR checks remain the release merge gate.
 
 The `Repository policy` job builds no product package, which is why
 documentation, lints, tests, and the C and C++ boundary are verified only in the
