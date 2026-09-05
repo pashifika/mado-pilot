@@ -17,21 +17,52 @@ change in the same pull request whenever a manifest requirement changes.
 
 ## Native development prerequisites
 
-Building the workspace needs an **OpenCV 4 development installation** and a
-**libclang** the binding generator can load. `mado-pilot-backend-opencv` generates
-its bindings at build time, so this is a prerequisite for `cargo build`, not only
-for running the matching tests.
+Developers acquire and maintain the native prerequisites; this source-only
+project redistributes no native library or model. Building the workspace needs
+an **OpenCV 4 development installation**, a loadable **libclang**, and the native
+compiler/SDK. The binding generator needs them for `cargo build`, not only tests.
 
-| Host | Install |
+Acquire these separately before running setup:
+
+| Host | Developer-owned installation |
 |---|---|
-| macOS | `brew install opencv@4`. Xcode Command Line Tools supply libclang; no Homebrew LLVM and no `PKG_CONFIG_PATH` are needed. |
-| Windows | Extract the official OpenCV prebuilt release, install LLVM, and set the discovery variables. |
+| macOS | Xcode Command Line Tools, Homebrew, and `brew install opencv@4` (not `opencv`). The Command Line Tools supply libclang; Homebrew LLVM is not required. |
+| Windows | The official OpenCV 4.14.0 prebuilt archive, LLVM 22.1.8, and Visual Studio C++ build tools with a Windows SDK. Open an **x64 MSVC developer command prompt**. |
 
-[docs/third-party-dependencies.md](docs/third-party-dependencies.md) records the
-exact versions, the Windows environment variables, why the discovery is restricted
-rather than ambient, and what fails when the library is absent. This is a
-development prerequisite only: source releases bundle no native dependency and
-make no installable deployment-profile claim, which remains gate `G-007`.
+With **Python 3.13+**, explicitly configure and check the existing installations:
+
+```sh
+# macOS: discover opencv@4 and the selected Xcode Command Line Tools
+python3 tools/setup-native.py
+python3 tools/setup-native.py -- cargo build --locked
+```
+
+```bat
+rem Windows: OPENCV_ROOT contains build\include and build\x64\vc16\{lib,bin}
+python tools/setup-native.py --opencv-root C:\native\opencv --libclang-path "C:\Program Files\LLVM\bin"
+python tools/setup-native.py --opencv-root C:\native\opencv --libclang-path "C:\Program Files\LLVM\bin" -- cargo build --locked
+```
+
+The CLI is `tools/setup-native.py [--opencv-root DIR] [--libclang-path DIR]
+[--github-env FILE --github-path FILE] [-- COMMAND ARG...]`. Both root options
+are required on Windows; macOS permits explicit overrides. Without a command it
+validates and prints JSON describing the target, version, selected roots, and
+configured environment; it does not modify the calling shell. Command mode runs
+one executable with that child-scoped environment and propagates its failure.
+Use it around subsequent native build/check commands too. CI may explicitly pass
+both GitHub environment files; setup writes them only after validation succeeds.
+The script does not download, install, elevate, or edit global shell settings.
+
+Missing or incompatible OpenCV, libclang, or toolchain inputs may fail setup or
+the build. Removing an eagerly linked OpenCV library after setup invalidates the
+environment and can prevent process entry; no deferred-load bridge or static-link
+workaround is promised. Existing caller-selected ORT/model canonical-path,
+length/hash, and typed runtime-refusal checks remain mandatory, as do platform
+capability checks. Product runtime never acquires dependencies.
+See [the dependency policy](docs/third-party-dependencies.md#opencv) and
+[ADR 0066](docs/adr/0066-developer-owned-native-prerequisites.md).
+This is not an installable profile or a clean/minimum-host/signing qualification;
+`G-007` and `G-012` remain open.
 
 The supported macOS native host is Apple Silicon macOS 26.6.2 (25G83), SDK
 26.5; the deployment floor remains macOS 26.5.2, and earlier versions are

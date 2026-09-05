@@ -670,6 +670,44 @@ The workspace keeps one committed lockfile at the repository root. No member has
 its own lockfile, and verification runs with `--locked` so that a check fails
 rather than silently changing resolution.
 
+### Native development prerequisite ownership
+
+[ADR 0066](adr/0066-developer-owned-native-prerequisites.md) records the
+user-approved source-only policy: this project redistributes no native libraries
+or models. Developers acquire OpenCV 4, loadable libclang, and the native
+compiler/SDK from upstream or package managers, then explicitly run
+`tools/setup-native.py` with Python 3.13+. Acquisition is separate from setup;
+neither the script nor product runtime downloads or installs dependencies.
+
+The interface is `tools/setup-native.py [--opencv-root DIR] [--libclang-path DIR]
+[--github-env FILE --github-path FILE] [-- COMMAND ARG...]`. Without a command it
+checks the selected installations and prints target/version/root/environment
+JSON. Command mode runs one executable with a child-scoped environment and
+propagates failure without evaluating shell text or mutating the parent shell.
+Windows requires both roots and an x64 MSVC developer prompt; macOS may discover
+`opencv@4` and the selected Xcode Command Line Tools. Conflicting OpenCV discovery
+variables cannot override the chosen root. Native CI provisions dependencies
+separately, then uses the same explicit setup; GitHub export requires both file
+options and successful validation. See
+[contributor commands](../CONTRIBUTING.md#native-development-prerequisites).
+
+An incomplete or incompatible development environment may fail setup or build.
+Removing eagerly linked OpenCV after setup invalidates that environment and may
+prevent process entry. No typed-recovery guarantee, private deferred-load bridge,
+or static-link workaround is added. This changes no production Rust API/ABI,
+ORT/model canonical-path, identity/hash, or typed runtime-refusal contract,
+provider policy, or platform capability check. No component gains downloader,
+installer, elevation, registry, or global shell mutation behavior.
+
+The original five-candidate qualification protocol and its failed/supporting
+results stay frozen under
+[native-release-profiles](evidence/native-release-profiles/README.md); they are
+superseded as acceptance for this amended incremental Change. This decision is
+not full Direction Slice acceptance or merge readiness. `G-007` and `G-012`
+remain open for broader deployment/published profiles; no native release,
+installer, clean/minimum-host, signing, static-artifact, or new support claim is
+made.
+
 ### Shared metadata contract
 
 The architecture checker validates shared metadata in three layers, so that neither
@@ -2367,11 +2405,13 @@ candidates whose scores differ by less than the tolerance. The measurements are 
 [evidence/vision-opencv/](evidence/vision-opencv/).
 
 The required OpenCV backend never silently falls back to another implementation.
-It reports an unsupported runtime version as a typed unavailable outcome; an
-absent library remains a process-load failure until gate
-[`G-007`](validation-gates.md#g-007) settles the controlled library search paths,
-which [third-party-dependencies.md](third-party-dependencies.md) records as a
-stated gap rather than a satisfied contract.
+It reports an unsupported runtime version as a typed unavailable outcome when
+the process can load. An absent eagerly linked library can prevent process
+entry and violates the developer-owned prerequisites in ADR 0066; a successful
+setup does not promise recovery after the installation is removed or changed.
+This does not weaken ORT/model typed runtime validation or platform capability
+checks. [The dependency policy](third-party-dependencies.md#opencv) records the
+setup boundary separately from the still-open `G-007`/`G-012` deployment gates.
 
 ### OCR recognition
 
@@ -2781,9 +2821,9 @@ The facade requires the OpenCV CPU backend and never substitutes another
 implementation. There is no backend-selection argument, because there is exactly
 one production matching backend and a selection type would name a choice no
 caller can make; a second backend arrives with its own constructor rather than by
-changing an existing one. The backend is initialized before anything else is
-wired, so an unusable OpenCV fails engine construction rather than the first
-search, and leaves no half-configured engine behind.
+changing an existing one. Once the process can load, the backend is initialized
+before anything else is wired, so a refused OpenCV version fails engine
+construction rather than the first search and leaves no half-configured engine.
 
 Integrated OCR follows the same fail-before-engine rule. Separate constructors
 initialize the controlled runtime, read/hash only the two accepted fixed model
@@ -2944,7 +2984,7 @@ against.
 | Windows input submission and cleanup | Implemented and enforceable in `mado-pilot-platform-windows` for separate `System` and explicit exact-window `WindowMessage` routes, ordinary `Unknown` compatibility with target-queue evidence, fixture `Supported` compatibility with protocol acknowledgement, retained-authority pre/post fences, conservative message translation, focus and signed-coordinate policies, system native-record accounting, integrity/UIPI classification, non-fallback after native submission begins, bounded sequence-owned same-route cleanup, target loss, cancellation/deadline races, and close. [ADR 0027](adr/0027-windows-window-message-queue-submission.md) supersedes ADR 0022's ordinary system-only consequence without claiming application consumption or generation-atomic `HWND` safety. Native ordinary/fixture, negative-consumer, queue-pressure, lifecycle, single-display, same-DPI and mixed-DPI topology, unrelated-foreground, visual/no-visual, and higher-integrity/UIPI refusal rows are recorded; same-value recurrence remains an explicit unproved row |
 | macOS input submission and cleanup | Implemented and enforceable in `mado-pilot-platform-macos` for the target-kind capability matrix, system-stream admission evidence, process-directed input with owning-process scope, unknown compatibility, and invocation-only evidence, absence of any window-message pair, route-sensitive early authority, one final native retained-window/process-lifetime commit per ordinary native unit, source-frame `RequireUnchanged` comparison, live `ReprojectCurrent`, snapshot projection, release-purpose cleanup without a retained-window inventory read, focus outcomes, Retina and signed multi-display point mapping, layout-resolved keys and refused modifier-only characters, sequence-owned modifier flags, surrogate-safe text chunking, non-fallback after possible effect, bounded sequence-owned cleanup, target loss, cancellation/deadline races, and close. Exact-window focus joins current shareable-content identity to a public read-only Accessibility focused-window snapshot and never raises an Accessibility window; successful submission is not presented as application consumption. Final candidate `dec43d7` passed the controlled profiles and independent `single`, exact two-display non-mirrored `same-scale`, and `mixed-scale` matrices. All fourteen controlled release pairs are qualified |
 | macOS shim containment and native ownership | Implemented in `mado-pilot-platform-macos` for exception containment at every entry point and callback trampoline, panic containment on the Rust side of every callback, per-work-item autorelease pooling, disable-and-drain callback fencing, detached Core Video storage from a finite budget, lazy CPU mapping at an exact stride, frame-authoritative Retina and signed multi-display geometry, and retryable idempotent teardown. Enforceability is uneven and stated rather than averaged: the surface-layout, status, geometry, panic-containment, and linkage cases run anywhere, while the containment, ownership-on-failure, autorelease, fence, and teardown cases need a host that has granted Screen Recording and report a skip with that reason elsewhere. The linkage rule is met by controlled dynamic loading rather than the weak framework linking [ADR 0012](adr/0012-macos-shim-language-and-containment.md) described, because Cargo does not propagate a dependency's `rustc-link-arg` to the final link | Not applicable; no native shim existed |
-| Native dependency packaging and clean-system loading | Partly applicable. OpenCV 4, ONNX Runtime 1.29.0, and the accepted model pair are controlled host-provided development-tree prerequisites with recorded licenses and exact identities. Default OCR performs no ambient search/download/bundling/fallback. Clean-system packaging, redistributable notices, and install profiles remain open under `G-007` | Not applicable; no native dependency was declared |
+| Native dependency packaging and clean-system loading | ADR 0066 fixes developer-owned OpenCV/libclang/toolchain setup and no native redistribution. Missing development prerequisites may fail build or eager loading; existing caller-controlled ONNX Runtime 1.29.0/model canonical paths, identities, hash checks, and typed runtime refusals remain mandatory. This is not clean-system qualification; deployment and published build profiles remain open under `G-007`/`G-012` | Not applicable; no native dependency was declared |
 
 Underneath all of it, what Phase 0 established and every phase still verifies is
 the repository itself: the package inventory and dependency directions,

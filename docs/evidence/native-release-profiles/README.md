@@ -1,13 +1,45 @@
 # Native release-profile qualification
 
-This procedure supports the Phase 5 G-007/G-012 investigation. No profile is
-selected, no gate is closed, and no installable artifact is published.
-[`protocol.json`](protocol.json) fixes the five candidate identifiers and the
-acceptance envelope. [`baseline.json`](baseline.json) binds the initial product,
-Direction, and development builder. Exact native closures and redistribution
-reviews must be frozen separately before clean-system qualification begins.
+## Current scope: developer-owned prerequisites
 
-## Run the procedure
+**User-approved amendment, 2026-09-05:**
+[ADR 0066](../../adr/0066-developer-owned-native-prerequisites.md) replaces this
+Change's bundled/host candidate and private-bridge acceptance with explicit
+development setup. Developers acquire OpenCV 4, libclang, and the native
+compiler/SDK separately from upstream or package managers, then run
+`tools/setup-native.py` with Python 3.13+. This source-only project redistributes
+no native library or model; neither setup nor product runtime downloads or
+installs dependencies.
+
+The interface is `tools/setup-native.py [--opencv-root DIR] [--libclang-path DIR]
+[--github-env FILE --github-path FILE] [-- COMMAND ARG...]`. No-command mode
+validates and prints target/version/root/environment JSON; command mode runs an
+executable with the configured child environment and propagates failure.
+Windows requires both roots and an x64 MSVC developer prompt; macOS may discover
+`opencv@4` and the selected Xcode Command Line Tools. CI export requires the
+paired file options and successful validation. See the complete
+[acquisition and invocation instructions](../../../CONTRIBUTING.md#native-development-prerequisites).
+
+An incomplete development environment may fail setup or build. Removing eagerly
+linked OpenCV after setup invalidates the environment and can prevent process
+entry; no private deferred-load bridge or static-link workaround is required.
+Existing caller-controlled ORT/model canonical-path, length/hash, typed runtime
+refusal, provider, and platform capability contracts remain mandatory.
+Current setup implementation and native verification remain pending integration
+review; none of the historical observations below is a setup pass.
+
+## Frozen qualification method (historical)
+
+[`protocol.json`](protocol.json) (`native-release-profile-v1`) fixes the original
+five candidates and their old acceptance envelope.
+[`baseline.json`](baseline.json) binds their initial product, Direction, and
+development builder. The protocol, inventories, and result JSON remain
+byte-for-byte historical; their required rows are superseded for the amended
+Change, not relaxed into passes. The following procedure still describes that
+original apparatus, not current setup acceptance. Its own protocol checks remain
+unchanged. No profile was selected or installable artifact published.
+
+### Run the historical procedure
 
 CI uses Python 3.14. The procedure supports Python 3.11+ on POSIX and 3.13+ on
 Windows, where private-directory creation requires owner/admin-only access.
@@ -59,7 +91,7 @@ process paths, and unrelated desktop metadata.
 Attempt directories and files restrict access at creation, independently of the
 caller's umask. Interruptions retain failure records and never become passes.
 
-## Manifest contract
+### Manifest contract
 
 The version-one object has exactly these fields:
 
@@ -94,7 +126,7 @@ uses null command/digest/exit/output fields, and an empty environment. All
 mandatory cases in `protocol.json` remain obligations even when a supporting
 manifest exercises only a subset.
 
-## Bounds and accounting
+### Bounds and accounting
 
 The fixed envelope is 512 declared files, 4 GiB aggregate declared file bytes
 including host inputs, 64 rows, 120 seconds execution per row, 5 seconds owned
@@ -126,7 +158,7 @@ colliding destinations, changed bytes, and missing/unapproved redistribution
 information. It hashes and copies in bounded chunks, never reads a whole model
 or native payload into memory, and verifies the file that was actually opened.
 
-## Native consumers and loader experiments
+### Native consumers and loader experiments
 
 Build the ordinary libraries first, with no private fixture features:
 
@@ -172,7 +204,7 @@ candidate and, on Windows, the requested OpenCV module after the temporary
 reference is released. This does not observe earlier unloads or prove the whole
 runtime closure.
 
-## Supporting execution checkpoint
+### Supporting execution checkpoint (historical)
 
 [`supporting-execution-01.json`](supporting-execution-01.json) binds the green CI
 and native consumer results to `c34fcc01c2c76e605272a6d3dd22cc817d6d5030`,
@@ -185,19 +217,18 @@ evidence. Adding weak-library flags to the ordinary Rust consumer left strong
 load commands intact and still aborted before entry when OpenCV was unavailable.
 Neither result completes the backend-only deferred bridge or admits a profile.
 
-## Remaining acceptance
+## Broader release gates remain open
 
-A clean consumer must exclude developer installations and ambient substitutes,
-observe actual direct/transitive loads and relocated/decoy cases in fresh
-processes, and cover the frozen public-language and header matrix. An Apple
-26.6.2 result does not qualify the encoded 26.5.2 floor. Ad-hoc local signing is
-not distribution signing or notarization. Windows CPU rows require the supported
-Windows 11 x64 system; CUDA needs its existing exact host-provided dependency and
-provider qualification scope.
+`G-007` still requires evidence for any future native deployment profile;
+`G-012` still requires the published target/feature/capability/size/default matrix.
+Developer setup and a successful native build are not clean-consumer admission.
+An Apple 26.6.2 run does not qualify the encoded 26.5.2 floor; ad-hoc local signing
+is not distribution signing or notarization. No broader Windows, CUDA, CoreML,
+or native capability support is inferred.
 
-G-007 needs an artifact-level ownership/search/license ADR. G-012 needs the
-complete target/feature/capability/size/default ADR. Both stay open until at least
-one CPU candidate per release target and every required row are evidenced and
-independently reviewed. G-008, future G-006, and any new G-013 claim remain
-separate. Historical records, CPU defaults, public ABI/version, source-only
-release scope, and unavailable watcher support are unchanged.
+The Direction's higher-level full-release/Slice acceptance has not been
+rewritten by this incremental amendment. Setup completion cannot assert that
+result, merge readiness, a native release, an installer, or gate closure.
+`G-008`, future `G-006`, and any new `G-013` claim remain separate. Historical
+failures, product defaults, public API/ABI, source-only release scope, and existing
+support qualifications retain their original authority.
