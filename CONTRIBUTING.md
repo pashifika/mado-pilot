@@ -343,9 +343,14 @@ python3 tools/setup-native.py -- cargo bench --locked --package mado-pilot --ben
 ```
 
 Record the exact source tree and executable/fixture digests, then invoke the
-emitted executable once with `--native-contract`. Exit `0` is `PASS`, `1` is
+emitted executable once through setup with `--native-contract`, for example
+`python3 tools/setup-native.py -- /absolute/emitted-executable --native-contract`
+(use the Windows setup form on Windows). The earlier build does not configure
+the parent shell for this process. Exit `0` is `PASS`, `1` is
 product `FAIL`, `2` is `INFRA`, and `3` is `UNSUPPORTED`; only `PASS` satisfies
 the required host job. Preserve the single JSON report even when it is red.
+These exit meanings apply to the emitted executable and its report; setup refusal
+is a prerequisite failure, not a Lane B product result.
 
 Hosted Windows and macOS jobs compile both native modes but do not execute Lane
 B: hosted macOS has no Screen Recording grant, and neither hosted runner owns

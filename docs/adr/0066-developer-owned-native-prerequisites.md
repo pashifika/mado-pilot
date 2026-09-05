@@ -78,11 +78,16 @@ merge readiness, a native release, installer, static artifact, or broader suppor
 
 ## Verification
 
-Implementation and integration verification are pending in the amended Change.
-The integration owner must exercise actual no-command JSON and child-command
-success/failure on the named native development targets, invalid prerequisite
-refusal, conflicting discovery inputs, literal argument/environment-file safety,
-and explicit CI export after provisioning. Existing ORT/model and platform
-contract checks remain required. Review must confirm that the original protocol,
-inventories, failed results, and historical support evidence retain their bytes
-and revision identities; old consumer successes cannot attest to the new setup.
+Source `dfd302fcd9f44fc4b637a1a2c72b5eb6a0216fc8` passed both hosted native
+jobs, repository policy, and branch policy. Actual macOS and Windows setup,
+configured commands, prerequisite refusals, literal arguments, and explicit
+exports were exercised. Windows rebuilt from an ordinary OS baseline using
+only the exported native settings; macOS additionally proved caller-owned
+dylib loading, private-export refusal, and selected-directory alias handling.
+
+The [source-bound execution record](../evidence/native-release-profiles/developer-setup-execution-01.json)
+retains the initial SDK/MSVC failures, their corrections, regression mutation
+checks, and independent Codex review. Seventeen frozen profile/G-004/release
+files retain their original bytes, and the G-004 validator passes. The new
+development-host results do not promote the historical qualification records
+or close the broader gates.

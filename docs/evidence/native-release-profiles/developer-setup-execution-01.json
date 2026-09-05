@@ -1,0 +1,188 @@
+{
+  "schema_version": 1,
+  "evidence_id": "developer-native-setup-execution-01",
+  "scope": "developer-owned prerequisite setup and development-host regression checks",
+  "qualification": "not-selected",
+  "gates": {"G-007": "open", "G-012": "open"},
+  "tested_source": {
+    "commit": "dfd302fcd9f44fc4b637a1a2c72b5eb6a0216fc8",
+    "tree": "a67ea6d1e52b6aefb5a19e11c41d3187e4d36a23",
+    "sha256": {
+      "tools/setup-native.py": "ffa0f75fecdd887463845c2ae3760fbc711cac7405928564dfa88f913a68c93e",
+      "tools/tests/test_setup_native.py": "d2d0494d4766b6f7f5ad986ed19fefeeeb45058afe268675ae124b1061b4528e",
+      ".github/workflows/rust.yml": "3caadb113d15871aab110f6a651d20a370cc80474ebc6e932391ba460657a892"
+    }
+  },
+  "ci": {
+    "rust_run": "https://github.com/pashifika/mado-pilot/actions/runs/33962545346",
+    "branch_run": "https://github.com/pashifika/mado-pilot/actions/runs/33962545274",
+    "jobs": {
+      "Repository policy": "success",
+      "macOS aarch64-apple-darwin": "success",
+      "Windows x86_64-pc-windows-msvc": "success",
+      "Branch policy": "success"
+    }
+  },
+  "macos": {
+    "target": "aarch64-apple-darwin",
+    "os": "macOS 26.6.2 (25G83)",
+    "python": "3.14.7",
+    "compiler": "Apple clang version 21.0.0 (clang-2100.1.1.101)",
+    "sdk": "26.5",
+    "opencv": "4.14.0",
+    "setup_tests": {"run": 11, "skipped": 0, "status": "passed"},
+    "retained_procedure_tests": {"run": 57, "skipped": 4, "status": "passed"},
+    "actual_cli_cases": [
+      {"case": "no-command native compile/link, PNG roundtrip and libclang API probes", "exit": 0},
+      {"case": "missing OpenCV root", "exit": 1},
+      {"case": "missing libclang root", "exit": 1},
+      {"case": "incomplete GitHub export pair", "exit": 2},
+      {"case": "unsafe GitHub export path", "exit": 1},
+      {"case": "literal spaced, Japanese, accented, shell-metacharacter and empty arguments", "exit": 0},
+      {"case": "conflicting OpenCV discovery overridden by selected roots", "exit": 0},
+      {"case": "paired GitHub export", "exit": 0},
+      {"case": "requested child failure", "exit": 23}
+    ],
+    "validation_failure": {
+      "downstream_command_ran": false,
+      "prefilled_export_files_changed": false
+    },
+    "parent_environment_changed": false,
+    "inherited_secret_or_full_path_disclosed": false,
+    "cargo_check_from_exported_settings": "passed",
+    "public_consumers": {
+      "command": "python3 tools/setup-native.py -- python3 tools/native-release-profile/check_consumers.py --root <checkout> --library-dir <release-library-directory> --output <new-private-attempt> --model-root <accepted-model-root> --runtime <canonical-ORT-library>",
+      "exact_private_record_sha256": "5184f60859edcf2d272084fa04c9f062258ce1c9fee9655838807dab9006a298",
+      "rows": 25,
+      "all_rows": "passed",
+      "surfaces": ["external Rust facade", "C", "C++", "frozen ABI prefixes"],
+      "admission": "development-host",
+      "qualification": "not-selected",
+      "ocr_scope": "blank-image CPU inference; no recognition-quality or nonempty OCR-region lifetime claim"
+    },
+    "caller_library_regression": {
+      "pre_fix_source_commit": "468fd00d5810e974e2f430d77fd89abf94f3b40a",
+      "pre_fix_exit": 1,
+      "pre_fix_failure": "OSError loading the caller-owned dylib by name",
+      "fixed_exit": 0,
+      "observed_library_function_result": 47,
+      "configuration_disclosed_inherited_library_path": false,
+      "extra_private_loader_path_export_exit": 1,
+      "refusal_preserved_files_and_prevented_command": true,
+      "selected_only_duplicate_export_exit": 0,
+      "selected_directory_trailing_slash_and_symlink_alias_export_exit": 0
+    }
+  },
+  "windows": {
+    "target": "x86_64-pc-windows-msvc",
+    "python": "3.14.6 AMD64",
+    "compiler_contract": "installed x64 MSVC developer environment with Windows SDK",
+    "opencv": "4.14.0",
+    "libclang": "22.1.8",
+    "setup_tests": {
+      "run": 11,
+      "skipped": 2,
+      "status": "passed",
+      "skips": ["multicall executable symlink privilege", "macOS-only library search"]
+    },
+    "real_setup_and_export_exit": 0,
+    "fresh_step_replay": {
+      "baseline": "normal OS allowlist and Rust toolchain PATH; not the previous MSVC baseline",
+      "native_context_fields_in_actual_baseline_child": [],
+      "exported_assignments_applied": 31,
+      "exported_path_additions_applied": 3,
+      "actual_native_field_set_equals_exports": true,
+      "msvc_fields_after": ["INCLUDE", "LIB", "LIBPATH", "VSCMD_ARG_TGT_ARCH"],
+      "required_fields_nonempty": true,
+      "other_vc_or_sdk_context_restored": false,
+      "fresh_unicode_cargo_target": true,
+      "cargo_argv": ["cargo", "check", "--locked", "-p", "mado-pilot"],
+      "exit": 0,
+      "timed_out": false,
+      "output_limited": false,
+      "cleanup_ok": true
+    },
+    "private_archive": {
+      "bytes": 12506,
+      "sha256": "57070324a24bceefdb4778d50c10a8bc37c3e14ac6d5b4e1c0d85c099fc33a64",
+      "verified_manifest_members": 22,
+      "committed": false
+    }
+  },
+  "compiler_context_mutation_proof": {
+    "scope": "deterministic test fixtures; not additional native-host executions",
+    "test": "test_selected_roots_override_stale_child_and_ci_discovery",
+    "unmodified_macos_and_windows_fixtures": "passed",
+    "remove_sdk_export": "named test failed",
+    "remove_sdk_from_probe_and_export": "named test failed",
+    "remove_msvc_exports": "named test failed",
+    "select_available_debug_import_instead_of_release": "named test failed"
+  },
+  "earlier_setup_observations": {
+    "source_commit": "235ad2127f19b126fc46c7306faccd670285b19d",
+    "source_tree": "dd55e1e930710c63ce8a7900ff399583289e1a91",
+    "macos_actual_setup_cases": 9,
+    "windows_expected_refusal_cases": 7,
+    "windows_literal_arguments_and_exit_23": "passed",
+    "windows_private_state_disclosure_scans": 21,
+    "windows_private_archive": {
+      "bytes": 31543,
+      "sha256": "e1957ecc87d6cee00c15467dd99bb357ece47c0958766f208091ffd0af05244b",
+      "verified_manifest_members": 80,
+      "committed": false
+    },
+    "export_replay_limitation": "The initial Windows replay retained the MSVC baseline; it did not prove a fresh CI step."
+  },
+  "corrected_msvc_export_observation": {
+    "source_commit": "468fd00d5810e974e2f430d77fd89abf94f3b40a",
+    "source_tree": "c99fcba1fd2a578fda7afd2b0232030e4b446c22",
+    "fresh_os_baseline_cargo_check": "passed",
+    "ci_run": "https://github.com/pashifika/mado-pilot/actions/runs/33960863859",
+    "ci_required_jobs": "passed",
+    "private_archive": {
+      "bytes": 13189,
+      "sha256": "cff14894df0dbf62f25b2699d97455ae1483bda8db47720bf49d75d27cc9a882",
+      "verified_manifest_members": 22,
+      "committed": false
+    }
+  },
+  "retained_setup_failures": [
+    {
+      "stage": "initial pre-commit macOS setup",
+      "error": "fatal error: 'limits' file not found",
+      "cause": "selected Clang was invoked without the selected SDKROOT",
+      "resolution": "select and propagate the macOS SDK before probing and exporting"
+    },
+    {
+      "source_commit": "235ad2127f19b126fc46c7306faccd670285b19d",
+      "ci_run": "https://github.com/pashifika/mado-pilot/actions/runs/33960146445",
+      "stage": "Windows Clippy after successful setup",
+      "error": "fatal error C1083: Cannot open include file: 'limits': No such file or directory",
+      "cause": "later CI step received explicit cl.exe but not INCLUDE/LIB",
+      "resolution_commit": "468fd00d5810e974e2f430d77fd89abf94f3b40a"
+    }
+  ],
+  "independent_review": {
+    "model_family": "Codex",
+    "scopes": ["setup safety and compiler-context regressions", "workflow, documentation and preserved runtime contracts"],
+    "final_actionable_findings": 0,
+    "runtime_verification_owner": "integration owner and native Windows worker"
+  },
+  "historical_preservation": {
+    "comparison_source_commit": "3e4bd207089d28cd9ddb8835eff8f52272999266",
+    "files_compared": 17,
+    "scopes": ["five native-profile JSON records", "all eleven G-004 evidence files", "v0.4.0 release notes"],
+    "result": "byte-identical",
+    "historical_index_section_sha256": "e648a53485ccdfef189b3637cd0bc65ce88ab2e33bed90d78ffd1dae83e54c5f",
+    "g004_validator": "passed"
+  },
+  "other_checks": ["actionlint", "cargo fmt --all --check", "workspace dependency-direction check"],
+  "not_established": [
+    "clean or minimum-host admission",
+    "redistributable native dependency closure",
+    "signing or notarization",
+    "live capture or input qualification",
+    "full Direction/Slice acceptance",
+    "native release authorization"
+  ]
+}

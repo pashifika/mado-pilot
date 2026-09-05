@@ -25,8 +25,14 @@ linked OpenCV after setup invalidates the environment and can prevent process
 entry; no private deferred-load bridge or static-link workaround is required.
 Existing caller-controlled ORT/model canonical-path, length/hash, typed runtime
 refusal, provider, and platform capability contracts remain mandatory.
-Current setup implementation and native verification remain pending integration
-review; none of the historical observations below is a setup pass.
+The [current setup execution record](developer-setup-execution-01.json) binds
+implementation `dfd302fcd9f44fc4b637a1a2c72b5eb6a0216fc8` to successful hosted
+Windows/macOS CI, actual native setup and export replay, 11 setup tests per
+native host (0 macOS / 2 Windows skips), and independent Codex review. macOS
+also passed 25 public-consumer rows. The record preserves the initial SDK/MSVC
+failures and the caller-library regression rather than rewriting them as passes.
+These are development-host observations only: G-007/G-012 and broader Direction
+acceptance remain open. None of the historical observations below is a setup pass.
 
 ## Frozen qualification method (historical)
 
