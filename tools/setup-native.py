@@ -228,6 +228,9 @@ def prepare(opencv_root: Path | None, libclang_path: Path | None,
                       "select the matching OpenCV 4 archive root containing build/x64/vc16/bin")
             settings.update(OPENCV_LINK_LIBS=library_name, OPENCV_MSVC_CRT="dynamic",
                             OPENCV_DISABLE_PROBES="pkg_config,cmake,vcpkg_cmake,vcpkg", CL="", _CL_="", LINK="")
+            settings.update(INCLUDE=environment["INCLUDE"], LIB=environment["LIB"],
+                            LIBPATH=environment.get("LIBPATH", ""),
+                            VSCMD_ARG_TGT_ARCH=environment["VSCMD_ARG_TGT_ARCH"])
             paths = [str(runtime), str(clang_dir), str(compiler.parent)]
             cflags = []
         else:

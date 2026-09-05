@@ -51,6 +51,8 @@ configured environment; it does not modify the calling shell. Command mode runs
 one executable with that child-scoped environment and propagates its failure.
 Use it around subsequent native build/check commands too. CI may explicitly pass
 both GitHub environment files; setup writes them only after validation succeeds.
+Windows exports include the selected MSVC include/library search paths, so later
+CI steps retain the compiler context without exporting the whole inherited environment.
 The script does not download, install, elevate, or edit global shell settings.
 
 Missing or incompatible OpenCV, libclang, or toolchain inputs may fail setup or
