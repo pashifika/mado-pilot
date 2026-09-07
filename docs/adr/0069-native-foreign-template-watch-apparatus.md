@@ -76,6 +76,24 @@ requires different effective DPI; Apple requires movement and new geometry with
 exact observed scale, even when both screens use the same Retina scale. Missing
 topology is `UNEXECUTED`, never a passed or product-unsupported row.
 
+Readiness requires completed no-match progress at the consumer's source
+watermark, not an idle scheduler instant. Bounded work may remain pending or
+in flight; complete frame/geometry correlation, completion/generation
+watermarks, zero confirmed stability and error checks remain mandatory.
+
+For F8 `DESTROY`, Windows closes the authenticated owned window. macOS ends
+the authenticated fixture process through `finish_before` using the existing
+request deadline, as the Rust native loss row does. A window-only close may
+leave a ScreenCaptureKit filter quiescent without a terminal callback.
+Accept the action only after full fixture finalization succeeds; reuse that
+idempotent result during later cleanup. Do not fabricate a control
+acknowledgement or reinterpret quiescence/deadlines as `TargetLost`.
+
+Both language consumers use the Rust/asset marker policy: minimum score
+`0.95`, one result and overlapping-result suppression. A language-specific
+stricter threshold is not the common flow. Exact marker bounds, source-frame
+identity and the visible token remain independent acceptance checks.
+
 ### Bounded control and retained evidence
 
 One synchronous request is outstanding over consumer stdout/stdin. Framing uses

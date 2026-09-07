@@ -1250,6 +1250,20 @@ fn run_native_template_watch_checks(paths: &Paths) -> Result<(), Box<dyn std::er
     }
     let program = compile(
         paths,
+        Language::C,
+        "native-template-watch-readiness",
+        &paths
+            .root
+            .join("crates/bindings/capi/tests/c/madopilot-native-watch-readiness.c"),
+        true,
+    )?;
+    let output = run(paths, &program, &[])?;
+    report_output("native template-watch readiness contract", &output);
+    if !output.status.success() {
+        return Err("the native template-watch readiness contract failed".into());
+    }
+    let program = compile(
+        paths,
         Language::Cpp,
         "native-template-watch-exit",
         &paths

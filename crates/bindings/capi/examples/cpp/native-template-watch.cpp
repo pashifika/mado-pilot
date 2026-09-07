@@ -24,7 +24,7 @@ namespace {
 
 constexpr std::uint64_t operation_nanos = UINT64_C(5000000000);
 constexpr std::uint64_t observation_nanos = UINT64_C(25000000);
-constexpr double marker_min_score = 0.99;
+constexpr double marker_min_score = 0.95;
 constexpr const char* rows[] = {"F1", "F2", "F3", "F4", "F5", "F6", "F7", "F8", "F9"};
 
 unsigned long long number(std::uint64_t value)
@@ -50,6 +50,15 @@ bool same_stamp(const madopilot::FrameStamp& a, const madopilot::FrameStamp& b)
 bool same_geometry(const madopilot::FrameStamp& a, const madopilot::FrameStamp& b)
 {
     return a.stream == b.stream && a.epoch == b.epoch && a.geometry == b.geometry;
+}
+
+bool pending_ready(const madopilot::TemplateQuerySnapshot& snapshot,
+                   const madopilot::FrameStamp& seen, std::uint64_t completed_after,
+                   std::uint64_t generation_after)
+{
+    return snapshot.completed > completed_after && snapshot.generation > generation_after &&
+           (snapshot.flags & MADOPILOT_TEMPLATE_QUERY_HAS_LAST_FRAME) != 0 &&
+           same_geometry(snapshot.last_frame, seen) && snapshot.last_frame.sequence >= seen.sequence;
 }
 
 bool same_rect(const madopilot::Rect& a, const madopilot::Rect& b)
@@ -650,10 +659,7 @@ private:
                             s.confirmed_observations == 0 && s.confirmed_duration_nanos == 0 &&
                             s.failed == 0 && s.queue_expired == 0,
                         "pending_stability_mismatch")) return false;
-            if (s.completed > completed_after && s.generation > generation_after &&
-                s.pending_count == 0 && s.in_flight_count == 0 &&
-                (s.flags & MADOPILOT_TEMPLATE_QUERY_HAS_LAST_FRAME) != 0 &&
-                same_geometry(s.last_frame, seen) && s.last_frame.sequence >= seen.sequence) {
+            if (pending_ready(s, seen, completed_after, generation_after)) {
                 out = s;
                 return fact("pending", "%llu %u %llu", number(s.completed), s.confirmed_observations,
                             number(s.confirmed_duration_nanos));

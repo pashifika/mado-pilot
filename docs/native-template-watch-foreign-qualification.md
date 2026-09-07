@@ -46,7 +46,23 @@ required zero pending and in-flight work despite completed no-match analyses
 on a continuously active stream. A diagnostic-only C variant without that
 extra idle condition passed warmup F1–F7, then failed F8
 `nonmatched_contract_failed`. This neither changes the accepted oracle nor
-qualifies the variant; permanent correction and lifecycle review remain open.
+qualifies the variant; the original results remain unchanged.
+
+The successor removes only the extra idle requirement while retaining
+completed/source/generation checks and bounded work. It also aligns macOS F8
+with the established Rust authenticated-process-loss stimulus. A source-pinned
+Apple smoke passed C F1–F8 in warmup and three measurements; C++ reached pending
+readiness but its subsequent match query ended `DeadlineExceeded` during F1.
+F9 remained `resource_budget_unaccepted`. This is partial smoke evidence,
+not a new final qualification or numerical acceptance.
+
+A later numeric-only probe preserved the C++ `0.99` query deadline and found
+the correct marker at score `0.9824870228767395` in a separate exact-token
+frame. C++ now uses the existing C/Rust/asset threshold `0.95`, with all
+position, token, source and result checks retained. Its successor smoke passed
+F1–F8 in warmup and three measurements. This and the earlier corrected C
+cohort establish local Apple functional smoke coverage, not final qualification:
+F9 is still `resource_budget_unaccepted`, and prior failed reports are frozen.
 
 ## Candidate and apparatus
 
@@ -81,6 +97,11 @@ Use the existing token-driven owned-fixture methods from
 - Establish readiness by decoding the acknowledged token from a frame acquired
   by the **consumer's own session**. A sleep, successful call, unrelated capture,
   or observer-session token is not readiness evidence.
+- Readiness may observe bounded pending/in-flight work after an accepted
+  no-match completion; it does not require capture or analysis to become idle.
+- F8 loss uses owned-window close on Windows and authenticated fixture-process
+  finalization on macOS, under the existing request deadline. Window-only
+  ScreenCaptureKit quiescence is not a synthetic target-loss event.
 - Keep screenshots and raw frame dumps transient in private scratch storage;
   retained reports contain bounded identities, geometry, statuses, and counters,
   not images, arbitrary window titles, paths, or sensitive payloads.

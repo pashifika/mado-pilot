@@ -637,7 +637,10 @@ fn region_containment_is_resolved_against_the_analyzed_frame() {
         clip_policy: MADOPILOT_CLIP_POLICY_REJECT,
         ..request
     };
-    let refused = Query::start(&flow, flow.present, &request, &operation()).wait();
+    // The clipped watcher can exhaust Flow's single-frame source before this start.
+    // A fresh replay keeps admission independent of that acquisition worker.
+    let session = ReplaySession::new(&flow);
+    let refused = Query::on_session(session.session, flow.present, &request, &operation()).wait();
     let info = refused.info();
     assert_eq!(info.outcome, MADOPILOT_TEMPLATE_QUERY_OUTCOME_FAILED);
     assert_eq!(info.status, MADOPILOT_STATUS_INVALID_ARGUMENT);

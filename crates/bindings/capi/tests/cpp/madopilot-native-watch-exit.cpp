@@ -79,6 +79,36 @@ extern "C" madopilot_status_t exit_test_get_api(uint32_t major, uint32_t minor,
 #undef mpw_library
 #undef madopilot_get_api
 
+static bool readiness_contract()
+{
+    madopilot::FrameStamp required{};
+    required.stream = 1;
+    required.sequence = 5;
+    madopilot::TemplateQuerySnapshot snapshot{};
+    snapshot.flags = MADOPILOT_TEMPLATE_QUERY_HAS_LAST_FRAME;
+    snapshot.last_frame = required;
+    snapshot.completed = 1;
+    snapshot.generation = 2;
+    snapshot.pending_count = 1;
+    snapshot.in_flight_count = 1;
+    if (!pending_ready(snapshot, required, 0, 0)) return false;
+    if (pending_ready(snapshot, required, 1, 0)) return false;
+    if (pending_ready(snapshot, required, 0, 2)) return false;
+    snapshot.completed = 0;
+    if (pending_ready(snapshot, required, 0, 0)) return false;
+    snapshot.completed = 1;
+    snapshot.flags = 0;
+    if (pending_ready(snapshot, required, 0, 0)) return false;
+    snapshot.flags = MADOPILOT_TEMPLATE_QUERY_HAS_LAST_FRAME;
+    required.geometry = 1;
+    if (pending_ready(snapshot, required, 0, 0)) return false;
+    required.geometry = 0;
+    required.sequence = 6;
+    if (pending_ready(snapshot, required, 0, 0)) return false;
+    snapshot.last_frame.sequence = required.sequence;
+    return pending_ready(snapshot, required, 0, 0);
+}
+
 int main()
 {
     char name[] = "native-consumer";
@@ -109,6 +139,10 @@ int main()
         if (!valid) std::fprintf(stderr, "native exit scenario %u failed: exit=%d rows=%zu done=%d\n",
                                  scenario, exit, exit_test::count, exit_test::done);
         passed = passed && valid;
+    }
+    if (!readiness_contract()) {
+        std::fputs("native busy progress readiness contract failed\n", stderr);
+        return 1;
     }
     return passed ? 0 : 1;
 }

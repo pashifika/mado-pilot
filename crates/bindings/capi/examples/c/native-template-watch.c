@@ -535,6 +535,14 @@ cleanup:
     return ok && !cleanup_failed;
 }
 
+static int pending_ready(const madopilot_template_query_snapshot_t *snapshot,
+                         const madopilot_frame_stamp_t *after, uint64_t completed_before)
+{
+    return snapshot->completed > completed_before &&
+           (snapshot->flags & MADOPILOT_TEMPLATE_QUERY_HAS_LAST_FRAME) != 0 &&
+           same_geometry(&snapshot->last_frame, after) && stamp_at_least(&snapshot->last_frame, after);
+}
+
 static int pending(madopilot_template_query_t *query, const madopilot_frame_stamp_t *after,
                     uint64_t completed_before, madopilot_template_query_snapshot_t *out)
 {
@@ -549,9 +557,7 @@ static int pending(madopilot_template_query_t *query, const madopilot_frame_stam
                     out->pending_count <= 1 && out->in_flight_count <= 1 && out->confirmed_observations == 0 &&
                     out->confirmed_duration_nanos == 0 && out->failed == 0 && out->queue_expired == 0,
                     "pending_contract_failed"));
-        if (out->completed > completed_before && out->pending_count == 0 && out->in_flight_count == 0 &&
-            (out->flags & MADOPILOT_TEMPLATE_QUERY_HAS_LAST_FRAME) != 0 &&
-            same_geometry(&out->last_frame, after) && stamp_at_least(&out->last_frame, after)) {
+        if (pending_ready(out, after, completed_before)) {
             TRY(fact("pending", "%" PRIu64 " %" PRIu32 " %" PRIu64,
                      out->completed, out->confirmed_observations, out->confirmed_duration_nanos));
             ok = 1; break;
@@ -790,7 +796,7 @@ static int geometry_row(native_scope *scope, geometry_authority *geometry, int m
         TRY(require(before.transform.width != geometry->transform.width || before.transform.height != geometry->transform.height,
                     "resize_not_observed"));
     }
-    /* A completed, idle, no-match analysis on the new absent generation must
+    /* A completed no-match analysis on the new absent generation must
      * replace old authority before the old query is cancelled. */
     TRY(pending(old_query, &geometry->stamp, prior.completed, &newer));
     TRY(require(newer.query_id == prior.query_id && newer.generation > prior.generation,

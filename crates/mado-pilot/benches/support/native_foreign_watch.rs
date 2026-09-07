@@ -1740,7 +1740,14 @@ impl FixtureBinding {
             "DESTROY" => {
                 #[cfg(target_os = "macos")]
                 {
-                    fixture.command(super::FixtureCommandKind::Close)
+                    // A closed-window filter may stay quiescent. Use the same
+                    // authenticated process-loss stimulus as the Rust native row.
+                    if !fixture.finish_before(deadline).is_accepted() {
+                        return Err("fixture_action_failed");
+                    }
+                    self.action_acknowledged[index] = true;
+                    self.destroyed = true;
+                    return Ok("OK".into());
                 }
                 #[cfg(windows)]
                 {
