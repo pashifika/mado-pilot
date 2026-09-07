@@ -35,10 +35,18 @@ On candidate `ec7d3d3b87b9828e03e1ae6215ff28a929f29af0`, the fixed five-process
 numeric campaigns failed on both targets; passing central statistics did not
 override maximum-latency failures. Windows C/C++ passed F1–F8 across their
 warmup and three measurements, but F9 remained budget-unaccepted. Apple's
-permissioned iTerm2 context captured frames, then both consumers failed F1
-token observation before any measurement cycle. Its original C++ report also
+permissioned iTerm2 context captured frames, then both consumers reported F1
+`observation_deadline` before any measurement cycle. Its original C++ report also
 records an exit-contract infrastructure failure. These reports remain bound to
 that candidate; corrected consumer exit classification does not relabel them.
+
+Subsequent bounded diagnostics on `ae12a2a` confirmed that all 90 token cells
+matched at the nominal coordinates. The blocking readiness predicate also
+required zero pending and in-flight work despite completed no-match analyses
+on a continuously active stream. A diagnostic-only C variant without that
+extra idle condition passed warmup F1–F7, then failed F8
+`nonmatched_contract_failed`. This neither changes the accepted oracle nor
+qualifies the variant; permanent correction and lifecycle review remain open.
 
 ## Candidate and apparatus
 
