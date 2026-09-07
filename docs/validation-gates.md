@@ -588,6 +588,15 @@ runs on.
 **Status.** Open per workload. Phase 0 defined the profile and budget format and
 deliberately assigned no numeric product budget.
 
+**Phase 5 foreign template-query boundary remains open.** ABI 1.6 introduces
+independent pending/terminal observation, wait cancellation, retained-owner,
+and exact-frame access workloads. The paired `template-watch-boundary` harness
+provides correctness and caller-allocation smoke evidence; it assigns no
+target latency or memory ceiling and does not inherit ADR 0051–0053 budgets.
+Acceptance requires target-specific precursor samples, an independently
+reviewed budget decision, and final-candidate enforcement under the
+[foreign qualification protocol](native-template-watch-foreign-qualification.md).
+
 **Phase 1 is resolved** by
 [ADR 0008](adr/0008-phase-1-performance-budgets.md). Thirteen workloads across
 two benchmarks are measured on both release targets — Apple M1 Pro under macOS

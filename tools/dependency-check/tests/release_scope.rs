@@ -43,10 +43,13 @@ fn compliant_observation() -> ReleaseScopeObservation {
             .collect(),
         release_notes: include_str!("../../../docs/releases/v0.4.0.md").to_owned(),
         cmake_project: include_str!("../../../crates/bindings/capi/CMakeLists.txt").to_owned(),
-        c_header: include_str!("../../../crates/bindings/capi/include/madopilot/madopilot.h")
-            .to_owned(),
-        cpp_header: include_str!("../../../crates/bindings/capi/include/madopilot/madopilot.hpp")
-            .to_owned(),
+        c_header: include_str!(
+            "../../../crates/bindings/capi/tests/abi-compat/v1_5/madopilot/madopilot.h"
+        )
+        .to_owned(),
+        // This lexical-scope fixture is not a current C++ API inventory.
+        // Exact released source remains bound by REQUIRED_TREE_IDENTITIES.
+        cpp_header: "#include \"madopilot/madopilot.h\"\n".to_owned(),
     }
 }
 

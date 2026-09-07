@@ -19,6 +19,8 @@
  */
 
 #include <atomic>
+#include <cmath>
+#include <cstring>
 #include <cstdio>
 #include <cstdlib>
 #include <new>
@@ -38,13 +40,13 @@
  * Checks need allocations to fail either immediately or after one successful
  * allocation. They cover owned error-text cleanup and the strong exception
  * guarantee of C-record projections. The replacement forwards to malloc unless
- * a check has armed it, so every other allocation behaves normally. Each check
- * disarms it before reporting.
+ * a check has armed it on the calling thread. Backend-worker allocations remain
+ * unaffected. Each check disarms it before reporting.
  * ------------------------------------------------------------------------ */
 
 namespace {
-bool starve_allocations = false;
-std::atomic<int> allocations_before_failure{-1};
+thread_local bool starve_allocations = false;
+thread_local int allocations_before_failure = -1;
 }
 
 void* operator new(std::size_t size)
@@ -52,13 +54,12 @@ void* operator new(std::size_t size)
     if (starve_allocations) {
         throw std::bad_alloc();
     }
-    const int remaining =
-        allocations_before_failure.load(std::memory_order_relaxed);
+    const int remaining = allocations_before_failure;
     if (remaining == 0) {
         throw std::bad_alloc();
     }
     if (remaining > 0) {
-        allocations_before_failure.fetch_sub(1, std::memory_order_relaxed);
+        --allocations_before_failure;
     }
     // Zero bytes still has to yield a distinct address, which malloc is allowed
     // to refuse to provide.
@@ -101,6 +102,15 @@ static_assert(is_move_only_owner<madopilot::Frame>(), "Frame is move-only");
 static_assert(is_move_only_owner<madopilot::Mapping>(), "Mapping is move-only");
 static_assert(is_move_only_owner<madopilot::MatchResult>(), "MatchResult is move-only");
 static_assert(is_move_only_owner<madopilot::OcrResult>(), "OcrResult is move-only");
+static_assert(is_move_only_owner<madopilot::TemplateQuery>(),
+              "TemplateQuery is move-only");
+static_assert(is_move_only_owner<madopilot::TemplateQueryResult>(),
+              "TemplateQueryResult is move-only");
+static_assert(!std::is_copy_constructible_v<madopilot::TemplateQueryPoll> &&
+                  std::is_nothrow_move_constructible_v<madopilot::TemplateQueryPoll>,
+              "a poll observation owns its optional terminal result");
+static_assert(std::is_trivially_copyable_v<madopilot::TemplateQuerySnapshot>,
+              "pending facts own no borrowed storage");
 static_assert(is_move_only_owner<madopilot::ZoneScanOcrResult>(),
               "ZoneScanOcrResult is move-only");
 static_assert(is_move_only_owner<madopilot::InputReceipt>(),
@@ -167,6 +177,13 @@ template <class T>
 struct indexes<T, std::void_t<decltype(std::declval<T>().at(0))>> : std::true_type {};
 
 template <class T, class = void>
+struct reads_match : std::false_type {};
+
+template <class T>
+struct reads_match<T, std::void_t<decltype(std::declval<T>().match_at(0))>>
+    : std::true_type {};
+
+template <class T, class = void>
 struct probes_permission : std::false_type {};
 
 template <class T>
@@ -203,6 +220,13 @@ static_assert(describes<madopilot::Mapping&>::value, "a named mapping describes 
 static_assert(!describes<madopilot::Mapping>::value, "a temporary mapping does not");
 static_assert(describes<madopilot::MatchResult&>::value, "a named result describes itself");
 static_assert(!describes<madopilot::MatchResult>::value, "a temporary result does not");
+static_assert(describes<madopilot::TemplateQueryResult&>::value,
+              "a named terminal result exposes its borrowed identity");
+static_assert(!describes<madopilot::TemplateQueryResult>::value,
+              "a temporary terminal result cannot expose borrowed identity");
+static_assert(reads_match<madopilot::TemplateQueryResult&>::value &&
+                  !reads_match<madopilot::TemplateQueryResult>::value,
+              "match text requires a named retained terminal result");
 static_assert(describes<madopilot::OcrResult&>::value, "a named OCR result describes itself");
 static_assert(!describes<madopilot::OcrResult>::value,
               "a temporary OCR result does not expose borrowed description views");
@@ -257,6 +281,15 @@ static_assert(
     "provider C projection move repairs views without throwing");
 static_assert(std::is_copy_constructible_v<madopilot::FindRequest>,
               "FindRequest is a value");
+static_assert(std::is_copy_constructible_v<madopilot::TemplateWatchOptions> &&
+                  std::is_copy_assignable_v<madopilot::TemplateWatchOptions>,
+              "watch options are reusable values");
+static_assert(
+    std::is_nothrow_copy_constructible_v<madopilot::TemplateWatchOptions::CView> &&
+        std::is_nothrow_copy_assignable_v<madopilot::TemplateWatchOptions::CView> &&
+        std::is_nothrow_move_constructible_v<madopilot::TemplateWatchOptions::CView> &&
+        std::is_nothrow_move_assignable_v<madopilot::TemplateWatchOptions::CView>,
+    "watch projections rebind without allocating");
 static_assert(std::is_copy_constructible_v<madopilot::OcrRequest>,
               "OcrRequest owns its string values");
 static_assert(std::is_copy_constructible_v<madopilot::OcrRequest::CView>,
@@ -404,6 +437,7 @@ bool check_ok(const madopilot::Result<T>& result, const char* what)
 /// references and clones. Nothing in this struct releases anything explicitly.
 struct Fixture {
     madopilot::Api api;
+    const char* package_directory = nullptr;
     std::vector<std::uint8_t> scene;
     madopilot::Cancellation cancellation;
     madopilot::Operation operation;
@@ -430,8 +464,9 @@ struct Fixture {
         return opened.take();
     }
 
-    bool build(const char* package_path)
+    bool build(const char* package_path, bool two_frames = false)
     {
+        package_directory = package_path;
         auto loaded = madopilot::Api::load();
         if (!check_ok(loaded, "Api::load")) {
             return false;
@@ -461,6 +496,7 @@ struct Fixture {
 
         auto source = madopilot::Source::replay_memory("panel");
         source.frame(supplied);
+        if (two_frames) source.frame(supplied);
 
         auto built = api.create_engine(source, operation);
         if (!check_ok(built, "create_engine")) {
@@ -1805,13 +1841,13 @@ void projection_copy_assignment_preserves_the_destination_on_allocation_failure(
     const auto profile_source = new_profile.to_c();
 
     bool profile_threw = false;
-    allocations_before_failure.store(1, std::memory_order_relaxed);
+    allocations_before_failure = 1;
     try {
         profile_destination = profile_source;
     } catch (const std::bad_alloc&) {
         profile_threw = true;
     }
-    allocations_before_failure.store(-1, std::memory_order_relaxed);
+    allocations_before_failure = -1;
 
     const auto equals = [](madopilot_str_t view, const std::string& expected) {
         return std::string_view(view.data, view.len) == expected;
@@ -1841,13 +1877,13 @@ void projection_copy_assignment_preserves_the_destination_on_allocation_failure(
     const auto request_source = new_request.to_c();
 
     bool request_threw = false;
-    allocations_before_failure.store(1, std::memory_order_relaxed);
+    allocations_before_failure = 1;
     try {
         request_destination = request_source;
     } catch (const std::bad_alloc&) {
         request_threw = true;
     }
-    allocations_before_failure.store(-1, std::memory_order_relaxed);
+    allocations_before_failure = -1;
 
     check(request_threw &&
               equals(request_destination.value().model_id, old_model) &&
@@ -2085,6 +2121,640 @@ void old_and_partial_extents_hide_ocr_before_missing_entries(Fixture& fixture)
               current_zone_call.status() == MADOPILOT_STATUS_INVALID_ARGUMENT,
           "complete ABI 1.4 reaches grouped request validation");
 }
+
+/// Installs a consumer-owned table around an already retained handle. This
+/// exercises public operations without changing the library's immutable table.
+template <class T>
+struct TableOwner : T {
+    TableOwner(T owner, const madopilot_api_t* table, std::size_t extent)
+        : T(std::move(owner)) {
+        this->api_ = table;
+        this->extent_ = extent;
+    }
+};
+
+void allocation_failure_injection_is_caller_local(Fixture&)
+{
+    std::atomic<bool> proceed{false};
+    std::atomic<bool> done{false};
+    bool worker_succeeded = false;
+    std::thread worker([&] {
+        while (!proceed.load(std::memory_order_acquire)) std::this_thread::yield();
+        try {
+            void* memory = ::operator new(32);
+            ::operator delete(memory);
+            worker_succeeded = true;
+        } catch (const std::bad_alloc&) {
+        }
+        done.store(true, std::memory_order_release);
+    });
+    bool caller_failed = false;
+    starve_allocations = true;
+    try {
+        void* memory = ::operator new(32);
+        ::operator delete(memory);
+    } catch (const std::bad_alloc&) {
+        caller_failed = true;
+    }
+    proceed.store(true, std::memory_order_release);
+    while (!done.load(std::memory_order_acquire)) std::this_thread::yield();
+    starve_allocations = false;
+    worker.join();
+    check(caller_failed && worker_succeeded,
+          "allocation failure affects only the calling thread, not backend workers");
+}
+
+void template_watch_projections_own_their_options(Fixture& fixture)
+{
+    madopilot::TemplateWatchOptions request;
+    madopilot::MatchOptions matching;
+    matching.min_score(0.99).max_results(1);
+    request.match_options(matching).duration(17).consecutive(2).immediate()
+        .change_policy(MADOPILOT_TEMPLATE_CHANGE_EXACT_RGBA);
+    auto original = request.to_c();
+    auto copied = original;
+    auto copy_assigned = madopilot::TemplateWatchOptions().to_c();
+    copy_assigned = original;
+    auto moved = std::move(copy_assigned);
+    auto move_assigned = madopilot::TemplateWatchOptions().to_c();
+    move_assigned = std::move(copied);
+    request.template_defaults();
+
+    const auto owns_options = [](const madopilot::TemplateWatchOptions::CView& view) {
+        const auto pointer = reinterpret_cast<std::uintptr_t>(view.value().match_options);
+        const auto begin = reinterpret_cast<std::uintptr_t>(&view);
+        return pointer >= begin && pointer + sizeof(madopilot_match_options_t) <=
+                                       begin + sizeof(view);
+    };
+    for (const auto* view : {&original, &copied, &copy_assigned, &moved, &move_assigned}) {
+        if (check(owns_options(*view), "each live projection owns its options pointer")) {
+            check(view->value().match_options->min_score == 0.99 &&
+                      view->value().match_options->max_results == 1,
+                  "projection copies and moves preserve independent option values");
+        }
+    }
+    const auto defaults = request.to_c();
+    check(defaults.value().match_options == nullptr,
+          "clearing the request cannot change already-owned projections");
+
+    madopilot::TemplateWatchOptions immutable;
+    immutable.match_options(matching).duration(19).consecutive(2).immediate();
+    std::array<const madopilot_match_options_t*, 2> pointers{};
+    std::array<bool, 2> passed{};
+    std::atomic<unsigned> ready{0};
+    std::atomic<bool> proceed{false};
+    std::array<std::thread, 2> threads;
+    for (std::size_t index = 0; index < threads.size(); ++index) {
+        threads[index] = std::thread(
+            [&, index, options = immutable, session = fixture.open_another(),
+             prepared = fixture.present.clone()] {
+                const auto projection = options.to_c();
+                pointers[index] = projection.value().match_options;
+                ready.fetch_add(1, std::memory_order_release);
+                while (!proceed.load(std::memory_order_acquire)) {
+                    std::this_thread::yield();
+                }
+                auto started =
+                    session.start_template_watch(prepared, options, fixture.operation);
+                if (!started) {
+                    return;
+                }
+                auto query = started.take();
+                auto waited = query.wait(fixture.operation);
+                if (!waited) {
+                    return;
+                }
+                auto result = waited.take();
+                const auto info = result.describe();
+                passed[index] = info &&
+                    info.value().outcome == MADOPILOT_TEMPLATE_QUERY_OUTCOME_MATCHED &&
+                    info.value().options.min_score == 0.99 &&
+                    info.value().match_count == 1 &&
+                    owns_options(projection);
+            });
+    }
+    while (ready.load(std::memory_order_acquire) != threads.size()) {
+        std::this_thread::yield();
+    }
+    check(pointers[0] != pointers[1],
+          "simultaneously live immutable calls have independent backing storage");
+    proceed.store(true, std::memory_order_release);
+    for (auto& thread : threads) {
+        thread.join();
+    }
+    check(passed[0] && passed[1],
+          "concurrent copied requests preserve matching and reset inactive stability");
+}
+
+int forbidden_watch_calls = 0;
+
+madopilot_status_t forbidden_watch_start(
+    const madopilot_session_t*, const madopilot_template_t*,
+    const madopilot_template_watch_options_t*, const madopilot_operation_t*,
+    madopilot_template_query_t** out_query, madopilot_error_t** out_error)
+{
+    ++forbidden_watch_calls;
+    *out_query = nullptr;
+    *out_error = nullptr;
+    return MADOPILOT_STATUS_INTERNAL;
+}
+
+void incomplete_tables_refuse_template_owners(Fixture& fixture)
+{
+    const std::size_t prefixes[] = {
+        MADOPILOT_API_SIZE_ABI_1_0,
+        MADOPILOT_API_SIZE_DIAGNOSTIC_BATCH_RECORD_AT,
+        MADOPILOT_API_SIZE_ENGINE_CREATE_WITH_DEFAULT_OCR,
+        MADOPILOT_API_SIZE_ENGINE_OCR_DESCRIPTOR,
+        MADOPILOT_API_SIZE_ABI_1_5,
+        MADOPILOT_API_SIZE_ENGINE_TEMPLATE_SCHEDULER_DESCRIPTOR,
+        MADOPILOT_API_SIZE_SESSION_START_TEMPLATE_WATCH,
+        MADOPILOT_API_SIZE_TEMPLATE_QUERY_LIFECYCLE,
+        MADOPILOT_API_SIZE_TEMPLATE_QUERY_POLL,
+        MADOPILOT_API_SIZE_TEMPLATE_QUERY_WAIT,
+        MADOPILOT_API_SIZE_TEMPLATE_QUERY_CANCEL,
+        MADOPILOT_API_SIZE_TEMPLATE_QUERY_RESULT_LIFECYCLE,
+        MADOPILOT_API_SIZE_TEMPLATE_QUERY_RESULT_INFO,
+        MADOPILOT_API_SIZE_TEMPLATE_QUERY_RESULT_MATCH_AT,
+        MADOPILOT_API_SIZE_TEMPLATE_QUERY_RESULT_FRAME,
+    };
+    for (const auto prefix : prefixes) {
+        for (const bool short_library : {false, true}) {
+            madopilot_api_t table = *fixture.api.table();
+            table.session_start_template_watch = forbidden_watch_start;
+            table.struct_size = static_cast<std::uint32_t>(
+                short_library ? prefix : sizeof(table));
+            const auto extent = short_library ? sizeof(table) : prefix;
+            TableOwner<madopilot::Session> session(
+                fixture.session.clone(), &table, extent);
+            TableOwner<madopilot::Engine> engine(
+                fixture.engine.clone(), &table, extent);
+            forbidden_watch_calls = 0;
+            const auto refused = session.start_template_watch(
+                fixture.present, madopilot::TemplateWatchOptions(), fixture.operation);
+            check(!refused && refused.status() == MADOPILOT_STATUS_UNSUPPORTED &&
+                      forbidden_watch_calls == 0,
+                  "either short extent refuses before a creating entry is called");
+            const auto descriptor = engine.template_scheduler_descriptor();
+            if (prefix < MADOPILOT_API_SIZE_ENGINE_TEMPLATE_SCHEDULER_DESCRIPTOR) {
+                check(!descriptor && descriptor.status() == MADOPILOT_STATUS_UNSUPPORTED,
+                      "descriptor access checks both extents before reading its slot");
+            } else {
+                check_ok(descriptor, "descriptor-only access needs no query lifecycle");
+            }
+        }
+    }
+
+    using Remove = void (*)(madopilot_api_t&);
+    const Remove missing_entries[] = {
+        [](auto& table) { table.session_start_template_watch = nullptr; },
+        [](auto& table) { table.template_query_retain = nullptr; },
+        [](auto& table) { table.template_query_release = nullptr; },
+        [](auto& table) { table.template_query_poll = nullptr; },
+        [](auto& table) { table.template_query_wait = nullptr; },
+        [](auto& table) { table.template_query_cancel = nullptr; },
+        [](auto& table) { table.template_query_result_retain = nullptr; },
+        [](auto& table) { table.template_query_result_release = nullptr; },
+        [](auto& table) { table.template_query_result_info = nullptr; },
+        [](auto& table) { table.template_query_result_match_at = nullptr; },
+        [](auto& table) { table.template_query_result_frame = nullptr; },
+        [](auto& table) { table.template_query_result_error = nullptr; },
+        [](auto& table) { table.frame_retain = nullptr; },
+        [](auto& table) { table.frame_release = nullptr; },
+        [](auto& table) { table.frame_stamp = nullptr; },
+        [](auto& table) { table.frame_describe = nullptr; },
+        [](auto& table) { table.frame_map = nullptr; },
+        [](auto& table) { table.mapping_retain = nullptr; },
+        [](auto& table) { table.mapping_release = nullptr; },
+        [](auto& table) { table.mapping_describe = nullptr; },
+        [](auto& table) { table.mapping_stamp = nullptr; },
+        [](auto& table) { table.error_retain = nullptr; },
+        [](auto& table) { table.error_release = nullptr; },
+        [](auto& table) { table.error_describe = nullptr; },
+    };
+    for (const auto remove : missing_entries) {
+        madopilot_api_t table = *fixture.api.table();
+        table.session_start_template_watch = forbidden_watch_start;
+        remove(table);
+        TableOwner<madopilot::Session> session(
+            fixture.session.clone(), &table, sizeof(table));
+        forbidden_watch_calls = 0;
+        const auto refused = session.start_template_watch(
+            fixture.present, madopilot::TemplateWatchOptions(), fixture.operation);
+        check(!refused && refused.status() == MADOPILOT_STATUS_UNSUPPORTED &&
+                  forbidden_watch_calls == 0,
+              "missing query, result, frame, mapping or error entries publish no owner");
+    }
+    madopilot_api_t table = *fixture.api.table();
+    table.engine_template_scheduler_descriptor = nullptr;
+    TableOwner<madopilot::Engine> engine(fixture.engine.clone(), &table, sizeof(table));
+    const auto descriptor = engine.template_scheduler_descriptor();
+    check(!descriptor && descriptor.status() == MADOPILOT_STATUS_UNSUPPORTED,
+          "a present descriptor extent does not imply a callable pointer");
+}
+
+const madopilot_api_t* lifecycle_api = nullptr;
+unsigned query_retains = 0;
+unsigned query_releases = 0;
+unsigned result_retains = 0;
+unsigned result_releases = 0;
+
+madopilot_status_t counting_query_retain(const madopilot_template_query_t* handle)
+{
+    ++query_retains;
+    return lifecycle_api->template_query_retain(handle);
+}
+
+madopilot_status_t counting_query_release(madopilot_template_query_t* handle)
+{
+    ++query_releases;
+    return lifecycle_api->template_query_release(handle);
+}
+
+madopilot_status_t counting_terminal_retain(const madopilot_template_query_result_t* handle)
+{
+    ++result_retains;
+    return lifecycle_api->template_query_result_retain(handle);
+}
+
+madopilot_status_t counting_terminal_release(madopilot_template_query_result_t* handle)
+{
+    ++result_releases;
+    return lifecycle_api->template_query_result_release(handle);
+}
+
+void template_query_moves_clones_and_wait_authority(Fixture& baseline)
+{
+    Fixture fixture;
+    if (!fixture.build(baseline.package_directory, true)) return;
+    madopilot::TemplateWatchOptions pending_options;
+    pending_options.change_policy(MADOPILOT_TEMPLATE_CHANGE_ANALYSIS_ALWAYS)
+        .minimum_interval(UINT64_C(3600000000000));
+    lifecycle_api = fixture.api.table();
+    madopilot_api_t table = *lifecycle_api;
+    table.template_query_retain = counting_query_retain;
+    table.template_query_release = counting_query_release;
+    table.template_query_result_retain = counting_terminal_retain;
+    table.template_query_result_release = counting_terminal_release;
+    query_retains = query_releases = result_retains = result_releases = 0;
+    TableOwner<madopilot::Session> session(fixture.session.clone(), &table, sizeof(table));
+    auto started = session.start_template_watch(
+        fixture.absent, pending_options, fixture.operation);
+    if (!check_ok(started, "start a no-match query")) {
+        return;
+    }
+    auto original = started.take();
+    auto surviving = original.clone();
+    auto moved = std::move(original);
+    TableOwner<madopilot::Session> replacement_session(fixture.open_another(), &table, sizeof(table));
+    auto replacement = replacement_session.start_template_watch(
+        fixture.absent, pending_options, fixture.operation);
+    if (!check_ok(replacement, "start a move-assignment destination")) {
+        return;
+    }
+    auto assigned = replacement.take();
+    assigned = std::move(moved);
+    assigned.reset();
+    check(original.empty() && moved.empty() && query_retains == 1 && query_releases == 2,
+          "move assignment releases its destination without cancelling a surviving clone");
+
+    auto pending = surviving.poll();
+    if (!check_ok(pending, "poll after dropping the non-final owner")) {
+        return;
+    }
+    check(pending.value().pending() && !pending.value().terminal,
+          "dropping one clone cannot cancel pending authority");
+    const auto saved = pending.value().snapshot;
+    for (int round = 0; round < 32; ++round) {
+        auto next = surviving.poll();
+        if (!check_ok(next, "repeated pending poll")) {
+            return;
+        }
+        check(next.value().pending() && !next.value().terminal &&
+                  next.value().snapshot.query_id == saved.query_id &&
+                  next.value().snapshot.pending_count <= 1 &&
+                  next.value().snapshot.in_flight_count <= 1,
+              "pending polls return value facts without a terminal owner");
+    }
+    bool allocation_free = true;
+    starve_allocations = true;
+    try {
+        auto next = surviving.poll();
+        allocation_free = next && next.value().pending() && !next.value().terminal;
+    } catch (const std::bad_alloc&) {
+        allocation_free = false;
+    }
+    starve_allocations = false;
+    check(allocation_free, "the C++ pending-poll path needs no allocation");
+    madopilot::Operation expired;
+    expired.deadline(0);
+    const auto timed_out = surviving.wait(expired);
+    check(!timed_out && timed_out.status() == MADOPILOT_STATUS_DEADLINE_EXCEEDED,
+          "caller deadline is a wait failure, not a terminal result");
+    auto token_result = fixture.api.create_cancellation();
+    if (!check_ok(token_result, "create a caller-wait cancellation")) {
+        return;
+    }
+    auto token = token_result.take();
+    check_ok(token.cancel(), "cancel only the caller-wait operation");
+    madopilot::Operation interrupted;
+    interrupted.cancellation(token);
+    const auto cancelled_wait = surviving.wait(interrupted);
+    check(!cancelled_wait && cancelled_wait.status() == MADOPILOT_STATUS_CANCELLED,
+          "caller cancellation remains distinct from query cancellation");
+    const auto still_pending = surviving.poll();
+    check(still_pending && still_pending.value().pending(),
+          "both interrupted waits leave the query pending");
+
+    auto cancelled = surviving.cancel();
+    if (!check_ok(cancelled, "cancel the query")) {
+        return;
+    }
+    auto terminal = cancelled.take();
+    auto terminal_clone = terminal.clone();
+    madopilot::TemplateQueryResult moved_terminal(std::move(terminal));
+    auto assigned_terminal = terminal_clone.clone();
+    assigned_terminal = std::move(moved_terminal);
+    assigned_terminal.reset();
+    surviving.reset();
+    check(query_releases == query_retains + 2 &&
+              result_retains == 2 && result_releases == 2,
+          "query and terminal move assignments release each displaced reference once");
+    const auto info = terminal_clone.describe();
+    check(info && info.value().outcome == MADOPILOT_TEMPLATE_QUERY_OUTCOME_CANCELLED &&
+              info.value().status == MADOPILOT_STATUS_CANCELLED &&
+              info.value().query_id == saved.query_id,
+          "terminal cancellation is successful data after the query is released");
+    check(pending.value().snapshot.query_id == saved.query_id &&
+              pending.value().pending() && !pending.value().terminal,
+          "an earlier owning poll remains an independent pending observation");
+    const auto no_frame = terminal_clone.frame();
+    const auto no_match = terminal_clone.match_at(0);
+    const auto no_failure = terminal_clone.error();
+    check(!no_frame && no_frame.status() == MADOPILOT_STATUS_INVALID_ARGUMENT &&
+              !no_match && no_match.status() == MADOPILOT_STATUS_INVALID_ARGUMENT,
+          "non-matched terminals cannot supply invented frames or matches");
+    check(no_failure && !no_failure.value(),
+          "cancellation is not a retained backend failure");
+    terminal_clone.reset();
+    check(result_releases == result_retains + 1,
+          "the last terminal reference is released exactly once");
+
+    TableOwner<madopilot::Session> abandoned_session(fixture.open_another(), &table, sizeof(table));
+    auto abandoned = abandoned_session.start_template_watch(
+        fixture.absent, pending_options, fixture.operation);
+    if (check_ok(abandoned, "start a query for final-release cancellation")) {
+        auto last = abandoned.take();
+        const auto before = query_releases;
+        last.reset();
+        check(query_releases == before + 1,
+              "destroying the sole pending owner calls the cancelling C release");
+    }
+}
+
+void retained_query_threads_observe_one_winner(Fixture& baseline)
+{
+    Fixture fixture;
+    if (!fixture.build(baseline.package_directory, true)) return;
+    madopilot::TemplateWatchOptions pending_options;
+    pending_options.change_policy(MADOPILOT_TEMPLATE_CHANGE_ANALYSIS_ALWAYS)
+        .minimum_interval(UINT64_C(3600000000000));
+    auto started = fixture.session.start_template_watch(
+        fixture.absent, pending_options, fixture.operation);
+    if (!check_ok(started, "start a concurrently observed query")) {
+        return;
+    }
+    auto query = started.take();
+    std::array<madopilot::TemplateQueryResult, 3> results;
+    std::array<bool, 3> passed{};
+    std::atomic<bool> proceed{false};
+    std::array<std::thread, 3> threads;
+    for (std::size_t index = 0; index < threads.size(); ++index) {
+        threads[index] = std::thread([&, index, mine = query.clone()] {
+            while (!proceed.load(std::memory_order_acquire)) {
+                std::this_thread::yield();
+            }
+            if (index == 0) {
+                for (int round = 0; round < 32; ++round) {
+                    auto poll = mine.poll();
+                    if (!poll || (poll.value().pending() &&
+                        (poll.value().terminal ||
+                         poll.value().snapshot.pending_count > 1 ||
+                         poll.value().snapshot.in_flight_count > 1))) {
+                        return;
+                    }
+                }
+            }
+            auto observed = index == 2 ? mine.cancel() : mine.wait(fixture.operation);
+            if (!observed) {
+                return;
+            }
+            results[index] = observed.take();
+            const auto info = results[index].describe();
+            passed[index] = info &&
+                info.value().outcome == MADOPILOT_TEMPLATE_QUERY_OUTCOME_CANCELLED &&
+                info.value().status == MADOPILOT_STATUS_CANCELLED;
+        });
+    }
+    query.reset();
+    proceed.store(true, std::memory_order_release);
+    for (auto& thread : threads) {
+        thread.join();
+    }
+    check(passed[0] && passed[1] && passed[2],
+          "independently retained poll, wait and cancel callers observe one winner");
+    const auto first = results[0].describe();
+    const auto second = results[1].describe();
+    const auto third = results[2].describe();
+    check(first && second && third && first.value().query_id == second.value().query_id &&
+              second.value().query_id == third.value().query_id,
+          "terminal observations identify the same query winner");
+}
+
+bool same_stamp(const madopilot::FrameStamp& left, const madopilot::FrameStamp& right)
+{
+    return left.stream == right.stream && left.epoch == right.epoch &&
+           left.sequence == right.sequence && left.geometry == right.geometry;
+}
+
+void template_terminal_and_mapping_outlive_every_parent(Fixture& fixture)
+{
+    Fixture parents;
+    if (!parents.build(fixture.package_directory)) {
+        return;
+    }
+    auto started = parents.session.start_template_watch(
+        parents.present, madopilot::TemplateWatchOptions(), parents.operation);
+    if (!check_ok(started, "start a matched query")) {
+        return;
+    }
+    auto query = started.take();
+    auto waited = query.wait(parents.operation);
+    if (!check_ok(waited, "wait for the matched source")) {
+        return;
+    }
+    auto result = waited.take();
+    const auto initial = result.describe();
+    if (!check_ok(initial, "describe the matched terminal")) {
+        return;
+    }
+    check(initial.value().outcome == MADOPILOT_TEMPLATE_QUERY_OUTCOME_MATCHED &&
+              initial.value().match_count == 2,
+          "the query returns both planted matches");
+    const auto source = initial.value().source;
+    const auto session_info = parents.session.describe();
+    check(session_info && initial.value().target == session_info.value().target,
+          "the terminal identifies the issuing session's target");
+
+    madopilot::Operation expired;
+    expired.deadline(0);
+    const auto interrupted = query.wait(expired);
+    check(!interrupted && interrupted.status() == MADOPILOT_STATUS_DEADLINE_EXCEEDED,
+          "an expired caller wait is checked even after a match has committed");
+    for (int round = 0; round < 16; ++round) {
+        auto polled = query.poll();
+        auto cancelled = query.cancel();
+        if (!check_ok(polled, "poll a matched terminal") ||
+            !check_ok(cancelled, "cancel after a committed match")) {
+            return;
+        }
+        check(polled.value().terminal &&
+                  polled.value().terminal->get() == result.get() &&
+                  cancelled.value().get() == result.get(),
+              "poll and late cancel retain the same committed match projection");
+    }
+    auto frame_result = result.frame();
+    if (!check_ok(frame_result, "retain the exact source frame")) {
+        return;
+    }
+    auto frame = frame_result.take();
+    check_ok(parents.session.close(parents.operation), "close the result's parent");
+    query.reset();
+    parents.present.reset();
+    parents.absent.reset();
+    parents.package.reset();
+    parents.frame.reset();
+    parents.session.reset();
+    parents.targets.reset();
+    parents.engine.reset();
+    parents.cancellation.reset();
+
+    const auto retained = result.describe();
+    if (!check_ok(retained, "describe after all parents are released")) {
+        return;
+    }
+    check(retained.value().template_id.view() == "panel.patch" &&
+              same_stamp(retained.value().source, source) &&
+              retained.value().transform.geometry == source.geometry &&
+              retained.value().transform.width == SCENE_WIDTH &&
+              retained.value().transform.height == SCENE_HEIGHT,
+          "retained identities and transform cannot relabel after parent teardown");
+    bool planted[2] = {false, false};
+    for (std::size_t index = 0; index < 2; ++index) {
+        const auto match = result.match_at(index);
+        if (!check_ok(match, "read a retained match")) {
+            return;
+        }
+        bool recognized = false;
+        for (std::size_t location = 0; location < 2; ++location) {
+            if (match.value().bounds.left == static_cast<std::int32_t>(SCENE_PLANTED[location][0]) &&
+                match.value().bounds.top == static_cast<std::int32_t>(SCENE_PLANTED[location][1]) &&
+                match.value().bounds.right == static_cast<std::int32_t>(SCENE_PLANTED[location][0] + PATCH_WIDTH) &&
+                match.value().bounds.bottom == static_cast<std::int32_t>(SCENE_PLANTED[location][1] + PATCH_HEIGHT)) {
+                recognized = !planted[location];
+                planted[location] = true;
+            }
+        }
+        check(recognized && match.value().template_id.view() == "panel.patch" &&
+                  std::abs(match.value().score - 1.0) <= 1e-5,
+              "retained matches preserve the unordered planted coordinate set");
+    }
+    const auto invalid = result.match_at(2);
+    check(!invalid && invalid.status() == MADOPILOT_STATUS_INVALID_ARGUMENT,
+          "an out-of-range retained match is a product error");
+    auto later_frame_result = result.frame();
+    if (!check_ok(later_frame_result, "obtain another frame after parent teardown")) {
+        return;
+    }
+    auto later_frame = later_frame_result.take();
+    const auto exact_stamp = later_frame.stamp();
+    check(exact_stamp && same_stamp(exact_stamp.value(), source),
+          "the retained frame has the complete result source stamp");
+    result.reset();
+    auto mapped = frame.map(madopilot::MapRequest(), fixture.operation);
+    auto mapped_again = later_frame.map(madopilot::MapRequest(), fixture.operation);
+    if (!check_ok(mapped, "map after the terminal and all parents are released") ||
+        !check_ok(mapped_again, "map a second retained source handle")) {
+        return;
+    }
+    auto mapping = mapped.take();
+    auto second_mapping = mapped_again.take();
+    const auto first_image = mapping.describe();
+    const auto second_image = second_mapping.describe();
+    check(first_image && second_image && first_image.value().shared() &&
+              second_image.value().shared() &&
+              first_image.value().bytes.data() == second_image.value().bytes.data(),
+          "repeated frame access and mapping share immutable pixels");
+    frame.reset();
+    later_frame.reset();
+    second_mapping.reset();
+    const auto image = mapping.describe();
+    const auto mapped_stamp = mapping.stamp();
+    check(image && image.value().bytes.size() == fixture.scene.size() &&
+              std::memcmp(image.value().bytes.data(), fixture.scene.data(), fixture.scene.size()) == 0 &&
+              mapped_stamp && same_stamp(mapped_stamp.value(), source),
+          "the last mapping owns exact bytes and source after every other owner is gone");
+}
+
+madopilot_status_t terminal_error_for_copy(
+    const madopilot_template_query_result_t* result, madopilot_error_t** out_error)
+{
+    *out_error = reinterpret_cast<madopilot_error_t*>(
+        const_cast<madopilot_template_query_result_t*>(result));
+    return MADOPILOT_STATUS_OK;
+}
+
+void terminal_error_text_is_owned_and_guarded(Fixture& fixture)
+{
+    auto started = fixture.session.start_template_watch(
+        fixture.absent, madopilot::TemplateWatchOptions(), fixture.operation);
+    if (!check_ok(started, "start a query for terminal error ownership")) {
+        return;
+    }
+    auto query = started.take();
+    auto cancelled = query.cancel();
+    if (!check_ok(cancelled, "obtain an immutable terminal owner")) {
+        return;
+    }
+    madopilot_api_t table = *fixture.api.table();
+    table.template_query_result_error = terminal_error_for_copy;
+    table.error_describe = describing_a_message;
+    table.error_release = counting_error_release;
+    TableOwner<madopilot::TemplateQueryResult> result(
+        cancelled.take(), &table, sizeof(table));
+    fake_releases = 0;
+    auto copied = result.error();
+    check(copied && copied.value() &&
+              copied.value()->status() == MADOPILOT_STATUS_INTERNAL && fake_releases == 1,
+          "terminal failure is successful owned data and consumes its C error");
+    fake_releases = 0;
+    bool threw = false;
+    starve_allocations = true;
+    try {
+        static_cast<void>(result.error());
+    } catch (const std::bad_alloc&) {
+        threw = true;
+    }
+    starve_allocations = false;
+    check(threw && fake_releases == 1,
+          "terminal error release remains guarded through a throwing text copy");
+    result.reset();
+    query.reset();
+    check(copied && copied.value() &&
+              copied.value()->message() == "a message the caller is about to copy",
+          "copied terminal detail outlives its C error, result and query");
+}
+
 void run(const char* name, void (*test)(Fixture&), Fixture& fixture)
 {
     current = name;
@@ -2153,6 +2823,8 @@ int main(int argc, char** argv)
     run("close reports its outcome", close_reports_its_outcome, fixture);
     run("concurrent readers use explicit clones", concurrent_readers_use_explicit_clones,
         fixture);
+    run("allocation failure injection is caller-local",
+        allocation_failure_injection_is_caller_local, fixture);
 
     run("OCR request projections rebind after copy and move",
         ocr_request_projections_rebind_after_every_copy_and_move, fixture);
@@ -2164,6 +2836,18 @@ int main(int argc, char** argv)
         fixture);
     run("old and partial extents hide OCR before missing entries",
         old_and_partial_extents_hide_ocr_before_missing_entries, fixture);
+    run("template watch projections own their options",
+        template_watch_projections_own_their_options, fixture);
+    run("incomplete tables refuse template owners",
+        incomplete_tables_refuse_template_owners, fixture);
+    run("template query moves clones and wait authority",
+        template_query_moves_clones_and_wait_authority, fixture);
+    run("retained query threads observe one winner",
+        retained_query_threads_observe_one_winner, fixture);
+    run("template terminal and mapping outlive every parent",
+        template_terminal_and_mapping_outlive_every_parent, fixture);
+    run("terminal error text is owned and guarded",
+        terminal_error_text_is_owned_and_guarded, fixture);
     if (failures != 0) {
         std::printf("%d C++ ownership check(s) failed\n", failures);
         return 1;

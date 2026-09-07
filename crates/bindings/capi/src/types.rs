@@ -850,6 +850,69 @@ pub const MADOPILOT_ERROR_HAS_ASSET_DETAIL: u32 = 1 << 0;
 /// `madopilot_error_detail_t.backend` names the backend that failed.
 pub const MADOPILOT_ERROR_HAS_BACKEND: u32 = 1 << 1;
 
+/// Which confirmation rule a template watcher uses.
+pub type madopilot_template_stability_kind_t = i32;
+/// Complete on the first confirmed match.
+pub const MADOPILOT_TEMPLATE_STABILITY_IMMEDIATE: madopilot_template_stability_kind_t = 0;
+/// Require a positive number of consecutive confirmed matches.
+pub const MADOPILOT_TEMPLATE_STABILITY_CONSECUTIVE: madopilot_template_stability_kind_t = 1;
+/// Require a positive confirmed matching duration.
+pub const MADOPILOT_TEMPLATE_STABILITY_DURATION: madopilot_template_stability_kind_t = 2;
+
+/// How a template watcher treats unchanged frame content.
+pub type madopilot_template_change_policy_t = i32;
+/// Analyze every rate-eligible frame transition.
+pub const MADOPILOT_TEMPLATE_CHANGE_ANALYSIS_ALWAYS: madopilot_template_change_policy_t = 0;
+/// Reuse analysis only for exact compatible RGBA content.
+pub const MADOPILOT_TEMPLATE_CHANGE_EXACT_RGBA: madopilot_template_change_policy_t = 1;
+
+/// Whether a poll observation carries progress or an immutable terminal owner.
+pub type madopilot_template_query_state_t = i32;
+/// Failure-initialized output only.
+pub const MADOPILOT_TEMPLATE_QUERY_STATE_UNAVAILABLE: madopilot_template_query_state_t = 0;
+/// The query remains pending.
+pub const MADOPILOT_TEMPLATE_QUERY_STATE_PENDING: madopilot_template_query_state_t = 1;
+/// The query has one immutable terminal outcome.
+pub const MADOPILOT_TEMPLATE_QUERY_STATE_TERMINAL: madopilot_template_query_state_t = 2;
+
+/// The terminal outcome, independently of the accessor's call status.
+pub type madopilot_template_query_outcome_t = i32;
+/// Failure-initialized output only.
+pub const MADOPILOT_TEMPLATE_QUERY_OUTCOME_NONE: madopilot_template_query_outcome_t = 0;
+/// Confirmed matching satisfied the requested stability.
+pub const MADOPILOT_TEMPLATE_QUERY_OUTCOME_MATCHED: madopilot_template_query_outcome_t = 1;
+/// Query-lifetime cancellation won.
+pub const MADOPILOT_TEMPLATE_QUERY_OUTCOME_CANCELLED: madopilot_template_query_outcome_t = 2;
+/// The query's deadline won, not a caller-wait deadline.
+pub const MADOPILOT_TEMPLATE_QUERY_OUTCOME_DEADLINE_EXCEEDED: madopilot_template_query_outcome_t =
+    3;
+/// The source session closed.
+pub const MADOPILOT_TEMPLATE_QUERY_OUTCOME_SESSION_CLOSED: madopilot_template_query_outcome_t = 4;
+/// The engine's scheduler closed.
+pub const MADOPILOT_TEMPLATE_QUERY_OUTCOME_SCHEDULER_CLOSED: madopilot_template_query_outcome_t = 5;
+/// The source target was lost.
+pub const MADOPILOT_TEMPLATE_QUERY_OUTCOME_TARGET_LOST: madopilot_template_query_outcome_t = 6;
+/// Eligible work exceeded its bounded queue residence.
+pub const MADOPILOT_TEMPLATE_QUERY_OUTCOME_OVERLOADED: madopilot_template_query_outcome_t = 7;
+/// Capture, mapping, or analysis failed; error detail is separately accessible.
+pub const MADOPILOT_TEMPLATE_QUERY_OUTCOME_FAILED: madopilot_template_query_outcome_t = 8;
+
+/// The applicable overload reason.
+pub type madopilot_template_overload_t = i32;
+/// The outcome is not overloaded.
+pub const MADOPILOT_TEMPLATE_OVERLOAD_NONE: madopilot_template_overload_t = 0;
+/// Eligible pending work expired in the scheduler queue.
+pub const MADOPILOT_TEMPLATE_OVERLOAD_QUEUE_EXPIRED: madopilot_template_overload_t = 1;
+
+/// The watch options' region and clip policy are active.
+pub const MADOPILOT_TEMPLATE_WATCH_HAS_REGION: u32 = 1 << 0;
+/// The pending snapshot carries all four last-frame identities.
+pub const MADOPILOT_TEMPLATE_QUERY_HAS_LAST_FRAME: u32 = 1 << 0;
+/// The retained frame covers its complete target.
+pub const MADOPILOT_TRANSFORM_COVERS_TARGET: u32 = 1 << 0;
+/// The transform carries target placement and both logical scales.
+pub const MADOPILOT_TRANSFORM_HAS_TARGET_PLACEMENT: u32 = 1 << 1;
+
 /// One point in a declared coordinate space.
 ///
 /// Not size-versioned: four points are embedded by value in one OCR region.
@@ -2098,6 +2161,323 @@ pub struct madopilot_package_source_t {
     pub path: madopilot_str_t,
     /// The archive bytes, for [`MADOPILOT_PACKAGE_SOURCE_ARCHIVE_BYTES`].
     pub archive: madopilot_bytes_t,
+}
+
+/// Complete mandatory ABI 1.6 scheduler-descriptor prefix.
+pub const MADOPILOT_TEMPLATE_SCHEDULER_DESCRIPTOR_SIZE_V1_6: u32 = 48;
+/// Complete mandatory ABI 1.6 watch-options prefix.
+pub const MADOPILOT_TEMPLATE_WATCH_OPTIONS_SIZE_V1_6: u32 = 72;
+/// Complete mandatory ABI 1.6 query-snapshot prefix.
+pub const MADOPILOT_TEMPLATE_QUERY_SNAPSHOT_SIZE_V1_6: u32 = 160;
+/// Complete mandatory ABI 1.6 transform-snapshot prefix.
+pub const MADOPILOT_TRANSFORM_SNAPSHOT_SIZE_V1_6: u32 = 88;
+/// Complete mandatory ABI 1.6 terminal-info prefix.
+pub const MADOPILOT_TEMPLATE_QUERY_RESULT_INFO_SIZE_V1_6: u32 = 272;
+
+/// Read-only limits selected by the engine's existing template scheduler.
+///
+/// Mandatory prefix: [`MADOPILOT_TEMPLATE_SCHEDULER_DESCRIPTOR_SIZE_V1_6`].
+#[repr(C)]
+#[derive(Debug, Clone, Copy)]
+pub struct madopilot_template_scheduler_descriptor_t {
+    /// Caller-known output extent.
+    pub struct_size: u32,
+    /// No bits defined; zero.
+    pub flags: u32,
+    /// Maximum live engine queries.
+    pub max_engine_queries: u32,
+    /// Maximum active scheduler sessions.
+    pub max_active_sessions: u32,
+    /// Maximum live queries in one session.
+    pub max_session_queries: u32,
+    /// Engine-wide concurrent analysis limit, not a per-query depth.
+    pub max_in_flight_analyses: u32,
+    /// Latest-wins pending frames retained per query.
+    pub latest_pending_frames_per_query: u32,
+    /// Maximum mapped-cache entries.
+    pub max_mapped_cache_entries: u32,
+    /// Maximum retained mapped-cache bytes.
+    pub mapped_cache_bytes: u64,
+    /// Eligible pending-work residence limit in nanoseconds.
+    pub eligible_queue_expiry_nanos: u64,
+}
+
+impl madopilot_template_scheduler_descriptor_t {
+    /// The failure state.
+    #[must_use]
+    pub const fn cleared(struct_size: u32) -> Self {
+        Self {
+            struct_size,
+            flags: 0,
+            max_engine_queries: 0,
+            max_active_sessions: 0,
+            max_session_queries: 0,
+            max_in_flight_analyses: 0,
+            latest_pending_frames_per_query: 0,
+            max_mapped_cache_entries: 0,
+            mapped_cache_bytes: 0,
+            eligible_queue_expiry_nanos: 0,
+        }
+    }
+}
+
+/// Call-borrowed watch options; successful start retains no caller storage.
+///
+/// Mandatory prefix: [`MADOPILOT_TEMPLATE_WATCH_OPTIONS_SIZE_V1_6`].
+/// Region fields are ignored without `HAS_REGION`; inactive stability values
+/// must be zero. All-zero data selects immediate/unrestricted/analysis-always,
+/// not Rust's exact-RGBA default.
+#[repr(C)]
+#[derive(Debug, Clone, Copy)]
+pub struct madopilot_template_watch_options_t {
+    /// Caller-known input extent.
+    pub struct_size: u32,
+    /// [`MADOPILOT_TEMPLATE_WATCH_HAS_REGION`].
+    pub flags: u32,
+    /// Optional existing overrides; null selects prepared-template defaults.
+    pub match_options: *const madopilot_match_options_t,
+    /// Active half-open search region in capture pixels.
+    pub region: madopilot_pixel_rect_t,
+    /// Active region containment policy.
+    pub clip_policy: madopilot_clip_policy_t,
+    /// Minimum analysis interval; zero means unrestricted.
+    pub minimum_interval_nanos: u64,
+    /// Immediate, consecutive count, or confirmed duration.
+    pub stability_kind: madopilot_template_stability_kind_t,
+    /// Positive only for consecutive stability.
+    pub stability_observations: u32,
+    /// Positive only for duration stability.
+    pub stability_duration_nanos: u64,
+    /// Explicit unchanged-content policy.
+    pub change_policy: madopilot_template_change_policy_t,
+    /// Must be zero.
+    pub reserved: u32,
+}
+
+impl madopilot_template_watch_options_t {
+    /// Immediate, unrestricted analysis with template defaults and no region.
+    #[must_use]
+    pub const fn cleared(struct_size: u32) -> Self {
+        Self {
+            struct_size,
+            flags: 0,
+            match_options: std::ptr::null(),
+            region: madopilot_pixel_rect_t::empty(),
+            clip_policy: MADOPILOT_CLIP_POLICY_REJECT,
+            minimum_interval_nanos: 0,
+            stability_kind: MADOPILOT_TEMPLATE_STABILITY_IMMEDIATE,
+            stability_observations: 0,
+            stability_duration_nanos: 0,
+            change_policy: MADOPILOT_TEMPLATE_CHANGE_ANALYSIS_ALWAYS,
+            reserved: 0,
+        }
+    }
+}
+
+/// A by-value poll observation with no borrowed views or owned handles.
+///
+/// Mandatory prefix: [`MADOPILOT_TEMPLATE_QUERY_SNAPSHOT_SIZE_V1_6`].
+/// Pending counts are independent saturating dispositions, not disjoint frame
+/// totals. Terminal observations retain only state/id; zero progress is not
+/// final accounting. Only the outer size is caller input.
+#[repr(C)]
+#[derive(Debug, Clone, Copy)]
+pub struct madopilot_template_query_snapshot_t {
+    /// Caller-known output extent.
+    pub struct_size: u32,
+    /// Unavailable on failure, otherwise pending or terminal.
+    pub state: madopilot_template_query_state_t,
+    /// [`MADOPILOT_TEMPLATE_QUERY_HAS_LAST_FRAME`] on pending observations.
+    pub flags: u32,
+    /// Current confirmed consecutive count, saturating at `u32::MAX`.
+    pub confirmed_observations: u32,
+    /// Nonzero engine-local query identity; zero on failure.
+    pub query_id: u64,
+    /// Latest admitted analysis generation, initially zero.
+    pub generation: u64,
+    /// Confirmed matching span, saturating at `u64::MAX`, not elapsed wait time.
+    pub confirmed_duration_nanos: u64,
+    /// Latest pending depth, zero or one for this query.
+    pub pending_count: u32,
+    /// In-flight depth, zero or one for this query.
+    pub in_flight_count: u32,
+    /// Newest considered transition, or a size-initialized absent stamp.
+    pub last_frame: madopilot_frame_stamp_t,
+    /// Backend analyses admitted.
+    pub admitted: u64,
+    /// Exact-compatible unchanged frames skipped.
+    pub skipped_change: u64,
+    /// Work retained for rate eligibility.
+    pub deferred_rate: u64,
+    /// Work sharing immutable analysis.
+    pub coalesced: u64,
+    /// Displaced work or authority.
+    pub superseded: u64,
+    /// Work refused before analysis.
+    pub rejected: u64,
+    /// Eligible work whose queue residence expired.
+    pub queue_expired: u64,
+    /// Completed analyses, including no-match.
+    pub completed: u64,
+    /// Mapping or backend failures.
+    pub failed: u64,
+}
+
+impl madopilot_template_query_snapshot_t {
+    /// The failure state and inactive terminal-progress fields.
+    #[must_use]
+    pub const fn cleared(struct_size: u32) -> Self {
+        Self {
+            struct_size,
+            state: MADOPILOT_TEMPLATE_QUERY_STATE_UNAVAILABLE,
+            flags: 0,
+            confirmed_observations: 0,
+            query_id: 0,
+            generation: 0,
+            confirmed_duration_nanos: 0,
+            pending_count: 0,
+            in_flight_count: 0,
+            last_frame: madopilot_frame_stamp_t::cleared(40),
+            admitted: 0,
+            skipped_change: 0,
+            deferred_rate: 0,
+            coalesced: 0,
+            superseded: 0,
+            rejected: 0,
+            queue_expired: 0,
+            completed: 0,
+            failed: 0,
+        }
+    }
+}
+
+/// Exact frame-time transform facts, not a coordinate-conversion API.
+///
+/// Mandatory prefix: [`MADOPILOT_TRANSFORM_SNAPSHOT_SIZE_V1_6`]. Placement
+/// implies complete target coverage and activates all eight doubles; otherwise
+/// those fields are zero. Target and desktop scales are independent.
+#[repr(C)]
+#[derive(Debug, Clone, Copy)]
+pub struct madopilot_transform_snapshot_t {
+    /// Initialized fixed nested extent when embedded in terminal info.
+    pub struct_size: u32,
+    /// Target coverage and placement-presence bits.
+    pub flags: u32,
+    /// Retained geometry revision.
+    pub geometry: u64,
+    /// Capture width in pixels.
+    pub width: u32,
+    /// Capture height in pixels.
+    pub height: u32,
+    /// Desktop-logical horizontal origin; may be negative.
+    pub desktop_origin_x: f64,
+    /// Desktop-logical vertical origin; may be negative.
+    pub desktop_origin_y: f64,
+    /// Positive target-logical width when placement is present.
+    pub logical_width: f64,
+    /// Positive target-logical height when placement is present.
+    pub logical_height: f64,
+    /// Capture pixels per target-logical horizontal unit.
+    pub target_scale_x: f64,
+    /// Capture pixels per target-logical vertical unit.
+    pub target_scale_y: f64,
+    /// Capture pixels per desktop-logical horizontal unit.
+    pub desktop_scale_x: f64,
+    /// Capture pixels per desktop-logical vertical unit.
+    pub desktop_scale_y: f64,
+}
+
+impl madopilot_transform_snapshot_t {
+    /// The failure state and inactive non-matched transform.
+    #[must_use]
+    pub const fn cleared(struct_size: u32) -> Self {
+        Self {
+            struct_size,
+            flags: 0,
+            geometry: 0,
+            width: 0,
+            height: 0,
+            desktop_origin_x: 0.0,
+            desktop_origin_y: 0.0,
+            logical_width: 0.0,
+            logical_height: 0.0,
+            target_scale_x: 0.0,
+            target_scale_y: 0.0,
+            desktop_scale_x: 0.0,
+            desktop_scale_y: 0.0,
+        }
+    }
+}
+
+/// Immutable terminal facts; string views borrow the terminal-result owner.
+///
+/// Mandatory prefix: [`MADOPILOT_TEMPLATE_QUERY_RESULT_INFO_SIZE_V1_6`].
+/// Outcome/status/query id are always active; overload applies only to
+/// overloaded results, and fields from target onward only to matched results.
+/// Callers initialize only the outer size. Nested values have fixed ABI 1.6
+/// extents and cannot grow in place.
+#[repr(C)]
+#[derive(Debug, Clone, Copy)]
+pub struct madopilot_template_query_result_info_t {
+    /// Caller-known output extent.
+    pub struct_size: u32,
+    /// Terminal kind, or none on failure.
+    pub outcome: madopilot_template_query_outcome_t,
+    /// Terminal data, not the accessor's call status.
+    pub status: crate::status::madopilot_status_t,
+    /// Queue-expired for overloaded outcomes; otherwise none.
+    pub overload: madopilot_template_overload_t,
+    /// Nonzero engine-local query identity; zero on failure.
+    pub query_id: u64,
+    /// Same issuing-engine target ordinal as the source session.
+    pub target: u64,
+    /// Exact retained match/frame identity.
+    pub source: madopilot_frame_stamp_t,
+    /// Positive retained match-array length for matched results.
+    pub match_count: u64,
+    /// Prepared-template identity, borrowed from this result.
+    pub template_id: madopilot_str_t,
+    /// Selected backend identity, borrowed from this result.
+    pub backend_id: madopilot_str_t,
+    /// Selected backend version, borrowed from this result.
+    pub backend_version: madopilot_str_t,
+    /// Effective options with all three existing option-presence bits set.
+    pub options: madopilot_match_options_t,
+    /// Clipped search rectangle in full-frame capture pixels.
+    pub effective_region: madopilot_pixel_rect_t,
+    /// Completed confirmed stability count.
+    pub confirmed_observations: u32,
+    /// Completed confirmed span, saturating at `u64::MAX`.
+    pub confirmed_duration_nanos: u64,
+    /// Exact source-frame transform; geometry equals `source.geometry`.
+    pub transform: madopilot_transform_snapshot_t,
+}
+
+impl madopilot_template_query_result_info_t {
+    /// The failure state and inactive non-matched facts.
+    #[must_use]
+    pub const fn cleared(struct_size: u32) -> Self {
+        Self {
+            struct_size,
+            outcome: MADOPILOT_TEMPLATE_QUERY_OUTCOME_NONE,
+            status: crate::status::MADOPILOT_STATUS_INTERNAL,
+            overload: MADOPILOT_TEMPLATE_OVERLOAD_NONE,
+            query_id: 0,
+            target: 0,
+            source: madopilot_frame_stamp_t::cleared(40),
+            match_count: 0,
+            template_id: madopilot_str_t::empty(),
+            backend_id: madopilot_str_t::empty(),
+            backend_version: madopilot_str_t::empty(),
+            options: madopilot_match_options_t::cleared(24),
+            effective_region: madopilot_pixel_rect_t::empty(),
+            confirmed_observations: 0,
+            confirmed_duration_nanos: 0,
+            transform: madopilot_transform_snapshot_t::cleared(
+                MADOPILOT_TRANSFORM_SNAPSHOT_SIZE_V1_6,
+            ),
+        }
+    }
 }
 
 /// Resolves a C pixel-format value.

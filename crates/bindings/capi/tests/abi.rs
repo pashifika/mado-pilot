@@ -46,6 +46,22 @@ fn a_caller_negotiates_the_complete_current_table() {
 }
 
 #[test]
+fn released_table_extents_still_negotiate_without_claiming_the_query_suffix() {
+    for (minor, extent) in [(0, 424), (2, 592), (3, 648), (4, 720), (5, 736)] {
+        let api = negotiate(MADOPILOT_ABI_MAJOR, minor, extent)
+            .expect("every released caller extent remains supported");
+        let mut info = build_info();
+        assert_eq!(
+            unsafe { (api.describe_build)(&raw mut info) },
+            MADOPILOT_STATUS_OK
+        );
+        assert_eq!(info.abi_major, 1);
+        assert_eq!(info.table_size, MADOPILOT_API_SIZE_CURRENT);
+        assert!(extent <= MADOPILOT_API_SIZE_1_5 as usize);
+    }
+}
+
+#[test]
 fn a_caller_that_knows_only_the_information_prefix_still_negotiates() {
     let api = negotiate(
         MADOPILOT_ABI_MAJOR,
@@ -964,6 +980,55 @@ fn every_versioned_output_holds_a_declared_size_to_its_own_field_boundaries() {
         |out| unsafe { (api.session_input_descriptor)(flow.session, out) },
     );
 
+    assert_output_prefixes(
+        "engine_template_scheduler_descriptor",
+        "madopilot_template_scheduler_descriptor_t",
+        MADOPILOT_TEMPLATE_SCHEDULER_DESCRIPTOR_SIZE_V1_6,
+        |out| unsafe { (api.engine_template_scheduler_descriptor)(flow.engine, out) },
+    );
+    let options =
+        madopilot_template_watch_options_t::cleared(MADOPILOT_TEMPLATE_WATCH_OPTIONS_SIZE_V1_6);
+    let mut query = ptr::null_mut();
+    assert_eq!(
+        unsafe {
+            (api.session_start_template_watch)(
+                flow.session,
+                flow.absent,
+                &raw const options,
+                &raw const operation,
+                &raw mut query,
+                ptr::null_mut(),
+            )
+        },
+        MADOPILOT_STATUS_OK,
+    );
+    let mut terminal = ptr::null_mut();
+    assert_eq!(
+        unsafe { (api.template_query_cancel)(query, &raw mut terminal, ptr::null_mut()) },
+        MADOPILOT_STATUS_OK,
+    );
+    assert_output_prefixes(
+        "template_query_poll",
+        "madopilot_template_query_snapshot_t",
+        MADOPILOT_TEMPLATE_QUERY_SNAPSHOT_SIZE_V1_6,
+        |out| unsafe {
+            let mut observed = ptr::null_mut();
+            let status = (api.template_query_poll)(query, out, &raw mut observed, ptr::null_mut());
+            (api.template_query_result_release)(observed);
+            status
+        },
+    );
+    assert_output_prefixes(
+        "template_query_result_info",
+        "madopilot_template_query_result_info_t",
+        MADOPILOT_TEMPLATE_QUERY_RESULT_INFO_SIZE_V1_6,
+        |out| unsafe { (api.template_query_result_info)(terminal, out) },
+    );
+    unsafe {
+        (api.template_query_result_release)(terminal);
+        (api.template_query_release)(query);
+    }
+
     // SAFETY: each handle is owned by this frame.
     unsafe {
         (api.mapping_release)(mapping);
@@ -1123,6 +1188,26 @@ fn every_versioned_input_refuses_a_size_below_its_mandatory_prefix() {
                 ptr::null_mut(),
             );
             (api.result_release)(result);
+            status
+        },
+    );
+
+    assert_input_prefix(
+        "madopilot_template_watch_options_t",
+        MADOPILOT_TEMPLATE_WATCH_OPTIONS_SIZE_V1_6,
+        madopilot_template_watch_options_t::cleared(MADOPILOT_TEMPLATE_WATCH_OPTIONS_SIZE_V1_6),
+        |options| unsafe {
+            let operation = operation();
+            let mut query = ptr::null_mut();
+            let status = (api.session_start_template_watch)(
+                flow.session,
+                flow.absent,
+                options,
+                &raw const operation,
+                &raw mut query,
+                ptr::null_mut(),
+            );
+            (api.template_query_release)(query);
             status
         },
     );
@@ -1410,6 +1495,70 @@ fn every_multi_output_entry_describes_a_null_primary_output_through_a_valid_erro
             )
         },
     );
+    assert_primary_rejection_describes_the_output(
+        api,
+        "session_start_template_watch",
+        "out_query",
+        |out_error| unsafe {
+            (api.session_start_template_watch)(
+                ptr::null(),
+                ptr::null(),
+                ptr::null(),
+                ptr::null(),
+                ptr::null_mut(),
+                out_error,
+            )
+        },
+    );
+    assert_primary_rejection_describes_the_output(
+        api,
+        "template_query_poll",
+        "out_snapshot",
+        |out_error| unsafe {
+            let mut result = ptr::NonNull::dangling().as_ptr();
+            let status =
+                (api.template_query_poll)(ptr::null(), ptr::null_mut(), &raw mut result, out_error);
+            assert!(
+                result.is_null(),
+                "the independently legal result output is cleared"
+            );
+            status
+        },
+    );
+    assert_primary_rejection_describes_the_output(
+        api,
+        "template_query_poll",
+        "out_result",
+        |out_error| unsafe {
+            let mut snapshot = madopilot_template_query_snapshot_t::cleared(
+                MADOPILOT_TEMPLATE_QUERY_SNAPSHOT_SIZE_V1_6,
+            );
+            snapshot.query_id = u64::MAX;
+            let status = (api.template_query_poll)(
+                ptr::null(),
+                &raw mut snapshot,
+                ptr::null_mut(),
+                out_error,
+            );
+            assert_eq!(snapshot.query_id, 0);
+            assert_eq!(snapshot.state, MADOPILOT_TEMPLATE_QUERY_STATE_UNAVAILABLE);
+            status
+        },
+    );
+    assert_primary_rejection_describes_the_output(
+        api,
+        "template_query_wait",
+        "out_result",
+        |out_error| unsafe {
+            (api.template_query_wait)(ptr::null(), ptr::null(), ptr::null_mut(), out_error)
+        },
+    );
+    assert_primary_rejection_describes_the_output(
+        api,
+        "template_query_cancel",
+        "out_result",
+        |out_error| unsafe { (api.template_query_cancel)(ptr::null(), ptr::null_mut(), out_error) },
+    );
 }
 
 #[test]
@@ -1523,6 +1672,62 @@ fn every_multi_output_entry_describes_a_misaligned_primary_output_through_a_vali
             },
         );
     });
+    with_misaligned_handle_output(|out_query| {
+        assert_primary_rejection_describes_the_output(
+            api,
+            "session_start_template_watch",
+            "out_query",
+            |out_error| unsafe {
+                (api.session_start_template_watch)(
+                    ptr::null(),
+                    ptr::null(),
+                    ptr::null(),
+                    ptr::null(),
+                    out_query,
+                    out_error,
+                )
+            },
+        );
+    });
+    with_misaligned_handle_output(|out_result| {
+        assert_primary_rejection_describes_the_output(
+            api,
+            "template_query_poll",
+            "out_result",
+            |out_error| unsafe {
+                let mut snapshot = madopilot_template_query_snapshot_t::cleared(
+                    MADOPILOT_TEMPLATE_QUERY_SNAPSHOT_SIZE_V1_6,
+                );
+                snapshot.query_id = u64::MAX;
+                let status = (api.template_query_poll)(
+                    ptr::null(),
+                    &raw mut snapshot,
+                    out_result,
+                    out_error,
+                );
+                assert_eq!(snapshot.query_id, 0);
+                status
+            },
+        );
+    });
+    with_misaligned_handle_output(|out_result| {
+        assert_primary_rejection_describes_the_output(
+            api,
+            "template_query_wait",
+            "out_result",
+            |out_error| unsafe {
+                (api.template_query_wait)(ptr::null(), ptr::null(), out_result, out_error)
+            },
+        );
+    });
+    with_misaligned_handle_output(|out_result| {
+        assert_primary_rejection_describes_the_output(
+            api,
+            "template_query_cancel",
+            "out_result",
+            |out_error| unsafe { (api.template_query_cancel)(ptr::null(), out_result, out_error) },
+        );
+    });
 }
 
 #[test]
@@ -1583,6 +1788,39 @@ fn every_multi_output_entry_clears_a_valid_primary_when_the_error_output_is_misa
     assert_error_rejection_clears_primary("session_find", |out_result, out_error| unsafe {
         (api.session_find)(ptr::null(), ptr::null(), ptr::null(), out_result, out_error)
     });
+    assert_error_rejection_clears_primary(
+        "session_start_template_watch",
+        |out_query, out_error| unsafe {
+            (api.session_start_template_watch)(
+                ptr::null(),
+                ptr::null(),
+                ptr::null(),
+                ptr::null(),
+                out_query,
+                out_error,
+            )
+        },
+    );
+    assert_error_rejection_clears_primary("template_query_poll", |out_result, out_error| unsafe {
+        let mut snapshot = madopilot_template_query_snapshot_t::cleared(
+            MADOPILOT_TEMPLATE_QUERY_SNAPSHOT_SIZE_V1_6,
+        );
+        snapshot.query_id = u64::MAX;
+        let status =
+            (api.template_query_poll)(ptr::null(), &raw mut snapshot, out_result, out_error);
+        assert_eq!(snapshot.query_id, 0);
+        assert_eq!(snapshot.state, MADOPILOT_TEMPLATE_QUERY_STATE_UNAVAILABLE);
+        status
+    });
+    assert_error_rejection_clears_primary("template_query_wait", |out_result, out_error| unsafe {
+        (api.template_query_wait)(ptr::null(), ptr::null(), out_result, out_error)
+    });
+    assert_error_rejection_clears_primary(
+        "template_query_cancel",
+        |out_result, out_error| unsafe {
+            (api.template_query_cancel)(ptr::null(), out_result, out_error)
+        },
+    );
 }
 
 #[test]
@@ -1607,6 +1845,22 @@ fn retain_and_release_accept_null() {
         assert_eq!((api.error_release)(ptr::null_mut()), MADOPILOT_STATUS_OK);
         assert_eq!((api.result_release)(ptr::null_mut()), MADOPILOT_STATUS_OK);
         assert_eq!((api.mapping_release)(ptr::null_mut()), MADOPILOT_STATUS_OK);
+        assert_eq!(
+            (api.template_query_retain)(ptr::null()),
+            MADOPILOT_STATUS_OK
+        );
+        assert_eq!(
+            (api.template_query_release)(ptr::null_mut()),
+            MADOPILOT_STATUS_OK
+        );
+        assert_eq!(
+            (api.template_query_result_retain)(ptr::null()),
+            MADOPILOT_STATUS_OK
+        );
+        assert_eq!(
+            (api.template_query_result_release)(ptr::null_mut()),
+            MADOPILOT_STATUS_OK
+        );
     }
 }
 
@@ -2496,14 +2750,7 @@ fn build_info() -> madopilot_build_info_t {
     }
 }
 
-/// A rejected primary output leaves a fresh error that names the output.
-///
-/// Two properties in one call. The slot is initialized before anything is
-/// validated, so the sentinel the caller left in it cannot survive; and the
-/// fault is reported through the error output rather than reduced to a status,
-/// because `MADOPILOT_STATUS_INVALID_ARGUMENT` on an entry with seven pointer
-/// arguments does not say which one was wrong. A rejected output is an invalid
-/// argument like any other and is described like one.
+/// A rejected primary output replaces stale storage with an owned ABI fault.
 fn assert_primary_rejection_describes_the_output(
     api: &'static madopilot_api_t,
     entry: &str,
@@ -2524,14 +2771,14 @@ fn assert_primary_rejection_describes_the_output(
         "{entry} must overwrite the caller's stale error rather than leave it in place"
     );
 
-    let (detail, message) = support::describe_message_and_release(api, error);
+    let detail = support::describe_and_release(api, error);
     assert_eq!(
         detail.status, MADOPILOT_STATUS_INVALID_ARGUMENT,
         "{entry} error status"
     );
-    assert!(
-        message.contains(output),
-        "{entry} must name the output it rejected, said: {message}"
+    assert_eq!(
+        detail.category, MADOPILOT_ERROR_CATEGORY_ABI,
+        "{entry}.{output} reports a boundary fault without pinning diagnostic wording"
     );
 
     // SAFETY: `sentinel` is the owned handle the output slot held before the

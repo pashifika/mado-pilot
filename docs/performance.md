@@ -1242,3 +1242,25 @@ recognizer nodes. One pre-runtime canonical-path apparatus stop is retained; its
 authorized canonical-spelling replacement changed no source, executable,
 directory contents, workload arguments, or product environment and reproduced
 the exact counts.
+
+## Phase 5 pull-query foreign boundary
+
+`mado-pilot-capi` adds the `template-watch-boundary` paired Rust/C replay
+harness. It separates pending poll, first closed-terminal projection, retained
+terminal poll, info/match reads, caller-wait interruption, query/result reference
+lifecycles, and exact-frame reads after parent teardown. Setup and backend
+completion remain outside caller latency/allocation windows.
+
+The short `cargo test --package mado-pilot-capi --bench template-watch-boundary`
+plan checks correctness and zero caller allocation for pending/retained
+observations. The `cargo bench` plan retains twenty warmups and two hundred
+samples per workload. Caller allocation calls, process-wide Rust heap
+observations, and readable frame bytes have distinct scopes; none is an
+invented native mapped-byte or RSS measurement.
+
+No target latency or heap budget is accepted yet. New precursor profiles,
+independent budget acceptance, and final-candidate enforcement are required by
+`G-013`; historical Rust/native budgets above remain unchanged and do not
+qualify this boundary. Commands, exact workload identities, sampling units,
+measurement limitations, and native acceptance rows are in the
+[foreign qualification protocol](native-template-watch-foreign-qualification.md).

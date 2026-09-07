@@ -97,6 +97,11 @@ const MANDATORY: &[(&str, usize)] = &[
     ("madopilot_replay_frame_t", 40),
     ("madopilot_source_t", 48),
     ("madopilot_package_source_t", 24),
+    ("madopilot_template_scheduler_descriptor_t", 48),
+    ("madopilot_template_watch_options_t", 72),
+    ("madopilot_template_query_snapshot_t", 160),
+    ("madopilot_transform_snapshot_t", 88),
+    ("madopilot_template_query_result_info_t", 272),
 ];
 
 /// The ABI-major-one function-table order.
@@ -199,6 +204,19 @@ const TABLE_ORDER: &[&str] = &[
     "engine_ocr_descriptor",
     "engine_create_with_ocr_provider",
     "engine_ocr_provider_descriptor",
+    "engine_template_scheduler_descriptor",
+    "session_start_template_watch",
+    "template_query_retain",
+    "template_query_release",
+    "template_query_poll",
+    "template_query_wait",
+    "template_query_cancel",
+    "template_query_result_retain",
+    "template_query_result_release",
+    "template_query_result_info",
+    "template_query_result_match_at",
+    "template_query_result_frame",
+    "template_query_result_error",
 ];
 
 fn find(name: &str) -> &'static TypeLayout {
@@ -415,13 +433,26 @@ fn the_function_table_keeps_its_abi_major_one_order() {
         "ABI 1.4 table extent is frozen"
     );
 
-    let abi_1_5 = &table.fields[phase_1_2_start + 37..];
+    let abi_1_5 = &table.fields[phase_1_2_start + 37..phase_1_2_start + 39];
     assert_eq!(
         abi_1_5.iter().map(|field| field.offset).collect::<Vec<_>>(),
         [720, 728],
         "ABI 1.5 appends provider construction and observation after the complete 1.4 extent"
     );
-    assert_eq!(table.size, 736, "ABI 1.5 table extent is fixed");
+    assert_eq!(MADOPILOT_API_SIZE_1_5, 736, "ABI 1.5 table extent is fixed");
+
+    let abi_1_6 = &table.fields[phase_1_2_start + 39..];
+    assert_eq!(
+        abi_1_6.iter().map(|field| field.offset).collect::<Vec<_>>(),
+        [
+            736, 744, 752, 760, 768, 776, 784, 792, 800, 808, 816, 824, 832
+        ],
+        "ABI 1.6 appends thirteen query entries after the complete 1.5 extent"
+    );
+    assert_eq!(
+        table.size, 840,
+        "ABI 1.6 table extent matches the reviewed contract"
+    );
 }
 
 #[test]

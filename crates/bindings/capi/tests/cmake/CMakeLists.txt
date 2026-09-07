@@ -86,6 +86,21 @@ add_executable(
 )
 target_link_libraries(consumer-ocr-profile-cpp PRIVATE MadoPilot::Cpp)
 
+add_executable(
+  consumer-template-watch-c
+  "${MADOPILOT_SOURCE_DIR}/examples/c/template-watch.c"
+)
+target_include_directories(consumer-template-watch-c PRIVATE "${MADOPILOT_SOURCE_DIR}/examples")
+target_link_libraries(consumer-template-watch-c PRIVATE MadoPilot::C)
+set_target_properties(consumer-template-watch-c PROPERTIES C_STANDARD 11 C_STANDARD_REQUIRED ON)
+
+add_executable(
+  consumer-template-watch-cpp
+  "${MADOPILOT_SOURCE_DIR}/examples/cpp/template-watch.cpp"
+)
+target_include_directories(consumer-template-watch-cpp PRIVATE "${MADOPILOT_SOURCE_DIR}/examples")
+target_link_libraries(consumer-template-watch-cpp PRIVATE MadoPilot::Cpp)
+
 enable_testing()
 
 add_test(NAME consumer-c COMMAND consumer-c)
@@ -99,6 +114,15 @@ set_tests_properties(
   consumer-ocr-profile-c consumer-ocr-profile-cpp
   PROPERTIES SKIP_RETURN_CODE 77
 )
+add_test(
+  NAME consumer-template-watch-c
+  COMMAND consumer-template-watch-c --package "${MADOPILOT_SOURCE_DIR}/../../../fixtures/assets/phase1-slice"
+)
+add_test(
+  NAME consumer-template-watch-cpp
+  COMMAND consumer-template-watch-cpp --package "${MADOPILOT_SOURCE_DIR}/../../../fixtures/assets/phase1-slice"
+)
+set_tests_properties(consumer-template-watch-c consumer-template-watch-cpp PROPERTIES TIMEOUT 30)
 
 if(WIN32)
   # Windows has no run path: the loader searches the executable's directory and
@@ -108,6 +132,7 @@ if(WIN32)
   set_tests_properties(
     consumer-c consumer-cpp consumer-native-cpp consumer-ocr-default-cpp
     consumer-ocr-profile-c consumer-ocr-profile-cpp
+    consumer-template-watch-c consumer-template-watch-cpp
     PROPERTIES
       ENVIRONMENT_MODIFICATION "PATH=path_list_prepend:${_madopilot_native_artifacts}"
   )

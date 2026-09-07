@@ -51,6 +51,9 @@
 //! from inside a cargo-launched process is a worse failure mode than a missing
 //! artifact with an actionable message.
 
+#[path = "../tests/support/frozen_numbers.rs"]
+mod frozen_numbers;
+
 #[cfg(all(windows, feature = "qualification-unsupported-api"))]
 use mado_pilot::{NativeEngineRequest, OperationContext, Status};
 
@@ -97,6 +100,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     println!("library: {}", paths.library.display());
 
     check_layout(&paths)?;
+    check_numeric_contract(&paths)?;
     run_c_example(&paths, &label)?;
     let run_windows_native_fixture = windows_native_fixture_requested();
     let native_fixtures = if run_windows_native_fixture {
@@ -126,6 +130,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     drop(native_fixtures);
     check_cpp_ownership(&paths)?;
     run_cpp_example(&paths, &label)?;
+    run_template_watch_examples(&paths)?;
     #[cfg(feature = "private-fixture")]
     run_ocr_fixture_examples(&paths)?;
     run_default_ocr_examples(&paths)?;
@@ -1189,6 +1194,67 @@ fn run_cpp_example(paths: &Paths, label: &str) -> Result<(), Box<dyn std::error:
     check_example("C++", &output)
 }
 
+fn run_template_watch_examples(paths: &Paths) -> Result<(), Box<dyn std::error::Error>> {
+    for (language, directory, extension, marker) in [
+        (Language::C, "c", "c", "madopilot-c-template-watch complete"),
+        (
+            Language::Cpp,
+            "cpp",
+            "cpp",
+            "madopilot-cpp-template-watch complete",
+        ),
+    ] {
+        let source = paths.root.join(format!(
+            "crates/bindings/capi/examples/{directory}/template-watch.{extension}"
+        ));
+        let program = compile(
+            paths,
+            language,
+            &format!("template-watch-{directory}"),
+            &source,
+            true,
+        )?;
+        let output = run(paths, &program, &["--package", &package(paths)])?;
+        let stdout = String::from_utf8_lossy(&output.stdout);
+        print!("{stdout}");
+        report_output("template-watch consumer", &output);
+        if !output.status.success() || !stdout.contains(marker) {
+            return Err(format!("the {directory} template-watch consumer failed").into());
+        }
+    }
+    Ok(())
+}
+
+fn check_numeric_contract(paths: &Paths) -> Result<(), Box<dyn std::error::Error>> {
+    use std::fmt::Write as _;
+
+    let source = paths.scratch.join("madopilot-frozen-numbers.c");
+    let mut program = String::from("#include <stdint.h>\n#include \"madopilot/madopilot.h\"\n");
+    for (name, defined, frozen) in frozen_numbers::FROZEN {
+        if defined != frozen {
+            return Err(format!("Rust ABI number {name}: {defined} != {frozen}").into());
+        }
+        writeln!(
+            program,
+            "_Static_assert((int64_t)({name}) == INT64_C({frozen}), \"{name}\");"
+        )?;
+    }
+    program.push_str("int main(void) { return 0; }\n");
+    std::fs::write(&source, program)?;
+    compile(
+        paths,
+        Language::C,
+        "madopilot-frozen-numbers",
+        &source,
+        false,
+    )?;
+    println!(
+        "compiled C/Rust frozen numeric contract: {} values",
+        frozen_numbers::FROZEN.len()
+    );
+    Ok(())
+}
+
 /// Compiles, links, and runs the native flow through the C++ RAII wrapper.
 fn run_native_cpp_example(
     paths: &Paths,
@@ -1284,9 +1350,9 @@ fn check_cpp_ownership(paths: &Paths) -> Result<(), Box<dyn std::error::Error>> 
 
 /// Released header profiles whose frozen declarations remain ABI obligations.
 ///
-/// ABI 1.0, 1.2, 1.3, and 1.4 are released frozen profiles older than the
-/// working ABI 1.5 header. The unreleased ABI 1.1 draft has no compatibility fixture.
-const FROZEN_HEADERS: &[&str] = &["v1", "v1_2", "v1_3", "v1_4"];
+/// ABI 1.0, 1.2, 1.3, 1.4, and 1.5 are released frozen profiles.
+/// The unreleased ABI 1.1 draft has no compatibility fixture.
+const FROZEN_HEADERS: &[&str] = &["v1", "v1_2", "v1_3", "v1_4", "v1_5"];
 
 /// Runs the layout probe against each frozen header, and checks that what that
 /// header declares is still true of the library built now.

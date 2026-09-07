@@ -314,7 +314,7 @@ fn search_failure(error: &Error, backend: &str) -> Fault {
     Fault::from_error(error, MADOPILOT_ERROR_CATEGORY_VISION).with_backend(backend)
 }
 
-fn resolve_options(
+pub(crate) fn resolve_options(
     request: &madopilot_find_request_t,
     template: &PreparedTemplate,
 ) -> Result<MatchOptions, Fault> {
@@ -356,7 +356,9 @@ fn resolve_options(
     Ok(options)
 }
 
-fn region_selection(request: &madopilot_find_request_t) -> Result<RegionSelection, Fault> {
+pub(crate) fn region_selection(
+    request: &madopilot_find_request_t,
+) -> Result<RegionSelection, Fault> {
     let space = crate::types::space(request.region.space)?;
     if space != mado_pilot::CoordinateSpace::CapturePixels {
         return Err(Fault::abi(

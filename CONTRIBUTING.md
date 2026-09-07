@@ -316,6 +316,25 @@ process paths, or desktop metadata. Record an unavailable host or topology as an
 explicit evidence gap. Never turn absence into a skip that passes the release
 claim.
 
+## Pull-based C/C++ template queries
+
+The ABI 1.6 replay consumers, ownership/concurrency checks, C/Rust layout probe,
+frozen ABI 1.0–1.5 callers, and independent CMake consumers run through
+`c-abi-check`. The paired boundary benchmark adds a short, budget-free
+correctness and caller-allocation smoke plan:
+
+```sh
+python3 tools/setup-native.py -- cargo test --locked --package mado-pilot-capi --tests
+python3 tools/setup-native.py -- cargo build --locked --package mado-pilot-capi --lib
+python3 tools/setup-native.py -- cargo run --locked --package mado-pilot-capi --example c-abi-check -- --label "<host>"
+python3 tools/setup-native.py -- cargo test --locked --package mado-pilot-capi --bench template-watch-boundary
+```
+
+Use a separate `CARGO_TARGET_DIR` for a hash-pinned qualification build and for
+every later build purpose or feature variant. Hosted green checks do not
+qualify native C/C++ watching or accept its new `G-013` budgets. Those require
+the [foreign qualification protocol](docs/native-template-watch-foreign-qualification.md).
+
 ## Native template-watch qualification lanes
 
 Native template-watch verification has four independent jobs. Do not infer one
@@ -403,8 +422,8 @@ RUSTDOCFLAGS="-D warnings" python3 tools/setup-native.py -- cargo doc --locked -
 # 7. Dependency licenses, advisories, sources, and duplicate versions
 cargo deny --locked check
 
-# 8. C/C++ ABI 1.5, provider feature compilation, ownership, frozen
-#    1.0/1.2/1.3/1.4 callers, current examples, and CMake consumers. The
+# 8. C/C++ ABI 1.6, provider feature compilation, ownership, frozen
+#    1.0/1.2/1.3/1.4/1.5 callers, current examples, and CMake consumers. The
 #    private-fixture run additionally compiles/runs local OCR fixtures; its
 #    constructor is absent from release builds and the public table.
 python3 tools/setup-native.py -- cargo build --locked --package mado-pilot-capi

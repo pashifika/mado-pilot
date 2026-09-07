@@ -66,7 +66,7 @@ Generate the full Rust API reference locally:
 python3 tools/setup-native.py -- cargo doc --locked --package mado-pilot --no-deps
 ```
 
-Open `target/doc/mado_pilot/index.html`. Rust API stability begins at 1.0; the C ABI has its own compatibility policy. Template watching is currently Rust-only.
+Open `target/doc/mado_pilot/index.html`. Rust API stability begins at 1.0; the C ABI has its own compatibility policy. Template watching has Rust and pull-based C/C++ APIs. Native watcher support is qualified for Rust; native C/C++ qualification remains pending.
 
 ## Documentation
 

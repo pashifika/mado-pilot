@@ -155,7 +155,7 @@ pub(crate) unsafe fn context(operation: *const madopilot_operation_t) -> Result<
     Ok(Context(context))
 }
 
-/// A validated operation context, and the two checks every entry owes it.
+/// A validated context for call-local checks or owned query authority.
 #[derive(Debug)]
 pub(crate) struct Context(OperationContext);
 
@@ -163,6 +163,11 @@ impl Context {
     /// Returns the facade context to hand to the operation being performed.
     pub(crate) const fn inner(&self) -> &OperationContext {
         &self.0
+    }
+
+    /// Moves query-lifetime authority into an owning facade request.
+    pub(crate) fn into_inner(self) -> OperationContext {
+        self.0
     }
 
     /// Refuses admission when the operation is already over.

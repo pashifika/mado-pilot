@@ -45,7 +45,7 @@ use crate::status::{MADOPILOT_STATUS_INTERNAL_PANIC, madopilot_status_t};
 use crate::types::{
     madopilot_find_request_t, madopilot_input_request_t, madopilot_map_request_t,
     madopilot_match_options_t, madopilot_ocr_request_t, madopilot_open_request_t,
-    madopilot_operation_t,
+    madopilot_operation_t, madopilot_template_watch_options_t,
 };
 
 /// Runs one table entry with a panic containment fence around it.
@@ -266,6 +266,8 @@ pub(crate) trait Input: Registered {
     /// A bit missing from this table is the failure the table exists to
     /// prevent, so nothing may honor a bit without listing it: every read goes
     /// through [`declared!`], which does not compile otherwise.
+    /// The named field may already lie within the mandatory prefix; in that
+    /// case the bit still selects applicability but cannot expose omitted data.
     const PRESENCE: &'static [(u32, usize)];
 
     /// Every field at its documented default, for the fields a shorter prefix
@@ -765,6 +767,7 @@ const FAMILY_OWNERS: &[&str] = &[
     <madopilot_ocr_request_t as Input>::NAME,
     <madopilot_match_options_t as Input>::NAME,
     <madopilot_input_request_t as Input>::NAME,
+    <madopilot_template_watch_options_t as Input>::NAME,
 ];
 
 /// Whether `list` holds `value`.
@@ -918,8 +921,8 @@ pub(crate) const fn check_input_tables<S: Input>() {
             "a presence bit requires a prefix that is not a field boundary"
         );
         assert!(
-            required > S::MANDATORY,
-            "a presence bit names a field the mandatory prefix already covers, so the bit can never be refused"
+            required > 2 * size_of::<u32>(),
+            "a presence bit must cover data beyond struct_size and flags"
         );
 
         let mut earlier = 0;
@@ -954,6 +957,7 @@ mod tests {
         FAMILY_OWNERS, Input, Out, Versioned, boundary, madopilot_find_request_t,
         madopilot_input_request_t, madopilot_map_request_t, madopilot_match_options_t,
         madopilot_ocr_request_t, madopilot_open_request_t, madopilot_operation_t,
+        madopilot_template_watch_options_t,
     };
     use crate::status::MADOPILOT_STATUS_INTERNAL_PANIC;
     use crate::types::{
@@ -1130,6 +1134,11 @@ mod tests {
             owner: <madopilot_input_request_t as Input>::NAME,
             table: <madopilot_input_request_t as Input>::PRESENCE,
         },
+        PresenceFamily {
+            prefix: "MADOPILOT_TEMPLATE_WATCH_HAS_",
+            owner: <madopilot_template_watch_options_t as Input>::NAME,
+            table: <madopilot_template_watch_options_t as Input>::PRESENCE,
+        },
     ];
 
     /// Flags on structures the library writes.
@@ -1146,6 +1155,9 @@ mod tests {
         "MADOPILOT_ENGINE_READS_PERMISSIONS",
         "MADOPILOT_ENGINE_HAS_OCR",
         "MADOPILOT_OCR_PROVIDER_DESCRIPTOR_HAS_FALLBACK",
+        "MADOPILOT_TEMPLATE_QUERY_HAS_LAST_FRAME",
+        "MADOPILOT_TRANSFORM_COVERS_TARGET",
+        "MADOPILOT_TRANSFORM_HAS_TARGET_PLACEMENT",
         "MADOPILOT_TARGET_HAS_KIND",
         "MADOPILOT_TARGET_HAS_CAPTURE_PERMISSION",
         "MADOPILOT_PERMISSION_HAS_DIAGNOSTIC",

@@ -39,12 +39,12 @@
 //!
 //! # Implementation status
 //!
-//! ABI 1.5 preserves the complete released ABI 1.0, 1.2, 1.3, and 1.4
+//! ABI 1.6 preserves the complete released ABI 1.0, 1.2, 1.3, 1.4, and 1.5
 //! prefixes. ABI 1.0 covers deterministic capture/matching; ABI 1.2 appends
 //! native input and bounded diagnostics; ABI 1.3 appends one-shot OCR; ABI 1.4
 //! appends explicit profiles and grouped OCR; ABI 1.5 appends provider-policy
-//! construction and immutable provider facts. It contains no watcher, query,
-//! callback, automatic-input, or native-frame entry.
+//! construction and immutable provider facts. ABI 1.6 appends pull-based template
+//! queries and retained terminal results, without callbacks or automatic input.
 //!
 //! The C++ wrapper covers exactly the negotiated table and declares no ABI of
 //! its own, so it adds no binary compatibility surface;
@@ -54,8 +54,9 @@
 //! **Every released numeric value, structure prefix, field offset, and table
 //! position is frozen for ABI major 1.** ADR 0007 froze ABI 1.0, ADR 0023 froze
 //! ABI 1.2, ADR 0035 records ABI 1.3, ADR 0043 records ABI 1.4, and ADR 0046
-//! records the additive ABI 1.5 provider boundary. Within this major nothing
-//! moves; a later minor appends. `tests/abi-compat/` compiles and runs every
+//! records the additive ABI 1.5 provider boundary. ADR 0067 defines the ABI 1.6
+//! template-query suffix. Within this major nothing moves; a later minor appends.
+//! `tests/abi-compat/` compiles and runs every
 //! released header against later builds. The unreleased 1.1 draft has no fixture
 //! or compatibility surface.
 //!
@@ -111,6 +112,9 @@ mod status;
 mod table;
 mod types;
 mod view;
+mod watch;
+#[cfg(test)]
+mod watch_tests;
 
 pub use assets::{madopilot_package_t, madopilot_template_t};
 pub use capture::{madopilot_frame_t, madopilot_mapping_t, madopilot_session_t};
@@ -125,3 +129,4 @@ pub use status::*;
 pub use table::*;
 pub use types::*;
 pub use view::{madopilot_bytes_t, madopilot_str_t};
+pub use watch::{madopilot_template_query_result_t, madopilot_template_query_t};

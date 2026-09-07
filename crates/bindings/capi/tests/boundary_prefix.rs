@@ -414,6 +414,66 @@ fn a_match_option_bit_for_a_field_the_prefix_omits_is_refused() {
 }
 
 #[test]
+fn watch_start_preserves_nested_match_option_prefix_rules() {
+    let api = table();
+    let flow = Flow::open();
+    let operation = operation();
+    let mut query = ptr::NonNull::dangling().as_ptr();
+    let mut error = ptr::null_mut();
+    for (prefix, flags) in [(8, MADOPILOT_MATCH_HAS_MIN_SCORE), (12, 0)] {
+        let match_options = madopilot_match_options_t {
+            flags,
+            ..madopilot_match_options_t::cleared(prefix)
+        };
+        let options = madopilot_template_watch_options_t {
+            match_options: &raw const match_options,
+            ..madopilot_template_watch_options_t::cleared(
+                MADOPILOT_TEMPLATE_WATCH_OPTIONS_SIZE_V1_6,
+            )
+        };
+        let status = unsafe {
+            (api.session_start_template_watch)(
+                flow.session,
+                flow.absent,
+                &raw const options,
+                &raw const operation,
+                &raw mut query,
+                &raw mut error,
+            )
+        };
+        assert_eq!(status, MADOPILOT_STATUS_INVALID_ARGUMENT);
+        assert!(
+            query.is_null(),
+            "invalid nested options cannot publish a query"
+        );
+        assert_eq!(refusal_category(api, error), MADOPILOT_ERROR_CATEGORY_ABI);
+    }
+
+    // The same eight-byte nested prefix is legal when it asks for defaults.
+    let match_options = madopilot_match_options_t::cleared(8);
+    let options = madopilot_template_watch_options_t {
+        match_options: &raw const match_options,
+        ..madopilot_template_watch_options_t::cleared(MADOPILOT_TEMPLATE_WATCH_OPTIONS_SIZE_V1_6)
+    };
+    let status = unsafe {
+        (api.session_start_template_watch)(
+            flow.session,
+            flow.absent,
+            &raw const options,
+            &raw const operation,
+            &raw mut query,
+            &raw mut error,
+        )
+    };
+    assert_eq!(status, MADOPILOT_STATUS_OK);
+    assert!(error.is_null());
+    assert_eq!(
+        unsafe { (api.template_query_release)(query) },
+        MADOPILOT_STATUS_OK
+    );
+}
+
+#[test]
 fn a_match_options_prefix_that_sets_no_bit_asks_for_the_template_defaults() {
     let api = table();
     let flow = Flow::open();
