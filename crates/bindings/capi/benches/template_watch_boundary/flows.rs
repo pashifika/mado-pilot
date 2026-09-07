@@ -373,6 +373,30 @@ impl RustFlow {
                     && result.status() == Some(Status::Closed))
     }
 
+    pub(super) fn create_cancel_release() -> Exercise {
+        let mut flow = Self::new(Case::CreateCancelRelease);
+        let result = flow.query().cancel();
+        let correct = flow.query().id().get() == flow.expected.query_id
+            && matches!(result.as_ref(), TemplateTerminalOutcome::Cancelled)
+            && result.status() == Some(Status::Cancelled)
+            && matches!(flow.query().poll(), TemplateQueryOutcome::Terminal(observed)
+                if matches!(observed.as_ref(), TemplateTerminalOutcome::Cancelled)
+                    && observed.status() == Some(Status::Cancelled));
+        drop(flow.query.take());
+        flow.close_parents();
+        let correct = correct
+            && matches!(result.as_ref(), TemplateTerminalOutcome::Cancelled)
+            && result.status() == Some(Status::Cancelled);
+        drop(result);
+        // All fixture, caller authority and parent/query/result owners are gone
+        // before timed() reads its post-window heap and allocation counters.
+        drop(flow);
+        Exercise {
+            correct,
+            readable_view: None,
+        }
+    }
+
     fn read_matched(&self, outcome: &TemplateTerminalOutcome) -> bool {
         let TemplateTerminalOutcome::Matched(matched) = outcome else {
             return false;
@@ -477,7 +501,9 @@ impl RustFlow {
                     readable_view = Some(bytes);
                     readable
                 }
-                Case::FirstTerminal => unreachable!("first observation has per-sample setup"),
+                Case::FirstTerminal | Case::CreateCancelRelease => {
+                    unreachable!("lifecycle observation has per-sample setup")
+                }
             });
         }
         Exercise {
@@ -895,6 +921,72 @@ impl CFlow {
             && no_failure
     }
 
+    pub(super) fn create_cancel_release() -> Exercise {
+        let mut flow = Self::new(Case::CreateCancelRelease);
+        let mut result = ptr::null_mut();
+        // SAFETY: the query is retained; the result output is independent,
+        // writable storage. The returned reference uses this table's releaser.
+        ok(
+            unsafe {
+                (flow.api.template_query_cancel)(
+                    flow.query().pointer,
+                    &raw mut result,
+                    ptr::null_mut(),
+                )
+            },
+            "template_query_cancel",
+        );
+        let result = CHandle::new(result, flow.api.template_query_result_release);
+        let observed = flow.first_poll();
+        let correct = observed.snapshot.state == MADOPILOT_TEMPLATE_QUERY_STATE_TERMINAL
+            && Progress::c(observed.snapshot).terminal(flow.expected.query_id)
+            && observed
+                .result
+                .as_ref()
+                .is_some_and(|result| flow.cancelled_result(result))
+            && flow.cancelled_result(&result);
+        drop(observed);
+        drop(flow.query.take());
+        flow.close_parents();
+        let correct = correct && flow.cancelled_result(&result);
+        drop(result);
+        drop(flow);
+        Exercise {
+            correct,
+            readable_view: None,
+        }
+    }
+
+    fn cancelled_result(&self, result: &CHandle<madopilot_template_query_result_t>) -> bool {
+        let info = self.info(result);
+        let mut failure = ptr::null_mut();
+        // SAFETY: the result remains owned and failure is a separate output.
+        ok(
+            unsafe { (self.api.template_query_result_error)(result.pointer, &raw mut failure) },
+            "template_query_result_error",
+        );
+        let no_failure = failure.is_null();
+        if !no_failure {
+            drop(CHandle::new(failure, self.api.error_release));
+        }
+        info.query_id == self.expected.query_id
+            && info.outcome == MADOPILOT_TEMPLATE_QUERY_OUTCOME_CANCELLED
+            && info.status == MADOPILOT_STATUS_CANCELLED
+            && info.overload == MADOPILOT_TEMPLATE_OVERLOAD_NONE
+            && info.target == 0
+            && info.match_count == 0
+            && info.confirmed_observations == 0
+            && info.confirmed_duration_nanos == 0
+            && Stamp::c(info.source) == Stamp([0; 4])
+            && info.template_id.data.is_null()
+            && info.template_id.len == 0
+            && info.backend_id.data.is_null()
+            && info.backend_id.len == 0
+            && info.backend_version.data.is_null()
+            && info.backend_version.len == 0
+            && no_failure
+    }
+
     fn read_matched(&self, result: &CHandle<madopilot_template_query_result_t>) -> bool {
         let info = self.info(result);
         let transform = info.transform;
@@ -1114,7 +1206,9 @@ impl CFlow {
                     readable_view = Some(bytes);
                     readable
                 }
-                Case::FirstTerminal => unreachable!("first observation has per-sample setup"),
+                Case::FirstTerminal | Case::CreateCancelRelease => {
+                    unreachable!("lifecycle observation has per-sample setup")
+                }
             });
         }
         Exercise {

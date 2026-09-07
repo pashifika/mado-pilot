@@ -138,6 +138,10 @@ A budget names one measure. The version-one vocabulary is:
 | `detached_textures_peak` | count | Maximum simultaneously live Adapter-owned detached textures during one workload. |
 | `staging_textures_peak` | count | Maximum simultaneously live CPU-readable staging textures during one workload. |
 | `gpu_resources_peak` | count | Maximum simultaneously live producer, detached, and staging textures during one workload. |
+| `caller_allocation_calls` | count | Per-sample calling-thread Rust `alloc`, `alloc_zeroed`, and `realloc` calls. Includes transient allocations; excludes other threads, foreign `malloc`, and independently loaded library allocators. |
+| `caller_allocation_calls_max` | count | Largest `caller_allocation_calls` sample in the declared workload. |
+| `readable_frame_view_bytes` | bytes | Actually readable frame mapping length, not incremental mapped bytes or a producer-pool observation. |
+| `lifecycle_live_delta_bytes_per_sample` | bytes | Signed process-wide Rust live-heap change from before a complete public lifecycle to after all its owners are released. Includes concurrent Rust activity; not RSS or caller-only retained memory. |
 
 A phase that needs a measure outside this list adds it here in the same change,
 with its unit and its meaning.
@@ -1248,8 +1252,11 @@ the exact counts.
 `mado-pilot-capi` adds the `template-watch-boundary` paired Rust/C replay
 harness. It separates pending poll, first closed-terminal projection, retained
 terminal poll, info/match reads, caller-wait interruption, query/result reference
-lifecycles, and exact-frame reads after parent teardown. Setup and backend
-completion remain outside caller latency/allocation windows.
+lifecycles, and exact-frame reads after parent teardown. These original sixteen
+rows exclude setup and backend completion from caller timing. Two additional
+rows measure complete replay create/cancel/final-release lifecycles, including
+setup, settled pending authority and teardown, with a signed live-byte delta
+for every sample.
 
 The short `cargo test --package mado-pilot-capi --bench template-watch-boundary`
 plan checks correctness and zero caller allocation for pending/retained
@@ -1258,9 +1265,11 @@ samples per workload. Caller allocation calls, process-wide Rust heap
 observations, and readable frame bytes have distinct scopes; none is an
 invented native mapped-byte or RSS measurement.
 
-No target latency or heap budget is accepted yet. New precursor profiles,
-independent budget acceptance, and final-candidate enforcement are required by
-`G-013`; historical Rust/native budgets above remain unchanged and do not
-qualify this boundary. Commands, exact workload identities, sampling units,
-measurement limitations, and native acceptance rows are in the
+[ADR 0068](adr/0068-template-watch-boundary-budgets.md) independently accepts
+complete eighteen-row latency, allocation and live-Rust-heap profiles for both
+targets. Historical proposals, overruns and provenance-incomplete supplemental
+observations remain separately identified. Final-candidate enforcement and
+native consumer/resource qualification are still required by `G-013`;
+historical Rust/native budgets above remain unchanged and do not qualify this
+boundary. Commands, workload identities, sampling units and native rows are in the
 [foreign qualification protocol](native-template-watch-foreign-qualification.md).

@@ -19,8 +19,9 @@ deterministic replay, asset loading, OpenCV matching, bounded ONNX OCR with
 explicit initialization-time provider policy, finite template watcher
 scheduling, runtime orchestration, engine-scoped diagnostics, the Rust facade,
 C ABI 1.6, and the header-only C++ wrapper are implemented. The new C/C++ pull
-query surface has replay and consumer-contract coverage; its native support and
-foreign-boundary performance budgets are not yet qualified.
+query surface has replay and consumer-contract coverage and independently
+accepted foreign-overhead limits; native support and final-candidate budget
+enforcement remain unqualified.
 The picker-free Windows Adapter implements window/display discovery, WGC/D3D11 capture, system input,
 and explicit exact-window `WindowMessage` submission. The macOS Adapter
 implements discovery, ScreenCaptureKit capture, `CGEvent` system input, and
@@ -137,6 +138,9 @@ The subsequent ABI 1.6 development surface adds pull-based C/C++ template
 queries under [ADR 0067](adr/0067-pull-template-watch-c-abi.md). Native foreign
 consumer qualification and independent `G-013` overhead acceptance remain open;
 the existing Rust native evidence does not qualify those new boundaries.
+Controlled C/C++ consumers and a benchmark-private, capture-free fixture
+controller now exist under [ADR 0069](adr/0069-native-foreign-template-watch-apparatus.md).
+Admission checks and unaccepted resource observations do not promote native support.
 See [Implementation status](#implementation-status).
 
 ## Product definition
@@ -1031,7 +1035,7 @@ responsibilities a later phase takes on.
 | C++ RAII wrapper, `MadoPilot::C` and `MadoPilot::Cpp` CMake targets | Implemented through ABI 1.6 as a header-only C adapter, including repaired owning request projections, move-only query/terminal-result owners, explicit clone, lvalue-only borrowed views, retained exact-frame access, and complete negotiated-owner-surface refusal |
 | CMake install and export set, pkg-config file | Not implemented; consumption is from the development tree |
 | Numeric performance budgets | Phase 1 and accepted Phase 2 profiles remain revision-bound under ADRs 0008 and 0024–0032. ADRs 0037, 0039–0041, 0044, 0045, 0048, and 0049 retain their exact OCR/provider evidence. ADRs 0051 and 0052 retain replay/OpenCV watcher ceilings, and ADR 0053 retains independent native WGC and ScreenCaptureKit latency, heap, RSS, and growth budgets. Qualification V2 does not reinterpret those measurements: target-specific statistical enforcement is optional Lane C evidence and cannot replace either required Lane B semantic result |
-| Foreign template-query overhead budgets | Open under `G-013`. The paired Rust/C replay harness measures boundary latency and caller allocations without inheriting historical Rust watcher ceilings. New native C/C++ support requires separate controlled-fixture evidence |
+| Foreign template-query overhead budgets | `G-013` remains open. ADR 0068 independently accepts target-specific eighteen-row Rust/C replay profiles, including full-lifecycle per-sample live-byte bounds. Final-candidate enforcement is pending; incomplete or mismatched profiles are refused. Native C/C++ support requires separate controlled-fixture evidence |
 | Native permission behavior | Implemented on macOS as non-prompting probes. Windows has no permission probe; its input path performs non-prompting integrity comparison and reports proven UIPI without elevation |
 | Release artifacts | `v0.4.0` is source-only; installable packaging remains unimplemented |
 | ABI compatibility testing | Frozen ABI 1.0/1.2/1.3/1.4/1.5 headers compile independently and execute against ABI 1.6 at their exact extents. Current C++ consumers refuse partial owner surfaces before reading missing entries or creating handles |
@@ -2801,9 +2805,10 @@ publishes neither a binary artifact nor a C/C++ watcher. See
 [Native template watching from Rust](native-template-watch.md) and ADR 0064.
 
 That exclusion is the released `v0.4.0` scope. The current ABI 1.6 development
-surface adds pull-based C/C++ queries over the unchanged facade. Its native
-foreign-consumer evidence and numeric overhead budgets remain separate and
-unaccepted; see [the foreign qualification protocol](native-template-watch-foreign-qualification.md).
+surface adds pull-based C/C++ queries over the unchanged facade. Numeric
+overhead profiles are independently accepted, but final enforcement and native
+foreign-consumer qualification remain incomplete; see
+[the foreign qualification protocol](native-template-watch-foreign-qualification.md).
 
 The engine holds contracts only. It cannot observe which adapter is behind one,
 so no orchestration rule can come to depend on a concrete adapter, and there is

@@ -105,12 +105,18 @@ struct NativeFixture {
 
 #[cfg(windows)]
 impl NativeFixture {
-    fn start(arguments: &Arguments) -> Result<Self, String> {
+    fn start(arguments: &Arguments, authority: Option<Instant>) -> Result<Self, String> {
+        // `authority` is the one absolute cohort deadline and is never renewed.
+        // File reads, hashing, spawning, and reaping are not preemptible, so it
+        // is re-checked after each such call returns; expiry then authorizes
+        // only bounded cleanup, never the next stage.
+        require_startup_authority(authority)?;
         let bytes = std::fs::read(&arguments.fixture_executable)
             .map_err(|_| "fixture_authority_failed".to_owned())?;
         if !fixture_bytes_match(arguments, &bytes) {
             return Err("fixture_authority_failed".to_owned());
         }
+        require_startup_authority(authority)?;
         let token = format!(
             "native-watch-{}-{}",
             std::process::id(),
@@ -124,33 +130,47 @@ impl NativeFixture {
                 command.env(key, value);
             }
         }
-        let mut child = command
+        command
             .arg(format!("--title-token={token}"))
             .stdin(Stdio::null())
             .stdout(Stdio::piped())
-            .stderr(Stdio::null())
+            .stderr(Stdio::null());
+        require_startup_authority(authority)?;
+        let child = command
             .spawn()
             .map_err(|_| "fixture_authority_failed".to_owned())?;
+        let (sender, lines) = mpsc::sync_channel(64);
+        // `fixture` owns the child from here: every early return below drops it
+        // through `finish`, which terminates and reaps the child within
+        // FIXTURE_WAIT and joins the reader once one exists.
+        let mut fixture = Self {
+            child: Some(child),
+            lines,
+            reader: None,
+            reader_failed: Arc::new(AtomicBool::new(false)),
+            pending: VecDeque::new(),
+            title,
+            generation: 1,
+            revision: 0,
+            moved: false,
+            resized: false,
+            visual_tokens: VisualTokenSequence::new(),
+            finish_result: None,
+        };
+        require_startup_authority(authority)?;
         if !fixture_path_matches(arguments) {
-            let _reaped = terminate_child_bounded(
-                &mut child,
-                Instant::now() + FIXTURE_WAIT,
-            );
             return Err("fixture_authority_failed".to_owned());
         }
-        let Some(output) = child.stdout.take() else {
-            let _reaped = terminate_child_bounded(
-                &mut child,
-                Instant::now() + FIXTURE_WAIT,
-            );
-            return Err("fixture_authority_failed".to_owned());
-        };
-        let (sender, lines) = mpsc::sync_channel(64);
-        let reader_failed = Arc::new(AtomicBool::new(false));
-        let reader_failed_for_thread = Arc::clone(&reader_failed);
+        require_startup_authority(authority)?;
+        let output = fixture
+            .child
+            .as_mut()
+            .and_then(|child| child.stdout.take())
+            .ok_or_else(|| "fixture_authority_failed".to_owned())?;
+        let reader_failed_for_thread = Arc::clone(&fixture.reader_failed);
         // The receiver may stop draining before Drop joins this reader, so a
         // full channel must terminate the reader instead of blocking it.
-        let reader = match thread::Builder::new()
+        let reader = thread::Builder::new()
             .name("mado-pilot-native-watch-fixture".to_owned())
             .spawn(move || {
                 let mut stream = output;
@@ -211,31 +231,17 @@ impl NativeFixture {
                     }
                 }
             })
-        {
-            Ok(reader) => reader,
-            Err(_) => {
-                let _reaped = terminate_child_bounded(
-                    &mut child,
-                    Instant::now() + FIXTURE_WAIT,
-                );
-                return Err("fixture_authority_failed".to_owned());
-            }
-        };
-        let mut fixture = Self {
-            child: Some(child),
-            lines,
-            reader: Some(reader),
-            reader_failed,
-            pending: VecDeque::new(),
-            title,
-            generation: 1,
-            revision: 0,
-            moved: false,
-            resized: false,
-            visual_tokens: VisualTokenSequence::new(),
-            finish_result: None,
-        };
-        let ready = fixture.wait_for("fixture-ready ", FIXTURE_WAIT)?;
+            .map_err(|_| "fixture_authority_failed".to_owned())?;
+        fixture.reader = Some(reader);
+        let ready = fixture.wait_for(
+            "fixture-ready ",
+            startup_handshake_deadline(Instant::now(), authority),
+        );
+        // Expiry dominates the handshake outcome: a ready line observed at or
+        // after the authority instant, pending or freshly received, is not
+        // admitted, and nothing blocking remains before success.
+        require_startup_authority(authority)?;
+        let ready = ready?;
         let expected = format!(
             "fixture-ready class={} title={} capacity={}",
             protocol::ORDINARY_CLASS_NAME,
@@ -291,7 +297,7 @@ impl NativeFixture {
         }
     }
 
-    fn wait_for(&mut self, prefix: &str, wait: Duration) -> Result<String, String> {
+    fn wait_for(&mut self, prefix: &str, deadline: Instant) -> Result<String, String> {
         if let Some(index) = self
             .pending
             .iter()
@@ -302,7 +308,6 @@ impl NativeFixture {
                 .remove(index)
                 .ok_or_else(|| "fixture_authority_failed".to_owned());
         }
-        let deadline = Instant::now() + wait;
         loop {
             let remaining = deadline.saturating_duration_since(Instant::now());
             if remaining.is_zero() {
@@ -331,7 +336,7 @@ impl NativeFixture {
     }
 
     fn acknowledge(&mut self, prefix: &str) -> Result<ControlAcknowledgement, String> {
-        let line = self.wait_for(prefix, FIXTURE_COMMAND_WAIT)?;
+        let line = self.wait_for(prefix, Instant::now() + FIXTURE_COMMAND_WAIT)?;
         if line.trim() != prefix {
             return Err("fixture_authority_failed".to_owned());
         }
@@ -493,6 +498,27 @@ fn terminate_child_bounded(child: &mut Child, deadline: Instant) -> bool {
             Ok(None) | Err(_) => return false,
         }
     }
+}
+
+/// Fails once the optional absolute cohort authority has expired; `None` is the
+/// legacy fixed-bound startup and never fails here.
+#[cfg(windows)]
+fn require_startup_authority(authority: Option<Instant>) -> Result<(), String> {
+    match authority {
+        Some(deadline) if Instant::now() >= deadline => {
+            Err("cohort_deadline_exhausted".to_owned())
+        }
+        _ => Ok(()),
+    }
+}
+
+/// The handshake ends at the fixed startup bound from `now`, or at the absolute
+/// cohort authority when that instant comes first; the chosen instant is passed
+/// through unchanged so scheduling delay can never extend it.
+#[cfg(windows)]
+fn startup_handshake_deadline(now: Instant, authority: Option<Instant>) -> Instant {
+    let fixed = now + FIXTURE_WAIT;
+    authority.map_or(fixed, |deadline| fixed.min(deadline))
 }
 
 #[cfg(windows)]
@@ -662,4 +688,27 @@ fn peak_resident_bytes() -> Option<u64> {
     }
     .ok()?;
     u64::try_from(counters.PeakWorkingSetSize).ok()
+}
+
+#[cfg(all(windows, test))]
+mod windows_startup_authority_tests {
+    #[test]
+    fn expired_startup_authority_cannot_be_renewed_and_none_keeps_legacy_bound() {
+        use super::*;
+        let expired = Instant::now() - Duration::from_secs(1);
+        let live = Instant::now() + Duration::from_secs(3_600);
+        assert!(require_startup_authority(None).is_ok());
+        assert!(require_startup_authority(Some(live)).is_ok());
+        assert_eq!(
+            require_startup_authority(Some(expired)),
+            Err("cohort_deadline_exhausted".to_owned())
+        );
+        let now = Instant::now();
+        let fixed = now + FIXTURE_WAIT;
+        assert_eq!(startup_handshake_deadline(now, None), fixed);
+        assert_eq!(startup_handshake_deadline(now, Some(live)), fixed);
+        assert_eq!(startup_handshake_deadline(now, Some(expired)), expired);
+        let sooner = now + Duration::from_secs(1);
+        assert_eq!(startup_handshake_deadline(now, Some(sooner)), sooner);
+    }
 }

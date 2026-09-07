@@ -528,6 +528,7 @@ pub struct FixtureController {
     run_nonce: u64,
     next_nonce: u64,
     launch_mode: LaunchMode,
+    bounded_command_writes: bool,
     stopped: bool,
     expected_identity: ExecutableIdentity,
     finish_result: Option<FixtureFinalization>,
@@ -597,16 +598,23 @@ impl FixtureController {
             launch_mode,
             wait,
             MAX_FIXTURE_LAUNCH_ATTEMPTS,
+            None,
         )
     }
 
     /// Launches exactly once for a no-retry qualification process.
+    ///
+    /// `authority` is one absolute deadline that is never renewed: startup
+    /// refuses to launch, to keep a launched child, or to report success once
+    /// it has passed, and the handshake waits no longer than
+    /// `min(wait, authority)`. `None` keeps the plain `wait` allowance.
     pub fn start_once(
         executable: &Path,
         expected_executable: Arc<[u8]>,
         expected_identity: ExecutableIdentity,
         launch_mode: LaunchMode,
         wait: Duration,
+        authority: Option<Instant>,
     ) -> Result<Self, String> {
         Self::start_with_max_attempts(
             executable,
@@ -615,6 +623,7 @@ impl FixtureController {
             launch_mode,
             wait,
             1,
+            authority,
         )
     }
 
@@ -625,6 +634,7 @@ impl FixtureController {
         launch_mode: LaunchMode,
         wait: Duration,
         max_launch_attempts: u32,
+        authority: Option<Instant>,
     ) -> Result<Self, String> {
         let executable = executable
             .canonicalize()
@@ -644,6 +654,10 @@ impl FixtureController {
                 "the fixture code identity changed after provenance was recorded".to_owned(),
             );
         }
+        // The provenance read and identity lookup are blocking syscalls that
+        // cannot be interrupted; refuse to bind or launch once they have used
+        // up the authority.
+        require_startup_authority(authority)?;
         let socket_directory = FixtureSocketDirectory::new()?;
         let socket_path = socket_directory.socket_path();
         let run_nonce = next_fixture_run_nonce()?;
@@ -664,12 +678,14 @@ impl FixtureController {
             .iter()
             .map(OsString::as_os_str)
             .collect::<Vec<&OsStr>>();
-        let launched = LaunchedFixtureApplication::launch(&bundle, &argument_views)?;
-        let mut expected_process_id = launched.process_id();
-        let mut launch_guard = LaunchGuard::new(launched);
+        let (mut launch_guard, mut expected_process_id) =
+            launch_guarded_before(&bundle, &argument_views, authority)?;
         let mut launch_attempts = 1_u32;
-        let deadline = Instant::now() + wait;
+        let deadline = startup_deadline(Instant::now() + wait, authority);
         let (stream, application, accepted_launch) = loop {
+            // `deadline` already caps every wait below; this refuses to begin a
+            // new handshake step once the authority itself is spent.
+            require_startup_authority(authority)?;
             if max_launch_attempts > 1
                 && launch_guard.lifetime()? == FixtureApplicationLifetime::Lost
             {
@@ -684,9 +700,10 @@ impl FixtureController {
                     launch_attempts + 1
                 );
                 drop(launch_guard);
-                let launched = LaunchedFixtureApplication::launch(&bundle, &argument_views)?;
-                expected_process_id = launched.process_id();
-                launch_guard = LaunchGuard::new(launched);
+                let (guard, process_id) =
+                    launch_guarded_before(&bundle, &argument_views, authority)?;
+                launch_guard = guard;
+                expected_process_id = process_id;
                 launch_attempts += 1;
                 continue;
             }
@@ -773,6 +790,9 @@ impl FixtureController {
             );
         }
 
+        // The guard still owns the child here, so an expired authority tears it
+        // down within DROP_WAIT instead of handing it to the caller.
+        require_startup_authority(authority)?;
         let (launched, application) = launch_guard.take(accepted_launch);
         Ok(Self {
             launched,
@@ -785,6 +805,7 @@ impl FixtureController {
             run_nonce,
             next_nonce: 1,
             launch_mode,
+            bounded_command_writes: false,
             expected_identity,
             stopped: false,
             finish_result: None,
@@ -810,6 +831,12 @@ impl FixtureController {
             return None;
         }
         Some(self.application)
+    }
+
+    /// Enables the foreign controller's absolute write-and-ack deadline without
+    /// changing the existing Rust qualification lanes.
+    pub(crate) fn enable_bounded_command_writes(&mut self) {
+        self.bounded_command_writes = true;
     }
 
     /// The explicit renderer/mode fact validated from the ready record.
@@ -841,7 +868,7 @@ impl FixtureController {
             .checked_add(1)
             .ok_or_else(|| "the fixture command identity is exhausted".to_owned())?;
 
-        let encoded = format_command_line(FixtureCommand {
+        let mut encoded = format_command_line(FixtureCommand {
             run_nonce: self.run_nonce,
             nonce,
             event_payload_tag,
@@ -855,10 +882,22 @@ impl FixtureController {
             .as_mut()
             .ok_or_else(|| "the fixture command channel is closed".to_owned())?;
         let started = Instant::now();
-        writeln!(input, "{encoded}")
-            .and_then(|()| input.flush())
-            .map_err(|_| "the fixture command could not be written".to_owned())?;
-        let deadline = started + wait;
+        let deadline = started
+            + if self.bounded_command_writes {
+                wait.min(Duration::from_secs(2))
+            } else {
+                wait
+            };
+        if self.bounded_command_writes {
+            encoded.push('\n');
+            write_command_before(input, encoded.as_bytes(), deadline).map_err(|_| {
+                "the fixture command could not be written before its deadline".to_owned()
+            })?;
+        } else {
+            writeln!(input, "{encoded}")
+                .and_then(|()| input.flush())
+                .map_err(|_| "the fixture command could not be written".to_owned())?;
+        }
         loop {
             let message = recv_message(&self.lines, &self.reader_failed, deadline)?;
             match message {
@@ -1595,6 +1634,46 @@ fn wait_for_launched_live(
     Ok(AcceptedFixtureLaunch)
 }
 
+/// Exact failure returned by every startup step that finds its absolute
+/// authority already spent.
+pub(crate) const STARTUP_AUTHORITY_EXPIRED: &str = "the fixture startup authority expired";
+
+/// An absolute startup authority is spent at its instant, matching the
+/// zero-remaining rule used by the cohort deadline that supplies it.
+fn startup_authority_expired(authority: Option<Instant>, now: Instant) -> bool {
+    authority.is_some_and(|authority| now >= authority)
+}
+
+/// The handshake deadline never outlives the supplied authority; `None`
+/// keeps the plain wait deadline.
+fn startup_deadline(wait_deadline: Instant, authority: Option<Instant>) -> Instant {
+    authority.map_or(wait_deadline, |authority| wait_deadline.min(authority))
+}
+
+fn require_startup_authority(authority: Option<Instant>) -> Result<(), String> {
+    if startup_authority_expired(authority, Instant::now()) {
+        return Err(STARTUP_AUTHORITY_EXPIRED.to_owned());
+    }
+    Ok(())
+}
+
+/// Launches the bundle only inside the authority and guards the child before
+/// re-checking it. NSWorkspace launch is not interruptible, so a launch that
+/// returns after expiry is torn down by the guard within `DROP_WAIT` rather
+/// than continued into a handshake.
+fn launch_guarded_before(
+    bundle: &Path,
+    arguments: &[&OsStr],
+    authority: Option<Instant>,
+) -> Result<(LaunchGuard, u32), String> {
+    require_startup_authority(authority)?;
+    let launched = LaunchedFixtureApplication::launch(bundle, arguments)?;
+    let process_id = launched.process_id();
+    let guard = LaunchGuard::new(launched);
+    require_startup_authority(authority)?;
+    Ok((guard, process_id))
+}
+
 struct LaunchGuard {
     launched: Option<LaunchedFixtureApplication>,
     application: Option<AuthenticatedFixtureProcess>,
@@ -1651,6 +1730,43 @@ impl Drop for LaunchGuard {
     }
 }
 
+fn write_bytes_before(
+    mut bytes: &[u8],
+    deadline: Instant,
+    mut write: impl FnMut(&[u8], Duration) -> std::io::Result<usize>,
+) -> std::io::Result<()> {
+    while !bytes.is_empty() {
+        let remaining = deadline.saturating_duration_since(Instant::now());
+        if remaining.is_zero() {
+            return Err(std::io::ErrorKind::TimedOut.into());
+        }
+        match write(bytes, remaining) {
+            Ok(0) => return Err(std::io::ErrorKind::WriteZero.into()),
+            Ok(written) if written <= bytes.len() => bytes = &bytes[written..],
+            Ok(_) => return Err(std::io::ErrorKind::InvalidData.into()),
+            Err(error) if error.kind() == std::io::ErrorKind::Interrupted => {}
+            Err(error) => return Err(error),
+        }
+    }
+    Ok(())
+}
+
+fn write_command_before(
+    input: &mut UnixStream,
+    bytes: &[u8],
+    deadline: Instant,
+) -> std::io::Result<()> {
+    let previous_timeout = input.write_timeout()?;
+    let result = write_bytes_before(bytes, deadline, |bytes, remaining| {
+        input.set_write_timeout(Some(remaining))?;
+        input.write(bytes)
+    });
+    // The cloned reader shares nonblocking state, so only the write timeout is
+    // adjusted. Restore it even when a partial write, EOF, or deadline fails.
+    let restored = input.set_write_timeout(previous_timeout);
+    result.and(restored)
+}
+
 #[cfg(test)]
 mod tests {
     use super::{
@@ -1661,7 +1777,8 @@ mod tests {
         controlled_resize_logical_size_matches, discard_setup_events_until_quiet,
         expected_controlled_resize_logical_size, finalize_drop_then_observe, finalize_once,
         finish_reader_output, fixture_bundle, language_pins_are_unchanged, next_fixture_run_nonce,
-        observe_fixture_exit_with, post_use_identity_gate, read_bounded_lines, strict_event_reset,
+        observe_fixture_exit_with, post_use_identity_gate, read_bounded_lines,
+        startup_authority_expired, startup_deadline, strict_event_reset,
         wait_for_launched_live_with,
     };
     use crate::macos_fixture_control::FixtureApplicationLifetime;
@@ -1676,6 +1793,53 @@ mod tests {
     use std::sync::{Arc, Mutex, mpsc};
     use std::thread;
     use std::time::{Duration, Instant};
+
+    #[test]
+    fn bounded_command_partial_writes_preserve_the_complete_record() {
+        let mut received = Vec::new();
+        let mut interrupted = false;
+        super::write_bytes_before(
+            b"command\n",
+            Instant::now() + Duration::from_secs(1),
+            |bytes, _| {
+                if !interrupted {
+                    interrupted = true;
+                    return Err(std::io::ErrorKind::Interrupted.into());
+                }
+                let written = bytes.len().min(2);
+                received.extend_from_slice(&bytes[..written]);
+                Ok(written)
+            },
+        )
+        .unwrap();
+        assert_eq!(received, b"command\n");
+    }
+
+    #[test]
+    fn bounded_command_expiry_writes_nothing_and_closed_peer_is_not_success() {
+        let mut written = false;
+        let expired = super::write_bytes_before(b"command\n", Instant::now(), |_, _| {
+            written = true;
+            Ok(1)
+        });
+        assert_eq!(expired.unwrap_err().kind(), std::io::ErrorKind::TimedOut);
+        assert!(!written);
+        let (mut input, peer) = UnixStream::pair().unwrap();
+        input
+            .set_write_timeout(Some(Duration::from_secs(3)))
+            .unwrap();
+        let original = input.write_timeout().unwrap();
+        drop(peer);
+        assert!(
+            super::write_command_before(
+                &mut input,
+                b"command\n",
+                Instant::now() + Duration::from_secs(1),
+            )
+            .is_err()
+        );
+        assert_eq!(input.write_timeout().unwrap(), original);
+    }
 
     #[test]
     fn fixture_bundle_derivation_accepts_only_the_expected_layout() {
@@ -1815,6 +1979,32 @@ mod tests {
                 || panic!("an expired acceptance must not wait"),
             ),
             Err(FixtureLaunchAcceptanceError::DeadlineExceeded)
+        );
+    }
+
+    #[test]
+    fn startup_authority_is_spent_at_its_instant_and_caps_the_handshake_deadline() {
+        let now = Instant::now();
+        let wait_deadline = now + Duration::from_secs(10);
+
+        assert!(!startup_authority_expired(
+            None,
+            now + Duration::from_secs(3_600)
+        ));
+        assert!(!startup_authority_expired(
+            Some(now + Duration::from_nanos(1)),
+            now
+        ));
+        assert!(startup_authority_expired(Some(now), now));
+
+        assert_eq!(startup_deadline(wait_deadline, None), wait_deadline);
+        assert_eq!(
+            startup_deadline(wait_deadline, Some(now + Duration::from_secs(4))),
+            now + Duration::from_secs(4)
+        );
+        assert_eq!(
+            startup_deadline(wait_deadline, Some(now + Duration::from_secs(40))),
+            wait_deadline
         );
     }
 

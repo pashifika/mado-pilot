@@ -2,16 +2,18 @@
 
 ABI 1.6 implements the C/C++ pull-query surface in
 [ADR 0067](adr/0067-pull-template-watch-c-abi.md). Replay consumers and the
-paired boundary smoke harness exist. **Native C/C++ qualification and new
-numeric overhead budgets remain unaccepted.** Neither the released Rust
-watcher evidence nor a hosted green build promotes the new foreign boundary.
+paired boundary harness exist. Target-specific eighteen-row numeric profiles
+are independently accepted under ADR 0068; **final enforcement and native
+C/C++ qualification remain incomplete**. Neither released Rust watcher evidence
+nor a hosted green build promotes the new foreign boundary.
 
 This protocol fixes the observable qualification rows and measurement scope.
-The current `examples/c/template-watch.c` and `examples/cpp/template-watch.cpp`
-are replay consumers, not native qualification runners. A native campaign
-must first implement and review their controlled native flow and its owned
-fixture orchestration. There is no executable native foreign command to run
-at this revision.
+The existing `examples/c/template-watch.c` and `examples/cpp/template-watch.cpp`
+remain replay consumers. Separate `native-template-watch.c` and
+`native-template-watch.cpp` consumers now use the released public boundary with
+the capture-free owned-fixture controller described in
+[ADR 0069](adr/0069-native-foreign-template-watch-apparatus.md). Executable
+apparatus is not native support qualification.
 
 ## Separate authorities
 
@@ -72,6 +74,79 @@ cleanup and resource return against a recorded baseline. Missing host access,
 permission, topology, executable mode, or accepted budget is an explicit
 unexecuted prerequisite, never a skipped pass.
 
+### Executable apparatus
+
+Use separate absolute target roots for the library/consumers, controller,
+boundary precursors and validation. Complete all builds before pinning bytes.
+For the library/consumer root:
+
+```sh
+export CARGO_TARGET_DIR="$PWD/target/native-foreign-consumers"
+python3 tools/setup-native.py -- cargo build --locked --release --package mado-pilot-capi --lib --example c-abi-check
+python3 tools/setup-native.py -- cargo run --locked --release --package mado-pilot-capi --example c-abi-check -- --label "<host>"
+```
+
+`c-abi-check` compiles both new consumers and runs only their non-prompting
+`--check` admission mode, alongside the existing ABI/C++/CMake checks. That mode
+never opens a capture session and reports no native row pass.
+
+In the independent controller root:
+
+```sh
+export CARGO_TARGET_DIR="$PWD/target/native-foreign-controller"
+python3 tools/setup-native.py -- cargo build --locked --release --package mado-pilot --features native-template-watch-qualification --bench native-template-watch
+```
+
+Record the actual controller and consumer executable paths. Run each consumer
+sequentially against its own authenticated fixture lifetime:
+
+```sh
+python3 tools/setup-native.py -- <absolute-controller> \
+  --foreign-consumer=<absolute-consumer> \
+  --fixture-executable=<absolute-approved-fixture-executable> \
+  --foreign-artifact-dir=<absolute-new-attempt-directory> \
+  --foreign-library=<absolute-actually-loaded-library>
+```
+
+On Windows use the explicit OpenCV/libclang setup options from
+`CONTRIBUTING.md`, and build the existing window-message fixture in a separate
+root. Do not pass `--activate` or `--fail-stage`. On Apple retain the already
+approved fixture bundle; do not replace, rebuild or re-sign it to change a
+permission outcome. Both foreign commands use absolute `--key=value` arguments;
+the attempt directory must not exist and its parent must already exist.
+
+`LOADED` identifies the module containing the actual `madopilot_get_api`
+address. Pin that module, not merely an import library or preferred search path.
+For a Cargo-built Apple library, its install name may point into `release/deps`
+rather than the top-level hard link; record and verify the actual module.
+
+Each invocation writes immutable root `before.json` and `report.json` using
+`madopilot.native-foreign-watch.cohort.v2`. The fixed cohort contains one full
+warmup and three full measurements in the same controller process, with fresh
+fixture/consumer owners and unchanged artifact pins. Each launched cycle writes
+its own complete F1–F9 ledger and cleanup facts under `warmup/` or
+`measurement-001/` through `measurement-003/`, using
+`madopilot.native-foreign-watch.cycle.v2`. Unlaunched cycles are explicitly
+unexecuted, not missing successes. Exit codes are `0` for complete acceptance,
+`1` for a nonpassing cohort and `2` for apparatus failure. Native F9 resource
+ceilings remain unaccepted and prevent complete acceptance.
+
+Cold controller counts are initialization observations, not a leak-free claim.
+After an eligible full warmup, every measured before/after and final observation
+must satisfy the same fixed post-warmup baseline. No reset, allowance, additional
+warmup or wait-until-stable is permitted. Warmup semantic or cleanup failure
+prevents later launches; the sole F9 budget-unaccepted gate stays visibly
+unexecuted while allowing otherwise clean planned measurements.
+
+The transport bounds a complete wire line, including LF/CRLF, to 2048 bytes,
+uses a finite 64-event reader queue and permits 64 facts per row / 512 records
+per consumer. Consumer work between requests uses the 120-second row bound
+and the same absolute 600-second cohort authority across all four cycles.
+Filesystem/native calls are not preempted; startup overruns permit only bounded
+cleanup, not later binding or consumer launch. The first request byte starts a fixed
+five-second request/reply deadline; partial bytes never restart it. Individual
+public operations retain their own five-second absolute deadlines.
+
 ## Common native public flow
 
 Run each row through both the negotiated C table and the C++ wrapper. C++ may
@@ -97,6 +172,24 @@ F4/F5 cannot pass on a status-only observation. On macOS, permission-refusal
 behavior is recorded only when that state is actually observed; do not revoke
 user permission or fabricate a refusal. Unavailable Windows topology leaves
 F5 unexecuted without weakening the other rows.
+
+Raw public frames have no transform accessor. Each declared metadata setup
+uses one immediate public probe result and its exact retained frame/transform,
+then compares all ninety acknowledged token cells in the consumer session.
+Bootstrap facts are separate from qualification match evidence. A post-change
+probe starts only after raw frames already show new epoch/geometry (and resize
+dimensions). Stream/query ids are nonzero; epoch, sequence and geometry
+revision are zero-based and are never adjusted by the apparatus.
+
+F1 includes one complete native warmup and three complete fresh lifecycles in
+the same consumer process, fixture and loaded module. It records an all-owners-
+released baseline and one post-release resource sample per measured lifecycle.
+F9 records the final pre-exit sample. Windows reports private commit, working
+set and handle count; Apple reports physical footprint, resident bytes and Mach
+port-name count without retaining port values. These are not GPU-byte or exact
+native live-object measurements. Until new target-specific native precursors and
+independent ceiling acceptance exist, effective F9 is
+`UNEXECUTED resource_budget_unaccepted`, even when consumer cleanup succeeds.
 
 Deterministic tests retain authority for scheduler saturation/fairness,
 coalescing, queue expiry, controlled late backend results, invalid prefixes and
@@ -128,12 +221,14 @@ selecting numeric ceilings.
 | `query_clone_release` | Shared query reference acquisition/release |
 | `result_clone_release` | Shared terminal reference acquisition/release |
 | `exact_frame_after_parents` | Exact retained frame mapping/read after all parents are gone |
+| `create_cancel_release` | Complete replay engine/session/package/template/query setup, settled pending, cancellation, result/query release, and final caller teardown |
 
 Smoke uses one warmup and three retained samples. Profile uses twenty warmups
 and two hundred retained samples. A sample contains 32 observations except the
-first-projection rows, which contain one. Backend completion and fixture setup
-are outside caller latency/allocation windows. Matched setup uses a bounded
-public wait, not a sleep or an unstimulated poll.
+first-projection and full-lifecycle rows, which contain one. Backend completion
+and fixture setup are outside the original observation windows; the full
+lifecycle pair deliberately includes its complete startup-through-close window.
+Matched setup uses a bounded public wait, not a sleep or an unstimulated poll.
 
 The report retains per-sample caller latency, allocation/deallocation calls,
 process-wide Rust live-byte observations, heap peak/growth, and correctness.
@@ -150,13 +245,18 @@ Measurement limits are part of the result:
   they are not a caller-only retained-storage measurement.
 - Exact-frame rows report the actually readable RGBA view length. That is not
   authoritative incremental mapped bytes or a native producer-pool measurement.
-- The current harness supplies correctness and structural allocation gates only.
-  It accepts no latency/heap ceiling, makes no real-time claim, and reuses none
-  of the historical Rust watcher numbers.
+- Correctness and structural allocation gates remain unconditional. Numeric
+  enforcement is opt-in and fails closed unless a complete independently
+  accepted target profile matches. [ADR 0068](adr/0068-template-watch-boundary-budgets.md)
+  independently accepts all eighteen rows on both targets, including each
+  lifecycle sample's signed live-byte delta. Final-candidate enforcement remains
+  pending. No historical Rust ceiling is inherited.
 
 ## Acceptance and rejection
 
-`G-013` remains open for these new workloads. Before final-candidate enforcement:
+`G-013` remains open. Precursor measurement and numeric review are complete;
+the requirements below still distinguish profile acceptance from final and
+native qualification:
 
 1. Capture repeated precursor profiles on **both** approved release targets,
    preserving all raw samples and exact provenance. Separate stable boundary

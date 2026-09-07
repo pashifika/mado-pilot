@@ -1,8 +1,9 @@
 //! Paired public Rust-facade / negotiated C-table template-query observations.
 //!
-//! Replay/OpenCV setup and completion are outside every caller allocation and
-//! latency window. This is not native capture, backend latency, dynamic loading,
-//! foreign malloc, RSS, or a qualification against historical watcher ceilings.
+//! The original observation pairs exclude replay/OpenCV setup and completion
+//! from caller windows. The separate create/cancel/release pair includes the
+//! entire public replay lifecycle. Neither measures native capture startup,
+//! dynamic loading, foreign malloc, RSS, or historical watcher ceilings.
 //! The process-wide `Accounting` heap readings include fixture/setup and worker
 //! activity; the additional allocation-call counters cover only this caller.
 //!
@@ -23,7 +24,8 @@
 //!     --hardware "..." --os-version "..."
 //! ```
 //! Use a dedicated `CARGO_TARGET_DIR` if another campaign has pinned this
-//! package's binaries. No latency/heap ceiling is accepted by this harness.
+//! package's binaries. `--enforce-budgets` requires a complete independently
+//! accepted target profile; ADR 0068 proposals are not accepted by this harness.
 
 use std::alloc::{GlobalAlloc, Layout};
 use std::cell::{Cell, RefCell};
@@ -34,6 +36,8 @@ use mado_pilot::ContentDigest;
 use mado_pilot_testkit::bench_harness::{Accounting, Benchmark, Plan, Profile, Sample, Workload};
 use mado_pilot_testkit::{bench_harness, match_fixtures};
 
+#[path = "template_watch_boundary/budgets.rs"]
+mod budgets;
 #[path = "template_watch_boundary/flows.rs"]
 mod flows;
 
@@ -158,10 +162,11 @@ enum Case {
     QueryClone,
     ResultClone,
     RetainedFrame,
+    CreateCancelRelease,
 }
 
 impl Case {
-    const ALL: [Self; 8] = [
+    const ALL: [Self; 9] = [
         Self::PendingPoll,
         Self::FirstTerminal,
         Self::TerminalPoll,
@@ -170,12 +175,17 @@ impl Case {
         Self::QueryClone,
         Self::ResultClone,
         Self::RetainedFrame,
+        Self::CreateCancelRelease,
     ];
 
     fn pending(self) -> bool {
         matches!(
             self,
-            Self::PendingPoll | Self::FirstTerminal | Self::WaitCancelled | Self::QueryClone
+            Self::PendingPoll
+                | Self::FirstTerminal
+                | Self::WaitCancelled
+                | Self::QueryClone
+                | Self::CreateCancelRelease
         )
     }
 
@@ -198,6 +208,7 @@ impl Case {
                 "exact_frame_after_parents_rust",
                 "exact_frame_after_parents_c",
             ],
+            Self::CreateCancelRelease => ["create_cancel_release_rust", "create_cancel_release_c"],
         }
     }
 
@@ -227,11 +238,14 @@ impl Case {
             Self::RetainedFrame => {
                 "after query, session, engine, template and package teardown a retained result yields its exact RGBA frame, shared mapping and all original bytes"
             }
+            Self::CreateCancelRelease => {
+                "one full public replay engine/session/package/query startup reaches settled pending, explicit cancellation publishes Cancelled, its result remains readable after query and parents release, and all caller owners are released before the window ends"
+            }
         }
     }
 
     fn repetitions(self) -> usize {
-        if self == Self::FirstTerminal {
+        if matches!(self, Self::FirstTerminal | Self::CreateCancelRelease) {
             1
         } else {
             BATCH
@@ -292,6 +306,8 @@ enum Ready {
     C(CFlow),
     FirstRust,
     FirstC,
+    LifecycleRust,
+    LifecycleC,
 }
 
 struct Fixture<'a> {
@@ -304,6 +320,8 @@ fn exercise(fixture: &Fixture<'_>) -> Sample {
     let (result, mut observation) = match &fixture.ready {
         Ready::Rust(flow) => timed(|| flow.exercise(fixture.case)),
         Ready::C(flow) => timed(|| flow.exercise(fixture.case)),
+        Ready::LifecycleRust => timed(RustFlow::create_cancel_release),
+        Ready::LifecycleC => timed(CFlow::create_cancel_release),
         Ready::FirstRust => {
             let mut flow = RustFlow::new(Case::FirstTerminal);
             flow.close_parents();
@@ -362,6 +380,7 @@ fn main() {
             "--bench requires nonempty --os-version"
         );
     }
+    let enforcement = budgets::select(&arguments, plan, &hardware, &os_version);
     let mut measurements = Vec::with_capacity(Case::ALL.len() * 2);
     for case in Case::ALL {
         for (side, name) in case.names().into_iter().enumerate() {
@@ -377,6 +396,8 @@ fn main() {
                     let ready = match (case, side) {
                         (Case::FirstTerminal, 0) => Ready::FirstRust,
                         (Case::FirstTerminal, _) => Ready::FirstC,
+                        (Case::CreateCancelRelease, 0) => Ready::LifecycleRust,
+                        (Case::CreateCancelRelease, _) => Ready::LifecycleC,
                         (_, 0) => Ready::Rust(RustFlow::new(case)),
                         _ => Ready::C(CFlow::new(case)),
                     };
@@ -397,7 +418,7 @@ fn main() {
     }
 
     if full {
-        report(plan, &hardware, &os_version, &measurements);
+        report(plan, &hardware, &os_version, &measurements, enforcement);
     } else {
         for measurement in &measurements {
             bench_harness::summarize(
@@ -428,12 +449,24 @@ fn main() {
             }
         }
     }
+    if let Some(profile) = enforcement {
+        profile.enforce(&measurements, plan);
+        println!("\n[budget_enforcement]");
+        text("profile", profile.id());
+        text("status", "passed");
+    }
 }
 
 // The shared reporter cannot omit an unknown mapped-byte observation. Reuse its
 // benchmark block, Plan, Profile host parsing, measurement and heap accounting,
 // but emit only supported observations here rather than print a fictional zero.
-fn report(plan: Plan, hardware: &str, os_version: &str, measurements: &[Measurement]) {
+fn report(
+    plan: Plan,
+    hardware: &str,
+    os_version: &str,
+    measurements: &[Measurement],
+    enforcement: Option<&budgets::BoundaryProfile>,
+) {
     println!("format_version = 1\n\n[benchmark]");
     for (key, value) in bench_harness::benchmark_block(&Benchmark {
         id: "phase-5-template-watch-boundary",
@@ -458,17 +491,7 @@ fn report(plan: Plan, hardware: &str, os_version: &str, measurements: &[Measurem
     text("release_target", bench_harness::RELEASE_TARGET);
     text("hardware", hardware);
     text("os_version", os_version);
-    text(
-        "build_profile",
-        &format!(
-            "template-watch-boundary; debug_assertions={}; private-fixture={}; coreml-provider={}; cuda-provider={}; qualification-unsupported-api={}",
-            cfg!(debug_assertions),
-            cfg!(feature = "private-fixture"),
-            cfg!(feature = "coreml-provider"),
-            cfg!(feature = "cuda-provider"),
-            cfg!(feature = "qualification-unsupported-api")
-        ),
-    );
+    text("build_profile", &build_profile());
     println!(
         "warmup_iterations = {}\nsample_count = {}",
         plan.warmup(),
@@ -484,7 +507,7 @@ fn report(plan: Plan, hardware: &str, os_version: &str, measurements: &[Measurem
     );
     text(
         "latency_scope",
-        "one batch of caller observations including fixed-value oracle comparisons and transient reference release; no replay/engine/package/template setup, matching completion wait, parent close, report storage or output",
+        "original sixteen observation rows: one batch including fixed-value oracle comparisons and transient reference release, excluding replay/engine/package/template setup, matching wait and parent close; create_cancel_release rows instead time the full replay lifecycle; report storage and output are always outside",
     );
     text(
         "first_terminal_scope",
@@ -503,13 +526,26 @@ fn report(plan: Plan, hardware: &str, os_version: &str, measurements: &[Measurem
         "process-wide live Rust heap via existing Accounting, including fixture and concurrent workers; peak/growth use shared harness baselines; first-terminal rows also include per-sample untimed setup/teardown in heap and iteration_span",
     );
     text(
+        "lifecycle_scope",
+        "create_cancel_release rows alone include one full replay setup, settled pending oracle, Cancelled publication, result/query final release and session/engine/caller teardown per sample; live before/after readings surround that entire window, with no post-teardown wait for a chosen heap value",
+    );
+    text(
+        "startup_scope",
+        "native capture startup unavailable; lifecycle rows measure replay startup-through-close including package preparation, not native session-open to frame readiness",
+    );
+    text(
+        "resident_memory_scope",
+        "unavailable: live Rust GlobalAlloc bytes are not process RSS, foreign malloc, native heap or GPU memory",
+    );
+    text(
         "mapped_bytes_scope",
         "not instrumented: no mapped_bytes_per_result or extra-mapped-byte assertion; unchanged pending authority is observed, not a byte measurement; retained-frame rows report actual readable mapping length and check shared-storage flags in their oracle",
     );
     text(
         "qualification",
-        "observations only; correctness and structural caller zero allocations enforced; target latency and heap budgets require separate acceptance; no native support or historical evidence promotion",
+        "correctness and structural caller zero allocations always enforced; numeric enforcement is opt-in and requires a complete independently accepted target profile; no native support or historical evidence promotion",
     );
+    budgets::report_selection(enforcement);
     println!("setup_operation_timeout_nanos = {}", SETUP_WAIT.as_nanos());
     println!("query_lifetime_nanos = {}", QUERY_LIFETIME.as_nanos());
     println!(
@@ -544,6 +580,14 @@ fn report(plan: Plan, hardware: &str, os_version: &str, measurements: &[Measurem
                 .saturating_sub(metrics.fixture_baseline.get())
         );
         println!("allocated_growth_bytes = {}", workload.growth_bytes());
+        println!(
+            "caller_allocation_calls_max = {}",
+            observations
+                .iter()
+                .map(|sample| sample.calls.allocations())
+                .max()
+                .expect("every workload retains caller observations")
+        );
         println!(
             "caller_zero_allocation_gate = {}",
             measurement.case.requires_zero_allocations()
@@ -589,6 +633,24 @@ fn report(plan: Plan, hardware: &str, os_version: &str, measurements: &[Measurem
                         .expect("retained-frame sample observed a real byte view")
                 }),
             );
+            println!(
+                "readable_frame_view_bytes = {}",
+                observations
+                    .iter()
+                    .map(|sample| sample.readable_view.expect("retained-frame byte view"))
+                    .max()
+                    .expect("retained-frame samples are present")
+            );
+        }
+        if measurement.case == Case::CreateCancelRelease {
+            array(
+                "lifecycle_live_delta_bytes_per_sample",
+                observations.iter().map(|sample| {
+                    i64::try_from(sample.live_after).expect("live heap fits signed observation")
+                        - i64::try_from(sample.live_before)
+                            .expect("live heap fits signed observation")
+                }),
+            );
         }
     }
 }
@@ -612,6 +674,17 @@ fn array(key: &str, values: impl IntoIterator<Item = impl std::fmt::Display>) {
         print!("{value}");
     }
     println!("]");
+}
+
+fn build_profile() -> String {
+    format!(
+        "template-watch-boundary; debug_assertions={}; private-fixture={}; coreml-provider={}; cuda-provider={}; qualification-unsupported-api={}",
+        cfg!(debug_assertions),
+        cfg!(feature = "private-fixture"),
+        cfg!(feature = "coreml-provider"),
+        cfg!(feature = "cuda-provider"),
+        cfg!(feature = "qualification-unsupported-api")
+    )
 }
 
 fn fixtures() -> PathBuf {

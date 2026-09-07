@@ -21,7 +21,7 @@ applicability joins those results at the current V2 boundary.
 | Non-blocking `TemplateQuery::poll`, blocking `wait`, explicit `cancel`, and immutable terminal results | Supported for replay/OpenCV and the qualified native sessions |
 | OCR predicates or wait-for-text | Not implemented |
 | Watcher callbacks or subscriptions | Not implemented |
-| C ABI or C++ watcher start/query APIs | Implemented in the subsequent ABI 1.6 development surface; native foreign qualification and overhead budgets remain pending |
+| C ABI or C++ watcher start/query APIs | Implemented in the subsequent ABI 1.6 development surface; numeric overhead profiles accepted, final enforcement and native foreign qualification pending |
 | Automatic input, target activation, or watcher-triggered actions | Not implemented |
 | Tokio/futures integration or real-time guarantees | Not implemented |
 | `v0.4.0` distribution | Source-only release; packaged libraries, crates.io publication, static artifacts, installers, and bundled native dependencies are not provided |
@@ -234,6 +234,7 @@ Native Rust WGC/ScreenCaptureKit watcher support is qualified on the named relea
 
 The subsequent ABI 1.6 development surface adds pull-based C/C++ watcher APIs
 with replay, ownership, layout, and frozen-prefix checks. Those checks do not
-qualify the native foreign boundary. Its executable native campaign and new
+qualify the native foreign boundary. Independent native consumers and a
+capture-free fixture controller now exist; native campaign acceptance and new
 overhead budgets remain pending under the
 [foreign qualification protocol](native-template-watch-foreign-qualification.md).

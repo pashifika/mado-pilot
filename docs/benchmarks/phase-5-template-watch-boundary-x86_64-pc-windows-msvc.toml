@@ -1,0 +1,2712 @@
+# Independently accepted precursor-derived ceilings, not final results.
+# Original reports, failures, source identities and arrays remain unchanged.
+format_version = 1
+
+[benchmark]
+id = "phase-5-template-watch-boundary-x86_64-pc-windows-msvc"
+workload = "paired public Rust-facade and negotiated C-table query observation costs"
+phase = "5"
+status = "precursor-measured-budgets-accepted"
+normative = true
+measurements_recorded = true
+normative_scope = "accepted target-local numeric limits only; recorded observations are precursors, not final qualification results"
+
+[profile]
+fixture = "fixtures/assets/phase1-slice; generated match_fixtures RGBA scene; two-frame rate-held absent and one-frame matched replay"
+fixture_sha256 = "293050009da09f14f272919e3df33738c138a26863948309736303db9fc04492"
+scene_rgba_sha256 = "f64b1df743b1204cf70f459866371602ffbd99b1cee383e38837c562b2889aa2"
+release_target = "x86_64-pc-windows-msvc"
+hardware = "Intel Core i7-12700KF"
+os_version = "Windows 11 Pro 10.0.26200"
+build_profile = "template-watch-boundary; debug_assertions=false; private-fixture=false; coreml-provider=false; cuda-provider=false; qualification-unsupported-api=false"
+metric_schema = "phase-5-template-watch-boundary-v2"
+warmup_iterations = 20
+sample_count = 200
+process_count = 4
+precursor_workload_count = 18
+required_workload_count = 18
+process_policy = "four source-bound precursor processes for the original sixteen rows; two complete source-bound processes for lifecycle rows; all 200 samples retained per workload/process; no pooling, exclusion, replacement or retry"
+correctness_oracle = "every warmup and retained observation checks its unchanged consumer oracle; structural zero-allocation gates inspect every caller window"
+queue_policy = "two-frame rate-held absent replay or one-frame matched replay; fixed finite scheduler and unchanged settled pending snapshot"
+latency_scope = "original sixteen observation rows: one batch including fixed-value oracle comparisons and transient reference release, excluding replay/engine/package/template setup, matching wait and parent close; create_cancel_release rows instead time the full replay lifecycle; report storage and output are always outside"
+first_terminal_scope = "one first poll and its owned result publication only; SessionClosed is committed by public close before the window; result oracle and release are after the window; no matched-backend completion is timed"
+deadline_scope = "finite operation authority, not preemption of an uninterruptible backend or a hard wall-clock guarantee; poll, retain, release and value access use their public nonblocking/bounded lifecycle contracts"
+allocation_scope = "caller-thread Rust GlobalAlloc calls only; includes alloc, alloc_zeroed and every realloc (even a same-size or shrinking call); excludes other threads, foreign malloc and independently loaded libraries"
+heap_scope = "process-wide live Rust heap via existing Accounting, including fixture and concurrent workers; peak/growth use shared harness baselines; first-terminal rows also include per-sample untimed setup/teardown in heap and iteration_span"
+mapped_bytes_scope = "not instrumented: no mapped_bytes_per_result or extra-mapped-byte assertion; unchanged pending authority is observed, not a byte measurement; retained-frame rows report actual readable mapping length and check shared-storage flags in their oracle"
+steady_heap_scope = "ending caller-recorded process live Rust bytes minus pre-fixture baseline, saturated at zero; fixture retained except first-terminal and full-lifecycle per-sample teardown; distinct from each signed lifecycle live-after minus live-before sample"
+resident_memory_scope = "unavailable: Rust GlobalAlloc is not process RSS, native heap, foreign malloc or GPU memory"
+startup_scope = "native capture startup unavailable; lifecycle rows measure replay startup-through-close including package preparation, not native session-open to frame readiness"
+lifecycle_scope = "create_cancel_release rows alone include one full replay setup, settled pending oracle, Cancelled publication, result/query final release and session/engine/caller teardown per sample; live before/after readings surround that entire window, with no post-teardown wait for a chosen heap value"
+abi_overhead_scope = "paired absolute Rust and negotiated C-table costs in one Rust-linked process, not independent C++/dynamic-library/foreign-allocator costs; no subtractive or ratio gate"
+setup_operation_timeout_nanos = 5000000000
+query_lifetime_nanos = 60000000000
+pending_minimum_interval_nanos = 3600000000000
+historical_precursor_workload_count = 16
+complete_precursor_process_count = 2
+lifecycle_source_bound_process_count = 2
+
+[acceptance]
+status = "accepted"
+independent_review = "rasen/changes/pull-based-c-and-cpp-template-watch-query/evidence/windows-boundary-acceptance-001.json"
+adr = "docs/adr/0068-template-watch-boundary-budgets.md"
+final_enforcement = "not run; requires a clean pinned final source/executable and five fresh sequential full enforcement processes on this exact target/host; precursors do not count; no retry, replacement, exclusion or CLI override"
+native_support = "not implied"
+date = "2026-09-07"
+accepted_workload_count = 18
+final_enforcement_process_count = 0
+native_f9_os_resource_budgets = "unaccepted"
+
+[derivation]
+latency = "for each target/workload/statistic: 2 * max(applicable source-bound per-process nearest-rank raw-nanosecond statistic), rounded upward to 100 ns"
+latency_quantum_nanos = 100
+latency_headroom_numerator = 2
+latency_headroom_denominator = 1
+heap = "for each target/workload/peak-or-steady metric: 1.25 * max(applicable source-bound per-process bytes), rounded upward to 4096 bytes; an observed zero stays zero"
+heap_quantum_bytes = 4096
+heap_headroom_numerator = 5
+heap_headroom_denominator = 4
+allocations = "maximum source-bound observed caller alloc + alloc_zeroed + realloc per complete sample; no allowance, dealloc subtraction or conversion from net heap"
+growth = "signed post-warmup allocated growth at most zero for every workload; opt-in accepted ceiling, not the inherited Phase 1 4096-byte hard gate"
+limits = "four source-bound processes for original rows, two for lifecycle; no confidence interval or long-tail guarantee; actual zero-duration first polls reflect clock granularity; keep every outlier"
+final_campaign = "after independent acceptance and candidate pinning, five fresh sequential full enforcement processes per target, retaining every attempted process and full raw output; no final result selects or relaxes a ceiling"
+nearest_rank_one_based = [100, 190, 200]
+lifecycle_live_delta = "every retained signed process_live_bytes_after_window - process_live_bytes_before_window sample <= 0; not an average, sum or saturated difference"
+measurement_summary = "measurement statistics are worst applicable source-bound per-process observations; budget records are accepted limits, never measured values"
+source_bound_precursors = ["windows-first", "windows-repeat", "windows-001", "windows-002"]
+lifecycle_source_bound_precursors = ["windows-001", "windows-002"]
+
+[[precursor]]
+id = "windows-first"
+report = "rasen/changes/pull-based-c-and-cpp-template-watch-query/evidence/windows-prereq-002.zip:boundary-first.stdout.log"
+report_sha256 = "99170f73dcfa0a98b358ae35dd52837c6858a8044c1a6d2e3bac99f385a69934"
+executed_source = "9db705be8beff44fb52aa17d42fe9885897077b3"
+executed_tree = "624f2e6da362fe82d1fe140a730583245d54bf29"
+benchmark_executable_sha256 = "1070371ca87d558efa69f7e585021101627977f6ce5d78c49a98fd9d0c751aed"
+exit_code = 0
+archive_sha256 = "afb88f9f2abd9039203c9b3e7871fb27d31ac8531a171d2f8789c52c425ebd62"
+provenance = "archive commands.json, source-and-headers.json, benchmark-before.json, benchmark-after.json, environment-provenance.json and summary.json; raw stdout is authoritative, not amended .toml copies"
+
+[[precursor]]
+id = "windows-repeat"
+report = "rasen/changes/pull-based-c-and-cpp-template-watch-query/evidence/windows-prereq-002.zip:boundary-repeat.stdout.log"
+report_sha256 = "952fdbfb8d6c14fedd1f0a609712e20a314040593e6e7b75c24446e88a31cf6e"
+executed_source = "9db705be8beff44fb52aa17d42fe9885897077b3"
+executed_tree = "624f2e6da362fe82d1fe140a730583245d54bf29"
+benchmark_executable_sha256 = "1070371ca87d558efa69f7e585021101627977f6ce5d78c49a98fd9d0c751aed"
+exit_code = 0
+archive_sha256 = "afb88f9f2abd9039203c9b3e7871fb27d31ac8531a171d2f8789c52c425ebd62"
+provenance = "archive commands.json, source-and-headers.json, benchmark-before.json, benchmark-after.json, environment-provenance.json and summary.json; raw stdout is authoritative, not amended .toml copies"
+
+[[excluded_attempt]]
+artifact = "rasen/changes/pull-based-c-and-cpp-template-watch-query/evidence/windows-prereq-002.zip:prior-failed-attempt-001.zip"
+sha256 = "be03b11a96bfeb1b4d039998876f99c7445a4ddf7a1adce325dc98f356bf8238"
+status = "failed initialization attempt preserved unchanged; no complete boundary measurement"
+
+[[budget]]
+measure = "result_correctness"
+kind = "hard"
+requirement = "every warmup and retained sample satisfies the existing consumer oracle"
+predicate = "result_correctness == 0"
+
+[[measurement]]
+workload = "pending_poll_rust"
+correctness_oracle = "the settled no-match query remains pending with identical identity, stability, depths and all nine work counts"
+measurement_role = "worst applicable source-bound per-process precursor statistics; not pooled, supplementary, accepted limits or final results"
+observations_per_sample = 32
+result_correctness = 0
+caller_zero_allocation_gate = true
+latency_p50_ms = 0.001100
+latency_p95_ms = 0.001100
+latency_max_ms = 0.004600
+peak_allocated_bytes = 102576
+steady_allocated_bytes = 102576
+allocated_growth_bytes = 0
+caller_allocation_calls_max = 0
+source_bound_process_count = 4
+
+[[measurement.precursor]]
+id = "windows-first"
+sample_count = 200
+result_correctness = 0
+latency_p50_ms = 0.0009
+latency_p95_ms = 0.001
+latency_max_ms = 0.0046
+peak_allocated_bytes = 102576
+steady_allocated_bytes = 102576
+allocated_growth_bytes = 0
+caller_allocation_calls_max = 0
+
+[[measurement.precursor]]
+id = "windows-repeat"
+sample_count = 200
+result_correctness = 0
+latency_p50_ms = 0.0006
+latency_p95_ms = 0.0006
+latency_max_ms = 0.0007
+peak_allocated_bytes = 102576
+steady_allocated_bytes = 102576
+allocated_growth_bytes = 0
+caller_allocation_calls_max = 0
+
+[[measurement.precursor]]
+id = "windows-001"
+sample_count = 200
+result_correctness = 0
+latency_p50_ms = 0.000600
+latency_p95_ms = 0.000600
+latency_max_ms = 0.000600
+peak_allocated_bytes = 102576
+steady_allocated_bytes = 102576
+allocated_growth_bytes = 0
+caller_allocation_calls_max = 0
+
+[[measurement.precursor]]
+id = "windows-002"
+sample_count = 200
+result_correctness = 0
+latency_p50_ms = 0.001100
+latency_p95_ms = 0.001100
+latency_max_ms = 0.001100
+peak_allocated_bytes = 102576
+steady_allocated_bytes = 102576
+allocated_growth_bytes = 0
+caller_allocation_calls_max = 0
+
+[[measurement.budget]]
+measure = "caller_allocation_calls"
+kind = "hard"
+requirement = "every retained caller window remains allocation-free; warmups retain their existing consumer oracle"
+predicate = "every caller_allocation_calls == 0"
+
+[[measurement.budget]]
+measure = "latency_p50"
+kind = "absolute"
+status = "accepted"
+unit = "milliseconds"
+direction = "at_most"
+limit = 0.002200
+rationale = "ADR 0068: derivation.latency"
+
+[[measurement.budget]]
+measure = "latency_p95"
+kind = "absolute"
+status = "accepted"
+unit = "milliseconds"
+direction = "at_most"
+limit = 0.002200
+rationale = "ADR 0068: derivation.latency"
+
+[[measurement.budget]]
+measure = "latency_max"
+kind = "absolute"
+status = "accepted"
+unit = "milliseconds"
+direction = "at_most"
+limit = 0.009200
+rationale = "ADR 0068: derivation.latency"
+
+[[measurement.budget]]
+measure = "peak_allocated_bytes"
+kind = "absolute"
+status = "accepted"
+unit = "bytes"
+direction = "at_most"
+limit = 131072
+rationale = "ADR 0068: derivation.heap"
+
+[[measurement.budget]]
+measure = "steady_allocated_bytes"
+kind = "absolute"
+status = "accepted"
+unit = "bytes"
+direction = "at_most"
+limit = 131072
+rationale = "ADR 0068: derivation.heap"
+
+[[measurement.budget]]
+measure = "allocated_growth_bytes"
+kind = "absolute"
+status = "accepted"
+unit = "bytes"
+direction = "at_most"
+limit = 0
+rationale = "ADR 0068: derivation.growth"
+
+[[measurement.budget]]
+measure = "caller_allocation_calls_max"
+kind = "absolute"
+status = "accepted"
+unit = "count"
+direction = "at_most"
+limit = 0
+rationale = "ADR 0068: derivation.allocations"
+
+[[measurement]]
+workload = "pending_poll_c"
+correctness_oracle = "the settled no-match query remains pending with identical identity, stability, depths and all nine work counts"
+measurement_role = "worst applicable source-bound per-process precursor statistics; not pooled, supplementary, accepted limits or final results"
+observations_per_sample = 32
+result_correctness = 0
+caller_zero_allocation_gate = true
+latency_p50_ms = 0.001600
+latency_p95_ms = 0.001700
+latency_max_ms = 0.015400
+peak_allocated_bytes = 104250
+steady_allocated_bytes = 104250
+allocated_growth_bytes = 0
+caller_allocation_calls_max = 0
+source_bound_process_count = 4
+
+[[measurement.precursor]]
+id = "windows-first"
+sample_count = 200
+result_correctness = 0
+latency_p50_ms = 0.0016
+latency_p95_ms = 0.0016
+latency_max_ms = 0.0082
+peak_allocated_bytes = 104250
+steady_allocated_bytes = 104250
+allocated_growth_bytes = 0
+caller_allocation_calls_max = 0
+
+[[measurement.precursor]]
+id = "windows-repeat"
+sample_count = 200
+result_correctness = 0
+latency_p50_ms = 0.0016
+latency_p95_ms = 0.0017
+latency_max_ms = 0.0082
+peak_allocated_bytes = 104250
+steady_allocated_bytes = 104250
+allocated_growth_bytes = 0
+caller_allocation_calls_max = 0
+
+[[measurement.precursor]]
+id = "windows-001"
+sample_count = 200
+result_correctness = 0
+latency_p50_ms = 0.001500
+latency_p95_ms = 0.001600
+latency_max_ms = 0.015400
+peak_allocated_bytes = 104250
+steady_allocated_bytes = 104250
+allocated_growth_bytes = 0
+caller_allocation_calls_max = 0
+
+[[measurement.precursor]]
+id = "windows-002"
+sample_count = 200
+result_correctness = 0
+latency_p50_ms = 0.001600
+latency_p95_ms = 0.001600
+latency_max_ms = 0.008000
+peak_allocated_bytes = 104250
+steady_allocated_bytes = 104250
+allocated_growth_bytes = 0
+caller_allocation_calls_max = 0
+
+[[measurement.budget]]
+measure = "caller_allocation_calls"
+kind = "hard"
+requirement = "every retained caller window remains allocation-free; warmups retain their existing consumer oracle"
+predicate = "every caller_allocation_calls == 0"
+
+[[measurement.budget]]
+measure = "latency_p50"
+kind = "absolute"
+status = "accepted"
+unit = "milliseconds"
+direction = "at_most"
+limit = 0.003200
+rationale = "ADR 0068: derivation.latency"
+
+[[measurement.budget]]
+measure = "latency_p95"
+kind = "absolute"
+status = "accepted"
+unit = "milliseconds"
+direction = "at_most"
+limit = 0.003400
+rationale = "ADR 0068: derivation.latency"
+
+[[measurement.budget]]
+measure = "latency_max"
+kind = "absolute"
+status = "accepted"
+unit = "milliseconds"
+direction = "at_most"
+limit = 0.030800
+rationale = "ADR 0068: derivation.latency"
+
+[[measurement.budget]]
+measure = "peak_allocated_bytes"
+kind = "absolute"
+status = "accepted"
+unit = "bytes"
+direction = "at_most"
+limit = 131072
+rationale = "ADR 0068: derivation.heap"
+
+[[measurement.budget]]
+measure = "steady_allocated_bytes"
+kind = "absolute"
+status = "accepted"
+unit = "bytes"
+direction = "at_most"
+limit = 131072
+rationale = "ADR 0068: derivation.heap"
+
+[[measurement.budget]]
+measure = "allocated_growth_bytes"
+kind = "absolute"
+status = "accepted"
+unit = "bytes"
+direction = "at_most"
+limit = 0
+rationale = "ADR 0068: derivation.growth"
+
+[[measurement.budget]]
+measure = "caller_allocation_calls_max"
+kind = "absolute"
+status = "accepted"
+unit = "count"
+direction = "at_most"
+limit = 0
+rationale = "ADR 0068: derivation.allocations"
+
+[[measurement]]
+workload = "first_closed_terminal_poll_rust"
+correctness_oracle = "the first terminal poll after successful public session close returns SessionClosed, not a match or caller failure"
+measurement_role = "worst applicable source-bound per-process precursor statistics; not pooled, supplementary, accepted limits or final results"
+observations_per_sample = 1
+result_correctness = 0
+caller_zero_allocation_gate = false
+latency_p50_ms = 0.000200
+latency_p95_ms = 0.000200
+latency_max_ms = 0.007300
+peak_allocated_bytes = 194568
+steady_allocated_bytes = 0
+allocated_growth_bytes = 0
+caller_allocation_calls_max = 0
+source_bound_process_count = 4
+
+[[measurement.precursor]]
+id = "windows-first"
+sample_count = 200
+result_correctness = 0
+latency_p50_ms = 0.0002
+latency_p95_ms = 0.0002
+latency_max_ms = 0.001
+peak_allocated_bytes = 194568
+steady_allocated_bytes = 0
+allocated_growth_bytes = 0
+caller_allocation_calls_max = 0
+
+[[measurement.precursor]]
+id = "windows-repeat"
+sample_count = 200
+result_correctness = 0
+latency_p50_ms = 0.0002
+latency_p95_ms = 0.0002
+latency_max_ms = 0.0073
+peak_allocated_bytes = 194568
+steady_allocated_bytes = 0
+allocated_growth_bytes = 0
+caller_allocation_calls_max = 0
+
+[[measurement.precursor]]
+id = "windows-001"
+sample_count = 200
+result_correctness = 0
+latency_p50_ms = 0.000200
+latency_p95_ms = 0.000200
+latency_max_ms = 0.001100
+peak_allocated_bytes = 194568
+steady_allocated_bytes = 0
+allocated_growth_bytes = 0
+caller_allocation_calls_max = 0
+
+[[measurement.precursor]]
+id = "windows-002"
+sample_count = 200
+result_correctness = 0
+latency_p50_ms = 0.000200
+latency_p95_ms = 0.000200
+latency_max_ms = 0.001300
+peak_allocated_bytes = 194568
+steady_allocated_bytes = 0
+allocated_growth_bytes = 0
+caller_allocation_calls_max = 0
+
+[[measurement.budget]]
+measure = "latency_p50"
+kind = "absolute"
+status = "accepted"
+unit = "milliseconds"
+direction = "at_most"
+limit = 0.000400
+rationale = "ADR 0068: derivation.latency"
+
+[[measurement.budget]]
+measure = "latency_p95"
+kind = "absolute"
+status = "accepted"
+unit = "milliseconds"
+direction = "at_most"
+limit = 0.000400
+rationale = "ADR 0068: derivation.latency"
+
+[[measurement.budget]]
+measure = "latency_max"
+kind = "absolute"
+status = "accepted"
+unit = "milliseconds"
+direction = "at_most"
+limit = 0.014600
+rationale = "ADR 0068: derivation.latency"
+
+[[measurement.budget]]
+measure = "peak_allocated_bytes"
+kind = "absolute"
+status = "accepted"
+unit = "bytes"
+direction = "at_most"
+limit = 245760
+rationale = "ADR 0068: derivation.heap"
+
+[[measurement.budget]]
+measure = "steady_allocated_bytes"
+kind = "absolute"
+status = "accepted"
+unit = "bytes"
+direction = "at_most"
+limit = 0
+rationale = "ADR 0068: derivation.heap"
+
+[[measurement.budget]]
+measure = "allocated_growth_bytes"
+kind = "absolute"
+status = "accepted"
+unit = "bytes"
+direction = "at_most"
+limit = 0
+rationale = "ADR 0068: derivation.growth"
+
+[[measurement.budget]]
+measure = "caller_allocation_calls_max"
+kind = "absolute"
+status = "accepted"
+unit = "count"
+direction = "at_most"
+limit = 0
+rationale = "ADR 0068: derivation.allocations"
+
+[[measurement]]
+workload = "first_closed_terminal_poll_c"
+correctness_oracle = "the first terminal poll after successful public session close returns SessionClosed, not a match or caller failure"
+measurement_role = "worst applicable source-bound per-process precursor statistics; not pooled, supplementary, accepted limits or final results"
+observations_per_sample = 1
+result_correctness = 0
+caller_zero_allocation_gate = false
+latency_p50_ms = 0.000700
+latency_p95_ms = 0.001500
+latency_max_ms = 0.014800
+peak_allocated_bytes = 196235
+steady_allocated_bytes = 0
+allocated_growth_bytes = 0
+caller_allocation_calls_max = 1
+source_bound_process_count = 4
+
+[[measurement.precursor]]
+id = "windows-first"
+sample_count = 200
+result_correctness = 0
+latency_p50_ms = 0.0007
+latency_p95_ms = 0.0015
+latency_max_ms = 0.0148
+peak_allocated_bytes = 196235
+steady_allocated_bytes = 0
+allocated_growth_bytes = 0
+caller_allocation_calls_max = 1
+
+[[measurement.precursor]]
+id = "windows-repeat"
+sample_count = 200
+result_correctness = 0
+latency_p50_ms = 0.0007
+latency_p95_ms = 0.001
+latency_max_ms = 0.0142
+peak_allocated_bytes = 196235
+steady_allocated_bytes = 0
+allocated_growth_bytes = 0
+caller_allocation_calls_max = 1
+
+[[measurement.precursor]]
+id = "windows-001"
+sample_count = 200
+result_correctness = 0
+latency_p50_ms = 0.000600
+latency_p95_ms = 0.001400
+latency_max_ms = 0.002300
+peak_allocated_bytes = 196235
+steady_allocated_bytes = 0
+allocated_growth_bytes = 0
+caller_allocation_calls_max = 1
+
+[[measurement.precursor]]
+id = "windows-002"
+sample_count = 200
+result_correctness = 0
+latency_p50_ms = 0.000700
+latency_p95_ms = 0.001400
+latency_max_ms = 0.007000
+peak_allocated_bytes = 196235
+steady_allocated_bytes = 0
+allocated_growth_bytes = 0
+caller_allocation_calls_max = 1
+
+[[measurement.budget]]
+measure = "latency_p50"
+kind = "absolute"
+status = "accepted"
+unit = "milliseconds"
+direction = "at_most"
+limit = 0.001400
+rationale = "ADR 0068: derivation.latency"
+
+[[measurement.budget]]
+measure = "latency_p95"
+kind = "absolute"
+status = "accepted"
+unit = "milliseconds"
+direction = "at_most"
+limit = 0.003000
+rationale = "ADR 0068: derivation.latency"
+
+[[measurement.budget]]
+measure = "latency_max"
+kind = "absolute"
+status = "accepted"
+unit = "milliseconds"
+direction = "at_most"
+limit = 0.029600
+rationale = "ADR 0068: derivation.latency"
+
+[[measurement.budget]]
+measure = "peak_allocated_bytes"
+kind = "absolute"
+status = "accepted"
+unit = "bytes"
+direction = "at_most"
+limit = 245760
+rationale = "ADR 0068: derivation.heap"
+
+[[measurement.budget]]
+measure = "steady_allocated_bytes"
+kind = "absolute"
+status = "accepted"
+unit = "bytes"
+direction = "at_most"
+limit = 0
+rationale = "ADR 0068: derivation.heap"
+
+[[measurement.budget]]
+measure = "allocated_growth_bytes"
+kind = "absolute"
+status = "accepted"
+unit = "bytes"
+direction = "at_most"
+limit = 0
+rationale = "ADR 0068: derivation.growth"
+
+[[measurement.budget]]
+measure = "caller_allocation_calls_max"
+kind = "absolute"
+status = "accepted"
+unit = "count"
+direction = "at_most"
+limit = 1
+rationale = "ADR 0068: derivation.allocations"
+
+[[measurement]]
+workload = "retained_terminal_poll_rust"
+correctness_oracle = "each terminal poll preserves the retained matched winner and both planted matches without accumulating projections"
+measurement_role = "worst applicable source-bound per-process precursor statistics; not pooled, supplementary, accepted limits or final results"
+observations_per_sample = 32
+result_correctness = 0
+caller_zero_allocation_gate = true
+latency_p50_ms = 0.001000
+latency_p95_ms = 0.001100
+latency_max_ms = 0.001200
+peak_allocated_bytes = 78072
+steady_allocated_bytes = 78072
+allocated_growth_bytes = 0
+caller_allocation_calls_max = 0
+source_bound_process_count = 4
+
+[[measurement.precursor]]
+id = "windows-first"
+sample_count = 200
+result_correctness = 0
+latency_p50_ms = 0.001
+latency_p95_ms = 0.001
+latency_max_ms = 0.0011
+peak_allocated_bytes = 78072
+steady_allocated_bytes = 78072
+allocated_growth_bytes = 0
+caller_allocation_calls_max = 0
+
+[[measurement.precursor]]
+id = "windows-repeat"
+sample_count = 200
+result_correctness = 0
+latency_p50_ms = 0.001
+latency_p95_ms = 0.001
+latency_max_ms = 0.0011
+peak_allocated_bytes = 78072
+steady_allocated_bytes = 78072
+allocated_growth_bytes = 0
+caller_allocation_calls_max = 0
+
+[[measurement.precursor]]
+id = "windows-001"
+sample_count = 200
+result_correctness = 0
+latency_p50_ms = 0.001000
+latency_p95_ms = 0.001100
+latency_max_ms = 0.001200
+peak_allocated_bytes = 78072
+steady_allocated_bytes = 78072
+allocated_growth_bytes = 0
+caller_allocation_calls_max = 0
+
+[[measurement.precursor]]
+id = "windows-002"
+sample_count = 200
+result_correctness = 0
+latency_p50_ms = 0.001000
+latency_p95_ms = 0.001000
+latency_max_ms = 0.001100
+peak_allocated_bytes = 78072
+steady_allocated_bytes = 78072
+allocated_growth_bytes = 0
+caller_allocation_calls_max = 0
+
+[[measurement.budget]]
+measure = "caller_allocation_calls"
+kind = "hard"
+requirement = "every retained caller window remains allocation-free; warmups retain their existing consumer oracle"
+predicate = "every caller_allocation_calls == 0"
+
+[[measurement.budget]]
+measure = "latency_p50"
+kind = "absolute"
+status = "accepted"
+unit = "milliseconds"
+direction = "at_most"
+limit = 0.002000
+rationale = "ADR 0068: derivation.latency"
+
+[[measurement.budget]]
+measure = "latency_p95"
+kind = "absolute"
+status = "accepted"
+unit = "milliseconds"
+direction = "at_most"
+limit = 0.002200
+rationale = "ADR 0068: derivation.latency"
+
+[[measurement.budget]]
+measure = "latency_max"
+kind = "absolute"
+status = "accepted"
+unit = "milliseconds"
+direction = "at_most"
+limit = 0.002400
+rationale = "ADR 0068: derivation.latency"
+
+[[measurement.budget]]
+measure = "peak_allocated_bytes"
+kind = "absolute"
+status = "accepted"
+unit = "bytes"
+direction = "at_most"
+limit = 98304
+rationale = "ADR 0068: derivation.heap"
+
+[[measurement.budget]]
+measure = "steady_allocated_bytes"
+kind = "absolute"
+status = "accepted"
+unit = "bytes"
+direction = "at_most"
+limit = 98304
+rationale = "ADR 0068: derivation.heap"
+
+[[measurement.budget]]
+measure = "allocated_growth_bytes"
+kind = "absolute"
+status = "accepted"
+unit = "bytes"
+direction = "at_most"
+limit = 0
+rationale = "ADR 0068: derivation.growth"
+
+[[measurement.budget]]
+measure = "caller_allocation_calls_max"
+kind = "absolute"
+status = "accepted"
+unit = "count"
+direction = "at_most"
+limit = 0
+rationale = "ADR 0068: derivation.allocations"
+
+[[measurement]]
+workload = "retained_terminal_poll_c"
+correctness_oracle = "each terminal poll preserves the retained matched winner and both planted matches without accumulating projections"
+measurement_role = "worst applicable source-bound per-process precursor statistics; not pooled, supplementary, accepted limits or final results"
+observations_per_sample = 32
+result_correctness = 0
+caller_zero_allocation_gate = true
+latency_p50_ms = 0.004700
+latency_p95_ms = 0.004800
+latency_max_ms = 0.016500
+peak_allocated_bytes = 79970
+steady_allocated_bytes = 79970
+allocated_growth_bytes = 0
+caller_allocation_calls_max = 0
+source_bound_process_count = 4
+
+[[measurement.precursor]]
+id = "windows-first"
+sample_count = 200
+result_correctness = 0
+latency_p50_ms = 0.0045
+latency_p95_ms = 0.0046
+latency_max_ms = 0.0092
+peak_allocated_bytes = 79970
+steady_allocated_bytes = 79970
+allocated_growth_bytes = 0
+caller_allocation_calls_max = 0
+
+[[measurement.precursor]]
+id = "windows-repeat"
+sample_count = 200
+result_correctness = 0
+latency_p50_ms = 0.0046
+latency_p95_ms = 0.0047
+latency_max_ms = 0.0047
+peak_allocated_bytes = 79970
+steady_allocated_bytes = 79970
+allocated_growth_bytes = 0
+caller_allocation_calls_max = 0
+
+[[measurement.precursor]]
+id = "windows-001"
+sample_count = 200
+result_correctness = 0
+latency_p50_ms = 0.004700
+latency_p95_ms = 0.004800
+latency_max_ms = 0.004800
+peak_allocated_bytes = 79970
+steady_allocated_bytes = 79970
+allocated_growth_bytes = 0
+caller_allocation_calls_max = 0
+
+[[measurement.precursor]]
+id = "windows-002"
+sample_count = 200
+result_correctness = 0
+latency_p50_ms = 0.004600
+latency_p95_ms = 0.004700
+latency_max_ms = 0.016500
+peak_allocated_bytes = 79970
+steady_allocated_bytes = 79970
+allocated_growth_bytes = 0
+caller_allocation_calls_max = 0
+
+[[measurement.budget]]
+measure = "caller_allocation_calls"
+kind = "hard"
+requirement = "every retained caller window remains allocation-free; warmups retain their existing consumer oracle"
+predicate = "every caller_allocation_calls == 0"
+
+[[measurement.budget]]
+measure = "latency_p50"
+kind = "absolute"
+status = "accepted"
+unit = "milliseconds"
+direction = "at_most"
+limit = 0.009400
+rationale = "ADR 0068: derivation.latency"
+
+[[measurement.budget]]
+measure = "latency_p95"
+kind = "absolute"
+status = "accepted"
+unit = "milliseconds"
+direction = "at_most"
+limit = 0.009600
+rationale = "ADR 0068: derivation.latency"
+
+[[measurement.budget]]
+measure = "latency_max"
+kind = "absolute"
+status = "accepted"
+unit = "milliseconds"
+direction = "at_most"
+limit = 0.033000
+rationale = "ADR 0068: derivation.latency"
+
+[[measurement.budget]]
+measure = "peak_allocated_bytes"
+kind = "absolute"
+status = "accepted"
+unit = "bytes"
+direction = "at_most"
+limit = 102400
+rationale = "ADR 0068: derivation.heap"
+
+[[measurement.budget]]
+measure = "steady_allocated_bytes"
+kind = "absolute"
+status = "accepted"
+unit = "bytes"
+direction = "at_most"
+limit = 102400
+rationale = "ADR 0068: derivation.heap"
+
+[[measurement.budget]]
+measure = "allocated_growth_bytes"
+kind = "absolute"
+status = "accepted"
+unit = "bytes"
+direction = "at_most"
+limit = 0
+rationale = "ADR 0068: derivation.growth"
+
+[[measurement.budget]]
+measure = "caller_allocation_calls_max"
+kind = "absolute"
+status = "accepted"
+unit = "count"
+direction = "at_most"
+limit = 0
+rationale = "ADR 0068: derivation.allocations"
+
+[[measurement]]
+workload = "terminal_info_match_read_rust"
+correctness_oracle = "every info and both match reads preserve exact source, target, geometry, template, effective options and planted bounds/scores"
+measurement_role = "worst applicable source-bound per-process precursor statistics; not pooled, supplementary, accepted limits or final results"
+observations_per_sample = 32
+result_correctness = 0
+caller_zero_allocation_gate = true
+latency_p50_ms = 0.000500
+latency_p95_ms = 0.000600
+latency_max_ms = 0.000600
+peak_allocated_bytes = 78072
+steady_allocated_bytes = 78072
+allocated_growth_bytes = 0
+caller_allocation_calls_max = 0
+source_bound_process_count = 4
+
+[[measurement.precursor]]
+id = "windows-first"
+sample_count = 200
+result_correctness = 0
+latency_p50_ms = 0.0005
+latency_p95_ms = 0.0005
+latency_max_ms = 0.0006
+peak_allocated_bytes = 78072
+steady_allocated_bytes = 78072
+allocated_growth_bytes = 0
+caller_allocation_calls_max = 0
+
+[[measurement.precursor]]
+id = "windows-repeat"
+sample_count = 200
+result_correctness = 0
+latency_p50_ms = 0.0005
+latency_p95_ms = 0.0006
+latency_max_ms = 0.0006
+peak_allocated_bytes = 78072
+steady_allocated_bytes = 78072
+allocated_growth_bytes = 0
+caller_allocation_calls_max = 0
+
+[[measurement.precursor]]
+id = "windows-001"
+sample_count = 200
+result_correctness = 0
+latency_p50_ms = 0.000500
+latency_p95_ms = 0.000600
+latency_max_ms = 0.000600
+peak_allocated_bytes = 78072
+steady_allocated_bytes = 78072
+allocated_growth_bytes = 0
+caller_allocation_calls_max = 0
+
+[[measurement.precursor]]
+id = "windows-002"
+sample_count = 200
+result_correctness = 0
+latency_p50_ms = 0.000500
+latency_p95_ms = 0.000600
+latency_max_ms = 0.000600
+peak_allocated_bytes = 78072
+steady_allocated_bytes = 78072
+allocated_growth_bytes = 0
+caller_allocation_calls_max = 0
+
+[[measurement.budget]]
+measure = "caller_allocation_calls"
+kind = "hard"
+requirement = "every retained caller window remains allocation-free; warmups retain their existing consumer oracle"
+predicate = "every caller_allocation_calls == 0"
+
+[[measurement.budget]]
+measure = "latency_p50"
+kind = "absolute"
+status = "accepted"
+unit = "milliseconds"
+direction = "at_most"
+limit = 0.001000
+rationale = "ADR 0068: derivation.latency"
+
+[[measurement.budget]]
+measure = "latency_p95"
+kind = "absolute"
+status = "accepted"
+unit = "milliseconds"
+direction = "at_most"
+limit = 0.001200
+rationale = "ADR 0068: derivation.latency"
+
+[[measurement.budget]]
+measure = "latency_max"
+kind = "absolute"
+status = "accepted"
+unit = "milliseconds"
+direction = "at_most"
+limit = 0.001200
+rationale = "ADR 0068: derivation.latency"
+
+[[measurement.budget]]
+measure = "peak_allocated_bytes"
+kind = "absolute"
+status = "accepted"
+unit = "bytes"
+direction = "at_most"
+limit = 98304
+rationale = "ADR 0068: derivation.heap"
+
+[[measurement.budget]]
+measure = "steady_allocated_bytes"
+kind = "absolute"
+status = "accepted"
+unit = "bytes"
+direction = "at_most"
+limit = 98304
+rationale = "ADR 0068: derivation.heap"
+
+[[measurement.budget]]
+measure = "allocated_growth_bytes"
+kind = "absolute"
+status = "accepted"
+unit = "bytes"
+direction = "at_most"
+limit = 0
+rationale = "ADR 0068: derivation.growth"
+
+[[measurement.budget]]
+measure = "caller_allocation_calls_max"
+kind = "absolute"
+status = "accepted"
+unit = "count"
+direction = "at_most"
+limit = 0
+rationale = "ADR 0068: derivation.allocations"
+
+[[measurement]]
+workload = "terminal_info_match_read_c"
+correctness_oracle = "every info and both match reads preserve exact source, target, geometry, template, effective options and planted bounds/scores"
+measurement_role = "worst applicable source-bound per-process precursor statistics; not pooled, supplementary, accepted limits or final results"
+observations_per_sample = 32
+result_correctness = 0
+caller_zero_allocation_gate = true
+latency_p50_ms = 0.002500
+latency_p95_ms = 0.002600
+latency_max_ms = 0.006200
+peak_allocated_bytes = 79970
+steady_allocated_bytes = 79970
+allocated_growth_bytes = 0
+caller_allocation_calls_max = 0
+source_bound_process_count = 4
+
+[[measurement.precursor]]
+id = "windows-first"
+sample_count = 200
+result_correctness = 0
+latency_p50_ms = 0.0025
+latency_p95_ms = 0.0025
+latency_max_ms = 0.0062
+peak_allocated_bytes = 79970
+steady_allocated_bytes = 79970
+allocated_growth_bytes = 0
+caller_allocation_calls_max = 0
+
+[[measurement.precursor]]
+id = "windows-repeat"
+sample_count = 200
+result_correctness = 0
+latency_p50_ms = 0.0025
+latency_p95_ms = 0.0026
+latency_max_ms = 0.0026
+peak_allocated_bytes = 79970
+steady_allocated_bytes = 79970
+allocated_growth_bytes = 0
+caller_allocation_calls_max = 0
+
+[[measurement.precursor]]
+id = "windows-001"
+sample_count = 200
+result_correctness = 0
+latency_p50_ms = 0.002500
+latency_p95_ms = 0.002600
+latency_max_ms = 0.002600
+peak_allocated_bytes = 79970
+steady_allocated_bytes = 79970
+allocated_growth_bytes = 0
+caller_allocation_calls_max = 0
+
+[[measurement.precursor]]
+id = "windows-002"
+sample_count = 200
+result_correctness = 0
+latency_p50_ms = 0.002500
+latency_p95_ms = 0.002600
+latency_max_ms = 0.002600
+peak_allocated_bytes = 79970
+steady_allocated_bytes = 79970
+allocated_growth_bytes = 0
+caller_allocation_calls_max = 0
+
+[[measurement.budget]]
+measure = "caller_allocation_calls"
+kind = "hard"
+requirement = "every retained caller window remains allocation-free; warmups retain their existing consumer oracle"
+predicate = "every caller_allocation_calls == 0"
+
+[[measurement.budget]]
+measure = "latency_p50"
+kind = "absolute"
+status = "accepted"
+unit = "milliseconds"
+direction = "at_most"
+limit = 0.005000
+rationale = "ADR 0068: derivation.latency"
+
+[[measurement.budget]]
+measure = "latency_p95"
+kind = "absolute"
+status = "accepted"
+unit = "milliseconds"
+direction = "at_most"
+limit = 0.005200
+rationale = "ADR 0068: derivation.latency"
+
+[[measurement.budget]]
+measure = "latency_max"
+kind = "absolute"
+status = "accepted"
+unit = "milliseconds"
+direction = "at_most"
+limit = 0.012400
+rationale = "ADR 0068: derivation.latency"
+
+[[measurement.budget]]
+measure = "peak_allocated_bytes"
+kind = "absolute"
+status = "accepted"
+unit = "bytes"
+direction = "at_most"
+limit = 102400
+rationale = "ADR 0068: derivation.heap"
+
+[[measurement.budget]]
+measure = "steady_allocated_bytes"
+kind = "absolute"
+status = "accepted"
+unit = "bytes"
+direction = "at_most"
+limit = 102400
+rationale = "ADR 0068: derivation.heap"
+
+[[measurement.budget]]
+measure = "allocated_growth_bytes"
+kind = "absolute"
+status = "accepted"
+unit = "bytes"
+direction = "at_most"
+limit = 0
+rationale = "ADR 0068: derivation.growth"
+
+[[measurement.budget]]
+measure = "caller_allocation_calls_max"
+kind = "absolute"
+status = "accepted"
+unit = "count"
+direction = "at_most"
+limit = 0
+rationale = "ADR 0068: derivation.allocations"
+
+[[measurement]]
+workload = "caller_wait_cancelled_rust"
+correctness_oracle = "a separately pre-cancelled bounded caller wait reports Cancelled and leaves the complete pending query observation unchanged"
+measurement_role = "worst applicable source-bound per-process precursor statistics; not pooled, supplementary, accepted limits or final results"
+observations_per_sample = 32
+result_correctness = 0
+caller_zero_allocation_gate = false
+latency_p50_ms = 0.001100
+latency_p95_ms = 0.001200
+latency_max_ms = 0.001500
+peak_allocated_bytes = 102576
+steady_allocated_bytes = 102576
+allocated_growth_bytes = 0
+caller_allocation_calls_max = 0
+source_bound_process_count = 4
+
+[[measurement.precursor]]
+id = "windows-first"
+sample_count = 200
+result_correctness = 0
+latency_p50_ms = 0.001
+latency_p95_ms = 0.001
+latency_max_ms = 0.001
+peak_allocated_bytes = 102576
+steady_allocated_bytes = 102576
+allocated_growth_bytes = 0
+caller_allocation_calls_max = 0
+
+[[measurement.precursor]]
+id = "windows-repeat"
+sample_count = 200
+result_correctness = 0
+latency_p50_ms = 0.0007
+latency_p95_ms = 0.0007
+latency_max_ms = 0.0007
+peak_allocated_bytes = 102576
+steady_allocated_bytes = 102576
+allocated_growth_bytes = 0
+caller_allocation_calls_max = 0
+
+[[measurement.precursor]]
+id = "windows-001"
+sample_count = 200
+result_correctness = 0
+latency_p50_ms = 0.000700
+latency_p95_ms = 0.000700
+latency_max_ms = 0.001500
+peak_allocated_bytes = 102576
+steady_allocated_bytes = 102576
+allocated_growth_bytes = 0
+caller_allocation_calls_max = 0
+
+[[measurement.precursor]]
+id = "windows-002"
+sample_count = 200
+result_correctness = 0
+latency_p50_ms = 0.001100
+latency_p95_ms = 0.001200
+latency_max_ms = 0.001200
+peak_allocated_bytes = 102576
+steady_allocated_bytes = 102576
+allocated_growth_bytes = 0
+caller_allocation_calls_max = 0
+
+[[measurement.budget]]
+measure = "latency_p50"
+kind = "absolute"
+status = "accepted"
+unit = "milliseconds"
+direction = "at_most"
+limit = 0.002200
+rationale = "ADR 0068: derivation.latency"
+
+[[measurement.budget]]
+measure = "latency_p95"
+kind = "absolute"
+status = "accepted"
+unit = "milliseconds"
+direction = "at_most"
+limit = 0.002400
+rationale = "ADR 0068: derivation.latency"
+
+[[measurement.budget]]
+measure = "latency_max"
+kind = "absolute"
+status = "accepted"
+unit = "milliseconds"
+direction = "at_most"
+limit = 0.003000
+rationale = "ADR 0068: derivation.latency"
+
+[[measurement.budget]]
+measure = "peak_allocated_bytes"
+kind = "absolute"
+status = "accepted"
+unit = "bytes"
+direction = "at_most"
+limit = 131072
+rationale = "ADR 0068: derivation.heap"
+
+[[measurement.budget]]
+measure = "steady_allocated_bytes"
+kind = "absolute"
+status = "accepted"
+unit = "bytes"
+direction = "at_most"
+limit = 131072
+rationale = "ADR 0068: derivation.heap"
+
+[[measurement.budget]]
+measure = "allocated_growth_bytes"
+kind = "absolute"
+status = "accepted"
+unit = "bytes"
+direction = "at_most"
+limit = 0
+rationale = "ADR 0068: derivation.growth"
+
+[[measurement.budget]]
+measure = "caller_allocation_calls_max"
+kind = "absolute"
+status = "accepted"
+unit = "count"
+direction = "at_most"
+limit = 0
+rationale = "ADR 0068: derivation.allocations"
+
+[[measurement]]
+workload = "caller_wait_cancelled_c"
+correctness_oracle = "a separately pre-cancelled bounded caller wait reports Cancelled and leaves the complete pending query observation unchanged"
+measurement_role = "worst applicable source-bound per-process precursor statistics; not pooled, supplementary, accepted limits or final results"
+observations_per_sample = 32
+result_correctness = 0
+caller_zero_allocation_gate = false
+latency_p50_ms = 0.005800
+latency_p95_ms = 0.005900
+latency_max_ms = 0.012200
+peak_allocated_bytes = 104289
+steady_allocated_bytes = 104250
+allocated_growth_bytes = 0
+caller_allocation_calls_max = 64
+source_bound_process_count = 4
+
+[[measurement.precursor]]
+id = "windows-first"
+sample_count = 200
+result_correctness = 0
+latency_p50_ms = 0.0058
+latency_p95_ms = 0.0059
+latency_max_ms = 0.0113
+peak_allocated_bytes = 104289
+steady_allocated_bytes = 104250
+allocated_growth_bytes = 0
+caller_allocation_calls_max = 64
+
+[[measurement.precursor]]
+id = "windows-repeat"
+sample_count = 200
+result_correctness = 0
+latency_p50_ms = 0.0058
+latency_p95_ms = 0.0059
+latency_max_ms = 0.0119
+peak_allocated_bytes = 104289
+steady_allocated_bytes = 104250
+allocated_growth_bytes = 0
+caller_allocation_calls_max = 64
+
+[[measurement.precursor]]
+id = "windows-001"
+sample_count = 200
+result_correctness = 0
+latency_p50_ms = 0.005700
+latency_p95_ms = 0.005800
+latency_max_ms = 0.012200
+peak_allocated_bytes = 104289
+steady_allocated_bytes = 104250
+allocated_growth_bytes = 0
+caller_allocation_calls_max = 64
+
+[[measurement.precursor]]
+id = "windows-002"
+sample_count = 200
+result_correctness = 0
+latency_p50_ms = 0.005800
+latency_p95_ms = 0.005800
+latency_max_ms = 0.009900
+peak_allocated_bytes = 104289
+steady_allocated_bytes = 104250
+allocated_growth_bytes = 0
+caller_allocation_calls_max = 64
+
+[[measurement.budget]]
+measure = "latency_p50"
+kind = "absolute"
+status = "accepted"
+unit = "milliseconds"
+direction = "at_most"
+limit = 0.011600
+rationale = "ADR 0068: derivation.latency"
+
+[[measurement.budget]]
+measure = "latency_p95"
+kind = "absolute"
+status = "accepted"
+unit = "milliseconds"
+direction = "at_most"
+limit = 0.011800
+rationale = "ADR 0068: derivation.latency"
+
+[[measurement.budget]]
+measure = "latency_max"
+kind = "absolute"
+status = "accepted"
+unit = "milliseconds"
+direction = "at_most"
+limit = 0.024400
+rationale = "ADR 0068: derivation.latency"
+
+[[measurement.budget]]
+measure = "peak_allocated_bytes"
+kind = "absolute"
+status = "accepted"
+unit = "bytes"
+direction = "at_most"
+limit = 131072
+rationale = "ADR 0068: derivation.heap"
+
+[[measurement.budget]]
+measure = "steady_allocated_bytes"
+kind = "absolute"
+status = "accepted"
+unit = "bytes"
+direction = "at_most"
+limit = 131072
+rationale = "ADR 0068: derivation.heap"
+
+[[measurement.budget]]
+measure = "allocated_growth_bytes"
+kind = "absolute"
+status = "accepted"
+unit = "bytes"
+direction = "at_most"
+limit = 0
+rationale = "ADR 0068: derivation.growth"
+
+[[measurement.budget]]
+measure = "caller_allocation_calls_max"
+kind = "absolute"
+status = "accepted"
+unit = "count"
+direction = "at_most"
+limit = 64
+rationale = "ADR 0068: derivation.allocations"
+
+[[measurement]]
+workload = "query_clone_release_rust"
+correctness_oracle = "dropping a non-final shared query reference leaves the original query and its complete pending observation unchanged"
+measurement_role = "worst applicable source-bound per-process precursor statistics; not pooled, supplementary, accepted limits or final results"
+observations_per_sample = 32
+result_correctness = 0
+caller_zero_allocation_gate = false
+latency_p50_ms = 0.001400
+latency_p95_ms = 0.001400
+latency_max_ms = 0.003700
+peak_allocated_bytes = 102576
+steady_allocated_bytes = 102576
+allocated_growth_bytes = 0
+caller_allocation_calls_max = 0
+source_bound_process_count = 4
+
+[[measurement.precursor]]
+id = "windows-first"
+sample_count = 200
+result_correctness = 0
+latency_p50_ms = 0.0012
+latency_p95_ms = 0.0013
+latency_max_ms = 0.0013
+peak_allocated_bytes = 102576
+steady_allocated_bytes = 102576
+allocated_growth_bytes = 0
+caller_allocation_calls_max = 0
+
+[[measurement.precursor]]
+id = "windows-repeat"
+sample_count = 200
+result_correctness = 0
+latency_p50_ms = 0.0009
+latency_p95_ms = 0.001
+latency_max_ms = 0.001
+peak_allocated_bytes = 102576
+steady_allocated_bytes = 102576
+allocated_growth_bytes = 0
+caller_allocation_calls_max = 0
+
+[[measurement.precursor]]
+id = "windows-001"
+sample_count = 200
+result_correctness = 0
+latency_p50_ms = 0.000900
+latency_p95_ms = 0.001000
+latency_max_ms = 0.001000
+peak_allocated_bytes = 102576
+steady_allocated_bytes = 102576
+allocated_growth_bytes = 0
+caller_allocation_calls_max = 0
+
+[[measurement.precursor]]
+id = "windows-002"
+sample_count = 200
+result_correctness = 0
+latency_p50_ms = 0.001400
+latency_p95_ms = 0.001400
+latency_max_ms = 0.003700
+peak_allocated_bytes = 102576
+steady_allocated_bytes = 102576
+allocated_growth_bytes = 0
+caller_allocation_calls_max = 0
+
+[[measurement.budget]]
+measure = "latency_p50"
+kind = "absolute"
+status = "accepted"
+unit = "milliseconds"
+direction = "at_most"
+limit = 0.002800
+rationale = "ADR 0068: derivation.latency"
+
+[[measurement.budget]]
+measure = "latency_p95"
+kind = "absolute"
+status = "accepted"
+unit = "milliseconds"
+direction = "at_most"
+limit = 0.002800
+rationale = "ADR 0068: derivation.latency"
+
+[[measurement.budget]]
+measure = "latency_max"
+kind = "absolute"
+status = "accepted"
+unit = "milliseconds"
+direction = "at_most"
+limit = 0.007400
+rationale = "ADR 0068: derivation.latency"
+
+[[measurement.budget]]
+measure = "peak_allocated_bytes"
+kind = "absolute"
+status = "accepted"
+unit = "bytes"
+direction = "at_most"
+limit = 131072
+rationale = "ADR 0068: derivation.heap"
+
+[[measurement.budget]]
+measure = "steady_allocated_bytes"
+kind = "absolute"
+status = "accepted"
+unit = "bytes"
+direction = "at_most"
+limit = 131072
+rationale = "ADR 0068: derivation.heap"
+
+[[measurement.budget]]
+measure = "allocated_growth_bytes"
+kind = "absolute"
+status = "accepted"
+unit = "bytes"
+direction = "at_most"
+limit = 0
+rationale = "ADR 0068: derivation.growth"
+
+[[measurement.budget]]
+measure = "caller_allocation_calls_max"
+kind = "absolute"
+status = "accepted"
+unit = "count"
+direction = "at_most"
+limit = 0
+rationale = "ADR 0068: derivation.allocations"
+
+[[measurement]]
+workload = "query_clone_release_c"
+correctness_oracle = "dropping a non-final shared query reference leaves the original query and its complete pending observation unchanged"
+measurement_role = "worst applicable source-bound per-process precursor statistics; not pooled, supplementary, accepted limits or final results"
+observations_per_sample = 32
+result_correctness = 0
+caller_zero_allocation_gate = false
+latency_p50_ms = 0.001900
+latency_p95_ms = 0.001900
+latency_max_ms = 0.012800
+peak_allocated_bytes = 104250
+steady_allocated_bytes = 104250
+allocated_growth_bytes = 0
+caller_allocation_calls_max = 0
+source_bound_process_count = 4
+
+[[measurement.precursor]]
+id = "windows-first"
+sample_count = 200
+result_correctness = 0
+latency_p50_ms = 0.0019
+latency_p95_ms = 0.0019
+latency_max_ms = 0.0128
+peak_allocated_bytes = 104250
+steady_allocated_bytes = 104250
+allocated_growth_bytes = 0
+caller_allocation_calls_max = 0
+
+[[measurement.precursor]]
+id = "windows-repeat"
+sample_count = 200
+result_correctness = 0
+latency_p50_ms = 0.0019
+latency_p95_ms = 0.0019
+latency_max_ms = 0.0019
+peak_allocated_bytes = 104250
+steady_allocated_bytes = 104250
+allocated_growth_bytes = 0
+caller_allocation_calls_max = 0
+
+[[measurement.precursor]]
+id = "windows-001"
+sample_count = 200
+result_correctness = 0
+latency_p50_ms = 0.001800
+latency_p95_ms = 0.001900
+latency_max_ms = 0.001900
+peak_allocated_bytes = 104250
+steady_allocated_bytes = 104250
+allocated_growth_bytes = 0
+caller_allocation_calls_max = 0
+
+[[measurement.precursor]]
+id = "windows-002"
+sample_count = 200
+result_correctness = 0
+latency_p50_ms = 0.001900
+latency_p95_ms = 0.001900
+latency_max_ms = 0.008400
+peak_allocated_bytes = 104250
+steady_allocated_bytes = 104250
+allocated_growth_bytes = 0
+caller_allocation_calls_max = 0
+
+[[measurement.budget]]
+measure = "latency_p50"
+kind = "absolute"
+status = "accepted"
+unit = "milliseconds"
+direction = "at_most"
+limit = 0.003800
+rationale = "ADR 0068: derivation.latency"
+
+[[measurement.budget]]
+measure = "latency_p95"
+kind = "absolute"
+status = "accepted"
+unit = "milliseconds"
+direction = "at_most"
+limit = 0.003800
+rationale = "ADR 0068: derivation.latency"
+
+[[measurement.budget]]
+measure = "latency_max"
+kind = "absolute"
+status = "accepted"
+unit = "milliseconds"
+direction = "at_most"
+limit = 0.025600
+rationale = "ADR 0068: derivation.latency"
+
+[[measurement.budget]]
+measure = "peak_allocated_bytes"
+kind = "absolute"
+status = "accepted"
+unit = "bytes"
+direction = "at_most"
+limit = 131072
+rationale = "ADR 0068: derivation.heap"
+
+[[measurement.budget]]
+measure = "steady_allocated_bytes"
+kind = "absolute"
+status = "accepted"
+unit = "bytes"
+direction = "at_most"
+limit = 131072
+rationale = "ADR 0068: derivation.heap"
+
+[[measurement.budget]]
+measure = "allocated_growth_bytes"
+kind = "absolute"
+status = "accepted"
+unit = "bytes"
+direction = "at_most"
+limit = 0
+rationale = "ADR 0068: derivation.growth"
+
+[[measurement.budget]]
+measure = "caller_allocation_calls_max"
+kind = "absolute"
+status = "accepted"
+unit = "count"
+direction = "at_most"
+limit = 0
+rationale = "ADR 0068: derivation.allocations"
+
+[[measurement]]
+workload = "result_clone_release_rust"
+correctness_oracle = "a shared result clone is readable, its release leaves the retained matched owner unchanged, and neither copies match storage"
+measurement_role = "worst applicable source-bound per-process precursor statistics; not pooled, supplementary, accepted limits or final results"
+observations_per_sample = 32
+result_correctness = 0
+caller_zero_allocation_gate = false
+latency_p50_ms = 0.001200
+latency_p95_ms = 0.001200
+latency_max_ms = 0.049900
+peak_allocated_bytes = 78072
+steady_allocated_bytes = 78072
+allocated_growth_bytes = 0
+caller_allocation_calls_max = 0
+source_bound_process_count = 4
+
+[[measurement.precursor]]
+id = "windows-first"
+sample_count = 200
+result_correctness = 0
+latency_p50_ms = 0.0012
+latency_p95_ms = 0.0012
+latency_max_ms = 0.0012
+peak_allocated_bytes = 78072
+steady_allocated_bytes = 78072
+allocated_growth_bytes = 0
+caller_allocation_calls_max = 0
+
+[[measurement.precursor]]
+id = "windows-repeat"
+sample_count = 200
+result_correctness = 0
+latency_p50_ms = 0.0012
+latency_p95_ms = 0.0012
+latency_max_ms = 0.0499
+peak_allocated_bytes = 78072
+steady_allocated_bytes = 78072
+allocated_growth_bytes = 0
+caller_allocation_calls_max = 0
+
+[[measurement.precursor]]
+id = "windows-001"
+sample_count = 200
+result_correctness = 0
+latency_p50_ms = 0.001200
+latency_p95_ms = 0.001200
+latency_max_ms = 0.001200
+peak_allocated_bytes = 78072
+steady_allocated_bytes = 78072
+allocated_growth_bytes = 0
+caller_allocation_calls_max = 0
+
+[[measurement.precursor]]
+id = "windows-002"
+sample_count = 200
+result_correctness = 0
+latency_p50_ms = 0.001200
+latency_p95_ms = 0.001200
+latency_max_ms = 0.002000
+peak_allocated_bytes = 78072
+steady_allocated_bytes = 78072
+allocated_growth_bytes = 0
+caller_allocation_calls_max = 0
+
+[[measurement.budget]]
+measure = "latency_p50"
+kind = "absolute"
+status = "accepted"
+unit = "milliseconds"
+direction = "at_most"
+limit = 0.002400
+rationale = "ADR 0068: derivation.latency"
+
+[[measurement.budget]]
+measure = "latency_p95"
+kind = "absolute"
+status = "accepted"
+unit = "milliseconds"
+direction = "at_most"
+limit = 0.002400
+rationale = "ADR 0068: derivation.latency"
+
+[[measurement.budget]]
+measure = "latency_max"
+kind = "absolute"
+status = "accepted"
+unit = "milliseconds"
+direction = "at_most"
+limit = 0.099800
+rationale = "ADR 0068: derivation.latency"
+
+[[measurement.budget]]
+measure = "peak_allocated_bytes"
+kind = "absolute"
+status = "accepted"
+unit = "bytes"
+direction = "at_most"
+limit = 98304
+rationale = "ADR 0068: derivation.heap"
+
+[[measurement.budget]]
+measure = "steady_allocated_bytes"
+kind = "absolute"
+status = "accepted"
+unit = "bytes"
+direction = "at_most"
+limit = 98304
+rationale = "ADR 0068: derivation.heap"
+
+[[measurement.budget]]
+measure = "allocated_growth_bytes"
+kind = "absolute"
+status = "accepted"
+unit = "bytes"
+direction = "at_most"
+limit = 0
+rationale = "ADR 0068: derivation.growth"
+
+[[measurement.budget]]
+measure = "caller_allocation_calls_max"
+kind = "absolute"
+status = "accepted"
+unit = "count"
+direction = "at_most"
+limit = 0
+rationale = "ADR 0068: derivation.allocations"
+
+[[measurement]]
+workload = "result_clone_release_c"
+correctness_oracle = "a shared result clone is readable, its release leaves the retained matched owner unchanged, and neither copies match storage"
+measurement_role = "worst applicable source-bound per-process precursor statistics; not pooled, supplementary, accepted limits or final results"
+observations_per_sample = 32
+result_correctness = 0
+caller_zero_allocation_gate = false
+latency_p50_ms = 0.005300
+latency_p95_ms = 0.005400
+latency_max_ms = 0.057300
+peak_allocated_bytes = 79970
+steady_allocated_bytes = 79970
+allocated_growth_bytes = 0
+caller_allocation_calls_max = 0
+source_bound_process_count = 4
+
+[[measurement.precursor]]
+id = "windows-first"
+sample_count = 200
+result_correctness = 0
+latency_p50_ms = 0.0052
+latency_p95_ms = 0.0052
+latency_max_ms = 0.0573
+peak_allocated_bytes = 79970
+steady_allocated_bytes = 79970
+allocated_growth_bytes = 0
+caller_allocation_calls_max = 0
+
+[[measurement.precursor]]
+id = "windows-repeat"
+sample_count = 200
+result_correctness = 0
+latency_p50_ms = 0.0053
+latency_p95_ms = 0.0053
+latency_max_ms = 0.0054
+peak_allocated_bytes = 79970
+steady_allocated_bytes = 79970
+allocated_growth_bytes = 0
+caller_allocation_calls_max = 0
+
+[[measurement.precursor]]
+id = "windows-001"
+sample_count = 200
+result_correctness = 0
+latency_p50_ms = 0.005300
+latency_p95_ms = 0.005400
+latency_max_ms = 0.005400
+peak_allocated_bytes = 79970
+steady_allocated_bytes = 79970
+allocated_growth_bytes = 0
+caller_allocation_calls_max = 0
+
+[[measurement.precursor]]
+id = "windows-002"
+sample_count = 200
+result_correctness = 0
+latency_p50_ms = 0.005300
+latency_p95_ms = 0.005400
+latency_max_ms = 0.008800
+peak_allocated_bytes = 79970
+steady_allocated_bytes = 79970
+allocated_growth_bytes = 0
+caller_allocation_calls_max = 0
+
+[[measurement.budget]]
+measure = "latency_p50"
+kind = "absolute"
+status = "accepted"
+unit = "milliseconds"
+direction = "at_most"
+limit = 0.010600
+rationale = "ADR 0068: derivation.latency"
+
+[[measurement.budget]]
+measure = "latency_p95"
+kind = "absolute"
+status = "accepted"
+unit = "milliseconds"
+direction = "at_most"
+limit = 0.010800
+rationale = "ADR 0068: derivation.latency"
+
+[[measurement.budget]]
+measure = "latency_max"
+kind = "absolute"
+status = "accepted"
+unit = "milliseconds"
+direction = "at_most"
+limit = 0.114600
+rationale = "ADR 0068: derivation.latency"
+
+[[measurement.budget]]
+measure = "peak_allocated_bytes"
+kind = "absolute"
+status = "accepted"
+unit = "bytes"
+direction = "at_most"
+limit = 102400
+rationale = "ADR 0068: derivation.heap"
+
+[[measurement.budget]]
+measure = "steady_allocated_bytes"
+kind = "absolute"
+status = "accepted"
+unit = "bytes"
+direction = "at_most"
+limit = 102400
+rationale = "ADR 0068: derivation.heap"
+
+[[measurement.budget]]
+measure = "allocated_growth_bytes"
+kind = "absolute"
+status = "accepted"
+unit = "bytes"
+direction = "at_most"
+limit = 0
+rationale = "ADR 0068: derivation.growth"
+
+[[measurement.budget]]
+measure = "caller_allocation_calls_max"
+kind = "absolute"
+status = "accepted"
+unit = "count"
+direction = "at_most"
+limit = 0
+rationale = "ADR 0068: derivation.allocations"
+
+[[measurement]]
+workload = "exact_frame_after_parents_rust"
+correctness_oracle = "after query, session, engine, template and package teardown a retained result yields its exact RGBA frame, shared mapping and all original bytes"
+measurement_role = "worst applicable source-bound per-process precursor statistics; not pooled, supplementary, accepted limits or final results"
+observations_per_sample = 32
+result_correctness = 0
+caller_zero_allocation_gate = false
+latency_p50_ms = 0.023900
+latency_p95_ms = 0.025400
+latency_max_ms = 0.093100
+peak_allocated_bytes = 50048
+steady_allocated_bytes = 50048
+allocated_growth_bytes = 0
+caller_allocation_calls_max = 0
+readable_frame_view_bytes = 24576
+source_bound_process_count = 4
+
+[[measurement.precursor]]
+id = "windows-first"
+sample_count = 200
+result_correctness = 0
+latency_p50_ms = 0.0232
+latency_p95_ms = 0.0254
+latency_max_ms = 0.0541
+peak_allocated_bytes = 50048
+steady_allocated_bytes = 50048
+allocated_growth_bytes = 0
+caller_allocation_calls_max = 0
+
+[[measurement.precursor]]
+id = "windows-repeat"
+sample_count = 200
+result_correctness = 0
+latency_p50_ms = 0.0231
+latency_p95_ms = 0.0232
+latency_max_ms = 0.0931
+peak_allocated_bytes = 50048
+steady_allocated_bytes = 50048
+allocated_growth_bytes = 0
+caller_allocation_calls_max = 0
+
+[[measurement.precursor]]
+id = "windows-001"
+sample_count = 200
+result_correctness = 0
+latency_p50_ms = 0.021200
+latency_p95_ms = 0.021300
+latency_max_ms = 0.027300
+peak_allocated_bytes = 50048
+steady_allocated_bytes = 50048
+allocated_growth_bytes = 0
+caller_allocation_calls_max = 0
+
+[[measurement.precursor]]
+id = "windows-002"
+sample_count = 200
+result_correctness = 0
+latency_p50_ms = 0.023900
+latency_p95_ms = 0.024100
+latency_max_ms = 0.041300
+peak_allocated_bytes = 50048
+steady_allocated_bytes = 50048
+allocated_growth_bytes = 0
+caller_allocation_calls_max = 0
+
+[[measurement.budget]]
+measure = "latency_p50"
+kind = "absolute"
+status = "accepted"
+unit = "milliseconds"
+direction = "at_most"
+limit = 0.047800
+rationale = "ADR 0068: derivation.latency"
+
+[[measurement.budget]]
+measure = "latency_p95"
+kind = "absolute"
+status = "accepted"
+unit = "milliseconds"
+direction = "at_most"
+limit = 0.050800
+rationale = "ADR 0068: derivation.latency"
+
+[[measurement.budget]]
+measure = "latency_max"
+kind = "absolute"
+status = "accepted"
+unit = "milliseconds"
+direction = "at_most"
+limit = 0.186200
+rationale = "ADR 0068: derivation.latency"
+
+[[measurement.budget]]
+measure = "peak_allocated_bytes"
+kind = "absolute"
+status = "accepted"
+unit = "bytes"
+direction = "at_most"
+limit = 65536
+rationale = "ADR 0068: derivation.heap"
+
+[[measurement.budget]]
+measure = "steady_allocated_bytes"
+kind = "absolute"
+status = "accepted"
+unit = "bytes"
+direction = "at_most"
+limit = 65536
+rationale = "ADR 0068: derivation.heap"
+
+[[measurement.budget]]
+measure = "allocated_growth_bytes"
+kind = "absolute"
+status = "accepted"
+unit = "bytes"
+direction = "at_most"
+limit = 0
+rationale = "ADR 0068: derivation.growth"
+
+[[measurement.budget]]
+measure = "caller_allocation_calls_max"
+kind = "absolute"
+status = "accepted"
+unit = "count"
+direction = "at_most"
+limit = 0
+rationale = "ADR 0068: derivation.allocations"
+
+[[measurement.budget]]
+measure = "readable_frame_view_bytes"
+kind = "absolute"
+status = "accepted"
+unit = "bytes"
+direction = "equal"
+limit = 24576
+rationale = "ADR 0068: exact observed 96 * 64 * 4 view length, NOT incremental mapped bytes"
+
+[[measurement]]
+workload = "exact_frame_after_parents_c"
+correctness_oracle = "after query, session, engine, template and package teardown a retained result yields its exact RGBA frame, shared mapping and all original bytes"
+measurement_role = "worst applicable source-bound per-process precursor statistics; not pooled, supplementary, accepted limits or final results"
+observations_per_sample = 32
+result_correctness = 0
+caller_zero_allocation_gate = false
+latency_p50_ms = 0.037200
+latency_p95_ms = 0.044800
+latency_max_ms = 0.124700
+peak_allocated_bytes = 50432
+steady_allocated_bytes = 50128
+allocated_growth_bytes = 0
+caller_allocation_calls_max = 96
+readable_frame_view_bytes = 24576
+source_bound_process_count = 4
+
+[[measurement.precursor]]
+id = "windows-first"
+sample_count = 200
+result_correctness = 0
+latency_p50_ms = 0.037
+latency_p95_ms = 0.042
+latency_max_ms = 0.1247
+peak_allocated_bytes = 50432
+steady_allocated_bytes = 50128
+allocated_growth_bytes = 0
+caller_allocation_calls_max = 96
+
+[[measurement.precursor]]
+id = "windows-repeat"
+sample_count = 200
+result_correctness = 0
+latency_p50_ms = 0.0371
+latency_p95_ms = 0.0448
+latency_max_ms = 0.1185
+peak_allocated_bytes = 50432
+steady_allocated_bytes = 50128
+allocated_growth_bytes = 0
+caller_allocation_calls_max = 96
+
+[[measurement.precursor]]
+id = "windows-001"
+sample_count = 200
+result_correctness = 0
+latency_p50_ms = 0.037200
+latency_p95_ms = 0.037400
+latency_max_ms = 0.051500
+peak_allocated_bytes = 50432
+steady_allocated_bytes = 50128
+allocated_growth_bytes = 0
+caller_allocation_calls_max = 96
+
+[[measurement.precursor]]
+id = "windows-002"
+sample_count = 200
+result_correctness = 0
+latency_p50_ms = 0.037000
+latency_p95_ms = 0.037900
+latency_max_ms = 0.108800
+peak_allocated_bytes = 50432
+steady_allocated_bytes = 50128
+allocated_growth_bytes = 0
+caller_allocation_calls_max = 96
+
+[[measurement.budget]]
+measure = "latency_p50"
+kind = "absolute"
+status = "accepted"
+unit = "milliseconds"
+direction = "at_most"
+limit = 0.074400
+rationale = "ADR 0068: derivation.latency"
+
+[[measurement.budget]]
+measure = "latency_p95"
+kind = "absolute"
+status = "accepted"
+unit = "milliseconds"
+direction = "at_most"
+limit = 0.089600
+rationale = "ADR 0068: derivation.latency"
+
+[[measurement.budget]]
+measure = "latency_max"
+kind = "absolute"
+status = "accepted"
+unit = "milliseconds"
+direction = "at_most"
+limit = 0.249400
+rationale = "ADR 0068: derivation.latency"
+
+[[measurement.budget]]
+measure = "peak_allocated_bytes"
+kind = "absolute"
+status = "accepted"
+unit = "bytes"
+direction = "at_most"
+limit = 65536
+rationale = "ADR 0068: derivation.heap"
+
+[[measurement.budget]]
+measure = "steady_allocated_bytes"
+kind = "absolute"
+status = "accepted"
+unit = "bytes"
+direction = "at_most"
+limit = 65536
+rationale = "ADR 0068: derivation.heap"
+
+[[measurement.budget]]
+measure = "allocated_growth_bytes"
+kind = "absolute"
+status = "accepted"
+unit = "bytes"
+direction = "at_most"
+limit = 0
+rationale = "ADR 0068: derivation.growth"
+
+[[measurement.budget]]
+measure = "caller_allocation_calls_max"
+kind = "absolute"
+status = "accepted"
+unit = "count"
+direction = "at_most"
+limit = 96
+rationale = "ADR 0068: derivation.allocations"
+
+[[measurement.budget]]
+measure = "readable_frame_view_bytes"
+kind = "absolute"
+status = "accepted"
+unit = "bytes"
+direction = "equal"
+limit = 24576
+rationale = "ADR 0068: exact observed 96 * 64 * 4 view length, NOT incremental mapped bytes"
+
+[[measurement]]
+workload = "create_cancel_release_rust"
+correctness_oracle = "one full public replay engine/session/package/query startup reaches settled pending, explicit cancellation publishes Cancelled, its result remains readable after query and parents release, and all caller owners are released before the window ends"
+measurement_role = "worst source-bound lifecycle per-process precursor statistics; not pooled, supplementary, accepted limits or final results"
+observations_per_sample = 1
+result_correctness = 0
+caller_zero_allocation_gate = false
+latency_p50_ms = 1.257800
+latency_p95_ms = 1.518100
+latency_max_ms = 1.985400
+peak_allocated_bytes = 194568
+steady_allocated_bytes = 0
+allocated_growth_bytes = 0
+caller_allocation_calls_max = 226
+source_bound_process_count = 2
+lifecycle_live_delta_sample_count = 400
+lifecycle_live_delta_bytes_min = 0
+lifecycle_live_delta_bytes_max = 0
+lifecycle_live_delta_bytes_sum = 0
+lifecycle_live_delta_positive_sample_count = 0
+
+[[measurement.precursor]]
+id = "windows-001"
+sample_count = 200
+result_correctness = 0
+latency_p50_ms = 1.198200
+latency_p95_ms = 1.502900
+latency_max_ms = 1.846000
+peak_allocated_bytes = 194568
+steady_allocated_bytes = 0
+allocated_growth_bytes = 0
+caller_allocation_calls_max = 226
+lifecycle_live_delta_sample_count = 200
+lifecycle_live_delta_bytes_min = 0
+lifecycle_live_delta_bytes_max = 0
+lifecycle_live_delta_bytes_sum = 0
+lifecycle_live_delta_positive_sample_count = 0
+process_live_bytes_before_window_min = 334129
+process_live_bytes_before_window_max = 334129
+process_live_bytes_after_window_min = 334129
+process_live_bytes_after_window_max = 334129
+
+[[measurement.precursor]]
+id = "windows-002"
+sample_count = 200
+result_correctness = 0
+latency_p50_ms = 1.257800
+latency_p95_ms = 1.518100
+latency_max_ms = 1.985400
+peak_allocated_bytes = 194568
+steady_allocated_bytes = 0
+allocated_growth_bytes = 0
+caller_allocation_calls_max = 226
+lifecycle_live_delta_sample_count = 200
+lifecycle_live_delta_bytes_min = 0
+lifecycle_live_delta_bytes_max = 0
+lifecycle_live_delta_bytes_sum = 0
+lifecycle_live_delta_positive_sample_count = 0
+process_live_bytes_before_window_min = 334129
+process_live_bytes_before_window_max = 334129
+process_live_bytes_after_window_min = 334129
+process_live_bytes_after_window_max = 334129
+
+[[measurement.budget]]
+measure = "latency_p50"
+kind = "absolute"
+status = "accepted"
+unit = "milliseconds"
+direction = "at_most"
+limit = 2.515600
+rationale = "ADR 0068: derivation.latency"
+
+[[measurement.budget]]
+measure = "latency_p95"
+kind = "absolute"
+status = "accepted"
+unit = "milliseconds"
+direction = "at_most"
+limit = 3.036200
+rationale = "ADR 0068: derivation.latency"
+
+[[measurement.budget]]
+measure = "latency_max"
+kind = "absolute"
+status = "accepted"
+unit = "milliseconds"
+direction = "at_most"
+limit = 3.970800
+rationale = "ADR 0068: derivation.latency"
+
+[[measurement.budget]]
+measure = "peak_allocated_bytes"
+kind = "absolute"
+status = "accepted"
+unit = "bytes"
+direction = "at_most"
+limit = 245760
+rationale = "ADR 0068: derivation.heap"
+
+[[measurement.budget]]
+measure = "steady_allocated_bytes"
+kind = "absolute"
+status = "accepted"
+unit = "bytes"
+direction = "at_most"
+limit = 0
+rationale = "ADR 0068: derivation.heap"
+
+[[measurement.budget]]
+measure = "allocated_growth_bytes"
+kind = "absolute"
+status = "accepted"
+unit = "bytes"
+direction = "at_most"
+limit = 0
+rationale = "ADR 0068: derivation.growth"
+
+[[measurement.budget]]
+measure = "caller_allocation_calls_max"
+kind = "absolute"
+status = "accepted"
+unit = "count"
+direction = "at_most"
+limit = 226
+rationale = "ADR 0068: derivation.allocations"
+
+[[measurement.budget]]
+measure = "lifecycle_live_delta_bytes_per_sample"
+kind = "absolute"
+status = "accepted"
+unit = "bytes"
+direction = "at_most"
+limit = 0
+rationale = "ADR 0068: derivation.lifecycle_live_delta"
+predicate = "every lifecycle_live_delta_bytes_per_sample <= 0"
+
+[[measurement]]
+workload = "create_cancel_release_c"
+correctness_oracle = "one full public replay engine/session/package/query startup reaches settled pending, explicit cancellation publishes Cancelled, its result remains readable after query and parents release, and all caller owners are released before the window ends"
+measurement_role = "worst source-bound lifecycle per-process precursor statistics; not pooled, supplementary, accepted limits or final results"
+observations_per_sample = 1
+result_correctness = 0
+caller_zero_allocation_gate = false
+latency_p50_ms = 1.180500
+latency_p95_ms = 1.373000
+latency_max_ms = 2.015200
+peak_allocated_bytes = 196235
+steady_allocated_bytes = 0
+allocated_growth_bytes = 0
+caller_allocation_calls_max = 239
+source_bound_process_count = 2
+lifecycle_live_delta_sample_count = 400
+lifecycle_live_delta_bytes_min = 0
+lifecycle_live_delta_bytes_max = 0
+lifecycle_live_delta_bytes_sum = 0
+lifecycle_live_delta_positive_sample_count = 0
+
+[[measurement.precursor]]
+id = "windows-001"
+sample_count = 200
+result_correctness = 0
+latency_p50_ms = 1.180500
+latency_p95_ms = 1.373000
+latency_max_ms = 2.015200
+peak_allocated_bytes = 196235
+steady_allocated_bytes = 0
+allocated_growth_bytes = 0
+caller_allocation_calls_max = 239
+lifecycle_live_delta_sample_count = 200
+lifecycle_live_delta_bytes_min = 0
+lifecycle_live_delta_bytes_max = 0
+lifecycle_live_delta_bytes_sum = 0
+lifecycle_live_delta_positive_sample_count = 0
+process_live_bytes_before_window_min = 353329
+process_live_bytes_before_window_max = 353329
+process_live_bytes_after_window_min = 353329
+process_live_bytes_after_window_max = 353329
+
+[[measurement.precursor]]
+id = "windows-002"
+sample_count = 200
+result_correctness = 0
+latency_p50_ms = 1.167100
+latency_p95_ms = 1.371500
+latency_max_ms = 1.871900
+peak_allocated_bytes = 196235
+steady_allocated_bytes = 0
+allocated_growth_bytes = 0
+caller_allocation_calls_max = 239
+lifecycle_live_delta_sample_count = 200
+lifecycle_live_delta_bytes_min = 0
+lifecycle_live_delta_bytes_max = 0
+lifecycle_live_delta_bytes_sum = 0
+lifecycle_live_delta_positive_sample_count = 0
+process_live_bytes_before_window_min = 353329
+process_live_bytes_before_window_max = 353329
+process_live_bytes_after_window_min = 353329
+process_live_bytes_after_window_max = 353329
+
+[[measurement.budget]]
+measure = "latency_p50"
+kind = "absolute"
+status = "accepted"
+unit = "milliseconds"
+direction = "at_most"
+limit = 2.361000
+rationale = "ADR 0068: derivation.latency"
+
+[[measurement.budget]]
+measure = "latency_p95"
+kind = "absolute"
+status = "accepted"
+unit = "milliseconds"
+direction = "at_most"
+limit = 2.746000
+rationale = "ADR 0068: derivation.latency"
+
+[[measurement.budget]]
+measure = "latency_max"
+kind = "absolute"
+status = "accepted"
+unit = "milliseconds"
+direction = "at_most"
+limit = 4.030400
+rationale = "ADR 0068: derivation.latency"
+
+[[measurement.budget]]
+measure = "peak_allocated_bytes"
+kind = "absolute"
+status = "accepted"
+unit = "bytes"
+direction = "at_most"
+limit = 245760
+rationale = "ADR 0068: derivation.heap"
+
+[[measurement.budget]]
+measure = "steady_allocated_bytes"
+kind = "absolute"
+status = "accepted"
+unit = "bytes"
+direction = "at_most"
+limit = 0
+rationale = "ADR 0068: derivation.heap"
+
+[[measurement.budget]]
+measure = "allocated_growth_bytes"
+kind = "absolute"
+status = "accepted"
+unit = "bytes"
+direction = "at_most"
+limit = 0
+rationale = "ADR 0068: derivation.growth"
+
+[[measurement.budget]]
+measure = "caller_allocation_calls_max"
+kind = "absolute"
+status = "accepted"
+unit = "count"
+direction = "at_most"
+limit = 239
+rationale = "ADR 0068: derivation.allocations"
+
+[[measurement.budget]]
+measure = "lifecycle_live_delta_bytes_per_sample"
+kind = "absolute"
+status = "accepted"
+unit = "bytes"
+direction = "at_most"
+limit = 0
+rationale = "ADR 0068: derivation.lifecycle_live_delta"
+predicate = "every lifecycle_live_delta_bytes_per_sample <= 0"
+
+[[precursor]]
+id = "windows-001"
+report = "rasen/changes/pull-based-c-and-cpp-template-watch-query/evidence/windows-native-candidate-001.zip:boundary-001.stdout.log"
+report_sha256 = "220dd03a9f6f1222fc2d0479402491396d169d0afb5a8cfd1e4c4fcd1e10c1a3"
+executed_source = "9db705be8beff44fb52aa17d42fe9885897077b3"
+executed_tree = "51d12df8619b123c13e15717f21cb83c7bee8c2c"
+source_state = "explicit source-bound uncommitted overlay on executed_source base; not a clean final candidate"
+source_qualified = true
+source_manifest = "rasen/changes/pull-based-c-and-cpp-template-watch-query/evidence/native-source-candidate-001.json"
+source_manifest_sha256 = "dbec8a09389dfd5e4ead8d3add93992c73c6c55dc8514be1e5999fc25df19149"
+source_archive = "rasen/changes/pull-based-c-and-cpp-template-watch-query/evidence/native-source-candidate-001.zip"
+source_archive_sha256 = "76d9092e856f0c5810daa32f93f0a46b40bf6a8b92acafb666a96d08ade4c3bc"
+benchmark_executable_sha256 = "1dd7eada29c09dce953a34c9dbcb7eb09fb5225c1d32f0559518b69e4c39e611"
+exit_code = 0
+workload_count = 18
+warmup_iterations = 20
+sample_count = 200
+report_budget_enforcement_requested = false
+report_budget_acceptance = "proposed"
+report_budget_profile_sha256 = "242f944973d51b726961fdf78581711f71b0c7659a5e902c91f47eabae42357a"
+role = "source-bound precursor observations; independent numeric acceptance is separate; not final enforcement"
+archive_sha256 = "db99385dfeec1a2b06945e5732ba50e13c1eb072c602db459f254cfc64380e54"
+build_record = "rasen/changes/pull-based-c-and-cpp-template-watch-query/evidence/windows-native-candidate-001.zip:commands.json"
+build_command_id = "boundary-build"
+run_record = "rasen/changes/pull-based-c-and-cpp-template-watch-query/evidence/windows-native-candidate-001.zip:commands.json"
+run_command_id = "boundary-001"
+executable_before = "rasen/changes/pull-based-c-and-cpp-template-watch-query/evidence/windows-native-candidate-001.zip:pins-before.json"
+executable_after = "rasen/changes/pull-based-c-and-cpp-template-watch-query/evidence/windows-native-candidate-001.zip:pins-after.json"
+source_applicability = "historical base to candidate001 keeps the original sixteen workloads, timing windows, oracles, fixture, build/features and schedule unchanged; new executable distributions are also included, not presumed identical"
+
+[[precursor]]
+id = "windows-002"
+report = "rasen/changes/pull-based-c-and-cpp-template-watch-query/evidence/windows-native-candidate-001.zip:boundary-002.stdout.log"
+report_sha256 = "17c81d90d0b9c38e95fe135ae4f407378d0b51563bfcb748dbbf7bc37e87672d"
+executed_source = "9db705be8beff44fb52aa17d42fe9885897077b3"
+executed_tree = "51d12df8619b123c13e15717f21cb83c7bee8c2c"
+source_state = "explicit source-bound uncommitted overlay on executed_source base; not a clean final candidate"
+source_qualified = true
+source_manifest = "rasen/changes/pull-based-c-and-cpp-template-watch-query/evidence/native-source-candidate-001.json"
+source_manifest_sha256 = "dbec8a09389dfd5e4ead8d3add93992c73c6c55dc8514be1e5999fc25df19149"
+source_archive = "rasen/changes/pull-based-c-and-cpp-template-watch-query/evidence/native-source-candidate-001.zip"
+source_archive_sha256 = "76d9092e856f0c5810daa32f93f0a46b40bf6a8b92acafb666a96d08ade4c3bc"
+benchmark_executable_sha256 = "1dd7eada29c09dce953a34c9dbcb7eb09fb5225c1d32f0559518b69e4c39e611"
+exit_code = 0
+workload_count = 18
+warmup_iterations = 20
+sample_count = 200
+report_budget_enforcement_requested = false
+report_budget_acceptance = "proposed"
+report_budget_profile_sha256 = "242f944973d51b726961fdf78581711f71b0c7659a5e902c91f47eabae42357a"
+role = "source-bound precursor observations; independent numeric acceptance is separate; not final enforcement"
+archive_sha256 = "db99385dfeec1a2b06945e5732ba50e13c1eb072c602db459f254cfc64380e54"
+build_record = "rasen/changes/pull-based-c-and-cpp-template-watch-query/evidence/windows-native-candidate-001.zip:commands.json"
+build_command_id = "boundary-build"
+run_record = "rasen/changes/pull-based-c-and-cpp-template-watch-query/evidence/windows-native-candidate-001.zip:commands.json"
+run_command_id = "boundary-002"
+executable_before = "rasen/changes/pull-based-c-and-cpp-template-watch-query/evidence/windows-native-candidate-001.zip:pins-before.json"
+executable_after = "rasen/changes/pull-based-c-and-cpp-template-watch-query/evidence/windows-native-candidate-001.zip:pins-after.json"
+source_applicability = "historical base to candidate001 keeps the original sixteen workloads, timing windows, oracles, fixture, build/features and schedule unchanged; new executable distributions are also included, not presumed identical"
+
+[[superseded_proposal]]
+id = "original-sixteen-row-proposal"
+status = "superseded-unaccepted-alternative"
+selected = false
+reason = "explicit complete eighteen-row independent acceptance supersedes this proposal; no raw value or original artifact is replaced"
+original_profile = "rasen/changes/pull-based-c-and-cpp-template-watch-query/evidence/native-source-candidate-001.zip:docs/benchmarks/phase-5-template-watch-boundary-x86_64-pc-windows-msvc.toml"
+original_profile_sha256 = "242f944973d51b726961fdf78581711f71b0c7659a5e902c91f47eabae42357a"
+source_archive_sha256 = "76d9092e856f0c5810daa32f93f0a46b40bf6a8b92acafb666a96d08ade4c3bc"
+profile_source_tree = "51d12df8619b123c13e15717f21cb83c7bee8c2c"
+observation_source = "9db705be8beff44fb52aa17d42fe9885897077b3"
+observation_tree = "624f2e6da362fe82d1fe140a730583245d54bf29"
+precursors = ["windows-first", "windows-repeat"]
+available_workload_count = 16
+required_workload_count = 18
+unavailable_workloads = ["create_cancel_release_rust", "create_cancel_release_c"]
+latency_unit = "nanoseconds per complete sample; p50, p95, max"
+heap_unit = "bytes"
+allocation_unit = "calls per complete sample"
+historical_applicability = "rasen/changes/pull-based-c-and-cpp-template-watch-query/evidence/extended-boundary-applicability-001.json"
+
+[[superseded_proposal.budget]]
+workload = "pending_poll_rust"
+observations_per_sample = 32
+latency_nanos = [1800, 2000, 9200]
+peak_allocated_bytes = 131072
+steady_allocated_bytes = 131072
+allocated_growth_bytes = 0
+caller_allocation_calls_max = 0
+
+[[superseded_proposal.budget]]
+workload = "pending_poll_c"
+observations_per_sample = 32
+latency_nanos = [3200, 3400, 16400]
+peak_allocated_bytes = 131072
+steady_allocated_bytes = 131072
+allocated_growth_bytes = 0
+caller_allocation_calls_max = 0
+
+[[superseded_proposal.budget]]
+workload = "first_closed_terminal_poll_rust"
+observations_per_sample = 1
+latency_nanos = [400, 400, 14600]
+peak_allocated_bytes = 245760
+steady_allocated_bytes = 0
+allocated_growth_bytes = 0
+caller_allocation_calls_max = 0
+
+[[superseded_proposal.budget]]
+workload = "first_closed_terminal_poll_c"
+observations_per_sample = 1
+latency_nanos = [1400, 3000, 29600]
+peak_allocated_bytes = 245760
+steady_allocated_bytes = 0
+allocated_growth_bytes = 0
+caller_allocation_calls_max = 1
+
+[[superseded_proposal.budget]]
+workload = "retained_terminal_poll_rust"
+observations_per_sample = 32
+latency_nanos = [2000, 2000, 2200]
+peak_allocated_bytes = 98304
+steady_allocated_bytes = 98304
+allocated_growth_bytes = 0
+caller_allocation_calls_max = 0
+
+[[superseded_proposal.budget]]
+workload = "retained_terminal_poll_c"
+observations_per_sample = 32
+latency_nanos = [9200, 9400, 18400]
+peak_allocated_bytes = 102400
+steady_allocated_bytes = 102400
+allocated_growth_bytes = 0
+caller_allocation_calls_max = 0
+
+[[superseded_proposal.budget]]
+workload = "terminal_info_match_read_rust"
+observations_per_sample = 32
+latency_nanos = [1000, 1200, 1200]
+peak_allocated_bytes = 98304
+steady_allocated_bytes = 98304
+allocated_growth_bytes = 0
+caller_allocation_calls_max = 0
+
+[[superseded_proposal.budget]]
+workload = "terminal_info_match_read_c"
+observations_per_sample = 32
+latency_nanos = [5000, 5200, 12400]
+peak_allocated_bytes = 102400
+steady_allocated_bytes = 102400
+allocated_growth_bytes = 0
+caller_allocation_calls_max = 0
+
+[[superseded_proposal.budget]]
+workload = "caller_wait_cancelled_rust"
+observations_per_sample = 32
+latency_nanos = [2000, 2000, 2000]
+peak_allocated_bytes = 131072
+steady_allocated_bytes = 131072
+allocated_growth_bytes = 0
+caller_allocation_calls_max = 0
+
+[[superseded_proposal.budget]]
+workload = "caller_wait_cancelled_c"
+observations_per_sample = 32
+latency_nanos = [11600, 11800, 23800]
+peak_allocated_bytes = 131072
+steady_allocated_bytes = 131072
+allocated_growth_bytes = 0
+caller_allocation_calls_max = 64
+
+[[superseded_proposal.budget]]
+workload = "query_clone_release_rust"
+observations_per_sample = 32
+latency_nanos = [2400, 2600, 2600]
+peak_allocated_bytes = 131072
+steady_allocated_bytes = 131072
+allocated_growth_bytes = 0
+caller_allocation_calls_max = 0
+
+[[superseded_proposal.budget]]
+workload = "query_clone_release_c"
+observations_per_sample = 32
+latency_nanos = [3800, 3800, 25600]
+peak_allocated_bytes = 131072
+steady_allocated_bytes = 131072
+allocated_growth_bytes = 0
+caller_allocation_calls_max = 0
+
+[[superseded_proposal.budget]]
+workload = "result_clone_release_rust"
+observations_per_sample = 32
+latency_nanos = [2400, 2400, 99800]
+peak_allocated_bytes = 98304
+steady_allocated_bytes = 98304
+allocated_growth_bytes = 0
+caller_allocation_calls_max = 0
+
+[[superseded_proposal.budget]]
+workload = "result_clone_release_c"
+observations_per_sample = 32
+latency_nanos = [10600, 10600, 114600]
+peak_allocated_bytes = 102400
+steady_allocated_bytes = 102400
+allocated_growth_bytes = 0
+caller_allocation_calls_max = 0
+
+[[superseded_proposal.budget]]
+workload = "exact_frame_after_parents_rust"
+observations_per_sample = 32
+latency_nanos = [46400, 50800, 186200]
+peak_allocated_bytes = 65536
+steady_allocated_bytes = 65536
+allocated_growth_bytes = 0
+caller_allocation_calls_max = 0
+readable_frame_view_bytes = 24576
+readable_frame_view_direction = "at_most"
+
+[[superseded_proposal.budget]]
+workload = "exact_frame_after_parents_c"
+observations_per_sample = 32
+latency_nanos = [74200, 89600, 249400]
+peak_allocated_bytes = 65536
+steady_allocated_bytes = 65536
+allocated_growth_bytes = 0
+caller_allocation_calls_max = 96
+readable_frame_view_bytes = 24576
+readable_frame_view_direction = "at_most"
+
+[[proposal_overrun]]
+precursor = "windows-002"
+workload = "query_clone_release_rust"
+measure = "latency_max"
+unit = "nanoseconds"
+observed = 3700
+superseded_proposed_limit = 2600
+overrun = 1100
+report_sha256 = "17c81d90d0b9c38e95fe135ae4f407378d0b51563bfcb748dbbf7bc37e87672d"
+classification = "offline exceedance of an unaccepted superseded proposal; no sample exclusion, apparatus-invalid relabeling or final enforcement result"
+independent_review = "rasen/changes/pull-based-c-and-cpp-template-watch-query/evidence/windows-boundary-acceptance-001.json"
+sample_index_one_based = 134
+historical_applicability = "rasen/changes/pull-based-c-and-cpp-template-watch-query/evidence/extended-boundary-applicability-001.json"

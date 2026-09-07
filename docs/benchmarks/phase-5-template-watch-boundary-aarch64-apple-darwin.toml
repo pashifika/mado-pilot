@@ -1,0 +1,3354 @@
+# Independently accepted precursor-derived ceilings, not final results.
+# Original reports, failures, source identities and arrays remain unchanged.
+format_version = 1
+
+[benchmark]
+id = "phase-5-template-watch-boundary-aarch64-apple-darwin"
+workload = "paired public Rust-facade and negotiated C-table query observation costs"
+phase = "5"
+status = "precursor-measured-budgets-accepted"
+normative = true
+measurements_recorded = true
+normative_scope = "accepted target-local numeric limits only; recorded observations are precursors, not final qualification results"
+
+[profile]
+fixture = "fixtures/assets/phase1-slice; generated match_fixtures RGBA scene; two-frame rate-held absent and one-frame matched replay"
+fixture_sha256 = "293050009da09f14f272919e3df33738c138a26863948309736303db9fc04492"
+scene_rgba_sha256 = "f64b1df743b1204cf70f459866371602ffbd99b1cee383e38837c562b2889aa2"
+release_target = "aarch64-apple-darwin"
+hardware = "Apple M1 Pro"
+os_version = "macOS 26.6.2 (25G83)"
+build_profile = "template-watch-boundary; debug_assertions=false; private-fixture=false; coreml-provider=false; cuda-provider=false; qualification-unsupported-api=false"
+metric_schema = "phase-5-template-watch-boundary-v2"
+warmup_iterations = 20
+sample_count = 200
+process_count = 4
+precursor_workload_count = 18
+required_workload_count = 18
+process_policy = "four source-bound precursor processes for the original sixteen rows; two complete source-bound processes for lifecycle rows; all 200 samples retained per workload/process; no pooling, exclusion, replacement or retry"
+correctness_oracle = "every warmup and retained observation checks its unchanged consumer oracle; structural zero-allocation gates inspect every caller window"
+queue_policy = "two-frame rate-held absent replay or one-frame matched replay; fixed finite scheduler and unchanged settled pending snapshot"
+latency_scope = "original sixteen observation rows: one batch including fixed-value oracle comparisons and transient reference release, excluding replay/engine/package/template setup, matching wait and parent close; create_cancel_release rows instead time the full replay lifecycle; report storage and output are always outside"
+first_terminal_scope = "one first poll and its owned result publication only; SessionClosed is committed by public close before the window; result oracle and release are after the window; no matched-backend completion is timed"
+deadline_scope = "finite operation authority, not preemption of an uninterruptible backend or a hard wall-clock guarantee; poll, retain, release and value access use their public nonblocking/bounded lifecycle contracts"
+allocation_scope = "caller-thread Rust GlobalAlloc calls only; includes alloc, alloc_zeroed and every realloc (even a same-size or shrinking call); excludes other threads, foreign malloc and independently loaded libraries"
+heap_scope = "process-wide live Rust heap via existing Accounting, including fixture and concurrent workers; peak/growth use shared harness baselines; first-terminal rows also include per-sample untimed setup/teardown in heap and iteration_span"
+mapped_bytes_scope = "not instrumented: no mapped_bytes_per_result or extra-mapped-byte assertion; unchanged pending authority is observed, not a byte measurement; retained-frame rows report actual readable mapping length and check shared-storage flags in their oracle"
+steady_heap_scope = "ending caller-recorded process live Rust bytes minus pre-fixture baseline, saturated at zero; fixture retained except first-terminal and full-lifecycle per-sample teardown; distinct from each signed lifecycle live-after minus live-before sample"
+resident_memory_scope = "unavailable: Rust GlobalAlloc is not process RSS, native heap, foreign malloc or GPU memory"
+startup_scope = "native capture startup unavailable; lifecycle rows measure replay startup-through-close including package preparation, not native session-open to frame readiness"
+lifecycle_scope = "create_cancel_release rows alone include one full replay setup, settled pending oracle, Cancelled publication, result/query final release and session/engine/caller teardown per sample; live before/after readings surround that entire window, with no post-teardown wait for a chosen heap value"
+abi_overhead_scope = "paired absolute Rust and negotiated C-table costs in one Rust-linked process, not independent C++/dynamic-library/foreign-allocator costs; no subtractive or ratio gate"
+setup_operation_timeout_nanos = 5000000000
+query_lifetime_nanos = 60000000000
+pending_minimum_interval_nanos = 3600000000000
+historical_precursor_workload_count = 16
+complete_precursor_process_count = 2
+lifecycle_source_bound_process_count = 2
+supplementary_process_count = 2
+
+[acceptance]
+status = "accepted"
+independent_review = "rasen/changes/pull-based-c-and-cpp-template-watch-query/evidence/apple-boundary-acceptance-001.json"
+adr = "docs/adr/0068-template-watch-boundary-budgets.md"
+final_enforcement = "not run; requires a clean pinned final source/executable and five fresh sequential full enforcement processes on this exact target/host; precursors do not count; no retry, replacement, exclusion or CLI override"
+native_support = "not implied"
+date = "2026-09-07"
+accepted_workload_count = 18
+final_enforcement_process_count = 0
+native_f9_os_resource_budgets = "unaccepted"
+
+[derivation]
+latency = "for each target/workload/statistic: 2 * max(applicable source-bound per-process nearest-rank raw-nanosecond statistic), rounded upward to 100 ns"
+latency_quantum_nanos = 100
+latency_headroom_numerator = 2
+latency_headroom_denominator = 1
+heap = "for each target/workload/peak-or-steady metric: 1.25 * max(applicable source-bound per-process bytes), rounded upward to 4096 bytes; an observed zero stays zero"
+heap_quantum_bytes = 4096
+heap_headroom_numerator = 5
+heap_headroom_denominator = 4
+allocations = "maximum source-bound observed caller alloc + alloc_zeroed + realloc per complete sample; no allowance, dealloc subtraction or conversion from net heap"
+growth = "signed post-warmup allocated growth at most zero for every workload; opt-in accepted ceiling, not the inherited Phase 1 4096-byte hard gate"
+limits = "four source-bound processes for original rows, two for lifecycle; no confidence interval or long-tail guarantee; actual zero-duration first polls reflect clock granularity; keep every outlier"
+final_campaign = "after independent acceptance and candidate pinning, five fresh sequential full enforcement processes per target, retaining every attempted process and full raw output; no final result selects or relaxes a ceiling"
+nearest_rank_one_based = [100, 190, 200]
+lifecycle_live_delta = "every retained signed process_live_bytes_after_window - process_live_bytes_before_window sample <= 0; not an average, sum or saturated difference"
+measurement_summary = "measurement statistics are worst applicable source-bound per-process observations; budget records are accepted limits, never measured values"
+source_bound_precursors = ["apple-02", "apple-03", "apple-005", "apple-006"]
+lifecycle_source_bound_precursors = ["apple-005", "apple-006"]
+supplementary_latency_heap_floor = "for every one of the eighteen rows, apply the same latency 2x/100ns and heap 5/4x/4096bytes rules to provenance-incomplete apple-003/004 separately; accepted limit is max(source-bound derivation, supplementary floor); no source qualification or allocation/growth/delta headroom is granted"
+supplementary_observations = ["apple-003", "apple-004"]
+
+[[precursor]]
+id = "apple-02"
+report = "rasen/changes/pull-based-c-and-cpp-template-watch-query/evidence/apple-boundary-precursor-02.toml"
+report_sha256 = "c25a32a2750f8b54c79e0564bbd487e3031ecff1bea3e5483fce446a70fcc5cd"
+executed_source = "9db705be8beff44fb52aa17d42fe9885897077b3"
+executed_tree = "624f2e6da362fe82d1fe140a730583245d54bf29"
+benchmark_executable_sha256 = "52480021f4e68eebad6fcf7e6f8125053ea0c43962220e0d9a84ba756cde0f49"
+exit_code = 0
+provenance = "rasen/changes/pull-based-c-and-cpp-template-watch-query/evidence/implementation-result.md#artifact-identities"
+
+[[precursor]]
+id = "apple-03"
+report = "rasen/changes/pull-based-c-and-cpp-template-watch-query/evidence/apple-boundary-precursor-03.toml"
+report_sha256 = "2d334efe05889b6952f7c2e9fc0ac236b486ed81714148d521a9bb0f8378a146"
+executed_source = "9db705be8beff44fb52aa17d42fe9885897077b3"
+executed_tree = "624f2e6da362fe82d1fe140a730583245d54bf29"
+benchmark_executable_sha256 = "52480021f4e68eebad6fcf7e6f8125053ea0c43962220e0d9a84ba756cde0f49"
+exit_code = 0
+provenance = "rasen/changes/pull-based-c-and-cpp-template-watch-query/evidence/implementation-result.md#artifact-identities"
+
+[[excluded_attempt]]
+artifact = "rasen/changes/pull-based-c-and-cpp-template-watch-query/evidence/apple-boundary-precursor-01-truncated.log"
+sha256 = "4f71ee69e57eb4eb86cf39643b28101d9def816d0f24d0e7da66783a621cbadd"
+status = "apparatus-invalid: truncated retained report; exit 0 does not restore missing rows"
+
+[[budget]]
+measure = "result_correctness"
+kind = "hard"
+requirement = "every warmup and retained sample satisfies the existing consumer oracle"
+predicate = "result_correctness == 0"
+
+[[measurement]]
+workload = "pending_poll_rust"
+correctness_oracle = "the settled no-match query remains pending with identical identity, stability, depths and all nine work counts"
+measurement_role = "worst applicable source-bound per-process precursor statistics; not pooled, supplementary, accepted limits or final results"
+observations_per_sample = 32
+result_correctness = 0
+caller_zero_allocation_gate = true
+latency_p50_ms = 0.000583
+latency_p95_ms = 0.000667
+latency_max_ms = 0.000709
+peak_allocated_bytes = 103719
+steady_allocated_bytes = 103719
+allocated_growth_bytes = 0
+caller_allocation_calls_max = 0
+source_bound_process_count = 4
+
+[[measurement.precursor]]
+id = "apple-02"
+sample_count = 200
+result_correctness = 0
+latency_p50_ms = 0.000542
+latency_p95_ms = 0.000625
+latency_max_ms = 0.000709
+peak_allocated_bytes = 103719
+steady_allocated_bytes = 103719
+allocated_growth_bytes = 0
+caller_allocation_calls_max = 0
+
+[[measurement.precursor]]
+id = "apple-03"
+sample_count = 200
+result_correctness = 0
+latency_p50_ms = 0.000583
+latency_p95_ms = 0.000667
+latency_max_ms = 0.000708
+peak_allocated_bytes = 103595
+steady_allocated_bytes = 103595
+allocated_growth_bytes = 0
+caller_allocation_calls_max = 0
+
+[[measurement.precursor]]
+id = "apple-005"
+sample_count = 200
+result_correctness = 0
+latency_p50_ms = 0.000583
+latency_p95_ms = 0.000584
+latency_max_ms = 0.000667
+peak_allocated_bytes = 103719
+steady_allocated_bytes = 103719
+allocated_growth_bytes = 0
+caller_allocation_calls_max = 0
+
+[[measurement.precursor]]
+id = "apple-006"
+sample_count = 200
+result_correctness = 0
+latency_p50_ms = 0.000542
+latency_p95_ms = 0.000584
+latency_max_ms = 0.000709
+peak_allocated_bytes = 103595
+steady_allocated_bytes = 103595
+allocated_growth_bytes = 0
+caller_allocation_calls_max = 0
+
+[[measurement.supplementary_observation]]
+id = "apple-003"
+sample_count = 200
+result_correctness = 0
+source_qualified = false
+latency_p50_ms = 0.000542
+latency_p95_ms = 0.000584
+latency_max_ms = 0.000709
+peak_allocated_bytes = 103595
+steady_allocated_bytes = 103595
+allocated_growth_bytes = 0
+caller_allocation_calls_max = 0
+
+[[measurement.supplementary_observation]]
+id = "apple-004"
+sample_count = 200
+result_correctness = 0
+source_qualified = false
+latency_p50_ms = 0.000583
+latency_p95_ms = 0.000667
+latency_max_ms = 0.000708
+peak_allocated_bytes = 103595
+steady_allocated_bytes = 103595
+allocated_growth_bytes = 0
+caller_allocation_calls_max = 0
+
+[[measurement.budget]]
+measure = "caller_allocation_calls"
+kind = "hard"
+requirement = "every retained caller window remains allocation-free; warmups retain their existing consumer oracle"
+predicate = "every caller_allocation_calls == 0"
+
+[[measurement.budget]]
+measure = "latency_p50"
+kind = "absolute"
+status = "accepted"
+unit = "milliseconds"
+direction = "at_most"
+limit = 0.001200
+rationale = "ADR 0068: derivation.latency"
+
+[[measurement.budget]]
+measure = "latency_p95"
+kind = "absolute"
+status = "accepted"
+unit = "milliseconds"
+direction = "at_most"
+limit = 0.001400
+rationale = "ADR 0068: derivation.latency"
+
+[[measurement.budget]]
+measure = "latency_max"
+kind = "absolute"
+status = "accepted"
+unit = "milliseconds"
+direction = "at_most"
+limit = 0.001500
+rationale = "ADR 0068: derivation.latency"
+
+[[measurement.budget]]
+measure = "peak_allocated_bytes"
+kind = "absolute"
+status = "accepted"
+unit = "bytes"
+direction = "at_most"
+limit = 131072
+rationale = "ADR 0068: derivation.heap"
+
+[[measurement.budget]]
+measure = "steady_allocated_bytes"
+kind = "absolute"
+status = "accepted"
+unit = "bytes"
+direction = "at_most"
+limit = 131072
+rationale = "ADR 0068: derivation.heap"
+
+[[measurement.budget]]
+measure = "allocated_growth_bytes"
+kind = "absolute"
+status = "accepted"
+unit = "bytes"
+direction = "at_most"
+limit = 0
+rationale = "ADR 0068: derivation.growth"
+
+[[measurement.budget]]
+measure = "caller_allocation_calls_max"
+kind = "absolute"
+status = "accepted"
+unit = "count"
+direction = "at_most"
+limit = 0
+rationale = "ADR 0068: derivation.allocations"
+
+[[measurement]]
+workload = "pending_poll_c"
+correctness_oracle = "the settled no-match query remains pending with identical identity, stability, depths and all nine work counts"
+measurement_role = "worst applicable source-bound per-process precursor statistics; not pooled, supplementary, accepted limits or final results"
+observations_per_sample = 32
+result_correctness = 0
+caller_zero_allocation_gate = true
+latency_p50_ms = 0.001750
+latency_p95_ms = 0.001875
+latency_max_ms = 0.004833
+peak_allocated_bytes = 105401
+steady_allocated_bytes = 105401
+allocated_growth_bytes = 0
+caller_allocation_calls_max = 0
+source_bound_process_count = 4
+
+[[measurement.precursor]]
+id = "apple-02"
+sample_count = 200
+result_correctness = 0
+latency_p50_ms = 0.001667
+latency_p95_ms = 0.001875
+latency_max_ms = 0.001959
+peak_allocated_bytes = 105277
+steady_allocated_bytes = 105277
+allocated_growth_bytes = 0
+caller_allocation_calls_max = 0
+
+[[measurement.precursor]]
+id = "apple-03"
+sample_count = 200
+result_correctness = 0
+latency_p50_ms = 0.001709
+latency_p95_ms = 0.001875
+latency_max_ms = 0.002
+peak_allocated_bytes = 105277
+steady_allocated_bytes = 105277
+allocated_growth_bytes = 0
+caller_allocation_calls_max = 0
+
+[[measurement.precursor]]
+id = "apple-005"
+sample_count = 200
+result_correctness = 0
+latency_p50_ms = 0.001750
+latency_p95_ms = 0.001834
+latency_max_ms = 0.001917
+peak_allocated_bytes = 105401
+steady_allocated_bytes = 105401
+allocated_growth_bytes = 0
+caller_allocation_calls_max = 0
+
+[[measurement.precursor]]
+id = "apple-006"
+sample_count = 200
+result_correctness = 0
+latency_p50_ms = 0.001667
+latency_p95_ms = 0.001875
+latency_max_ms = 0.004833
+peak_allocated_bytes = 105401
+steady_allocated_bytes = 105401
+allocated_growth_bytes = 0
+caller_allocation_calls_max = 0
+
+[[measurement.supplementary_observation]]
+id = "apple-003"
+sample_count = 200
+result_correctness = 0
+source_qualified = false
+latency_p50_ms = 0.001709
+latency_p95_ms = 0.001875
+latency_max_ms = 0.002041
+peak_allocated_bytes = 105277
+steady_allocated_bytes = 105277
+allocated_growth_bytes = 0
+caller_allocation_calls_max = 0
+
+[[measurement.supplementary_observation]]
+id = "apple-004"
+sample_count = 200
+result_correctness = 0
+source_qualified = false
+latency_p50_ms = 0.001750
+latency_p95_ms = 0.001916
+latency_max_ms = 0.002000
+peak_allocated_bytes = 105277
+steady_allocated_bytes = 105277
+allocated_growth_bytes = 0
+caller_allocation_calls_max = 0
+
+[[measurement.budget]]
+measure = "caller_allocation_calls"
+kind = "hard"
+requirement = "every retained caller window remains allocation-free; warmups retain their existing consumer oracle"
+predicate = "every caller_allocation_calls == 0"
+
+[[measurement.budget]]
+measure = "latency_p50"
+kind = "absolute"
+status = "accepted"
+unit = "milliseconds"
+direction = "at_most"
+limit = 0.003500
+rationale = "ADR 0068: derivation.latency"
+
+[[measurement.budget]]
+measure = "latency_p95"
+kind = "absolute"
+status = "accepted"
+unit = "milliseconds"
+direction = "at_most"
+limit = 0.003900
+rationale = "ADR 0068: derivation.latency"
+
+[[measurement.budget]]
+measure = "latency_max"
+kind = "absolute"
+status = "accepted"
+unit = "milliseconds"
+direction = "at_most"
+limit = 0.009700
+rationale = "ADR 0068: derivation.latency"
+
+[[measurement.budget]]
+measure = "peak_allocated_bytes"
+kind = "absolute"
+status = "accepted"
+unit = "bytes"
+direction = "at_most"
+limit = 135168
+rationale = "ADR 0068: derivation.heap"
+
+[[measurement.budget]]
+measure = "steady_allocated_bytes"
+kind = "absolute"
+status = "accepted"
+unit = "bytes"
+direction = "at_most"
+limit = 135168
+rationale = "ADR 0068: derivation.heap"
+
+[[measurement.budget]]
+measure = "allocated_growth_bytes"
+kind = "absolute"
+status = "accepted"
+unit = "bytes"
+direction = "at_most"
+limit = 0
+rationale = "ADR 0068: derivation.growth"
+
+[[measurement.budget]]
+measure = "caller_allocation_calls_max"
+kind = "absolute"
+status = "accepted"
+unit = "count"
+direction = "at_most"
+limit = 0
+rationale = "ADR 0068: derivation.allocations"
+
+[[measurement]]
+workload = "first_closed_terminal_poll_rust"
+correctness_oracle = "the first terminal poll after successful public session close returns SessionClosed, not a match or caller failure"
+measurement_role = "worst applicable source-bound per-process precursor statistics; not pooled, supplementary, accepted limits or final results"
+observations_per_sample = 1
+result_correctness = 0
+caller_zero_allocation_gate = false
+latency_p50_ms = 0.000083
+latency_p95_ms = 0.000250
+latency_max_ms = 0.002125
+peak_allocated_bytes = 194857
+steady_allocated_bytes = 0
+allocated_growth_bytes = 0
+caller_allocation_calls_max = 0
+source_bound_process_count = 4
+
+[[measurement.precursor]]
+id = "apple-02"
+sample_count = 200
+result_correctness = 0
+latency_p50_ms = 4.2e-05
+latency_p95_ms = 0.000208
+latency_max_ms = 0.000292
+peak_allocated_bytes = 194857
+steady_allocated_bytes = 0
+allocated_growth_bytes = 0
+caller_allocation_calls_max = 0
+
+[[measurement.precursor]]
+id = "apple-03"
+sample_count = 200
+result_correctness = 0
+latency_p50_ms = 8.3e-05
+latency_p95_ms = 0.00025
+latency_max_ms = 0.000417
+peak_allocated_bytes = 194857
+steady_allocated_bytes = 0
+allocated_growth_bytes = 0
+caller_allocation_calls_max = 0
+
+[[measurement.precursor]]
+id = "apple-005"
+sample_count = 200
+result_correctness = 0
+latency_p50_ms = 0.000083
+latency_p95_ms = 0.000209
+latency_max_ms = 0.000334
+peak_allocated_bytes = 194857
+steady_allocated_bytes = 0
+allocated_growth_bytes = 0
+caller_allocation_calls_max = 0
+
+[[measurement.precursor]]
+id = "apple-006"
+sample_count = 200
+result_correctness = 0
+latency_p50_ms = 0.000083
+latency_p95_ms = 0.000250
+latency_max_ms = 0.002125
+peak_allocated_bytes = 194857
+steady_allocated_bytes = 0
+allocated_growth_bytes = 0
+caller_allocation_calls_max = 0
+
+[[measurement.supplementary_observation]]
+id = "apple-003"
+sample_count = 200
+result_correctness = 0
+source_qualified = false
+latency_p50_ms = 0.000083
+latency_p95_ms = 0.000250
+latency_max_ms = 0.000459
+peak_allocated_bytes = 194857
+steady_allocated_bytes = 0
+allocated_growth_bytes = 0
+caller_allocation_calls_max = 0
+
+[[measurement.supplementary_observation]]
+id = "apple-004"
+sample_count = 200
+result_correctness = 0
+source_qualified = false
+latency_p50_ms = 0.000083
+latency_p95_ms = 0.000250
+latency_max_ms = 0.000458
+peak_allocated_bytes = 194857
+steady_allocated_bytes = 0
+allocated_growth_bytes = 0
+caller_allocation_calls_max = 0
+
+[[measurement.budget]]
+measure = "latency_p50"
+kind = "absolute"
+status = "accepted"
+unit = "milliseconds"
+direction = "at_most"
+limit = 0.000200
+rationale = "ADR 0068: derivation.latency"
+
+[[measurement.budget]]
+measure = "latency_p95"
+kind = "absolute"
+status = "accepted"
+unit = "milliseconds"
+direction = "at_most"
+limit = 0.000500
+rationale = "ADR 0068: derivation.latency"
+
+[[measurement.budget]]
+measure = "latency_max"
+kind = "absolute"
+status = "accepted"
+unit = "milliseconds"
+direction = "at_most"
+limit = 0.004300
+rationale = "ADR 0068: derivation.latency"
+
+[[measurement.budget]]
+measure = "peak_allocated_bytes"
+kind = "absolute"
+status = "accepted"
+unit = "bytes"
+direction = "at_most"
+limit = 245760
+rationale = "ADR 0068: derivation.heap"
+
+[[measurement.budget]]
+measure = "steady_allocated_bytes"
+kind = "absolute"
+status = "accepted"
+unit = "bytes"
+direction = "at_most"
+limit = 0
+rationale = "ADR 0068: derivation.heap"
+
+[[measurement.budget]]
+measure = "allocated_growth_bytes"
+kind = "absolute"
+status = "accepted"
+unit = "bytes"
+direction = "at_most"
+limit = 0
+rationale = "ADR 0068: derivation.growth"
+
+[[measurement.budget]]
+measure = "caller_allocation_calls_max"
+kind = "absolute"
+status = "accepted"
+unit = "count"
+direction = "at_most"
+limit = 0
+rationale = "ADR 0068: derivation.allocations"
+
+[[measurement]]
+workload = "first_closed_terminal_poll_c"
+correctness_oracle = "the first terminal poll after successful public session close returns SessionClosed, not a match or caller failure"
+measurement_role = "worst applicable source-bound per-process precursor statistics; not pooled, supplementary, accepted limits or final results"
+observations_per_sample = 1
+result_correctness = 0
+caller_zero_allocation_gate = false
+latency_p50_ms = 0.000334
+latency_p95_ms = 0.000834
+latency_max_ms = 0.037083
+peak_allocated_bytes = 196549
+steady_allocated_bytes = 0
+allocated_growth_bytes = 0
+caller_allocation_calls_max = 1
+source_bound_process_count = 4
+
+[[measurement.precursor]]
+id = "apple-02"
+sample_count = 200
+result_correctness = 0
+latency_p50_ms = 0.000292
+latency_p95_ms = 0.000625
+latency_max_ms = 0.037083
+peak_allocated_bytes = 196549
+steady_allocated_bytes = 0
+allocated_growth_bytes = 0
+caller_allocation_calls_max = 1
+
+[[measurement.precursor]]
+id = "apple-03"
+sample_count = 200
+result_correctness = 0
+latency_p50_ms = 0.000292
+latency_p95_ms = 0.000834
+latency_max_ms = 0.002041
+peak_allocated_bytes = 196549
+steady_allocated_bytes = 0
+allocated_growth_bytes = 0
+caller_allocation_calls_max = 1
+
+[[measurement.precursor]]
+id = "apple-005"
+sample_count = 200
+result_correctness = 0
+latency_p50_ms = 0.000334
+latency_p95_ms = 0.000834
+latency_max_ms = 0.001667
+peak_allocated_bytes = 196549
+steady_allocated_bytes = 0
+allocated_growth_bytes = 0
+caller_allocation_calls_max = 1
+
+[[measurement.precursor]]
+id = "apple-006"
+sample_count = 200
+result_correctness = 0
+latency_p50_ms = 0.000334
+latency_p95_ms = 0.000750
+latency_max_ms = 0.003042
+peak_allocated_bytes = 196549
+steady_allocated_bytes = 0
+allocated_growth_bytes = 0
+caller_allocation_calls_max = 1
+
+[[measurement.supplementary_observation]]
+id = "apple-003"
+sample_count = 200
+result_correctness = 0
+source_qualified = false
+latency_p50_ms = 0.000375
+latency_p95_ms = 0.001083
+latency_max_ms = 0.003416
+peak_allocated_bytes = 196549
+steady_allocated_bytes = 0
+allocated_growth_bytes = 0
+caller_allocation_calls_max = 1
+
+[[measurement.supplementary_observation]]
+id = "apple-004"
+sample_count = 200
+result_correctness = 0
+source_qualified = false
+latency_p50_ms = 0.000375
+latency_p95_ms = 0.000833
+latency_max_ms = 0.001916
+peak_allocated_bytes = 196549
+steady_allocated_bytes = 0
+allocated_growth_bytes = 0
+caller_allocation_calls_max = 1
+
+[[measurement.budget]]
+measure = "latency_p50"
+kind = "absolute"
+status = "accepted"
+unit = "milliseconds"
+direction = "at_most"
+limit = 0.000800
+rationale = "ADR 0068: derivation.latency"
+
+[[measurement.budget]]
+measure = "latency_p95"
+kind = "absolute"
+status = "accepted"
+unit = "milliseconds"
+direction = "at_most"
+limit = 0.002200
+rationale = "ADR 0068: derivation.latency"
+
+[[measurement.budget]]
+measure = "latency_max"
+kind = "absolute"
+status = "accepted"
+unit = "milliseconds"
+direction = "at_most"
+limit = 0.074200
+rationale = "ADR 0068: derivation.latency"
+
+[[measurement.budget]]
+measure = "peak_allocated_bytes"
+kind = "absolute"
+status = "accepted"
+unit = "bytes"
+direction = "at_most"
+limit = 245760
+rationale = "ADR 0068: derivation.heap"
+
+[[measurement.budget]]
+measure = "steady_allocated_bytes"
+kind = "absolute"
+status = "accepted"
+unit = "bytes"
+direction = "at_most"
+limit = 0
+rationale = "ADR 0068: derivation.heap"
+
+[[measurement.budget]]
+measure = "allocated_growth_bytes"
+kind = "absolute"
+status = "accepted"
+unit = "bytes"
+direction = "at_most"
+limit = 0
+rationale = "ADR 0068: derivation.growth"
+
+[[measurement.budget]]
+measure = "caller_allocation_calls_max"
+kind = "absolute"
+status = "accepted"
+unit = "count"
+direction = "at_most"
+limit = 1
+rationale = "ADR 0068: derivation.allocations"
+
+[[measurement]]
+workload = "retained_terminal_poll_rust"
+correctness_oracle = "each terminal poll preserves the retained matched winner and both planted matches without accumulating projections"
+measurement_role = "worst applicable source-bound per-process precursor statistics; not pooled, supplementary, accepted limits or final results"
+observations_per_sample = 32
+result_correctness = 0
+caller_zero_allocation_gate = true
+latency_p50_ms = 0.000834
+latency_p95_ms = 0.000917
+latency_max_ms = 0.007792
+peak_allocated_bytes = 79195
+steady_allocated_bytes = 79195
+allocated_growth_bytes = 0
+caller_allocation_calls_max = 0
+source_bound_process_count = 4
+
+[[measurement.precursor]]
+id = "apple-02"
+sample_count = 200
+result_correctness = 0
+latency_p50_ms = 0.000791
+latency_p95_ms = 0.000916
+latency_max_ms = 0.001041
+peak_allocated_bytes = 79195
+steady_allocated_bytes = 79195
+allocated_growth_bytes = 0
+caller_allocation_calls_max = 0
+
+[[measurement.precursor]]
+id = "apple-03"
+sample_count = 200
+result_correctness = 0
+latency_p50_ms = 0.000791
+latency_p95_ms = 0.000834
+latency_max_ms = 0.000958
+peak_allocated_bytes = 79195
+steady_allocated_bytes = 79195
+allocated_growth_bytes = 0
+caller_allocation_calls_max = 0
+
+[[measurement.precursor]]
+id = "apple-005"
+sample_count = 200
+result_correctness = 0
+latency_p50_ms = 0.000834
+latency_p95_ms = 0.000917
+latency_max_ms = 0.001000
+peak_allocated_bytes = 79195
+steady_allocated_bytes = 79195
+allocated_growth_bytes = 0
+caller_allocation_calls_max = 0
+
+[[measurement.precursor]]
+id = "apple-006"
+sample_count = 200
+result_correctness = 0
+latency_p50_ms = 0.000791
+latency_p95_ms = 0.000875
+latency_max_ms = 0.007792
+peak_allocated_bytes = 79195
+steady_allocated_bytes = 79195
+allocated_growth_bytes = 0
+caller_allocation_calls_max = 0
+
+[[measurement.supplementary_observation]]
+id = "apple-003"
+sample_count = 200
+result_correctness = 0
+source_qualified = false
+latency_p50_ms = 0.000791
+latency_p95_ms = 0.000875
+latency_max_ms = 0.001000
+peak_allocated_bytes = 79195
+steady_allocated_bytes = 79195
+allocated_growth_bytes = 0
+caller_allocation_calls_max = 0
+
+[[measurement.supplementary_observation]]
+id = "apple-004"
+sample_count = 200
+result_correctness = 0
+source_qualified = false
+latency_p50_ms = 0.000833
+latency_p95_ms = 0.000917
+latency_max_ms = 0.001000
+peak_allocated_bytes = 79195
+steady_allocated_bytes = 79195
+allocated_growth_bytes = 0
+caller_allocation_calls_max = 0
+
+[[measurement.budget]]
+measure = "caller_allocation_calls"
+kind = "hard"
+requirement = "every retained caller window remains allocation-free; warmups retain their existing consumer oracle"
+predicate = "every caller_allocation_calls == 0"
+
+[[measurement.budget]]
+measure = "latency_p50"
+kind = "absolute"
+status = "accepted"
+unit = "milliseconds"
+direction = "at_most"
+limit = 0.001700
+rationale = "ADR 0068: derivation.latency"
+
+[[measurement.budget]]
+measure = "latency_p95"
+kind = "absolute"
+status = "accepted"
+unit = "milliseconds"
+direction = "at_most"
+limit = 0.001900
+rationale = "ADR 0068: derivation.latency"
+
+[[measurement.budget]]
+measure = "latency_max"
+kind = "absolute"
+status = "accepted"
+unit = "milliseconds"
+direction = "at_most"
+limit = 0.015600
+rationale = "ADR 0068: derivation.latency"
+
+[[measurement.budget]]
+measure = "peak_allocated_bytes"
+kind = "absolute"
+status = "accepted"
+unit = "bytes"
+direction = "at_most"
+limit = 102400
+rationale = "ADR 0068: derivation.heap"
+
+[[measurement.budget]]
+measure = "steady_allocated_bytes"
+kind = "absolute"
+status = "accepted"
+unit = "bytes"
+direction = "at_most"
+limit = 102400
+rationale = "ADR 0068: derivation.heap"
+
+[[measurement.budget]]
+measure = "allocated_growth_bytes"
+kind = "absolute"
+status = "accepted"
+unit = "bytes"
+direction = "at_most"
+limit = 0
+rationale = "ADR 0068: derivation.growth"
+
+[[measurement.budget]]
+measure = "caller_allocation_calls_max"
+kind = "absolute"
+status = "accepted"
+unit = "count"
+direction = "at_most"
+limit = 0
+rationale = "ADR 0068: derivation.allocations"
+
+[[measurement]]
+workload = "retained_terminal_poll_c"
+correctness_oracle = "each terminal poll preserves the retained matched winner and both planted matches without accumulating projections"
+measurement_role = "worst applicable source-bound per-process precursor statistics; not pooled, supplementary, accepted limits or final results"
+observations_per_sample = 32
+result_correctness = 0
+caller_zero_allocation_gate = true
+latency_p50_ms = 0.004208
+latency_p95_ms = 0.004583
+latency_max_ms = 0.020083
+peak_allocated_bytes = 81101
+steady_allocated_bytes = 81101
+allocated_growth_bytes = 0
+caller_allocation_calls_max = 0
+source_bound_process_count = 4
+
+[[measurement.precursor]]
+id = "apple-02"
+sample_count = 200
+result_correctness = 0
+latency_p50_ms = 0.004208
+latency_p95_ms = 0.004583
+latency_max_ms = 0.005375
+peak_allocated_bytes = 81101
+steady_allocated_bytes = 81101
+allocated_growth_bytes = 0
+caller_allocation_calls_max = 0
+
+[[measurement.precursor]]
+id = "apple-03"
+sample_count = 200
+result_correctness = 0
+latency_p50_ms = 0.004208
+latency_p95_ms = 0.0045
+latency_max_ms = 0.020083
+peak_allocated_bytes = 81101
+steady_allocated_bytes = 81101
+allocated_growth_bytes = 0
+caller_allocation_calls_max = 0
+
+[[measurement.precursor]]
+id = "apple-005"
+sample_count = 200
+result_correctness = 0
+latency_p50_ms = 0.004083
+latency_p95_ms = 0.004333
+latency_max_ms = 0.004625
+peak_allocated_bytes = 81101
+steady_allocated_bytes = 81101
+allocated_growth_bytes = 0
+caller_allocation_calls_max = 0
+
+[[measurement.precursor]]
+id = "apple-006"
+sample_count = 200
+result_correctness = 0
+latency_p50_ms = 0.004042
+latency_p95_ms = 0.004292
+latency_max_ms = 0.004584
+peak_allocated_bytes = 81101
+steady_allocated_bytes = 81101
+allocated_growth_bytes = 0
+caller_allocation_calls_max = 0
+
+[[measurement.supplementary_observation]]
+id = "apple-003"
+sample_count = 200
+result_correctness = 0
+source_qualified = false
+latency_p50_ms = 0.004041
+latency_p95_ms = 0.004209
+latency_max_ms = 0.004625
+peak_allocated_bytes = 81101
+steady_allocated_bytes = 81101
+allocated_growth_bytes = 0
+caller_allocation_calls_max = 0
+
+[[measurement.supplementary_observation]]
+id = "apple-004"
+sample_count = 200
+result_correctness = 0
+source_qualified = false
+latency_p50_ms = 0.004125
+latency_p95_ms = 0.004333
+latency_max_ms = 0.010458
+peak_allocated_bytes = 81101
+steady_allocated_bytes = 81101
+allocated_growth_bytes = 0
+caller_allocation_calls_max = 0
+
+[[measurement.budget]]
+measure = "caller_allocation_calls"
+kind = "hard"
+requirement = "every retained caller window remains allocation-free; warmups retain their existing consumer oracle"
+predicate = "every caller_allocation_calls == 0"
+
+[[measurement.budget]]
+measure = "latency_p50"
+kind = "absolute"
+status = "accepted"
+unit = "milliseconds"
+direction = "at_most"
+limit = 0.008500
+rationale = "ADR 0068: derivation.latency"
+
+[[measurement.budget]]
+measure = "latency_p95"
+kind = "absolute"
+status = "accepted"
+unit = "milliseconds"
+direction = "at_most"
+limit = 0.009200
+rationale = "ADR 0068: derivation.latency"
+
+[[measurement.budget]]
+measure = "latency_max"
+kind = "absolute"
+status = "accepted"
+unit = "milliseconds"
+direction = "at_most"
+limit = 0.040200
+rationale = "ADR 0068: derivation.latency"
+
+[[measurement.budget]]
+measure = "peak_allocated_bytes"
+kind = "absolute"
+status = "accepted"
+unit = "bytes"
+direction = "at_most"
+limit = 102400
+rationale = "ADR 0068: derivation.heap"
+
+[[measurement.budget]]
+measure = "steady_allocated_bytes"
+kind = "absolute"
+status = "accepted"
+unit = "bytes"
+direction = "at_most"
+limit = 102400
+rationale = "ADR 0068: derivation.heap"
+
+[[measurement.budget]]
+measure = "allocated_growth_bytes"
+kind = "absolute"
+status = "accepted"
+unit = "bytes"
+direction = "at_most"
+limit = 0
+rationale = "ADR 0068: derivation.growth"
+
+[[measurement.budget]]
+measure = "caller_allocation_calls_max"
+kind = "absolute"
+status = "accepted"
+unit = "count"
+direction = "at_most"
+limit = 0
+rationale = "ADR 0068: derivation.allocations"
+
+[[measurement]]
+workload = "terminal_info_match_read_rust"
+correctness_oracle = "every info and both match reads preserve exact source, target, geometry, template, effective options and planted bounds/scores"
+measurement_role = "worst applicable source-bound per-process precursor statistics; not pooled, supplementary, accepted limits or final results"
+observations_per_sample = 32
+result_correctness = 0
+caller_zero_allocation_gate = true
+latency_p50_ms = 0.000625
+latency_p95_ms = 0.000709
+latency_max_ms = 0.000833
+peak_allocated_bytes = 79195
+steady_allocated_bytes = 79195
+allocated_growth_bytes = 0
+caller_allocation_calls_max = 0
+source_bound_process_count = 4
+
+[[measurement.precursor]]
+id = "apple-02"
+sample_count = 200
+result_correctness = 0
+latency_p50_ms = 0.000625
+latency_p95_ms = 0.000709
+latency_max_ms = 0.000833
+peak_allocated_bytes = 79195
+steady_allocated_bytes = 79195
+allocated_growth_bytes = 0
+caller_allocation_calls_max = 0
+
+[[measurement.precursor]]
+id = "apple-03"
+sample_count = 200
+result_correctness = 0
+latency_p50_ms = 0.000584
+latency_p95_ms = 0.000708
+latency_max_ms = 0.00075
+peak_allocated_bytes = 79195
+steady_allocated_bytes = 79195
+allocated_growth_bytes = 0
+caller_allocation_calls_max = 0
+
+[[measurement.precursor]]
+id = "apple-005"
+sample_count = 200
+result_correctness = 0
+latency_p50_ms = 0.000625
+latency_p95_ms = 0.000709
+latency_max_ms = 0.000792
+peak_allocated_bytes = 79195
+steady_allocated_bytes = 79195
+allocated_growth_bytes = 0
+caller_allocation_calls_max = 0
+
+[[measurement.precursor]]
+id = "apple-006"
+sample_count = 200
+result_correctness = 0
+latency_p50_ms = 0.000584
+latency_p95_ms = 0.000708
+latency_max_ms = 0.000750
+peak_allocated_bytes = 79195
+steady_allocated_bytes = 79195
+allocated_growth_bytes = 0
+caller_allocation_calls_max = 0
+
+[[measurement.supplementary_observation]]
+id = "apple-003"
+sample_count = 200
+result_correctness = 0
+source_qualified = false
+latency_p50_ms = 0.000584
+latency_p95_ms = 0.000709
+latency_max_ms = 0.000791
+peak_allocated_bytes = 79195
+steady_allocated_bytes = 79195
+allocated_growth_bytes = 0
+caller_allocation_calls_max = 0
+
+[[measurement.supplementary_observation]]
+id = "apple-004"
+sample_count = 200
+result_correctness = 0
+source_qualified = false
+latency_p50_ms = 0.000625
+latency_p95_ms = 0.000708
+latency_max_ms = 0.000709
+peak_allocated_bytes = 79195
+steady_allocated_bytes = 79195
+allocated_growth_bytes = 0
+caller_allocation_calls_max = 0
+
+[[measurement.budget]]
+measure = "caller_allocation_calls"
+kind = "hard"
+requirement = "every retained caller window remains allocation-free; warmups retain their existing consumer oracle"
+predicate = "every caller_allocation_calls == 0"
+
+[[measurement.budget]]
+measure = "latency_p50"
+kind = "absolute"
+status = "accepted"
+unit = "milliseconds"
+direction = "at_most"
+limit = 0.001300
+rationale = "ADR 0068: derivation.latency"
+
+[[measurement.budget]]
+measure = "latency_p95"
+kind = "absolute"
+status = "accepted"
+unit = "milliseconds"
+direction = "at_most"
+limit = 0.001500
+rationale = "ADR 0068: derivation.latency"
+
+[[measurement.budget]]
+measure = "latency_max"
+kind = "absolute"
+status = "accepted"
+unit = "milliseconds"
+direction = "at_most"
+limit = 0.001700
+rationale = "ADR 0068: derivation.latency"
+
+[[measurement.budget]]
+measure = "peak_allocated_bytes"
+kind = "absolute"
+status = "accepted"
+unit = "bytes"
+direction = "at_most"
+limit = 102400
+rationale = "ADR 0068: derivation.heap"
+
+[[measurement.budget]]
+measure = "steady_allocated_bytes"
+kind = "absolute"
+status = "accepted"
+unit = "bytes"
+direction = "at_most"
+limit = 102400
+rationale = "ADR 0068: derivation.heap"
+
+[[measurement.budget]]
+measure = "allocated_growth_bytes"
+kind = "absolute"
+status = "accepted"
+unit = "bytes"
+direction = "at_most"
+limit = 0
+rationale = "ADR 0068: derivation.growth"
+
+[[measurement.budget]]
+measure = "caller_allocation_calls_max"
+kind = "absolute"
+status = "accepted"
+unit = "count"
+direction = "at_most"
+limit = 0
+rationale = "ADR 0068: derivation.allocations"
+
+[[measurement]]
+workload = "terminal_info_match_read_c"
+correctness_oracle = "every info and both match reads preserve exact source, target, geometry, template, effective options and planted bounds/scores"
+measurement_role = "worst applicable source-bound per-process precursor statistics; not pooled, supplementary, accepted limits or final results"
+observations_per_sample = 32
+result_correctness = 0
+caller_zero_allocation_gate = true
+latency_p50_ms = 0.002209
+latency_p95_ms = 0.002458
+latency_max_ms = 0.002584
+peak_allocated_bytes = 81101
+steady_allocated_bytes = 81101
+allocated_growth_bytes = 0
+caller_allocation_calls_max = 0
+source_bound_process_count = 4
+
+[[measurement.precursor]]
+id = "apple-02"
+sample_count = 200
+result_correctness = 0
+latency_p50_ms = 0.002125
+latency_p95_ms = 0.002292
+latency_max_ms = 0.002542
+peak_allocated_bytes = 81101
+steady_allocated_bytes = 81101
+allocated_growth_bytes = 0
+caller_allocation_calls_max = 0
+
+[[measurement.precursor]]
+id = "apple-03"
+sample_count = 200
+result_correctness = 0
+latency_p50_ms = 0.002125
+latency_p95_ms = 0.002333
+latency_max_ms = 0.002417
+peak_allocated_bytes = 81101
+steady_allocated_bytes = 81101
+allocated_growth_bytes = 0
+caller_allocation_calls_max = 0
+
+[[measurement.precursor]]
+id = "apple-005"
+sample_count = 200
+result_correctness = 0
+latency_p50_ms = 0.002209
+latency_p95_ms = 0.002458
+latency_max_ms = 0.002583
+peak_allocated_bytes = 81101
+steady_allocated_bytes = 81101
+allocated_growth_bytes = 0
+caller_allocation_calls_max = 0
+
+[[measurement.precursor]]
+id = "apple-006"
+sample_count = 200
+result_correctness = 0
+latency_p50_ms = 0.002167
+latency_p95_ms = 0.002417
+latency_max_ms = 0.002584
+peak_allocated_bytes = 81101
+steady_allocated_bytes = 81101
+allocated_growth_bytes = 0
+caller_allocation_calls_max = 0
+
+[[measurement.supplementary_observation]]
+id = "apple-003"
+sample_count = 200
+result_correctness = 0
+source_qualified = false
+latency_p50_ms = 0.002083
+latency_p95_ms = 0.002167
+latency_max_ms = 0.002250
+peak_allocated_bytes = 81101
+steady_allocated_bytes = 81101
+allocated_growth_bytes = 0
+caller_allocation_calls_max = 0
+
+[[measurement.supplementary_observation]]
+id = "apple-004"
+sample_count = 200
+result_correctness = 0
+source_qualified = false
+latency_p50_ms = 0.002167
+latency_p95_ms = 0.002333
+latency_max_ms = 0.002458
+peak_allocated_bytes = 81101
+steady_allocated_bytes = 81101
+allocated_growth_bytes = 0
+caller_allocation_calls_max = 0
+
+[[measurement.budget]]
+measure = "caller_allocation_calls"
+kind = "hard"
+requirement = "every retained caller window remains allocation-free; warmups retain their existing consumer oracle"
+predicate = "every caller_allocation_calls == 0"
+
+[[measurement.budget]]
+measure = "latency_p50"
+kind = "absolute"
+status = "accepted"
+unit = "milliseconds"
+direction = "at_most"
+limit = 0.004500
+rationale = "ADR 0068: derivation.latency"
+
+[[measurement.budget]]
+measure = "latency_p95"
+kind = "absolute"
+status = "accepted"
+unit = "milliseconds"
+direction = "at_most"
+limit = 0.005000
+rationale = "ADR 0068: derivation.latency"
+
+[[measurement.budget]]
+measure = "latency_max"
+kind = "absolute"
+status = "accepted"
+unit = "milliseconds"
+direction = "at_most"
+limit = 0.005200
+rationale = "ADR 0068: derivation.latency"
+
+[[measurement.budget]]
+measure = "peak_allocated_bytes"
+kind = "absolute"
+status = "accepted"
+unit = "bytes"
+direction = "at_most"
+limit = 102400
+rationale = "ADR 0068: derivation.heap"
+
+[[measurement.budget]]
+measure = "steady_allocated_bytes"
+kind = "absolute"
+status = "accepted"
+unit = "bytes"
+direction = "at_most"
+limit = 102400
+rationale = "ADR 0068: derivation.heap"
+
+[[measurement.budget]]
+measure = "allocated_growth_bytes"
+kind = "absolute"
+status = "accepted"
+unit = "bytes"
+direction = "at_most"
+limit = 0
+rationale = "ADR 0068: derivation.growth"
+
+[[measurement.budget]]
+measure = "caller_allocation_calls_max"
+kind = "absolute"
+status = "accepted"
+unit = "count"
+direction = "at_most"
+limit = 0
+rationale = "ADR 0068: derivation.allocations"
+
+[[measurement]]
+workload = "caller_wait_cancelled_rust"
+correctness_oracle = "a separately pre-cancelled bounded caller wait reports Cancelled and leaves the complete pending query observation unchanged"
+measurement_role = "worst applicable source-bound per-process precursor statistics; not pooled, supplementary, accepted limits or final results"
+observations_per_sample = 32
+result_correctness = 0
+caller_zero_allocation_gate = false
+latency_p50_ms = 0.000667
+latency_p95_ms = 0.000792
+latency_max_ms = 0.003291
+peak_allocated_bytes = 103719
+steady_allocated_bytes = 103719
+allocated_growth_bytes = 0
+caller_allocation_calls_max = 0
+source_bound_process_count = 4
+
+[[measurement.precursor]]
+id = "apple-02"
+sample_count = 200
+result_correctness = 0
+latency_p50_ms = 0.000667
+latency_p95_ms = 0.000792
+latency_max_ms = 0.000833
+peak_allocated_bytes = 103595
+steady_allocated_bytes = 103595
+allocated_growth_bytes = 0
+caller_allocation_calls_max = 0
+
+[[measurement.precursor]]
+id = "apple-03"
+sample_count = 200
+result_correctness = 0
+latency_p50_ms = 0.000667
+latency_p95_ms = 0.000792
+latency_max_ms = 0.003291
+peak_allocated_bytes = 103719
+steady_allocated_bytes = 103719
+allocated_growth_bytes = 0
+caller_allocation_calls_max = 0
+
+[[measurement.precursor]]
+id = "apple-005"
+sample_count = 200
+result_correctness = 0
+latency_p50_ms = 0.000667
+latency_p95_ms = 0.000792
+latency_max_ms = 0.000834
+peak_allocated_bytes = 103595
+steady_allocated_bytes = 103595
+allocated_growth_bytes = 0
+caller_allocation_calls_max = 0
+
+[[measurement.precursor]]
+id = "apple-006"
+sample_count = 200
+result_correctness = 0
+latency_p50_ms = 0.000667
+latency_p95_ms = 0.000791
+latency_max_ms = 0.000792
+peak_allocated_bytes = 103719
+steady_allocated_bytes = 103719
+allocated_growth_bytes = 0
+caller_allocation_calls_max = 0
+
+[[measurement.supplementary_observation]]
+id = "apple-003"
+sample_count = 200
+result_correctness = 0
+source_qualified = false
+latency_p50_ms = 0.000667
+latency_p95_ms = 0.000792
+latency_max_ms = 0.001125
+peak_allocated_bytes = 103595
+steady_allocated_bytes = 103595
+allocated_growth_bytes = 0
+caller_allocation_calls_max = 0
+
+[[measurement.supplementary_observation]]
+id = "apple-004"
+sample_count = 200
+result_correctness = 0
+source_qualified = false
+latency_p50_ms = 0.000667
+latency_p95_ms = 0.000750
+latency_max_ms = 0.000875
+peak_allocated_bytes = 103595
+steady_allocated_bytes = 103595
+allocated_growth_bytes = 0
+caller_allocation_calls_max = 0
+
+[[measurement.budget]]
+measure = "latency_p50"
+kind = "absolute"
+status = "accepted"
+unit = "milliseconds"
+direction = "at_most"
+limit = 0.001400
+rationale = "ADR 0068: derivation.latency"
+
+[[measurement.budget]]
+measure = "latency_p95"
+kind = "absolute"
+status = "accepted"
+unit = "milliseconds"
+direction = "at_most"
+limit = 0.001600
+rationale = "ADR 0068: derivation.latency"
+
+[[measurement.budget]]
+measure = "latency_max"
+kind = "absolute"
+status = "accepted"
+unit = "milliseconds"
+direction = "at_most"
+limit = 0.006600
+rationale = "ADR 0068: derivation.latency"
+
+[[measurement.budget]]
+measure = "peak_allocated_bytes"
+kind = "absolute"
+status = "accepted"
+unit = "bytes"
+direction = "at_most"
+limit = 131072
+rationale = "ADR 0068: derivation.heap"
+
+[[measurement.budget]]
+measure = "steady_allocated_bytes"
+kind = "absolute"
+status = "accepted"
+unit = "bytes"
+direction = "at_most"
+limit = 131072
+rationale = "ADR 0068: derivation.heap"
+
+[[measurement.budget]]
+measure = "allocated_growth_bytes"
+kind = "absolute"
+status = "accepted"
+unit = "bytes"
+direction = "at_most"
+limit = 0
+rationale = "ADR 0068: derivation.growth"
+
+[[measurement.budget]]
+measure = "caller_allocation_calls_max"
+kind = "absolute"
+status = "accepted"
+unit = "count"
+direction = "at_most"
+limit = 0
+rationale = "ADR 0068: derivation.allocations"
+
+[[measurement]]
+workload = "caller_wait_cancelled_c"
+correctness_oracle = "a separately pre-cancelled bounded caller wait reports Cancelled and leaves the complete pending query observation unchanged"
+measurement_role = "worst applicable source-bound per-process precursor statistics; not pooled, supplementary, accepted limits or final results"
+observations_per_sample = 32
+result_correctness = 0
+caller_zero_allocation_gate = false
+latency_p50_ms = 0.004167
+latency_p95_ms = 0.004458
+latency_max_ms = 0.011625
+peak_allocated_bytes = 105316
+steady_allocated_bytes = 105277
+allocated_growth_bytes = 0
+caller_allocation_calls_max = 64
+source_bound_process_count = 4
+
+[[measurement.precursor]]
+id = "apple-02"
+sample_count = 200
+result_correctness = 0
+latency_p50_ms = 0.004083
+latency_p95_ms = 0.004417
+latency_max_ms = 0.01
+peak_allocated_bytes = 105316
+steady_allocated_bytes = 105277
+allocated_growth_bytes = 0
+caller_allocation_calls_max = 64
+
+[[measurement.precursor]]
+id = "apple-03"
+sample_count = 200
+result_correctness = 0
+latency_p50_ms = 0.004167
+latency_p95_ms = 0.004458
+latency_max_ms = 0.004709
+peak_allocated_bytes = 105316
+steady_allocated_bytes = 105277
+allocated_growth_bytes = 0
+caller_allocation_calls_max = 64
+
+[[measurement.precursor]]
+id = "apple-005"
+sample_count = 200
+result_correctness = 0
+latency_p50_ms = 0.004125
+latency_p95_ms = 0.004292
+latency_max_ms = 0.011625
+peak_allocated_bytes = 105316
+steady_allocated_bytes = 105277
+allocated_growth_bytes = 0
+caller_allocation_calls_max = 64
+
+[[measurement.precursor]]
+id = "apple-006"
+sample_count = 200
+result_correctness = 0
+latency_p50_ms = 0.004125
+latency_p95_ms = 0.004458
+latency_max_ms = 0.005667
+peak_allocated_bytes = 105316
+steady_allocated_bytes = 105277
+allocated_growth_bytes = 0
+caller_allocation_calls_max = 64
+
+[[measurement.supplementary_observation]]
+id = "apple-003"
+sample_count = 200
+result_correctness = 0
+source_qualified = false
+latency_p50_ms = 0.004084
+latency_p95_ms = 0.004333
+latency_max_ms = 0.004708
+peak_allocated_bytes = 105316
+steady_allocated_bytes = 105277
+allocated_growth_bytes = 0
+caller_allocation_calls_max = 64
+
+[[measurement.supplementary_observation]]
+id = "apple-004"
+sample_count = 200
+result_correctness = 0
+source_qualified = false
+latency_p50_ms = 0.004083
+latency_p95_ms = 0.004167
+latency_max_ms = 0.005750
+peak_allocated_bytes = 105440
+steady_allocated_bytes = 105401
+allocated_growth_bytes = 0
+caller_allocation_calls_max = 64
+
+[[measurement.budget]]
+measure = "latency_p50"
+kind = "absolute"
+status = "accepted"
+unit = "milliseconds"
+direction = "at_most"
+limit = 0.008400
+rationale = "ADR 0068: derivation.latency"
+
+[[measurement.budget]]
+measure = "latency_p95"
+kind = "absolute"
+status = "accepted"
+unit = "milliseconds"
+direction = "at_most"
+limit = 0.009000
+rationale = "ADR 0068: derivation.latency"
+
+[[measurement.budget]]
+measure = "latency_max"
+kind = "absolute"
+status = "accepted"
+unit = "milliseconds"
+direction = "at_most"
+limit = 0.023300
+rationale = "ADR 0068: derivation.latency"
+
+[[measurement.budget]]
+measure = "peak_allocated_bytes"
+kind = "absolute"
+status = "accepted"
+unit = "bytes"
+direction = "at_most"
+limit = 135168
+rationale = "ADR 0068: derivation.heap"
+
+[[measurement.budget]]
+measure = "steady_allocated_bytes"
+kind = "absolute"
+status = "accepted"
+unit = "bytes"
+direction = "at_most"
+limit = 135168
+rationale = "ADR 0068: derivation.heap"
+
+[[measurement.budget]]
+measure = "allocated_growth_bytes"
+kind = "absolute"
+status = "accepted"
+unit = "bytes"
+direction = "at_most"
+limit = 0
+rationale = "ADR 0068: derivation.growth"
+
+[[measurement.budget]]
+measure = "caller_allocation_calls_max"
+kind = "absolute"
+status = "accepted"
+unit = "count"
+direction = "at_most"
+limit = 64
+rationale = "ADR 0068: derivation.allocations"
+
+[[measurement]]
+workload = "query_clone_release_rust"
+correctness_oracle = "dropping a non-final shared query reference leaves the original query and its complete pending observation unchanged"
+measurement_role = "worst applicable source-bound per-process precursor statistics; not pooled, supplementary, accepted limits or final results"
+observations_per_sample = 32
+result_correctness = 0
+caller_zero_allocation_gate = false
+latency_p50_ms = 0.000667
+latency_p95_ms = 0.000750
+latency_max_ms = 0.000875
+peak_allocated_bytes = 103719
+steady_allocated_bytes = 103719
+allocated_growth_bytes = 0
+caller_allocation_calls_max = 0
+source_bound_process_count = 4
+
+[[measurement.precursor]]
+id = "apple-02"
+sample_count = 200
+result_correctness = 0
+latency_p50_ms = 0.000667
+latency_p95_ms = 0.00075
+latency_max_ms = 0.000875
+peak_allocated_bytes = 103595
+steady_allocated_bytes = 103595
+allocated_growth_bytes = 0
+caller_allocation_calls_max = 0
+
+[[measurement.precursor]]
+id = "apple-03"
+sample_count = 200
+result_correctness = 0
+latency_p50_ms = 0.000666
+latency_p95_ms = 0.00075
+latency_max_ms = 0.000875
+peak_allocated_bytes = 103719
+steady_allocated_bytes = 103719
+allocated_growth_bytes = 0
+caller_allocation_calls_max = 0
+
+[[measurement.precursor]]
+id = "apple-005"
+sample_count = 200
+result_correctness = 0
+latency_p50_ms = 0.000625
+latency_p95_ms = 0.000709
+latency_max_ms = 0.000875
+peak_allocated_bytes = 103595
+steady_allocated_bytes = 103595
+allocated_growth_bytes = 0
+caller_allocation_calls_max = 0
+
+[[measurement.precursor]]
+id = "apple-006"
+sample_count = 200
+result_correctness = 0
+latency_p50_ms = 0.000667
+latency_p95_ms = 0.000750
+latency_max_ms = 0.000833
+peak_allocated_bytes = 103595
+steady_allocated_bytes = 103595
+allocated_growth_bytes = 0
+caller_allocation_calls_max = 0
+
+[[measurement.supplementary_observation]]
+id = "apple-003"
+sample_count = 200
+result_correctness = 0
+source_qualified = false
+latency_p50_ms = 0.000667
+latency_p95_ms = 0.000750
+latency_max_ms = 0.000875
+peak_allocated_bytes = 103595
+steady_allocated_bytes = 103595
+allocated_growth_bytes = 0
+caller_allocation_calls_max = 0
+
+[[measurement.supplementary_observation]]
+id = "apple-004"
+sample_count = 200
+result_correctness = 0
+source_qualified = false
+latency_p50_ms = 0.000667
+latency_p95_ms = 0.000750
+latency_max_ms = 0.000792
+peak_allocated_bytes = 103595
+steady_allocated_bytes = 103595
+allocated_growth_bytes = 0
+caller_allocation_calls_max = 0
+
+[[measurement.budget]]
+measure = "latency_p50"
+kind = "absolute"
+status = "accepted"
+unit = "milliseconds"
+direction = "at_most"
+limit = 0.001400
+rationale = "ADR 0068: derivation.latency"
+
+[[measurement.budget]]
+measure = "latency_p95"
+kind = "absolute"
+status = "accepted"
+unit = "milliseconds"
+direction = "at_most"
+limit = 0.001500
+rationale = "ADR 0068: derivation.latency"
+
+[[measurement.budget]]
+measure = "latency_max"
+kind = "absolute"
+status = "accepted"
+unit = "milliseconds"
+direction = "at_most"
+limit = 0.001800
+rationale = "ADR 0068: derivation.latency"
+
+[[measurement.budget]]
+measure = "peak_allocated_bytes"
+kind = "absolute"
+status = "accepted"
+unit = "bytes"
+direction = "at_most"
+limit = 131072
+rationale = "ADR 0068: derivation.heap"
+
+[[measurement.budget]]
+measure = "steady_allocated_bytes"
+kind = "absolute"
+status = "accepted"
+unit = "bytes"
+direction = "at_most"
+limit = 131072
+rationale = "ADR 0068: derivation.heap"
+
+[[measurement.budget]]
+measure = "allocated_growth_bytes"
+kind = "absolute"
+status = "accepted"
+unit = "bytes"
+direction = "at_most"
+limit = 0
+rationale = "ADR 0068: derivation.growth"
+
+[[measurement.budget]]
+measure = "caller_allocation_calls_max"
+kind = "absolute"
+status = "accepted"
+unit = "count"
+direction = "at_most"
+limit = 0
+rationale = "ADR 0068: derivation.allocations"
+
+[[measurement]]
+workload = "query_clone_release_c"
+correctness_oracle = "dropping a non-final shared query reference leaves the original query and its complete pending observation unchanged"
+measurement_role = "worst applicable source-bound per-process precursor statistics; not pooled, supplementary, accepted limits or final results"
+observations_per_sample = 32
+result_correctness = 0
+caller_zero_allocation_gate = false
+latency_p50_ms = 0.001917
+latency_p95_ms = 0.002125
+latency_max_ms = 0.015000
+peak_allocated_bytes = 105277
+steady_allocated_bytes = 105277
+allocated_growth_bytes = 0
+caller_allocation_calls_max = 0
+source_bound_process_count = 4
+
+[[measurement.precursor]]
+id = "apple-02"
+sample_count = 200
+result_correctness = 0
+latency_p50_ms = 0.001875
+latency_p95_ms = 0.002083
+latency_max_ms = 0.002208
+peak_allocated_bytes = 105277
+steady_allocated_bytes = 105277
+allocated_growth_bytes = 0
+caller_allocation_calls_max = 0
+
+[[measurement.precursor]]
+id = "apple-03"
+sample_count = 200
+result_correctness = 0
+latency_p50_ms = 0.001875
+latency_p95_ms = 0.002083
+latency_max_ms = 0.002167
+peak_allocated_bytes = 105277
+steady_allocated_bytes = 105277
+allocated_growth_bytes = 0
+caller_allocation_calls_max = 0
+
+[[measurement.precursor]]
+id = "apple-005"
+sample_count = 200
+result_correctness = 0
+latency_p50_ms = 0.001875
+latency_p95_ms = 0.002083
+latency_max_ms = 0.002167
+peak_allocated_bytes = 105277
+steady_allocated_bytes = 105277
+allocated_growth_bytes = 0
+caller_allocation_calls_max = 0
+
+[[measurement.precursor]]
+id = "apple-006"
+sample_count = 200
+result_correctness = 0
+latency_p50_ms = 0.001917
+latency_p95_ms = 0.002125
+latency_max_ms = 0.015000
+peak_allocated_bytes = 105277
+steady_allocated_bytes = 105277
+allocated_growth_bytes = 0
+caller_allocation_calls_max = 0
+
+[[measurement.supplementary_observation]]
+id = "apple-003"
+sample_count = 200
+result_correctness = 0
+source_qualified = false
+latency_p50_ms = 0.001875
+latency_p95_ms = 0.002083
+latency_max_ms = 0.002125
+peak_allocated_bytes = 105277
+steady_allocated_bytes = 105277
+allocated_growth_bytes = 0
+caller_allocation_calls_max = 0
+
+[[measurement.supplementary_observation]]
+id = "apple-004"
+sample_count = 200
+result_correctness = 0
+source_qualified = false
+latency_p50_ms = 0.002000
+latency_p95_ms = 0.002125
+latency_max_ms = 0.002167
+peak_allocated_bytes = 105277
+steady_allocated_bytes = 105277
+allocated_growth_bytes = 0
+caller_allocation_calls_max = 0
+
+[[measurement.budget]]
+measure = "latency_p50"
+kind = "absolute"
+status = "accepted"
+unit = "milliseconds"
+direction = "at_most"
+limit = 0.004000
+rationale = "ADR 0068: derivation.latency"
+
+[[measurement.budget]]
+measure = "latency_p95"
+kind = "absolute"
+status = "accepted"
+unit = "milliseconds"
+direction = "at_most"
+limit = 0.004300
+rationale = "ADR 0068: derivation.latency"
+
+[[measurement.budget]]
+measure = "latency_max"
+kind = "absolute"
+status = "accepted"
+unit = "milliseconds"
+direction = "at_most"
+limit = 0.030000
+rationale = "ADR 0068: derivation.latency"
+
+[[measurement.budget]]
+measure = "peak_allocated_bytes"
+kind = "absolute"
+status = "accepted"
+unit = "bytes"
+direction = "at_most"
+limit = 135168
+rationale = "ADR 0068: derivation.heap"
+
+[[measurement.budget]]
+measure = "steady_allocated_bytes"
+kind = "absolute"
+status = "accepted"
+unit = "bytes"
+direction = "at_most"
+limit = 135168
+rationale = "ADR 0068: derivation.heap"
+
+[[measurement.budget]]
+measure = "allocated_growth_bytes"
+kind = "absolute"
+status = "accepted"
+unit = "bytes"
+direction = "at_most"
+limit = 0
+rationale = "ADR 0068: derivation.growth"
+
+[[measurement.budget]]
+measure = "caller_allocation_calls_max"
+kind = "absolute"
+status = "accepted"
+unit = "count"
+direction = "at_most"
+limit = 0
+rationale = "ADR 0068: derivation.allocations"
+
+[[measurement]]
+workload = "result_clone_release_rust"
+correctness_oracle = "a shared result clone is readable, its release leaves the retained matched owner unchanged, and neither copies match storage"
+measurement_role = "worst applicable source-bound per-process precursor statistics; not pooled, supplementary, accepted limits or final results"
+observations_per_sample = 32
+result_correctness = 0
+caller_zero_allocation_gate = false
+latency_p50_ms = 0.001208
+latency_p95_ms = 0.001292
+latency_max_ms = 0.001375
+peak_allocated_bytes = 79195
+steady_allocated_bytes = 79195
+allocated_growth_bytes = 0
+caller_allocation_calls_max = 0
+source_bound_process_count = 4
+
+[[measurement.precursor]]
+id = "apple-02"
+sample_count = 200
+result_correctness = 0
+latency_p50_ms = 0.001208
+latency_p95_ms = 0.001292
+latency_max_ms = 0.001334
+peak_allocated_bytes = 79195
+steady_allocated_bytes = 79195
+allocated_growth_bytes = 0
+caller_allocation_calls_max = 0
+
+[[measurement.precursor]]
+id = "apple-03"
+sample_count = 200
+result_correctness = 0
+latency_p50_ms = 0.001125
+latency_p95_ms = 0.001292
+latency_max_ms = 0.001334
+peak_allocated_bytes = 79195
+steady_allocated_bytes = 79195
+allocated_growth_bytes = 0
+caller_allocation_calls_max = 0
+
+[[measurement.precursor]]
+id = "apple-005"
+sample_count = 200
+result_correctness = 0
+latency_p50_ms = 0.001125
+latency_p95_ms = 0.001292
+latency_max_ms = 0.001375
+peak_allocated_bytes = 79195
+steady_allocated_bytes = 79195
+allocated_growth_bytes = 0
+caller_allocation_calls_max = 0
+
+[[measurement.precursor]]
+id = "apple-006"
+sample_count = 200
+result_correctness = 0
+latency_p50_ms = 0.001125
+latency_p95_ms = 0.001208
+latency_max_ms = 0.001375
+peak_allocated_bytes = 79195
+steady_allocated_bytes = 79195
+allocated_growth_bytes = 0
+caller_allocation_calls_max = 0
+
+[[measurement.supplementary_observation]]
+id = "apple-003"
+sample_count = 200
+result_correctness = 0
+source_qualified = false
+latency_p50_ms = 0.001167
+latency_p95_ms = 0.001292
+latency_max_ms = 0.001375
+peak_allocated_bytes = 79195
+steady_allocated_bytes = 79195
+allocated_growth_bytes = 0
+caller_allocation_calls_max = 0
+
+[[measurement.supplementary_observation]]
+id = "apple-004"
+sample_count = 200
+result_correctness = 0
+source_qualified = false
+latency_p50_ms = 0.001208
+latency_p95_ms = 0.001292
+latency_max_ms = 0.001334
+peak_allocated_bytes = 79195
+steady_allocated_bytes = 79195
+allocated_growth_bytes = 0
+caller_allocation_calls_max = 0
+
+[[measurement.budget]]
+measure = "latency_p50"
+kind = "absolute"
+status = "accepted"
+unit = "milliseconds"
+direction = "at_most"
+limit = 0.002500
+rationale = "ADR 0068: derivation.latency"
+
+[[measurement.budget]]
+measure = "latency_p95"
+kind = "absolute"
+status = "accepted"
+unit = "milliseconds"
+direction = "at_most"
+limit = 0.002600
+rationale = "ADR 0068: derivation.latency"
+
+[[measurement.budget]]
+measure = "latency_max"
+kind = "absolute"
+status = "accepted"
+unit = "milliseconds"
+direction = "at_most"
+limit = 0.002800
+rationale = "ADR 0068: derivation.latency"
+
+[[measurement.budget]]
+measure = "peak_allocated_bytes"
+kind = "absolute"
+status = "accepted"
+unit = "bytes"
+direction = "at_most"
+limit = 102400
+rationale = "ADR 0068: derivation.heap"
+
+[[measurement.budget]]
+measure = "steady_allocated_bytes"
+kind = "absolute"
+status = "accepted"
+unit = "bytes"
+direction = "at_most"
+limit = 102400
+rationale = "ADR 0068: derivation.heap"
+
+[[measurement.budget]]
+measure = "allocated_growth_bytes"
+kind = "absolute"
+status = "accepted"
+unit = "bytes"
+direction = "at_most"
+limit = 0
+rationale = "ADR 0068: derivation.growth"
+
+[[measurement.budget]]
+measure = "caller_allocation_calls_max"
+kind = "absolute"
+status = "accepted"
+unit = "count"
+direction = "at_most"
+limit = 0
+rationale = "ADR 0068: derivation.allocations"
+
+[[measurement]]
+workload = "result_clone_release_c"
+correctness_oracle = "a shared result clone is readable, its release leaves the retained matched owner unchanged, and neither copies match storage"
+measurement_role = "worst applicable source-bound per-process precursor statistics; not pooled, supplementary, accepted limits or final results"
+observations_per_sample = 32
+result_correctness = 0
+caller_zero_allocation_gate = false
+latency_p50_ms = 0.004417
+latency_p95_ms = 0.004750
+latency_max_ms = 0.008333
+peak_allocated_bytes = 81101
+steady_allocated_bytes = 81101
+allocated_growth_bytes = 0
+caller_allocation_calls_max = 0
+source_bound_process_count = 4
+
+[[measurement.precursor]]
+id = "apple-02"
+sample_count = 200
+result_correctness = 0
+latency_p50_ms = 0.004333
+latency_p95_ms = 0.004542
+latency_max_ms = 0.004959
+peak_allocated_bytes = 81101
+steady_allocated_bytes = 81101
+allocated_growth_bytes = 0
+caller_allocation_calls_max = 0
+
+[[measurement.precursor]]
+id = "apple-03"
+sample_count = 200
+result_correctness = 0
+latency_p50_ms = 0.004417
+latency_p95_ms = 0.004625
+latency_max_ms = 0.004917
+peak_allocated_bytes = 81101
+steady_allocated_bytes = 81101
+allocated_growth_bytes = 0
+caller_allocation_calls_max = 0
+
+[[measurement.precursor]]
+id = "apple-005"
+sample_count = 200
+result_correctness = 0
+latency_p50_ms = 0.004375
+latency_p95_ms = 0.004667
+latency_max_ms = 0.004875
+peak_allocated_bytes = 81101
+steady_allocated_bytes = 81101
+allocated_growth_bytes = 0
+caller_allocation_calls_max = 0
+
+[[measurement.precursor]]
+id = "apple-006"
+sample_count = 200
+result_correctness = 0
+latency_p50_ms = 0.004375
+latency_p95_ms = 0.004750
+latency_max_ms = 0.008333
+peak_allocated_bytes = 81101
+steady_allocated_bytes = 81101
+allocated_growth_bytes = 0
+caller_allocation_calls_max = 0
+
+[[measurement.supplementary_observation]]
+id = "apple-003"
+sample_count = 200
+result_correctness = 0
+source_qualified = false
+latency_p50_ms = 0.004250
+latency_p95_ms = 0.004375
+latency_max_ms = 0.004625
+peak_allocated_bytes = 81101
+steady_allocated_bytes = 81101
+allocated_growth_bytes = 0
+caller_allocation_calls_max = 0
+
+[[measurement.supplementary_observation]]
+id = "apple-004"
+sample_count = 200
+result_correctness = 0
+source_qualified = false
+latency_p50_ms = 0.004250
+latency_p95_ms = 0.004625
+latency_max_ms = 0.004875
+peak_allocated_bytes = 81101
+steady_allocated_bytes = 81101
+allocated_growth_bytes = 0
+caller_allocation_calls_max = 0
+
+[[measurement.budget]]
+measure = "latency_p50"
+kind = "absolute"
+status = "accepted"
+unit = "milliseconds"
+direction = "at_most"
+limit = 0.008900
+rationale = "ADR 0068: derivation.latency"
+
+[[measurement.budget]]
+measure = "latency_p95"
+kind = "absolute"
+status = "accepted"
+unit = "milliseconds"
+direction = "at_most"
+limit = 0.009500
+rationale = "ADR 0068: derivation.latency"
+
+[[measurement.budget]]
+measure = "latency_max"
+kind = "absolute"
+status = "accepted"
+unit = "milliseconds"
+direction = "at_most"
+limit = 0.016700
+rationale = "ADR 0068: derivation.latency"
+
+[[measurement.budget]]
+measure = "peak_allocated_bytes"
+kind = "absolute"
+status = "accepted"
+unit = "bytes"
+direction = "at_most"
+limit = 102400
+rationale = "ADR 0068: derivation.heap"
+
+[[measurement.budget]]
+measure = "steady_allocated_bytes"
+kind = "absolute"
+status = "accepted"
+unit = "bytes"
+direction = "at_most"
+limit = 102400
+rationale = "ADR 0068: derivation.heap"
+
+[[measurement.budget]]
+measure = "allocated_growth_bytes"
+kind = "absolute"
+status = "accepted"
+unit = "bytes"
+direction = "at_most"
+limit = 0
+rationale = "ADR 0068: derivation.growth"
+
+[[measurement.budget]]
+measure = "caller_allocation_calls_max"
+kind = "absolute"
+status = "accepted"
+unit = "count"
+direction = "at_most"
+limit = 0
+rationale = "ADR 0068: derivation.allocations"
+
+[[measurement]]
+workload = "exact_frame_after_parents_rust"
+correctness_oracle = "after query, session, engine, template and package teardown a retained result yields its exact RGBA frame, shared mapping and all original bytes"
+measurement_role = "worst applicable source-bound per-process precursor statistics; not pooled, supplementary, accepted limits or final results"
+observations_per_sample = 32
+result_correctness = 0
+caller_zero_allocation_gate = false
+latency_p50_ms = 0.024250
+latency_p95_ms = 0.025250
+latency_max_ms = 0.041875
+peak_allocated_bytes = 50048
+steady_allocated_bytes = 50048
+allocated_growth_bytes = 0
+caller_allocation_calls_max = 0
+readable_frame_view_bytes = 24576
+source_bound_process_count = 4
+
+[[measurement.precursor]]
+id = "apple-02"
+sample_count = 200
+result_correctness = 0
+latency_p50_ms = 0.02425
+latency_p95_ms = 0.02525
+latency_max_ms = 0.041875
+peak_allocated_bytes = 50048
+steady_allocated_bytes = 50048
+allocated_growth_bytes = 0
+caller_allocation_calls_max = 0
+
+[[measurement.precursor]]
+id = "apple-03"
+sample_count = 200
+result_correctness = 0
+latency_p50_ms = 0.023541
+latency_p95_ms = 0.025208
+latency_max_ms = 0.038125
+peak_allocated_bytes = 50048
+steady_allocated_bytes = 50048
+allocated_growth_bytes = 0
+caller_allocation_calls_max = 0
+
+[[measurement.precursor]]
+id = "apple-005"
+sample_count = 200
+result_correctness = 0
+latency_p50_ms = 0.022959
+latency_p95_ms = 0.023250
+latency_max_ms = 0.028333
+peak_allocated_bytes = 50048
+steady_allocated_bytes = 50048
+allocated_growth_bytes = 0
+caller_allocation_calls_max = 0
+
+[[measurement.precursor]]
+id = "apple-006"
+sample_count = 200
+result_correctness = 0
+latency_p50_ms = 0.022583
+latency_p95_ms = 0.023167
+latency_max_ms = 0.027000
+peak_allocated_bytes = 50048
+steady_allocated_bytes = 50048
+allocated_growth_bytes = 0
+caller_allocation_calls_max = 0
+
+[[measurement.supplementary_observation]]
+id = "apple-003"
+sample_count = 200
+result_correctness = 0
+source_qualified = false
+latency_p50_ms = 0.022500
+latency_p95_ms = 0.023208
+latency_max_ms = 0.024333
+peak_allocated_bytes = 50048
+steady_allocated_bytes = 50048
+allocated_growth_bytes = 0
+caller_allocation_calls_max = 0
+
+[[measurement.supplementary_observation]]
+id = "apple-004"
+sample_count = 200
+result_correctness = 0
+source_qualified = false
+latency_p50_ms = 0.022875
+latency_p95_ms = 0.024208
+latency_max_ms = 0.025083
+peak_allocated_bytes = 50048
+steady_allocated_bytes = 50048
+allocated_growth_bytes = 0
+caller_allocation_calls_max = 0
+
+[[measurement.budget]]
+measure = "latency_p50"
+kind = "absolute"
+status = "accepted"
+unit = "milliseconds"
+direction = "at_most"
+limit = 0.048500
+rationale = "ADR 0068: derivation.latency"
+
+[[measurement.budget]]
+measure = "latency_p95"
+kind = "absolute"
+status = "accepted"
+unit = "milliseconds"
+direction = "at_most"
+limit = 0.050500
+rationale = "ADR 0068: derivation.latency"
+
+[[measurement.budget]]
+measure = "latency_max"
+kind = "absolute"
+status = "accepted"
+unit = "milliseconds"
+direction = "at_most"
+limit = 0.083800
+rationale = "ADR 0068: derivation.latency"
+
+[[measurement.budget]]
+measure = "peak_allocated_bytes"
+kind = "absolute"
+status = "accepted"
+unit = "bytes"
+direction = "at_most"
+limit = 65536
+rationale = "ADR 0068: derivation.heap"
+
+[[measurement.budget]]
+measure = "steady_allocated_bytes"
+kind = "absolute"
+status = "accepted"
+unit = "bytes"
+direction = "at_most"
+limit = 65536
+rationale = "ADR 0068: derivation.heap"
+
+[[measurement.budget]]
+measure = "allocated_growth_bytes"
+kind = "absolute"
+status = "accepted"
+unit = "bytes"
+direction = "at_most"
+limit = 0
+rationale = "ADR 0068: derivation.growth"
+
+[[measurement.budget]]
+measure = "caller_allocation_calls_max"
+kind = "absolute"
+status = "accepted"
+unit = "count"
+direction = "at_most"
+limit = 0
+rationale = "ADR 0068: derivation.allocations"
+
+[[measurement.budget]]
+measure = "readable_frame_view_bytes"
+kind = "absolute"
+status = "accepted"
+unit = "bytes"
+direction = "equal"
+limit = 24576
+rationale = "ADR 0068: exact observed 96 * 64 * 4 view length, NOT incremental mapped bytes"
+
+[[measurement]]
+workload = "exact_frame_after_parents_c"
+correctness_oracle = "after query, session, engine, template and package teardown a retained result yields its exact RGBA frame, shared mapping and all original bytes"
+measurement_role = "worst applicable source-bound per-process precursor statistics; not pooled, supplementary, accepted limits or final results"
+observations_per_sample = 32
+result_correctness = 0
+caller_zero_allocation_gate = false
+latency_p50_ms = 0.032709
+latency_p95_ms = 0.034917
+latency_max_ms = 0.065916
+peak_allocated_bytes = 50432
+steady_allocated_bytes = 50128
+allocated_growth_bytes = 0
+caller_allocation_calls_max = 96
+readable_frame_view_bytes = 24576
+source_bound_process_count = 4
+
+[[measurement.precursor]]
+id = "apple-02"
+sample_count = 200
+result_correctness = 0
+latency_p50_ms = 0.032167
+latency_p95_ms = 0.034666
+latency_max_ms = 0.056042
+peak_allocated_bytes = 50432
+steady_allocated_bytes = 50128
+allocated_growth_bytes = 0
+caller_allocation_calls_max = 96
+
+[[measurement.precursor]]
+id = "apple-03"
+sample_count = 200
+result_correctness = 0
+latency_p50_ms = 0.032334
+latency_p95_ms = 0.034417
+latency_max_ms = 0.04675
+peak_allocated_bytes = 50432
+steady_allocated_bytes = 50128
+allocated_growth_bytes = 0
+caller_allocation_calls_max = 96
+
+[[measurement.precursor]]
+id = "apple-005"
+sample_count = 200
+result_correctness = 0
+latency_p50_ms = 0.032709
+latency_p95_ms = 0.034917
+latency_max_ms = 0.065916
+peak_allocated_bytes = 50432
+steady_allocated_bytes = 50128
+allocated_growth_bytes = 0
+caller_allocation_calls_max = 96
+
+[[measurement.precursor]]
+id = "apple-006"
+sample_count = 200
+result_correctness = 0
+latency_p50_ms = 0.032083
+latency_p95_ms = 0.034542
+latency_max_ms = 0.047500
+peak_allocated_bytes = 50432
+steady_allocated_bytes = 50128
+allocated_growth_bytes = 0
+caller_allocation_calls_max = 96
+
+[[measurement.supplementary_observation]]
+id = "apple-003"
+sample_count = 200
+result_correctness = 0
+source_qualified = false
+latency_p50_ms = 0.032166
+latency_p95_ms = 0.034666
+latency_max_ms = 0.068292
+peak_allocated_bytes = 50432
+steady_allocated_bytes = 50128
+allocated_growth_bytes = 0
+caller_allocation_calls_max = 96
+
+[[measurement.supplementary_observation]]
+id = "apple-004"
+sample_count = 200
+result_correctness = 0
+source_qualified = false
+latency_p50_ms = 0.033000
+latency_p95_ms = 0.034208
+latency_max_ms = 0.034458
+peak_allocated_bytes = 50432
+steady_allocated_bytes = 50128
+allocated_growth_bytes = 0
+caller_allocation_calls_max = 96
+
+[[measurement.budget]]
+measure = "latency_p50"
+kind = "absolute"
+status = "accepted"
+unit = "milliseconds"
+direction = "at_most"
+limit = 0.066000
+rationale = "ADR 0068: derivation.latency"
+
+[[measurement.budget]]
+measure = "latency_p95"
+kind = "absolute"
+status = "accepted"
+unit = "milliseconds"
+direction = "at_most"
+limit = 0.069900
+rationale = "ADR 0068: derivation.latency"
+
+[[measurement.budget]]
+measure = "latency_max"
+kind = "absolute"
+status = "accepted"
+unit = "milliseconds"
+direction = "at_most"
+limit = 0.136600
+rationale = "ADR 0068: derivation.latency"
+
+[[measurement.budget]]
+measure = "peak_allocated_bytes"
+kind = "absolute"
+status = "accepted"
+unit = "bytes"
+direction = "at_most"
+limit = 65536
+rationale = "ADR 0068: derivation.heap"
+
+[[measurement.budget]]
+measure = "steady_allocated_bytes"
+kind = "absolute"
+status = "accepted"
+unit = "bytes"
+direction = "at_most"
+limit = 65536
+rationale = "ADR 0068: derivation.heap"
+
+[[measurement.budget]]
+measure = "allocated_growth_bytes"
+kind = "absolute"
+status = "accepted"
+unit = "bytes"
+direction = "at_most"
+limit = 0
+rationale = "ADR 0068: derivation.growth"
+
+[[measurement.budget]]
+measure = "caller_allocation_calls_max"
+kind = "absolute"
+status = "accepted"
+unit = "count"
+direction = "at_most"
+limit = 96
+rationale = "ADR 0068: derivation.allocations"
+
+[[measurement.budget]]
+measure = "readable_frame_view_bytes"
+kind = "absolute"
+status = "accepted"
+unit = "bytes"
+direction = "equal"
+limit = 24576
+rationale = "ADR 0068: exact observed 96 * 64 * 4 view length, NOT incremental mapped bytes"
+
+[[measurement]]
+workload = "create_cancel_release_rust"
+correctness_oracle = "one full public replay engine/session/package/query startup reaches settled pending, explicit cancellation publishes Cancelled, its result remains readable after query and parents release, and all caller owners are released before the window ends"
+measurement_role = "worst source-bound lifecycle per-process precursor statistics; not pooled, supplementary, accepted limits or final results"
+observations_per_sample = 1
+result_correctness = 0
+caller_zero_allocation_gate = false
+latency_p50_ms = 0.701500
+latency_p95_ms = 0.790917
+latency_max_ms = 0.953334
+peak_allocated_bytes = 194857
+steady_allocated_bytes = 0
+allocated_growth_bytes = 0
+caller_allocation_calls_max = 188
+source_bound_process_count = 2
+lifecycle_live_delta_sample_count = 400
+lifecycle_live_delta_bytes_min = 0
+lifecycle_live_delta_bytes_max = 0
+lifecycle_live_delta_bytes_sum = 0
+lifecycle_live_delta_positive_sample_count = 0
+
+[[measurement.precursor]]
+id = "apple-005"
+sample_count = 200
+result_correctness = 0
+latency_p50_ms = 0.701500
+latency_p95_ms = 0.790917
+latency_max_ms = 0.953334
+peak_allocated_bytes = 194857
+steady_allocated_bytes = 0
+allocated_growth_bytes = 0
+caller_allocation_calls_max = 188
+lifecycle_live_delta_sample_count = 200
+lifecycle_live_delta_bytes_min = 0
+lifecycle_live_delta_bytes_max = 0
+lifecycle_live_delta_bytes_sum = 0
+lifecycle_live_delta_positive_sample_count = 0
+process_live_bytes_before_window_min = 334777
+process_live_bytes_before_window_max = 334777
+process_live_bytes_after_window_min = 334777
+process_live_bytes_after_window_max = 334777
+
+[[measurement.precursor]]
+id = "apple-006"
+sample_count = 200
+result_correctness = 0
+latency_p50_ms = 0.697959
+latency_p95_ms = 0.778250
+latency_max_ms = 0.912000
+peak_allocated_bytes = 194857
+steady_allocated_bytes = 0
+allocated_growth_bytes = 0
+caller_allocation_calls_max = 188
+lifecycle_live_delta_sample_count = 200
+lifecycle_live_delta_bytes_min = 0
+lifecycle_live_delta_bytes_max = 0
+lifecycle_live_delta_bytes_sum = 0
+lifecycle_live_delta_positive_sample_count = 0
+process_live_bytes_before_window_min = 334777
+process_live_bytes_before_window_max = 334777
+process_live_bytes_after_window_min = 334777
+process_live_bytes_after_window_max = 334777
+
+[[measurement.supplementary_observation]]
+id = "apple-003"
+sample_count = 200
+result_correctness = 0
+source_qualified = false
+latency_p50_ms = 0.704333
+latency_p95_ms = 0.793750
+latency_max_ms = 15.714875
+peak_allocated_bytes = 194857
+steady_allocated_bytes = 0
+allocated_growth_bytes = 0
+caller_allocation_calls_max = 188
+lifecycle_live_delta_sample_count = 200
+lifecycle_live_delta_bytes_min = 0
+lifecycle_live_delta_bytes_max = 0
+lifecycle_live_delta_bytes_sum = 0
+lifecycle_live_delta_positive_sample_count = 0
+process_live_bytes_before_window_min = 334777
+process_live_bytes_before_window_max = 334777
+process_live_bytes_after_window_min = 334777
+process_live_bytes_after_window_max = 334777
+latency_over_10ms_sample_count = 3
+
+[[measurement.supplementary_observation]]
+id = "apple-004"
+sample_count = 200
+result_correctness = 0
+source_qualified = false
+latency_p50_ms = 0.709667
+latency_p95_ms = 0.788667
+latency_max_ms = 15.714083
+peak_allocated_bytes = 194857
+steady_allocated_bytes = 0
+allocated_growth_bytes = 0
+caller_allocation_calls_max = 188
+lifecycle_live_delta_sample_count = 200
+lifecycle_live_delta_bytes_min = 0
+lifecycle_live_delta_bytes_max = 0
+lifecycle_live_delta_bytes_sum = 0
+lifecycle_live_delta_positive_sample_count = 0
+process_live_bytes_before_window_min = 334777
+process_live_bytes_before_window_max = 334777
+process_live_bytes_after_window_min = 334777
+process_live_bytes_after_window_max = 334777
+latency_over_10ms_sample_count = 1
+
+[[measurement.budget]]
+measure = "latency_p50"
+kind = "absolute"
+status = "accepted"
+unit = "milliseconds"
+direction = "at_most"
+limit = 1.419400
+rationale = "ADR 0068: derivation.latency"
+
+[[measurement.budget]]
+measure = "latency_p95"
+kind = "absolute"
+status = "accepted"
+unit = "milliseconds"
+direction = "at_most"
+limit = 1.587500
+rationale = "ADR 0068: derivation.latency"
+
+[[measurement.budget]]
+measure = "latency_max"
+kind = "absolute"
+status = "accepted"
+unit = "milliseconds"
+direction = "at_most"
+limit = 31.429800
+rationale = "ADR 0068: derivation.latency"
+
+[[measurement.budget]]
+measure = "peak_allocated_bytes"
+kind = "absolute"
+status = "accepted"
+unit = "bytes"
+direction = "at_most"
+limit = 245760
+rationale = "ADR 0068: derivation.heap"
+
+[[measurement.budget]]
+measure = "steady_allocated_bytes"
+kind = "absolute"
+status = "accepted"
+unit = "bytes"
+direction = "at_most"
+limit = 0
+rationale = "ADR 0068: derivation.heap"
+
+[[measurement.budget]]
+measure = "allocated_growth_bytes"
+kind = "absolute"
+status = "accepted"
+unit = "bytes"
+direction = "at_most"
+limit = 0
+rationale = "ADR 0068: derivation.growth"
+
+[[measurement.budget]]
+measure = "caller_allocation_calls_max"
+kind = "absolute"
+status = "accepted"
+unit = "count"
+direction = "at_most"
+limit = 188
+rationale = "ADR 0068: derivation.allocations"
+
+[[measurement.budget]]
+measure = "lifecycle_live_delta_bytes_per_sample"
+kind = "absolute"
+status = "accepted"
+unit = "bytes"
+direction = "at_most"
+limit = 0
+rationale = "ADR 0068: derivation.lifecycle_live_delta"
+predicate = "every lifecycle_live_delta_bytes_per_sample <= 0"
+
+[[measurement]]
+workload = "create_cancel_release_c"
+correctness_oracle = "one full public replay engine/session/package/query startup reaches settled pending, explicit cancellation publishes Cancelled, its result remains readable after query and parents release, and all caller owners are released before the window ends"
+measurement_role = "worst source-bound lifecycle per-process precursor statistics; not pooled, supplementary, accepted limits or final results"
+observations_per_sample = 1
+result_correctness = 0
+caller_zero_allocation_gate = false
+latency_p50_ms = 0.714625
+latency_p95_ms = 0.822792
+latency_max_ms = 15.785000
+peak_allocated_bytes = 196549
+steady_allocated_bytes = 0
+allocated_growth_bytes = 0
+caller_allocation_calls_max = 201
+source_bound_process_count = 2
+lifecycle_live_delta_sample_count = 400
+lifecycle_live_delta_bytes_min = 0
+lifecycle_live_delta_bytes_max = 0
+lifecycle_live_delta_bytes_sum = 0
+lifecycle_live_delta_positive_sample_count = 0
+
+[[measurement.precursor]]
+id = "apple-005"
+sample_count = 200
+result_correctness = 0
+latency_p50_ms = 0.714625
+latency_p95_ms = 0.822792
+latency_max_ms = 15.785000
+peak_allocated_bytes = 196549
+steady_allocated_bytes = 0
+allocated_growth_bytes = 0
+caller_allocation_calls_max = 201
+lifecycle_live_delta_sample_count = 200
+lifecycle_live_delta_bytes_min = 0
+lifecycle_live_delta_bytes_max = 0
+lifecycle_live_delta_bytes_sum = 0
+lifecycle_live_delta_positive_sample_count = 0
+process_live_bytes_before_window_min = 353977
+process_live_bytes_before_window_max = 353977
+process_live_bytes_after_window_min = 353977
+process_live_bytes_after_window_max = 353977
+
+[[measurement.precursor]]
+id = "apple-006"
+sample_count = 200
+result_correctness = 0
+latency_p50_ms = 0.704750
+latency_p95_ms = 0.807000
+latency_max_ms = 15.776042
+peak_allocated_bytes = 196549
+steady_allocated_bytes = 0
+allocated_growth_bytes = 0
+caller_allocation_calls_max = 201
+lifecycle_live_delta_sample_count = 200
+lifecycle_live_delta_bytes_min = 0
+lifecycle_live_delta_bytes_max = 0
+lifecycle_live_delta_bytes_sum = 0
+lifecycle_live_delta_positive_sample_count = 0
+process_live_bytes_before_window_min = 353977
+process_live_bytes_before_window_max = 353977
+process_live_bytes_after_window_min = 353977
+process_live_bytes_after_window_max = 353977
+
+[[measurement.supplementary_observation]]
+id = "apple-003"
+sample_count = 200
+result_correctness = 0
+source_qualified = false
+latency_p50_ms = 0.700917
+latency_p95_ms = 0.784000
+latency_max_ms = 0.808917
+peak_allocated_bytes = 196549
+steady_allocated_bytes = 0
+allocated_growth_bytes = 0
+caller_allocation_calls_max = 201
+lifecycle_live_delta_sample_count = 200
+lifecycle_live_delta_bytes_min = 0
+lifecycle_live_delta_bytes_max = 0
+lifecycle_live_delta_bytes_sum = 0
+lifecycle_live_delta_positive_sample_count = 0
+process_live_bytes_before_window_min = 353977
+process_live_bytes_before_window_max = 353977
+process_live_bytes_after_window_min = 353977
+process_live_bytes_after_window_max = 353977
+latency_over_10ms_sample_count = 0
+
+[[measurement.supplementary_observation]]
+id = "apple-004"
+sample_count = 200
+result_correctness = 0
+source_qualified = false
+latency_p50_ms = 0.683958
+latency_p95_ms = 0.766167
+latency_max_ms = 1.324333
+peak_allocated_bytes = 196549
+steady_allocated_bytes = 0
+allocated_growth_bytes = 0
+caller_allocation_calls_max = 201
+lifecycle_live_delta_sample_count = 200
+lifecycle_live_delta_bytes_min = 0
+lifecycle_live_delta_bytes_max = 0
+lifecycle_live_delta_bytes_sum = 0
+lifecycle_live_delta_positive_sample_count = 0
+process_live_bytes_before_window_min = 353977
+process_live_bytes_before_window_max = 353977
+process_live_bytes_after_window_min = 353977
+process_live_bytes_after_window_max = 353977
+latency_over_10ms_sample_count = 0
+
+[[measurement.budget]]
+measure = "latency_p50"
+kind = "absolute"
+status = "accepted"
+unit = "milliseconds"
+direction = "at_most"
+limit = 1.429300
+rationale = "ADR 0068: derivation.latency"
+
+[[measurement.budget]]
+measure = "latency_p95"
+kind = "absolute"
+status = "accepted"
+unit = "milliseconds"
+direction = "at_most"
+limit = 1.645600
+rationale = "ADR 0068: derivation.latency"
+
+[[measurement.budget]]
+measure = "latency_max"
+kind = "absolute"
+status = "accepted"
+unit = "milliseconds"
+direction = "at_most"
+limit = 31.570000
+rationale = "ADR 0068: derivation.latency"
+
+[[measurement.budget]]
+measure = "peak_allocated_bytes"
+kind = "absolute"
+status = "accepted"
+unit = "bytes"
+direction = "at_most"
+limit = 245760
+rationale = "ADR 0068: derivation.heap"
+
+[[measurement.budget]]
+measure = "steady_allocated_bytes"
+kind = "absolute"
+status = "accepted"
+unit = "bytes"
+direction = "at_most"
+limit = 0
+rationale = "ADR 0068: derivation.heap"
+
+[[measurement.budget]]
+measure = "allocated_growth_bytes"
+kind = "absolute"
+status = "accepted"
+unit = "bytes"
+direction = "at_most"
+limit = 0
+rationale = "ADR 0068: derivation.growth"
+
+[[measurement.budget]]
+measure = "caller_allocation_calls_max"
+kind = "absolute"
+status = "accepted"
+unit = "count"
+direction = "at_most"
+limit = 201
+rationale = "ADR 0068: derivation.allocations"
+
+[[measurement.budget]]
+measure = "lifecycle_live_delta_bytes_per_sample"
+kind = "absolute"
+status = "accepted"
+unit = "bytes"
+direction = "at_most"
+limit = 0
+rationale = "ADR 0068: derivation.lifecycle_live_delta"
+predicate = "every lifecycle_live_delta_bytes_per_sample <= 0"
+
+[[precursor]]
+id = "apple-005"
+report = "rasen/changes/pull-based-c-and-cpp-template-watch-query/evidence/apple-boundary-precursor-005.toml"
+report_sha256 = "1dfa5b608fefa4db1a7fd2b7f1f9a310b9179f56bf029a802f0fade9f483bc8d"
+executed_source = "9db705be8beff44fb52aa17d42fe9885897077b3"
+executed_tree = "1497c5512d01848c886008afb135a16d8341d33d"
+source_state = "explicit source-bound uncommitted overlay on executed_source base; not a clean final candidate"
+source_qualified = true
+source_manifest = "rasen/changes/pull-based-c-and-cpp-template-watch-query/evidence/apple-boundary-source-005.json"
+source_manifest_sha256 = "a10ac56a8573b9631d3074a07c75c5940fe3fafdbf999a531cd1a0041c90b9d8"
+source_archive = "rasen/changes/pull-based-c-and-cpp-template-watch-query/evidence/apple-boundary-source-005.zip"
+source_archive_sha256 = "4521d601071fba9be24fca2c0820dfa44fba781a57e7dc07b2d2eb050bf29a25"
+benchmark_executable_sha256 = "af2eca8db77e0428553e18d279a05fe3ab051225b73665374154de272ca415bd"
+exit_code = 0
+workload_count = 18
+warmup_iterations = 20
+sample_count = 200
+report_budget_enforcement_requested = false
+report_budget_acceptance = "proposed"
+report_budget_profile_sha256 = "8c326a2266b106f3e6510824aa9454d0c8d01a7b9c36ecf9932b2b6516ed514e"
+role = "source-bound precursor observations; independent numeric acceptance is separate; not final enforcement"
+build_record = "rasen/changes/pull-based-c-and-cpp-template-watch-query/evidence/apple-boundary-build-005.json"
+run_plan = "rasen/changes/pull-based-c-and-cpp-template-watch-query/evidence/apple-boundary-run-plan-005.json"
+run_record = "rasen/changes/pull-based-c-and-cpp-template-watch-query/evidence/apple-boundary-run-005.json"
+finalization = "rasen/changes/pull-based-c-and-cpp-template-watch-query/evidence/apple-boundary-finalization-005.json"
+source_applicability = "candidate001 tree 51d12df8619b123c13e15717f21cb83c7bee8c2c to executed_tree changes only ADR0068 prose; measured code, oracle, fixture, timing windows and schedule are unchanged"
+
+[[precursor]]
+id = "apple-006"
+report = "rasen/changes/pull-based-c-and-cpp-template-watch-query/evidence/apple-boundary-precursor-006.toml"
+report_sha256 = "f1a65105f8058b60bcdf677814dd19bd4d266888f56b641c86936e137e430d29"
+executed_source = "9db705be8beff44fb52aa17d42fe9885897077b3"
+executed_tree = "1497c5512d01848c886008afb135a16d8341d33d"
+source_state = "explicit source-bound uncommitted overlay on executed_source base; not a clean final candidate"
+source_qualified = true
+source_manifest = "rasen/changes/pull-based-c-and-cpp-template-watch-query/evidence/apple-boundary-source-005.json"
+source_manifest_sha256 = "a10ac56a8573b9631d3074a07c75c5940fe3fafdbf999a531cd1a0041c90b9d8"
+source_archive = "rasen/changes/pull-based-c-and-cpp-template-watch-query/evidence/apple-boundary-source-005.zip"
+source_archive_sha256 = "4521d601071fba9be24fca2c0820dfa44fba781a57e7dc07b2d2eb050bf29a25"
+benchmark_executable_sha256 = "af2eca8db77e0428553e18d279a05fe3ab051225b73665374154de272ca415bd"
+exit_code = 0
+workload_count = 18
+warmup_iterations = 20
+sample_count = 200
+report_budget_enforcement_requested = false
+report_budget_acceptance = "proposed"
+report_budget_profile_sha256 = "8c326a2266b106f3e6510824aa9454d0c8d01a7b9c36ecf9932b2b6516ed514e"
+role = "source-bound precursor observations; independent numeric acceptance is separate; not final enforcement"
+build_record = "rasen/changes/pull-based-c-and-cpp-template-watch-query/evidence/apple-boundary-build-005.json"
+run_plan = "rasen/changes/pull-based-c-and-cpp-template-watch-query/evidence/apple-boundary-run-plan-005.json"
+run_record = "rasen/changes/pull-based-c-and-cpp-template-watch-query/evidence/apple-boundary-run-006.json"
+finalization = "rasen/changes/pull-based-c-and-cpp-template-watch-query/evidence/apple-boundary-finalization-005.json"
+source_applicability = "candidate001 tree 51d12df8619b123c13e15717f21cb83c7bee8c2c to executed_tree changes only ADR0068 prose; measured code, oracle, fixture, timing windows and schedule are unchanged"
+
+[[superseded_proposal]]
+id = "original-sixteen-row-proposal"
+status = "superseded-unaccepted-alternative"
+selected = false
+reason = "explicit complete eighteen-row independent acceptance supersedes this proposal; no raw value or original artifact is replaced"
+original_profile = "rasen/changes/pull-based-c-and-cpp-template-watch-query/evidence/native-source-candidate-001.zip:docs/benchmarks/phase-5-template-watch-boundary-aarch64-apple-darwin.toml"
+original_profile_sha256 = "8c326a2266b106f3e6510824aa9454d0c8d01a7b9c36ecf9932b2b6516ed514e"
+source_archive_sha256 = "76d9092e856f0c5810daa32f93f0a46b40bf6a8b92acafb666a96d08ade4c3bc"
+profile_source_tree = "51d12df8619b123c13e15717f21cb83c7bee8c2c"
+observation_source = "9db705be8beff44fb52aa17d42fe9885897077b3"
+observation_tree = "624f2e6da362fe82d1fe140a730583245d54bf29"
+precursors = ["apple-02", "apple-03"]
+available_workload_count = 16
+required_workload_count = 18
+unavailable_workloads = ["create_cancel_release_rust", "create_cancel_release_c"]
+latency_unit = "nanoseconds per complete sample; p50, p95, max"
+heap_unit = "bytes"
+allocation_unit = "calls per complete sample"
+historical_applicability = "rasen/changes/pull-based-c-and-cpp-template-watch-query/evidence/extended-boundary-applicability-001.json"
+
+[[superseded_proposal.budget]]
+workload = "pending_poll_rust"
+observations_per_sample = 32
+latency_nanos = [1200, 1400, 1500]
+peak_allocated_bytes = 131072
+steady_allocated_bytes = 131072
+allocated_growth_bytes = 0
+caller_allocation_calls_max = 0
+
+[[superseded_proposal.budget]]
+workload = "pending_poll_c"
+observations_per_sample = 32
+latency_nanos = [3500, 3800, 4000]
+peak_allocated_bytes = 135168
+steady_allocated_bytes = 135168
+allocated_growth_bytes = 0
+caller_allocation_calls_max = 0
+
+[[superseded_proposal.budget]]
+workload = "first_closed_terminal_poll_rust"
+observations_per_sample = 1
+latency_nanos = [200, 500, 900]
+peak_allocated_bytes = 245760
+steady_allocated_bytes = 0
+allocated_growth_bytes = 0
+caller_allocation_calls_max = 0
+
+[[superseded_proposal.budget]]
+workload = "first_closed_terminal_poll_c"
+observations_per_sample = 1
+latency_nanos = [600, 1700, 74200]
+peak_allocated_bytes = 245760
+steady_allocated_bytes = 0
+allocated_growth_bytes = 0
+caller_allocation_calls_max = 1
+
+[[superseded_proposal.budget]]
+workload = "retained_terminal_poll_rust"
+observations_per_sample = 32
+latency_nanos = [1600, 1900, 2100]
+peak_allocated_bytes = 102400
+steady_allocated_bytes = 102400
+allocated_growth_bytes = 0
+caller_allocation_calls_max = 0
+
+[[superseded_proposal.budget]]
+workload = "retained_terminal_poll_c"
+observations_per_sample = 32
+latency_nanos = [8500, 9200, 40200]
+peak_allocated_bytes = 102400
+steady_allocated_bytes = 102400
+allocated_growth_bytes = 0
+caller_allocation_calls_max = 0
+
+[[superseded_proposal.budget]]
+workload = "terminal_info_match_read_rust"
+observations_per_sample = 32
+latency_nanos = [1300, 1500, 1700]
+peak_allocated_bytes = 102400
+steady_allocated_bytes = 102400
+allocated_growth_bytes = 0
+caller_allocation_calls_max = 0
+
+[[superseded_proposal.budget]]
+workload = "terminal_info_match_read_c"
+observations_per_sample = 32
+latency_nanos = [4300, 4700, 5100]
+peak_allocated_bytes = 102400
+steady_allocated_bytes = 102400
+allocated_growth_bytes = 0
+caller_allocation_calls_max = 0
+
+[[superseded_proposal.budget]]
+workload = "caller_wait_cancelled_rust"
+observations_per_sample = 32
+latency_nanos = [1400, 1600, 6600]
+peak_allocated_bytes = 131072
+steady_allocated_bytes = 131072
+allocated_growth_bytes = 0
+caller_allocation_calls_max = 0
+
+[[superseded_proposal.budget]]
+workload = "caller_wait_cancelled_c"
+observations_per_sample = 32
+latency_nanos = [8400, 9000, 20000]
+peak_allocated_bytes = 135168
+steady_allocated_bytes = 135168
+allocated_growth_bytes = 0
+caller_allocation_calls_max = 64
+
+[[superseded_proposal.budget]]
+workload = "query_clone_release_rust"
+observations_per_sample = 32
+latency_nanos = [1400, 1500, 1800]
+peak_allocated_bytes = 131072
+steady_allocated_bytes = 131072
+allocated_growth_bytes = 0
+caller_allocation_calls_max = 0
+
+[[superseded_proposal.budget]]
+workload = "query_clone_release_c"
+observations_per_sample = 32
+latency_nanos = [3800, 4200, 4500]
+peak_allocated_bytes = 135168
+steady_allocated_bytes = 135168
+allocated_growth_bytes = 0
+caller_allocation_calls_max = 0
+
+[[superseded_proposal.budget]]
+workload = "result_clone_release_rust"
+observations_per_sample = 32
+latency_nanos = [2500, 2600, 2700]
+peak_allocated_bytes = 102400
+steady_allocated_bytes = 102400
+allocated_growth_bytes = 0
+caller_allocation_calls_max = 0
+
+[[superseded_proposal.budget]]
+workload = "result_clone_release_c"
+observations_per_sample = 32
+latency_nanos = [8900, 9300, 10000]
+peak_allocated_bytes = 102400
+steady_allocated_bytes = 102400
+allocated_growth_bytes = 0
+caller_allocation_calls_max = 0
+
+[[superseded_proposal.budget]]
+workload = "exact_frame_after_parents_rust"
+observations_per_sample = 32
+latency_nanos = [48500, 50500, 83800]
+peak_allocated_bytes = 65536
+steady_allocated_bytes = 65536
+allocated_growth_bytes = 0
+caller_allocation_calls_max = 0
+readable_frame_view_bytes = 24576
+readable_frame_view_direction = "at_most"
+
+[[superseded_proposal.budget]]
+workload = "exact_frame_after_parents_c"
+observations_per_sample = 32
+latency_nanos = [64700, 69400, 112100]
+peak_allocated_bytes = 65536
+steady_allocated_bytes = 65536
+allocated_growth_bytes = 0
+caller_allocation_calls_max = 96
+readable_frame_view_bytes = 24576
+readable_frame_view_direction = "at_most"
+
+[[supplementary_observation]]
+id = "apple-003"
+report = "rasen/changes/pull-based-c-and-cpp-template-watch-query/evidence/apple-boundary-precursor-003.toml"
+report_sha256 = "d6128fb35bdd40aacce9852a0cc4938164af0cf439d60ac9774de7fa5cc7842c"
+status = "provenance-incomplete-supplementary-latency-heap-guardband-floor"
+source_qualified = false
+source_provenance = "BLOCKED: missing contemporaneous per-run source/executable/command binding; candidate001 and the later byte-identical 005 rebuild do not retroactively bind this process"
+role = "supplementary latency/heap floor only across all eighteen rows; not source-qualified lifecycle acceptance, not a final process"
+workload_count = 18
+warmup_iterations = 20
+sample_count = 200
+report_budget_enforcement_requested = false
+report_budget_acceptance = "proposed"
+report_budget_profile_sha256 = "8c326a2266b106f3e6510824aa9454d0c8d01a7b9c36ecf9932b2b6516ed514e"
+historical_analysis = "rasen/changes/pull-based-c-and-cpp-template-watch-query/evidence/apple-extended-boundary-analysis-001.json"
+historical_applicability = "rasen/changes/pull-based-c-and-cpp-template-watch-query/evidence/extended-boundary-applicability-001.json"
+historical_applicability_scope = "zero old-proposal overruns for these 003/004 observations only; not extended to 005/006"
+independent_review = "rasen/changes/pull-based-c-and-cpp-template-watch-query/evidence/apple-boundary-acceptance-001.json"
+
+[[supplementary_observation]]
+id = "apple-004"
+report = "rasen/changes/pull-based-c-and-cpp-template-watch-query/evidence/apple-boundary-precursor-004.toml"
+report_sha256 = "c15ca6e9d8ea138a9ebae28d798443cb9a68091c78011fba4eed838e7f335f07"
+status = "provenance-incomplete-supplementary-latency-heap-guardband-floor"
+source_qualified = false
+source_provenance = "BLOCKED: missing contemporaneous per-run source/executable/command binding; candidate001 and the later byte-identical 005 rebuild do not retroactively bind this process"
+role = "supplementary latency/heap floor only across all eighteen rows; not source-qualified lifecycle acceptance, not a final process"
+workload_count = 18
+warmup_iterations = 20
+sample_count = 200
+report_budget_enforcement_requested = false
+report_budget_acceptance = "proposed"
+report_budget_profile_sha256 = "8c326a2266b106f3e6510824aa9454d0c8d01a7b9c36ecf9932b2b6516ed514e"
+historical_analysis = "rasen/changes/pull-based-c-and-cpp-template-watch-query/evidence/apple-extended-boundary-analysis-001.json"
+historical_applicability = "rasen/changes/pull-based-c-and-cpp-template-watch-query/evidence/extended-boundary-applicability-001.json"
+historical_applicability_scope = "zero old-proposal overruns for these 003/004 observations only; not extended to 005/006"
+independent_review = "rasen/changes/pull-based-c-and-cpp-template-watch-query/evidence/apple-boundary-acceptance-001.json"
+
+[[alternative]]
+id = "source-bound-only-without-supplementary-floor"
+status = "not-selected"
+reason = "the known unbound 003/004 latency tails remain an explicit uniformly applied supplementary floor; only the nine differing metrics below change without that floor; every other accepted limit is identical"
+latency_unit = "nanoseconds per complete sample"
+independent_review = "rasen/changes/pull-based-c-and-cpp-template-watch-query/evidence/apple-boundary-acceptance-001.json"
+
+[[alternative.metric]]
+workload = "pending_poll_c"
+measure = "latency_p95"
+unit = "nanoseconds"
+limit = 3800
+
+[[alternative.metric]]
+workload = "first_closed_terminal_poll_c"
+measure = "latency_p50"
+unit = "nanoseconds"
+limit = 700
+
+[[alternative.metric]]
+workload = "first_closed_terminal_poll_c"
+measure = "latency_p95"
+unit = "nanoseconds"
+limit = 1700
+
+[[alternative.metric]]
+workload = "query_clone_release_c"
+measure = "latency_p50"
+unit = "nanoseconds"
+limit = 3900
+
+[[alternative.metric]]
+workload = "exact_frame_after_parents_c"
+measure = "latency_p50"
+unit = "nanoseconds"
+limit = 65500
+
+[[alternative.metric]]
+workload = "exact_frame_after_parents_c"
+measure = "latency_max"
+unit = "nanoseconds"
+limit = 131900
+
+[[alternative.metric]]
+workload = "create_cancel_release_rust"
+measure = "latency_p50"
+unit = "nanoseconds"
+limit = 1403000
+
+[[alternative.metric]]
+workload = "create_cancel_release_rust"
+measure = "latency_p95"
+unit = "nanoseconds"
+limit = 1581900
+
+[[alternative.metric]]
+workload = "create_cancel_release_rust"
+measure = "latency_max"
+unit = "nanoseconds"
+limit = 1906700
+
+[[proposal_overrun]]
+precursor = "apple-006"
+workload = "pending_poll_c"
+measure = "latency_max"
+unit = "nanoseconds"
+observed = 4833
+superseded_proposed_limit = 4000
+overrun = 833
+report_sha256 = "f1a65105f8058b60bcdf677814dd19bd4d266888f56b641c86936e137e430d29"
+classification = "offline exceedance of an unaccepted superseded proposal; no sample exclusion, apparatus-invalid relabeling or final enforcement result"
+independent_review = "rasen/changes/pull-based-c-and-cpp-template-watch-query/evidence/apple-boundary-acceptance-001.json"
+
+[[proposal_overrun]]
+precursor = "apple-006"
+workload = "first_closed_terminal_poll_rust"
+measure = "latency_max"
+unit = "nanoseconds"
+observed = 2125
+superseded_proposed_limit = 900
+overrun = 1225
+report_sha256 = "f1a65105f8058b60bcdf677814dd19bd4d266888f56b641c86936e137e430d29"
+classification = "offline exceedance of an unaccepted superseded proposal; no sample exclusion, apparatus-invalid relabeling or final enforcement result"
+independent_review = "rasen/changes/pull-based-c-and-cpp-template-watch-query/evidence/apple-boundary-acceptance-001.json"
+
+[[proposal_overrun]]
+precursor = "apple-006"
+workload = "retained_terminal_poll_rust"
+measure = "latency_max"
+unit = "nanoseconds"
+observed = 7792
+superseded_proposed_limit = 2100
+overrun = 5692
+report_sha256 = "f1a65105f8058b60bcdf677814dd19bd4d266888f56b641c86936e137e430d29"
+classification = "offline exceedance of an unaccepted superseded proposal; no sample exclusion, apparatus-invalid relabeling or final enforcement result"
+independent_review = "rasen/changes/pull-based-c-and-cpp-template-watch-query/evidence/apple-boundary-acceptance-001.json"
+
+[[proposal_overrun]]
+precursor = "apple-006"
+workload = "query_clone_release_c"
+measure = "latency_max"
+unit = "nanoseconds"
+observed = 15000
+superseded_proposed_limit = 4500
+overrun = 10500
+report_sha256 = "f1a65105f8058b60bcdf677814dd19bd4d266888f56b641c86936e137e430d29"
+classification = "offline exceedance of an unaccepted superseded proposal; no sample exclusion, apparatus-invalid relabeling or final enforcement result"
+independent_review = "rasen/changes/pull-based-c-and-cpp-template-watch-query/evidence/apple-boundary-acceptance-001.json"
+
+[[historical_refusal]]
+artifact = "rasen/changes/pull-based-c-and-cpp-template-watch-query/evidence/apple-boundary-enforcement-refusal-001.json"
+sha256 = "c7350c99315af08a75faff720551d060905d71a306d497b002b7c2ae6bd9af8b"
+exit_code = 101
+scope = "expected pre-acceptance refusal of the original proposed profile; not final numeric enforcement and not rewritten by current acceptance"

@@ -131,6 +131,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     check_cpp_ownership(&paths)?;
     run_cpp_example(&paths, &label)?;
     run_template_watch_examples(&paths)?;
+    run_native_template_watch_checks(&paths)?;
     #[cfg(feature = "private-fixture")]
     run_ocr_fixture_examples(&paths)?;
     run_default_ocr_examples(&paths)?;
@@ -1220,6 +1221,31 @@ fn run_template_watch_examples(paths: &Paths) -> Result<(), Box<dyn std::error::
         report_output("template-watch consumer", &output);
         if !output.status.success() || !stdout.contains(marker) {
             return Err(format!("the {directory} template-watch consumer failed").into());
+        }
+    }
+    Ok(())
+}
+
+fn run_native_template_watch_checks(paths: &Paths) -> Result<(), Box<dyn std::error::Error>> {
+    for (language, directory, extension) in [(Language::C, "c", "c"), (Language::Cpp, "cpp", "cpp")]
+    {
+        let source = paths.root.join(format!(
+            "crates/bindings/capi/examples/{directory}/native-template-watch.{extension}"
+        ));
+        let program = compile(
+            paths,
+            language,
+            &format!("native-template-watch-{directory}"),
+            &source,
+            true,
+        )?;
+        let output = run(paths, &program, &["--check"])?;
+        print!("{}", String::from_utf8_lossy(&output.stdout));
+        report_output("native template-watch admission check", &output);
+        if !output.status.success() {
+            return Err(
+                format!("the {directory} native template-watch admission check failed").into(),
+            );
         }
     }
     Ok(())
