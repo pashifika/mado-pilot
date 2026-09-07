@@ -115,6 +115,11 @@ add_executable(
   "${MADOPILOT_SOURCE_DIR}/examples/cpp/native-template-watch.cpp"
 )
 target_link_libraries(consumer-native-template-watch-cpp PRIVATE MadoPilot::Cpp)
+add_executable(
+  consumer-native-template-watch-exit
+  "${MADOPILOT_SOURCE_DIR}/tests/cpp/madopilot-native-watch-exit.cpp"
+)
+target_link_libraries(consumer-native-template-watch-exit PRIVATE MadoPilot::Cpp)
 
 enable_testing()
 
@@ -140,8 +145,10 @@ add_test(
 set_tests_properties(consumer-template-watch-c consumer-template-watch-cpp PROPERTIES TIMEOUT 30)
 add_test(NAME consumer-native-template-watch-c COMMAND consumer-native-template-watch-c --check)
 add_test(NAME consumer-native-template-watch-cpp COMMAND consumer-native-template-watch-cpp --check)
+add_test(NAME consumer-native-template-watch-exit COMMAND consumer-native-template-watch-exit)
 set_tests_properties(
-  consumer-native-template-watch-c consumer-native-template-watch-cpp PROPERTIES TIMEOUT 15
+  consumer-native-template-watch-c consumer-native-template-watch-cpp
+  consumer-native-template-watch-exit PROPERTIES TIMEOUT 15
 )
 
 if(WIN32)
@@ -154,6 +161,7 @@ if(WIN32)
     consumer-ocr-profile-c consumer-ocr-profile-cpp
     consumer-template-watch-c consumer-template-watch-cpp
     consumer-native-template-watch-c consumer-native-template-watch-cpp
+    consumer-native-template-watch-exit
     PROPERTIES
       ENVIRONMENT_MODIFICATION "PATH=path_list_prepend:${_madopilot_native_artifacts}"
   )

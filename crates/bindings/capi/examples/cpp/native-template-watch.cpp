@@ -142,7 +142,6 @@ public:
         } catch (...) {
             // Wrapper allocation failures are not product statuses. Do not leak
             // an exception's text or skip explicit native-session cleanup.
-            failed_ = true;
             if (protocol_ok_ && !reported_[current_]) {
                 report(current_, "FAIL", "consumer_exception");
             }
@@ -263,11 +262,9 @@ private:
     {
         if (reported_[row] || !protocol_ok_ || !mpw_row(rows[row], outcome, reason)) {
             protocol_ok_ = false;
-            failed_ = true;
             return false;
         }
         reported_[row] = true;
-        if (std::string_view(outcome) == "FAIL") failed_ = true;
         return true;
     }
 
@@ -1122,7 +1119,6 @@ private:
         engine_.reset();
         clean = clean && query_.empty() && retained_.result.empty() && retained_.frame.empty() &&
                 retained_.mapping.empty() && session_.empty() && engine_.empty();
-        if (!clean) failed_ = true;
         for (std::size_t index = 0; index < 8 && protocol_ok_; ++index) {
             if (!reported_[index]) report(index, "UNEXECUTED", "prior_row_unavailable");
         }
@@ -1140,7 +1136,8 @@ private:
         // acceptance. The controller withholds F9 until independent native
         // resource ceilings and fixture/resource finalization both qualify.
         if (protocol_ok_ && mpw_action("DONE") != 1) protocol_ok_ = false;
-        return failed_ || !protocol_ok_ ? 1 : 0;
+        // Row outcomes carry semantic failures; process status carries transport failure.
+        return protocol_ok_ ? 0 : 1;
     }
 
     madopilot::Api api_;
@@ -1163,7 +1160,6 @@ private:
     const char* outcome_ = "PASS";
     madopilot::Status status_ = MADOPILOT_STATUS_OK;
     bool protocol_ok_ = true;
-    bool failed_ = false;
 };
 
 int check(const madopilot::Api& api)
@@ -1263,6 +1259,7 @@ int main(int argc, char** argv)
                     !mpw_row("F9", measured ? "PASS" : "INFRA",
                              measured ? "consumer_cleanup" : "resource_snapshot_failed") ||
                     mpw_action("DONE") != 1) return 1;
+                return 0;
             }
             return loaded.status() == MADOPILOT_STATUS_UNSUPPORTED ? 0 : 1;
         }

@@ -22,14 +22,23 @@ apparatus is not native support qualification.
 | Existing Rust replay/OpenCV suite and `template-watch-query` benchmark | Unchanged scheduler/query semantics |
 | Existing Rust WGC/ScreenCaptureKit Lane B | Qualified Rust native boundary under ADR 0064 |
 | C/Rust layout probe, frozen headers, independent C/C++ and CMake consumers | ABI compatibility, foreign ownership, replay integration |
-| `template-watch-boundary` | Paired Rust/C replay observation costs and correctness; no accepted numeric ceilings |
-| Native foreign rows below | New C/C++ native boundary; currently unexecuted |
+| `template-watch-boundary` | Paired Rust/C replay costs and correctness; eighteen-row numeric ceilings independently accepted, final campaigns failed |
+| Native foreign rows below | New C/C++ native boundary; candidate-bound observations exist, full qualification remains incomplete |
 
 The accepted Rust Lane B results remain revision-bound to their recorded
 sources. Carry them only through a reviewed applicability statement. A change
 to runtime, capture, platform, backend, fixture, or qualification semantics
 requires the affected Rust gate again. Do not rewrite historical reports,
 profiles, digests, or ADRs to describe this development candidate.
+
+On candidate `ec7d3d3b87b9828e03e1ae6215ff28a929f29af0`, the fixed five-process
+numeric campaigns failed on both targets; passing central statistics did not
+override maximum-latency failures. Windows C/C++ passed F1–F8 across their
+warmup and three measurements, but F9 remained budget-unaccepted. Apple's
+permissioned iTerm2 context captured frames, then both consumers failed F1
+token observation before any measurement cycle. Its original C++ report also
+records an exit-contract infrastructure failure. These reports remain bound to
+that candidate; corrected consumer exit classification does not relabel them.
 
 ## Candidate and apparatus
 
@@ -130,6 +139,12 @@ its own complete F1–F9 ledger and cleanup facts under `warmup/` or
 unexecuted, not missing successes. Exit codes are `0` for complete acceptance,
 `1` for a nonpassing cohort and `2` for apparatus failure. Native F9 resource
 ceilings remain unaccepted and prevent complete acceptance.
+
+The consumer process exits zero after a complete ledger and acknowledged `DONE`,
+including semantic `FAIL` rows. Nonzero consumer exit indicates an incomplete
+exchange or unreported initialization failure. The controller derives cohort
+status from the ledger and its own finalization; consumer exit zero is not a
+native PASS. C and C++ use the same contract.
 
 Cold controller counts are initialization observations, not a leak-free claim.
 After an eligible full warmup, every measured before/after and final observation

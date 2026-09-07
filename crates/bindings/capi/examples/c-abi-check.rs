@@ -1248,6 +1248,20 @@ fn run_native_template_watch_checks(paths: &Paths) -> Result<(), Box<dyn std::er
             );
         }
     }
+    let program = compile(
+        paths,
+        Language::Cpp,
+        "native-template-watch-exit",
+        &paths
+            .root
+            .join("crates/bindings/capi/tests/cpp/madopilot-native-watch-exit.cpp"),
+        true,
+    )?;
+    let output = run(paths, &program, &[])?;
+    report_output("native template-watch exit contract", &output);
+    if !output.status.success() {
+        return Err("the native template-watch exit contract failed".into());
+    }
     Ok(())
 }
 
