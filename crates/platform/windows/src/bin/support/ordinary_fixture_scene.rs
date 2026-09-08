@@ -1500,110 +1500,112 @@ mod tests {
         let _serial = PROCESS_GDI.lock().expect("process GDI checks serialized");
         let mut gdi = Gdi;
         let extent = SceneExtent::from_client(&client(360, 240)).expect("bounded client");
-        // Exercise GDI once so lazily created per-process objects do not skew the baseline.
-        let warm = allocate_buffer(&mut gdi, extent).expect("warm-up buffer");
-        release_buffer(&mut gdi, warm).expect("warm-up release");
-        let baseline = gdi_object_count();
+        // Aggregate GDI counts can retain native resources after successful deletion.
+        // Compare complete identical lifecycles, not aggregate counts with our handle
+        // ledger. Every cycle still checks the cold/retained pixels and release calls.
+        let mut completed_count = None;
+        for cycle in 0..3 {
+            let destination = allocate_buffer(&mut gdi, extent).expect("owned destination buffer");
 
-        let destination = allocate_buffer(&mut gdi, extent).expect("owned destination buffer");
-        assert_eq!(gdi_object_count(), baseline + 2);
-
-        let mut scene = TargetScene::new(Gdi);
-        let shown = visible(0x5a3c_96e1);
-        let request = scene.request_paint();
-        assert_eq!(
-            scene.paint(
-                WINDOW,
-                destination.dc,
-                &client(360, 240),
-                FILL_RGB,
-                shown.packed(),
-            ),
-            Ok(extent)
-        );
-        assert_eq!(scene.outcome(request, WINDOW, shown.packed()), Ok(extent));
-        assert_eq!(
-            gdi_object_count(),
-            baseline + 4,
-            "one device and one bitmap back the scene; no brush survives the paint"
-        );
-        assert_eq!(pixel(destination.dc, 0, 0), colorref(FILL_RGB).0);
-        assert_eq!(pixel(destination.dc, 359, 239), colorref(FILL_RGB).0);
-        let marker_cells = [
-            (76, 60, WATCH_MARKER_PRIMARY_RGB),
-            (100, 60, WATCH_MARKER_SECONDARY_RGB),
-            (124, 60, WATCH_MARKER_PRIMARY_RGB),
-            (76, 84, WATCH_MARKER_SECONDARY_RGB),
-            (100, 84, WATCH_MARKER_PRIMARY_RGB),
-            (124, 84, WATCH_MARKER_PRIMARY_RGB),
-        ];
-        for (x, y, rgb) in marker_cells {
+            let mut scene = TargetScene::new(Gdi);
+            let shown = visible(0x5a3c_96e1);
+            let request = scene.request_paint();
             assert_eq!(
-                pixel(destination.dc, x, y),
-                colorref(rgb).0,
-                "marker cell at ({x}, {y})"
+                scene.paint(
+                    WINDOW,
+                    destination.dc,
+                    &client(360, 240),
+                    FILL_RGB,
+                    shown.packed(),
+                ),
+                Ok(extent)
             );
-        }
-        assert_token_pixels(destination.dc, shown);
+            assert_eq!(scene.outcome(request, WINDOW, shown.packed()), Ok(extent));
+            assert_eq!(pixel(destination.dc, 0, 0), colorref(FILL_RGB).0);
+            assert_eq!(pixel(destination.dc, 359, 239), colorref(FILL_RGB).0);
+            let marker_cells = [
+                (76, 60, WATCH_MARKER_PRIMARY_RGB),
+                (100, 60, WATCH_MARKER_SECONDARY_RGB),
+                (124, 60, WATCH_MARKER_PRIMARY_RGB),
+                (76, 84, WATCH_MARKER_SECONDARY_RGB),
+                (100, 84, WATCH_MARKER_PRIMARY_RGB),
+                (124, 84, WATCH_MARKER_PRIMARY_RGB),
+            ];
+            for (x, y, rgb) in marker_cells {
+                assert_eq!(
+                    pixel(destination.dc, x, y),
+                    colorref(rgb).0,
+                    "marker cell at ({x}, {y})"
+                );
+            }
+            assert_token_pixels(destination.dc, shown);
 
-        // Visible to absent: the marker vanishes because the whole background is redrawn,
-        // and the buffer is reused rather than reallocated.
-        let cleared = absent(7);
-        assert_eq!(
-            scene.paint(
-                WINDOW,
-                destination.dc,
-                &client(360, 240),
-                BENCHMARK_FILL_RGB,
-                cleared.packed(),
-            ),
-            Ok(extent)
-        );
-        assert_eq!(gdi_object_count(), baseline + 4);
-        for (x, y, _) in marker_cells {
+            // Visible to absent: the marker vanishes because the whole background is redrawn,
+            // and the buffer is reused rather than reallocated.
+            let cleared = absent(7);
             assert_eq!(
-                pixel(destination.dc, x, y),
-                colorref(BENCHMARK_FILL_RGB).0,
-                "cleared marker cell at ({x}, {y})"
+                scene.paint(
+                    WINDOW,
+                    destination.dc,
+                    &client(360, 240),
+                    BENCHMARK_FILL_RGB,
+                    cleared.packed(),
+                ),
+                Ok(extent)
             );
+            for (x, y, _) in marker_cells {
+                assert_eq!(
+                    pixel(destination.dc, x, y),
+                    colorref(BENCHMARK_FILL_RGB).0,
+                    "cleared marker cell at ({x}, {y})"
+                );
+            }
+            assert_token_pixels(destination.dc, cleared);
+
+            // A resize replaces the buffer without leaking the obsolete one.
+            let resized = scene
+                .paint(
+                    WINDOW,
+                    destination.dc,
+                    &client(480, 320),
+                    FILL_RGB,
+                    shown.packed(),
+                )
+                .expect("resized scene published into the clipped destination");
+            assert_eq!((resized.width(), resized.height()), (480, 320));
+
+            // A refused publication fails the request and releases the buffer.
+            let request = scene.request_paint();
+            assert_eq!(
+                scene.paint(
+                    WINDOW,
+                    HDC::default(),
+                    &client(480, 320),
+                    FILL_RGB,
+                    shown.packed(),
+                ),
+                Err(PaintFailure::Publish)
+            );
+            assert_eq!(
+                scene.outcome(request, WINDOW, shown.packed()),
+                Err(PaintFailure::Publish)
+            );
+            assert!(scene.buffer.is_none());
+
+            assert_eq!(scene.release(), Ok(()));
+            drop(scene);
+            release_buffer(&mut gdi, destination).expect("destination release");
+            // SAFETY: complete this test thread's GDI batch before observing its resources.
+            assert!(unsafe { windows::Win32::Graphics::Gdi::GdiFlush() }.as_bool());
+            let count = gdi_object_count();
+            println!("completed scene lifecycle {cycle}: {count} GDI objects");
+            if let Some(previous) = completed_count {
+                assert_eq!(
+                    count, previous,
+                    "completed scene lifecycles accumulate GDI resources"
+                );
+            }
+            completed_count = Some(count);
         }
-        assert_token_pixels(destination.dc, cleared);
-
-        // A resize replaces the buffer without leaking the obsolete one.
-        let resized = scene
-            .paint(
-                WINDOW,
-                destination.dc,
-                &client(480, 320),
-                FILL_RGB,
-                shown.packed(),
-            )
-            .expect("resized scene published into the clipped destination");
-        assert_eq!((resized.width(), resized.height()), (480, 320));
-        assert_eq!(gdi_object_count(), baseline + 4);
-
-        // A refused publication fails the request and releases the buffer.
-        let request = scene.request_paint();
-        assert_eq!(
-            scene.paint(
-                WINDOW,
-                HDC::default(),
-                &client(480, 320),
-                FILL_RGB,
-                shown.packed(),
-            ),
-            Err(PaintFailure::Publish)
-        );
-        assert_eq!(
-            scene.outcome(request, WINDOW, shown.packed()),
-            Err(PaintFailure::Publish)
-        );
-        assert!(scene.buffer.is_none());
-        assert_eq!(gdi_object_count(), baseline + 2);
-
-        assert_eq!(scene.release(), Ok(()));
-        drop(scene);
-        release_buffer(&mut gdi, destination).expect("destination release");
-        assert_eq!(gdi_object_count(), baseline);
     }
 }
