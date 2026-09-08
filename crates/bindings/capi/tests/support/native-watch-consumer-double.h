@@ -39,13 +39,18 @@ static struct {
 #define MPWT_OWNER(name) \
     struct madopilot_##name##_t { unsigned references; }; \
     static madopilot_##name##_t mpwt_##name; \
+    static inline int mpwt_##name##_live(const madopilot_##name##_t *owner) { \
+        if (owner != &mpwt_##name || owner->references == 0) { mpwt.broken = 1; return 0; } \
+        return 1; \
+    } \
     static inline madopilot_status_t mpwt_##name##_retain(const madopilot_##name##_t *owner) { \
-        if (owner != NULL) ++((madopilot_##name##_t *)owner)->references; \
+        if (!mpwt_##name##_live(owner)) return MADOPILOT_STATUS_INVALID_ARGUMENT; \
+        ++((madopilot_##name##_t *)owner)->references; \
         return MADOPILOT_STATUS_OK; \
     } \
     static inline madopilot_status_t mpwt_##name##_release(madopilot_##name##_t *owner) { \
         if (owner != NULL) { \
-            if (owner->references == 0) { mpwt.broken = 1; return MADOPILOT_STATUS_INTERNAL; } \
+            if (!mpwt_##name##_live(owner)) return MADOPILOT_STATUS_INVALID_ARGUMENT; \
             --owner->references; \
         } \
         return MADOPILOT_STATUS_OK; \
@@ -61,6 +66,8 @@ MPWT_OWNER(frame)
 MPWT_OWNER(mapping)
 MPWT_OWNER(error)
 #undef MPWT_OWNER
+#define MPWT_REQUIRE_OWNER(name, owner) \
+    do { if (!mpwt_##name##_live(owner)) return MADOPILOT_STATUS_INVALID_ARGUMENT; } while (0)
 
 static inline int mpwt_owners_released(void)
 {
@@ -234,8 +241,8 @@ static inline madopilot_status_t mpwt_acquire(const madopilot_session_t *session
                                              const madopilot_operation_t *operation,
                                              madopilot_frame_t **out, madopilot_error_t **error)
 {
-    (void)session;
     *out = NULL; if (error != NULL) *error = NULL;
+    MPWT_REQUIRE_OWNER(session, session);
     ++mpwt.acquisitions;
     if (!mpwt_deadline(operation)) return MADOPILOT_STATUS_INTERNAL;
     if (mpwt_frame.references != 0 || mpwt_mapping.references != 0) {
@@ -251,18 +258,23 @@ static inline madopilot_status_t mpwt_acquire(const madopilot_session_t *session
 
 static inline madopilot_status_t mpwt_frame_stamp(const madopilot_frame_t *frame, madopilot_frame_stamp_t *out)
 {
-    (void)frame; *out = mpwt.source; return MADOPILOT_STATUS_OK;
+    memset(out, 0, sizeof(*out));
+    MPWT_REQUIRE_OWNER(frame, frame);
+    *out = mpwt.source; return MADOPILOT_STATUS_OK;
 }
 static inline madopilot_status_t mpwt_frame_describe(const madopilot_frame_t *frame, madopilot_frame_info_t *out)
 {
-    (void)frame; *out = mpwt.frame_info; return MADOPILOT_STATUS_OK;
+    memset(out, 0, sizeof(*out));
+    MPWT_REQUIRE_OWNER(frame, frame);
+    *out = mpwt.frame_info; return MADOPILOT_STATUS_OK;
 }
 static inline madopilot_status_t mpwt_map(const madopilot_frame_t *frame, const madopilot_map_request_t *request,
                                          const madopilot_operation_t *operation, madopilot_mapping_t **out,
                                          madopilot_error_t **error)
 {
-    (void)frame; (void)request;
+    (void)request;
     *out = NULL; if (error != NULL) *error = NULL;
+    MPWT_REQUIRE_OWNER(frame, frame);
     ++mpwt.maps;
     if (!mpwt_deadline(operation)) return MADOPILOT_STATUS_INTERNAL;
     if (mpwt.map_failure != MADOPILOT_STATUS_OK) return mpwt.map_failure;
@@ -275,26 +287,34 @@ static inline madopilot_status_t mpwt_map(const madopilot_frame_t *frame, const 
 }
 static inline madopilot_status_t mpwt_mapping_stamp(const madopilot_mapping_t *mapping, madopilot_frame_stamp_t *out)
 {
-    (void)mapping; *out = mpwt.source;
+    memset(out, 0, sizeof(*out));
+    MPWT_REQUIRE_OWNER(mapping, mapping);
+    *out = mpwt.source;
     if (mpwt.mapping_identity_mismatch) ++out->sequence;
     return MADOPILOT_STATUS_OK;
 }
 static inline madopilot_status_t mpwt_mapping_describe(const madopilot_mapping_t *mapping, madopilot_image_t *out)
 {
-    (void)mapping; *out = mpwt.image; return mpwt.describe_failure;
+    memset(out, 0, sizeof(*out));
+    MPWT_REQUIRE_OWNER(mapping, mapping);
+    if (mpwt.describe_failure != MADOPILOT_STATUS_OK) return mpwt.describe_failure;
+    *out = mpwt.image; return MADOPILOT_STATUS_OK;
 }
 static inline madopilot_status_t mpwt_result_info(const madopilot_template_query_result_t *result,
                                                  madopilot_template_query_result_info_t *out)
 {
-    (void)result; *out = mpwt.result_info; return MADOPILOT_STATUS_OK;
+    memset(out, 0, sizeof(*out));
+    MPWT_REQUIRE_OWNER(template_query_result, result);
+    *out = mpwt.result_info; return MADOPILOT_STATUS_OK;
 }
 static inline madopilot_status_t mpwt_result_match(const madopilot_template_query_result_t *result,
                                                   size_t index, madopilot_match_t *out)
 {
-    (void)result;
+    memset(out, 0, sizeof(*out));
+    MPWT_REQUIRE_OWNER(template_query_result, result);
+    if (index != 0) return MADOPILOT_STATUS_INVALID_ARGUMENT;
     MPWT_INIT(*out);
     out->bounds.space = MADOPILOT_SPACE_CAPTURE_PIXELS;
-    if (index != 0) return MADOPILOT_STATUS_INVALID_ARGUMENT;
     out->score = 0.99; out->template_id = mpwt_text("native.marker");
     out->bounds.left = mpwt.shape.marker_x; out->bounds.top = mpwt.shape.marker_y;
     out->bounds.right = mpwt.shape.marker_x + (int32_t)(3u * mpwt.shape.marker_cell_w);
@@ -303,22 +323,29 @@ static inline madopilot_status_t mpwt_result_match(const madopilot_template_quer
 }
 static inline madopilot_status_t mpwt_result_frame(const madopilot_template_query_result_t *result, madopilot_frame_t **out)
 {
-    (void)result; ++mpwt_frame.references; *out = &mpwt_frame; return MADOPILOT_STATUS_OK;
+    *out = NULL;
+    MPWT_REQUIRE_OWNER(template_query_result, result);
+    ++mpwt_frame.references; *out = &mpwt_frame; return MADOPILOT_STATUS_OK;
 }
 static inline madopilot_status_t mpwt_result_error(const madopilot_template_query_result_t *result, madopilot_error_t **out)
 {
-    (void)result; *out = NULL; return MADOPILOT_STATUS_OK;
+    *out = NULL;
+    MPWT_REQUIRE_OWNER(template_query_result, result);
+    return MADOPILOT_STATUS_OK;
 }
 static inline madopilot_status_t mpwt_error_describe(const madopilot_error_t *error, madopilot_error_detail_t *out)
 {
-    (void)error; MPWT_INIT(*out); return MADOPILOT_STATUS_INTERNAL;
+    memset(out, 0, sizeof(*out));
+    MPWT_REQUIRE_OWNER(error, error);
+    MPWT_INIT(*out); return MADOPILOT_STATUS_INTERNAL;
 }
 static inline madopilot_status_t mpwt_poll(const madopilot_template_query_t *query,
                                           madopilot_template_query_snapshot_t *out,
                                           madopilot_template_query_result_t **result, madopilot_error_t **error)
 {
-    (void)query;
-    MPWT_INIT(*out); *result = NULL; if (error != NULL) *error = NULL;
+    memset(out, 0, sizeof(*out)); *result = NULL; if (error != NULL) *error = NULL;
+    MPWT_REQUIRE_OWNER(template_query, query);
+    MPWT_INIT(*out);
     out->state = MADOPILOT_TEMPLATE_QUERY_STATE_PENDING; out->query_id = 71;
     out->flags = MADOPILOT_TEMPLATE_QUERY_HAS_LAST_FRAME; out->last_frame = mpwt.required;
     out->completed = 1; out->generation = 2;
@@ -329,9 +356,10 @@ static inline madopilot_status_t mpwt_wait(const madopilot_template_query_t *que
                                           const madopilot_operation_t *operation,
                                           madopilot_template_query_result_t **out, madopilot_error_t **error)
 {
-    (void)query; (void)operation;
+    (void)operation;
+    *out = NULL; if (error != NULL) *error = NULL;
+    MPWT_REQUIRE_OWNER(template_query, query);
     ++mpwt_template_query_result.references; *out = &mpwt_template_query_result;
-    if (error != NULL) *error = NULL;
     return MADOPILOT_STATUS_OK;
 }
 static inline madopilot_status_t mpwt_cancel(const madopilot_template_query_t *query,
@@ -350,8 +378,10 @@ static inline madopilot_status_t mpwt_create(const madopilot_source_t *source, c
 static inline madopilot_status_t mpwt_discover(const madopilot_engine_t *engine, const madopilot_operation_t *operation,
                                               madopilot_target_list_t **out, madopilot_error_t **error)
 {
-    (void)engine; (void)operation;
-    ++mpwt_target_list.references; *out = &mpwt_target_list; if (error != NULL) *error = NULL;
+    (void)operation;
+    *out = NULL; if (error != NULL) *error = NULL;
+    MPWT_REQUIRE_OWNER(engine, engine);
+    ++mpwt_target_list.references; *out = &mpwt_target_list;
     return MADOPILOT_STATUS_OK;
 }
 static inline madopilot_status_t mpwt_open(const madopilot_engine_t *engine, const madopilot_target_list_t *targets,
@@ -359,8 +389,11 @@ static inline madopilot_status_t mpwt_open(const madopilot_engine_t *engine, con
                                           const madopilot_operation_t *operation, madopilot_session_t **out,
                                           madopilot_error_t **error)
 {
-    (void)engine; (void)targets; (void)index; (void)request; (void)operation;
-    ++mpwt_session.references; *out = &mpwt_session; if (error != NULL) *error = NULL;
+    (void)index; (void)request; (void)operation;
+    *out = NULL; if (error != NULL) *error = NULL;
+    MPWT_REQUIRE_OWNER(engine, engine);
+    MPWT_REQUIRE_OWNER(target_list, targets);
+    ++mpwt_session.references; *out = &mpwt_session;
     return MADOPILOT_STATUS_OK;
 }
 static inline madopilot_status_t mpwt_load_package(const madopilot_engine_t *engine,
@@ -368,16 +401,21 @@ static inline madopilot_status_t mpwt_load_package(const madopilot_engine_t *eng
                                                   const madopilot_operation_t *operation,
                                                   madopilot_package_t **out, madopilot_error_t **error)
 {
-    (void)engine; (void)source; (void)operation;
-    ++mpwt_package.references; *out = &mpwt_package; if (error != NULL) *error = NULL;
+    (void)source; (void)operation;
+    *out = NULL; if (error != NULL) *error = NULL;
+    MPWT_REQUIRE_OWNER(engine, engine);
+    ++mpwt_package.references; *out = &mpwt_package;
     return MADOPILOT_STATUS_OK;
 }
 static inline madopilot_status_t mpwt_prepare(const madopilot_engine_t *engine, const madopilot_package_t *package,
                                              madopilot_str_t id, const madopilot_operation_t *operation,
                                              madopilot_template_t **out, madopilot_error_t **error)
 {
-    (void)engine; (void)package; (void)id; (void)operation;
-    ++mpwt_template.references; *out = &mpwt_template; if (error != NULL) *error = NULL;
+    (void)id; (void)operation;
+    *out = NULL; if (error != NULL) *error = NULL;
+    MPWT_REQUIRE_OWNER(engine, engine);
+    MPWT_REQUIRE_OWNER(package, package);
+    ++mpwt_template.references; *out = &mpwt_template;
     return MADOPILOT_STATUS_OK;
 }
 static inline madopilot_status_t mpwt_start(const madopilot_session_t *session, const madopilot_template_t *marker,
@@ -385,8 +423,11 @@ static inline madopilot_status_t mpwt_start(const madopilot_session_t *session, 
                                            const madopilot_operation_t *operation,
                                            madopilot_template_query_t **out, madopilot_error_t **error)
 {
-    (void)session; (void)marker; (void)options; (void)operation;
-    ++mpwt_template_query.references; *out = &mpwt_template_query; if (error != NULL) *error = NULL;
+    (void)options; (void)operation;
+    *out = NULL; if (error != NULL) *error = NULL;
+    MPWT_REQUIRE_OWNER(session, session);
+    MPWT_REQUIRE_OWNER(template, marker);
+    ++mpwt_template_query.references; *out = &mpwt_template_query;
     return MADOPILOT_STATUS_OK;
 }
 

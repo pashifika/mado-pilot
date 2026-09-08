@@ -73,8 +73,10 @@ static int scene_observation(const char *name, int visible, enum mpwt_scene scen
     reset_consumer(visible, scene);
     memset(&scope, 0, sizeof(scope));
     scope.session = &mpwt_session; scope.target = 23;
+    mpwt_session.references = 1;
     geometry = required_geometry();
     observed = observe_token(&scope, &geometry, &mpwt.token);
+    (void)api->session_release(scope.session);
     valid = observed == expected && mpwt.visuals == 0 && !mpwt.expired_operation &&
             mpwt_owners_released() && !cleanup_failed;
     if (expected) valid = valid && stamp_equal(&geometry.stamp, &mpwt.source) &&
@@ -92,6 +94,7 @@ static int mapping_observation(unsigned scenario)
     reset_consumer(0, MPWT_ABSENT);
     memset(&scope, 0, sizeof(scope));
     scope.session = &mpwt_session; scope.target = 23;
+    mpwt_session.references = 1;
     geometry = required_geometry();
     if (scenario == 0) mpwt.map_timeouts = 1;
     if (scenario == 1) mpwt.map_timeouts = UINT_MAX;
@@ -99,6 +102,7 @@ static int mapping_observation(unsigned scenario)
     if (scenario == 3) mpwt.acquire_timeouts = 1;
     if (scenario == 4) mpwt.mapping_identity_mismatch = 1;
     observed = observe_token(&scope, &geometry, &mpwt.token);
+    (void)api->session_release(scope.session);
     valid = mpwt.visuals == 0 && !mpwt.expired_operation && mpwt_owners_released() && !cleanup_failed;
     if (scenario == 0) valid = valid && observed && mpwt.maps == 2 && mpwt.acquisitions == 2 &&
                                       stamp_equal(&geometry.stamp, &mpwt.source) && last_status == MADOPILOT_STATUS_OK;
@@ -134,7 +138,9 @@ static int retained_correlation(unsigned scenario)
         ++mpwt.source.epoch;
         mpwt.result_info.source = mpwt.source;
     }
+    mpwt_template_query.references = 1;
     matched = collect_match(&scope, &mpwt_template_query, &geometry, &mpwt.token, &held);
+    (void)api->template_query_release(&mpwt_template_query);
     valid = matched == (scenario == 0) && mpwt.acquisitions == 0 && mpwt.visuals == 0;
     if (scenario == 0) {
         valid = valid && held.info.query_id == 71 && stamp_equal(&held.info.source, &mpwt.source) &&
