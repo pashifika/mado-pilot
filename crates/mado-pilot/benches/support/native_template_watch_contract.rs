@@ -144,7 +144,7 @@ struct TokenMatchAuthority<'a> {
 }
 
 fn admission(arguments: &Arguments) -> ScenarioAttempt {
-    let mut fixture = match NativeFixture::start(arguments) {
+    let mut fixture = match NativeFixture::start(arguments, None) {
         Ok(fixture) => fixture,
         Err(_) => return apparatus(ExecutionOutcome::Infra, FailureStage::FixtureLaunch),
     };
@@ -1133,7 +1133,7 @@ struct ProductFailureContext {
 }
 
 fn start_contract(arguments: &Arguments, name: ScenarioName) -> StartAttempt {
-    let mut fixture = match NativeFixture::start(arguments) {
+    let mut fixture = match NativeFixture::start(arguments, None) {
         Ok(fixture) => fixture,
         Err(_) => {
             return StartAttempt::Apparatus {
@@ -1695,9 +1695,13 @@ fn resource_facts(resources: NativeResourceFacts) -> ResourceFacts {
         bounded_containment: resources.bounded_containment,
         output_drained: resources.output_drained,
         executable_identity_unchanged: resources.executable_identity_unchanged,
-        cleanup_debt: resources.cleanup_debt.map(|debt| match debt {
-            NativeCleanupDebtFact::None => CleanupDebtFact::None,
-            NativeCleanupDebtFact::Deferred => CleanupDebtFact::Deferred,
+        cleanup_debt: resources.cleanup_debt.map(|debt| -> CleanupDebtFact {
+            match debt {
+                #[cfg(target_os = "macos")]
+                NativeCleanupDebtFact::None => CleanupDebtFact::None,
+                #[cfg(target_os = "macos")]
+                NativeCleanupDebtFact::Deferred => CleanupDebtFact::Deferred,
+            }
         }),
         apple_launch_accepted_live: resources.apple_launch_accepted_live,
 
@@ -1717,10 +1721,15 @@ fn mapping_bytes_checksum(bytes: &[u8]) -> u64 {
 
 fn process_lifetime_fact(value: NativeProcessLifetimeFact) -> ProcessLifetimeFact {
     match value {
+        #[cfg(target_os = "macos")]
         NativeProcessLifetimeFact::NotObserved => ProcessLifetimeFact::NotObserved,
+        #[cfg(target_os = "macos")]
         NativeProcessLifetimeFact::Unknown => ProcessLifetimeFact::Unknown,
+        #[cfg(target_os = "macos")]
         NativeProcessLifetimeFact::Live => ProcessLifetimeFact::Live,
+        #[cfg(target_os = "macos")]
         NativeProcessLifetimeFact::Lost => ProcessLifetimeFact::Lost,
+        #[cfg(target_os = "macos")]
         NativeProcessLifetimeFact::ObservationFailed => ProcessLifetimeFact::ObservationFailed,
     }
 }

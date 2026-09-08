@@ -48,9 +48,9 @@ pub const MADOPILOT_ABI_MAJOR: u32 = 1;
 
 /// The ABI minor version this library implements.
 ///
-/// ABI 1.5 preserves the released ABI 1.0, 1.2, 1.3, and 1.4 prefixes and
-/// appends explicit OCR provider construction and immutable provider facts.
-pub const MADOPILOT_ABI_MINOR: u32 = 5;
+/// ABI 1.6 preserves every released prefix and appends pull-based template-watch
+/// queries and immutable terminal results.
+pub const MADOPILOT_ABI_MINOR: u32 = 6;
 
 /// The library package version, for [`madopilot_build_info_t::library_version`].
 const LIBRARY_VERSION: &str = env!("CARGO_PKG_VERSION");
@@ -612,6 +612,77 @@ table! {
         engine: *const crate::engine::madopilot_engine_t,
         out_descriptor: *mut crate::types::madopilot_ocr_provider_descriptor_t,
     ) => crate::ocr::engine_ocr_provider_descriptor;
+    /// Reports the engine's immutable selected template-scheduler limits.
+    engine_template_scheduler_descriptor(
+        engine: *const crate::engine::madopilot_engine_t,
+        out_descriptor: *mut crate::types::madopilot_template_scheduler_descriptor_t,
+    ) => crate::watch::engine_template_scheduler_descriptor;
+    /// Starts one owning query using call-borrowed options and lifetime operation.
+    session_start_template_watch(
+        session: *const crate::capture::madopilot_session_t,
+        tmpl: *const crate::assets::madopilot_template_t,
+        options: *const crate::types::madopilot_template_watch_options_t,
+        query_operation: *const crate::types::madopilot_operation_t,
+        out_query: *mut *mut crate::watch::madopilot_template_query_t,
+        out_error: *mut *mut crate::error::madopilot_error_t,
+    ) => crate::watch::session_start_template_watch;
+    /// Shares the one query owner. Null is a no-op.
+    template_query_retain(
+        query: *const crate::watch::madopilot_template_query_t,
+    ) => crate::watch::template_query_retain;
+    /// Drops one reference; final release cancels pending authority. Null is a no-op.
+    template_query_release(
+        query: *mut crate::watch::madopilot_template_query_t,
+    ) => crate::watch::template_query_release;
+    /// Reports pending value progress or one retained immutable terminal result.
+    template_query_poll(
+        query: *const crate::watch::madopilot_template_query_t,
+        out_snapshot: *mut crate::types::madopilot_template_query_snapshot_t,
+        out_result: *mut *mut crate::watch::madopilot_template_query_result_t,
+        out_error: *mut *mut crate::error::madopilot_error_t,
+    ) => crate::watch::template_query_poll;
+    /// Waits under independent caller authority; query termination is result data.
+    template_query_wait(
+        query: *const crate::watch::madopilot_template_query_t,
+        wait_operation: *const crate::types::madopilot_operation_t,
+        out_result: *mut *mut crate::watch::madopilot_template_query_result_t,
+        out_error: *mut *mut crate::error::madopilot_error_t,
+    ) => crate::watch::template_query_wait;
+    /// Competes cancellation and returns the immutable winner, which may be matched.
+    template_query_cancel(
+        query: *const crate::watch::madopilot_template_query_t,
+        out_result: *mut *mut crate::watch::madopilot_template_query_result_t,
+        out_error: *mut *mut crate::error::madopilot_error_t,
+    ) => crate::watch::template_query_cancel;
+    /// Retains immutable terminal facts independently of the query. Null is a no-op.
+    template_query_result_retain(
+        result: *const crate::watch::madopilot_template_query_result_t,
+    ) => crate::watch::template_query_result_retain;
+    /// Drops one terminal-result reference. Null is a no-op.
+    template_query_result_release(
+        result: *mut crate::watch::madopilot_template_query_result_t,
+    ) => crate::watch::template_query_result_release;
+    /// Reports terminal data; a failed query does not fail this accessor.
+    template_query_result_info(
+        result: *const crate::watch::madopilot_template_query_result_t,
+        out_info: *mut crate::types::madopilot_template_query_result_info_t,
+    ) => crate::watch::template_query_result_info;
+    /// Reports one indexed match whose template-id view borrows this result.
+    template_query_result_match_at(
+        result: *const crate::watch::madopilot_template_query_result_t,
+        index: usize,
+        out_match: *mut crate::types::madopilot_match_t,
+    ) => crate::watch::template_query_result_match_at;
+    /// Returns the independently retained exact matched source frame without mapping.
+    template_query_result_frame(
+        result: *const crate::watch::madopilot_template_query_result_t,
+        out_frame: *mut *mut crate::capture::madopilot_frame_t,
+    ) => crate::watch::template_query_result_frame;
+    /// Returns an independently owned Failed error, or null for other outcomes.
+    template_query_result_error(
+        result: *const crate::watch::madopilot_template_query_result_t,
+        out_failure: *mut *mut crate::error::madopilot_error_t,
+    ) => crate::watch::template_query_result_error;
 }
 
 /// `sizeof` the complete frozen ABI 1.0 function-table prefix.
@@ -666,6 +737,20 @@ pub const MADOPILOT_API_SIZE_1_4: u32 = {
     assert!(
         size <= u32::MAX as usize,
         "the ABI 1.4 table prefix fits a u32 size"
+    );
+    size as u32
+};
+
+/// `sizeof` the complete frozen ABI 1.5 function-table prefix.
+#[expect(
+    clippy::cast_possible_truncation,
+    reason = "guarded against the only value that could truncate"
+)]
+pub const MADOPILOT_API_SIZE_1_5: u32 = {
+    let size = std::mem::offset_of!(madopilot_api_t, engine_template_scheduler_descriptor);
+    assert!(
+        size <= u32::MAX as usize,
+        "the ABI 1.5 table prefix fits a u32 size"
     );
     size as u32
 };

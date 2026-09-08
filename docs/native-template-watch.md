@@ -21,7 +21,7 @@ applicability joins those results at the current V2 boundary.
 | Non-blocking `TemplateQuery::poll`, blocking `wait`, explicit `cancel`, and immutable terminal results | Supported for replay/OpenCV and the qualified native sessions |
 | OCR predicates or wait-for-text | Not implemented |
 | Watcher callbacks or subscriptions | Not implemented |
-| C ABI or C++ watcher start/query APIs | Not implemented; ABI 1.5 remains unchanged |
+| C ABI or C++ watcher start/query APIs | Implemented in the subsequent ABI 1.6 development surface; numeric overhead profiles accepted, final enforcement and native foreign qualification pending |
 | Automatic input, target activation, or watcher-triggered actions | Not implemented |
 | Tokio/futures integration or real-time guarantees | Not implemented |
 | `v0.4.0` distribution | Source-only release; packaged libraries, crates.io publication, static artifacts, installers, and bundled native dependencies are not provided |
@@ -230,4 +230,11 @@ Application logs remain the caller's responsibility. Avoid formatting full nativ
 
 ## Explicit limitations
 
-Native Rust WGC/ScreenCaptureKit watcher support is qualified on the named release targets and included in the source-only `v0.4.0` boundary. Qualification does not promote OCR predicates, callbacks/subscriptions, C ABI/C++, automatic input, target activation, arbitrary application/template/ROI compatibility or timing, real-time behavior, installable packaging, or crates.io/static artifacts. Existing C and C++ compilation, ownership, diagnostics, and frozen-prefix checks remain regression proof only; they are not watcher API checks.
+Native Rust WGC/ScreenCaptureKit watcher support is qualified on the named release targets and included in the source-only `v0.4.0` boundary. Qualification does not promote OCR predicates, callbacks/subscriptions, C ABI/C++, automatic input, target activation, arbitrary application/template/ROI compatibility or timing, real-time behavior, installable packaging, or crates.io/static artifacts.
+
+The subsequent ABI 1.6 development surface adds pull-based C/C++ watcher APIs
+with replay, ownership, layout, and frozen-prefix checks. Those checks do not
+qualify the native foreign boundary. Independent native consumers and a
+capture-free fixture controller now exist; native campaign acceptance and new
+overhead budgets remain pending under the
+[foreign qualification protocol](native-template-watch-foreign-qualification.md).

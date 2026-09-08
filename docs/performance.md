@@ -138,9 +138,28 @@ A budget names one measure. The version-one vocabulary is:
 | `detached_textures_peak` | count | Maximum simultaneously live Adapter-owned detached textures during one workload. |
 | `staging_textures_peak` | count | Maximum simultaneously live CPU-readable staging textures during one workload. |
 | `gpu_resources_peak` | count | Maximum simultaneously live producer, detached, and staging textures during one workload. |
+| `caller_allocation_calls` | count | Per-sample calling-thread Rust `alloc`, `alloc_zeroed`, and `realloc` calls. Includes transient allocations; excludes other threads, foreign `malloc`, and independently loaded library allocators. |
+| `caller_allocation_calls_max` | count | Largest `caller_allocation_calls` sample in the declared workload. |
+| `readable_frame_view_bytes` | bytes | Actually readable frame mapping length, not incremental mapped bytes or a producer-pool observation. |
+| `lifecycle_live_delta_bytes_per_sample` | bytes | Signed process-wide Rust live-heap change from before a complete public lifecycle to after all its owners are released. Includes concurrent Rust activity; not RSS or caller-only retained memory. |
+| `absolute_lifecycle` | bytes or count, as declared by the native resource workload | Current OS-process resource value at each post-release baseline/lifecycle checkpoint. Not a live-Rust-heap or in-flight peak measure. |
+| `delta_lifecycle` | signed bytes or count, as declared by the native resource workload | Each repeated lifecycle's post-release value minus that consumer's fixed post-warmup baseline. A finite positive allowance does not prove a plateau or absence of leaks. |
+| `absolute_final` | bytes or count, as declared by the native resource workload | Current OS-process resource value after the broader native flow and owner cleanup, before process exit. |
+| `delta_final` | signed bytes or count, as declared by the native resource workload | The final pre-exit value minus that consumer's fixed baseline. Uses a separate accepted envelope; the final flow is not a fourth identical lifecycle. |
 
 A phase that needs a measure outside this list adds it here in the same change,
 with its unit and its meaning.
+
+The private native foreign-controller profiles in
+[ADR 0069](adr/0069-native-foreign-template-watch-apparatus.md) use these last
+four names for comparison boundaries. Their `measurement.workload` selects
+physical footprint/private commit, resident bytes/working set, or Mach port
+names/process handles. Each workload declares its OS API and unit. The profile's
+`observed_*` fields retain historical precursor maxima; they are not results of
+a final run. The versioned native JSON report retains individual comparisons.
+These private profiles, like the private phase-five boundary profiles, are
+validated by their own compiled-profile admission rather than the shared
+`bench_harness` report-key contract.
 
 ### Why some names carry their unit and others do not
 
@@ -1242,3 +1261,30 @@ recognizer nodes. One pre-runtime canonical-path apparatus stop is retained; its
 authorized canonical-spelling replacement changed no source, executable,
 directory contents, workload arguments, or product environment and reproduced
 the exact counts.
+
+## Phase 5 pull-query foreign boundary
+
+`mado-pilot-capi` adds the `template-watch-boundary` paired Rust/C replay
+harness. It separates pending poll, first closed-terminal projection, retained
+terminal poll, info/match reads, caller-wait interruption, query/result reference
+lifecycles, and exact-frame reads after parent teardown. These original sixteen
+rows exclude setup and backend completion from caller timing. Two additional
+rows measure complete replay create/cancel/final-release lifecycles, including
+setup, settled pending authority and teardown, with a signed live-byte delta
+for every sample.
+
+The short `cargo test --package mado-pilot-capi --bench template-watch-boundary`
+plan checks correctness and zero caller allocation for pending/retained
+observations. The `cargo bench` plan retains twenty warmups and two hundred
+samples per workload. Caller allocation calls, process-wide Rust heap
+observations, and readable frame bytes have distinct scopes; none is an
+invented native mapped-byte or RSS measurement.
+
+[ADR 0068](adr/0068-template-watch-boundary-budgets.md) independently accepts
+complete eighteen-row latency, allocation and live-Rust-heap profiles for both
+targets. Historical proposals, overruns and provenance-incomplete supplemental
+observations remain separately identified. Final-candidate enforcement and
+native consumer/resource qualification are still required by `G-013`;
+historical Rust/native budgets above remain unchanged and do not qualify this
+boundary. Commands, workload identities, sampling units and native rows are in the
+[foreign qualification protocol](native-template-watch-foreign-qualification.md).

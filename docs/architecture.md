@@ -18,7 +18,10 @@ targets under ADR 0064.** Platform-neutral contracts,
 deterministic replay, asset loading, OpenCV matching, bounded ONNX OCR with
 explicit initialization-time provider policy, finite template watcher
 scheduling, runtime orchestration, engine-scoped diagnostics, the Rust facade,
-C ABI 1.5, and the header-only C++ wrapper are implemented.
+C ABI 1.6, and the header-only C++ wrapper are implemented. The new C/C++ pull
+query surface has replay and consumer-contract coverage and independently
+accepted foreign-overhead limits; native support and final-candidate budget
+enforcement remain unqualified.
 The picker-free Windows Adapter implements window/display discovery, WGC/D3D11 capture, system input,
 and explicit exact-window `WindowMessage` submission. The macOS Adapter
 implements discovery, ScreenCaptureKit capture, `CGEvent` system input, and
@@ -125,10 +128,22 @@ flowchart LR
     D --> Q[Qualified Rust native watcher]
 ```
 
+The following exclusions describe the released `v0.4.0` boundary:
+
 OCR predicates, callbacks/subscriptions, C/C++, automatic input,
 target activation, arbitrary application/template/ROI compatibility or timing,
 real-time guarantees, and installable packaging remain unavailable. The
 `v0.4.0` source release publishes the qualified Rust watcher boundary only.
+The subsequent ABI 1.6 development surface adds pull-based C/C++ template
+queries under [ADR 0067](adr/0067-pull-template-watch-c-abi.md). Native foreign
+consumer qualification and final `G-013` enforcement remain open;
+the existing Rust native evidence does not qualify those new boundaries.
+Controlled C/C++ consumers and a benchmark-private, capture-free fixture
+controller now exist under [ADR 0069](adr/0069-native-foreign-template-watch-apparatus.md).
+Its target-specific finite process-resource profiles are independently accepted,
+and explicit selection enables benchmark-private F9 evaluation. Default precursor
+observations remain unaccepted; final source/host campaign review and native
+support remain pending. Metadata declarations are not physical-host authentication.
 See [Implementation status](#implementation-status).
 
 ## Product definition
@@ -136,9 +151,10 @@ See [Implementation status](#implementation-status).
 MadoPilot is a headless visual automation runtime for applications and agents.
 It discovers windows and displays, captures frame streams, maps coordinate
 spaces, performs template matching and one-shot OCR, waits for stable template
-presence through a bounded Rust query over replay or qualified native sessions,
-injects input through explicit platform capabilities, and reports structured
-outcomes. OCR watchers remain future work.
+presence through bounded queries, injects input through explicit platform
+capabilities, and reports structured outcomes. Rust queries cover replay and
+qualified native sessions; C/C++ pull queries are implemented, with native
+qualification pending. OCR watchers remain future work.
 
 MadoPilot does not own a GUI, tray, editor, overlay, updater, workflow catalog,
 general workflow/cron scheduler, or general scripting DSL.
@@ -1004,7 +1020,7 @@ responsibilities a later phase takes on.
 | OCR model/profile decision and platform-neutral contracts | Implemented in `mado-pilot-ocr`: ADR 0033 fixes released native G-004; ADR 0038 records the rejected rectangular bounded candidate; ADR 0040 adds the accepted candidate-v2 closed identity over the same component bytes; ADR 0041 accepts singular target budgets; ADR 0044 accepts fixed non-overlapping grouped quality and budgets. Immutable model sources, exact-frame requests, normalized source-correlated results, typed failures, and deadline/cancellation-aware commit are implemented |
 | Exact accepted OCR preprocessing, ONNX inference, decoding, and provider policy | Implemented in `mado-pilot-backend-onnx`. ADR 0034 fixes controlled host-provided ONNX Runtime 1.29.0 loading through API 17 with one session pair and process-lifetime runtime ownership. Native G-004 keeps released DB736 behavior; explicit ADR 0040 selection keeps its bounded tensor/profile rules and ADR 0041/0044 budgets. ADR 0046 adds target-gated CUDA/CoreML initialization with one same-provider detector/recognizer pair, explicit dependency roots, atomic pre-publication preferred fallback, required-provider failure, immutable provider facts, and no inference retry/provider switching. ADR 0047 rejects CoreML release qualification. ADR 0048 remains historical explicit Windows CUDA evidence; ADR 0049 adds deterministic provider-specific output-bounded batches and requalifies the unchanged CUDA provider/loader policy. Automatic selection remains CPU on both release targets |
 | Accepted OCR composition | Existing constructors still omit OCR or select the released CPU native/bounded profiles with no fallback. New replay/Windows/macOS provider constructors own caller configuration, select model profile independently from provider policy, and publish provider descriptors only with a complete engine. Preferred initialization may build a fresh CPU pair; required policy publishes no engine on failure |
-| Bounded engine-scoped diagnostic and provider observation | The released allocation-free `Off` and finite `Normal`/`Debug` diagnostic stream retains strict order, exact losses, independent readers/batches, and content redaction. Rust watcher records add bounded query/source/region/state/stability/disposition/queue/elapsed/typed-outcome facts without template names, pixels, hashes, or backend payloads. The released C ABI has no watcher start surface and its diagnostic structures/function table remain unchanged |
+| Bounded engine-scoped diagnostic and provider observation | The allocation-free `Off` and finite `Normal`/`Debug` stream retains strict order, exact losses, independent readers/batches, and content redaction. Rust watcher records carry bounded query/source/region/state/stability/disposition/queue/elapsed/typed-outcome facts without sensitive payloads. ABI 1.6 exposes query progress separately; existing diagnostic records and entries remain unchanged |
 | Input request, route capability, submission receipt, cleanup bounds, provider, and controller contracts | Implemented in `mado-pilot-input` |
 | Input injection | Implemented in `mado-pilot-platform-windows` for system pointer/keyboard/text, ordinary exact-window `WindowMessage` submission with unknown compatibility and target-queue evidence, and fixture-class acknowledged `WindowMessage` submission. Implemented in `mado-pilot-platform-macos` for `CGEvent` system pointer/keyboard/text and process-directed pointer/keyboard/text with owning-process scope, unknown compatibility, and invocation-only evidence; final candidate `dec43d7` passed the controlled profiles, and independent `single`, exact two-display non-mirrored `same-scale`, and `mixed-scale` matrices passed for all fourteen controlled pairs. No macOS window-message route exists. Both implementations are reached through `mado-pilot-runtime`, the Rust facade, C ABI 1.2/1.3, and C++ |
 | Asset manifests and directory, memory, and archive loading | Implemented in `mado-pilot-assets`; strict schema versions 1 and 2 are readable, with version 2 adding OCR model declarations |
@@ -1015,16 +1031,17 @@ responsibilities a later phase takes on.
 | Bounded template-presence query and scheduling | Implemented in `mado-pilot-runtime` for Rust replay/OpenCV and maintained native WGC/ScreenCaptureKit sessions: current-once then strictly newer frame acquisition, finite latest-wins work, exact change/rate admission, confirmed-only stability, exact coalescing, two-worker fair progress, stale-generation rejection, and idempotent query/session/engine-scheduler close. ADRs 0051 and 0052 retain deterministic replay/OpenCV authority; ADR 0053 retains historical target-specific native regression budgets. ADR 0064 adds the token-driven V2 split: Lane A owns deterministic behavior, each target has one compact Lane B integration job, and Lane C statistics are optional. Both exact Lane B host contracts pass, and reviewed target-isolated applicability carries the Apple result through the final Windows evidence source |
 | OCR coalescing and wait-for-text | Not implemented |
 | Public Rust operations for the deterministic replay workflow | Implemented in `mado-pilot`, including the blocking replay template watcher example with separate query/wait operation contexts |
-| Public Rust operations for native and replay workflows | Implemented in `mado-pilot`, including explicit optional backend wiring, accepted CPU default/profile constructors, owning provider-policy constructors, immutable provider descriptors, borrowed one-to-eight-zone scans, and Rust template query types over replay, WGC, and ScreenCaptureKit sessions. Replay/OpenCV and native WGC/ScreenCaptureKit watcher support is qualified on the named release targets under ADR 0064. No platform-native, `ort`, worker, channel, Tokio, or callback type crosses the facade; C ABI/C++ watcher APIs remain absent |
+| Public Rust operations for native and replay workflows | Implemented in `mado-pilot`, including explicit optional backend wiring, accepted CPU constructors, owning provider policy, immutable descriptors, bounded zone scans, and template queries over replay, WGC, and ScreenCaptureKit sessions. Rust watcher support remains qualified under ADR 0064. No native, backend, worker, executor, or callback type crosses the facade. ABI 1.6 delegates its pull watcher to this unchanged facade |
 | Default adapter wiring and backend rules | OpenCV matching remains required. Every pre-provider constructor preserves CPU behavior. `*_engine_with_ocr_provider` is the only integrated provider-policy path; automatic selection uses only a release-qualified target accelerator, preferred fallback is initialization-only, and required/provider inference failure never falls back |
-| C ABI functions, C header, dynamic library | Implemented through ABI 1.5. ABI 1.0, 1.2, 1.3, and 1.4 remain frozen complete 424-, 592-, 648-, and 720-byte prefixes. ABI 1.5 appends provider construction at offset 720 and engine-owned provider descriptor access at offset 728 for a complete 736-byte table under ADR 0046 |
+| C ABI functions, C header, dynamic library | Implemented through ABI 1.6. Frozen ABI 1.0/1.2/1.3/1.4/1.5 prefixes remain 424/592/648/720/736 bytes. Thirteen template-query entries append at offset 736 for a complete 840-byte table under ADR 0067 |
 | C ABI static library and ABI-major release loader names | Not implemented; see [c-abi.md](c-abi.md) |
-| C++ RAII wrapper, `MadoPilot::C` and `MadoPilot::Cpp` CMake targets | Implemented through ABI 1.5 as a header-only adapter, including owning profile/zone/provider options with repaired projections, move-only grouped results, explicit clone, lvalue-only borrowed OCR/provider descriptor views, typed empty groups, and complete negotiated-suffix refusal |
+| C++ RAII wrapper, `MadoPilot::C` and `MadoPilot::Cpp` CMake targets | Implemented through ABI 1.6 as a header-only C adapter, including repaired owning request projections, move-only query/terminal-result owners, explicit clone, lvalue-only borrowed views, retained exact-frame access, and complete negotiated-owner-surface refusal |
 | CMake install and export set, pkg-config file | Not implemented; consumption is from the development tree |
 | Numeric performance budgets | Phase 1 and accepted Phase 2 profiles remain revision-bound under ADRs 0008 and 0024–0032. ADRs 0037, 0039–0041, 0044, 0045, 0048, and 0049 retain their exact OCR/provider evidence. ADRs 0051 and 0052 retain replay/OpenCV watcher ceilings, and ADR 0053 retains independent native WGC and ScreenCaptureKit latency, heap, RSS, and growth budgets. Qualification V2 does not reinterpret those measurements: target-specific statistical enforcement is optional Lane C evidence and cannot replace either required Lane B semantic result |
+| Foreign template-query overhead budgets | `G-013` remains open. ADR 0068 independently accepts target-specific eighteen-row Rust/C replay profiles, including full-lifecycle per-sample live-byte bounds. Final-candidate enforcement is pending; incomplete or mismatched profiles are refused. Native C/C++ support requires separate controlled-fixture evidence |
 | Native permission behavior | Implemented on macOS as non-prompting probes. Windows has no permission probe; its input path performs non-prompting integrity comparison and reports proven UIPI without elevation |
 | Release artifacts | `v0.4.0` is source-only; installable packaging remains unimplemented |
-| ABI compatibility testing | Implemented for frozen ABI 1.0, 1.2, 1.3, and 1.4 headers against current ABI 1.5. Historical callers compile only against immutable headers, negotiate their exact extents, and execute against the current library; current C++ tests refuse partial 1.3, 1.4, and 1.5 operations before reading missing entries |
+| ABI compatibility testing | Frozen ABI 1.0/1.2/1.3/1.4/1.5 headers compile independently and execute against ABI 1.6 at their exact extents. Current C++ consumers refuse partial owner surfaces before reading missing entries or creating handles |
 
 The existence of a package is not evidence that its behavior exists. Each product
 package documents its own planned responsibility, allowed seam, and implementation
@@ -2789,6 +2806,12 @@ Tokio/futures, C/C++, automatic input, target activation, installable packaging,
 and crates.io/static artifacts remain unavailable. The `v0.4.0` source release
 publishes neither a binary artifact nor a C/C++ watcher. See
 [Native template watching from Rust](native-template-watch.md) and ADR 0064.
+
+That exclusion is the released `v0.4.0` scope. The current ABI 1.6 development
+surface adds pull-based C/C++ queries over the unchanged facade. Numeric
+overhead profiles are independently accepted, but final enforcement and native
+foreign-consumer qualification remain incomplete; see
+[the foreign qualification protocol](native-template-watch-foreign-qualification.md).
 
 The engine holds contracts only. It cannot observe which adapter is behind one,
 so no orchestration rule can come to depend on a concrete adapter, and there is

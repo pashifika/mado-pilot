@@ -4,8 +4,9 @@
 #[cfg(target_os = "macos")]
 use crate::macos_fixture::{
     FixtureController, FixtureFinalization, FixtureProcessLifetimeFact, LaunchMode,
-    controlled_content_logical_size, controlled_resize_logical_size_matches,
-    expected_controlled_resize_logical_size, finalize_once,
+    STARTUP_AUTHORITY_EXPIRED, controlled_content_logical_size,
+    controlled_resize_logical_size_matches, expected_controlled_resize_logical_size,
+    finalize_once,
 };
 #[cfg(target_os = "macos")]
 use crate::macos_fixture_control::{
@@ -68,7 +69,14 @@ struct NativeFixture {
 
 #[cfg(target_os = "macos")]
 impl NativeFixture {
-    fn start(arguments: &Arguments) -> Result<Self, String> {
+    /// Starts the private fixture, optionally inside one absolute cohort
+    /// `authority` that is never renewed. The baseline read, provenance hash,
+    /// code identity lookup, NSWorkspace launch and handshake are each
+    /// re-checked against it: an overrun returns `cohort_deadline_exhausted`
+    /// after bounded teardown and never starts a further launch or handshake.
+    /// `None` keeps the plain `FIXTURE_WAIT` startup allowance.
+    fn start(arguments: &Arguments, authority: Option<Instant>) -> Result<Self, String> {
+        require_startup_authority(authority)?;
         let cleanup_baseline =
             fixture_cleanup_counts().map_err(|_| "fixture_authority_failed".to_owned())?;
         let bytes = std::fs::read(&arguments.fixture_executable)
@@ -78,13 +86,24 @@ impl NativeFixture {
         }
         let identity = executable_identity(&arguments.fixture_executable)
             .map_err(|_| "fixture_authority_failed".to_owned())?;
+        // The read, hash and identity lookup are not preemptible; refuse to
+        // launch once they have consumed the authority.
+        require_startup_authority(authority)?;
         let controller = FixtureController::start_once(
             &arguments.fixture_executable,
             Arc::from(bytes),
             identity,
             LaunchMode::Static,
             FIXTURE_WAIT,
-        )?;
+            authority,
+        )
+        .map_err(|error| {
+            if error == STARTUP_AUTHORITY_EXPIRED {
+                COHORT_DEADLINE_EXHAUSTED.to_owned()
+            } else {
+                error
+            }
+        })?;
         Ok(Self {
             controller,
             generation: 1,
@@ -189,11 +208,22 @@ impl NativeFixture {
     }
 
     fn finish(&mut self) -> NativeFixtureFinalization {
+        self.finish_with_deadline(None)
+    }
+
+    fn finish_before(&mut self, deadline: Instant) -> NativeFixtureFinalization {
+        self.finish_with_deadline(Some(deadline))
+    }
+
+    fn finish_with_deadline(&mut self, deadline: Option<Instant>) -> NativeFixtureFinalization {
         let controller = &mut self.controller;
         let baseline = self.cleanup_baseline;
         finalize_once(&mut self.finish_result, || {
-            let events_drained = controller.discard_watch_events(FIXTURE_WAIT);
-            let controller = controller.finish(FIXTURE_WAIT);
+            let remaining = || deadline.map_or(FIXTURE_WAIT, |deadline| {
+                deadline.saturating_duration_since(Instant::now())
+            });
+            let events_drained = controller.discard_watch_events(remaining());
+            let controller = controller.finish(remaining());
             let cleanup = fixture_cleanup_counts().ok();
             let resources = NativeResourceFacts {
                 baseline_observed: cleanup.is_some(),
@@ -235,6 +265,18 @@ impl Drop for NativeFixture {
     fn drop(&mut self) {
         let _ = self.finish();
     }
+}
+
+#[cfg(target_os = "macos")]
+const COHORT_DEADLINE_EXHAUSTED: &str = "cohort_deadline_exhausted";
+
+/// Fails once an absolute startup authority is spent; `None` never fails.
+#[cfg(target_os = "macos")]
+fn require_startup_authority(authority: Option<Instant>) -> Result<(), String> {
+    if authority.is_some_and(|authority| Instant::now() >= authority) {
+        return Err(COHORT_DEADLINE_EXHAUSTED.to_owned());
+    }
+    Ok(())
 }
 
 #[cfg(target_os = "macos")]

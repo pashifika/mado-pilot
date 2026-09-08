@@ -1,5 +1,5 @@
 /*
- * MadoPilot C ABI — ABI 1.5.
+ * MadoPilot C ABI — ABI 1.6.
  *
  * MadoPilot is a headless visual automation runtime. This header is the whole
  * C contract: one exported symbol, an immutable function table reached through
@@ -7,7 +7,7 @@
  * size-versioned structures with documented mandatory prefixes.
  *
  * ============================================================================
- * ABI 1.5. COMPLETE RELEASED ABI 1.0, 1.2, 1.3, AND 1.4 PREFIXES FROZEN.
+ * ABI 1.6. COMPLETE RELEASED ABI 1.0, 1.2, 1.3, 1.4, AND 1.5 PREFIXES FROZEN.
  *
  * Every ABI 1.0 numeric value, structure prefix, field offset, and
  * function-table position is frozen for ABI major 1 by
@@ -17,8 +17,9 @@
  * immutable owned OCR results after the complete ABI 1.2 extent. ABI 1.4
  * appends explicit profile construction and grouped zone OCR after the complete
  * 648-byte ABI 1.3 extent. ABI 1.5 appends explicit OCR provider policy and
- * immutable provider facts after the complete 720-byte ABI 1.4 extent. ABI 1.1
- * is intentionally unsupported. Within this major, later minors append only.
+ * immutable provider facts after the complete 720-byte ABI 1.4 extent. ABI 1.6
+ * appends pull-based template-watch queries after the 736-byte ABI 1.5 extent.
+ * ABI 1.1 is intentionally unsupported. Within this major, later minors append only.
  *
  * Use the smaller of your sizeof and the returned table's struct_size to decide
  * which members exist. crates/bindings/capi/tests/abi-compat/ keeps every
@@ -61,7 +62,7 @@ extern "C" {
 #define MADOPILOT_ABI_MAJOR 1u
 
 /* The ABI minor version this header declares. ABI 1.1 was never released. */
-#define MADOPILOT_ABI_MINOR 5u
+#define MADOPILOT_ABI_MINOR 6u
 
 /* ---------------------------------------------------------------------------
  * Status
@@ -709,6 +710,12 @@ enum {
 #define MADOPILOT_ERROR_HAS_ASSET_DETAIL 0x1u
 #define MADOPILOT_ERROR_HAS_BACKEND 0x2u
 
+/* Template-watch input and retained observation fields. */
+#define MADOPILOT_TEMPLATE_WATCH_HAS_REGION 0x1u
+#define MADOPILOT_TEMPLATE_QUERY_HAS_LAST_FRAME 0x1u
+#define MADOPILOT_TRANSFORM_COVERS_TARGET 0x1u
+#define MADOPILOT_TRANSFORM_HAS_TARGET_PLACEMENT 0x2u
+
 /* ---------------------------------------------------------------------------
  * Borrowed views
  *
@@ -772,6 +779,8 @@ typedef struct madopilot_diagnostic_reader_t madopilot_diagnostic_reader_t;
 typedef struct madopilot_diagnostic_batch_t madopilot_diagnostic_batch_t;
 typedef struct madopilot_ocr_result_t madopilot_ocr_result_t;
 typedef struct madopilot_ocr_zone_scan_result_t madopilot_ocr_zone_scan_result_t;
+typedef struct madopilot_template_query_t madopilot_template_query_t;
+typedef struct madopilot_template_query_result_t madopilot_template_query_result_t;
 
 /* ---------------------------------------------------------------------------
  * Structures
@@ -1523,6 +1532,210 @@ typedef struct madopilot_package_source_t {
 } madopilot_package_source_t;
 
 /* ---------------------------------------------------------------------------
+ * Pull-based template-watch records (ABI 1.6)
+ *
+ * Each SIZE_V1_6 below is the complete mandatory initial prefix. No shorter
+ * prefix is legal. Newer trailing input bytes are ignored; output bytes beyond
+ * this build's record remain untouched. Outputs report the initialized extent.
+ * Callers initialize only the outer output struct_size; embedded versioned
+ * values have fixed complete sizes and cannot grow in place in a later ABI.
+ * ------------------------------------------------------------------------ */
+
+typedef int32_t madopilot_template_stability_kind_t;
+enum {
+    MADOPILOT_TEMPLATE_STABILITY_IMMEDIATE = 0,
+    MADOPILOT_TEMPLATE_STABILITY_CONSECUTIVE = 1,
+    MADOPILOT_TEMPLATE_STABILITY_DURATION = 2
+};
+
+typedef int32_t madopilot_template_change_policy_t;
+enum {
+    MADOPILOT_TEMPLATE_CHANGE_ANALYSIS_ALWAYS = 0,
+    MADOPILOT_TEMPLATE_CHANGE_EXACT_RGBA = 1
+};
+
+typedef int32_t madopilot_template_query_state_t;
+enum {
+    MADOPILOT_TEMPLATE_QUERY_STATE_UNAVAILABLE = 0, /* Failure initialization only. */
+    MADOPILOT_TEMPLATE_QUERY_STATE_PENDING = 1,
+    MADOPILOT_TEMPLATE_QUERY_STATE_TERMINAL = 2
+};
+
+typedef int32_t madopilot_template_query_outcome_t;
+enum {
+    MADOPILOT_TEMPLATE_QUERY_OUTCOME_NONE = 0, /* Failure initialization only. */
+    MADOPILOT_TEMPLATE_QUERY_OUTCOME_MATCHED = 1,
+    MADOPILOT_TEMPLATE_QUERY_OUTCOME_CANCELLED = 2,
+    MADOPILOT_TEMPLATE_QUERY_OUTCOME_DEADLINE_EXCEEDED = 3,
+    MADOPILOT_TEMPLATE_QUERY_OUTCOME_SESSION_CLOSED = 4,
+    MADOPILOT_TEMPLATE_QUERY_OUTCOME_SCHEDULER_CLOSED = 5,
+    MADOPILOT_TEMPLATE_QUERY_OUTCOME_TARGET_LOST = 6,
+    MADOPILOT_TEMPLATE_QUERY_OUTCOME_OVERLOADED = 7,
+    MADOPILOT_TEMPLATE_QUERY_OUTCOME_FAILED = 8
+};
+
+typedef int32_t madopilot_template_overload_t;
+enum {
+    MADOPILOT_TEMPLATE_OVERLOAD_NONE = 0,
+    MADOPILOT_TEMPLATE_OVERLOAD_QUEUE_EXPIRED = 1
+};
+
+/* Read-only selected limits from Engine::template_scheduler(), not configurable
+ * capacity. Mandatory prefix: MADOPILOT_TEMPLATE_SCHEDULER_DESCRIPTOR_SIZE_V1_6. */
+typedef struct madopilot_template_scheduler_descriptor_t {
+    uint32_t struct_size;
+    uint32_t flags;                           /* Zero. */
+    uint32_t max_engine_queries;              /* 256. */
+    uint32_t max_active_sessions;             /* 16. */
+    uint32_t max_session_queries;             /* 64. */
+    uint32_t max_in_flight_analyses;           /* 2, engine-wide. */
+    uint32_t latest_pending_frames_per_query; /* 1, latest wins. */
+    uint32_t max_mapped_cache_entries;         /* 256. */
+    uint64_t mapped_cache_bytes;              /* 67108864. */
+    uint64_t eligible_queue_expiry_nanos;      /* 30000000000. */
+} madopilot_template_scheduler_descriptor_t;
+
+/* Mandatory prefix: MADOPILOT_TEMPLATE_WATCH_OPTIONS_SIZE_V1_6.
+ * match_options follows existing input-prefix/presence and template-default
+ * precedence rules; null means template defaults, not zero overrides.
+ * HAS_REGION activates region/clip_policy: nonempty half-open CapturePixels
+ * and a known clip policy, as for find. Containment/clipping uses each analyzed
+ * frame, so later resize can cause terminal failure. Without HAS_REGION both
+ * fields (including tags) are ignored and the full frame is selected.
+ * Zero interval is unrestricted; positive values set the minimum interval.
+ * IMMEDIATE requires both stability values zero; CONSECUTIVE requires positive
+ * observations and zero duration; DURATION requires zero observations and
+ * positive duration. Unknown tags/flags, nonzero reserved, and invalid active
+ * combinations are INVALID_ARGUMENT/ABI. Durations never truncate or clamp;
+ * unrepresentable runtime clock addition is INVALID_ARGUMENT.
+ * All storage is borrowed for start only. Zero data selects immediate,
+ * unrestricted, analysis-always; callers wanting Rust's default specify EXACT_RGBA. */
+typedef struct madopilot_template_watch_options_t {
+    uint32_t struct_size;
+    uint32_t flags; /* MADOPILOT_TEMPLATE_WATCH_HAS_REGION. */
+    const madopilot_match_options_t* match_options; /* Optional. */
+    madopilot_pixel_rect_t region;
+    madopilot_clip_policy_t clip_policy;
+    uint64_t minimum_interval_nanos;
+    madopilot_template_stability_kind_t stability_kind;
+    uint32_t stability_observations;
+    uint64_t stability_duration_nanos;
+    madopilot_template_change_policy_t change_policy;
+    uint32_t reserved; /* Zero. */
+} madopilot_template_watch_options_t;
+
+/* Mandatory prefix: MADOPILOT_TEMPLATE_QUERY_SNAPSHOT_SIZE_V1_6. By-value facts,
+ * no borrowed views or owned handles. query_id is nonzero and engine-local on
+ * success; zero is failure-only and ids are not comparable across engines.
+ * PENDING activates all progress fields. generation is the latest admitted
+ * analysis generation (initially zero). Confirmed count/span reset on a broken
+ * match run; span is confirmed matching time, not elapsed caller wait time.
+ * Count saturates at UINT32_MAX; durations and work counts at UINT64_MAX.
+ * Each depth is 0..1 per query; the descriptor's analysis limit is engine-wide.
+ * HAS_LAST_FRAME covers all four identities. Otherwise last_frame is size 40,
+ * flags zero, identities zero. It is the newest considered transition, not
+ * necessarily completed analysis or the eventual matched source.
+ * Work counts are independent dispositions, not disjoint frame totals; do not
+ * sum them into a frame/admission conservation law. A snapshot may stale at once.
+ * TERMINAL activates only state/id; all progress/flags are zero, last_frame is
+ * absent as above. Those zeros are not final accounting; out_result is authority. */
+typedef struct madopilot_template_query_snapshot_t {
+    uint32_t struct_size;
+    madopilot_template_query_state_t state;
+    uint32_t flags; /* MADOPILOT_TEMPLATE_QUERY_HAS_LAST_FRAME. */
+    uint32_t confirmed_observations;
+    uint64_t query_id;
+    uint64_t generation;
+    uint64_t confirmed_duration_nanos;
+    uint32_t pending_count;
+    uint32_t in_flight_count;
+    madopilot_frame_stamp_t last_frame;
+    uint64_t admitted;       /* Backend analysis admitted. */
+    uint64_t skipped_change; /* Exact-compatible skip. */
+    uint64_t deferred_rate;  /* Retained for rate eligibility. */
+    uint64_t coalesced;      /* Shared immutable analysis. */
+    uint64_t superseded;     /* Displaced work/authority. */
+    uint64_t rejected;       /* Refused before analysis. */
+    uint64_t queue_expired;  /* Eligible residence expired. */
+    uint64_t completed;      /* Success, including no-match. */
+    uint64_t failed;         /* Mapping/backend failure. */
+} madopilot_template_query_snapshot_t;
+
+/* Mandatory prefix: MADOPILOT_TRANSFORM_SNAPSHOT_SIZE_V1_6. Exact frame-time
+ * facts, not a conversion API. COVERS_TARGET means target-normalized equals
+ * frame-normalized. HAS_TARGET_PLACEMENT implies coverage and activates all
+ * eight doubles; otherwise they are zero and no logical placement is implied.
+ * Placement values are finite, dimensions/scales positive, origins may be
+ * negative. Scales are capture pixels per respective logical unit and need
+ * not equal each other. Never infer absent scale as 1 or from current geometry.
+ * Nonempty frames support capture/frame-normalized coordinates;
+ * target-normalized additionally requires coverage, logical spaces placement. */
+typedef struct madopilot_transform_snapshot_t {
+    uint32_t struct_size;
+    uint32_t flags; /* COVERS_TARGET / HAS_TARGET_PLACEMENT. */
+    uint64_t geometry;
+    uint32_t width;  /* Capture pixels. */
+    uint32_t height; /* Capture pixels. */
+    double desktop_origin_x; /* Desktop-logical units. */
+    double desktop_origin_y;
+    double logical_width;    /* Target-logical units. */
+    double logical_height;
+    double target_scale_x;
+    double target_scale_y;
+    double desktop_scale_x;
+    double desktop_scale_y;
+} madopilot_transform_snapshot_t;
+
+/* Mandatory prefix: MADOPILOT_TEMPLATE_QUERY_RESULT_INFO_SIZE_V1_6.
+ * outcome/status/query_id are always active. status is TERMINAL DATA:
+ * MATCHED -> OK; CANCELLED -> CANCELLED; DEADLINE_EXCEEDED -> DEADLINE_EXCEEDED;
+ * SESSION_CLOSED/SCHEDULER_CLOSED -> CLOSED; TARGET_LOST -> TARGET_LOST;
+ * OVERLOADED -> LIMIT_EXCEEDED; FAILED -> exact retained failure status.
+ * Only OVERLOADED has QUEUE_EXPIRED; other outcomes have overload NONE.
+ * Start-time capacity refusal is call LIMIT_EXCEEDED without a query.
+ * MATCHED activates target through transform. target equals session_info.target.
+ * All string views, including match_at.template_id, borrow this result owner.
+ * source is the full exact match/frame stamp; transform.geometry matches it.
+ * match_count is positive and equals the retained array length. options has all
+ * three MATCH_HAS_* bits set; effective_region is clipped full-frame
+ * CapturePixels, not ROI-relative. Confirmed count/span are completed stability,
+ * not requested thresholds; span saturates as in the snapshot.
+ * Frame access supplies format/stride/bounds/mapping. Later movement or resize
+ * cannot relabel these facts or their retained frame.
+ * NON-MATCHED clears target/count/confirmed values, uses {NULL,0} views, an absent
+ * size-40 stamp, {CAPTURE_PIXELS,0,0,0,0} region, size-24 options with zero data
+ * and DROP_OVERLAPPING, and a size-88 zero transform. These fields are inactive. */
+typedef struct madopilot_template_query_result_info_t {
+    uint32_t struct_size;
+    madopilot_template_query_outcome_t outcome;
+    madopilot_status_t status;
+    madopilot_template_overload_t overload;
+    uint64_t query_id;
+    uint64_t target;
+    madopilot_frame_stamp_t source;
+    uint64_t match_count;
+    madopilot_str_t template_id;
+    madopilot_str_t backend_id;
+    madopilot_str_t backend_version;
+    madopilot_match_options_t options;
+    madopilot_pixel_rect_t effective_region;
+    uint32_t confirmed_observations;
+    uint64_t confirmed_duration_nanos;
+    madopilot_transform_snapshot_t transform;
+} madopilot_template_query_result_info_t;
+
+#define MADOPILOT_TEMPLATE_SCHEDULER_DESCRIPTOR_SIZE_V1_6 \
+    ((uint32_t)(offsetof(madopilot_template_scheduler_descriptor_t, eligible_queue_expiry_nanos) + sizeof(uint64_t)))
+#define MADOPILOT_TEMPLATE_WATCH_OPTIONS_SIZE_V1_6 \
+    ((uint32_t)(offsetof(madopilot_template_watch_options_t, reserved) + sizeof(uint32_t)))
+#define MADOPILOT_TEMPLATE_QUERY_SNAPSHOT_SIZE_V1_6 \
+    ((uint32_t)(offsetof(madopilot_template_query_snapshot_t, failed) + sizeof(uint64_t)))
+#define MADOPILOT_TRANSFORM_SNAPSHOT_SIZE_V1_6 \
+    ((uint32_t)(offsetof(madopilot_transform_snapshot_t, desktop_scale_y) + sizeof(double)))
+#define MADOPILOT_TEMPLATE_QUERY_RESULT_INFO_SIZE_V1_6 \
+    ((uint32_t)(offsetof(madopilot_template_query_result_info_t, transform) + MADOPILOT_TRANSFORM_SNAPSHOT_SIZE_V1_6))
+
+/* ---------------------------------------------------------------------------
  * The function table
  *
  * Within an ABI major a member's position is permanent. Later phases append;
@@ -1545,9 +1758,8 @@ typedef struct madopilot_package_source_t {
  * says which header the caller was built against.
  *
  * Beyond the retain and release entries and the empty-view rule above, null is
- * accepted in four places, each documented where it is declared: `out_error`
- * below, madopilot_operation_t.cancellation, madopilot_find_request_t.frame,
- * and madopilot_find_request_t.options.
+ * accepted where explicitly documented: optional `out_error`, operation
+ * cancellation, find frame/options, and watch match_options.
  *
  * Every structure a caller passes in, every view one of those structures
  * carries, and every view passed directly as an argument — a template identity,
@@ -1932,6 +2144,130 @@ typedef struct madopilot_api_t {
     madopilot_status_t (*engine_ocr_provider_descriptor)(
         const madopilot_engine_t* engine,
         madopilot_ocr_provider_descriptor_t* out_descriptor);
+
+    /* --- ABI 1.6 pull-based template-watch suffix ---------------------- */
+
+    /* All required pointers must be nonnull, aligned and valid for their
+     * declared extent and complete call lifetime. Outputs must not overlap
+     * inputs, each other, or library-owned storage. Handle type/liveness is a
+     * caller precondition, not an arbitrary-address probe.
+     * Every independently legal output is initialized before input conversion
+     * or mutation, even if another output is invalid. Invalid storage is not
+     * written. Required-output faults take signature order, then optional error.
+     * Failure states: null owners; zero descriptor; UNAVAILABLE/zero snapshot
+     * with absent last_frame; info NONE/INTERNAL/NONE, id zero and inactive
+     * matched fields; existing reset match. Nested sizes are initialized even
+     * on failure; known padding is zero, unknown caller tail untouched.
+     * out_error is optional call-error storage: null on success, owned diagnostic
+     * on reportable failure. A contained panic returns INTERNAL_PANIC with
+     * initialized outputs, no partial owner, and no rollback of committed cancel.
+     * Input prefix/tag/active faults use ABI; match/region faults retain existing
+     * VISION/GEOMETRY categories. Wait interruption uses OPERATION. Runtime start
+     * and Failed status categories: Cancelled/DeadlineExceeded -> OPERATION;
+     * Closed/TargetLost/CaptureFailed -> CAPTURE; VisionFailed -> VISION;
+     * AssetInvalid -> ASSET; InputFailed -> INPUT; otherwise UNSPECIFIED.
+     *
+     * Retain shares one Rust query authority; at most one immutable terminal
+     * projection is cached. Independently retained threads may poll/wait/cancel/
+     * read concurrently; callers synchronize shared output buffers. No cache
+     * lock spans wait, cancellation, parent close, backend or mapping work.
+     * Earlier terminal winners never change; Rust owns close/cancel precedence.
+     * session_close terminates pending queries and refuses starts even when
+     * its drain is interrupted; releasing a session reference is not close.
+     * No engine_close exists: final engine_release closes the scheduler;
+     * pending queries become SCHEDULER_CLOSED unless prior authority won, and
+     * retained sessions cannot restart it. Non-final release does not close.
+     * Retained query/result/frame/mapping references survive parent teardown.
+     * Results retain neither parent/query/thread owners nor producer-pool slots
+     * needed for progress. Views live to their named result/error/mapping release. */
+
+    /* Read-only limits; no work admission, operation, or capacity configuration. */
+    madopilot_status_t (*engine_template_scheduler_descriptor)(
+        const madopilot_engine_t* engine,
+        madopilot_template_scheduler_descriptor_t* out_descriptor);
+
+    /* All except out_error required. Converts synchronously through the facade.
+     * Success retains no foreign storage; tmpl/cancellation references may then
+     * be released (token release is not cancellation). query_operation owns
+     * lifetime, not future waits. Rust owns admission/publication/close rechecks.
+     * May return already terminal. Current frame is considered once, then only
+     * strictly newer transitions; no-match stays pending. Invalid input publishes
+     * null and admits no watcher backend work. */
+    madopilot_status_t (*session_start_template_watch)(
+        const madopilot_session_t* session,
+        const madopilot_template_t* tmpl,
+        const madopilot_template_watch_options_t* options,
+        const madopilot_operation_t* query_operation,
+        madopilot_template_query_t** out_query,
+        madopilot_error_t** out_error);
+    /* Null is a no-op. Adds a C reference, not another Rust query owner. */
+    madopilot_status_t (*template_query_retain)(
+        const madopilot_template_query_t* query);
+    /* Null is a no-op. Final reference cancels pending authority; non-final
+     * release does not cancel. This is not a general worker-drain fence. */
+    madopilot_status_t (*template_query_release)(
+        madopilot_template_query_t* query);
+    /* Both primary outputs required. PENDING: OK + snapshot + null result,
+     * without result allocation, pixel mapping/copying, work admission,
+     * fabricated observations, stability advancement, or completion wait.
+     * TERMINAL: OK + terminal snapshot + one owned reference to shared facts,
+     * without copying match arrays or pixels on repeated observation. */
+    madopilot_status_t (*template_query_poll)(
+        const madopilot_template_query_t* query,
+        madopilot_template_query_snapshot_t* out_snapshot,
+        madopilot_template_query_result_t** out_result,
+        madopilot_error_t** out_error);
+    /* Independent wait_operation required. Its interruption is call
+     * CANCELLED/DEADLINE_EXCEEDED + null result, ending only this wait. Any query
+     * terminal, including failure, returns OK + owned result + null call error.
+     * Rust checks an already-interrupted wait before an already-terminal query;
+     * no cache bypass or extra C commit check changes that precedence. */
+    madopilot_status_t (*template_query_wait)(
+        const madopilot_template_query_t* query,
+        const madopilot_operation_t* wait_operation,
+        madopilot_template_query_result_t** out_result,
+        madopilot_error_t** out_error);
+    /* No caller operation. Valid cancellation competes immediately through Rust
+     * and returns OK + owned winning result, not necessarily CANCELLED.
+     * Idempotent; invalid out_result/out_error cannot mutate query authority. */
+    madopilot_status_t (*template_query_cancel)(
+        const madopilot_template_query_t* query,
+        madopilot_template_query_result_t** out_result,
+        madopilot_error_t** out_error);
+    /* Both accept null as a no-op. Facts are independent of query/parent lifetime. */
+    madopilot_status_t (*template_query_result_retain)(
+        const madopilot_template_query_result_t* result);
+    madopilot_status_t (*template_query_result_release)(
+        madopilot_template_query_result_t* result);
+    /* Valid terminal results return OK; out_info.status is terminal data. */
+    madopilot_status_t (*template_query_result_info)(
+        const madopilot_template_query_result_t* result,
+        madopilot_template_query_result_info_t* out_info);
+    /* MATCHED only. Invalid outcome/index >= match_count -> INVALID_ARGUMENT
+     * and reset match. Canonical ordering/score/bounds are unchanged;
+     * template_id borrows result. size_t addresses this retained process view. */
+    madopilot_status_t (*template_query_result_match_at)(
+        const madopilot_template_query_result_t* result,
+        size_t index,
+        madopilot_match_t* out_match);
+    /* MATCHED only; otherwise INVALID_ARGUMENT + null. Returns one independently
+     * retained exact source frame with ordinary frame/mapping APIs. May allocate
+     * a handle, never maps/copies pixels. Preserves the start-time non-owning
+     * mapping observer without retaining the session or engine. */
+    madopilot_status_t (*template_query_result_frame)(
+        const madopilot_template_query_result_t* result,
+        madopilot_frame_t** out_frame);
+    /* out_failure is REQUIRED terminal-error data, not optional call-error
+     * storage. FAILED -> OK + owned error with exact retained status/redacted
+     * detail; other valid outcomes -> OK + null; invalid input -> failure + null.
+     * No secondary error output. Error/views are independent of result lifetime.
+     * Describe/release via existing error entries. Category maps as above;
+     * flags=0, backend={NULL,0}, asset_fault/stage=UNKNOWN: Rust supplies no such
+     * provenance. Explicit error access may allocate/copy error storage;
+     * poll/wait never eagerly materialize it. */
+    madopilot_status_t (*template_query_result_error)(
+        const madopilot_template_query_result_t* result,
+        madopilot_error_t** out_failure);
 } madopilot_api_t;
 
 /* The table's mandatory prefix: everything through status_text.
@@ -2030,7 +2366,49 @@ typedef struct madopilot_api_t {
     offsetof(madopilot_api_t, engine_create_with_ocr_provider)
 #define MADOPILOT_API_SIZE_ENGINE_CREATE_WITH_OCR_PROVIDER \
     offsetof(madopilot_api_t, engine_ocr_provider_descriptor)
-#define MADOPILOT_API_SIZE_ENGINE_OCR_PROVIDER_DESCRIPTOR sizeof(madopilot_api_t)
+#define MADOPILOT_API_SIZE_ENGINE_OCR_PROVIDER_DESCRIPTOR \
+    offsetof(madopilot_api_t, engine_template_scheduler_descriptor)
+#define MADOPILOT_API_SIZE_ABI_1_5 \
+    offsetof(madopilot_api_t, engine_template_scheduler_descriptor)
+#define MADOPILOT_API_SIZE_ENGINE_TEMPLATE_SCHEDULER_DESCRIPTOR \
+    offsetof(madopilot_api_t, session_start_template_watch)
+#define MADOPILOT_API_SIZE_SESSION_START_TEMPLATE_WATCH \
+    offsetof(madopilot_api_t, template_query_retain)
+#define MADOPILOT_API_SIZE_TEMPLATE_QUERY_RETAIN \
+    offsetof(madopilot_api_t, template_query_release)
+#define MADOPILOT_API_SIZE_TEMPLATE_QUERY_RELEASE \
+    offsetof(madopilot_api_t, template_query_poll)
+#define MADOPILOT_API_SIZE_TEMPLATE_QUERY_POLL \
+    offsetof(madopilot_api_t, template_query_wait)
+#define MADOPILOT_API_SIZE_TEMPLATE_QUERY_WAIT \
+    offsetof(madopilot_api_t, template_query_cancel)
+#define MADOPILOT_API_SIZE_TEMPLATE_QUERY_CANCEL \
+    offsetof(madopilot_api_t, template_query_result_retain)
+#define MADOPILOT_API_SIZE_TEMPLATE_QUERY_RESULT_RETAIN \
+    offsetof(madopilot_api_t, template_query_result_release)
+#define MADOPILOT_API_SIZE_TEMPLATE_QUERY_RESULT_RELEASE \
+    offsetof(madopilot_api_t, template_query_result_info)
+#define MADOPILOT_API_SIZE_TEMPLATE_QUERY_RESULT_INFO \
+    offsetof(madopilot_api_t, template_query_result_match_at)
+#define MADOPILOT_API_SIZE_TEMPLATE_QUERY_RESULT_MATCH_AT \
+    offsetof(madopilot_api_t, template_query_result_frame)
+#define MADOPILOT_API_SIZE_TEMPLATE_QUERY_RESULT_FRAME \
+    offsetof(madopilot_api_t, template_query_result_error)
+#define MADOPILOT_API_SIZE_TEMPLATE_QUERY_RESULT_ERROR \
+    (offsetof(madopilot_api_t, template_query_result_error) + sizeof(((madopilot_api_t*)0)->template_query_result_error))
+#define MADOPILOT_API_SIZE_ABI_1_6 MADOPILOT_API_SIZE_TEMPLATE_QUERY_RESULT_ERROR
+
+/* Direct C callers check each invoked entry and every returned lifecycle. */
+#define MADOPILOT_API_SIZE_TEMPLATE_QUERY_LIFECYCLE MADOPILOT_API_SIZE_TEMPLATE_QUERY_RELEASE
+#define MADOPILOT_API_SIZE_TEMPLATE_QUERY_RESULT_LIFECYCLE MADOPILOT_API_SIZE_TEMPLATE_QUERY_RESULT_RELEASE
+
+/* Complete high-level owners require the whole suffix before any creating
+ * call, plus nonnull used pointers and inherited frame/mapping/error lifecycles.
+ * Check both caller-known and reported extent before reading any pointer.
+ * Missing extent/entry -> UNSUPPORTED without creating an owner. Descriptor-only
+ * access needs only its own entry extent, not either owner minimum. */
+#define MADOPILOT_API_SIZE_TEMPLATE_QUERY_REQUIRED MADOPILOT_API_SIZE_TEMPLATE_QUERY_RESULT_ERROR
+#define MADOPILOT_API_SIZE_TEMPLATE_QUERY_RESULT_REQUIRED MADOPILOT_API_SIZE_TEMPLATE_QUERY_RESULT_ERROR
 
 /* ---------------------------------------------------------------------------
  * The one exported symbol

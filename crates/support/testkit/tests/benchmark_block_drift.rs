@@ -83,10 +83,12 @@ use mado_pilot_testkit::native_watch_report::{
     WORKLOADS as NATIVE_TEMPLATE_WATCH_WORKLOADS,
 };
 
-/// Every committed benchmark profile, by repository path and content.
+/// Committed profiles produced by the shared harness, by path and content.
 ///
 /// `example-synthetic.toml` is deliberately absent because it documents the
 /// format with invented numbers rather than recording a measurement.
+/// Private phase-five boundary and native-foreign profiles validate their
+/// separately versioned contracts in their own benchmark modules.
 const PROFILES: [(&str, &str); 40] = [
     (
         "docs/benchmarks/phase-1-deterministic-slice-aarch64-apple-darwin.toml",

@@ -1,0 +1,261 @@
+# Independently accepted finite-protocol ceilings, not final results.
+# Historical source, samples and unexecuted F9 outcomes remain unchanged.
+format_version = 1
+
+[benchmark]
+id = "phase-5-native-foreign-resources-x86_64-pc-windows-msvc"
+workload = "independent C/C++ native consumer post-release and pre-exit process resources"
+phase = "5"
+status = "precursor-measured-budgets-accepted"
+normative = true
+measurements_recorded = true
+normative_scope = "prospective fixed-protocol sampled OS resource limits only; observed maxima are historical precursors, not final results or physical-host authentication"
+
+[profile]
+fixture = "crates/platform/windows/src/bin/mado-pilot-windows-window-message-fixture.rs; approved release executable"
+fixture_sha256 = "f7c0a718db6e9b7a571a7422e298ad104b8df1c9cefa259dd6e0e9088a5408d8"
+release_target = "x86_64-pc-windows-msvc"
+hardware = "Intel Core i7-12700KF; NVIDIA RTX 4080; driver32.0.15.9186"
+os_version = "Windows 11 Pro 25H2 (26200.9278)"
+topology = "primary3840x2160@150%;left3840x2160@125%;342x231->462x311->464x312"
+build_profile = "release; debug_assertions=false; mado-pilot native-template-watch-qualification bench; separately built default-feature mado-pilot-capi library; no consumer optimization inferred from Cargo release"
+toolchain = "Rust 1.97.1 (8bab26f4f; LLVM 22.1.6); MSVC VC 14.44.35207; Windows SDK 10.0.26100.0; libclang root D:/oss_libs/LLVM/bin"
+consumer_build = "cl /nologo /std:c11 /W3; cl /nologo /std:c++17 /EHsc /W3; repository include roots, exact output/object paths and madopilot.dll.lib; no /O2 or other optimization flag in either recorded invocation"
+deployment = "Windows 11 25H2 build family 26200; SDK 10.0.26100.0 is a build input, not a lower runtime floor; later policy OS is 10.0.26200.9278"
+dependencies = "developer-owned OpenCV 4.14.0 at D:/oss_libs/opencv; opencv_world4140.dll SHA256 a192cbf006faf48c054468fa2a2e56e3f680b401c23b8f7fb24373ff75654c46; libclang root is recorded, not a verified version or complete dependency attestation"
+consumer_protocol = "native-foreign-watch.v1"
+cohort_schema = "madopilot.native-foreign-watch.cohort.v3"
+cycle_schema = "madopilot.native-foreign-watch.cycle.v3"
+warmup_iterations = 1
+sample_count = 5
+measured_lifecycles = 3
+outer_warmup_count = 1
+outer_measurement_count = 3
+sample_order = [[0, 0], [1, 1], [1, 2], [1, 3], [2, 4]]
+resource_tuple = ["phase", "index", "private_or_footprint_bytes", "resident_bytes", "handle_or_port_count"]
+baseline = "F1 Resource(0,0) after one complete intrinsic warmup and all public-owner release; fixed for this consumer process while transport pipes remain open"
+lifecycle = "F1 Resource(1,1), (1,2), (1,3), each after one complete fresh public lifecycle and owner release; no baseline reset"
+final = "F9 Resource(2,4), after full F2-F8 and all public-owner release, before process exit; independent final envelope"
+comparison = "all 27 comparisons must pass: 3 baseline absolute, 18 lifecycle absolute/delta, 6 final absolute/delta; signed i128(sample)-i128(own baseline) <= delta limit; no saturation, averaging, pooling or process offset"
+process_policy = "apply to every consumer including outer warmup; no extra warmup, wait, resampling, exclusion, replacement or retry; a failed outer warmup prevents later measured launches"
+correctness_oracle = "all F1-F9 public-owner/identity/target-loss/deadline oracles and controller fixture/process/pipe/worker cleanup remain mandatory; numeric success rescues none"
+queue_policy = "unchanged finite native watcher protocol; one outstanding request, 64 reader events, 2048-byte wire lines, 64 facts per row, 512 records per process"
+controller_boundary = "separate fixed post-warmup equality predicate; historical Windows count 241 is not a future hard-coded baseline; cold controller observations are diagnostic"
+geometry_stages = ["F2/F3 and F4 before", "F4 after and F5 before", "F5 after"]
+frame_extents = [[342, 231], [462, 311], [464, 312]]
+transform_extents = [[342.0, 231.0], [462.0, 311.0], [465.2608695652174, 312.0]]
+frame_scales = [[1.0, 1.0], [1.0, 1.0], [0.997289972899729, 1.0]]
+geometry_scope = "observed consumer frame/transform dimensions and scale transitions, not target IDs, source ordinals, window origins or physical monitor authentication; retain existing exact-token and identity checks"
+
+[artifacts]
+consumer_c_sha256 = "2d8040c9804263e6ebd5f8397d6d5c2e8f9681034f30e08b5d683a418fe19248"
+consumer_cpp_sha256 = "e8e1d5ae6b1ac263f9530b8e3dca44d6be28c22c4f79eb27c095a8cc755e9900"
+library_sha256 = "c95dfd07bf1ee9da09ddd467cf62eb339499b5630c90610d1d3c6ed45bf28ac1"
+admission = "actual consumer equals one approved C/C++ digest; actual loaded madopilot_get_api module and fixture equal fixed pins; actual runner equals declared SHA256; all four artifacts unchanged before/after"
+replacement_policy = "no caller-supplied replacement consumer/library/fixture hashes; new binaries require independent source/build applicability review and a reviewed profile/code pin update"
+
+[acceptance]
+status = "accepted"
+date = "2026-09-08"
+adr = "docs/adr/0069-native-foreign-template-watch-apparatus.md"
+independent_review = "rasen/changes/pull-based-c-and-cpp-template-watch-query/evidence/scene-successor-native-resource-acceptance-001.json"
+independent_review_sha256 = "d046558b0f84c79b6bba9408383da52092dac04d84769448eee6a0cf3056ace9"
+accepted_limit_count = 12
+comparisons_per_consumer = 27
+selection = "all eight --foreign-resource-* key=value declarations together; none retains UNEXECUTED resource_budget_unaccepted; unknown, missing, duplicate, malformed or mismatched explicit selection is INFRA exit2 before consumer launch; no numeric overrides"
+declaration_options = ["--foreign-resource-profile", "--foreign-resource-hardware", "--foreign-resource-os-version", "--foreign-resource-topology", "--foreign-resource-source-commit", "--foreign-resource-source-tree", "--foreign-resource-runner-sha256", "--foreign-resource-context-sha256"]
+declaration_validation = "exact compiled profile document SHA256, target and release-build gate; exact declared hardware/OS/topology strings; source commit/tree 40hex and runner/context 64hex"
+external_campaign = "context SHA256 names a separately frozen reviewed record, not an approval switch; real pre/post host, topology, source/header/build/dependency provenance and final-source applicability remain external requirements, not authenticated by strings or digest"
+final_enforcement = "not run; changed evaluator/controller/profile source and approved-host campaign require separate review and advance pinning; final observations never choose or widen limits"
+native_support = "not implied; no retrospective F9 PASS, no-growth, plateau, harmless-cache, leak-free, peak, GPU-byte, exact-live-object or ADR0068 replay-budget promotion"
+
+[derivation]
+record = "rasen/changes/pull-based-c-and-cpp-template-watch-query/evidence/scene-successor-native-resource-derivation-001.json"
+record_sha256 = "e378e63651294b344326edd6c0a5bce76350eb7086ed22b6c9251dc8a4dd6184"
+precursor_process_count = 8
+dataset = "both C/C++ cohorts, each outer warmup and three measured consumers; all five samples per process retained; no exclusion"
+factor_numerator = 5
+factor_denominator = 4
+byte_quantum = 4096
+count_quantum = 1
+absolute_lifecycle = "ceil_to_unit(5*max(all baseline and lifecycle observations)/4)"
+delta_lifecycle = "ceil_to_unit(5*max(0, each lifecycle minus its own baseline)/4)"
+absolute_final = "ceil_to_unit(5*max(all final observations)/4)"
+delta_final = "ceil_to_unit(5*max(0, each final minus its own baseline)/4)"
+zero = "observed zero remains zero; missing, duplicate, reordered or malformed evidence is a failure, never zero or an unaccepted-only result"
+
+[provenance]
+precursor_source_commit = "e1778e89dcb921859f9adab31651be2e6ef4c0d8"
+precursor_source_tree = "7cd07947a3a2951f9951e293402e33e4ae7f95d6"
+precursor_c_header_sha256 = "2ac941efe83c544981c45f7247a564af63812486bc7bd73a72b48e166e971437"
+precursor_cpp_header_sha256 = "4e97030e6ea4bc484410dbac887c007ea3d66da8ab10db802909129e6ea1115f"
+precursor_runner_sha256 = "977248ba9c15ee4941fdca1062cd2e71fdd3483d52ac50376683bb738c190cb9"
+precursor_effective_f9 = "UNEXECUTED resource_budget_unaccepted; immutable; old runner does not implement this evaluator"
+archive = "rasen/changes/pull-based-c-and-cpp-template-watch-query/evidence/scene-successor-windows-001.zip"
+archive_sha256 = "fe84b9efe0130d3addb8dc46bbe4ccc5a3287b223c81335d1e52da3b36c27dee"
+input_inventory_member = "preflight.json"
+input_inventory_sha256 = "80d2430b70a43700cc921d2a741c4c430d26f64b505b871f35587571779b6f0b"
+postflight_member = "postflight.json"
+postflight_sha256 = "2035206214da956c99951352ffe21e0e6541948ca7e9060795c5bbf0d0d3e505"
+build_record_members = ["build-commands.json", "host.json", "rustc.stdout.log", "launch-pins.json"]
+cycle_report_members = ["native-c/warmup/report.json", "native-c/measurement-001/report.json", "native-c/measurement-002/report.json", "native-c/measurement-003/report.json", "native-cpp/warmup/report.json", "native-cpp/measurement-001/report.json", "native-cpp/measurement-002/report.json", "native-cpp/measurement-003/report.json"]
+source_applicability = "precursor source and toolchain facts are historical; future evaluator source commit/tree, actual runner digest and reviewed external context are independently supplied and frozen, not substituted for precursor identities"
+
+[policy_transfer]
+status = "accepted-prospective-fixed-policy-transfer"
+independent_review = "rasen/changes/pull-based-c-and-cpp-template-watch-query/evidence/native-resource-evaluator-windows-policy-transfer-001.json"
+independent_review_sha256 = "4100a1268530f3845985d1380eefc748cceaf8d512337b40150b5d7ccea1fd42"
+later_host_supplement = "rasen/changes/pull-based-c-and-cpp-template-watch-query/evidence/scene-successor-windows-host-supplement-001.zip"
+later_host_supplement_sha256 = "3cd802aadec911c6161d14834dd7d1ac41bc3a31d9d8789cfbac25ff5e1e4812"
+precursor_time_host_continuity = "UNESTABLISHED; later metadata and historical corroboration are not contemporaneous hardware/driver/OS/topology proof"
+adoption = "unchanged 12 limits adopted prospectively for the later-described host; no additional precursor prerequisite for this policy decision; no claim that 5/4 headroom was measured on this exact host"
+expected_cpu = "12th Gen Intel(R) Core(TM) i7-12700KF; 12 cores; 20 logical processors"
+expected_gpu = "NVIDIA GeForce RTX 4080; driver 32.0.15.9186"
+expected_os = "Microsoft Windows 11 Pro 25H2; 10.0.26200.9278"
+primary_physical_mode = "3840x2160; position(0,0);144Hz;150%;orientation0"
+left_physical_mode = "3840x2160; position(-3840,0);120Hz;125%;orientation0"
+primary_virtualized_monitor_bounds = [0, 0, 2560, 1440]
+left_virtualized_monitor_bounds = [-3072, 0, 0, 1728]
+dpi_limitation = "nominal144/120 is 96*scale, not measured GetDpiForMonitor DPI; observed96/96 came from a DPI-unaware query and is not physical DPI; physical modes come from EnumDisplaySettings"
+campaign_condition = "complete physical-mode conditions remain external pre/post campaign evidence; the shorter exact CLI topology label and observed frame scales do not authenticate them or substitute frame extents for monitor resolution"
+
+[[measurement]]
+workload = "private_commit_bytes"
+resource_index = 0
+unit = "bytes"
+measurement_api = "PROCESS_MEMORY_COUNTERS_EX.PrivateUsage"
+measurement_role = "worst historical precursor observation for this metric/boundary; not final results or host-continuity proof"
+observed_absolute_lifecycle = 28426240
+observed_delta_lifecycle = 6967296
+observed_absolute_final = 43823104
+observed_delta_final = 21561344
+
+[[measurement.budget]]
+measure = "absolute_lifecycle"
+kind = "absolute"
+status = "accepted"
+unit = "bytes"
+direction = "at_most"
+limit = 35532800
+rationale = "ADR 0069: derivation.absolute_lifecycle; signed own-baseline comparison for delta limits"
+
+[[measurement.budget]]
+measure = "delta_lifecycle"
+kind = "absolute"
+status = "accepted"
+unit = "bytes"
+direction = "at_most"
+limit = 8712192
+rationale = "ADR 0069: derivation.delta_lifecycle; signed own-baseline comparison for delta limits"
+
+[[measurement.budget]]
+measure = "absolute_final"
+kind = "absolute"
+status = "accepted"
+unit = "bytes"
+direction = "at_most"
+limit = 54779904
+rationale = "ADR 0069: derivation.absolute_final; signed own-baseline comparison for delta limits"
+
+[[measurement.budget]]
+measure = "delta_final"
+kind = "absolute"
+status = "accepted"
+unit = "bytes"
+direction = "at_most"
+limit = 26951680
+rationale = "ADR 0069: derivation.delta_final; signed own-baseline comparison for delta limits"
+
+[[measurement]]
+workload = "working_set_bytes"
+resource_index = 1
+unit = "bytes"
+measurement_api = "PROCESS_MEMORY_COUNTERS_EX.WorkingSetSize"
+measurement_role = "worst historical precursor observation for this metric/boundary; not final results or host-continuity proof"
+observed_absolute_lifecycle = 39555072
+observed_delta_lifecycle = 3608576
+observed_absolute_final = 44408832
+observed_delta_final = 8273920
+
+[[measurement.budget]]
+measure = "absolute_lifecycle"
+kind = "absolute"
+status = "accepted"
+unit = "bytes"
+direction = "at_most"
+limit = 49446912
+rationale = "ADR 0069: derivation.absolute_lifecycle; signed own-baseline comparison for delta limits"
+
+[[measurement.budget]]
+measure = "delta_lifecycle"
+kind = "absolute"
+status = "accepted"
+unit = "bytes"
+direction = "at_most"
+limit = 4513792
+rationale = "ADR 0069: derivation.delta_lifecycle; signed own-baseline comparison for delta limits"
+
+[[measurement.budget]]
+measure = "absolute_final"
+kind = "absolute"
+status = "accepted"
+unit = "bytes"
+direction = "at_most"
+limit = 55513088
+rationale = "ADR 0069: derivation.absolute_final; signed own-baseline comparison for delta limits"
+
+[[measurement.budget]]
+measure = "delta_final"
+kind = "absolute"
+status = "accepted"
+unit = "bytes"
+direction = "at_most"
+limit = 10342400
+rationale = "ADR 0069: derivation.delta_final; signed own-baseline comparison for delta limits"
+
+[[measurement]]
+workload = "process_handle_count"
+resource_index = 2
+unit = "count"
+measurement_api = "GetProcessHandleCount"
+measurement_role = "worst historical precursor observation for this metric/boundary; not final results or host-continuity proof"
+observed_absolute_lifecycle = 427
+observed_delta_lifecycle = 42
+observed_absolute_final = 431
+observed_delta_final = 46
+
+[[measurement.budget]]
+measure = "absolute_lifecycle"
+kind = "absolute"
+status = "accepted"
+unit = "count"
+direction = "at_most"
+limit = 534
+rationale = "ADR 0069: derivation.absolute_lifecycle; signed own-baseline comparison for delta limits"
+
+[[measurement.budget]]
+measure = "delta_lifecycle"
+kind = "absolute"
+status = "accepted"
+unit = "count"
+direction = "at_most"
+limit = 53
+rationale = "ADR 0069: derivation.delta_lifecycle; signed own-baseline comparison for delta limits"
+
+[[measurement.budget]]
+measure = "absolute_final"
+kind = "absolute"
+status = "accepted"
+unit = "count"
+direction = "at_most"
+limit = 539
+rationale = "ADR 0069: derivation.absolute_final; signed own-baseline comparison for delta limits"
+
+[[measurement.budget]]
+measure = "delta_final"
+kind = "absolute"
+status = "accepted"
+unit = "count"
+direction = "at_most"
+limit = 58
+rationale = "ADR 0069: derivation.delta_final; signed own-baseline comparison for delta limits"

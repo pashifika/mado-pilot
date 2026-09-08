@@ -86,6 +86,49 @@ add_executable(
 )
 target_link_libraries(consumer-ocr-profile-cpp PRIVATE MadoPilot::Cpp)
 
+add_executable(
+  consumer-template-watch-c
+  "${MADOPILOT_SOURCE_DIR}/examples/c/template-watch.c"
+)
+target_include_directories(consumer-template-watch-c PRIVATE "${MADOPILOT_SOURCE_DIR}/examples")
+target_link_libraries(consumer-template-watch-c PRIVATE MadoPilot::C)
+set_target_properties(consumer-template-watch-c PROPERTIES C_STANDARD 11 C_STANDARD_REQUIRED ON)
+
+add_executable(
+  consumer-template-watch-cpp
+  "${MADOPILOT_SOURCE_DIR}/examples/cpp/template-watch.cpp"
+)
+target_include_directories(consumer-template-watch-cpp PRIVATE "${MADOPILOT_SOURCE_DIR}/examples")
+target_link_libraries(consumer-template-watch-cpp PRIVATE MadoPilot::Cpp)
+
+# Only admission probes run unattended; capture requires the owned-fixture runner.
+add_executable(
+  consumer-native-template-watch-c
+  "${MADOPILOT_SOURCE_DIR}/examples/c/native-template-watch.c"
+)
+target_link_libraries(consumer-native-template-watch-c PRIVATE MadoPilot::C)
+set_target_properties(
+  consumer-native-template-watch-c PROPERTIES C_STANDARD 11 C_STANDARD_REQUIRED ON
+)
+add_executable(
+  consumer-native-template-watch-cpp
+  "${MADOPILOT_SOURCE_DIR}/examples/cpp/native-template-watch.cpp"
+)
+target_link_libraries(consumer-native-template-watch-cpp PRIVATE MadoPilot::Cpp)
+add_executable(
+  consumer-native-template-watch-exit
+  "${MADOPILOT_SOURCE_DIR}/tests/cpp/madopilot-native-watch-exit.cpp"
+)
+target_link_libraries(consumer-native-template-watch-exit PRIVATE MadoPilot::Cpp)
+add_executable(
+  consumer-native-template-watch-readiness
+  "${MADOPILOT_SOURCE_DIR}/tests/c/madopilot-native-watch-readiness.c"
+)
+target_link_libraries(consumer-native-template-watch-readiness PRIVATE MadoPilot::C)
+set_target_properties(
+  consumer-native-template-watch-readiness PROPERTIES C_STANDARD 11 C_STANDARD_REQUIRED ON
+)
+
 enable_testing()
 
 add_test(NAME consumer-c COMMAND consumer-c)
@@ -99,6 +142,23 @@ set_tests_properties(
   consumer-ocr-profile-c consumer-ocr-profile-cpp
   PROPERTIES SKIP_RETURN_CODE 77
 )
+add_test(
+  NAME consumer-template-watch-c
+  COMMAND consumer-template-watch-c --package "${MADOPILOT_SOURCE_DIR}/../../../fixtures/assets/phase1-slice"
+)
+add_test(
+  NAME consumer-template-watch-cpp
+  COMMAND consumer-template-watch-cpp --package "${MADOPILOT_SOURCE_DIR}/../../../fixtures/assets/phase1-slice"
+)
+set_tests_properties(consumer-template-watch-c consumer-template-watch-cpp PROPERTIES TIMEOUT 30)
+add_test(NAME consumer-native-template-watch-c COMMAND consumer-native-template-watch-c --check)
+add_test(NAME consumer-native-template-watch-cpp COMMAND consumer-native-template-watch-cpp --check)
+add_test(NAME consumer-native-template-watch-exit COMMAND consumer-native-template-watch-exit)
+add_test(NAME consumer-native-template-watch-readiness COMMAND consumer-native-template-watch-readiness)
+set_tests_properties(
+  consumer-native-template-watch-c consumer-native-template-watch-cpp
+  consumer-native-template-watch-exit consumer-native-template-watch-readiness PROPERTIES TIMEOUT 15
+)
 
 if(WIN32)
   # Windows has no run path: the loader searches the executable's directory and
@@ -108,6 +168,10 @@ if(WIN32)
   set_tests_properties(
     consumer-c consumer-cpp consumer-native-cpp consumer-ocr-default-cpp
     consumer-ocr-profile-c consumer-ocr-profile-cpp
+    consumer-template-watch-c consumer-template-watch-cpp
+    consumer-native-template-watch-c consumer-native-template-watch-cpp
+    consumer-native-template-watch-exit
+    consumer-native-template-watch-readiness
     PROPERTIES
       ENVIRONMENT_MODIFICATION "PATH=path_list_prepend:${_madopilot_native_artifacts}"
   )

@@ -74,6 +74,12 @@ impl ScriptedMatchCall {
         }
     }
 
+    /// Scripts one scored match relative to the search origin.
+    #[must_use]
+    pub fn matching(left: i32, top: i32, score: f64) -> Self {
+        Self::new(vec![Candidate::new(left, top, score)])
+    }
+
     /// Replaces the scripted backend behavior.
     #[must_use]
     pub const fn with_behavior(mut self, behavior: Behavior) -> Self {
@@ -166,6 +172,12 @@ impl ControlledMatcher {
     pub fn with_candidates(self, candidates: Vec<Candidate>) -> Self {
         self.script().candidates = candidates;
         self
+    }
+
+    /// Scripts one scored match relative to the search origin.
+    #[must_use]
+    pub fn with_match(self, left: i32, top: i32, score: f64) -> Self {
+        self.with_candidates(vec![Candidate::new(left, top, score)])
     }
 
     /// Scripts successive searches before falling back to the default response.

@@ -7,6 +7,8 @@ include!("native_template_watch_windows.rs");
 
 #[path = "native_template_watch_contract.rs"]
 mod native_contract;
+#[path = "native_foreign_watch.rs"]
+mod native_foreign;
 #[cfg(target_os = "macos")]
 #[path = "native_template_watch_root_cause.rs"]
 mod root_cause;
@@ -66,18 +68,26 @@ struct ControlAcknowledgement {
     visual_token: Option<VisualToken>,
 }
 
+// These observations are Apple-only; Windows can report only None.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum NativeProcessLifetimeFact {
+    #[cfg(target_os = "macos")]
     NotObserved,
+    #[cfg(target_os = "macos")]
     Unknown,
+    #[cfg(target_os = "macos")]
     Live,
+    #[cfg(target_os = "macos")]
     Lost,
+    #[cfg(target_os = "macos")]
     ObservationFailed,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum NativeCleanupDebtFact {
+    #[cfg(target_os = "macos")]
     None,
+    #[cfg(target_os = "macos")]
     Deferred,
 }
 
@@ -1108,7 +1118,7 @@ fn synchronize_session_to_token(
 
 impl NativeRun {
     fn start(arguments: &Arguments) -> Result<Self, String> {
-        let mut fixture = NativeFixture::start(arguments)?;
+        let mut fixture = NativeFixture::start(arguments, None)?;
         let engine = native_engine().map_err(|_| "capability_unavailable:capture".to_owned())?;
         let target = fixture.authenticated_target(&engine)?;
         let session = engine
@@ -1380,6 +1390,9 @@ impl Cohort {
 }
 
 pub(super) fn run() {
+    if native_foreign::dispatch() {
+        return;
+    }
     if Arguments::contract_requested() {
         native_contract::run();
         return;

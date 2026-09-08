@@ -23,6 +23,28 @@ itself.
 | [`v1_2`](v1_2/) | [ADR 0023](../../../../../docs/adr/0023-input-submission-observation-and-abi-1-2.md) | [`v1_2/madopilot/madopilot.h`](v1_2/madopilot/madopilot.h) | [`v1_2/old-prefix.c`](v1_2/old-prefix.c) |
 | [`v1_3`](v1_3/) | [ADR 0043](../../../../../docs/adr/0043-ocr-profile-and-zone-public-surfaces.md) | [`v1_3/madopilot/madopilot.h`](v1_3/madopilot/madopilot.h) | [`v1_3/old-prefix.c`](v1_3/old-prefix.c) |
 | [`v1_4`](v1_4/) | [ADR 0043](../../../../../docs/adr/0043-ocr-profile-and-zone-public-surfaces.md) | [`v1_4/madopilot/madopilot.h`](v1_4/madopilot/madopilot.h) | [`v1_4/old-prefix.c`](v1_4/old-prefix.c) |
+| [`v1_5`](v1_5/) | [ADR 0046](../../../../../docs/adr/0046-onnx-accelerator-provider-policy.md) | [`v1_5/madopilot/madopilot.h`](v1_5/madopilot/madopilot.h) | [`v1_5/old-prefix.c`](v1_5/old-prefix.c) |
+
+## ABI 1.5 snapshot provenance
+
+`v1_5/madopilot/madopilot.h` preserves the exact bytes of
+`crates/bindings/capi/include/madopilot/madopilot.h` at the pre-change
+`origin/dev/0.5.0` baseline:
+
+- Source commit: `9ad16ae1cfea97421734f63ffd9754a0f7027052`.
+- Source tree: `f354b2856b0cc02189eda2df4d0019a411d124f5`, identical to inspected
+  commit `483a61298060140365df8341a5ff95758e109226`.
+- Header size: `89960` bytes.
+- Header SHA-256: `1e7186531f3a9e67a2702c7b71684883fb2e1f8efbee7974068aef693e96632a`.
+
+The standalone caller uses the `v1_4` deterministic matching oracle and exercises
+all 90 ABI 1.5 entries, including retained children after parent teardown.
+Provider construction checks required records, the complete provider prefix,
+closed policy selection, incompatible dependency roots, and cancellation before
+prerequisite loading. Descriptor refusals reset provider facts and borrowed views
+without writing past the frozen output extent. No external OCR models or OCR
+runtime are needed; this fixture does not claim successful provider construction
+or accelerator qualification. Earlier frozen headers and callers are unchanged.
 
 ## How a fixture is compiled
 

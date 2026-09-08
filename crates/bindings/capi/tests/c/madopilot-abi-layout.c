@@ -95,6 +95,40 @@ MADOPILOT_FIELD_HAS_TYPE(madopilot_ocr_provider_descriptor_t, active_provider, i
 MADOPILOT_FIELD_HAS_TYPE(madopilot_ocr_provider_descriptor_t, initialization_fell_back, uint32_t*);
 MADOPILOT_FIELD_HAS_TYPE(madopilot_ocr_provider_descriptor_t, fallback_reason, int32_t*);
 #endif
+#if MADOPILOT_ABI_MINOR >= 6
+MADOPILOT_FIELD_HAS_TYPE(madopilot_template_scheduler_descriptor_t,
+                         max_engine_queries, uint32_t*);
+MADOPILOT_FIELD_HAS_TYPE(madopilot_template_scheduler_descriptor_t,
+                         mapped_cache_bytes, uint64_t*);
+MADOPILOT_FIELD_HAS_TYPE(madopilot_template_scheduler_descriptor_t,
+                         eligible_queue_expiry_nanos, uint64_t*);
+MADOPILOT_FIELD_HAS_TYPE(madopilot_template_watch_options_t, match_options,
+                         const madopilot_match_options_t**);
+MADOPILOT_FIELD_HAS_TYPE(madopilot_template_watch_options_t, minimum_interval_nanos,
+                         uint64_t*);
+MADOPILOT_FIELD_HAS_TYPE(madopilot_template_watch_options_t, stability_kind, int32_t*);
+MADOPILOT_FIELD_HAS_TYPE(madopilot_template_watch_options_t, stability_observations,
+                         uint32_t*);
+MADOPILOT_FIELD_HAS_TYPE(madopilot_template_watch_options_t, stability_duration_nanos,
+                         uint64_t*);
+MADOPILOT_FIELD_HAS_TYPE(madopilot_template_watch_options_t, change_policy, int32_t*);
+MADOPILOT_FIELD_HAS_TYPE(madopilot_template_query_snapshot_t, state, int32_t*);
+MADOPILOT_FIELD_HAS_TYPE(madopilot_template_query_snapshot_t, query_id, uint64_t*);
+MADOPILOT_FIELD_HAS_TYPE(madopilot_template_query_snapshot_t, generation, uint64_t*);
+MADOPILOT_FIELD_HAS_TYPE(madopilot_template_query_snapshot_t, pending_count, uint32_t*);
+MADOPILOT_FIELD_HAS_TYPE(madopilot_template_query_snapshot_t, in_flight_count, uint32_t*);
+MADOPILOT_FIELD_HAS_TYPE(madopilot_template_query_snapshot_t, admitted, uint64_t*);
+MADOPILOT_FIELD_HAS_TYPE(madopilot_transform_snapshot_t, geometry, uint64_t*);
+MADOPILOT_FIELD_HAS_TYPE(madopilot_transform_snapshot_t, desktop_scale_x, double*);
+MADOPILOT_FIELD_HAS_TYPE(madopilot_template_query_result_info_t, outcome, int32_t*);
+MADOPILOT_FIELD_HAS_TYPE(madopilot_template_query_result_info_t, status, int32_t*);
+MADOPILOT_FIELD_HAS_TYPE(madopilot_template_query_result_info_t, overload, int32_t*);
+MADOPILOT_FIELD_HAS_TYPE(madopilot_template_query_result_info_t, match_count, uint64_t*);
+MADOPILOT_FIELD_HAS_TYPE(madopilot_template_query_result_info_t, confirmed_observations,
+                         uint32_t*);
+MADOPILOT_FIELD_HAS_TYPE(madopilot_template_query_result_info_t, confirmed_duration_nanos,
+                         uint64_t*);
+#endif
 #undef MADOPILOT_FIELD_HAS_TYPE
 #endif
 
@@ -127,6 +161,32 @@ FIRST_FIELD_IS_STRUCT_SIZE(madopilot_ocr_zone_result_t);
 #if MADOPILOT_ABI_MINOR >= 5
 FIRST_FIELD_IS_STRUCT_SIZE(madopilot_ocr_provider_options_t);
 FIRST_FIELD_IS_STRUCT_SIZE(madopilot_ocr_provider_descriptor_t);
+#endif
+#if MADOPILOT_ABI_MINOR >= 6
+FIRST_FIELD_IS_STRUCT_SIZE(madopilot_template_scheduler_descriptor_t);
+FIRST_FIELD_IS_STRUCT_SIZE(madopilot_template_watch_options_t);
+FIRST_FIELD_IS_STRUCT_SIZE(madopilot_template_query_snapshot_t);
+FIRST_FIELD_IS_STRUCT_SIZE(madopilot_transform_snapshot_t);
+FIRST_FIELD_IS_STRUCT_SIZE(madopilot_template_query_result_info_t);
+_Static_assert(MADOPILOT_TEMPLATE_SCHEDULER_DESCRIPTOR_SIZE_V1_6 ==
+                   sizeof(madopilot_template_scheduler_descriptor_t),
+               "ABI 1.6 requires the whole initial scheduler descriptor");
+_Static_assert(MADOPILOT_TEMPLATE_WATCH_OPTIONS_SIZE_V1_6 ==
+                   sizeof(madopilot_template_watch_options_t),
+               "ABI 1.6 requires the whole initial watch options");
+_Static_assert(MADOPILOT_TEMPLATE_QUERY_SNAPSHOT_SIZE_V1_6 ==
+                   sizeof(madopilot_template_query_snapshot_t),
+               "ABI 1.6 requires the whole initial query snapshot");
+_Static_assert(MADOPILOT_TRANSFORM_SNAPSHOT_SIZE_V1_6 ==
+                   sizeof(madopilot_transform_snapshot_t),
+               "ABI 1.6 requires the whole initial transform snapshot");
+_Static_assert(MADOPILOT_TEMPLATE_QUERY_RESULT_INFO_SIZE_V1_6 ==
+                   sizeof(madopilot_template_query_result_info_t),
+               "ABI 1.6 requires the whole initial terminal info");
+_Static_assert(MADOPILOT_API_SIZE_ENGINE_OCR_PROVIDER_DESCRIPTOR == 736,
+               "the released provider descriptor extent remains 736 bytes");
+_Static_assert(MADOPILOT_API_SIZE_ABI_1_5 == 736,
+               "the released ABI 1.5 extent remains 736 bytes");
 #endif
 FIRST_FIELD_IS_STRUCT_SIZE(madopilot_package_info_t);
 FIRST_FIELD_IS_STRUCT_SIZE(madopilot_template_info_t);
@@ -668,6 +728,87 @@ int main(void)
     FIELD(madopilot_package_source_t, path);
     FIELD(madopilot_package_source_t, archive);
 
+#if MADOPILOT_ABI_MINOR >= 6
+    TYPE(madopilot_template_scheduler_descriptor_t);
+    FIELD(madopilot_template_scheduler_descriptor_t, struct_size);
+    FIELD(madopilot_template_scheduler_descriptor_t, flags);
+    FIELD(madopilot_template_scheduler_descriptor_t, max_engine_queries);
+    FIELD(madopilot_template_scheduler_descriptor_t, max_active_sessions);
+    FIELD(madopilot_template_scheduler_descriptor_t, max_session_queries);
+    FIELD(madopilot_template_scheduler_descriptor_t, max_in_flight_analyses);
+    FIELD(madopilot_template_scheduler_descriptor_t, latest_pending_frames_per_query);
+    FIELD(madopilot_template_scheduler_descriptor_t, max_mapped_cache_entries);
+    FIELD(madopilot_template_scheduler_descriptor_t, mapped_cache_bytes);
+    FIELD(madopilot_template_scheduler_descriptor_t, eligible_queue_expiry_nanos);
+
+    TYPE(madopilot_template_watch_options_t);
+    FIELD(madopilot_template_watch_options_t, struct_size);
+    FIELD(madopilot_template_watch_options_t, flags);
+    FIELD(madopilot_template_watch_options_t, match_options);
+    FIELD(madopilot_template_watch_options_t, region);
+    FIELD(madopilot_template_watch_options_t, clip_policy);
+    FIELD(madopilot_template_watch_options_t, minimum_interval_nanos);
+    FIELD(madopilot_template_watch_options_t, stability_kind);
+    FIELD(madopilot_template_watch_options_t, stability_observations);
+    FIELD(madopilot_template_watch_options_t, stability_duration_nanos);
+    FIELD(madopilot_template_watch_options_t, change_policy);
+    FIELD(madopilot_template_watch_options_t, reserved);
+
+    TYPE(madopilot_template_query_snapshot_t);
+    FIELD(madopilot_template_query_snapshot_t, struct_size);
+    FIELD(madopilot_template_query_snapshot_t, state);
+    FIELD(madopilot_template_query_snapshot_t, flags);
+    FIELD(madopilot_template_query_snapshot_t, confirmed_observations);
+    FIELD(madopilot_template_query_snapshot_t, query_id);
+    FIELD(madopilot_template_query_snapshot_t, generation);
+    FIELD(madopilot_template_query_snapshot_t, confirmed_duration_nanos);
+    FIELD(madopilot_template_query_snapshot_t, pending_count);
+    FIELD(madopilot_template_query_snapshot_t, in_flight_count);
+    FIELD(madopilot_template_query_snapshot_t, last_frame);
+    FIELD(madopilot_template_query_snapshot_t, admitted);
+    FIELD(madopilot_template_query_snapshot_t, skipped_change);
+    FIELD(madopilot_template_query_snapshot_t, deferred_rate);
+    FIELD(madopilot_template_query_snapshot_t, coalesced);
+    FIELD(madopilot_template_query_snapshot_t, superseded);
+    FIELD(madopilot_template_query_snapshot_t, rejected);
+    FIELD(madopilot_template_query_snapshot_t, queue_expired);
+    FIELD(madopilot_template_query_snapshot_t, completed);
+    FIELD(madopilot_template_query_snapshot_t, failed);
+
+    TYPE(madopilot_transform_snapshot_t);
+    FIELD(madopilot_transform_snapshot_t, struct_size);
+    FIELD(madopilot_transform_snapshot_t, flags);
+    FIELD(madopilot_transform_snapshot_t, geometry);
+    FIELD(madopilot_transform_snapshot_t, width);
+    FIELD(madopilot_transform_snapshot_t, height);
+    FIELD(madopilot_transform_snapshot_t, desktop_origin_x);
+    FIELD(madopilot_transform_snapshot_t, desktop_origin_y);
+    FIELD(madopilot_transform_snapshot_t, logical_width);
+    FIELD(madopilot_transform_snapshot_t, logical_height);
+    FIELD(madopilot_transform_snapshot_t, target_scale_x);
+    FIELD(madopilot_transform_snapshot_t, target_scale_y);
+    FIELD(madopilot_transform_snapshot_t, desktop_scale_x);
+    FIELD(madopilot_transform_snapshot_t, desktop_scale_y);
+
+    TYPE(madopilot_template_query_result_info_t);
+    FIELD(madopilot_template_query_result_info_t, struct_size);
+    FIELD(madopilot_template_query_result_info_t, outcome);
+    FIELD(madopilot_template_query_result_info_t, status);
+    FIELD(madopilot_template_query_result_info_t, overload);
+    FIELD(madopilot_template_query_result_info_t, query_id);
+    FIELD(madopilot_template_query_result_info_t, target);
+    FIELD(madopilot_template_query_result_info_t, source);
+    FIELD(madopilot_template_query_result_info_t, match_count);
+    FIELD(madopilot_template_query_result_info_t, template_id);
+    FIELD(madopilot_template_query_result_info_t, backend_id);
+    FIELD(madopilot_template_query_result_info_t, backend_version);
+    FIELD(madopilot_template_query_result_info_t, options);
+    FIELD(madopilot_template_query_result_info_t, effective_region);
+    FIELD(madopilot_template_query_result_info_t, confirmed_observations);
+    FIELD(madopilot_template_query_result_info_t, confirmed_duration_nanos);
+    FIELD(madopilot_template_query_result_info_t, transform);
+#endif
+
     TYPE(madopilot_api_t);
     FIELD(madopilot_api_t, struct_size);
     FIELD(madopilot_api_t, abi_major);
@@ -771,6 +912,21 @@ int main(void)
     FIELD(madopilot_api_t, engine_create_with_ocr_provider);
     FIELD(madopilot_api_t, engine_ocr_provider_descriptor);
 #endif
+#if MADOPILOT_ABI_MINOR >= 6
+    FIELD(madopilot_api_t, engine_template_scheduler_descriptor);
+    FIELD(madopilot_api_t, session_start_template_watch);
+    FIELD(madopilot_api_t, template_query_retain);
+    FIELD(madopilot_api_t, template_query_release);
+    FIELD(madopilot_api_t, template_query_poll);
+    FIELD(madopilot_api_t, template_query_wait);
+    FIELD(madopilot_api_t, template_query_cancel);
+    FIELD(madopilot_api_t, template_query_result_retain);
+    FIELD(madopilot_api_t, template_query_result_release);
+    FIELD(madopilot_api_t, template_query_result_info);
+    FIELD(madopilot_api_t, template_query_result_match_at);
+    FIELD(madopilot_api_t, template_query_result_frame);
+    FIELD(madopilot_api_t, template_query_result_error);
+#endif
 
     HANDLE(madopilot_cancellation_t);
     HANDLE(madopilot_error_t);
@@ -792,6 +948,10 @@ int main(void)
     HANDLE(madopilot_input_receipt_t);
     HANDLE(madopilot_diagnostic_reader_t);
     HANDLE(madopilot_diagnostic_batch_t);
+#endif
+#if MADOPILOT_ABI_MINOR >= 6
+    HANDLE(madopilot_template_query_t);
+    HANDLE(madopilot_template_query_result_t);
 #endif
 
     return 0;

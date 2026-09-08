@@ -1,5 +1,5 @@
 /*
- * MadoPilot C++ wrapper - ABI 1.4.
+ * MadoPilot C++ wrapper - ABI 1.6.
  *
  * A header-only RAII adapter over the released C ABI. It owns handles, turns
  * statuses into an exception-free `Result`, and marks every view by its
@@ -10,8 +10,8 @@
  * ============================================================================
  * This header declares no ABI of its own.
  *
- * The only ABI is the C one: ABI 1.0, 1.2, and 1.3 are frozen complete
- * prefixes; ABI 1.4 appends explicit profile construction and grouped OCR.
+ * The only ABI is the C one. Released prefixes remain frozen; ABI 1.6 appends
+ * pull-based template queries and independently retained terminal results.
  * Nothing below restates a numeric value from that contract: enumerated types
  * alias the C types, so a caller gets whatever the header it compiled against
  * declares. A hand-written mirror fails silently when
@@ -100,6 +100,11 @@ using DiagnosticKind = ::madopilot_diagnostic_kind_t;
 using DiagnosticOperationKind = ::madopilot_diagnostic_operation_kind_t;
 using SearchDiagnosticOutcome = ::madopilot_search_diagnostic_outcome_t;
 using Lifecycle = ::madopilot_lifecycle_t;
+using TemplateStabilityKind = ::madopilot_template_stability_kind_t;
+using TemplateChangePolicy = ::madopilot_template_change_policy_t;
+using TemplateQueryState = ::madopilot_template_query_state_t;
+using TemplateQueryOutcome = ::madopilot_template_query_outcome_t;
+using TemplateOverload = ::madopilot_template_overload_t;
 
 /* Structures with no borrowed view are passed through as themselves, for the
  * same reason: their fields are the contract's, and a projection would be a
@@ -111,6 +116,9 @@ using OcrRequestedRegion = ::madopilot_ocr_requested_region_t;
 using SessionInfo = ::madopilot_session_info_t;
 using EffectiveMatchOptions = ::madopilot_match_options_t;
 using OcrPoint = ::madopilot_ocr_point_t;
+using TemplateSchedulerDescriptor = ::madopilot_template_scheduler_descriptor_t;
+using TemplateQuerySnapshot = ::madopilot_template_query_snapshot_t;
+using TransformSnapshot = ::madopilot_transform_snapshot_t;
 
 /// True when a status is the success value.
 inline bool is_ok(Status status) noexcept { return status == MADOPILOT_STATUS_OK; }
@@ -229,6 +237,38 @@ inline bool has_entry(const ::madopilot_api_t* api, std::size_t negotiated_exten
                       std::size_t required) noexcept {
     return api != nullptr && negotiated_extent >= required &&
            static_cast<std::size_t>(api->struct_size) >= required;
+}
+
+/// Complete owner surfaces, including every transitively returned owner.
+/// The extent check must precede all pointer reads, including null checks.
+inline bool has_template_query_result(const ::madopilot_api_t* api,
+                                      std::size_t extent) noexcept {
+    return has_entry(api, extent,
+                     MADOPILOT_API_SIZE_TEMPLATE_QUERY_RESULT_REQUIRED) &&
+           api->template_query_result_retain != nullptr &&
+           api->template_query_result_release != nullptr &&
+           api->template_query_result_info != nullptr &&
+           api->template_query_result_match_at != nullptr &&
+           api->template_query_result_frame != nullptr &&
+           api->template_query_result_error != nullptr &&
+           api->frame_retain != nullptr && api->frame_release != nullptr &&
+           api->frame_stamp != nullptr && api->frame_describe != nullptr &&
+           api->frame_map != nullptr && api->mapping_retain != nullptr &&
+           api->mapping_release != nullptr && api->mapping_describe != nullptr &&
+           api->mapping_stamp != nullptr && api->error_retain != nullptr &&
+           api->error_release != nullptr && api->error_describe != nullptr;
+}
+
+inline bool has_template_query(const ::madopilot_api_t* api,
+                               std::size_t extent) noexcept {
+    return has_entry(api, extent, MADOPILOT_API_SIZE_TEMPLATE_QUERY_REQUIRED) &&
+           api->session_start_template_watch != nullptr &&
+           api->template_query_retain != nullptr &&
+           api->template_query_release != nullptr &&
+           api->template_query_poll != nullptr &&
+           api->template_query_wait != nullptr &&
+           api->template_query_cancel != nullptr &&
+           has_template_query_result(api, extent);
 }
 
 /// Releases one owned C error handle when the scope ends, however it ends.
@@ -1331,6 +1371,149 @@ private:
     Suppression suppression_ = MADOPILOT_SUPPRESSION_DROP_OVERLAPPING;
 };
 
+/// Template-watch selection. Defaults are immediate, unrestricted and
+/// analysis-always; omitted match options use the prepared template's defaults.
+/// Every start builds its own allocation-free C projection.
+class TemplateWatchOptions {
+public:
+    class CView;
+
+    TemplateWatchOptions() noexcept {
+        value_.region.space = MADOPILOT_SPACE_CAPTURE_PIXELS;
+        value_.clip_policy = MADOPILOT_CLIP_POLICY_REJECT;
+        value_.stability_kind = MADOPILOT_TEMPLATE_STABILITY_IMMEDIATE;
+        value_.change_policy = MADOPILOT_TEMPLATE_CHANGE_ANALYSIS_ALWAYS;
+    }
+
+    TemplateWatchOptions& match_options(const MatchOptions& options) noexcept {
+        match_options_ = options.to_c();
+        return *this;
+    }
+
+    TemplateWatchOptions& template_defaults() noexcept {
+        match_options_.reset();
+        return *this;
+    }
+
+    TemplateWatchOptions& region(Rect region) noexcept {
+        value_.flags |= MADOPILOT_TEMPLATE_WATCH_HAS_REGION;
+        value_.region = region;
+        return *this;
+    }
+
+    TemplateWatchOptions& full_frame() noexcept {
+        value_.flags &= ~MADOPILOT_TEMPLATE_WATCH_HAS_REGION;
+        return *this;
+    }
+
+    TemplateWatchOptions& clip_policy(ClipPolicy policy) noexcept {
+        value_.clip_policy = policy;
+        return *this;
+    }
+
+    /// Zero means unrestricted analysis; positive values are nanoseconds.
+    TemplateWatchOptions& minimum_interval(std::uint64_t nanos) noexcept {
+        value_.minimum_interval_nanos = nanos;
+        return *this;
+    }
+
+    TemplateWatchOptions& immediate() noexcept {
+        value_.stability_kind = MADOPILOT_TEMPLATE_STABILITY_IMMEDIATE;
+        value_.stability_observations = 0;
+        value_.stability_duration_nanos = 0;
+        return *this;
+    }
+
+    /// A zero count is refused by C, not translated into another rule.
+    TemplateWatchOptions& consecutive(std::uint32_t observations) noexcept {
+        value_.stability_kind = MADOPILOT_TEMPLATE_STABILITY_CONSECUTIVE;
+        value_.stability_observations = observations;
+        value_.stability_duration_nanos = 0;
+        return *this;
+    }
+
+    /// A zero duration is refused by C, not translated into immediate.
+    TemplateWatchOptions& duration(std::uint64_t nanos) noexcept {
+        value_.stability_kind = MADOPILOT_TEMPLATE_STABILITY_DURATION;
+        value_.stability_observations = 0;
+        value_.stability_duration_nanos = nanos;
+        return *this;
+    }
+
+    TemplateWatchOptions& change_policy(TemplateChangePolicy policy) noexcept {
+        value_.change_policy = policy;
+        return *this;
+    }
+
+    CView to_c() const noexcept;
+
+private:
+    std::optional<::madopilot_match_options_t> match_options_;
+    ::madopilot_template_watch_options_t value_ =
+        detail::sized<::madopilot_template_watch_options_t>();
+};
+
+/// Owns its match-options backing, including after copy/move and assignment.
+/// Moved-from projections remain usable and point only into their own storage.
+class TemplateWatchOptions::CView {
+public:
+    explicit CView(const TemplateWatchOptions& options) noexcept
+        : match_options_(options.match_options_), value_(options.value_) {
+        rebind();
+    }
+
+    CView(const CView& other) noexcept
+        : match_options_(other.match_options_), value_(other.value_) {
+        rebind();
+    }
+
+    CView& operator=(const CView& other) noexcept {
+        if (this != &other) {
+            match_options_ = other.match_options_;
+            value_ = other.value_;
+            rebind();
+        }
+        return *this;
+    }
+
+    CView(CView&& other) noexcept
+        : match_options_(std::move(other.match_options_)), value_(other.value_) {
+        rebind();
+        other.rebind();
+    }
+
+    CView& operator=(CView&& other) noexcept {
+        if (this != &other) {
+            match_options_ = std::move(other.match_options_);
+            value_ = other.value_;
+            rebind();
+            other.rebind();
+        }
+        return *this;
+    }
+
+    const ::madopilot_template_watch_options_t& value() const& noexcept {
+        return value_;
+    }
+    const ::madopilot_template_watch_options_t& value() const&& = delete;
+    const ::madopilot_template_watch_options_t* get() const& noexcept {
+        return &value_;
+    }
+    const ::madopilot_template_watch_options_t* get() const&& = delete;
+
+private:
+    void rebind() noexcept {
+        value_.match_options = match_options_ ? &*match_options_ : nullptr;
+    }
+
+    std::optional<::madopilot_match_options_t> match_options_;
+    ::madopilot_template_watch_options_t value_{};
+};
+
+inline TemplateWatchOptions::CView TemplateWatchOptions::to_c() const noexcept {
+    return CView(*this);
+}
+
 /* ---------------------------------------------------------------------------
  * Projections of the C output structures that carry borrowed views
  * ------------------------------------------------------------------------ */
@@ -1721,6 +1904,27 @@ struct ResultInfo {
     Rect searched{MADOPILOT_SPACE_CAPTURE_PIXELS, 0, 0, 0, 0};
 };
 
+/// Terminal status is data, not the status of describe/poll/wait/cancel.
+/// Matched-only fields are inactive for other outcomes. All three strings
+/// borrow from the TemplateQueryResult; source and transform are fixed values.
+struct TemplateQueryResultInfo {
+    TemplateQueryOutcome outcome = MADOPILOT_TEMPLATE_QUERY_OUTCOME_NONE;
+    Status status = MADOPILOT_STATUS_INTERNAL;
+    TemplateOverload overload = MADOPILOT_TEMPLATE_OVERLOAD_NONE;
+    std::uint64_t query_id = 0;
+    std::uint64_t target = 0;
+    FrameStamp source{};
+    std::uint64_t match_count = 0;
+    BorrowedStr template_id;
+    BorrowedStr backend_id;
+    BorrowedStr backend_version;
+    EffectiveMatchOptions options{};
+    Rect effective_region{MADOPILOT_SPACE_CAPTURE_PIXELS, 0, 0, 0, 0};
+    std::uint32_t confirmed_observations = 0;
+    std::uint64_t confirmed_duration_nanos = 0;
+    TransformSnapshot transform{};
+};
+
 /// Fixed OCR result description. Every string borrows from the `OcrResult`.
 struct OcrResultInfo {
     FrameStamp source{};
@@ -1763,7 +1967,7 @@ struct OcrRegion {
     std::array<OcrPoint, 4> points{};
 };
 
-/// One match. `template_id` borrows from the `MatchResult`.
+/// One match. `template_id` borrows from the result owner that returned it.
 struct Match {
     double score = 0.0;
     BorrowedStr template_id;
@@ -2141,6 +2345,7 @@ public:
 
 private:
     friend class Session;
+    friend class TemplateQueryResult;
     friend class detail::Owner<Frame, ::madopilot_frame_t>;
 
     Frame(const ::madopilot_api_t* api, std::size_t extent,
@@ -2644,6 +2849,241 @@ private:
 inline ZoneScanOcrRequest::CView ZoneScanOcrRequest::to_c() const {
     return CView(*this);
 }
+
+/// An immutable terminal outcome, independent of query and parent lifetimes.
+class TemplateQueryResult
+    : public detail::Owner<TemplateQueryResult,
+                           ::madopilot_template_query_result_t> {
+public:
+    TemplateQueryResult() noexcept = default;
+
+    /// String views borrow this retained result, never a temporary owner.
+    Result<TemplateQueryResultInfo> describe() const& {
+        if (api_ == nullptr) {
+            return detail::no_table<TemplateQueryResultInfo>();
+        }
+        if (!detail::has_template_query_result(api_, extent_)) {
+            return detail::unsupported<TemplateQueryResultInfo>();
+        }
+        auto info = detail::sized<::madopilot_template_query_result_info_t>();
+        const Status status = api_->template_query_result_info(handle_, &info);
+        if (!is_ok(status)) {
+            return Result<TemplateQueryResultInfo>::failure(
+                Error::from_status(status));
+        }
+        TemplateQueryResultInfo out;
+        out.outcome = info.outcome;
+        out.status = info.status;
+        out.overload = info.overload;
+        out.query_id = info.query_id;
+        out.target = info.target;
+        out.source = info.source;
+        out.match_count = info.match_count;
+        out.template_id = BorrowedStr(info.template_id);
+        out.backend_id = BorrowedStr(info.backend_id);
+        out.backend_version = BorrowedStr(info.backend_version);
+        out.options = info.options;
+        out.effective_region = info.effective_region;
+        out.confirmed_observations = info.confirmed_observations;
+        out.confirmed_duration_nanos = info.confirmed_duration_nanos;
+        out.transform = info.transform;
+        return Result<TemplateQueryResultInfo>::success(out);
+    }
+    Result<TemplateQueryResultInfo> describe() const&& = delete;
+
+    /// Matched-only; the template-id view borrows this result.
+    Result<Match> match_at(std::size_t index) const& {
+        if (api_ == nullptr) {
+            return detail::no_table<Match>();
+        }
+        if (!detail::has_template_query_result(api_, extent_)) {
+            return detail::unsupported<Match>();
+        }
+        auto match = detail::sized<::madopilot_match_t>();
+        const Status status =
+            api_->template_query_result_match_at(handle_, index, &match);
+        if (!is_ok(status)) {
+            return Result<Match>::failure(Error::from_status(status));
+        }
+        return Result<Match>::success(
+            Match{match.score, BorrowedStr(match.template_id), match.bounds});
+    }
+    Result<Match> match_at(std::size_t index) const&& = delete;
+
+    /// Independently retains the exact matched frame without mapping its pixels.
+    Result<Frame> frame() const {
+        if (api_ == nullptr) {
+            return detail::no_table<Frame>();
+        }
+        if (!detail::has_template_query_result(api_, extent_)) {
+            return detail::unsupported<Frame>();
+        }
+        ::madopilot_frame_t* frame = nullptr;
+        const Status status = api_->template_query_result_frame(handle_, &frame);
+        if (!is_ok(status)) {
+            return Result<Frame>::failure(Error::from_status(status));
+        }
+        if (frame == nullptr) {
+            return Result<Frame>::failure(
+                Error::from_status(MADOPILOT_STATUS_INTERNAL));
+        }
+        return Result<Frame>::success(Frame(api_, extent_, frame));
+    }
+
+    /// Failed detail is an owned C++ value; other outcomes return no error.
+    /// The C error stays guarded through every potentially throwing text copy.
+    Result<std::optional<Error>> error() const {
+        if (api_ == nullptr) {
+            return detail::no_table<std::optional<Error>>();
+        }
+        if (!detail::has_template_query_result(api_, extent_)) {
+            return detail::unsupported<std::optional<Error>>();
+        }
+        ::madopilot_error_t* failure = nullptr;
+        const Status status =
+            api_->template_query_result_error(handle_, &failure);
+        if (!is_ok(status)) {
+            return Result<std::optional<Error>>::failure(Error::from_status(status));
+        }
+        std::optional<Error> out;
+        if (failure != nullptr) {
+            out = detail::take_error(api_, MADOPILOT_STATUS_INTERNAL, failure);
+        }
+        return Result<std::optional<Error>>::success(std::move(out));
+    }
+
+private:
+    friend class TemplateQuery;
+    friend class detail::Owner<TemplateQueryResult,
+                               ::madopilot_template_query_result_t>;
+
+    TemplateQueryResult(const ::madopilot_api_t* api, std::size_t extent,
+                        ::madopilot_template_query_result_t* handle) noexcept
+        : Owner(api, extent, handle) {}
+
+    static Status retain_handle(
+        const ::madopilot_api_t* api,
+        ::madopilot_template_query_result_t* handle) noexcept {
+        return api->template_query_result_retain(handle);
+    }
+
+    static void release_handle(
+        const ::madopilot_api_t* api,
+        ::madopilot_template_query_result_t* handle) noexcept {
+        api->template_query_result_release(handle);
+    }
+};
+
+/// One owning poll observation. Pending facts are values, not borrowed state.
+/// Terminal snapshots have no final counters; the terminal owner is authoritative.
+struct TemplateQueryPoll {
+    TemplateQuerySnapshot snapshot{};
+    std::optional<TemplateQueryResult> terminal;
+
+    bool pending() const noexcept {
+        return snapshot.state == MADOPILOT_TEMPLATE_QUERY_STATE_PENDING;
+    }
+};
+
+/// Shared query authority. Each concurrent caller retains its own clone.
+/// Only explicit cancel or the final query release cancels pending work.
+class TemplateQuery
+    : public detail::Owner<TemplateQuery, ::madopilot_template_query_t> {
+public:
+    TemplateQuery() noexcept = default;
+
+    /// Non-blocking; pending polls allocate no result or pixel storage.
+    Result<TemplateQueryPoll> poll() const {
+        if (api_ == nullptr) {
+            return detail::no_table<TemplateQueryPoll>();
+        }
+        if (!detail::has_template_query(api_, extent_)) {
+            return detail::unsupported<TemplateQueryPoll>();
+        }
+        TemplateQueryPoll out;
+        out.snapshot = detail::sized<TemplateQuerySnapshot>();
+        ::madopilot_template_query_result_t* result = nullptr;
+        ::madopilot_error_t* error = nullptr;
+        const Status status =
+            api_->template_query_poll(handle_, &out.snapshot, &result, &error);
+        if (!is_ok(status)) {
+            return Result<TemplateQueryPoll>::failure(
+                detail::take_error(api_, status, error));
+        }
+        if (result != nullptr) {
+            out.terminal = TemplateQueryResult(api_, extent_, result);
+        }
+        return Result<TemplateQueryPoll>::success(std::move(out));
+    }
+
+    /// Only this wait uses operation. Query terminals, including deadline and
+    /// Failed, return success; caller-wait interruption returns call failure.
+    Result<TemplateQueryResult> wait(const Operation& operation) const {
+        if (api_ == nullptr) {
+            return detail::no_table<TemplateQueryResult>();
+        }
+        if (!detail::has_template_query(api_, extent_)) {
+            return detail::unsupported<TemplateQueryResult>();
+        }
+        const auto operation_c = operation.to_c();
+        ::madopilot_template_query_result_t* result = nullptr;
+        ::madopilot_error_t* error = nullptr;
+        const Status status =
+            api_->template_query_wait(handle_, &operation_c, &result, &error);
+        if (!is_ok(status)) {
+            return Result<TemplateQueryResult>::failure(
+                detail::take_error(api_, status, error));
+        }
+        if (result == nullptr) {
+            return Result<TemplateQueryResult>::failure(
+                Error::from_status(MADOPILOT_STATUS_INTERNAL));
+        }
+        return Result<TemplateQueryResult>::success(
+            TemplateQueryResult(api_, extent_, result));
+    }
+
+    /// Returns the winning terminal, which may already be Matched.
+    Result<TemplateQueryResult> cancel() const {
+        if (api_ == nullptr) {
+            return detail::no_table<TemplateQueryResult>();
+        }
+        if (!detail::has_template_query(api_, extent_)) {
+            return detail::unsupported<TemplateQueryResult>();
+        }
+        ::madopilot_template_query_result_t* result = nullptr;
+        ::madopilot_error_t* error = nullptr;
+        const Status status =
+            api_->template_query_cancel(handle_, &result, &error);
+        if (!is_ok(status)) {
+            return Result<TemplateQueryResult>::failure(
+                detail::take_error(api_, status, error));
+        }
+        if (result == nullptr) {
+            return Result<TemplateQueryResult>::failure(
+                Error::from_status(MADOPILOT_STATUS_INTERNAL));
+        }
+        return Result<TemplateQueryResult>::success(
+            TemplateQueryResult(api_, extent_, result));
+    }
+
+private:
+    friend class Session;
+    friend class detail::Owner<TemplateQuery, ::madopilot_template_query_t>;
+
+    TemplateQuery(const ::madopilot_api_t* api, std::size_t extent,
+                  ::madopilot_template_query_t* handle) noexcept
+        : Owner(api, extent, handle) {}
+
+    static Status retain_handle(const ::madopilot_api_t* api,
+                                ::madopilot_template_query_t* handle) noexcept {
+        return api->template_query_retain(handle);
+    }
+
+    static void release_handle(const ::madopilot_api_t* api,
+                               ::madopilot_template_query_t* handle) noexcept {
+        api->template_query_release(handle);
+    }
+};
 
 /// An immutable completed search.
 ///
@@ -3359,6 +3799,34 @@ public:
         return Result<MatchResult>::success(MatchResult(api_, extent_, result));
     }
 
+    /// Starts the maintained-session watcher. Template, options and operation
+    /// storage are borrowed only until this call returns; C owns later authority.
+    Result<TemplateQuery> start_template_watch(
+        const Template& prepared, const TemplateWatchOptions& options,
+        const Operation& operation) const {
+        if (api_ == nullptr) {
+            return detail::no_table<TemplateQuery>();
+        }
+        if (!detail::has_template_query(api_, extent_)) {
+            return detail::unsupported<TemplateQuery>();
+        }
+        const auto options_c = options.to_c();
+        const auto operation_c = operation.to_c();
+        ::madopilot_template_query_t* query = nullptr;
+        ::madopilot_error_t* error = nullptr;
+        const Status status = api_->session_start_template_watch(
+            handle_, prepared.get(), options_c.get(), &operation_c, &query, &error);
+        if (!is_ok(status)) {
+            return Result<TemplateQuery>::failure(
+                detail::take_error(api_, status, error));
+        }
+        if (query == nullptr) {
+            return Result<TemplateQuery>::failure(
+                Error::from_status(MADOPILOT_STATUS_INTERNAL));
+        }
+        return Result<TemplateQuery>::success(TemplateQuery(api_, extent_, query));
+    }
+
     /// Recognizes one exact retained frame through the explicitly configured backend.
     ///
     /// The complete OCR suffix is required before any appended function pointer
@@ -3499,6 +3967,26 @@ private:
 class Engine : public detail::Owner<Engine, ::madopilot_engine_t> {
 public:
     Engine() noexcept = default;
+
+    /// Selected fixed scheduler limits; this value borrows no engine storage.
+    Result<TemplateSchedulerDescriptor> template_scheduler_descriptor() const {
+        if (api_ == nullptr) {
+            return detail::no_table<TemplateSchedulerDescriptor>();
+        }
+        if (!detail::has_entry(
+                api_, extent_,
+                MADOPILOT_API_SIZE_ENGINE_TEMPLATE_SCHEDULER_DESCRIPTOR) ||
+            api_->engine_template_scheduler_descriptor == nullptr) {
+            return detail::unsupported<TemplateSchedulerDescriptor>();
+        }
+        auto value = detail::sized<TemplateSchedulerDescriptor>();
+        const Status status =
+            api_->engine_template_scheduler_descriptor(handle_, &value);
+        return is_ok(status)
+                   ? Result<TemplateSchedulerDescriptor>::success(value)
+                   : Result<TemplateSchedulerDescriptor>::failure(
+                         Error::from_status(status));
+    }
 
     Result<EngineCapabilities> capabilities() const {
         if (api_ == nullptr) {

@@ -21,17 +21,15 @@ A C++ caller uses the header-only RAII wrapper over this contract rather than
 calling the table directly; see [cpp-wrapper.md](cpp-wrapper.md). Everything
 below still applies to it, because it is the same contract.
 
-## ABI 1.5, with complete released 1.0, 1.2, 1.3, and 1.4 prefixes preserved
+## ABI 1.6, preserving every released major-1 prefix
 
-The current header declares ABI 1.5. ADR 0007 freezes ABI 1.0's 424-byte
-capture/matching table; ADR 0023 freezes ABI 1.2's 592-byte input/diagnostic
-table; ADRs 0035/0036 freeze ABI 1.3's singular OCR/default construction at 648
-bytes; ADR 0043 freezes ABI 1.4's explicit profile/grouped OCR surface at 720
-bytes. ABI 1.5 appends `engine_create_with_ocr_provider` at offset 720 and
-`engine_ocr_provider_descriptor` at offset 728 for a complete 736-byte table
-under [ADR 0046](adr/0046-onnx-accelerator-provider-policy.md).
-The `v0.4.0` product version leaves this separately versioned ABI unchanged and
-adds no watcher entry.
+The current header declares ABI 1.6. ABI 1.0 preserves its 424-byte
+capture/matching table, ABI 1.2 its 592-byte input/diagnostic table, ABI 1.3 its
+648-byte OCR/default-construction table, ABI 1.4 its 720-byte profile/grouped-OCR
+table, and ABI 1.5 its 736-byte provider-construction/descriptor table.
+[ADR 0067](adr/0067-pull-template-watch-c-abi.md) appends thirteen pull-based
+template-query entries for a complete **840-byte** table. The `v0.4.0` source
+release remains ABI 1.5; the watcher suffix is a subsequent development change.
 
 The unreleased 1.1 draft remains intentionally unsupported. Within ABI major 1:
 
@@ -43,18 +41,81 @@ The unreleased 1.1 draft remains intentionally unsupported. Within ABI major 1:
 
 A different ABI major is a different library, and `madopilot_get_api` refuses it.
 Use the smaller of caller `sizeof(madopilot_api_t)` and the returned
-`struct_size`. ABI 1.0, 1.2, 1.3, and 1.4 callers negotiate 424, 592, 648, and
-720 bytes. ABI 1.5 provider construction requires
-`MADOPILOT_API_SIZE_ENGINE_CREATE_WITH_OCR_PROVIDER` (728 bytes); provider
-descriptor access requires `MADOPILOT_API_SIZE_ENGINE_OCR_PROVIDER_DESCRIPTOR`
-(736 bytes). The C++ wrapper checks both caller-known and returned extents before
-reading either pointer.
+`struct_size`. ABI 1.0, 1.2, 1.3, 1.4, and 1.5 callers negotiate 424, 592, 648,
+720, and 736 bytes. Provider construction still requires 728 bytes and provider
+descriptor access still requires 736. Watcher descriptor access requires 744;
+the complete query/result surface ends at 840. Named `MADOPILOT_API_SIZE_*`
+constants describe each entry and owner extent. The C++ wrapper checks both
+caller-known and returned extents before reading a pointer.
 
 The released promise is executable. `tests/abi-compat/v1/`, `v1_2/`, `v1_3/`,
-and `v1_4/` keep exact headers/callers, compile without the working header, link
-to the current library, negotiate only their declared extents, and execute their
-complete flows. Current C++ checks also negotiate partial 1.3, 1.4, and 1.5
-extents and refuse high-level operations before a missing entry is read.
+`v1_4/`, and `v1_5/` retain frozen headers, compile callers without the working
+header, and exercise their declared extents against the current library.
+Current C++ consumers also refuse incomplete owner surfaces before creating a
+handle or reading a missing entry.
+
+## Starting a pull-based template query
+
+1. Negotiate ABI 1.6 and check every invoked entry and returned owner's lifecycle.
+   A C++ query or result requires the complete 840-byte surface.
+2. Use an existing maintained session and prepared template. Pass
+   `madopilot_template_watch_options_t` and a separate query-lifetime
+   `madopilot_operation_t` to `session_start_template_watch`. Storage is borrowed
+   only for that call; the query retains its template and cancellation authority.
+3. Select `AnalysisAlways` or exact-RGBA change detection, zero/unrestricted or a
+   positive minimum interval, and immediate/consecutive/duration stability.
+   Optional match options and CapturePixels region use existing matching rules.
+   Invalid active fields, unknown watch flags, and nonzero inactive stability
+   values are refused before query publication.
+4. Poll for a value snapshot or wait with an independent caller operation.
+   Current maintained state is considered once, followed by strictly newer
+   frames. A no-match observation remains pending. Polling never advances
+   stability. Pending snapshots expose complete optional frame identity,
+   generation, confirmed stability, nine work counts, and per-query pending and
+   in-flight depths, each bounded to one.
+5. Own the terminal `madopilot_template_query_result_t` independently. Repeated
+   poll/wait/cancel observations retain the same immutable winner; cancellation
+   cannot overwrite an already committed match. Terminal snapshots clear
+   pending-only fields: those zeros are not final work accounting.
+
+| Observation | Call status | Result |
+|---|---|---|
+| Pending poll | `OK` | Snapshot and null terminal handle |
+| Query terminal observed without caller-wait interruption | `OK` | Owned terminal result, including query deadline or failure |
+| Caller-wait cancellation/deadline | `CANCELLED` / `DEADLINE_EXCEEDED` | Null result; this call leaves query authority unchanged, even if already terminal |
+| Cancel, including after a terminal commit | `OK` | Authoritative terminal winner |
+| Invalid request/admission refusal | Typed failure | Null query |
+
+A caller-wait operation that is already interrupted takes precedence over an
+existing terminal. A failed wait therefore does not prove the query is Pending;
+poll or wait with valid caller authority to observe its current outcome.
+
+Terminal kinds are Matched, Cancelled, DeadlineExceeded, SessionClosed,
+SchedulerClosed, TargetLost, Overloaded, and Failed. The result's status is
+domain data, distinct from the observation call's status. QueueExpired is the
+overload reason; start-time capacity refusal is a call failure.
+
+`template_query_result_info` exposes immutable terminal facts. Matched results
+also expose target/template/backend identity, effective options and region,
+confirmed stability, complete source stamp, exact transform, and match count.
+`template_query_result_match_at` returns indexed borrowed views;
+`template_query_result_frame` returns an independently owned exact source frame
+through the existing frame/mapping API. Both reject non-Matched outcomes.
+`template_query_result_error` returns an owned structured error only for Failed,
+and succeeds with null for every other outcome.
+
+Final query release cancels pending work. Explicit session close produces
+SessionClosed; final engine release closes its scheduler. Independently
+retained terminal results, frames, mappings, and errors remain readable after
+query and parent teardown. No callback, OCR predicate, automatic input, retry,
+fallback, or additional scheduler is introduced.
+
+The executable replay consumers are
+[`examples/c/template-watch.c`](../crates/bindings/capi/examples/c/template-watch.c)
+and [`examples/cpp/template-watch.cpp`](../crates/bindings/capi/examples/cpp/template-watch.cpp).
+`c-abi-check` compiles and runs both and their independent CMake targets.
+Native C/C++ qualification and foreign-boundary `G-013` budget acceptance remain
+separate; see [the native qualification protocol](native-template-watch-foreign-qualification.md).
 
 ## Migrating an ABI 1.4 caller to provider-policy OCR
 
@@ -115,9 +176,9 @@ For the exact integrated profile configured on the engine,
 `madopilot_ocr_request_t.package` may be null when backend/model views match the
 descriptor reported by `engine_ocr_descriptor`. Existing default construction
 reports native G-004; ABI 1.4 explicit construction reports the bounded profile.
-Any explicit package model still requires its package. There
-is no watcher, retry, callback, scheduling, fallback, automatic input, ambient
-runtime/model search, download, or bundling. The feature-gated
+Any explicit package model still requires its package. OCR has no watcher,
+retry, callback, scheduling, automatic input, ambient runtime/model search,
+download, or bundling. The feature-gated
 `private-fixture` constructor remains outside the public header/table and absent
 from release builds.
 
@@ -198,6 +259,8 @@ the rule the whole design turns on, and it is what makes the following true:
   and engine;
 - an independently retained diagnostic reader keeps the sealed stream alive
   after engine release, and an owned batch outlives both engine and reader.
+- a template-query terminal result, its separately retained exact frame, and its
+  structured error outlive the query and all session/engine parents.
 
 **A borrowed view is valid only while its owner is retained.** Each declaration
 names the owner. Error messages borrow from errors, match template IDs borrow

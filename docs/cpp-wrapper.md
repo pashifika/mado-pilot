@@ -22,14 +22,12 @@ replaces one.
 
 ## This wrapper declares no ABI of its own
 
-The only ABI is the C one. ABI 1.0, 1.2, 1.3, and 1.4 are frozen complete
-prefixes. ABI 1.5 appends explicit OCR provider construction and engine-owned
-provider facts through the complete 736-byte table under
-[ADR 0046](adr/0046-onnx-accelerator-provider-policy.md). The wrapper adds
-source compatibility only, governed by ADR 0006's reviewed Rust-side naming
-policy.
-The `v0.4.0` product version changes neither ABI 1.5 nor this wrapper and adds no
-C++ watcher surface.
+The only ABI is the C one. ABI 1.0, 1.2, 1.3, 1.4, and 1.5 remain frozen
+complete prefixes. ABI 1.6 adds pull-based template queries through a complete
+840-byte table under [ADR 0067](adr/0067-pull-template-watch-c-abi.md).
+The wrapper adds source compatibility only, governed by ADR 0006's reviewed
+Rust-side naming policy. The `v0.4.0` source release remains ABI 1.5 and contains
+no C++ watcher; this surface is a subsequent development change.
 
 The wrapper is deliberately not a second place those values are written down.
 Its enumerated types are `using` aliases of the C types, so a caller writes
@@ -65,7 +63,7 @@ const madopilot::Api api = loaded.take();
 |---|---|---|
 | `Api` | nothing — the table belongs to the library | copyable |
 | `Error` | its own copies of the message and identifiers | copyable |
-| `Cancellation`, `Engine`, `TargetList`, `Package`, `Template`, `Session`, `Frame`, `Mapping`, `MatchResult`, `OcrResult`, `ZoneScanOcrResult`, `InputReceipt`, `DiagnosticReader`, `DiagnosticBatch` | one reference-counted C handle | `clone()` |
+| `Cancellation`, `Engine`, `TargetList`, `Package`, `Template`, `Session`, `Frame`, `Mapping`, `MatchResult`, `TemplateQuery`, `TemplateQueryResult`, `OcrResult`, `ZoneScanOcrResult`, `InputReceipt`, `DiagnosticReader`, `DiagnosticBatch` | one reference-counted C handle | `clone()` |
 
 **Every owner is move-only.** Copy construction and copy assignment are deleted,
 because an implicit copy would hide a reference-count bump behind an assignment.
@@ -496,13 +494,45 @@ independent repaired C projection. Clone an immutable result/reader per thread;
 retain/release remain atomic. Mutating a request or destroying the final owner
 concurrently with a call remains invalid caller behavior.
 
-## What ABI 1.5 does not wrap
+## Pull-based template queries
 
-The ABI 1.5 table ends at OCR provider descriptor access. There is no watcher,
-wait-for-text, query, callback/fence, per-inference retry, automatic
-action/input, packaging/download, or native-frame extension. Provider
-construction and later input remain separate facts. `cpp_surface.rs` asserts
-this inventory.
+`Engine::template_scheduler_descriptor()` returns the selected fixed limits.
+`Session::start_template_watch(prepared, options, operation)` starts the existing
+maintained-session watcher. `TemplateWatchOptions` owns optional match options
+and region values; every call creates an independent C projection whose
+interior pointers are repaired after copy/move construction and assignment.
+
+`TemplateQuery` and `TemplateQueryResult` are move-only owners with explicit
+`clone()`. A query clone shares one cancellation-on-final-release lifecycle;
+dropping an intermediate owner does not cancel it.
+
+- `poll()` returns `TemplateQueryPoll`: a value `snapshot` and an optional owned
+  `terminal`. Pending polls allocate no terminal or pixel storage.
+- `wait(operation)` bounds only that caller's wait. Query terminals, including
+  DeadlineExceeded and Failed, are successful observations; caller-wait
+  interruption is a failed call and leaves query authority unchanged.
+- `cancel()` returns the winning terminal, which may already be Matched.
+- A named terminal owner's `describe()` and `match_at(index)` expose borrowed
+  views. Their rvalue overloads are deleted. `frame()` returns an
+  independent exact source-frame owner; `error()` returns an optional owned
+  error for Failed and an empty value for other outcomes.
+
+Both owners require the complete 840-byte negotiated surface, including every
+transitive frame/mapping/error lifecycle, before a creating call. Clone one
+owner per concurrent caller. After query/session/engine teardown, retained
+terminal results and frames remain usable under the C contract.
+
+[`examples/cpp/template-watch.cpp`](../crates/bindings/capi/examples/cpp/template-watch.cpp)
+executes start, wait, cancel-after-terminal, retained result/frame access, and
+parent teardown through the wrapper only. Native C/C++ qualification remains
+pending under [the dedicated protocol](native-template-watch-foreign-qualification.md);
+replay success is not native support evidence.
+
+## What ABI 1.6 does not wrap
+
+There is no OCR watcher, wait-for-text, callback/fence, per-inference retry,
+automatic action/input, packaging/download, or native-frame extension.
+Provider construction and later input remain separate facts.
 
 `Api::table()` is the escape hatch: it returns the negotiated
 `const madopilot_api_t*` for a caller that needs an entry this wrapper does not
@@ -607,13 +637,13 @@ is required because compiling the checker example alone does not replace the
 profile-root dynamic library with its private-fixture variant. For the C++ half
 the checker:
 
-1. compiles and runs `tests/cpp/madopilot-cpp-ownership.cpp`: move-only OCR
-   ownership, explicit clone, lvalue-only views, copy/move request and
-   `DefaultOcrOptions` rebinding, ABI 1.2/partial-1.3 refusal, parent
-   independence, panic/error release, receipts, diagnostics, close, and
-   concurrent const access;
-2. runs deterministic matching, production default C/C++ OCR, and feature-gated
-   fixture OCR examples. Production examples must agree after line-ending
+1. compiles and runs `tests/cpp/madopilot-cpp-ownership.cpp`: move-only owners,
+   explicit clone, lvalue-only views, repaired request projections, incomplete
+   owner-surface refusal, independent template-query lifecycles, exact retained
+   frames, allocation-free pending observation, caller-local allocation-failure
+   injection, parent teardown, panic/error release, and concurrent const access;
+2. runs deterministic matching, pull-based template watching, production
+   default C/C++ OCR, and feature-gated fixture OCR examples. Production examples must agree after line-ending
    normalization on backend/model/count output, and fixture examples must agree
    on source/text/confidence plus content-redacted diagnostics;
 3. compiles and runs `examples/cpp/native-input.cpp`. The default `--check`
