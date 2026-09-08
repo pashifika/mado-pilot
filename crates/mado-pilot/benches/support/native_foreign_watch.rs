@@ -2928,15 +2928,6 @@ mod tests {
         struct ReportDirectory(PathBuf);
         impl Drop for ReportDirectory {
             fn drop(&mut self) {
-                #[cfg(windows)]
-                {
-                    let report = self.0.join("report.json");
-                    if let Ok(metadata) = fs::metadata(&report) {
-                        let mut permissions = metadata.permissions();
-                        permissions.set_readonly(false);
-                        let _ = fs::set_permissions(report, permissions);
-                    }
-                }
                 let _ = fs::remove_dir_all(&self.0);
             }
         }
@@ -2963,11 +2954,15 @@ mod tests {
             output_error: Some(before_error),
             resource: None,
         };
-        cycle.persist_report(&directory.0.join("report.json"), &text, resource);
+        let report_path = directory.0.join("report.json");
+        cycle.persist_report(&report_path, &text, resource);
         assert!(cycle.report_written);
         assert_eq!(cycle.output_error, Some(before_error));
         assert_eq!(cycle.aggregate, Outcome::Infra);
         assert!(!cycle.eligible);
+        // Remove the owned immutable report without broadening its permissions.
+        assert!(fs::metadata(&report_path).unwrap().permissions().readonly());
+        fs::remove_file(report_path).unwrap();
     }
 
     #[test]
