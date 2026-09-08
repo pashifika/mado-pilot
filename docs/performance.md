@@ -142,9 +142,24 @@ A budget names one measure. The version-one vocabulary is:
 | `caller_allocation_calls_max` | count | Largest `caller_allocation_calls` sample in the declared workload. |
 | `readable_frame_view_bytes` | bytes | Actually readable frame mapping length, not incremental mapped bytes or a producer-pool observation. |
 | `lifecycle_live_delta_bytes_per_sample` | bytes | Signed process-wide Rust live-heap change from before a complete public lifecycle to after all its owners are released. Includes concurrent Rust activity; not RSS or caller-only retained memory. |
+| `absolute_lifecycle` | bytes or count, as declared by the native resource workload | Current OS-process resource value at each post-release baseline/lifecycle checkpoint. Not a live-Rust-heap or in-flight peak measure. |
+| `delta_lifecycle` | signed bytes or count, as declared by the native resource workload | Each repeated lifecycle's post-release value minus that consumer's fixed post-warmup baseline. A finite positive allowance does not prove a plateau or absence of leaks. |
+| `absolute_final` | bytes or count, as declared by the native resource workload | Current OS-process resource value after the broader native flow and owner cleanup, before process exit. |
+| `delta_final` | signed bytes or count, as declared by the native resource workload | The final pre-exit value minus that consumer's fixed baseline. Uses a separate accepted envelope; the final flow is not a fourth identical lifecycle. |
 
 A phase that needs a measure outside this list adds it here in the same change,
 with its unit and its meaning.
+
+The private native foreign-controller profiles in
+[ADR 0069](adr/0069-native-foreign-template-watch-apparatus.md) use these last
+four names for comparison boundaries. Their `measurement.workload` selects
+physical footprint/private commit, resident bytes/working set, or Mach port
+names/process handles. Each workload declares its OS API and unit. The profile's
+`observed_*` fields retain historical precursor maxima; they are not results of
+a final run. The versioned native JSON report retains individual comparisons.
+These private profiles, like the private phase-five boundary profiles, are
+validated by their own compiled-profile admission rather than the shared
+`bench_harness` report-key contract.
 
 ### Why some names carry their unit and others do not
 

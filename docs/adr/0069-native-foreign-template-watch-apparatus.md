@@ -1,6 +1,6 @@
 # ADR 0069: Native foreign template-watch apparatus
 
-- **Status:** Implemented apparatus; native qualification and numeric acceptance pending
+- **Status:** Implemented apparatus and opt-in resource evaluation; final native qualification pending
 - **Date:** 2026-09-07
 - **Resolves gate:** None; native C/C++ qualification and foreign `G-013` acceptance remain pending
 - **Related:** ADR 0064, ADR 0067
@@ -150,9 +150,11 @@ this does not claim cold-start leak freedom.
 Warmup enforces the same full F1–F9 semantic, explicit-owner cleanup,
 containment, identity and deadline checks. It has its own retained ledger.
 Any refusal, missing row, semantic failure or infrastructure failure prevents
-later launches. The sole F9 `resource_budget_unaccepted` gate remains visibly
-`UNEXECUTED`; it does not prevent eligibility when all nine consumer oracles
-and explicit cleanup checks pass, and it never becomes `PASS`.
+later launches. Without an explicit resource profile, the sole F9
+`resource_budget_unaccepted` gate remains visibly `UNEXECUTED`; otherwise clean
+consumer oracles and explicit cleanup permit the planned measurements without
+turning F9 into `PASS`. With an admitted profile, warmup must also satisfy every
+numeric comparison and the profile's observed geometry before measurement entry.
 
 Establish the fixed baseline once after eligible warmup and complete child,
 pipe and worker teardown. Windows requires each measured before/after count
@@ -164,12 +166,18 @@ boundaries. No per-cycle baseline reset, allowance, extra warmup, sleep or
 wait-until-stable is permitted. A later failure stops further launches and
 leaves their cycles explicitly unexecuted.
 
-Root reports use `madopilot.native-foreign-watch.cohort.v2`; each launched
-cycle retains a complete `madopilot.native-foreign-watch.cycle.v2` report.
+Root reports use `madopilot.native-foreign-watch.cohort.v3`; each launched
+cycle retains a complete `madopilot.native-foreign-watch.cycle.v3` report.
 The root lists warmup and all three planned measurements, relative report
 paths, eligibility, the fixed/final baseline and aggregate outcome. Each
 cycle identifies its role and whether resource equality is enforced.
 An unlaunched cycle has no fabricated report or result.
+
+The v3 resource record distinguishes caller declarations and artifact admission
+from observed samples, signed comparisons and geometry applicability. One
+resource decision governs effective F9, aggregate, eligibility, row reason,
+report and exit. Historical v2 reports retain their original schema and outcome;
+the consumer wire protocol remains `native-foreign-watch.v1`.
 
 The 600-second authority is shared, not restarted for each cycle. Reserve
 the existing launch allowance before entry, propagate that same authority
@@ -205,11 +213,76 @@ retained. These are process-resource bounds, not complete GPU-byte or live-objec
 instrumentation. Missing measurements cannot become zero.
 
 F9 records a final sample before consumer exit, after all public owners are gone.
-New native precursor processes and independent target-specific ceiling acceptance
-are required before these resource observations can qualify F9. Until then its
-effective outcome is `UNEXECUTED resource_budget_unaccepted`, even when consumer
-release oracles pass. This prevents process-exit reclamation from masquerading
-as bounded in-process lifetime behavior.
+An explicitly admitted native resource profile applies its separate final
+absolute and fixed-baseline delta bounds. Default precursor mode remains
+`UNEXECUTED resource_budget_unaccepted`, even when consumer release oracles pass.
+Process-exit reclamation is not bounded in-process lifetime evidence.
+
+### Accepted finite native resource profiles
+
+Use the independently accepted
+[Apple profile](../benchmarks/phase-5-native-foreign-resources-aarch64-apple-darwin.toml)
+or
+[Windows profile](../benchmarks/phase-5-native-foreign-resources-x86_64-pc-windows-msvc.toml)
+only for its exact target and fixed native protocol. Each profile records twelve
+limits, metric mappings, sampling boundaries, approved consumer/library/fixture
+bytes and complete archived source/build/dependency authorities. Its numeric
+limits are compiled into the benchmark-private evaluator, with an `include_str!`
+document SHA-256 pin as in the separate ADR 0068 boundary evaluator; runtime
+TOML parsing and numeric overrides are not accepted.
+
+The derivation retains all eight C/C++ precursor processes per target at source
+`e1778e89dcb921859f9adab31651be2e6ef4c0d8`, tree
+`7cd07947a3a2951f9951e293402e33e4ae7f95d6`. It applies `5/4` to each historical
+maximum, rounding upward to 4,096 bytes or one count; observed zero stays zero.
+Absolute lifecycle derivation includes the baseline. Delta derivation uses each
+sample's own process baseline, never a global minimum. Those precursor F9 rows
+remain `UNEXECUTED resource_budget_unaccepted`; policy acceptance supplies no
+retroactive result.
+
+Windows additionally adopts the unchanged twelve limits as a prospective
+policy transfer to the later-described Core i7-12700KF / RTX 4080 host and exact
+dual-4K topology. Its profile retains the independent transfer decision and
+complete physical-mode conditions. Precursor-time hardware, driver, OS and
+topology continuity remains `UNESTABLISHED`; later metadata does not prove
+same-host derivation or measured headroom. The transfer requires no additional
+precursor before policy adoption and does not waive final campaign evidence.
+
+Every consumer supplies exactly five ordered resource tuples: F1 `(0,0)`,
+`(1,1)`, `(1,2)`, `(1,3)`, then F9 `(2,4)`. For each of three metrics, compare
+the baseline and each lifecycle with the lifecycle absolute ceiling, each
+lifecycle with its own fixed-baseline delta ceiling, and the final observation
+with separate final absolute and delta ceilings. All 27 comparisons must pass,
+including in the outer warmup. Differences are signed `i128(sample) -
+i128(baseline)`; a decrease remains negative. Missing, duplicate, reordered or
+malformed evidence cannot become zero, an unaccepted-only result, or a pass.
+
+Opt in through the complete eight-option metadata declaration group in
+[the foreign qualification guide](../native-template-watch-foreign-qualification.md#accepted-native-resource-selection).
+An unknown, missing, duplicate, malformed or mismatched explicit selection
+fails as `INFRA` with exit `2` before consumer launch. Admission checks the
+compiled document, target/release build, exact declared hardware/OS/topology,
+one approved C/C++ executable, loaded library and fixture pins, and the actual
+runner against its declared digest. Incompatible observed F2/F3 and F4/F5
+dimensions or scale transitions make warmup ineligible before measurements.
+
+Source commit/tree, hardware, OS and topology are declarations, not physical
+host or source authentication. The context digest references a separately
+frozen reviewed campaign record, not an approval switch. That record must bind
+real pre/post host/topology observations, source/header/build/dependency
+inventories and final evaluator/controller/profile applicability. New binaries
+require renewed applicability review, never arbitrary replacement CLI hashes.
+
+Numeric success cannot override semantic failure, owner cleanup, loaded-module
+identity, artifact drift, process/pipe/worker containment, deadline failure or
+the controller's independent fixed post-warmup equality predicate. Numeric
+failure stops later launches and remains in the original ledger; no retry,
+extra warmup, wait, sample replacement or ceiling adjustment rescues it.
+These are finite sampled post-release/pre-exit OS envelopes, not peak or GPU
+bytes, exact live-object counts, no-growth, plateau, harmless-cache attribution
+or leak freedom. Final-source review and an explicitly approved frozen native
+campaign remain separate, unexecuted gates; ADR 0068's failed replay campaigns
+and the native support decision are unchanged.
 
 ## Verification and support
 

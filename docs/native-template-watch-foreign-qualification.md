@@ -2,10 +2,11 @@
 
 ABI 1.6 implements the C/C++ pull-query surface in
 [ADR 0067](adr/0067-pull-template-watch-c-abi.md). Replay consumers and the
-paired boundary harness exist. Target-specific eighteen-row numeric profiles
-are independently accepted under ADR 0068; **final enforcement and native
-C/C++ qualification remain incomplete**. Neither released Rust watcher evidence
-nor a hosted green build promotes the new foreign boundary.
+paired boundary harness exist. Target-specific eighteen-row replay profiles
+are independently accepted under ADR 0068. Separate finite native process
+resource profiles and their opt-in evaluator exist under ADR 0069; **final
+enforcement and native C/C++ qualification remain incomplete**. Neither released
+Rust watcher evidence nor a hosted green build promotes the new foreign boundary.
 
 This protocol fixes the observable qualification rows and measurement scope.
 The existing `examples/c/template-watch.c` and `examples/cpp/template-watch.cpp`
@@ -24,6 +25,7 @@ apparatus is not native support qualification.
 | C/Rust layout probe, frozen headers, independent C/C++ and CMake consumers | ABI compatibility, foreign ownership, replay integration |
 | `template-watch-boundary` | Paired Rust/C replay costs and correctness; eighteen-row numeric ceilings independently accepted, final campaigns failed |
 | Native foreign rows below | New C/C++ native boundary; candidate-bound observations exist, full qualification remains incomplete |
+| Native foreign resource profiles | Twelve independently accepted sampled post-release/pre-exit OS ceilings per target; opt-in evaluation, not final campaign acceptance or native support |
 
 The accepted Rust Lane B results remain revision-bound to their recorded
 sources. Carry them only through a reviewed applicability statement. A change
@@ -172,7 +174,11 @@ On Windows use the explicit OpenCV/libclang setup options from
 root. Do not pass `--activate` or `--fail-stage`. On Apple retain the already
 approved fixture bundle; do not replace, rebuild or re-sign it to change a
 permission outcome. Both foreign commands use absolute `--key=value` arguments;
-the attempt directory must not exist and its parent must already exist.
+the attempt directory must not exist and its parent must already exist. These
+four path options alone select unaccepted precursor mode. A freshly rebuilt
+consumer or library is not automatically admitted by an accepted resource
+profile; that path requires the exact approved bytes or a new applicability
+review and coordinated profile/code pin update.
 
 `LOADED` identifies the module containing the actual `madopilot_get_api`
 address. Pin that module, not merely an import library or preferred search path.
@@ -180,15 +186,16 @@ For a Cargo-built Apple library, its install name may point into `release/deps`
 rather than the top-level hard link; record and verify the actual module.
 
 Each invocation writes immutable root `before.json` and `report.json` using
-`madopilot.native-foreign-watch.cohort.v2`. The fixed cohort contains one full
+`madopilot.native-foreign-watch.cohort.v3`. The fixed cohort contains one full
 warmup and three full measurements in the same controller process, with fresh
 fixture/consumer owners and unchanged artifact pins. Each launched cycle writes
 its own complete F1–F9 ledger and cleanup facts under `warmup/` or
 `measurement-001/` through `measurement-003/`, using
-`madopilot.native-foreign-watch.cycle.v2`. Unlaunched cycles are explicitly
+`madopilot.native-foreign-watch.cycle.v3`. Unlaunched cycles are explicitly
 unexecuted, not missing successes. Exit codes are `0` for complete acceptance,
-`1` for a nonpassing cohort and `2` for apparatus failure. Native F9 resource
-ceilings remain unaccepted and prevent complete acceptance.
+`1` for a nonpassing cohort and `2` for apparatus failure. Default precursor
+mode leaves effective F9 `UNEXECUTED resource_budget_unaccepted` and therefore
+cannot return complete acceptance. Historical v2 reports are not rewritten.
 
 The consumer process exits zero after a complete ledger and acknowledged `DONE`,
 including semantic `FAIL` rows. Nonzero consumer exit indicates an incomplete
@@ -199,9 +206,12 @@ native PASS. C and C++ use the same contract.
 Cold controller counts are initialization observations, not a leak-free claim.
 After an eligible full warmup, every measured before/after and final observation
 must satisfy the same fixed post-warmup baseline. No reset, allowance, additional
-warmup or wait-until-stable is permitted. Warmup semantic or cleanup failure
-prevents later launches; the sole F9 budget-unaccepted gate stays visibly
-unexecuted while allowing otherwise clean planned measurements.
+warmup or wait-until-stable is permitted. Warmup semantic, cleanup, selected
+resource or geometry failure prevents later launches; only the default F9
+budget-unaccepted gate stays visibly unexecuted while allowing otherwise clean
+planned measurements. The numeric consumer decision never relaxes controller
+post-warmup equality; the historical Windows baseline `241` is not a fixed
+future campaign value.
 
 The transport bounds a complete wire line, including LF/CRLF, to 2048 bytes,
 uses a finite 64-event reader queue and permits 64 facts per row / 512 records
@@ -211,6 +221,156 @@ Filesystem/native calls are not preempted; startup overruns permit only bounded
 cleanup, not later binding or consumer launch. The first request byte starts a fixed
 five-second request/reply deadline; partial bytes never restart it. Individual
 public operations retain their own five-second absolute deadlines.
+
+### Accepted native resource selection
+
+The accepted profile labels name compiled policies, not runtime TOML paths:
+
+| Target | Profile label |
+|---|---|
+| Apple Silicon | `phase-5-native-foreign-resources-aarch64-apple-darwin` |
+| Windows x64 | `phase-5-native-foreign-resources-x86_64-pc-windows-msvc` |
+
+The [Apple profile](benchmarks/phase-5-native-foreign-resources-aarch64-apple-darwin.toml)
+and [Windows profile](benchmarks/phase-5-native-foreign-resources-x86_64-pc-windows-msvc.toml)
+freeze twelve limits each, approved C/C++/library/fixture SHA-256 values, metric
+mappings, geometry and source/build/dependency authorities. Selection checks an
+embedded `include_str!` document SHA-256 and compiled target/release-build gate;
+there is no runtime numeric parser or override. The actual consumer must match
+one approved C/C++ digest, the fixture and actually loaded library must match
+their fixed pins, and the actual runner must match its caller-declared digest.
+Existing pre/post identity and `LOADED` module checks remain mandatory.
+
+Supply all eight metadata options together with the unchanged four path options:
+
+| Option | Required declaration |
+|---|---|
+| `--foreign-resource-profile` | Exact label for the compiled release target |
+| `--foreign-resource-hardware` | Exact `profile.hardware` string |
+| `--foreign-resource-os-version` | Exact `profile.os_version` string |
+| `--foreign-resource-topology` | Exact `profile.topology` string |
+| `--foreign-resource-source-commit` | Full 40-hex candidate source commit |
+| `--foreign-resource-source-tree` | Full 40-hex candidate source tree |
+| `--foreign-resource-runner-sha256` | Actual candidate controller's 64-hex SHA-256 |
+| `--foreign-resource-context-sha256` | 64-hex digest of the separately frozen reviewed campaign record |
+
+Every option uses `--key=value`. Unknown, missing, duplicate, malformed or
+mismatched explicit selection is `INFRA`, exit `2`, before consumer launch;
+it does not fall back to precursor mode. Omitting all eight retains the existing
+unaccepted mode. The group contains no arbitrary consumer/library/fixture hash
+input and no numeric ceiling input.
+
+Hardware, OS, topology and source identities are caller declarations, not
+physical-host or source authentication. A matching context digest is a reference,
+not an approval switch or proof that the referenced record has been reviewed.
+The independently frozen campaign must retain actual pre/post host and topology
+observations, source commit/tree and complete intervening applicability review,
+clean-worktree state, headers, build invocations/features/toolchains, SDK and
+deployment metadata, dependency/load-module inventories, artifact hashes and
+sizes, and profile/controller identities. Runtime string matching cannot replace
+that evidence; exact artifact admission and final source/host approval are
+separate decisions.
+
+The recorded build authorities preserve facts rather than normalizing them:
+
+- Apple uses Rust `1.97.1`, Apple Clang `21.0.0 (clang-2100.1.1.101)`, SDK
+  `26.5`, Homebrew `opencv@4` `4.14.0`, and the existing approved fixture.
+  The actual C11/C++17 invocations use `-Wall -Wextra` without optimization or
+  deployment overrides. Their link warning records consumer deployment `26.0`
+  against the library's `26.5.2`; the host is `26.6.2 (25G83)`. This is not
+  macOS `26.0` compatibility. The complete 56 OpenCV dylib pins and load commands
+  remain in the profile-pinned `apple-inputs.json`, with separate postflight.
+- Windows records Rust `1.97.1`, MSVC VC `14.44.35207`, SDK `10.0.26100.0`,
+  and the exact OpenCV `4.14.0` DLL pin. Its `cl` C11/C++17 invocations use
+  `/W3` and C++ `/EHsc`, with **no `/O2`**. Cargo `--release` does not turn
+  those independently compiled consumers into optimized builds. The recorded
+  libclang root is not proof of an exact libclang version; final dependency
+  evidence must identify actual inputs.
+
+Windows adopts the unchanged twelve limits as a prospective policy transfer to
+the later-described Core i7-12700KF, RTX 4080, driver `32.0.15.9186`, Windows
+11 Pro `25H2 (26200.9278)` host. The independent decision is pinned in the
+profile. It does not repair precursor-time CPU/GPU/driver/OS/topology continuity,
+which remains `UNESTABLISHED`, or claim that `5/4` headroom was measured on this
+exact host. No additional precursor was required before this policy adoption;
+real final-campaign provenance is still required.
+
+That Windows policy requires a physical primary `3840x2160` display at `(0,0)`,
+`144 Hz`, `150%`, and a physical left `3840x2160` display at `(-3840,0)`,
+`120 Hz`, `125%`, both orientation `0`. The later raw monitor bounds
+`[0,0,2560,1440]` and `[-3072,0,0,1728]` are virtualized, not physical modes.
+Nominal DPI `144/120` is calculated from scale; `GetDpiForMonitor` returned
+`96/96` in a DPI-unaware query and did not measure physical DPI. These complete
+conditions belong in external pre/post campaign evidence, beyond the exact
+short CLI topology label.
+
+Set `NATIVE_CONTROLLER`, `NATIVE_CONSUMER`, `APPROVED_FIXTURE`, `NATIVE_LIBRARY`
+and `ATTEMPT_DIR` to approved absolute paths, with a fresh attempt directory for
+each C or C++ cohort. Supply `CANDIDATE_COMMIT`, `CANDIDATE_TREE`, `RUNNER_SHA256`
+and `CONTEXT_SHA256` from that campaign's pinned candidate and reviewed record;
+the examples provide no candidate identity, digest, execution authority or
+result. On Apple:
+
+```sh
+python3 tools/setup-native.py -- "${NATIVE_CONTROLLER:?}" \
+  --foreign-consumer="${NATIVE_CONSUMER:?}" \
+  --fixture-executable="${APPROVED_FIXTURE:?}" \
+  --foreign-artifact-dir="${ATTEMPT_DIR:?}" \
+  --foreign-library="${NATIVE_LIBRARY:?}" \
+  --foreign-resource-profile=phase-5-native-foreign-resources-aarch64-apple-darwin \
+  --foreign-resource-hardware="Apple M1 Pro" \
+  --foreign-resource-os-version="macOS 26.6.2 (25G83)" \
+  --foreign-resource-topology="Retina2x-to-external1x;1280x904->1376x968->688x484" \
+  --foreign-resource-source-commit="${CANDIDATE_COMMIT:?}" \
+  --foreign-resource-source-tree="${CANDIDATE_TREE:?}" \
+  --foreign-resource-runner-sha256="${RUNNER_SHA256:?}" \
+  --foreign-resource-context-sha256="${CONTEXT_SHA256:?}"
+```
+
+On Windows, also supply the existing `OPENCV_ROOT` and `LIBCLANG_PATH` setup
+inputs in an x64 MSVC developer PowerShell:
+
+```powershell
+python tools/setup-native.py --opencv-root "$env:OPENCV_ROOT" --libclang-path "$env:LIBCLANG_PATH" -- "$env:NATIVE_CONTROLLER" `
+  "--foreign-consumer=$env:NATIVE_CONSUMER" `
+  "--fixture-executable=$env:APPROVED_FIXTURE" `
+  "--foreign-artifact-dir=$env:ATTEMPT_DIR" `
+  "--foreign-library=$env:NATIVE_LIBRARY" `
+  --foreign-resource-profile=phase-5-native-foreign-resources-x86_64-pc-windows-msvc `
+  "--foreign-resource-hardware=Intel Core i7-12700KF; NVIDIA RTX 4080; driver32.0.15.9186" `
+  "--foreign-resource-os-version=Windows 11 Pro 25H2 (26200.9278)" `
+  "--foreign-resource-topology=primary3840x2160@150%;left3840x2160@125%;342x231->462x311->464x312" `
+  "--foreign-resource-source-commit=$env:CANDIDATE_COMMIT" `
+  "--foreign-resource-source-tree=$env:CANDIDATE_TREE" `
+  "--foreign-resource-runner-sha256=$env:RUNNER_SHA256" `
+  "--foreign-resource-context-sha256=$env:CONTEXT_SHA256"
+```
+
+These commands require separate execution approval; adding profiles or the
+evaluator authorizes no native capture, permission/input action or final run.
+
+The v3 `resource_qualification` record replaces the ambiguous v2 `accepted`
+flag with `enforcement_requested`, `prelaunch_admitted`, `declarations`,
+`compiled_profile` and `error`. The declarations retain all eight metadata
+values; the compiled profile records its id, target, accepted-limit status,
+expected and observed document hashes, and metric definitions. The record
+explicitly denies physical-host/source-inventory authentication and native
+support promotion; external frozen campaign review remains required.
+
+The same `resource_decision` appears at the cycle root and in each launched
+`cohort.cycles[]` entry. Its `outcome` and `numeric_pass` describe the resource
+gate; `effective_f9`, `aggregate` and `eligible` are the consolidated results
+after consumer outcomes, phase and infrastructure/cleanup precedence. It also
+records `reason`, `may_advance_resource_gate`, geometry applicability/violation,
+typed samples, `comparison_count`, comparisons and violations. A complete admitted sample
+ledger produces all 27 comparisons; absent evidence remains unavailable rather
+than fabricated samples or zeros. The decision supplies effective F9,
+aggregate, eligibility, row reason, report and exit. A resource-side reason is
+exposed as the controller row reason only when it determines effective F9.
+Numeric success never rescues an existing semantic, owner, identity, cleanup,
+deadline or controller-equality failure. Numeric failure or incompatible
+observed geometry in outer warmup prevents all later measured launches; later
+failure stops the remaining cycles without fabricating reports.
 
 ## Common native public flow
 
@@ -247,14 +407,60 @@ dimensions). Stream/query ids are nonzero; epoch, sequence and geometry
 revision are zero-based and are never adjusted by the apparatus.
 
 F1 includes one complete native warmup and three complete fresh lifecycles in
-the same consumer process, fixture and loaded module. It records an all-owners-
-released baseline and one post-release resource sample per measured lifecycle.
-F9 records the final pre-exit sample. Windows reports private commit, working
-set and handle count; Apple reports physical footprint, resident bytes and Mach
-port-name count without retaining port values. These are not GPU-byte or exact
-native live-object measurements. Until new target-specific native precursors and
-independent ceiling acceptance exist, effective F9 is
+the same consumer process, fixture and loaded module. The five ordered resource
+tuples are F1 `(0,0)`, `(1,1)`, `(1,2)`, `(1,3)`, then F9 `(2,4)`. The first
+is the all-public-owners-released baseline after intrinsic warmup; the next
+three follow complete fresh lifecycle/release boundaries with transport pipes
+still open. The last is after the full flow and all owner release, before exit.
+No process shares or resets another process's baseline.
+
+Resource tuple positions `2`, `3`, `4` have target-specific meanings:
+
+| Target | Position 2, bytes | Position 3, bytes | Position 4, count |
+|---|---|---|---|
+| Apple | `TASK_VM_INFO.phys_footprint` | `TASK_VM_INFO.resident_size` | `mach_port_names` name count |
+| Windows | `PROCESS_MEMORY_COUNTERS_EX.PrivateUsage` | `PROCESS_MEMORY_COUNTERS_EX.WorkingSetSize` | `GetProcessHandleCount` |
+
+Apple releases both returned Mach arrays immediately and retains no port names.
+These are sampled process OS quantities, not Rust heap, peak memory, GPU bytes
+or exact native live-object measurements. They prove no plateau, no-growth,
+harmless-cache cause or leak freedom.
+
+Each admitted profile applies three baseline absolute comparisons, eighteen
+lifecycle absolute/delta comparisons, and six separate final absolute/delta
+comparisons. All 27 must pass for every consumer, including outer warmup.
+Every delta is signed `i128(sample) - i128(own baseline)`, compared with its
+accepted ceiling without saturation. Absolute bounds also constrain a large
+baseline; final headroom cannot excuse an earlier lifecycle miss. No averaging,
+last-sample-only check, process offset, extra wait, resampling or replacement is
+allowed. Missing, malformed, duplicate or out-of-order evidence is a failure,
+never zero or an unaccepted-only outcome.
+
+Observed F2/F3 and before/after F4/F5 geometry must remain within the selected
+profile's exact scalar conditions:
+
+| Target and stage | Consumer frame | Transform extent | Frame scale |
+|---|---|---|---|
+| Apple F2/F3 and F4 before | `1280x904` | `640x452` | `(2,2)` |
+| Apple F4 after and F5 before | `1376x968` | `688x484` | `(2,2)` |
+| Apple F5 after | `688x484` | `688x484` | `(1,1)` |
+| Windows F2/F3 and F4 before | `342x231` | `342x231` | `(1,1)` |
+| Windows F4 after and F5 before | `462x311` | `462x311` | `(1,1)` |
+| Windows F5 after | `464x312` | `465.2608695652174x312` | `(0.997289972899729,1)` |
+
+These conditions retain all eight precursor processes per target, not arbitrary
+target IDs, source ordinals or window origins. Windows frame scales are not
+monitor scaling percentages. A new topology, reverse transition or arbitrary
+extent requires applicability review even when the general functional apparatus
+can exercise it. Existing exact-token, frame identity and correlation oracles
+remain independent.
+
+Without an explicit profile, effective F9 remains
 `UNEXECUTED resource_budget_unaccepted`, even when consumer cleanup succeeds.
+The source `e1778e89dcb921859f9adab31651be2e6ef4c0d8`, tree
+`7cd07947a3a2951f9951e293402e33e4ae7f95d6` precursor ledgers retain that
+original outcome. Their accepted finite ceilings do not retrospectively pass
+F9 or change ADR 0068's failed replay campaigns.
 
 Deterministic tests retain authority for scheduler saturation/fairness,
 coalescing, queue expiry, controlled late backend results, invalid prefixes and
@@ -319,8 +525,11 @@ Measurement limits are part of the result:
 
 ## Acceptance and rejection
 
-`G-013` remains open. Precursor measurement and numeric review are complete;
-the requirements below still distinguish profile acceptance from final and
+`G-013` remains open. Replay and native resource precursor measurement and
+independent numeric policy review are complete; native resource evaluation is
+opt-in. Final-source/controller/profile applicability, external host/dependency
+provenance review and the separately frozen final native campaign remain
+pending. The requirements below distinguish policy acceptance from final and
 native qualification:
 
 1. Capture repeated precursor profiles on **both** approved release targets,

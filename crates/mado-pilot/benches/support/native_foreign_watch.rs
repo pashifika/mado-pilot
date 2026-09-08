@@ -25,6 +25,11 @@ use super::{
     scaled_i32,
 };
 
+#[path = "native_foreign_resources.rs"]
+mod resources;
+
+use resources::{ResourceAdmission, ResourceArtifacts, ResourceDecision, ResourceRequest};
+
 const LINE_LIMIT: usize = 2_048;
 const QUEUE_LIMIT: usize = 64;
 const RECORD_LIMIT: usize = 512;
@@ -63,23 +68,35 @@ struct ForeignArguments {
     fixture: PathBuf,
     directory: PathBuf,
     library: PathBuf,
+    resources: Option<ResourceRequest>,
 }
 
 impl ForeignArguments {
     fn parse(raw: &[OsString]) -> Checked<Self> {
-        if raw.len() != 4 {
+        if !matches!(raw.len(), 4 | 12) {
             return Err("invalid_arguments");
         }
         let mut paths: [Option<PathBuf>; 4] = [None, None, None, None];
+        let mut resources = [None; ResourceRequest::KEYS.len()];
         for arg in raw {
             let text = arg.to_str().ok_or("invalid_arguments")?;
             let (key, value) = text.split_once('=').ok_or("invalid_arguments")?;
             let index = match key {
-                "--foreign-consumer" => 0,
-                "--fixture-executable" => 1,
-                "--foreign-artifact-dir" => 2,
-                "--foreign-library" => 3,
-                _ => return Err("invalid_arguments"),
+                "--foreign-consumer" => Some(0),
+                "--fixture-executable" => Some(1),
+                "--foreign-artifact-dir" => Some(2),
+                "--foreign-library" => Some(3),
+                _ => None,
+            };
+            let Some(index) = index else {
+                let index = ResourceRequest::KEYS
+                    .iter()
+                    .position(|candidate| *candidate == key)
+                    .ok_or("invalid_arguments")?;
+                if resources[index].replace(value).is_some() {
+                    return Err("invalid_arguments");
+                }
+                continue;
             };
             let path = PathBuf::from(value);
             if paths[index].is_some() || !path.is_absolute() || !safe_payload(value) {
@@ -93,6 +110,7 @@ impl ForeignArguments {
             fixture: fixture.ok_or("invalid_arguments")?,
             directory: directory.ok_or("invalid_arguments")?,
             library: library.ok_or("invalid_arguments")?,
+            resources: ResourceRequest::parse(resources)?,
         })
     }
 }
@@ -365,13 +383,27 @@ impl CycleRole {
     }
 }
 
-#[derive(Clone, Copy)]
 struct CycleSummary {
     aggregate: Outcome,
     eligible: bool,
     before_written: bool,
     report_written: bool,
     output_error: Option<Failure>,
+    resource: Option<ResourceDecision>,
+}
+
+impl CycleSummary {
+    fn persist_report(&mut self, path: &Path, text: &str, mut resource: ResourceDecision) {
+        let written = write_new(path, text.as_bytes(), true);
+        self.report_written = written.is_ok();
+        if let Err(error) = written {
+            self.output_error = Some(error);
+            resource.mark_infrastructure_failure();
+        }
+        self.aggregate = resource.aggregate();
+        self.eligible = resource.eligible();
+        self.resource = Some(resource);
+    }
 }
 
 fn cycle_may_launch(
@@ -384,7 +416,7 @@ fn cycle_may_launch(
         && cycles[index].is_none()
         && cycles[..index]
             .iter()
-            .all(|cycle| cycle.is_some_and(|cycle| cycle.eligible))
+            .all(|cycle| cycle.as_ref().is_some_and(|cycle| cycle.eligible))
 }
 
 fn cohort_aggregate(
@@ -393,7 +425,11 @@ fn cohort_aggregate(
     infra: bool,
 ) -> Outcome {
     let observed = cycles.iter().fold(Outcome::Pass, |aggregate, cycle| {
-        aggregate.combine(cycle.map_or(Outcome::Unexecuted, |cycle| cycle.aggregate))
+        aggregate.combine(
+            cycle
+                .as_ref()
+                .map_or(Outcome::Unexecuted, |cycle| cycle.aggregate),
+        )
     });
     phase.aggregate(observed, infra)
 }
@@ -794,15 +830,7 @@ impl Ledger {
                 .iter()
                 .filter(|fact| fact.key == FactKey::Resource)
                 .count();
-            let expected = match (row, index) {
-                (0, 0) => [Number::Unsigned(0), Number::Unsigned(0)],
-                (0, 1..=3) => [Number::Unsigned(1), Number::Unsigned(index as u64)],
-                (8, 0) => [Number::Unsigned(2), Number::Unsigned(4)],
-                _ => return Err("resource_stage_invalid"),
-            };
-            if fact.values[..2] != expected {
-                return Err("resource_stage_invalid");
-            }
+            resources::validate_sample(row, index, &fact)?;
             if row == 0
                 && self.rows[row]
                     .facts
@@ -980,50 +1008,6 @@ impl Ledger {
         }
         self.done = true;
         Ok(())
-    }
-
-    fn eligible(&self, infra: bool) -> bool {
-        // PASS rows were admitted only after required_facts and control checks.
-        // Do not infer eligibility from effective UNEXECUTED: only the controller
-        // F9 budget gate may differ from nine actual consumer PASS outcomes.
-        !infra
-            && self.loaded
-            && self.done
-            && self.next == self.rows.len()
-            && self
-                .rows
-                .iter()
-                .all(|row| row.outcome == Some(Outcome::Pass))
-    }
-
-    fn aggregate(&self, infra: bool) -> Outcome {
-        if infra || !self.done {
-            return Outcome::Infra;
-        }
-        for outcome in [
-            Outcome::Infra,
-            Outcome::Fail,
-            Outcome::Unsupported,
-            Outcome::Unexecuted,
-        ] {
-            if self.rows.iter().any(|row| row.outcome == Some(outcome)) {
-                return outcome;
-            }
-        }
-        // Process exit and fixture cleanup do not qualify DLL-owned resources.
-        // These snapshots are precursors, not independently accepted ceilings.
-        Outcome::Unexecuted
-    }
-
-    fn effective(&self, row: usize, infra: bool) -> Outcome {
-        if infra {
-            return Outcome::Infra;
-        }
-        match (row, self.rows[row].outcome) {
-            (8, Some(Outcome::Pass)) => Outcome::Unexecuted,
-            (_, Some(outcome)) => outcome,
-            (_, None) => Outcome::Infra,
-        }
     }
 }
 
@@ -2080,6 +2064,7 @@ fn execute_cycle(
     index: usize,
     fixed_baseline: Option<Baseline>,
     cohort_deadline: Instant,
+    admission: &ResourceAdmission<'_>,
 ) -> CycleSummary {
     let role = CycleRole::at(index);
     let directory = arguments.directory.join(CYCLE_DIRECTORIES[index]);
@@ -2089,6 +2074,7 @@ fn execute_cycle(
         before_written: false,
         report_written: false,
         output_error: None,
+        resource: None,
     };
     if let Err(error) = private_directory(&directory) {
         summary.output_error = Some(error);
@@ -2112,6 +2098,8 @@ fn execute_cycle(
         }
         Err(error) => errors.push(error),
     }
+    let resource_before =
+        ResourceDecision::evaluate(admission, &ledger, Phase::Before, !errors.is_empty());
     match write_new(
         &directory.join("before.json"),
         report(
@@ -2120,8 +2108,12 @@ fn execute_cycle(
             &finalization,
             &errors,
             Phase::Before,
-            index,
-            fixed_baseline,
+            CycleReportContext {
+                index,
+                fixed_baseline,
+                admission,
+                resource: &resource_before,
+            },
         )
         .as_bytes(),
         true,
@@ -2229,31 +2221,26 @@ fn execute_cycle(
     }
     record_expiration(&mut errors, cohort_deadline);
     let infra = !errors.is_empty() || !finalization.accepted(role);
-    summary.aggregate = ledger.aggregate(infra);
-    summary.eligible = ledger.eligible(infra);
+    let resource = ResourceDecision::evaluate(admission, &ledger, Phase::Final, infra);
     // Evidence persistence is not a new qualification operation. Expired cycles
     // still retain their complete ledger and bounded-finalization observations.
-    match write_new(
+    summary.persist_report(
         &directory.join("report.json"),
-        report(
+        &report(
             &ledger,
             artifacts,
             &finalization,
             &errors,
             Phase::Final,
-            index,
-            fixed_baseline,
-        )
-        .as_bytes(),
-        true,
-    ) {
-        Ok(()) => summary.report_written = true,
-        Err(error) => {
-            summary.aggregate = Outcome::Infra;
-            summary.eligible = false;
-            summary.output_error = Some(error);
-        }
-    }
+            CycleReportContext {
+                index,
+                fixed_baseline,
+                admission,
+                resource: &resource,
+            },
+        ),
+        resource,
+    );
     summary
 }
 
@@ -2278,7 +2265,16 @@ fn execute(arguments: ForeignArguments) -> Checked<i32> {
             }
         }
     }
-    let mut cycles = [None; CYCLE_COUNT];
+    let admission = ResourceAdmission::select(
+        arguments.resources.as_ref(),
+        mado_pilot_testkit::bench_harness::RELEASE_TARGET,
+        !cfg!(debug_assertions),
+        ResourceArtifacts::from_artifacts(&artifacts),
+    );
+    if let Some(error) = admission.error {
+        errors.push(error);
+    }
+    let mut cycles = std::array::from_fn(|_| None);
     write_new(
         &arguments.directory.join("before.json"),
         cohort_report(
@@ -2287,6 +2283,7 @@ fn execute(arguments: ForeignArguments) -> Checked<i32> {
             &CohortFinalization::default(),
             &errors,
             Phase::Before,
+            &admission,
         )
         .as_bytes(),
         true,
@@ -2299,6 +2296,7 @@ fn execute(arguments: ForeignArguments) -> Checked<i32> {
             0,
             None,
             cohort_deadline,
+            &admission,
         ));
     }
     record_expiration(&mut errors, cohort_deadline);
@@ -2330,6 +2328,7 @@ fn execute(arguments: ForeignArguments) -> Checked<i32> {
             index,
             fixed_baseline,
             cohort_deadline,
+            &admission,
         ));
     }
     let artifacts_unchanged = finalize_artifacts(&mut artifacts, cohort_deadline);
@@ -2359,7 +2358,15 @@ fn execute(arguments: ForeignArguments) -> Checked<i32> {
     let outcome = cohort_aggregate(&cycles, Phase::Final, !errors.is_empty());
     write_new(
         &arguments.directory.join("report.json"),
-        cohort_report(&cycles, &artifacts, &finalization, &errors, Phase::Final).as_bytes(),
+        cohort_report(
+            &cycles,
+            &artifacts,
+            &finalization,
+            &errors,
+            Phase::Final,
+            &admission,
+        )
+        .as_bytes(),
         true,
     )?;
     println!("native_foreign_watch:{}", outcome.name());
@@ -2395,10 +2402,11 @@ fn baseline_predicate() -> &'static str {
     }
 }
 
-fn append_report_policy(text: &mut String) {
+fn append_report_policy(text: &mut String, admission: &ResourceAdmission<'_>) {
+    admission.append_json(text);
     let _ = write!(
         text,
-        ",\"exit_semantics\":{{\"pass\":0,\"nonpass\":1,\"infra\":2}},\"resource_qualification\":{{\"accepted\":false,\"reason\":\"resource_budget_unaccepted\",\"scope\":\"process private-or-footprint bytes, resident bytes and handle-or-port counts; not GPU bytes or exact live-object counts\"}},\"limits\":{{\"line_bytes\":{LINE_LIMIT},\"queue_events\":{QUEUE_LIMIT},\"records_per_consumer\":{RECORD_LIMIT},\"facts_per_row\":{FACTS_PER_ROW},\"stderr_bytes\":{STDERR_LIMIT},\"reply_ms\":5000,\"partial_line_ms\":5000,\"fixture_ack_ms\":2000,\"fixture_start_ms\":10000,\"lifecycle_ms\":10000,\"row_ms\":120000,\"cohort_ms\":600000,\"authority\":\"one_absolute_monotonic_deadline\",\"filesystem_native_call_preemption\":false,\"bounded_cleanup_after_expiry\":true}}"
+        ",\"exit_semantics\":{{\"pass\":0,\"nonpass\":1,\"infra\":2}},\"limits\":{{\"line_bytes\":{LINE_LIMIT},\"queue_events\":{QUEUE_LIMIT},\"records_per_consumer\":{RECORD_LIMIT},\"facts_per_row\":{FACTS_PER_ROW},\"stderr_bytes\":{STDERR_LIMIT},\"reply_ms\":5000,\"partial_line_ms\":5000,\"fixture_ack_ms\":2000,\"fixture_start_ms\":10000,\"lifecycle_ms\":10000,\"row_ms\":120000,\"cohort_ms\":600000,\"authority\":\"one_absolute_monotonic_deadline\",\"filesystem_native_call_preemption\":false,\"bounded_cleanup_after_expiry\":true}}"
     );
 }
 
@@ -2444,6 +2452,7 @@ fn cohort_report(
     finalization: &CohortFinalization,
     errors: &[Failure],
     phase: Phase,
+    admission: &ResourceAdmission<'_>,
 ) -> String {
     let infra = !errors.is_empty()
         || (phase == Phase::Final
@@ -2451,9 +2460,9 @@ fn cohort_report(
                 || (finalization.fixed_baseline.is_some() && !finalization.baseline_restored)));
     let outcome = cohort_aggregate(cycles, phase, infra);
     let mut text = format!(
-        "{{\"schema\":\"madopilot.native-foreign-watch.cohort.v2\",\"phase\":\"{}\",\"target\":\"{}\",\"protocol\":\"native-foreign-watch.v1\",\"warmup_count\":{WARMUP_COUNT},\"measurement_count\":{MEASUREMENT_COUNT},\"aggregate\":\"{}\",\"exit_code\":{},\"controller_resource_scope\":{{\"warmup\":\"initialization_observation\",\"measurement\":\"steady_state\",\"baseline_reference\":\"fixed_postwarmup\",\"measurement_baseline_enforced\":true,\"measurement_equality_enforced\":{},\"comparison_predicate\":\"{}\",\"cold_leak_free_qualified\":false,\"artifact_owners\":\"same_four_pins_held_through_final_baseline\"}},\"fixed_baseline\":{},\"final_baseline\":{},\"finalization\":{{\"baseline_observed\":{},\"baseline_restored\":{},\"artifacts_unchanged\":{}}}",
+        "{{\"schema\":\"madopilot.native-foreign-watch.cohort.v3\",\"phase\":\"{}\",\"target\":\"{}\",\"protocol\":\"native-foreign-watch.v1\",\"warmup_count\":{WARMUP_COUNT},\"measurement_count\":{MEASUREMENT_COUNT},\"aggregate\":\"{}\",\"exit_code\":{},\"controller_resource_scope\":{{\"warmup\":\"initialization_observation\",\"measurement\":\"steady_state\",\"baseline_reference\":\"fixed_postwarmup\",\"measurement_baseline_enforced\":true,\"measurement_equality_enforced\":{},\"comparison_predicate\":\"{}\",\"cold_leak_free_qualified\":false,\"artifact_owners\":\"same_four_pins_held_through_final_baseline\"}},\"fixed_baseline\":{},\"final_baseline\":{},\"finalization\":{{\"baseline_observed\":{},\"baseline_restored\":{},\"artifacts_unchanged\":{}}}",
         phase.name(),
-        super::target_name(),
+        mado_pilot_testkit::bench_harness::RELEASE_TARGET,
         outcome.name(),
         option_json((phase == Phase::Final).then_some(outcome.exit_code())),
         cfg!(windows),
@@ -2464,11 +2473,12 @@ fn cohort_report(
         finalization.baseline_restored,
         finalization.artifacts_unchanged,
     );
-    append_report_policy(&mut text);
+    append_report_policy(&mut text, admission);
     append_errors(&mut text, errors);
     append_artifacts(&mut text, artifacts);
     text.push_str(",\"cycles\":[");
     for (index, cycle) in cycles.iter().enumerate() {
+        let cycle = cycle.as_ref();
         if index > 0 {
             text.push(',');
         }
@@ -2494,12 +2504,23 @@ fn cohort_report(
             cycle.is_some_and(|cycle| cycle.eligible),
         );
         let reason = match cycle {
-            Some(cycle) => cycle.output_error,
+            Some(cycle) => cycle.output_error.or_else(|| {
+                cycle.resource.as_ref().and_then(|resource| {
+                    (resource.outcome() != Outcome::Pass && cycle.aggregate == resource.outcome())
+                        .then_some(resource.reason())
+                })
+            }),
             None if phase == Phase::Before => Some("cohort_not_started"),
             None => Some("prior_cycle_failed"),
         };
         if let Some(reason) = reason {
             let _ = write!(text, "\"{reason}\"");
+        } else {
+            text.push_str("null");
+        }
+        text.push_str(",\"resource_decision\":");
+        if let Some(resource) = cycle.and_then(|cycle| cycle.resource.as_ref()) {
+            resource.append_json(&mut text);
         } else {
             text.push_str("null");
         }
@@ -2509,26 +2530,37 @@ fn cohort_report(
     text
 }
 
+struct CycleReportContext<'a> {
+    index: usize,
+    fixed_baseline: Option<Baseline>,
+    admission: &'a ResourceAdmission<'a>,
+    resource: &'a ResourceDecision,
+}
+
 fn report(
     ledger: &Ledger,
     artifacts: &[Artifact],
     finalization: &Finalization,
     errors: &[Failure],
     phase: Phase,
-    index: usize,
-    fixed_baseline: Option<Baseline>,
+    context: CycleReportContext<'_>,
 ) -> String {
+    let CycleReportContext {
+        index,
+        fixed_baseline,
+        admission,
+        resource,
+    } = context;
     let role = CycleRole::at(index);
-    let infra = !errors.is_empty() || (phase == Phase::Final && !finalization.accepted(role));
-    let outcome = phase.aggregate(ledger.aggregate(infra), infra);
+    let outcome = resource.aggregate();
     let mut text = format!(
-        "{{\"schema\":\"madopilot.native-foreign-watch.cycle.v2\",\"phase\":\"{}\",\"target\":\"{}\",\"protocol\":\"native-foreign-watch.v1\",\"index\":{index},\"role\":\"{}\",\"aggregate\":\"{}\",\"exit_code\":{},\"eligible\":{},\"ledger_complete\":{},\"loaded_library_verified\":{},\"resource_observation\":{{\"scope\":\"{}\",\"baseline_reference\":\"{}\",\"baseline_enforced\":{},\"equality_enforced\":{},\"comparison_predicate\":\"{}\",\"fixed_baseline\":{},\"cold_leak_free_qualified\":false}}",
+        "{{\"schema\":\"madopilot.native-foreign-watch.cycle.v3\",\"phase\":\"{}\",\"target\":\"{}\",\"protocol\":\"native-foreign-watch.v1\",\"index\":{index},\"role\":\"{}\",\"aggregate\":\"{}\",\"exit_code\":{},\"eligible\":{},\"ledger_complete\":{},\"loaded_library_verified\":{},\"resource_observation\":{{\"scope\":\"{}\",\"baseline_reference\":\"{}\",\"baseline_enforced\":{},\"equality_enforced\":{},\"comparison_predicate\":\"{}\",\"fixed_baseline\":{},\"cold_leak_free_qualified\":false}}",
         phase.name(),
-        super::target_name(),
+        mado_pilot_testkit::bench_harness::RELEASE_TARGET,
         role.name(),
         outcome.name(),
         option_json((phase == Phase::Final).then_some(outcome.exit_code())),
-        phase == Phase::Final && ledger.eligible(infra),
+        resource.eligible(),
         ledger.done,
         ledger.loaded,
         role.scope(),
@@ -2538,7 +2570,9 @@ fn report(
         baseline_predicate(),
         baseline_json(fixed_baseline),
     );
-    append_report_policy(&mut text);
+    append_report_policy(&mut text, admission);
+    text.push_str(",\"resource_decision\":");
+    resource.append_json(&mut text);
     append_errors(&mut text, errors);
     append_artifacts(&mut text, artifacts);
     text.push_str(",\"rows\":[");
@@ -2549,15 +2583,15 @@ fn report(
         let consumer = row
             .outcome
             .map_or_else(|| "null".into(), |value| format!("\"{}\"", value.name()));
-        let effective = phase.aggregate(ledger.effective(index, infra), infra);
+        let effective = resource.effective(index);
         let reason = row
             .reason
             .as_ref()
             .map_or_else(|| "null".into(), |value| format!("\"{value}\""));
-        let controller_reason = if index == 8 && row.outcome == Some(Outcome::Pass) {
-            "\"resource_budget_unaccepted\""
+        let controller_reason = if index == 8 && resource.effective(8) == resource.outcome() {
+            format!("\"{}\"", resource.reason())
         } else {
-            "null"
+            "null".to_owned()
         };
         let _ = write!(
             text,
@@ -2639,36 +2673,765 @@ fn report(
 }
 
 #[cfg(test)]
+// Cargo checks harness=false benches with cfg(test), without collecting test entry points.
+#[allow(dead_code)]
 mod tests {
+    use super::*;
+
+    fn resource_arguments(profile: &resources::ResourceProfile) -> Vec<OsString> {
+        #[cfg(unix)]
+        let root = "/owned";
+        #[cfg(windows)]
+        let root = "C:\\owned";
+        let mut raw: Vec<_> = [
+            "--foreign-consumer",
+            "--fixture-executable",
+            "--foreign-artifact-dir",
+            "--foreign-library",
+        ]
+        .map(|key| OsString::from(format!("{key}={root}")))
+        .into_iter()
+        .collect();
+        let values = [
+            profile.id.to_owned(),
+            profile.hardware.to_owned(),
+            profile.os_version.to_owned(),
+            profile.topology.to_owned(),
+            "1".repeat(40),
+            "2".repeat(40),
+            "3".repeat(64),
+            "4".repeat(64),
+        ];
+        raw.extend(
+            ResourceRequest::KEYS
+                .into_iter()
+                .zip(values)
+                .map(|(key, value)| OsString::from(format!("{key}={value}"))),
+        );
+        raw
+    }
+
+    fn resource_request(profile: &resources::ResourceProfile) -> ResourceRequest {
+        ForeignArguments::parse(&resource_arguments(profile))
+            .unwrap()
+            .resources
+            .unwrap()
+    }
+
+    fn approved_artifacts<'a>(
+        profile: &'a resources::ResourceProfile,
+        request: &'a ResourceRequest,
+        cpp: bool,
+    ) -> ResourceArtifacts<'a> {
+        ResourceArtifacts {
+            consumer: profile.consumer_sha256[usize::from(cpp)],
+            library: profile.library_sha256,
+            fixture: profile.fixture_sha256,
+            runner: &request.runner_sha256,
+        }
+    }
+
+    fn unselected_resources() -> ResourceAdmission<'static> {
+        ResourceAdmission::select(
+            None,
+            mado_pilot_testkit::bench_harness::RELEASE_TARGET,
+            !cfg!(debug_assertions),
+            None,
+        )
+    }
+
+    fn append_fact(ledger: &mut Ledger, row: usize, key: FactKey, values: &str) {
+        ledger
+            .fact(
+                row,
+                Fact::parse(key, &values.split(' ').collect::<Vec<_>>()).unwrap(),
+            )
+            .unwrap();
+    }
+
+    fn append_bootstrap(ledger: &mut Ledger, row: usize, geometry: &resources::ProfileGeometry) {
+        let [width, height] = geometry.frame;
+        append_fact(
+            ledger,
+            row,
+            FactKey::Bootstrap,
+            &format!("1 0 0 0 {width} {height}"),
+        );
+    }
+
+    fn append_geometry(
+        ledger: &mut Ledger,
+        row: usize,
+        profile: &resources::ResourceProfile,
+        stage: usize,
+    ) {
+        let geometry = &profile.geometry[stage];
+        let [width, height] = geometry.frame;
+        append_fact(
+            ledger,
+            row,
+            FactKey::Frame,
+            &format!("1 {stage} 1 {stage} {width} {height}"),
+        );
+        let [width, height, x, y] = geometry.transform;
+        append_fact(
+            ledger,
+            row,
+            FactKey::Transform,
+            &format!("{stage} {stage} {stage} {width} {height} {x} {y} 1"),
+        );
+    }
+
+    fn resource_ledger(profile: &resources::ResourceProfile, samples: [[u64; 3]; 5]) -> Ledger {
+        let mut ledger = Ledger::new();
+        ledger.loaded = true;
+        for (row, reason) in PASS_REASONS.iter().enumerate() {
+            match row {
+                0 => {
+                    append_fact(
+                        &mut ledger,
+                        row,
+                        FactKey::Permissions,
+                        if cfg!(windows) { "3 3" } else { "1 3" },
+                    );
+                    append_fact(&mut ledger, row, FactKey::Status, "0 0");
+                    for (index, [first, resident, count]) in samples[..4].iter().enumerate() {
+                        append_bootstrap(&mut ledger, row, &profile.geometry[0]);
+                        append_fact(
+                            &mut ledger,
+                            row,
+                            FactKey::Resource,
+                            &format!(
+                                "{} {index} {first} {resident} {count}",
+                                u8::from(index != 0)
+                            ),
+                        );
+                    }
+                }
+                1 => {
+                    append_bootstrap(&mut ledger, row, &profile.geometry[0]);
+                    append_geometry(&mut ledger, row, profile, 0);
+                    append_fact(&mut ledger, row, FactKey::Pending, "1 0 0");
+                    append_fact(&mut ledger, row, FactKey::Startup, "1");
+                }
+                2 => append_geometry(&mut ledger, row, profile, 0),
+                3 | 4 => {
+                    append_geometry(&mut ledger, row, profile, row - 3);
+                    append_fact(&mut ledger, row, FactKey::Pending, "1 0 0");
+                    append_bootstrap(&mut ledger, row, &profile.geometry[row - 2]);
+                    append_geometry(&mut ledger, row, profile, row - 2);
+                    append_geometry(&mut ledger, row, profile, row - 2);
+                }
+                5 => {
+                    for status in ["3 0", "4 0", "0 2", "0 3"] {
+                        append_fact(&mut ledger, row, FactKey::Status, status);
+                    }
+                    append_fact(&mut ledger, row, FactKey::Pending, "1 0 0");
+                }
+                6 => {
+                    append_bootstrap(&mut ledger, row, &profile.geometry[2]);
+                    append_geometry(&mut ledger, row, profile, 0);
+                    append_geometry(&mut ledger, row, profile, 2);
+                }
+                7 => {
+                    for _ in 0..2 {
+                        append_bootstrap(&mut ledger, row, &profile.geometry[2]);
+                    }
+                    for status in ["0 4", "0 5", "0 6"] {
+                        append_fact(&mut ledger, row, FactKey::Status, status);
+                    }
+                }
+                8 => {
+                    let [first, resident, count] = samples[4];
+                    append_fact(
+                        &mut ledger,
+                        row,
+                        FactKey::Resource,
+                        &format!("2 4 {first} {resident} {count}"),
+                    );
+                    append_fact(&mut ledger, row, FactKey::Status, "0 0");
+                }
+                _ => unreachable!(),
+            }
+            if matches!(row, 2 | 3 | 4 | 6) {
+                append_fact(&mut ledger, row, FactKey::Match, "1 1 1 1 0 0 0 1 1");
+                append_fact(&mut ledger, row, FactKey::Mapped, "4");
+            }
+            ledger.row(row, Outcome::Pass, reason).unwrap();
+        }
+        ledger.finish().unwrap();
+        ledger
+    }
+
+    fn cycle_summary(
+        ledger: &Ledger,
+        admission: &ResourceAdmission<'_>,
+        infra: bool,
+    ) -> CycleSummary {
+        let resource = ResourceDecision::evaluate(admission, ledger, Phase::Final, infra);
+        CycleSummary {
+            aggregate: resource.aggregate(),
+            eligible: resource.eligible(),
+            before_written: true,
+            report_written: true,
+            output_error: None,
+            resource: Some(resource),
+        }
+    }
+
+    #[test]
+    fn cycle_report_persistence_failure_invalidates_the_effective_resource_decision() {
+        let profile = &resources::PROFILES[0];
+        let request = resource_request(profile);
+        let admission = ResourceAdmission::select(
+            Some(&request),
+            profile.target,
+            true,
+            Some(approved_artifacts(profile, &request, false)),
+        );
+        let ledger = resource_ledger(profile, [[1, 1, 1]; 5]);
+        let resource = ResourceDecision::evaluate(&admission, &ledger, Phase::Final, false);
+        let mut text = String::new();
+        resource.append_json(&mut text);
+        let mut cycle = CycleSummary {
+            aggregate: Outcome::Unexecuted,
+            eligible: false,
+            before_written: true,
+            report_written: false,
+            output_error: None,
+            resource: None,
+        };
+        // A directory cannot become a report file. Exercise real create_new failure
+        // without changing any existing file or relying on a permissions race.
+        cycle.persist_report(&std::env::current_dir().unwrap(), &text, resource);
+        let mut cycles = std::array::from_fn(|_| None);
+        cycles[0] = Some(cycle);
+        assert!(!cycle_may_launch(&cycles, 1, false));
+        assert_eq!(
+            cohort_aggregate(&cycles, Phase::Final, false).exit_code(),
+            2
+        );
+        let cycle = cycles[0].as_ref().unwrap();
+        assert_eq!(cycle.aggregate, Outcome::Infra);
+        assert!(!cycle.eligible);
+        assert_eq!(cycle.output_error, Some("output_create_failed"));
+        assert!(!cycle.report_written);
+        let resource = cycle.resource.as_ref().unwrap();
+        assert_eq!(resource.outcome(), Outcome::Pass);
+        assert_eq!(resource.effective(8), Outcome::Infra);
+        assert_eq!(resource.aggregate(), Outcome::Infra);
+        assert!(!resource.eligible());
+    }
+
+    #[test]
+    fn successful_final_report_preserves_an_earlier_output_failure() {
+        struct ReportDirectory(PathBuf);
+        impl Drop for ReportDirectory {
+            fn drop(&mut self) {
+                #[cfg(windows)]
+                {
+                    let report = self.0.join("report.json");
+                    if let Ok(metadata) = fs::metadata(&report) {
+                        let mut permissions = metadata.permissions();
+                        permissions.set_readonly(false);
+                        let _ = fs::set_permissions(report, permissions);
+                    }
+                }
+                let _ = fs::remove_dir_all(&self.0);
+            }
+        }
+        let nonce = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap()
+            .as_nanos();
+        let path = std::env::temp_dir().join(format!(
+            "mado-pilot-report-contract-{}-{nonce}",
+            std::process::id()
+        ));
+        private_directory(&path).unwrap();
+        let directory = ReportDirectory(path);
+        let before_error = write_new(&directory.0, b"", true).unwrap_err();
+        let resource =
+            ResourceDecision::evaluate(&unselected_resources(), &Ledger::new(), Phase::Final, true);
+        let mut text = String::new();
+        resource.append_json(&mut text);
+        let mut cycle = CycleSummary {
+            aggregate: Outcome::Infra,
+            eligible: false,
+            before_written: false,
+            report_written: false,
+            output_error: Some(before_error),
+            resource: None,
+        };
+        cycle.persist_report(&directory.0.join("report.json"), &text, resource);
+        assert!(cycle.report_written);
+        assert_eq!(cycle.output_error, Some(before_error));
+        assert_eq!(cycle.aggregate, Outcome::Infra);
+        assert!(!cycle.eligible);
+    }
+
+    #[test]
+    fn resource_selection_requires_the_complete_bounded_cli_group() {
+        let profile = &resources::PROFILES[0];
+        let raw = resource_arguments(profile);
+        assert!(
+            ForeignArguments::parse(&raw[..4])
+                .unwrap()
+                .resources
+                .is_none()
+        );
+        assert!(ForeignArguments::parse(&raw).unwrap().resources.is_some());
+        for missing in 4..12 {
+            let mut incomplete = raw.clone();
+            incomplete.remove(missing);
+            assert!(ForeignArguments::parse(&incomplete).is_err());
+        }
+        for (index, replacement) in [
+            (5, raw[4].clone()),
+            (5, OsString::from("--foreign-resource-max-bytes=100")),
+            (5, OsString::from("--foreign-resource-hardware=")),
+            (
+                5,
+                OsString::from(format!("--foreign-resource-hardware={}", "a".repeat(257))),
+            ),
+            (
+                6,
+                OsString::from("--foreign-resource-os-version=bad\nvalue"),
+            ),
+            (8, OsString::from("--foreign-resource-source-commit=1234")),
+            (
+                9,
+                OsString::from(format!("--foreign-resource-source-tree={}", "z".repeat(40))),
+            ),
+            (
+                10,
+                OsString::from(format!(
+                    "--foreign-resource-runner-sha256={}",
+                    "a".repeat(63)
+                )),
+            ),
+            (
+                11,
+                OsString::from(format!(
+                    "--foreign-resource-context-sha256={}",
+                    "g".repeat(64)
+                )),
+            ),
+        ] {
+            let mut invalid = raw.clone();
+            invalid[index] = replacement;
+            assert!(ForeignArguments::parse(&invalid).is_err());
+        }
+    }
+
+    #[test]
+    fn resource_admission_rejects_unreviewed_profiles_builds_and_artifacts() {
+        for profile in &resources::PROFILES {
+            let request = resource_request(profile);
+            let pins = approved_artifacts(profile, &request, false);
+            for (target, release) in [(profile.target, false), ("other-target", true)] {
+                let admission =
+                    ResourceAdmission::select(Some(&request), target, release, Some(pins));
+                assert_eq!(
+                    ResourceDecision::evaluate(&admission, &Ledger::new(), Phase::Before, false)
+                        .outcome(),
+                    Outcome::Infra,
+                );
+                assert!(!cycle_may_launch(
+                    &std::array::from_fn(|_| None),
+                    0,
+                    admission.error.is_some()
+                ));
+            }
+            assert!(
+                profile
+                    .admit(&request, profile.target, true, &"0".repeat(64), Some(pins))
+                    .is_err()
+            );
+            let different = "0".repeat(64);
+            for pins in [
+                ResourceArtifacts {
+                    consumer: &different,
+                    ..pins
+                },
+                ResourceArtifacts {
+                    library: &different,
+                    ..pins
+                },
+                ResourceArtifacts {
+                    fixture: &different,
+                    ..pins
+                },
+                ResourceArtifacts {
+                    runner: &different,
+                    ..pins
+                },
+            ] {
+                let admission =
+                    ResourceAdmission::select(Some(&request), profile.target, true, Some(pins));
+                let decision =
+                    ResourceDecision::evaluate(&admission, &Ledger::new(), Phase::Before, false);
+                assert_eq!(decision.outcome().exit_code(), 2);
+                assert!(!decision.may_advance());
+            }
+            assert!(
+                ResourceAdmission::select(Some(&request), profile.target, true, None)
+                    .error
+                    .is_some()
+            );
+            for field in 0..4 {
+                let mut request = resource_request(profile);
+                match field {
+                    0 => request.profile_id.push_str("-unreviewed"),
+                    1 => request.hardware.push_str("-different"),
+                    2 => request.os_version.push_str("-different"),
+                    3 => request.topology.push_str("-different"),
+                    _ => unreachable!(),
+                }
+                let pins = approved_artifacts(profile, &request, true);
+                let admission =
+                    ResourceAdmission::select(Some(&request), profile.target, true, Some(pins));
+                assert_eq!(
+                    ResourceDecision::evaluate(&admission, &Ledger::new(), Phase::Before, false)
+                        .outcome(),
+                    Outcome::Infra,
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn accepted_resource_profiles_can_pass_both_consumers_and_the_complete_cohort() {
+        // Representative retained counts exercise the real compiled limits, not
+        // a test-only profile or a disabled production enforcement branch.
+        let observations = [
+            [
+                [119_276_480, 173_015_040, 210],
+                [119_440_320, 173_211_648, 211],
+                [119_489_472, 173_260_800, 214],
+                [119_555_008, 173_342_720, 216],
+                [442_172_616, 495_943_680, 220],
+            ],
+            [
+                [21_655_552, 36_364_288, 415],
+                [24_342_528, 37_982_208, 389],
+                [24_694_784, 38_993_920, 423],
+                [26_660_864, 39_391_232, 427],
+                [40_079_360, 44_216_320, 431],
+            ],
+        ];
+        for (profile, samples) in resources::PROFILES.iter().zip(observations) {
+            let request = resource_request(profile);
+            for cpp in [false, true] {
+                let admission = ResourceAdmission::select(
+                    Some(&request),
+                    profile.target,
+                    true,
+                    Some(approved_artifacts(profile, &request, cpp)),
+                );
+                assert!(admission.error.is_none());
+                let ledger = resource_ledger(profile, samples);
+                let decision = ResourceDecision::evaluate(&admission, &ledger, Phase::Final, false);
+                assert_eq!(decision.effective(8), Outcome::Pass);
+                assert_eq!(decision.aggregate().exit_code(), 0);
+                assert!(decision.eligible());
+                let mut cycles = std::array::from_fn(|_| None);
+                for index in 0..CYCLE_COUNT {
+                    assert!(cycle_may_launch(&cycles, index, false));
+                    cycles[index] = Some(cycle_summary(&ledger, &admission, false));
+                }
+                assert_eq!(
+                    cohort_aggregate(&cycles, Phase::Final, false).exit_code(),
+                    0
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn every_baseline_lifecycle_and_final_limit_is_inclusive_and_binding() {
+        for profile in &resources::PROFILES {
+            let request = resource_request(profile);
+            let admission = ResourceAdmission::select(
+                Some(&request),
+                profile.target,
+                true,
+                Some(approved_artifacts(profile, &request, false)),
+            );
+            for sample in 0..5 {
+                for metric in 0..3 {
+                    for delta in [false, true] {
+                        if sample == 0 && delta {
+                            continue;
+                        }
+                        let budget = &profile.budgets[metric];
+                        let limit = if delta {
+                            if sample == 4 {
+                                budget.delta_final
+                            } else {
+                                budget.delta_lifecycle
+                            }
+                        } else if sample == 4 {
+                            budget.absolute_final
+                        } else {
+                            budget.absolute_lifecycle
+                        };
+                        let baseline = if delta { 0 } else { budget.absolute_lifecycle };
+                        let mut samples = [[0; 3]; 5];
+                        for values in &mut samples {
+                            values[metric] = baseline;
+                        }
+                        samples[sample][metric] = limit;
+                        let at_limit = resource_ledger(profile, samples);
+                        assert_eq!(
+                            ResourceDecision::evaluate(&admission, &at_limit, Phase::Final, false)
+                                .outcome(),
+                            Outcome::Pass,
+                        );
+                        samples[sample][metric] += 1;
+                        let over_limit = resource_ledger(profile, samples);
+                        let decision = ResourceDecision::evaluate(
+                            &admission,
+                            &over_limit,
+                            Phase::Final,
+                            false,
+                        );
+                        assert_eq!(decision.outcome(), Outcome::Fail);
+                        let failures: Vec<_> = decision
+                            .comparisons
+                            .as_ref()
+                            .unwrap()
+                            .iter()
+                            .filter(|comparison| !comparison.passed())
+                            .map(|comparison| {
+                                (comparison.sample, comparison.metric, comparison.delta)
+                            })
+                            .collect();
+                        assert_eq!(failures, [(sample, metric, delta)]);
+                    }
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn resource_differences_remain_signed_against_the_own_fixed_baseline() {
+        let profile = &resources::PROFILES[0];
+        let request = resource_request(profile);
+        let admission = ResourceAdmission::select(
+            Some(&request),
+            profile.target,
+            true,
+            Some(approved_artifacts(profile, &request, false)),
+        );
+        let ledger = resource_ledger(
+            profile,
+            [
+                [100, 200, 30],
+                [99, 198, 27],
+                [98, 196, 24],
+                [97, 194, 21],
+                [0, 1, 0],
+            ],
+        );
+        let decision = ResourceDecision::evaluate(&admission, &ledger, Phase::Final, false);
+        assert_eq!(decision.outcome(), Outcome::Pass);
+        let differences: Vec<_> = decision
+            .comparisons
+            .as_ref()
+            .unwrap()
+            .iter()
+            .filter(|comparison| comparison.delta)
+            .map(|comparison| comparison.observed)
+            .collect();
+        assert_eq!(
+            differences,
+            [-1, -2, -3, -2, -4, -6, -3, -6, -9, -100, -199, -30]
+        );
+    }
+
+    #[test]
+    fn missing_duplicate_reordered_and_malformed_resource_evidence_is_infra() {
+        let profile = &resources::PROFILES[0];
+        let request = resource_request(profile);
+        let selected = ResourceAdmission::select(
+            Some(&request),
+            profile.target,
+            true,
+            Some(approved_artifacts(profile, &request, false)),
+        );
+        for admission in [&selected, &unselected_resources()] {
+            for defect in 0..8 {
+                let mut ledger = resource_ledger(profile, [[100, 200, 3]; 5]);
+                let indices: Vec<_> = ledger.rows[0]
+                    .facts
+                    .iter()
+                    .enumerate()
+                    .filter_map(|(index, fact)| (fact.key == FactKey::Resource).then_some(index))
+                    .collect();
+                match defect {
+                    0 | 1 => {
+                        ledger.rows[0].facts.remove(indices[defect]);
+                    }
+                    2 => {
+                        ledger.rows[8].facts.remove(0);
+                    }
+                    3 => {
+                        let duplicate = ledger.rows[0].facts[indices[1]].clone();
+                        ledger.rows[0].facts.insert(indices[2], duplicate);
+                    }
+                    4 => ledger.rows[0].facts.swap(indices[1], indices[2]),
+                    5 => {
+                        ledger.rows[0].facts[indices[0]].values.pop();
+                    }
+                    6 => ledger.rows[8].facts[0].values[2] = Number::Real(1.0),
+                    7 => ledger.rows[8].facts[0].values[4] = Number::Unsigned(16_777_217),
+                    _ => unreachable!(),
+                }
+                let decision = ResourceDecision::evaluate(admission, &ledger, Phase::Final, false);
+                assert_eq!(decision.effective(8), Outcome::Infra);
+                assert_eq!(decision.aggregate().exit_code(), 2);
+                assert!(!decision.eligible());
+            }
+        }
+        for line in [
+            "FACT F1 resource 0 0 1 2",
+            "FACT F1 resource 0 0 -1 2 3",
+            "FACT F9 resource 2 4 NaN 2 3",
+            "FACT F9 resource 2 4 1 2 16777217",
+        ] {
+            assert!(parse_request(line).is_err());
+        }
+    }
+
+    #[test]
+    fn observed_geometry_not_declared_topology_controls_resource_applicability() {
+        for profile in &resources::PROFILES {
+            let request = resource_request(profile);
+            let admission = ResourceAdmission::select(
+                Some(&request),
+                profile.target,
+                true,
+                Some(approved_artifacts(profile, &request, true)),
+            );
+            let mut ledger = resource_ledger(profile, [[100, 200, 3]; 5]);
+            for row in &mut ledger.rows[1..5] {
+                row.facts.sort_by_key(|fact| fact.key == FactKey::Frame);
+            }
+            assert_eq!(
+                ResourceDecision::evaluate(&admission, &ledger, Phase::Final, false).outcome(),
+                Outcome::Pass
+            );
+            for (row, key, occurrence, scalar) in [
+                (1, FactKey::Frame, 0, 4),
+                (2, FactKey::Transform, 0, 5),
+                (3, FactKey::Frame, 1, 5),
+                (4, FactKey::Transform, 2, 3),
+            ] {
+                let mut ledger = resource_ledger(profile, [[100, 200, 3]; 5]);
+                let fact = ledger.rows[row]
+                    .facts
+                    .iter_mut()
+                    .filter(|fact| fact.key == key)
+                    .nth(occurrence)
+                    .unwrap();
+                fact.values[scalar] = match fact.values[scalar] {
+                    Number::Unsigned(value) => Number::Unsigned(value + 1),
+                    Number::Real(value) => Number::Real(value + 0.25),
+                };
+                let decision = ResourceDecision::evaluate(&admission, &ledger, Phase::Final, false);
+                assert_eq!(decision.outcome(), Outcome::Infra);
+                assert!(!decision.eligible());
+            }
+            let mut reversed = resource_ledger(profile, [[100, 200, 3]; 5]);
+            let before = reversed.rows[3].facts[0].clone();
+            reversed.rows[3].facts.push(before);
+            assert_eq!(
+                ResourceDecision::evaluate(&admission, &reversed, Phase::Final, false).outcome(),
+                Outcome::Infra
+            );
+        }
+    }
+
+    #[test]
+    fn resource_pass_preserves_stronger_consumer_and_cleanup_failures() {
+        let profile = &resources::PROFILES[0];
+        let request = resource_request(profile);
+        let admission = ResourceAdmission::select(
+            Some(&request),
+            profile.target,
+            true,
+            Some(approved_artifacts(profile, &request, false)),
+        );
+        for (row, outcome) in [
+            (0, Outcome::Infra),
+            (2, Outcome::Fail),
+            (4, Outcome::Unsupported),
+            (8, Outcome::Unexecuted),
+            (8, Outcome::Fail),
+        ] {
+            let mut ledger = resource_ledger(profile, [[100, 200, 3]; 5]);
+            ledger.rows[row].outcome = Some(outcome);
+            let decision = ResourceDecision::evaluate(&admission, &ledger, Phase::Final, false);
+            assert_eq!(decision.outcome(), Outcome::Pass);
+            assert_eq!(decision.aggregate(), outcome);
+            assert!(!decision.eligible());
+        }
+        let ledger = resource_ledger(profile, [[100, 200, 3]; 5]);
+        let decision = ResourceDecision::evaluate(&admission, &ledger, Phase::Final, true);
+        assert_eq!(decision.effective(8), Outcome::Infra);
+        assert_eq!(decision.aggregate(), Outcome::Infra);
+        assert!(!decision.eligible());
+    }
+
+    #[test]
+    fn an_intermediate_or_final_resource_overrun_stops_after_outer_warmup() {
+        for profile in &resources::PROFILES {
+            let request = resource_request(profile);
+            let admission = ResourceAdmission::select(
+                Some(&request),
+                profile.target,
+                true,
+                Some(approved_artifacts(profile, &request, false)),
+            );
+            for sample in [2, 4] {
+                let mut samples = [[100, 200, 3]; 5];
+                samples[sample][0] += if sample == 4 {
+                    profile.budgets[0].delta_final + 1
+                } else {
+                    profile.budgets[0].delta_lifecycle + 1
+                };
+                let ledger = resource_ledger(profile, samples);
+                let mut cycles = std::array::from_fn(|_| None);
+                cycles[0] = Some(cycle_summary(&ledger, &admission, false));
+                for index in 1..CYCLE_COUNT {
+                    assert!(!cycle_may_launch(&cycles, index, false));
+                }
+                assert_eq!(
+                    cohort_aggregate(&cycles, Phase::Final, false).exit_code(),
+                    1
+                );
+            }
+        }
+    }
 
     #[test]
     fn clean_warmup_can_advance_without_promoting_unaccepted_resource_budget() {
         use super::*;
-        let mut ledger = Ledger::new();
-        ledger.loaded = true;
-        ledger.done = true;
-        ledger.next = ledger.rows.len();
-        for row in &mut ledger.rows {
-            row.outcome = Some(Outcome::Pass);
-        }
-        let cycle = CycleSummary {
-            aggregate: ledger.aggregate(false),
-            eligible: ledger.eligible(false),
-            before_written: true,
-            report_written: true,
-            output_error: None,
-        };
-        let mut cycles = [None; CYCLE_COUNT];
-        cycles[0] = Some(cycle);
+        let ledger = resource_ledger(&resources::PROFILES[0], [[100, 200, 3]; 5]);
+        let admission = unselected_resources();
+        let mut cycles = std::array::from_fn(|_| None);
+        cycles[0] = Some(cycle_summary(&ledger, &admission, false));
         assert!(cycle_may_launch(&cycles, 1, false));
         assert!(!cycle_may_launch(&cycles, 2, false));
         assert!(!cycle_may_launch(&cycles, 0, false));
         for index in 1..CYCLE_COUNT {
             assert!(cycle_may_launch(&cycles, index, false));
-            cycles[index] = Some(cycle);
+            cycles[index] = Some(cycle_summary(&ledger, &admission, false));
         }
         assert!(!cycle_may_launch(&cycles, CYCLE_COUNT, false));
-        assert_eq!(ledger.effective(8, false), Outcome::Unexecuted);
+        let resource = ResourceDecision::evaluate(&admission, &ledger, Phase::Final, false);
+        assert_eq!(resource.effective(8), Outcome::Unexecuted);
         assert_eq!(
             cohort_aggregate(&cycles, Phase::Final, false),
             Outcome::Unexecuted
@@ -2684,22 +3447,11 @@ mod tests {
             (8, Outcome::Unexecuted, false),
             (8, Outcome::Pass, true),
         ] {
-            let mut ledger = Ledger::new();
-            ledger.loaded = true;
-            ledger.done = true;
-            ledger.next = ledger.rows.len();
-            for entry in &mut ledger.rows {
-                entry.outcome = Some(Outcome::Pass);
-            }
+            let ledger_profile = &resources::PROFILES[0];
+            let mut ledger = resource_ledger(ledger_profile, [[100, 200, 3]; 5]);
             ledger.rows[row].outcome = Some(outcome);
-            let mut cycles = [None; CYCLE_COUNT];
-            cycles[0] = Some(CycleSummary {
-                aggregate: ledger.aggregate(infra),
-                eligible: ledger.eligible(infra),
-                before_written: true,
-                report_written: true,
-                output_error: None,
-            });
+            let mut cycles = std::array::from_fn(|_| None);
+            cycles[0] = Some(cycle_summary(&ledger, &unselected_resources(), infra));
             assert!(!cycle_may_launch(&cycles, 1, false));
             assert_eq!(
                 cohort_aggregate(&cycles, Phase::Final, false),
@@ -2849,8 +3601,12 @@ mod tests {
             .unwrap();
         ledger.row(8, Outcome::Pass, PASS_REASONS[8]).unwrap();
         ledger.finish().unwrap();
-        assert_eq!(ledger.effective(8, false), Outcome::Unexecuted);
-        assert_eq!(ledger.effective(8, true), Outcome::Infra);
+        let resource =
+            ResourceDecision::evaluate(&unselected_resources(), &ledger, Phase::Final, false);
+        assert_eq!(resource.effective(8), Outcome::Unexecuted);
+        let failed =
+            ResourceDecision::evaluate(&unselected_resources(), &ledger, Phase::Final, true);
+        assert_eq!(failed.effective(8), Outcome::Infra);
     }
 
     #[test]
@@ -2936,8 +3692,12 @@ mod tests {
                 .unwrap();
         }
         ledger.finish().unwrap();
-        assert_eq!(ledger.aggregate(false), Outcome::Unexecuted);
-        assert_eq!(ledger.aggregate(true), Outcome::Infra);
+        let resource =
+            ResourceDecision::evaluate(&unselected_resources(), &ledger, Phase::Final, false);
+        assert_eq!(resource.aggregate(), Outcome::Unexecuted);
+        let failed =
+            ResourceDecision::evaluate(&unselected_resources(), &ledger, Phase::Final, true);
+        assert_eq!(failed.aggregate(), Outcome::Infra);
         assert!(ledger.finish().is_err());
     }
 

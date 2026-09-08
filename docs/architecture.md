@@ -136,11 +136,14 @@ real-time guarantees, and installable packaging remain unavailable. The
 `v0.4.0` source release publishes the qualified Rust watcher boundary only.
 The subsequent ABI 1.6 development surface adds pull-based C/C++ template
 queries under [ADR 0067](adr/0067-pull-template-watch-c-abi.md). Native foreign
-consumer qualification and independent `G-013` overhead acceptance remain open;
+consumer qualification and final `G-013` enforcement remain open;
 the existing Rust native evidence does not qualify those new boundaries.
 Controlled C/C++ consumers and a benchmark-private, capture-free fixture
 controller now exist under [ADR 0069](adr/0069-native-foreign-template-watch-apparatus.md).
-Admission checks and unaccepted resource observations do not promote native support.
+Its target-specific finite process-resource profiles are independently accepted,
+and explicit selection enables benchmark-private F9 evaluation. Default precursor
+observations remain unaccepted; final source/host campaign review and native
+support remain pending. Metadata declarations are not physical-host authentication.
 See [Implementation status](#implementation-status).
 
 ## Product definition
