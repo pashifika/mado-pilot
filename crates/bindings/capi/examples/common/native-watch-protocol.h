@@ -515,6 +515,45 @@ static inline int mpw_fact(const char *row, const char *key, const char *numeric
            mpw_exchange(request, reply, sizeof(reply)) && strcmp(reply, "OK") == 0;
 }
 
+/* The reference marker_state contract: six center samples, tolerance 8,
+ * separation 32, no coordinate search. -1 is malformed or ambiguous, not absent.
+ * Alpha does not participate, just as in the Rust native consumer. */
+static inline int mpw_marker_state(const uint8_t *pixels, size_t len, uint64_t stride,
+                                   uint32_t width, uint32_t height, const mpw_shape *shape)
+{
+    const uint8_t *cells[6];
+    uint64_t row_bytes = (uint64_t)width * 4u, required;
+    size_t index, channel;
+    int uniform = 1, separated = 0;
+    if (pixels == NULL || !mpw_shape_fits(width, height, shape) ||
+        stride < row_bytes || stride > SIZE_MAX) return -1;
+    if ((uint64_t)(height - 1u) > (UINT64_MAX - row_bytes) / stride) return -1;
+    required = (uint64_t)(height - 1u) * stride + row_bytes;
+    if (required > SIZE_MAX || required > len) return -1;
+    for (index = 0; index < 6; ++index) {
+        uint64_t x = (uint32_t)shape->marker_x + (uint64_t)(index % 3u) * shape->marker_cell_w +
+                     shape->marker_cell_w / 2u;
+        uint64_t y = (uint32_t)shape->marker_y + (uint64_t)(index / 3u) * shape->marker_cell_h +
+                     shape->marker_cell_h / 2u;
+        cells[index] = pixels + (size_t)(y * stride + x * 4u);
+        for (channel = 0; channel < 3; ++channel) {
+            if (abs((int)cells[index][channel] - (int)cells[0][channel]) > 8) uniform = 0;
+        }
+    }
+    if (uniform) return 0;
+    for (channel = 0; channel < 3; ++channel) {
+        if (abs((int)cells[0][channel] - (int)cells[1][channel]) >= 32) separated = 1;
+    }
+    if (!separated) return -1;
+    for (index = 0; index < 6; ++index) {
+        const uint8_t *expected = cells[index == 1 || index == 3 ? 1 : 0];
+        for (channel = 0; channel < 3; ++channel) {
+            if (abs((int)cells[index][channel] - (int)expected[channel]) > 8) return -1;
+        }
+    }
+    return 1;
+}
+
 static inline int mpw_pixels_match_token(const uint8_t *pixels, size_t len, uint64_t stride,
                                          uint32_t width, uint32_t height,
                                          const mpw_shape *shape, const mpw_token *token)

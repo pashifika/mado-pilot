@@ -159,6 +159,10 @@ public:
     }
 
 private:
+    friend struct QualificationContract;
+
+    enum class MapOutcome { mapped, slice_timeout, failed };
+
     bool fail(const char* reason, madopilot::Status status = MADOPILOT_STATUS_OK,
               const char* outcome = "FAIL")
     {
@@ -423,7 +427,7 @@ private:
         Retained matched;
         if (!absent_setup(geometry_, absent, seen_) ||
             !start_pending(geometry_, seen_, query_, pending_snapshot) ||
-            !visible_match(query_, geometry_, matched)) return false;
+            !visible_match(query_, pending_snapshot.query_id, geometry_, seen_, matched)) return false;
         query_.reset();
         matched.reset();
         if (!close_session()) return false;
@@ -562,7 +566,7 @@ private:
                     t.width, t.height) && transform_fact(t, target_);
     }
 
-    bool map_frame(const madopilot::Frame& frame, const Geometry& g,
+    MapOutcome map_frame(const madopilot::Frame& frame, const Geometry& g,
                    const madopilot::Operation& op, madopilot::Mapping& mapping,
                    madopilot::Image& image)
     {
@@ -574,9 +578,12 @@ private:
                         description.value().height == g.transform.height &&
                         description.value().space == MADOPILOT_SPACE_CAPTURE_PIXELS &&
                         same_rect(description.value().bounds, full_frame(g.transform.width, g.transform.height)),
-                    "frame_geometry_mismatch")) return false;
+                    "frame_geometry_mismatch")) return MapOutcome::failed;
         auto mapped = frame.map(madopilot::MapRequest(), op);
-        if (!accept(mapped, "frame_map_failed")) return false;
+        if (!mapped && mapped.status() == MADOPILOT_STATUS_DEADLINE_EXCEEDED) {
+            return MapOutcome::slice_timeout;
+        }
+        if (!accept(mapped, "frame_map_failed")) return MapOutcome::failed;
         mapping = mapped.take();
         const auto described = mapping.describe();
         const auto mapped_stamp = mapping.stamp();
@@ -587,9 +594,9 @@ private:
                         described.value().width == g.transform.width &&
                         described.value().height == g.transform.height &&
                         same_rect(described.value().region, full_frame(g.transform.width, g.transform.height)),
-                    "mapping_correlation_mismatch")) return false;
+                    "mapping_correlation_mismatch")) return MapOutcome::failed;
         image = described.value();
-        return true;
+        return MapOutcome::mapped;
     }
 
     static bool token_matches(const madopilot::Image& image, const Geometry& g, const mpw_token& token)
@@ -619,8 +626,17 @@ private:
             auto frame = acquired.take();
             madopilot::Mapping mapping;
             madopilot::Image image;
-            if (!slice(until, op) || !map_frame(frame, g, op, mapping, image)) return false;
-            if (token_matches(image, g, token)) {
+            if (!slice(until, op)) return false;
+            const auto mapped = map_frame(frame, g, op, mapping, image);
+            if (mapped == MapOutcome::failed) return false;
+            if (mapped == MapOutcome::slice_timeout) {
+                frame.reset();
+                mpw_pause();
+                continue;
+            }
+            if (token_matches(image, g, token) &&
+                mpw_marker_state(image.bytes.data(), image.bytes.size(), image.stride,
+                                 image.width, image.height, &g.shape) == token.visible) {
                 const auto stamp = frame.stamp();
                 if (!accept(stamp, "token_stamp_failed")) return false;
                 seen = stamp.value();
@@ -688,10 +704,13 @@ private:
         if (!expect(observed_at_ >= opened_at_, "startup_clock_mismatch") ||
             !fact("startup_nanos", "%llu", number(observed_at_ - opened_at_))) return false;
         madopilot::TemplateQuerySnapshot snapshot{};
-        return start_pending(geometry_, seen_, query_, snapshot);
+        if (!start_pending(geometry_, seen_, query_, snapshot)) return false;
+        query_id_ = snapshot.query_id;
+        return true;
     }
 
-    bool correlate(madopilot::TemplateQueryResult result, const Geometry& geometry,
+    bool correlate(madopilot::TemplateQueryResult result, std::uint64_t expected_query_id,
+                   const Geometry& geometry, const madopilot::FrameStamp& required_source,
                    const mpw_token& token, Retained& out)
     {
         const auto info = result.describe();
@@ -706,7 +725,8 @@ private:
                              MADOPILOT_MATCH_HAS_SUPPRESSION;
         if (!expect(token.visible == 1 && r.outcome == MADOPILOT_TEMPLATE_QUERY_OUTCOME_MATCHED &&
                         r.status == MADOPILOT_STATUS_OK && r.overload == MADOPILOT_TEMPLATE_OVERLOAD_NONE &&
-                        r.query_id != 0 && r.target == target_ && r.match_count == 1 &&
+                        expected_query_id != 0 && r.query_id == expected_query_id &&
+                        r.target == target_ && r.match_count == 1 &&
                         r.template_id.view() == "native.marker" && r.backend_id.view() == "opencv-cpu" &&
                         r.backend_version.view() == std::string_view(backend_version_.data(), backend_version_size_) &&
                         r.options.flags == options && r.options.min_score == marker_min_score &&
@@ -714,6 +734,7 @@ private:
                         r.confirmed_observations == 1 && r.confirmed_duration_nanos == 0 &&
                         same_rect(r.effective_region, full_frame(geometry.transform.width, geometry.transform.height)) &&
                         same_geometry(r.source, geometry.source) &&
+                        same_geometry(r.source, required_source) && r.source.sequence >= required_source.sequence &&
                         same_transform(r.transform, geometry.transform),
                     "matched_contract_mismatch")) return false;
         const auto match = result.match_at(0);
@@ -741,7 +762,12 @@ private:
         madopilot::Operation op;
         madopilot::Mapping mapping;
         madopilot::Image image;
-        if (!operation(op) || !map_frame(frame, geometry, op, mapping, image) ||
+        if (!operation(op)) return false;
+        const auto mapped = map_frame(frame, geometry, op, mapping, image);
+        if (mapped == MapOutcome::slice_timeout) {
+            return fail("frame_map_failed", MADOPILOT_STATUS_DEADLINE_EXCEEDED);
+        }
+        if (mapped != MapOutcome::mapped ||
             !expect(token_matches(image, geometry, token), "exact_result_token_mismatch")) return false;
         if (!frame_fact(r.source, r.transform) ||
             !transform_fact(r.transform, r.target) ||
@@ -762,24 +788,23 @@ private:
         return expect(frame.empty() && mapping.empty(), "retained_move_mismatch");
     }
 
-    bool visible_match(madopilot::TemplateQuery& query, const Geometry& geometry, Retained& out)
+    bool visible_match(madopilot::TemplateQuery& query, std::uint64_t expected_query_id,
+                       const Geometry& geometry, const madopilot::FrameStamp& required_source, Retained& out)
     {
         auto polled = query.poll();
         if (!accept(polled, "before_visual_poll_failed")) return false;
         auto before = polled.take();
-        if (!expect(before.pending() && !before.terminal, "before_visual_not_pending")) return false;
+        if (!expect(before.pending() && !before.terminal && expected_query_id != 0 &&
+                        before.snapshot.query_id == expected_query_id, "before_visual_not_pending")) return false;
         mpw_token token{};
         madopilot::TemplateQueryResult result;
         if (!visual(true, token) || !wait(query, result)) return false;
-        const auto info = result.describe();
-        return accept(info, "visible_result_info_failed") &&
-               expect(info.value().query_id == before.snapshot.query_id, "visible_query_identity_mismatch") &&
-               correlate(std::move(result), geometry, token, out);
+        return correlate(std::move(result), expected_query_id, geometry, required_source, token, out);
     }
 
     bool first_match()
     {
-        if (!visible_match(query_, geometry_, retained_)) return false;
+        if (!visible_match(query_, query_id_, geometry_, seen_, retained_)) return false;
         query_.reset();
         return true;
     }
@@ -905,7 +930,7 @@ private:
         madopilot::TemplateQuerySnapshot replacement{};
         Retained result;
         if (!start_pending(geometry_, seen_, query_, replacement) ||
-            !visible_match(query_, geometry_, result)) return false;
+            !visible_match(query_, replacement.query_id, geometry_, seen_, result)) return false;
         query_.reset();
         return true;
     }
@@ -955,12 +980,13 @@ private:
         if (!pending(query_, seen_, still_pending) ||
             !expect(still_pending.query_id == initial.query_id, "caller_wait_replaced_query")) return false;
         Retained success;
-        if (!visible_match(query_, geometry_, success)) return false;
+        if (!visible_match(query_, initial.query_id, geometry_, seen_, success)) return false;
         const auto immutable = query_.cancel();
         if (!accept(immutable, "matched_cancel_failed")) return false;
         const auto immutable_info = immutable.value().describe();
         if (!accept(immutable_info, "matched_cancel_info_failed") ||
             !expect(immutable_info.value().outcome == MADOPILOT_TEMPLATE_QUERY_OUTCOME_MATCHED &&
+                        immutable_info.value().query_id == initial.query_id &&
                         same_stamp(immutable_info.value().source, success.info.source),
                     "matched_terminal_mutated")) return false;
         query_.reset();
@@ -1010,6 +1036,7 @@ private:
                           retained_.info.backend_version.view() ==
                               std::string_view(backend_version_.data(), backend_version_size_) &&
                           retained_.info.backend_version.view() == description.value().backend_version.view() &&
+                          description.value().query_id == retained_.info.query_id &&
                           same_stamp(description.value().source, retained_.info.source) &&
                           same_stamp(stamp.value(), retained_.info.source) &&
                           same_stamp(mapping_stamp.value(), retained_.info.source) &&
@@ -1050,7 +1077,12 @@ private:
         madopilot::Operation op;
         madopilot::Mapping remapped;
         madopilot::Image image;
-        if (!operation(op) || !map_frame(retained_.frame, retained_.geometry, op, remapped, image) ||
+        if (!operation(op)) return false;
+        const auto mapped = map_frame(retained_.frame, retained_.geometry, op, remapped, image);
+        if (mapped == MapOutcome::slice_timeout) {
+            return fail("frame_map_failed", MADOPILOT_STATUS_DEADLINE_EXCEEDED);
+        }
+        if (mapped != MapOutcome::mapped ||
             !expect(token_matches(image, retained_.geometry, retained_.token), "frame_after_result_mismatch")) return false;
         remapped.reset();
         retained_.frame.reset();
@@ -1151,6 +1183,7 @@ private:
     madopilot::Engine engine_;
     madopilot::Session session_;
     madopilot::TemplateQuery query_;
+    std::uint64_t query_id_ = 0;
     Retained retained_;
     Geometry geometry_;
     madopilot::FrameStamp seen_{};

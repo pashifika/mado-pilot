@@ -94,9 +94,11 @@ Use the existing token-driven owned-fixture methods from
 - Derive scale-exact token and marker geometry from the observed target/frame
   transform. Supply a validated marker asset package to the public preparation
   API. Only the orchestrator changes fixture state.
-- Establish readiness by decoding the acknowledged token from a frame acquired
-  by the **consumer's own session**. A sleep, successful call, unrelated capture,
-  or observer-session token is not readiness evidence.
+- Establish readiness by decoding the acknowledged token and checking the
+  physical marker's visible/absent state in the same frame acquired by the
+  **consumer's own session**. Contradictory or ambiguous marker cells are not
+  readiness. A sleep, successful call, unrelated capture, or observer-session
+  token is not readiness evidence.
 - Readiness may observe bounded pending/in-flight work after an accepted
   no-match completion; it does not require capture or analysis to become idle.
 - F8 loss uses owned-window close on Windows and authenticated fixture-process
@@ -105,6 +107,25 @@ Use the existing token-driven owned-fixture methods from
 - Keep screenshots and raw frame dumps transient in private scratch storage;
   retained reports contain bounded identities, geometry, statuses, and counters,
   not images, arbitrary window titles, paths, or sensitive payloads.
+
+The Windows ordinary fixture constructs the background, marker and token from
+one command snapshot in a reusable off-screen scene, then publishes through one
+checked client-area copy. Visual and geometry success acknowledgements require
+the requested paint generation, target window and snapshot to have succeeded.
+The scene is bounded to 16,384 pixels per dimension and 128 MiB; a clipped
+marker/token scene, failed draw or failed publication is a failed control
+outcome. A refused resource release is reported and blocks further allocation
+by that scene owner. Resize replaces storage; target destruction releases it.
+These apparatus bounds are not F9 resource budgets. One final copy reduces
+application-created partial scenes; it does **not** guarantee compositor or WGC
+atomicity, nor does it prove the cause of historical token failures.
+
+C and C++ observation mapping slices remain within the original absolute
+observation deadline. A slice expiry may continue observation; expiry while
+mapping the retained result frame is terminal. C++ result correlation requires
+the exact expected query ID and the admitted stream/epoch/geometry watermark
+with no earlier sequence, in addition to result/frame/mapping agreement. These
+checks do not relax exact result-token validation or authorize a new campaign.
 
 Use `tools/setup-native.py -- COMMAND` for every OpenCV-dependent child; a prior
 check-only setup does not configure the parent shell. Observe fixture/process

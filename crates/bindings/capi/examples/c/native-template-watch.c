@@ -483,7 +483,9 @@ static int observe_token(native_scope *scope, geometry_authority *geometry, cons
             if (last_status != MADOPILOT_STATUS_DEADLINE_EXCEEDED) goto cleanup;
             TRY(require(mapping == NULL, "failure_output_not_reset"));
         } else if (mpw_pixels_match_token(image.bytes.data, image.bytes.len, image.stride,
-                                          image.width, image.height, &geometry->shape, token)) {
+                                          image.width, image.height, &geometry->shape, token) &&
+                   mpw_marker_state(image.bytes.data, image.bytes.len, image.stride,
+                                    image.width, image.height, &geometry->shape) == token->visible) {
             TRY(call(api->clock_now(&geometry->observed_nanos)));
             TRY(require(geometry->observed_nanos < phase.deadline_nanos, "observation_deadline"));
             geometry->stamp = stamp;

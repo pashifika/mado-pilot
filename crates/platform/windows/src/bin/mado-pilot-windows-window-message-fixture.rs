@@ -2,6 +2,10 @@
 //!
 //! The fixture reports only bounded counters and message families. It never
 //! prints message payloads, native handles, process identifiers, or input text.
+//!
+//! The retained target's visual scene is drawn off-screen and published by the
+//! checked renderer in `support/ordinary_fixture_scene.rs`; a visual control is
+//! acknowledged only when the paint it caused published that exact scene.
 
 #[cfg(not(windows))]
 fn main() {
@@ -12,6 +16,10 @@ fn main() {
 #[cfg(windows)]
 #[path = "support/ordinary_fixture_startup.rs"]
 mod ordinary_fixture_startup;
+
+#[cfg(windows)]
+#[path = "support/ordinary_fixture_scene.rs"]
+mod ordinary_fixture_scene;
 
 #[cfg(windows)]
 fn main() {
@@ -30,6 +38,7 @@ fn main() {
 
 #[cfg(windows)]
 mod fixture {
+    use std::cell::RefCell;
     use std::ffi::c_void;
     use std::io::{self, Write};
     use std::mem::size_of;
@@ -37,6 +46,7 @@ mod fixture {
     use std::sync::atomic::{AtomicBool, AtomicU32, AtomicU64, AtomicUsize, Ordering};
     use std::time::Duration;
 
+    use super::ordinary_fixture_scene::{Gdi, PaintFailure, SceneGdi, TargetScene};
     use super::ordinary_fixture_startup::{
         ActivationPath, Context, DpiAfterFailure, Failure, Foreground, Stage, Status,
         activate_with_fallback, ready_record,
@@ -46,21 +56,15 @@ mod fixture {
         BENCHMARK_FILL_RGB, CONTROL_BLOCK_QUEUE, CONTROL_DESTROY_TARGET,
         CONTROL_DUPLICATE_METADATA, CONTROL_REPARENT_TARGET, CONTROL_REPLACE_TARGET,
         CONTROL_REPORT, CONTROL_REUSE_STRESS, CONTROL_SET_GEOMETRY, CONTROL_SET_VISUAL_ABSENT,
-        CONTROL_SET_VISUAL_VISIBLE, CONTROL_TRANSITION_VISUAL, FILL_RGB, FixtureVisualCommand,
-        MAX_RECORDED_EVENTS, ORDINARY_CLASS_NAME, TARGET_LOSS_ACKNOWLEDGEMENT,
-        VISUAL_TRANSITION_ACKNOWLEDGEMENT, WATCH_MARKER_CELL_SIZE, WATCH_MARKER_HEIGHT,
-        WATCH_MARKER_PRIMARY_RGB, WATCH_MARKER_SECONDARY_RGB, WATCH_MARKER_WIDTH, WATCH_MARKER_X,
-        WATCH_MARKER_Y, WATCH_TOKEN_CELL_COUNT, WATCH_TOKEN_CELL_SIZE, WATCH_TOKEN_GRID_WIDTH,
-        WATCH_TOKEN_X, WATCH_TOKEN_Y, ordinary_fixture_title, visual_command_for_control,
-        visual_token_cell,
+        CONTROL_SET_VISUAL_VISIBLE, CONTROL_TRANSITION_VISUAL, FILL_RGB, MAX_RECORDED_EVENTS,
+        ORDINARY_CLASS_NAME, TARGET_LOSS_ACKNOWLEDGEMENT, VISUAL_TRANSITION_ACKNOWLEDGEMENT,
+        ordinary_fixture_title, visual_command_for_control,
     };
     use windows::Win32::Foundation::{
-        COLORREF, GetLastError, HINSTANCE, HWND, LPARAM, LRESULT, RECT, SetLastError, WIN32_ERROR,
-        WPARAM,
+        GetLastError, HINSTANCE, HWND, LPARAM, LRESULT, RECT, SetLastError, WIN32_ERROR, WPARAM,
     };
     use windows::Win32::Graphics::Gdi::{
-        BeginPaint, CreateSolidBrush, DeleteObject, EndPaint, FillRect, HDC, HGDIOBJ,
-        InvalidateRect, PAINTSTRUCT, UpdateWindow,
+        BeginPaint, EndPaint, HDC, InvalidateRect, PAINTSTRUCT, UpdateWindow,
     };
     use windows::Win32::System::LibraryLoader::GetModuleHandleW;
     use windows::Win32::System::Threading::{AttachThreadInput, GetCurrentThreadId};
@@ -77,10 +81,11 @@ mod fixture {
         GetForegroundWindow, GetMessageW, GetWindowThreadProcessId, KillTimer, MSG,
         PostQuitMessage, RegisterClassExW, SW_SHOW, SW_SHOWNOACTIVATE, SWP_NOACTIVATE,
         SWP_NOZORDER, SetForegroundWindow, SetParent, SetTimer, SetWindowPos, SetWindowTextW,
-        ShowWindow, WINDOW_STYLE, WM_CHAR, WM_CLOSE, WM_DESTROY, WM_INPUT, WM_KEYDOWN, WM_KEYUP,
-        WM_LBUTTONDOWN, WM_LBUTTONUP, WM_MBUTTONDOWN, WM_MBUTTONUP, WM_MOUSEHWHEEL, WM_MOUSEMOVE,
-        WM_MOUSEWHEEL, WM_NCDESTROY, WM_PAINT, WM_RBUTTONDOWN, WM_RBUTTONUP, WM_TIMER,
-        WM_XBUTTONDOWN, WM_XBUTTONUP, WNDCLASSEXW, WS_CHILD, WS_OVERLAPPEDWINDOW, WS_VISIBLE,
+        ShowWindow, WINDOW_STYLE, WM_CHAR, WM_CLOSE, WM_DESTROY, WM_ERASEBKGND, WM_INPUT,
+        WM_KEYDOWN, WM_KEYUP, WM_LBUTTONDOWN, WM_LBUTTONUP, WM_MBUTTONDOWN, WM_MBUTTONUP,
+        WM_MOUSEHWHEEL, WM_MOUSEMOVE, WM_MOUSEWHEEL, WM_NCDESTROY, WM_PAINT, WM_RBUTTONDOWN,
+        WM_RBUTTONUP, WM_TIMER, WM_XBUTTONDOWN, WM_XBUTTONUP, WNDCLASSEXW, WS_CHILD,
+        WS_OVERLAPPEDWINDOW, WS_VISIBLE,
     };
     use windows::core::{Error, PCWSTR, Result as WindowsResult};
 
@@ -111,6 +116,14 @@ mod fixture {
     static STATE_LEGACY_EVENTS: AtomicU32 = AtomicU32::new(0);
     static RAW_EVENTS: AtomicU32 = AtomicU32::new(0);
     static STATE_CHANGES: AtomicU32 = AtomicU32::new(0);
+
+    thread_local! {
+        /// The retained target's off-screen scene buffer and paint ledger. GDI objects
+        /// belong to the GUI thread that created them, so this owner is thread-local and
+        /// every borrow is released before a call that can dispatch `WM_PAINT`.
+        static TARGET_SCENE: RefCell<TargetScene<Gdi>> =
+            const { RefCell::new(TargetScene::new(Gdi)) };
+    }
 
     #[derive(Debug)]
     pub(super) enum RunError {
@@ -465,15 +478,15 @@ mod fixture {
                     )
                 }
                 .is_ok();
-                if updated {
-                    GEOMETRY_REPAINTS.store(64, Ordering::Release);
+                if !updated {
+                    print_line("control geometry=failed");
+                    return LRESULT(0);
                 }
-                let repainted = updated && pulse_target_paint();
-                print_line(if repainted {
-                    "control geometry=ready"
-                } else {
-                    "control geometry=failed"
-                });
+                GEOMETRY_REPAINTS.store(64, Ordering::Release);
+                match pulse_target_paint() {
+                    Ok(()) => print_line("control geometry=ready"),
+                    Err(failure) => print_paint_failure("geometry", failure),
+                }
                 LRESULT(0)
             }
             CONTROL_SET_VISUAL_ABSENT | CONTROL_SET_VISUAL_VISIBLE => {
@@ -482,19 +495,19 @@ mod fixture {
                     return LRESULT(0);
                 };
                 WATCH_VISUAL_STATE.store(command.packed(), Ordering::Release);
-                if repaint_target() {
-                    print_line(&command.acknowledgement());
-                } else {
-                    print_line("control visual-state=failed");
+                // The acknowledgement names the command only after the paint that rendered
+                // exactly this snapshot published the whole client scene.
+                match repaint_target() {
+                    Ok(()) => print_line(&command.acknowledgement()),
+                    Err(failure) => print_paint_failure("visual-state", failure),
                 }
                 LRESULT(0)
             }
             CONTROL_TRANSITION_VISUAL => {
-                print_line(if pulse_target_paint() {
-                    VISUAL_TRANSITION_ACKNOWLEDGEMENT
-                } else {
-                    "control visual-transition=failed"
-                });
+                match pulse_target_paint() {
+                    Ok(()) => print_line(VISUAL_TRANSITION_ACKNOWLEDGEMENT),
+                    Err(failure) => print_paint_failure("visual-transition", failure),
+                }
                 LRESULT(0)
             }
             CONTROL_DESTROY_TARGET => {
@@ -542,6 +555,12 @@ mod fixture {
                     print_observation("state", "async-state-change");
                 }
                 LRESULT(0)
+            }
+            WM_ERASEBKGND => {
+                // Every fixture paint covers its whole client area itself, so no system erase
+                // may publish a background-only scene between two complete paints. Claiming
+                // the erase here holds even if the class ever acquires a background brush.
+                LRESULT(1)
             }
             WM_PAINT => {
                 paint(hwnd);
@@ -672,6 +691,9 @@ mod fixture {
     }
 
     fn install_replacement(replacement: HWND) {
+        // The destroyed predecessor already released its buffer at WM_NCDESTROY; releasing
+        // again here keeps the invariant local to the replacement seam and is a no-op then.
+        release_target_scene();
         TARGET.store(handle_value(replacement), Ordering::Release);
         REPLACEMENT_ACTIVE.store(true, Ordering::Release);
         // SAFETY: the replacement is live and owned by this thread.
@@ -680,16 +702,52 @@ mod fixture {
         }
     }
 
-    fn repaint_target() -> bool {
+    /// Repaints the retained target synchronously and succeeds only when the paint that
+    /// this request caused rendered the current visual snapshot and published it.
+    ///
+    /// `UpdateWindow` returning success does not prove that a `WM_PAINT` ran or drew
+    /// anything; the scene ledger supplies that fact for exactly this generation.
+    fn repaint_target() -> Result<(), PaintFailure> {
         let target = load_handle(&TARGET);
-        // SAFETY: the retained target is owned by this GUI thread.
-        unsafe { InvalidateRect(Some(target), None, true) }.as_bool()
-            && unsafe { UpdateWindow(target) }.as_bool()
+        if target == HWND::default() {
+            // A null handle would ask Windows to invalidate every window on the desktop.
+            return Err(PaintFailure::NoTarget);
+        }
+        let window = handle_value(target);
+        let snapshot = WATCH_VISUAL_STATE.load(Ordering::Acquire);
+        let request = TARGET_SCENE.with_borrow_mut(TargetScene::request_paint);
+        // SAFETY: the retained target is owned by this GUI thread. No erase is requested:
+        // the scene paint covers the whole client area itself. No scene borrow is held
+        // here, so the WM_PAINT that UpdateWindow dispatches synchronously can record.
+        let painted = unsafe {
+            InvalidateRect(Some(target), None, false).as_bool() && UpdateWindow(target).as_bool()
+        };
+        if !painted {
+            return Err(PaintFailure::RepaintRequest);
+        }
+        TARGET_SCENE
+            .with_borrow(|scene| scene.outcome(request, window, snapshot))
+            .map(|_extent| ())
     }
 
-    fn pulse_target_paint() -> bool {
+    fn pulse_target_paint() -> Result<(), PaintFailure> {
         ANIMATED.fetch_xor(true, Ordering::AcqRel);
         repaint_target()
+    }
+
+    fn release_target_scene() {
+        // Preserve a release failure in the owner and report it. Further target paints
+        // then fail closed rather than allocating over potentially leaked resources.
+        if let Err(failure) = TARGET_SCENE.with_borrow_mut(TargetScene::release) {
+            print_paint_failure("scene-cleanup", failure);
+        }
+    }
+
+    fn print_paint_failure(control: &str, failure: PaintFailure) {
+        print_line(&format!(
+            "control {control}=failed reason={}",
+            failure.as_str()
+        ));
     }
 
     fn print_report() {
@@ -710,110 +768,53 @@ mod fixture {
 
     fn paint(hwnd: HWND) {
         let mut paint = PAINTSTRUCT::default();
-        // SAFETY: called only for WM_PAINT with a writable PAINTSTRUCT.
+        // SAFETY: called only for WM_PAINT with a writable PAINTSTRUCT. BeginPaint may send
+        // WM_ERASEBKGND and WM_NCPAINT synchronously; neither handler touches TARGET_SCENE,
+        // so no scene borrow is held until BeginPaint has returned.
         let device = unsafe { BeginPaint(hwnd, &raw mut paint) };
-        let mut client = Default::default();
-        // SAFETY: hwnd is live and client is writable for the current rectangle.
-        if unsafe { GetClientRect(hwnd, &raw mut client) }.is_ok() {
-            let is_target = handle_value(hwnd) == TARGET.load(Ordering::Acquire);
-            let fill = if is_target && ANIMATED.load(Ordering::Acquire) {
-                BENCHMARK_FILL_RGB
-            } else {
-                FILL_RGB
-            };
-            fill_solid_rect(device, &client, fill);
-            if is_target
-                && let Some(command) =
-                    FixtureVisualCommand::from_packed(WATCH_VISUAL_STATE.load(Ordering::Acquire))
-            {
-                paint_watch_visual(device, command);
-            }
+        let client = if device.is_invalid() {
+            None
+        } else {
+            let mut client = RECT::default();
+            // SAFETY: hwnd is live and client is writable for the current rectangle.
+            unsafe { GetClientRect(hwnd, &raw mut client) }
+                .ok()
+                .map(|()| client)
+        };
+        if handle_value(hwnd) == TARGET.load(Ordering::Acquire) {
+            paint_target_scene(hwnd, device, client);
+        } else if let Some(client) = client {
+            paint_role_background(device, &client);
         }
-        // SAFETY: balances BeginPaint for this WM_PAINT dispatch.
+        // SAFETY: balances BeginPaint for this WM_PAINT dispatch, whatever BeginPaint returned.
         let _ended = unsafe { EndPaint(hwnd, &raw const paint) };
     }
 
-    fn paint_watch_visual(device: HDC, command: FixtureVisualCommand) {
-        // SAFETY: both brushes are process-owned and deleted before this function returns.
-        let primary = unsafe { CreateSolidBrush(colorref(WATCH_MARKER_PRIMARY_RGB)) };
-        // SAFETY: same ownership rule as `primary`.
-        let secondary = unsafe { CreateSolidBrush(colorref(WATCH_MARKER_SECONDARY_RGB)) };
-        if command.state().marker_is_visible() {
-            let marker = RECT {
-                left: WATCH_MARKER_X,
-                top: WATCH_MARKER_Y,
-                right: WATCH_MARKER_X + WATCH_MARKER_WIDTH,
-                bottom: WATCH_MARKER_Y + WATCH_MARKER_HEIGHT,
-            };
-            let top_middle = RECT {
-                left: WATCH_MARKER_X + WATCH_MARKER_CELL_SIZE,
-                top: WATCH_MARKER_Y,
-                right: WATCH_MARKER_X + WATCH_MARKER_CELL_SIZE * 2,
-                bottom: WATCH_MARKER_Y + WATCH_MARKER_CELL_SIZE,
-            };
-            let bottom_left = RECT {
-                left: WATCH_MARKER_X,
-                top: WATCH_MARKER_Y + WATCH_MARKER_CELL_SIZE,
-                right: WATCH_MARKER_X + WATCH_MARKER_CELL_SIZE,
-                bottom: WATCH_MARKER_Y + WATCH_MARKER_HEIGHT,
-            };
-            fill_rect_with_brush(device, &marker, primary);
-            fill_rect_with_brush(device, &top_middle, secondary);
-            fill_rect_with_brush(device, &bottom_left, secondary);
+    /// Publishes the target's complete client scene from one snapshot and records the
+    /// outcome against the open repaint generation, so the requester learns whether this
+    /// paint, not an earlier one, drew and published its command.
+    fn paint_target_scene(hwnd: HWND, device: HDC, client: Option<RECT>) {
+        let window = handle_value(hwnd);
+        let snapshot = WATCH_VISUAL_STATE.load(Ordering::Acquire);
+        let background = if ANIMATED.load(Ordering::Acquire) {
+            BENCHMARK_FILL_RGB
+        } else {
+            FILL_RGB
+        };
+        // Only GDI drawing runs inside this borrow; nothing here dispatches a message.
+        let _outcome = TARGET_SCENE.with_borrow_mut(|scene| match client {
+            Some(client) => scene.paint(window, device, &client, background, snapshot),
+            None => scene.record_failure(window, snapshot, PaintFailure::PaintSession),
+        });
+    }
+
+    /// Ordinary roles keep their plain deterministic fill; nothing acknowledges their paints.
+    fn paint_role_background(device: HDC, client: &RECT) {
+        let mut gdi = Gdi;
+        if let Some(brush) = gdi.create_solid_brush(FILL_RGB) {
+            let _filled = gdi.fill_rect(device, client, brush);
+            let _deleted = gdi.delete_object(brush.into());
         }
-
-        for index in 0..WATCH_TOKEN_CELL_COUNT {
-            let column = i32::try_from(index % WATCH_TOKEN_GRID_WIDTH)
-                .expect("visual-token column fits i32");
-            let row =
-                i32::try_from(index / WATCH_TOKEN_GRID_WIDTH).expect("visual-token row fits i32");
-            let left = WATCH_TOKEN_X + column * WATCH_TOKEN_CELL_SIZE;
-            let top = WATCH_TOKEN_Y + row * WATCH_TOKEN_CELL_SIZE;
-            let cell = RECT {
-                left,
-                top,
-                right: left + WATCH_TOKEN_CELL_SIZE,
-                bottom: top + WATCH_TOKEN_CELL_SIZE,
-            };
-            let brush = if visual_token_cell(command, index)
-                .expect("index is bounded by WATCH_TOKEN_CELL_COUNT")
-            {
-                primary
-            } else {
-                secondary
-            };
-            fill_rect_with_brush(device, &cell, brush);
-        }
-
-        // SAFETY: neither brush remains selected after the FillRect calls above.
-        let _primary_deleted = unsafe { DeleteObject(HGDIOBJ(primary.0)) };
-        // SAFETY: same lifetime rule as `primary`.
-        let _secondary_deleted = unsafe { DeleteObject(HGDIOBJ(secondary.0)) };
-    }
-
-    fn fill_rect_with_brush(
-        device: HDC,
-        rectangle: &RECT,
-        brush: windows::Win32::Graphics::Gdi::HBRUSH,
-    ) {
-        // SAFETY: device, rectangle, and process-owned brush are live for this paint call.
-        let _filled = unsafe { FillRect(device, rectangle, brush) };
-    }
-
-    fn fill_solid_rect(device: HDC, rectangle: &RECT, rgb: u32) {
-        // SAFETY: creating, using, and deleting this process-owned brush is paired.
-        let brush = unsafe { CreateSolidBrush(colorref(rgb)) };
-        // SAFETY: device, rectangle, and brush are live for this paint call.
-        let _filled = unsafe { FillRect(device, rectangle, brush) };
-        // SAFETY: the brush is no longer selected or needed after FillRect.
-        let _deleted = unsafe { DeleteObject(HGDIOBJ(brush.0)) };
-    }
-
-    fn colorref(rgb: u32) -> COLORREF {
-        let red = rgb & 0xff_0000;
-        let green = rgb & 0x00_ff00;
-        let blue = rgb & 0x00_00ff;
-        COLORREF((red >> 16) | green | (blue << 16))
     }
 
     fn print_observation(role: &str, family: &str) {
@@ -896,7 +897,15 @@ mod fixture {
 
     fn clear_handle(hwnd: HWND) {
         let value = handle_value(hwnd);
-        for handle in [&TARGET, &GAME, &SIBLING, &CHILD, &FOREGROUND, &RAW, &STATE] {
+        // The target's off-screen buffer belongs to that window's lifetime: a destroyed or
+        // replaced target releases it here, and its successor allocates on first paint.
+        if TARGET
+            .compare_exchange(value, 0, Ordering::AcqRel, Ordering::Acquire)
+            .is_ok()
+        {
+            release_target_scene();
+        }
+        for handle in [&GAME, &SIBLING, &CHILD, &FOREGROUND, &RAW, &STATE] {
             let _cleared = handle.compare_exchange(value, 0, Ordering::AcqRel, Ordering::Acquire);
         }
         if [&TARGET, &GAME, &SIBLING, &FOREGROUND, &RAW, &STATE]
