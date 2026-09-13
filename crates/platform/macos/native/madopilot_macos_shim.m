@@ -3868,6 +3868,214 @@ mp_shim_status mp_shim_testing_stop_callback_exception(
     MP_SHIM_END
 }
 
+static mp_shim_status mp_shim_testing_frame_sample_create(
+    const MPShimFramework *framework, struct mp_shim_session *session,
+    MPShimSessionHold *__weak *out_metadata_owner, CMSampleBufferRef *out_sample) {
+    *out_metadata_owner = nil;
+    *out_sample = NULL;
+    CVPixelBufferRef image = NULL;
+    CMVideoFormatDescriptionRef format = NULL;
+    CMSampleBufferRef sample = NULL;
+    CFDictionaryRef original_rect = NULL;
+    CFMutableDictionaryRef rect = NULL;
+    @autoreleasepool {
+        @try {
+            if (CVPixelBufferCreate(kCFAllocatorDefault, 4, 4, kCVPixelFormatType_32BGRA,
+                                   NULL, &image) != kCVReturnSuccess ||
+                image == NULL) {
+                return MP_SHIM_PLATFORM_FAILURE;
+            }
+            if (CVPixelBufferLockBaseAddress(image, 0) != kCVReturnSuccess) {
+                return MP_SHIM_PLATFORM_FAILURE;
+            }
+            mp_shim_status filled = MP_SHIM_OK;
+            @try {
+                void *base = CVPixelBufferGetBaseAddress(image);
+                size_t stride = CVPixelBufferGetBytesPerRow(image);
+                if (base == NULL || stride < 16 || stride > SIZE_MAX / 4 ||
+                    CVPixelBufferGetDataSize(image) < stride * 4) {
+                    filled = MP_SHIM_PLATFORM_FAILURE;
+                } else {
+                    memset(base, 0x31, stride * 4);
+                }
+            } @finally {
+                if (CVPixelBufferUnlockBaseAddress(image, 0) != kCVReturnSuccess) {
+                    filled = MP_SHIM_PLATFORM_FAILURE;
+                }
+            }
+            if (filled != MP_SHIM_OK) {
+                return filled;
+            }
+            if (CMVideoFormatDescriptionCreateForImageBuffer(kCFAllocatorDefault, image,
+                                                            &format) != noErr ||
+                format == NULL) {
+                return MP_SHIM_PLATFORM_FAILURE;
+            }
+            CMSampleTimingInfo timing = {
+                .duration = CMTimeMake(1, 60),
+                .presentationTimeStamp = CMTimeMake(1, 1),
+                .decodeTimeStamp = kCMTimeInvalid,
+            };
+            if (CMSampleBufferCreateReadyWithImageBuffer(kCFAllocatorDefault, image, format,
+                                                        &timing, &sample) != noErr ||
+                sample == NULL) {
+                return MP_SHIM_PLATFORM_FAILURE;
+            }
+            CFArrayRef attachments = CMSampleBufferGetSampleAttachmentsArray(sample, true);
+            if (attachments == NULL || CFArrayGetCount(attachments) != 1) {
+                return MP_SHIM_PLATFORM_FAILURE;
+            }
+            CFMutableDictionaryRef attachment =
+                (CFMutableDictionaryRef)CFArrayGetValueAtIndex(attachments, 0);
+            if (attachment == NULL) {
+                return MP_SHIM_PLATFORM_FAILURE;
+            }
+            original_rect =
+                CGRectCreateDictionaryRepresentation(CGRectMake(0.0, 0.0, 4.0, 4.0));
+            if (original_rect == NULL) {
+                return MP_SHIM_PLATFORM_FAILURE;
+            }
+            rect = CFDictionaryCreateMutableCopy(kCFAllocatorDefault, 0, original_rect);
+            if (rect == NULL) {
+                return MP_SHIM_PLATFORM_FAILURE;
+            }
+            /* Ordinary dictionary ownership keeps an existing ARC holder alive.
+             * This function's pool drains before delivery; only sample metadata
+             * owns the holder afterward, and the observer is zeroing weak. */
+            MPShimSessionHold *owner = [[MPShimSessionHold alloc] initWithSession:session];
+            if (owner == nil) {
+                return MP_SHIM_PLATFORM_FAILURE;
+            }
+            CFDictionarySetValue(rect, CFSTR("MPShimTestingFrameOwner"), (__bridge CFTypeRef)owner);
+            *out_metadata_owner = owner;
+            CFDictionarySetValue(attachment, framework->key_status,
+                                 (__bridge CFTypeRef)@(MPShimFrameStatusComplete));
+            CFDictionarySetValue(attachment, framework->key_content_rect, rect);
+            CFDictionarySetValue(attachment, framework->key_screen_rect, rect);
+            CFDictionarySetValue(attachment, framework->key_scale_factor, (__bridge CFTypeRef)@1);
+            if (framework->key_content_scale != NULL) {
+                CFDictionarySetValue(attachment, framework->key_content_scale, (__bridge CFTypeRef)@1);
+            }
+            *out_sample = sample;
+            sample = NULL;
+            mp_shim_note_owned();
+            return MP_SHIM_OK;
+        } @finally {
+            CFTypeRef released[] = {rect, original_rect, sample, format, image};
+            for (size_t slot = 0; slot < sizeof(released) / sizeof(released[0]); slot += 1) {
+                if (released[slot] != NULL) {
+                    CFRelease(released[slot]);
+                }
+            }
+        }
+    }
+}
+
+mp_shim_status mp_shim_testing_frame_callback_boundary(
+    uint32_t raise_sites, void *context,
+    mp_shim_status (*frame_callback)(void *, mp_shim_frame *, const mp_shim_frame_info *),
+    mp_shim_status (*frame_commit_callback)(void *),
+    void (*stopped_callback)(void *, mp_shim_status),
+    mp_shim_status *out_fence_status) {
+    if (out_fence_status == NULL) {
+        return MP_SHIM_INVALID_ARGUMENT;
+    }
+    *out_fence_status = MP_SHIM_PLATFORM_FAILURE;
+    if (frame_callback == NULL || frame_commit_callback == NULL || stopped_callback == NULL ||
+        (raise_sites != 0 && raise_sites != MP_SHIM_RAISE_BEFORE_CALLBACK &&
+         raise_sites != MP_SHIM_RAISE_AFTER_CALLBACK)) {
+        return MP_SHIM_INVALID_ARGUMENT;
+    }
+    MP_SHIM_BEGIN
+    @autoreleasepool {
+        /* This only loads the existing runtime constants/classes. Its established
+         * Core Graphics connection initialization is not a discovery or capture. */
+        const MPShimFramework *framework = mp_shim_capture_framework();
+        if (framework == NULL) {
+            return MP_SHIM_UNSUPPORTED;
+        }
+        struct mp_shim_session *session = calloc(1, sizeof(struct mp_shim_session));
+        if (session == NULL) {
+            return MP_SHIM_PLATFORM_FAILURE;
+        }
+        MPShimPthreadInitializer initializer = {0};
+        if (!mp_shim_session_sync_init(session, &initializer)) {
+            free(session);
+            return MP_SHIM_PLATFORM_FAILURE;
+        }
+        atomic_init(&session->refs, 1u);
+        atomic_init(&session->output_added, false);
+        atomic_init(&session->started, false);
+        atomic_init(&session->closing, false);
+        atomic_init(&session->closed, false);
+        atomic_init(&session->stop_reported, false);
+        session->magic = MP_SHIM_SESSION_MAGIC;
+        session->kind = MP_SHIM_TARGET_DISPLAY;
+        session->detached_budget = 2;
+        session->testing_raise_sites = raise_sites;
+        session->callback_context = context;
+        session->frame_callback = frame_callback;
+        session->frame_commit_callback = frame_commit_callback;
+        session->stopped_callback = stopped_callback;
+        /* Diagnostic tier stays zero: this is not a live capture session. */
+        MPShimStreamOutput *output = nil;
+        CMSampleBufferRef sample = NULL;
+        MPShimSessionHold *__weak metadata_owner = nil;
+        mp_shim_status result = MP_SHIM_PLATFORM_FAILURE;
+        @try {
+            output = [MPShimStreamOutput new];
+            if (output != nil) {
+                [output adoptSession:session];
+                session->output = CFBridgingRetain(output);
+                mp_shim_note_owned();
+                result = mp_shim_testing_frame_sample_create(
+                    framework, session, &metadata_owner, &sample);
+                if (result == MP_SHIM_OK) {
+                    [output stream:nil didOutputSampleBuffer:sample ofType:MPShimStreamOutputTypeScreen];
+                    [output stream:nil didOutputSampleBuffer:sample ofType:MPShimStreamOutputTypeScreen];
+                }
+            }
+        } @catch (NSException *exception) {
+            (void)exception;
+            result = MP_SHIM_NATIVE_EXCEPTION;
+        } @catch (...) {
+            result = MP_SHIM_NATIVE_EXCEPTION;
+        } @finally {
+            /* The two direct messages have returned; no queue, stream or delayed
+             * callback exists. A nonzero active count is therefore a fence defect,
+             * not work this helper should wait for or quarantine asynchronously. */
+            *out_fence_status = mp_shim_admission_fence(&session->admission, 0);
+            session->callback_context = NULL;
+            session->frame_callback = NULL;
+            session->frame_commit_callback = NULL;
+            session->stopped_callback = NULL;
+            /* Nothing was submitted. Run the real nonblocking release phase to
+             * break the output cycle and release the detached pool, then drop only
+             * this helper's owners. Escaped detached frames retain the heap session
+             * and its mutexes until their real mp_shim_frame_release calls return. */
+            session->close_phase = MP_SHIM_CLOSE_RELEASE;
+            mp_shim_status closed = mp_shim_session_close(session, 0);
+            if (result == MP_SHIM_OK && closed != MP_SHIM_OK) {
+                result = closed;
+            }
+            output = nil;
+            if (sample != NULL) {
+                CFRelease(sample);
+                mp_shim_note_released();
+            }
+            /* A leaked production metadata retain keeps this real session holder
+             * alive. Do not extend production local lifetimes to force that leak:
+             * optimized ARC may release a local before a later fault site. */
+            if (result == MP_SHIM_OK && metadata_owner != nil) {
+                result = MP_SHIM_PLATFORM_FAILURE;
+            }
+            mp_shim_session_unref(session);
+        }
+        return result;
+    }
+    MP_SHIM_END
+}
+
 #pragma mark - Session lifecycle
 
 static bool mp_shim_session_valid(const struct mp_shim_session *session) {

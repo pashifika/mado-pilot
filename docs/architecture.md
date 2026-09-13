@@ -190,7 +190,7 @@ One limit on reading the macOS row applies to every macOS capture claim in this
 document. macOS grants Screen Recording per application, and this Adapter will not
 prompt, so a host that has neither granted nor denied it — a continuous-integration
 runner, for instance — reaches the non-prompting refusal rather than the capture
-path. The Adapter's controlled scenarios report a skip with that reason there
+path. The Adapter's capture scenarios report a skip with that reason there
 instead of a pass, so a green run on such a host is not evidence that capture ran.
 
 #### The macOS native boundary
@@ -201,6 +201,11 @@ is a defect the Rust side cannot see. Gate `G-003` is resolved by
 [ADR 0012](adr/0012-macos-shim-language-and-containment.md) on the measurements in
 [evidence/g-003/](evidence/g-003/README.md). `mado-pilot-platform-macos` now
 implements that boundary and carries the tests ADR 0012 named.
+
+Frame-callback containment tests use owned CoreMedia samples through the actual
+native callback and Rust trampolines. They check commit ordering, terminal delivery,
+callback drain, and escaped-frame ownership without a live capture stream or
+permission probe. Those cases do not establish capture support.
 
 The shim is **Objective-C with Automatic Reference Counting, compiled with
 `-fobjc-arc-exceptions`**. Objective-C++ is not used and C++ is not admitted into

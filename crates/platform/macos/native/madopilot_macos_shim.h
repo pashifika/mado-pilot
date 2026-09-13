@@ -405,6 +405,31 @@ mp_shim_status mp_shim_testing_stop_callback_exception(
     mp_shim_status *out_fence_status);
 
 /*
+ * Synchronously delivers one owned 4x4 BGRA sample twice through the production
+ * frame delegate. `raise_sites` is zero, MP_SHIM_RAISE_BEFORE_CALLBACK, or
+ * MP_SHIM_RAISE_AFTER_CALLBACK; a Rust panic is contained by the caller's real
+ * callback trampoline with native sites zero.
+ *
+ * The sample is filled with 0x31, has unit scale, content/screen rect (0, 0, 4, 4),
+ * and a one-second presentation timestamp. Callbacks run only on this call's
+ * thread, before it returns. Borrowed frames may be detached; up to two detached
+ * owners may outlive this call and keep their heap session alive until released.
+ *
+ * The return value reports setup/cleanup failure, while `out_fence_status`
+ * reports the production disable-and-drain fence. An ordinary ARC metadata owner
+ * surviving sample release is a cleanup failure. Frame failures reach only the
+ * stopped callback. No discovery, permission probe, stream, or input is
+ * submitted. The existing constant loader may initialize its non-prompting
+ * Core Graphics connection.
+ */
+mp_shim_status mp_shim_testing_frame_callback_boundary(
+    uint32_t raise_sites, void *context,
+    mp_shim_status (*frame_callback)(void *, mp_shim_frame *, const mp_shim_frame_info *),
+    mp_shim_status (*frame_commit_callback)(void *),
+    void (*stopped_callback)(void *, mp_shim_status),
+    mp_shim_status *out_fence_status);
+
+/*
  * Deterministic test seam for the resumable asynchronous start/stop gates.
  * Each first wait expires while the delayed completion remains pending; each
  * second wait resumes that same gate and observes its completion.

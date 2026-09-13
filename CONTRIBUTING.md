@@ -100,6 +100,12 @@ compiled with `-fobjc-arc-exceptions`, which
 records as a correctness requirement rather than a style choice: without it, an
 exception unwinding out of a scope that holds a native object leaks it.
 
+The four frame-callback boundary cases feed owned CoreMedia samples to the real
+callback. They cover successful commit, native exceptions before/after delivery,
+and a Rust callback panic without opening a capture stream or probing permissions.
+They run without Screen Recording, including under ASAN; they do not qualify
+capture, target discovery, or native input.
+
 Running that adapter's capture scenarios needs one thing the build does not:
 **Screen Recording granted to the process running the tests**. MadoPilot never
 prompts, so on a host that has neither granted nor denied it the scenarios reach the

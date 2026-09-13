@@ -2492,6 +2492,181 @@ fn testing_stop_callback_exception() -> Result<(ShimStatus, u32, ShimStatus), Sh
     ))
 }
 
+/// Scalar observations after the controlled callback probe released every owner.
+#[cfg(test)]
+#[derive(Debug, Clone, Copy)]
+pub(crate) struct FrameCallbackBoundaryObservation {
+    pub(crate) stages: u32,
+    pub(crate) commits: u32,
+    pub(crate) terminal_reports: u32,
+    pub(crate) terminal_status: Option<ShimStatus>,
+    pub(crate) panic_reached: bool,
+    pub(crate) ordered: bool,
+    pub(crate) pending_frame: bool,
+    pub(crate) valid_samples: u32,
+    pub(crate) fence: ShimStatus,
+}
+
+/// Delivers two owned samples through the production callback boundary, without
+/// discovering a target, opening a stream, or probing Screen Recording.
+///
+/// The synchronous call borrows a stack-owned probe. Commit and stop both clear
+/// its staged frame, retaining that detached owner only for observation after the
+/// helper releases its own session reference. No frame or callback context escapes
+/// this wrapper, including on a setup or copy failure.
+#[cfg(test)]
+pub(crate) fn testing_frame_callback_boundary(
+    site: u32,
+) -> Result<FrameCallbackBoundaryObservation, ShimStatus> {
+    use std::cell::RefCell;
+
+    struct Probe {
+        observation: FrameCallbackBoundaryObservation,
+        panic_in_callback: bool,
+        staged: Option<(DetachedFrame, FrameInfo)>,
+        samples: [Option<(DetachedFrame, FrameInfo)>; 2],
+    }
+
+    impl Probe {
+        fn observe_staged(&mut self) {
+            if let Some(sample) = self.staged.take() {
+                if let Some(slot) = self.samples.iter_mut().find(|slot| slot.is_none()) {
+                    *slot = Some(sample);
+                } else {
+                    self.observation.ordered = false;
+                }
+            }
+        }
+    }
+
+    unsafe extern "C" fn stage(
+        context: *mut c_void,
+        frame: *mut OpaqueFrame,
+        info: *const FrameInfo,
+    ) -> u32 {
+        // SAFETY: the synchronous helper passes the live registered RefCell<Probe>
+        // and the production delegate's callback-borrowed frame and full report.
+        unsafe {
+            contained_frame_callback::<RefCell<Probe>>(
+                context,
+                frame,
+                info,
+                |owner, borrowed, info| {
+                    let mut probe = owner.borrow_mut();
+                    probe.observation.stages += 1;
+                    let ordered =
+                        probe.staged.is_none() && probe.observation.terminal_status.is_none();
+                    probe.observation.ordered &= ordered;
+                    let detached = match borrowed.detach() {
+                        Ok(detached) => detached,
+                        Err(status) => return status,
+                    };
+                    probe.staged = Some((detached, *info));
+                    if probe.panic_in_callback {
+                        probe.observation.panic_reached = true;
+                        panic!("injected Rust frame callback panic");
+                    }
+                    ShimStatus::Ok
+                },
+            )
+        }
+    }
+
+    unsafe extern "C" fn commit(context: *mut c_void) -> u32 {
+        // SAFETY: the helper invokes this only during the synchronous call with
+        // the same live RefCell<Probe> registered for the frame callback.
+        unsafe {
+            contained_frame_commit_callback::<RefCell<Probe>>(context, |owner| {
+                let mut probe = owner.borrow_mut();
+                probe.observation.commits += 1;
+                let ordered = probe.staged.is_some() && probe.observation.terminal_status.is_none();
+                probe.observation.ordered &= ordered;
+                probe.observe_staged();
+                ShimStatus::Ok
+            })
+        }
+    }
+
+    unsafe extern "C" fn stopped(context: *mut c_void, status: u32) {
+        // SAFETY: the production terminal gate invokes this with the same live
+        // RefCell<Probe>; no callback can outlive the synchronous helper call.
+        unsafe {
+            contained_stopped_callback::<RefCell<Probe>>(context, status, |owner, status| {
+                let mut probe = owner.borrow_mut();
+                probe.observation.terminal_reports += 1;
+                if probe.observation.terminal_status.is_none() {
+                    probe.observation.terminal_status = Some(status);
+                } else {
+                    probe.observation.ordered = false;
+                }
+                // This owner is only an observation, never a committed frame.
+                probe.observe_staged();
+            });
+        }
+    }
+
+    let panic_in_callback = site == PANIC_IN_RUST_CALLBACK;
+    let probe = RefCell::new(Probe {
+        observation: FrameCallbackBoundaryObservation {
+            stages: 0,
+            commits: 0,
+            terminal_reports: 0,
+            terminal_status: None,
+            panic_reached: false,
+            ordered: true,
+            pending_frame: false,
+            valid_samples: 0,
+            fence: ShimStatus::Unrecognized(u32::MAX),
+        },
+        panic_in_callback,
+        staged: None,
+        samples: [None, None],
+    });
+    let raise_sites = if panic_in_callback { 0 } else { site };
+    let mut fence = u32::MAX;
+    // SAFETY: all three callbacks use the exact declared C signatures and contain
+    // their Rust bodies. The helper borrows `probe` only on this thread, performs
+    // both deliveries and the admission fence synchronously, and retains neither
+    // its context nor callback registration after returning. `fence` is writable.
+    let status = unsafe {
+        mp_shim_testing_frame_callback_boundary(
+            raise_sites,
+            (&raw const probe).cast_mut().cast(),
+            Some(stage),
+            Some(commit),
+            Some(stopped),
+            &raw mut fence,
+        )
+    };
+    ShimStatus::from_raw(status).into_result()?;
+    let mut probe = probe.into_inner();
+    probe.observation.fence = ShimStatus::from_raw(fence);
+    probe.observation.pending_frame = probe.staged.is_some();
+    for (frame, info) in probe.samples.iter().flatten() {
+        // All metadata and pixel checks run outside the contained FFI callbacks.
+        // The helper has already released its session owner, so this also reads a
+        // real detached frame whose lease alone keeps native pool state alive.
+        let mut pixels = [0; 4 * 4 * 4];
+        frame.copy_out(&mut pixels, 4 * 4)?;
+        if info.pixel_format == PIXEL_BGRA8
+            && info.extent() == Some(PixelExtent::new(4, 4))
+            && info.surface_extent() == Some(PixelExtent::new(4, 4))
+            && info.scale_factor == 1.0
+            && info.backing_scale() == Some(1.0)
+            && info.content_origin_x == 0.0
+            && info.content_origin_y == 0.0
+            && info.screen_rect() == Some(((0.0, 0.0), (4.0, 4.0)))
+            && info.display_time_nanos == 1_000_000_000
+            && pixels == [0x31; 4 * 4 * 4]
+        {
+            probe.observation.valid_samples += 1;
+        }
+    }
+    let observation = probe.observation;
+    drop(probe);
+    Ok(observation)
+}
+
 #[cfg(test)]
 fn testing_gate_retries(
     completion_delay: Duration,
@@ -3220,6 +3395,15 @@ unsafe extern "C" {
     fn mp_shim_testing_stop_callback_exception(
         out_terminal_status: *mut u32,
         out_terminal_calls: *mut u32,
+        out_fence_status: *mut u32,
+    ) -> u32;
+    #[cfg(test)]
+    fn mp_shim_testing_frame_callback_boundary(
+        raise_sites: u32,
+        context: *mut c_void,
+        frame_callback: Option<FrameCallback>,
+        frame_commit_callback: Option<FrameCommitCallback>,
+        stopped_callback: Option<StoppedCallback>,
         out_fence_status: *mut u32,
     ) -> u32;
     #[cfg(test)]
