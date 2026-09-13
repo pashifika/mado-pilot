@@ -827,6 +827,10 @@ new accepting ADR are required before final enforcement. Fixed scheduler/storage
 safety limits are not measured budgets. Controlled API or hosted compilation
 cannot substitute for real CPU replay or target-owned WGC/ScreenCaptureKit
 evidence. Existing profiles and historical failed/partial results are unchanged.
+The [measurement-scope decision](adr/0071-ocr-watch-observable-measurement-scopes.md)
+removes no required observation and accepts no numerical budget. Structured
+view/retention/process-memory observations and qualification-only startup stages
+must be complete before a later accepting workload-budget ADR can use them.
 
 ## G-014
 

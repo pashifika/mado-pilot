@@ -384,18 +384,20 @@ Focused deterministic checks are:
 ```sh
 : "${CARGO_TARGET_DIR:?set a new deterministic target root}"
 : "${OCR_NORMALIZATION_PROOF_TARGET:?set a separate new proof target root}"
+: "${OCR_QUALIFICATION_CHECK_TARGET:?set a separate new qualification-feature check root}"
 cargo test --locked --package mado-pilot-ocr --lib
 cargo run --locked --release --package mado-pilot-ocr --example ocr-normalization-bound --target-dir "$OCR_NORMALIZATION_PROOF_TARGET"
 python3 tools/setup-native.py -- cargo test --locked --package mado-pilot-runtime --tests
 python3 tools/setup-native.py -- cargo test --locked --package mado-pilot --example ocr-text-watch
+python3 tools/setup-native.py -- cargo test --locked --package mado-pilot --features ocr-text-watch-qualification --example ocr-text-watch --target-dir "$OCR_QUALIFICATION_CHECK_TARGET"
 python3 -m unittest discover -s tools/ocr-text-watch/tests -v
 ```
 
 Set `CARGO_TARGET_DIR` on the non-proof commands before running them. Windows
 uses the existing explicit `--opencv-root`/`--libclang-path` setup options.
 The Python tests use inert files and an owned Python child, not ONNX or capture.
-The example's test verifies its independent Retina oracle; it does not execute
-the real-model example main.
+The example tests verify its independent Retina oracle and qualification-only
+stage-record rejection; neither test configuration executes the real-model main.
 
 ## Verification
 

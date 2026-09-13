@@ -181,6 +181,25 @@ an unchanged executable nor a version string replaces actual dependency identity
 Windows snapshots do not establish the history of transient unloaded images;
 the required OpenCV and ORT dependencies remain loaded for this procedure.
 
+When the exact image set is not yet known, a separately authorized binding-only
+run may execute the qualification-feature transition example **once**:
+
+```sh
+: "${OCR_BINDING_EVIDENCE:?new private binding evidence directory required}"
+python tools/setup-native.py -- python tools/ocr-text-watch/bind_replay.py \
+  --executable "$OCR_REPLAY_EXAMPLE" --corpus "$OCR_REPLAY_CORPUS" \
+  --output "$OCR_BINDING_EVIDENCE" --execute-binding
+```
+
+It has the same90-second process,10-second cleanup and64-KiB output bounds.
+It records exact source/inputs, complete output, required executable/runtime
+membership and observed image hashes. Additional images are observed and hashed
+after execution, not preapproved or proven unchanged throughout this binding run.
+The resulting `observed-native-images.json` must be independently reviewed before
+it becomes an approved input to the later three-process replay cohort. Binding
+success is neither image approval nor replay/numeric/native qualification.
+Failure retains the first attempt and authorizes no retry.
+
 Metadata reads are limited to 1 MiB, identity files to 1 GiB, and non-regular or
 changing files are refused. Metadata is parsed and hashed from the same bytes.
 Injected-library environment variables and ambient Git repository selectors are
@@ -205,9 +224,10 @@ python tools/setup-native.py -- cargo test --locked --package mado-pilot \
 The process watchdog is 300 seconds. Held-work tests distinguish original
 pending age from the last replacement, leave both classes ready when checking
 the next template turn, and account for missing resource reads after teardown.
-Reported backend-input mapping bytes, retained-accessor mappings and cache
-occupancy are separate from an unmeasured total physical mapping ledger.
-Logical retained extents are not native allocation/RSS totals.
+Structured per-invocation rows keep backend-input view traffic, caller-accessor
+mapping traffic, logical cache/result extents and OS memory separate. They do
+not claim unique allocations or a total opaque native-mapping ledger.
+[ADR 0071](adr/0071-ocr-watch-observable-measurement-scopes.md) defines the scopes.
 
 `tools/ocr-text-watch/workloads.py` requires a clean committed candidate, an exact
 native image manifest and a private host record. It runs three controlled
@@ -215,11 +235,19 @@ processes or, only in explicit `real-cpu-cold-startup` mode after separate
 authority, five fresh runs of the real transition example. Host declarations
 are separated from observations; only the named host and release target are
 verified by this runner. Unobserved CPU/memory facts remain unverified.
-Real startup measures launch-to-owned-cleanup wall time, not internal engine
-timestamps, native pair counts or real-example RSS. Missing measurements and
-unaccepted numeric ceilings keep qualification false. `--enforce-budgets` refuses
-instead of inventing a pass. First failures and successful prefixes are retained;
-later processes are not run after a failure.
+Real startup requires an example built with the nondefault
+`ocr-text-watch-qualification` feature. It reuses the existing public constructor,
+ONNX initialization hooks and native memory sampler to record twelve ordered
+process-local stages through physical OCR zero and retained-owner release.
+Observed detector/recognizer creation counts are not live-session counts.
+The supervisor's whole-process cleanup remains separate from internal timestamps
+and ORT process-global residency. Ambient `MADO_PILOT_ORT_PROFILE_DIR` is refused.
+
+Report schema3 separates complete observed measurements from numerical acceptance.
+Missing/duplicate/malformed required records stop later processes and keep
+measurement completeness false. Complete measurements do not accept any budget;
+`--enforce-budgets` still refuses. Process failures retain precedence over missing
+telemetry, and first failures and successful prefixes are preserved.
 
 ## Native and workload gates
 

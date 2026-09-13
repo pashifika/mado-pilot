@@ -132,6 +132,7 @@ fn run_sample(case: &Case) -> Sample {
             "missing-nonpass"
         }
     );
+    evidence.measurement(phase, iteration, elapsed);
     let mut sample =
         Sample::new(elapsed, true, evidence.backend_max_bytes).with_query_work(evidence.work);
     if let Some(peak) = evidence.resident_peak {
@@ -146,6 +147,8 @@ struct Evidence {
     work: QueryWorkMetrics,
     backend_input_bytes: u64,
     backend_max_bytes: u64,
+    backend_mapped_bytes: u64,
+    backend_mapped_max_bytes: u64,
     retained_read_bytes: u64,
     records: u64,
     lost_normal: u64,
@@ -153,6 +156,14 @@ struct Evidence {
     last_record: u64,
     resident_peak: Option<u64>,
     resident_complete: bool,
+    mapped_cache_high_water_bytes: u64,
+    retained_source_high_water_bytes: u64,
+    retained_text_high_water_bytes: u64,
+    retained_index_high_water_bytes: u64,
+    separate_frame_high_water_bytes: u64,
+    physical_ocr_high_water: u32,
+    memory_high_water: resources::Resident,
+    memory_samples: u64,
 }
 
 impl Evidence {
@@ -164,12 +175,27 @@ impl Evidence {
             backend_input_bytes: 0,
             backend_max_bytes: 0,
             retained_read_bytes: 0,
+            backend_mapped_bytes: 0,
+            backend_mapped_max_bytes: 0,
             records: 0,
             lost_normal: 0,
             lost_debug: 0,
             last_record: 0,
             resident_peak: None,
             resident_complete: true,
+            mapped_cache_high_water_bytes: 0,
+            retained_source_high_water_bytes: 0,
+            retained_text_high_water_bytes: 0,
+            retained_index_high_water_bytes: 0,
+            separate_frame_high_water_bytes: 0,
+            physical_ocr_high_water: 0,
+            memory_high_water: resources::Resident {
+                current: None,
+                peak: None,
+                private: None,
+                footprint: None,
+            },
+            memory_samples: 0,
         }
     }
 
@@ -187,6 +213,14 @@ impl Evidence {
             observed.mapped_cache_bytes <= 64 * 1024 * 1024,
             "logical mapping cache capacity exceeded"
         );
+        self.mapped_cache_high_water_bytes = self
+            .mapped_cache_high_water_bytes
+            .max(observed.mapped_cache_high_water_bytes);
+        self.physical_ocr_high_water = self
+            .physical_ocr_high_water
+            .max(observed.physical_ocr_high_water);
+        self.separate_frame_high_water_bytes =
+            self.separate_frame_high_water_bytes.max(frame_clones);
         let resident = self.resident();
         println!(
             "# ocr-checkpoint workload={} stage={label} elapsed_ns={} scheduler={observed:?} separate_frame_extent_bytes={frame_clones} resident_current_bytes={:?} resident_process_peak_bytes={:?} private_bytes={:?} physical_footprint_bytes={:?}",
@@ -206,7 +240,83 @@ impl Evidence {
         if let Some(peak) = resident.peak {
             self.resident_peak = Some(self.resident_peak.map_or(peak, |old| old.max(peak)));
         }
+        // Every existing checkpoint and retirement read contributes. One missing
+        // observation makes that field incomplete, even if later reads succeed.
+        for (high_water, value) in [
+            (&mut self.memory_high_water.current, resident.current),
+            (&mut self.memory_high_water.peak, resident.peak),
+            (&mut self.memory_high_water.private, resident.private),
+            (&mut self.memory_high_water.footprint, resident.footprint),
+        ] {
+            *high_water = if self.memory_samples == 0 {
+                value
+            } else {
+                (*high_water).zip(value).map(|(old, value)| old.max(value))
+            };
+        }
+        self.memory_samples = self
+            .memory_samples
+            .checked_add(1)
+            .expect("bounded memory sample count");
         resident
+    }
+
+    fn observe_retained(&mut self, results: &[Arc<OcrTextTerminalOutcome>]) {
+        // One extent per successful result, not per Arc handle or distinct
+        // physical allocation. Separate caller-held frames are reported apart.
+        let mut source = 0_u64;
+        let mut text = 0_u64;
+        let mut indexes = 0_u64;
+        for terminal in results {
+            let extent = matched(terminal).retained_extent();
+            source = source
+                .checked_add(extent.source_bytes())
+                .expect("bounded retained source extents");
+            text = text
+                .checked_add(extent.text_bytes())
+                .expect("bounded retained text extents");
+            indexes = indexes
+                .checked_add(extent.index_bytes())
+                .expect("bounded retained index extents");
+        }
+        self.retained_source_high_water_bytes = self.retained_source_high_water_bytes.max(source);
+        self.retained_text_high_water_bytes = self.retained_text_high_water_bytes.max(text);
+        self.retained_index_high_water_bytes = self.retained_index_high_water_bytes.max(indexes);
+    }
+
+    fn measurement(&self, phase: &str, iteration: usize, elapsed: Duration) {
+        let elapsed_ns =
+            u64::try_from(elapsed.as_nanos()).expect("bounded invocation elapsed time");
+        println!(
+            concat!(
+                "# ocr-measurement workload={} phase={} iteration={} elapsed_ns={}",
+                " backend_input_mapped_bytes={} backend_input_max_bytes={}",
+                " retained_read_mapped_bytes={} mapped_cache_high_water_bytes={}",
+                " retained_source_high_water_bytes={} retained_text_high_water_bytes={}",
+                " retained_index_high_water_bytes={} separate_frame_high_water_bytes={}",
+                " resident_current_high_water_bytes={:?} resident_process_peak_bytes={:?}",
+                " private_high_water_bytes={:?} physical_footprint_high_water_bytes={:?}",
+                " memory_samples={} physical_ocr_high_water={}"
+            ),
+            self.name,
+            phase,
+            iteration,
+            elapsed_ns,
+            self.backend_mapped_bytes,
+            self.backend_mapped_max_bytes,
+            self.retained_read_bytes,
+            self.mapped_cache_high_water_bytes,
+            self.retained_source_high_water_bytes,
+            self.retained_text_high_water_bytes,
+            self.retained_index_high_water_bytes,
+            self.separate_frame_high_water_bytes,
+            self.memory_high_water.current,
+            self.memory_high_water.peak,
+            self.memory_high_water.private,
+            self.memory_high_water.footprint,
+            self.memory_samples,
+            self.physical_ocr_high_water,
+        );
     }
 
     fn endpoint(&self, label: &str, started: Instant) {
@@ -250,6 +360,11 @@ impl Evidence {
         let input = rig.ocr.input.lock().expect("observed OCR input lock");
         self.backend_input_bytes += input.total_bytes;
         self.backend_max_bytes = self.backend_max_bytes.max(input.max_bytes);
+        self.backend_mapped_bytes = self
+            .backend_mapped_bytes
+            .checked_add(input.mapped_bytes)
+            .expect("bounded backend request mappings");
+        self.backend_mapped_max_bytes = self.backend_mapped_max_bytes.max(input.mapped_max_bytes);
         self.work.backend_runs += rig.ocr.inner.recognition_count() as u64;
         self.work.producer_publications += publications;
         for query in queries {
@@ -290,6 +405,8 @@ struct ObservedOcr {
 
 #[derive(Debug, Default)]
 struct InputObservations {
+    mapped_bytes: u64,
+    mapped_max_bytes: u64,
     total_bytes: u64,
     max_bytes: u64,
     sources: Vec<FrameStamp>,
@@ -309,28 +426,35 @@ impl OcrBackend for ObservedOcr {
         output: &mut dyn OcrCandidateSink,
         operation: &OperationContext,
     ) -> mado_pilot::Result<()> {
-        let Ok(_slot) = self.slot.try_lock() else {
-            self.input.lock().expect("observed OCR input lock").busy += 1;
-            return Err(Error::new(
-                Status::LimitExceeded,
-                "controlled OCR inference slot is occupied",
-            ));
-        };
         let mapping = request.pixels();
         let bytes = u64::try_from(mapping.descriptor().byte_len()).expect("bounded mapping bytes");
-        assert_eq!(bytes, SOURCE_BYTES, "backend input extent differs");
-        assert_eq!(
-            mapping.descriptor().format(),
-            FORMAT,
-            "backend input format differs"
-        );
-        assert_eq!(
-            mapping.bytes().len() as u64,
-            bytes,
-            "backend mapping descriptor differs"
-        );
-        {
+        let _slot = {
             let mut input = self.input.lock().expect("observed OCR input lock");
+            // Count actual request views, including the mapped one-shot Busy
+            // refusal. Keep the existing admitted-input counters unchanged.
+            input.mapped_bytes = input
+                .mapped_bytes
+                .checked_add(bytes)
+                .expect("bounded backend request mappings");
+            input.mapped_max_bytes = input.mapped_max_bytes.max(bytes);
+            let Ok(slot) = self.slot.try_lock() else {
+                input.busy += 1;
+                return Err(Error::new(
+                    Status::LimitExceeded,
+                    "controlled OCR inference slot is occupied",
+                ));
+            };
+            assert_eq!(bytes, SOURCE_BYTES, "backend input extent differs");
+            assert_eq!(
+                mapping.descriptor().format(),
+                FORMAT,
+                "backend input format differs"
+            );
+            assert_eq!(
+                mapping.bytes().len() as u64,
+                bytes,
+                "backend mapping descriptor differs"
+            );
             assert!(
                 input.sources.len() < 256,
                 "controlled script exceeded its input bound"
@@ -338,7 +462,8 @@ impl OcrBackend for ObservedOcr {
             input.total_bytes += bytes;
             input.max_bytes = input.max_bytes.max(bytes);
             input.sources.push(mapping.stamp());
-        }
+            slot
+        };
         self.inner.recognize(request, output, operation)
     }
     fn close(&self, operation: &OperationContext) -> mado_pilot::Result<()> {
@@ -603,5 +728,10 @@ fn verify_pixels(evidence: &mut Evidence, frame: &Frame, stamp: FrameStamp, fill
         mapped.stamp() == stamp && mapped.bytes().iter().all(|byte| *byte == fill),
         "retained pixels differ from their exact source"
     );
-    evidence.retained_read_bytes += mapped.descriptor().byte_len() as u64;
+    evidence.retained_read_bytes = evidence
+        .retained_read_bytes
+        .checked_add(
+            u64::try_from(mapped.descriptor().byte_len()).expect("bounded retained mapping bytes"),
+        )
+        .expect("bounded retained mapping traffic");
 }

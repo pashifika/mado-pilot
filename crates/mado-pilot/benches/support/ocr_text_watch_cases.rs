@@ -98,6 +98,7 @@ pub(super) fn positive_consecutive(evidence: &mut Evidence) {
         "blank plus three confirmations expected"
     );
     rig.quiescent();
+    evidence.observe_retained(std::slice::from_ref(&terminal));
     evidence.checkpoint("matched-retained", &rig, 0);
     session.close(&bounded()).expect("session closed");
     evidence.collect(&rig, &[&query], 4);
@@ -299,7 +300,7 @@ fn mixed_inference(evidence: &mut Evidence) {
     println!(
         "# ocr-oracle workload=mixed-two-session one_shot_busy=controlled-status-only real_onnx_busy=unexecuted"
     );
-    evidence.checkpoint("templates-progress-while-ocr-held", &rig, 0);
+    evidence.checkpoint("templates-progress-while-ocr-held", &rig, SOURCE_BYTES);
     let mut previous = None;
     for (turn, gate) in gates.iter().enumerate() {
         assert!(
@@ -361,7 +362,7 @@ fn mixed_inference(evidence: &mut Evidence) {
     first.close(&bounded()).expect("first session closed");
     second.close(&bounded()).expect("second session closed");
     evidence.collect(&rig, &[&queries[0], &queries[1]], 18);
-    evidence.checkpoint("mixed-inference-physical-zero", &rig, 0);
+    evidence.checkpoint("mixed-inference-physical-zero", &rig, SOURCE_BYTES);
 }
 
 fn template_completed(queries: &[TemplateQuery], count: u64) {
@@ -709,6 +710,7 @@ pub(super) fn retained(evidence: &mut Evidence) {
         "Arc handle clone counted as a new result"
     );
     drop(same_owner);
+    evidence.observe_retained(&results);
     evidence.checkpoint("four-results-four-frame-owners", &rig, 4 * SOURCE_BYTES);
     for index in 0..20 {
         rig.clock.advance(CAPTURE_TICK);
@@ -933,6 +935,7 @@ pub(super) fn startup(evidence: &mut Evidence) {
     evidence.endpoint("first-positive-to-terminal", started);
     verify_result(matched(&terminal), stamp, stamp, 1);
     rig.quiescent();
+    evidence.observe_retained(std::slice::from_ref(&terminal));
     let started = Instant::now();
     session.close(&bounded()).expect("startup session closed");
     evidence.endpoint("logical-close", started);

@@ -1,5 +1,5 @@
 # Prospective workload only. No numeric budget, host, or final execution is accepted.
-format_version = 1
+format_version = 2
 
 [benchmark]
 id = "ocr-text-watch-x86_64-pc-windows-msvc"
@@ -36,16 +36,16 @@ percentile = "nearest-rank p95 within each process; no pooling, exclusion, or re
 process_timeout_seconds = 300
 cleanup_timeout_seconds = 15
 output_limit_bytes = 1048576
-rss_method = "controlled: GetProcessMemoryInfo current/peak working set and PrivateUsage; owned Job peak and real example RSS remain unmeasured-nonpass"
-mapped_bytes_method = "admitted backend-input CpuMapping descriptor bytes, retained-accessor mapping bytes and engine cache current/high-water separately; total physical mapping ledger unmeasured-nonpass"
-retained_bytes_method = "sample live result-owned source/text/index extent and result count; separately record native RSS and caller-owned frame retention"
+rss_method = "controlled and qualification-only real stages: GetProcessMemoryInfo current/peak working set and PrivateUsage; required missing values are nonpass"
+mapped_bytes_method = "actual backend request input view bytes including rejected Busy calls, caller retained-accessor view bytes, and logical cache high-water separately; sums are view traffic, not unique allocations"
+retained_bytes_method = "observed logical per-result source/text/index high-water and separate caller-frame extents; native memory uses OS snapshots, never alias extent sums"
 fairness_oracle = "two workers; one physical OCR lease; ready OCR query claim within S*Q successful OCR turns; ready template turn preserved between repeated OCR mappings"
 accounting_oracle = "generation-authoritative observations; disposition transitions may overlap, exact diagnostic loss counted; no text/pixels/hashes/private paths in ordinary output"
 
 [open_gates]
 host_and_display_binding = "required before precursor: exact OS/build/CPU/memory, host identity, display geometry/scale and permission state for native rows"
 source_and_executable_binding = "required before precursor and separately before final: commit/tree, executable and controlled runtime/model/fixture digests"
-workload_harness_review = "model-free harness exists; independent review and execution are required, separate from real/native measurement authority"
+workload_harness_review = "structured measurement schema and qualification-only real stages require independent review and model-free checks; real/native execution remains separate"
 precursor_authority = "not granted"
 numeric_ceilings = "withheld pending target-specific precursor evidence and independent justification"
 accepting_adr = "not issued; use next unused ordinal and ocr-text-watch-workload-profiles suffix"
@@ -110,8 +110,12 @@ process_count = 5
 warmup_iterations = 0
 sample_count = 1
 script = "controlled startup:0 warmups/1 sample; separately authorized real startup:5 fresh processes, public transition example interval1ms/immediate, no model initialization per query"
-expected = "controlled lifecycle semantics; real example exact bounded-v2/model/runtime and fixed source/output oracle; actual native pair/session count remains unmeasured-nonpass"
-endpoints = "controlled construction/open/query/close; real mode only process launch-to-owned-cleanup wall time; internal real engine-open/first-query/physical-zero timings unmeasured-nonpass"
+expected = "controlled lifecycle semantics; real exact bounded-v2/model/runtime/source oracle; exactly one detector and one recognizer ready-hook creation, no query-time reinitialization, and final physical OCR zero"
+endpoints = "real qualification feature: process-start, four native-open stages, engine/session ready, query terminal, logical close, physical OCR zero, parents dropped, retained owners dropped; supervisor process-tree cleanup remains separate"
+required_feature = "ocr-text-watch-qualification"
+measurement_schema = 1
+memory_scope = "working set/private bytes sampled at all12 stages; process-global ORT residency may remain until process exit"
+mapping_scope = "cold-startup reports retained-accessor mapped view traffic, not inaccessible internal ORT allocation totals"
 
 [measurements]
 performed = false

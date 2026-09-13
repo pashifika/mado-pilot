@@ -1,11 +1,12 @@
 # Windows owned WGC OCR procedure
 
-**Task 7.1 source/procedure preparation only. Task 7.2 is not run.** This pass
-has no Windows compiler, real-model execution grant, or Windows fixture/capture
-execution grant. No build, test, formatter, linter, fixture launch, capture,
-permission, focus, or input operation was performed. The commands below are
-prospective, not evidence of execution or native support. Existing Rust template
-and historical C/C++ results do not qualify this OCR procedure.
+**Task 7.1 preparation is compiled and reviewed. Task 7.2 is not run.**
+Strict SDK `/W4 /WX` compilation, Rust clippy and controlled contracts passed on
+Windows; the integrated `fd5468f` tree also passed hosted CI. Initial failures
+remain recorded at their original revisions. No new watcher model inference,
+fixture launch, capture, permission, focus or input operation is claimed.
+The commands below require fresh candidate and execution authority; existing
+Rust template and historical C/C++ results do not qualify this OCR procedure.
 
 ## Fixed scope and oracle
 
@@ -135,7 +136,7 @@ physical cleanup. RSS/latency are observations, not accepted G-013 budgets;
 no p95, heap, growth, or performance qualification is implied. A semantic match
 with failed cleanup remains semantic evidence and overall failure.
 
-## Build and prepare on the approved Windows host — not executed here
+## Build and prepare a fresh candidate on the approved Windows host
 
 Use an ordinary x64 MSVC developer PowerShell with the existing repository
 prerequisites from `CONTRIBUTING.md`. The product source must be a clean reviewed
@@ -198,10 +199,9 @@ never publish these private files as ordinary logs. Existing output directories
 and files are not overwritten. A failed or partial attempt is never relabeled by
 a later run, and host/build success does not inherit any old native qualification.
 
-Main/CI owns later Windows compilation and validation. No manifest change is
-needed: Cargo auto-discovers the example and the existing Windows dev-dependency
-already selects the required `windows` 0.62.2 SDK bindings. Runtime integration
-must provide the agreed `OcrTextQuery::progress`, accepted/source/confirmation
+Cargo auto-discovers the example; the existing Windows dev-dependency supplies
+the required `windows` 0.62.2 SDK bindings. The compiled runtime provides
+`OcrTextQuery::progress`, accepted/source/confirmation
 accessors, retained result/index/first-confirmed/provider/extent accessors, and
 `Engine::ocr_text_observation`. Native success remains unverified until the
 reviewed finite command above actually completes under fresh authority.

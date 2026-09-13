@@ -1,13 +1,12 @@
 # Private Apple Silicon OCR text-watch procedure
 
-**Task 7.3 preparation only. Task 7.4 is not run.** No signing, model inference,
-fixture launch, capture, permission change, focus action, or input action has run.
-Main's first strict compile-only attempt failed on deprecated `[self.window flushWindow]`;
-that call is removed without warning suppression. A later Rust example compile-only
-check passed with two unreachable match-arm and three helper-visibility warnings;
-those sources are corrected without suppression. The latest resize-oracle delta
-has not been rebuilt by this worker.
-Source review or compilation is not native qualification; native support and A9 remain open.
+**Task 7.3 preparation is compiled and reviewed. Task 7.4 is not run.**
+The strict Apple fixture build and Rust example passed CI and scoped verification
+on the delivered `fd5468f` tree. Earlier compile failures remain recorded with
+their original revisions; they were fixed without warning suppression.
+No new watcher signing, model inference, fixture launch, capture, permission
+change, focus action or input action is claimed. Compilation is not native
+qualification; native support and A9 remain open.
 The frozen foreign/native-template controllers, evidence, grants, and binaries
 are neither consumed nor changed.
 
@@ -144,7 +143,7 @@ recognized text, pixels/hashes, model/runtime paths or signing identifiers.
 No RSS ceiling, native thread-unload fence, arbitrary retained-clone memory bound,
 or task-8 qualification is claimed.
 
-## Explicit later build steps — not executed
+## Fresh native candidate build and signing — separate authority required
 
 Use ordinary installed Command Line Tools, the pinned Rust toolchain, Python
 3.13+, and the repository's existing OpenCV/libclang prerequisites. No dependency

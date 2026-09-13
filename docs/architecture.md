@@ -2670,6 +2670,13 @@ code must stay alive until actual return, and no replacement or forced
 termination is supplied. Retained-result extent counters are not de-duplicated
 native allocation/RSS measurements or a bound on arbitrary caller frame clones.
 
+Qualification-only startup observation uses the nondefault
+`ocr-text-watch-qualification` facade feature, forwarding only the existing ONNX
+benchmark hooks. It changes neither default wiring nor public query contracts.
+Ordered native-open and lifecycle stages, scoped mapping/retention extents and
+OS memory follow [ADR 0071](adr/0071-ocr-watch-observable-measurement-scopes.md);
+view-byte sums are not unique allocations or an opaque native memory ledger.
+
 The [lifecycle/privacy guide and example](ocr-text-watch.md) document this
 implementation. Ordinary Rust tests and the model-free derivation do not
 qualify real ONNX replay or either native capture target. Prospective workloads

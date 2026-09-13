@@ -344,6 +344,12 @@ jobs:
         shell: bash
         run: python -m unittest discover -s tools/ocr-text-watch/tests -v
 
+      - name: Test qualification-only OCR observation without inference
+        shell: bash
+        env:
+          CARGO_TARGET_DIR: ${{ runner.temp }}/ocr-watch-qualification-tests
+        run: cargo test --locked --package mado-pilot --features ocr-text-watch-qualification --example ocr-text-watch
+
       - name: Compile the owned OCR fixture without launching it
         shell: cmd
         run: |
@@ -620,6 +626,12 @@ jobs:
       - name: Test OCR replay evidence admission
         shell: bash
         run: python3 -m unittest discover -s tools/ocr-text-watch/tests -v
+
+      - name: Test qualification-only OCR observation without inference
+        shell: bash
+        env:
+          CARGO_TARGET_DIR: ${{ runner.temp }}/ocr-watch-qualification-tests
+        run: cargo test --locked --package mado-pilot --features ocr-text-watch-qualification --example ocr-text-watch
 
       - name: Compile the owned OCR fixture without launching it
         shell: bash

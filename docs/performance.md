@@ -43,6 +43,10 @@ bindings and numerical acceptance pending new precursor authority and evidence.
 Result-owned source/text/index extents, native resident memory, logical close
 and physical quiescence are separate measurements. No one-shot OCR, template
 or frozen foreign-boundary ceiling is reused to qualify this workload.
+Their [measurement scopes](adr/0071-ocr-watch-observable-measurement-scopes.md)
+separate actual view traffic and logical extents from OS process memory.
+Qualification-only real startup records internal stages and native construction
+events; complete observations still do not accept a numerical ceiling.
 
 ## Where benchmark files live
 

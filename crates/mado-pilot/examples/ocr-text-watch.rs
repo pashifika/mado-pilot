@@ -4,6 +4,13 @@
 #[path = "support/ocr_dependency_images.rs"]
 mod ocr_dependency_images;
 
+#[cfg(feature = "ocr-text-watch-qualification")]
+#[path = "support/ocr_watch_measurements.rs"]
+mod ocr_watch_measurements;
+
+#[cfg(feature = "ocr-text-watch-qualification")]
+use ocr_watch_measurements::{Measurements, Stage};
+
 use std::path::PathBuf;
 use std::process::ExitCode;
 use std::sync::Arc;
@@ -57,6 +64,9 @@ fn main() -> ExitCode {
 }
 
 fn run() -> Result<(), Box<dyn std::error::Error>> {
+    #[cfg(feature = "ocr-text-watch-qualification")]
+    let mut measurements = Measurements::start()?;
+
     let mut args = std::env::args_os().skip(1);
     let corpus = PathBuf::from(args.next().ok_or("a generated replay corpus is required")?);
     let scenario = args
@@ -101,6 +111,8 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
         &config,
         &setup,
     )?;
+    #[cfg(feature = "ocr-text-watch-qualification")]
+    measurements.record(Stage::EngineReady);
     let backend = engine.ocr_backend().ok_or("OCR is unavailable")?;
     let target = engine
         .discover(&setup)?
@@ -108,6 +120,8 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
         .ok_or("the fixed replay target is missing")?
         .id();
     let session = engine.open(target, &OpenRequest::new(), &setup)?;
+    #[cfg(feature = "ocr-text-watch-qualification")]
+    measurements.record(Stage::SessionReady);
     let work = (|| -> Result<Arc<OcrTextTerminalOutcome>, Box<dyn std::error::Error>> {
         let query = session.start_ocr_text_watch(OcrTextWatchRequest::new(
             Rect::new(output_space, 0.0, 0.0, width, height)?,
@@ -136,6 +150,8 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
         }
         let wait = OperationContext::new().with_timeout(Duration::from_secs(35))?;
         let terminal = query.wait(&wait)?;
+        #[cfg(feature = "ocr-text-watch-qualification")]
+        measurements.record(Stage::QueryTerminal);
         if let OcrTextTerminalOutcome::Matched(result) = terminal.as_ref() {
             if result.target() != target || result.result().backend() != &backend {
                 return Err("selected target or backend correlation differs".into());
@@ -147,9 +163,15 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
     })();
     let close = OperationContext::new().with_timeout(Duration::from_secs(10))?;
     let close_outcome = session.close(&close);
+    #[cfg(feature = "ocr-text-watch-qualification")]
+    let physical_cleanup = measurements.close_returned(&engine);
     drop(session);
     drop(engine);
+    #[cfg(feature = "ocr-text-watch-qualification")]
+    measurements.record(Stage::ParentsDropped);
     close_outcome?;
+    #[cfg(feature = "ocr-text-watch-qualification")]
+    physical_cleanup?;
     let terminal = work?;
 
     if scenario == "negative" {
@@ -157,18 +179,27 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
             return Err("negative source did not drain to closed".into());
         }
         println!("ocr-text-watch: scenario=negative terminal=SessionClosed cleanup=returned");
+        #[cfg(feature = "ocr-text-watch-qualification")]
+        {
+            drop(terminal);
+            measurements.finish(&scenario)?;
+        }
         return Ok(());
     }
     let OcrTextTerminalOutcome::Matched(result) = terminal.as_ref() else {
         return Err("the fixed positive source did not match".into());
     };
     verify_result(result, sequence, output_space)?;
+    #[cfg(feature = "ocr-text-watch-qualification")]
+    measurements.retained_result(result);
     let retained_frame = result.frame().clone();
     let mapping = retained_frame.map(PixelFormat::Bgra8, &close)?;
     let expected_pixels = std::fs::read(corpus.join("hud.bgra"))?;
     if mapping.stamp() != result.result().stamp() || mapping.bytes() != expected_pixels {
         return Err("retained source pixels differ after parent teardown".into());
     }
+    #[cfg(feature = "ocr-text-watch-qualification")]
+    measurements.retained_read(&mapping)?;
     println!(
         "ocr-text-watch: scenario={scenario} terminal=Matched sequence={sequence} regions={} satisfying={} confirmations={} retained_bytes={} cleanup=returned",
         result.result().regions().len(),
@@ -179,9 +210,17 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
     // A separately retained frame remains usable after the result owner is gone too.
     drop(mapping);
     drop(terminal);
-    if retained_frame.map(PixelFormat::Bgra8, &close)?.bytes() != expected_pixels {
+    let mapping = retained_frame.map(PixelFormat::Bgra8, &close)?;
+    if mapping.bytes() != expected_pixels {
         return Err("separately retained frame differs".into());
     }
+    #[cfg(feature = "ocr-text-watch-qualification")]
+    measurements.retained_read(&mapping)?;
+    drop(mapping);
+    drop(expected_pixels);
+    drop(retained_frame);
+    #[cfg(feature = "ocr-text-watch-qualification")]
+    measurements.finish(&scenario)?;
     Ok(())
 }
 

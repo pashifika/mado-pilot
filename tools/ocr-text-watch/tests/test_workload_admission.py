@@ -23,7 +23,7 @@ TARGET = "aarch64-apple-darwin"
 PROFILE = (workloads.ROOT / "docs/benchmarks" / f"ocr-text-watch-{TARGET}.toml").read_bytes()
 
 
-def controlled_output() -> str:
+def controlled_output(*, measured=True) -> str:
     samples = [(name, "warmup" if index < 2 else "sample", index)
                for name in workloads.WORKLOADS[:-1] for index in range(22)]
     samples.append(("cold-startup", "sample", 0))
@@ -31,10 +31,47 @@ def controlled_output() -> str:
     for name, phase, index in samples:
         suffix = f"workload={name} phase={phase} iteration={index}"
         lines.extend((f"# ocr-start {suffix}", f"# ocr-raw {suffix} semantic=passed retained=0"))
+        if measured:
+            lines.append(
+                f"# ocr-measurement {suffix} elapsed_ns=1000 "
+                "backend_input_mapped_bytes=2073600 backend_input_max_bytes=2073600 "
+                "retained_read_mapped_bytes=0 mapped_cache_high_water_bytes=2073600 "
+                "retained_source_high_water_bytes=0 retained_text_high_water_bytes=0 "
+                f"retained_index_high_water_bytes=0 separate_frame_high_water_bytes={2073600 if name == 'mixed-two-session' else 0} "
+                "resident_current_high_water_bytes=Some(2048) resident_process_peak_bytes=Some(4096) "
+                "private_high_water_bytes=None physical_footprint_high_water_bytes=Some(3072) "
+                "memory_samples=2 physical_ocr_high_water=1"
+            )
     lines.extend((
         "ocr-text-watch-query: 6 workloads, 20 samples each, 0 oracle failure(s)",
         "ocr-text-watch-controlled-startup: 1 workloads, 1 samples each, 0 oracle failure(s)",
     ))
+    return "\n".join(lines)
+
+
+def real_output() -> str:
+    stages = (
+        "process-start", "runtime-initialized", "provider-prepared",
+        "detector-session-ready", "recognizer-session-ready", "engine-ready",
+        "session-ready", "query-terminal", "logical-close-returned",
+        "physical-ocr-zero", "parents-dropped", "retained-results-dropped",
+    )
+    lines = [
+        "ocr-text-watch: scenario=transition terminal=Matched sequence=1 regions=8 "
+        "satisfying=1 confirmations=1 retained_bytes=2073600 cleanup=returned"
+    ]
+    lines.extend(
+        f"# ocr-real-stage stage={stage} elapsed_ns={index * 1000} "
+        "resident_current_bytes=Some(2048) resident_process_peak_bytes=Some(4096) "
+        "private_bytes=None physical_footprint_bytes=Some(3072)"
+        for index, stage in enumerate(stages)
+    )
+    lines.append(
+        "# ocr-real-summary schema=1 scenario=transition open_stages=4 "
+        "detector_sessions_created=1 recognizer_sessions_created=1 physical_ocr_after_close=0 "
+        "physical_ocr_final=0 retained_source_extent_bytes=2073600 retained_text_extent_bytes=32 "
+        "retained_index_extent_bytes=2 retained_read_mapped_bytes=4147200"
+    )
     return "\n".join(lines)
 
 
@@ -237,16 +274,13 @@ class WorkloadAdmission(unittest.TestCase):
         self.assertEqual(result["unexecuted_processes"], [2, 3])
         self.assertEqual(self.launch.call_count, 1)
 
-    def test_completed_semantic_modes_never_promote_unmeasured_qualification(self):
+    def test_complete_measurements_do_not_accept_numeric_qualification(self):
         for mode, count in (("controlled", 3), ("real-cpu-cold-startup", 5)):
             with self.subTest(mode=mode):
                 self.args.mode = mode
                 self.args.output = self.root / mode
                 self.args.corpus = self.root if mode != "controlled" else None
-                self.process_record["stdout"] = controlled_output() if mode == "controlled" else (
-                    "ocr-text-watch: scenario=transition terminal=Matched sequence=1 regions=8 "
-                    "satisfying=1 confirmations=1 retained_bytes=2073600 cleanup=returned"
-                )
+                self.process_record["stdout"] = controlled_output() if mode == "controlled" else real_output()
                 with patch.object(workloads.run_replay, "canonical_environment", return_value=dict(os.environ)), \
                         patch.object(workloads.run_replay, "inputs", return_value={"runtime": workloads.run_replay.identity(self.image)}):
                     self.assertTrue(workloads.execute(self.args))
@@ -254,9 +288,39 @@ class WorkloadAdmission(unittest.TestCase):
                 self.assertTrue(result["semantic_cohort_passed"])
                 self.assertEqual(result["executed_processes"], count)
                 self.assertEqual(result["unexecuted_processes"], [])
-                self.assertFalse(result["required_measurements_complete"])
+                self.assertTrue(result["required_measurements_complete"])
                 self.assertFalse(result["passed"])
                 self.assertFalse(self.record("process-1.json")["budget_passed"])
+
+    def test_missing_measurements_stop_later_processes_without_inventing_budget_success(self):
+        self.process_record["stdout"] = controlled_output(measured=False)
+        self.assertFalse(workloads.execute(self.args))
+        result = self.record()
+        self.assertEqual(result["first_failure"]["kind"], "measurement-incomplete")
+        self.assertEqual(result["unexecuted_processes"], [2, 3])
+        self.assertTrue(self.record("process-1.json")["semantic_passed"])
+        self.assertFalse(result["required_measurements_complete"])
+        self.assertFalse(result["passed"])
+        self.assertEqual(self.launch.call_count, 1)
+
+    def test_process_failure_precedes_its_missing_measurements(self):
+        self.process_record.update(exit_code=1, stdout="")
+        self.assertFalse(workloads.execute(self.args))
+        result = self.record()
+        self.assertEqual(result["first_failure"]["kind"], "process-failure")
+        self.assertEqual(result["first_failure"]["stage"], "process-result")
+        self.assertEqual(result["unexecuted_processes"], [2, 3])
+        self.assertEqual(self.launch.call_count, 1)
+
+    def test_real_startup_rejects_ambient_ort_profiling_before_launch(self):
+        self.args.mode = "real-cpu-cold-startup"
+        self.args.corpus = self.root
+        with patch.object(workloads.run_replay, "canonical_environment", return_value={
+            "MADO_PILOT_ORT_PROFILE_DIR": "unrelated-profile-output",
+        }):
+            self.assertFalse(workloads.execute(self.args))
+        self.assertEqual(self.record()["first_failure"]["stage"], "preflight-environment")
+        self.launch.assert_not_called()
 
     def test_final_binding_exception_invalidates_an_otherwise_complete_cohort(self):
         calls = 0

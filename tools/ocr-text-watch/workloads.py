@@ -12,6 +12,7 @@ import subprocess
 import sys
 import tomllib
 
+import measurements
 import run_replay
 
 ROOT = run_replay.ROOT
@@ -30,6 +31,8 @@ HARNESS = (
     "crates/support/testkit/src/controlled_storage.rs",
     "crates/mado-pilot/examples/ocr-text-watch.rs",
     "crates/mado-pilot/examples/support/ocr_dependency_images.rs",
+    "crates/mado-pilot/examples/support/ocr_watch_measurements.rs",
+    "tools/ocr-text-watch/measurements.py",
     "tools/ocr-text-watch/run_replay.py",
     "tools/native-release-profile/_process_group.py",
     "tools/native-release-profile/_windows_process.py",
@@ -39,6 +42,8 @@ HARNESS = (
 def profile(path: Path) -> tuple[dict, dict]:
     data, document_identity = run_replay.read_document(path)
     value = tomllib.loads(data.decode("utf-8"))
+    if type(value.get("format_version")) is not int or value["format_version"] != 2:
+        raise ValueError("unsupported workload measurement profile version")
     expected_target = run_replay.selected_target()
     canonical = ROOT / "docs/benchmarks" / f"ocr-text-watch-{expected_target}.toml"
     canonical_bytes, _ = run_replay.read_document(canonical)
@@ -68,6 +73,7 @@ def profile(path: Path) -> tuple[dict, dict]:
     if any(type(workloads[-1].get(key)) is not type(setting) or workloads[-1][key] != setting
            for key, setting in {
         "process_count": 5, "warmup_iterations": 0, "sample_count": 1,
+        "required_feature": "ocr-text-watch-qualification", "measurement_schema": 1,
     }.items()):
         raise ValueError("cold-startup cohort differs from its fixed five fresh processes")
     return value, document_identity
@@ -224,6 +230,8 @@ def execute(args: argparse.Namespace) -> bool:
         }
         stage = "preflight-environment"
         environment = run_replay.canonical_environment() if real else dict(os.environ)
+        if real and environment.get("MADO_PILOT_ORT_PROFILE_DIR"):
+            raise ValueError("fixed startup measurements do not admit ambient ORT profiling")
         report_paths = [output / f"process-{index + 1}.native-images.txt" for index in range(count)]
         child_environments = [
             run_replay.dependency_environment(environment, report_path) for report_path in report_paths
@@ -236,7 +244,7 @@ def execute(args: argparse.Namespace) -> bool:
         argv = [str(executable), str(corpus), "transition"] if real else [str(executable), "--semantic"]
         stage = "plan-evidence"
         run_replay.write_record(output / "plan.json", {
-            "schema_version": 2, "mode": args.mode, "authority": "explicit --execute; this exact prospective cohort requires operator authorization",
+            "schema_version": 3, "mode": args.mode, "authority": "explicit --execute; this exact prospective cohort requires operator authorization",
             "target": facts["release_target"], "host": host_facts, "source": original_source,
             "bindings": before, "argv": argv, "process_count": count,
             "child_selection_environments": [selection_environment(child) for child in child_environments],
@@ -249,9 +257,9 @@ def execute(args: argparse.Namespace) -> bool:
             "output_limit_bytes": facts["output_limit_bytes"], "retries": 0, "exclusions": 0,
             "order": ["cold-startup"] if real else list(WORKLOADS),
             "clock": "supervisor monotonic launch-attempt through process-tree cleanup; Rust per-sample Instant is separate",
-            "cold_startup_scope": "real mode executes the existing public example once in each fresh process; no OS cache flush or internal startup timestamp is implied",
+            "cold_startup_scope": "five fresh processes with qualification-only internal Instant/RSS stages; no OS cache flush; ready-hook session creations are not live-session counts",
             "real_example_overrides": {"query_interval_ms": 1, "confirmation_count": 1} if real else None,
-            "resource_scope": "controlled rows expose process RSS and logical cache/result extents, not native fixture allocation; real example has no RSS or native-pair counter hook",
+            "resource_scope": "backend-input and caller-accessor view traffic, logical cache/result extents and OS memory are distinct; no opaque total native-allocation ledger",
             "numeric_enforcement": "refused: no accepted budget ADR", "native_capture": "unexecuted-separate-target-procedure",
             "private_record": "Contains declared and observed host facts, controlled path/digest identities, loader-selection environment and complete raw process output",
         })
@@ -282,11 +290,7 @@ def execute(args: argparse.Namespace) -> bool:
                 "dependency_report_path": str(report_paths[index]),
                 "selection_environment": selection_environment(child_environments[index]),
                 "elapsed_scope": "whole fresh process including driver and teardown; never held-double OCR performance",
-                "rss": None if real else "see raw target snapshots; missing values are nonpass, not zero",
-                "internal_startup_endpoints": "unmeasured-nonpass" if real else "controlled-only raw endpoints",
-                "native_session_pair_count": "unmeasured-nonpass" if real else "not-applicable-controlled-backend",
-                "physical_mapping_total_bytes": None,
-                "physical_mapping_total_status": "unmeasured-nonpass; backend input/cache/accessor extents are not a complete physical-map ledger",
+                "measurements": None,
                 "required_measurements_complete": False, "budget_passed": False,
             }
             stage = "before-process-bindings"
@@ -316,6 +320,15 @@ def execute(args: argparse.Namespace) -> bool:
                         "kind": "process-failure", "stage": stage, "process": index + 1,
                         "semantic_passed": row["semantic_passed"], "cleanup_passed": row["cleanup_passed"],
                     })
+                stage = "measurement-observation"
+                measure = measurements.real_measurements if real else measurements.controlled_measurements
+                row["measurements"] = measure(observed["stdout"], facts["release_target"])
+                row["required_measurements_complete"] = row["measurements"]["complete"] is True
+                if not row["required_measurements_complete"]:
+                    failures.append({
+                        "kind": "measurement-incomplete", "stage": stage, "process": index + 1,
+                        "reasons": row["measurements"]["failures"],
+                    })
                 stage = "dependency-observation"
                 dependencies = run_replay.observe_dependencies(observed, report_paths[index], approved_images)
                 row["native_dependencies"] = dependencies
@@ -336,12 +349,15 @@ def execute(args: argparse.Namespace) -> bool:
             final_failure = retain_failure("final-bindings", None, error)
 
     semantic_complete = (
-        admitted and unchanged and not failures and len(rows) == count
+        admitted and unchanged and first_apparatus_failure is None and len(rows) == count
         and all(row["semantic_passed"] and row["cleanup_passed"] and row["dependencies_passed"] for row in rows)
+    )
+    measurement_complete = semantic_complete and not failures and all(
+        row["required_measurements_complete"] for row in rows
     )
     states = {row["process"]: row["execution_state"] for row in rows}
     run_replay.write_record(output / "result.json", {
-        "schema_version": 2, "mode": args.mode, "admitted": admitted, "process_count": count,
+        "schema_version": 3, "mode": args.mode, "admitted": admitted, "process_count": count,
         "identity_unchanged": unchanged, "semantic_cohort_passed": semantic_complete,
         "executed_processes": sum(state == "started" for state in states.values()),
         "attempted_processes": sum(state != "not-attempted" for state in states.values()),
@@ -353,17 +369,17 @@ def execute(args: argparse.Namespace) -> bool:
         "first_failure": failures[0] if failures else None, "failures": failures,
         "apparatus_invalid": first_apparatus_failure is not None,
         "final_binding_check": {"performed": admitted, "matched": unchanged, "failure": final_failure},
-        "required_measurements_complete": False, "passed": False,
+        "required_measurements_complete": measurement_complete, "passed": False,
         "task_8_2": "not-passed", "task_8_3": "not-passed", "numeric_budgets": "unaccepted",
         "native_scope": "unexecuted; no fixture, capture, signature, permission or input operation is delegated",
     })
-    return semantic_complete
+    return measurement_complete
 
 
 def main() -> int:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--mode", required=True, choices=("controlled", "real-cpu-cold-startup"))
-    parser.add_argument("--executable", required=True, type=Path, help="bench executable for controlled mode; public example executable for real CPU mode")
+    parser.add_argument("--executable", required=True, type=Path, help="bench executable for controlled mode; public example built with ocr-text-watch-qualification for real CPU mode")
     parser.add_argument("--profile", required=True, type=Path)
     parser.add_argument("--host-record", required=True, type=Path, help="private JSON containing release_target, host_id matching platform.node(), cpu, os_version, memory_bytes; CPU/OS/memory declarations remain unverified")
     parser.add_argument("--native-images", required=True, type=Path, help="independently approved canonical native-image path to SHA-256 JSON; never derived from this execution")
@@ -381,7 +397,7 @@ def main() -> int:
     except (OSError, ValueError, KeyError, TypeError, subprocess.SubprocessError):
         print("OCR workload procedure failed; retain and inspect private evidence without retry", file=sys.stderr)
         return 1
-    print("OCR semantic cohort completed; workload qualification remains nonpass" if complete else "OCR cohort failed; later processes remain unexecuted")
+    print("OCR semantic and measurement cohort completed; numerical qualification remains unaccepted" if complete else "OCR cohort failed; later processes remain unexecuted")
     return 0 if complete else 1
 
 
