@@ -229,6 +229,7 @@ dependencies = [
  "mado-pilot-platform-windows",
  "mado-pilot-runtime",
  "mado-pilot-testkit",
+ "serde_json",
  "windows",
 ]
 

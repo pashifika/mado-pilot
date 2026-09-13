@@ -13,6 +13,7 @@ qualification-unsupported-api = ["mado-pilot-platform-windows/qualification-unsu
 coreml-provider = ["mado-pilot-backend-onnx/coreml-provider"]
 cuda-provider = ["mado-pilot-backend-onnx/cuda-provider"]
 ocr-text-watch-qualification = ["mado-pilot-backend-onnx/benchmark-instrumentation"]
+ocr-loader-diagnostic = []
 native-template-watch-qualification = [
     "mado-pilot-runtime/benchmark-instrumentation",
     "mado-pilot-backend-opencv/benchmark-instrumentation",
@@ -47,6 +48,7 @@ libc.workspace = true
 
 [dev-dependencies]
 mado-pilot-testkit = { path = "../support/testkit" }
+serde_json.workspace = true
 
 [[bench]]
 name = "deterministic-slice"

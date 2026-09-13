@@ -48,6 +48,13 @@ impl fmt::Display for Failure {
 
 impl std::error::Error for Failure {}
 
+/// An owned, absolute, line-safe image path and an opt-in diagnostic base address.
+pub(crate) struct Image {
+    #[cfg(feature = "ocr-loader-diagnostic")]
+    pub(crate) base: u64,
+    pub(crate) path: String,
+}
+
 /// Writes one exclusive report only when explicitly requested by the process runner.
 ///
 /// The caller must supply an existing private parent directory (see module docs).
@@ -85,30 +92,57 @@ pub(crate) fn record_if_requested() -> Result<(), Failure> {
         return Err(Failure::Rule("report-regular-file"));
     }
 
+    let images = stable_snapshot::<PATH_UNITS>()?;
+
+    for image in images {
+        report
+            .write_all(image.path.as_bytes())
+            .map_err(|error| Failure::Io("report-write", error.kind()))?;
+        report
+            .write_all(b"\n")
+            .map_err(|error| Failure::Io("report-write", error.kind()))?;
+    }
+    report
+        .sync_all()
+        .map_err(|error| Failure::Io("report-sync", error.kind()))
+}
+
+/// Observes a stable, base-ordered inventory with owned paths and borrowed handles.
+///
+/// The scratch capacity includes the terminator and an ambiguous last slot, so a
+/// capacity of 2,050 accepts at most 2,048 UTF-16 content units.
+pub(crate) fn stable_snapshot<const PATH_CAPACITY: usize>() -> Result<Vec<Image>, Failure> {
+    if !(3..=PATH_UNITS).contains(&PATH_CAPACITY) {
+        return Err(Failure::Rule("module-path-capacity"));
+    }
+
     // SAFETY: GetCurrentProcess has no preconditions. Its pseudo-handle is valid
     // for this process and borrowed; it must not be closed or made an owned handle.
     let process = unsafe { GetCurrentProcess() };
     let mut modules = [HMODULE::default(); MODULE_LIMIT];
     let count = snapshot(process, &mut modules)?;
     let modules = &modules[..count];
-    let mut path_buffer = [0_u16; PATH_UNITS];
-    let mut paths: Vec<String> = Vec::with_capacity(count);
+    let mut path_buffer = [0_u16; PATH_CAPACITY];
+    let mut images: Vec<Image> = Vec::with_capacity(count);
     let mut output_bytes = 0_usize;
     for &module in modules {
         let path = module_path(process, module, &mut path_buffer)?;
-        let path = String::from_utf16(path).map_err(|_| Failure::Rule("module-path-encoding"))?;
-        if !Path::new(&path).is_absolute() {
-            return Err(Failure::Rule("module-path-absolute"));
-        }
-        if paths.iter().any(|previous| previous == &path) {
+        let path = validated_path(path)?;
+        if images.iter().any(|previous| previous.path == path) {
             return Err(Failure::Rule("module-path-duplicate"));
         }
+        // Preserve the legacy early line-output rejection before path revalidation.
+        // A diagnostic JSON checkpoint cannot fit if its unescaped paths cannot.
         output_bytes = output_bytes
             .checked_add(path.len())
             .and_then(|bytes| bytes.checked_add(1))
             .filter(|bytes| *bytes <= OUTPUT_LIMIT)
             .ok_or(Failure::Rule("report-output-limit"))?;
-        paths.push(path);
+        images.push(Image {
+            #[cfg(feature = "ocr-loader-diagnostic")]
+            base: module.0.addr() as u64,
+            path,
+        });
     }
 
     let mut verification = [HMODULE::default(); MODULE_LIMIT];
@@ -118,9 +152,10 @@ pub(crate) fn record_if_requested() -> Result<(), Failure> {
     }
     // A reused base address can preserve the handle set while changing its path.
     // Reuse the UTF-16 buffer to compare paths without another owned-string copy.
-    for (&module, path) in modules.iter().zip(&paths) {
+    for (&module, image) in modules.iter().zip(&images) {
         let current = module_path(process, module, &mut path_buffer)?;
-        if !path.encode_utf16().eq(current.iter().copied()) {
+        validate_line_protocol(current)?;
+        if !image.path.encode_utf16().eq(current.iter().copied()) {
             return Err(Failure::Rule("module-path-changed"));
         }
     }
@@ -128,18 +163,24 @@ pub(crate) fn record_if_requested() -> Result<(), Failure> {
     if modules != &verification[..verified_count] {
         return Err(Failure::Rule("module-inventory-changed"));
     }
+    Ok(images)
+}
 
-    for path in paths {
-        report
-            .write_all(path.as_bytes())
-            .map_err(|error| Failure::Io("report-write", error.kind()))?;
-        report
-            .write_all(b"\n")
-            .map_err(|error| Failure::Io("report-write", error.kind()))?;
+/// Converts UTF-16 content (without a terminator) to an absolute, line-safe path.
+pub(crate) fn validated_path(units: &[u16]) -> Result<String, Failure> {
+    validate_line_protocol(units)?;
+    let path = String::from_utf16(units).map_err(|_| Failure::Rule("module-path-encoding"))?;
+    if !Path::new(&path).is_absolute() {
+        return Err(Failure::Rule("module-path-absolute"));
     }
-    report
-        .sync_all()
-        .map_err(|error| Failure::Io("report-sync", error.kind()))
+    Ok(path)
+}
+
+fn validate_line_protocol(units: &[u16]) -> Result<(), Failure> {
+    if units.iter().any(|unit| matches!(*unit, 0 | 10 | 13)) {
+        return Err(Failure::Rule("module-path-line-protocol"));
+    }
+    Ok(())
 }
 
 fn snapshot(process: HANDLE, modules: &mut [HMODULE; MODULE_LIMIT]) -> Result<usize, Failure> {
@@ -174,14 +215,14 @@ fn snapshot(process: HANDLE, modules: &mut [HMODULE; MODULE_LIMIT]) -> Result<us
 fn module_path(
     process: HANDLE,
     module: HMODULE,
-    buffer: &mut [u16; PATH_UNITS],
+    buffer: &mut [u16],
 ) -> Result<&[u16], Failure> {
     // A sentinel makes a missing terminator observable even on buffer reuse.
     buffer.fill(u16::MAX);
     // SAFETY: Both handles refer to the current process; module is a non-null,
     // borrowed snapshot identifier, never dereferenced or unloaded by Rust. The
     // API handles loader invalidation as failure. buffer is an exclusive live
-    // UTF-16 output slice whose fixed length fits u32; no pointer is retained.
+    // UTF-16 output slice whose length stable_snapshot bounds; no pointer is retained.
     let length = unsafe { GetModuleFileNameExW(Some(process), Some(module), buffer) };
     if length == 0 {
         return Err(Failure::Windows(
@@ -195,9 +236,5 @@ fn module_path(
     if length >= buffer.len() - 1 || buffer[length] != 0 {
         return Err(Failure::Rule("module-path-limit"));
     }
-    let path = &buffer[..length];
-    if path.iter().any(|unit| matches!(*unit, 0 | 10 | 13)) {
-        return Err(Failure::Rule("module-path-line-protocol"));
-    }
-    Ok(path)
+    Ok(&buffer[..length])
 }

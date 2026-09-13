@@ -7,6 +7,10 @@
 #[path = "../examples/support/ocr_dependency_images.rs"]
 mod ocr_dependency_images;
 
+#[cfg(all(windows, target_arch = "x86_64", feature = "ocr-loader-diagnostic"))]
+#[path = "support/ocr_loader_diagnostic.rs"]
+mod ocr_loader_diagnostic;
+
 #[path = "support/ocr_text_watch.rs"]
 mod support;
 
@@ -19,7 +23,24 @@ use mado_pilot_testkit::bench_harness::{self, Accounting, Plan};
 static ALLOCATOR: Accounting = Accounting;
 
 fn main() {
+    #[cfg(feature = "ocr-loader-diagnostic")]
+    {
+        if !cfg!(all(windows, target_arch = "x86_64")) {
+            eprintln!("OCR loader diagnostic requires Windows x86_64");
+            std::process::exit(2);
+        }
+        let mut arguments = std::env::args_os().skip(1);
+        if arguments.next().as_deref() != Some(std::ffi::OsStr::new("--semantic"))
+            || arguments.next().is_some()
+        {
+            eprintln!("OCR loader diagnostic requires exactly --semantic");
+            std::process::exit(2);
+        }
+    }
+
+    #[cfg(not(feature = "ocr-loader-diagnostic"))]
     let arguments: Vec<String> = std::env::args().skip(1).collect();
+    #[cfg(not(feature = "ocr-loader-diagnostic"))]
     for argument in &arguments {
         match argument.as_str() {
             "--test" | "--bench" | "--semantic" => {}
@@ -50,6 +71,10 @@ fn main() {
             std::process::exit(1);
         }
     });
+    #[cfg(feature = "ocr-loader-diagnostic")]
+    println!(
+        "# loader diagnostic only; numerical_qualification=false; window=post-registration; pre-main=unobserved; historical_explanation=false"
+    );
     println!(
         "# lane=controlled-scheduler semantics-only=true model_execution=false native_capture=false numeric_budgets=unaccepted"
     );
@@ -63,6 +88,14 @@ fn main() {
         "# mapped_bytes_per_result=largest-observed-backend-input; total-physical-mapping-bytes=unmeasured-nonpass"
     );
     let plan = Plan::new(2, 20);
+    #[cfg(all(windows, target_arch = "x86_64", feature = "ocr-loader-diagnostic"))]
+    let diagnostic = match ocr_loader_diagnostic::Diagnostic::begin() {
+        Ok(diagnostic) => diagnostic,
+        Err(error) => {
+            eprintln!("OCR loader diagnostic failed: {error}");
+            std::process::exit(1);
+        }
+    };
     let workloads = support::workloads(plan);
     let (startup, repeated) = workloads.split_last().expect("seven fixed workloads");
     bench_harness::summarize("ocr-text-watch-query", plan, repeated);
@@ -74,12 +107,28 @@ fn main() {
     for workload in &workloads {
         assert_eq!(workload.incorrect(), 0, "semantic workload failed");
     }
-    #[cfg(windows)]
+    #[cfg(all(windows, not(feature = "ocr-loader-diagnostic")))]
     if let Err(error) = ocr_dependency_images::record_if_requested() {
         eprintln!(
             "OCR workload dependency observation failed: {error}; no dependency proof is implied"
         );
         std::process::exit(1);
+    }
+    #[cfg(all(windows, target_arch = "x86_64", feature = "ocr-loader-diagnostic"))]
+    {
+        let image_result = ocr_dependency_images::record_if_requested();
+        let trace_result = diagnostic.finish(image_result.as_ref().err().map(|_| "end-image-writer-failed"));
+        if let Err(error) = &image_result {
+            eprintln!(
+                "OCR workload dependency observation failed: {error}; no dependency proof is implied"
+            );
+        }
+        if let Err(error) = &trace_result {
+            eprintln!("OCR loader diagnostic failed: {error}");
+        }
+        if image_result.is_err() || trace_result.is_err() {
+            std::process::exit(1);
+        }
     }
     println!(
         "# cold-startup real_cpu=unexecuted controlled-construction-only=true; native_resources=unexecuted; task_8_2=not-passed task_8_3=not-passed"
