@@ -176,14 +176,17 @@ SHA-256 values, with at most 256 entries. It includes the executable and real
 ONNX Runtime. On Windows it includes every observed module, including system
 DLLs; on macOS it includes every non-system image, with shared-cache images bound
 to the OS build. This binds OpenCV as well as ONNX. Windows records a bounded
-current-process module snapshot; macOS uses a separate private dyld report capped
-at1MiB by `RLIMIT_FSIZE`. Its exec launcher preserves the supervisor's ordinary
-stdout/stderr budget; the file-size ceiling also applies to other candidate
-regular-file writes. Whole-process timing/peak can include launcher startup.
+current-process module snapshot; macOS collects a dedicated diagnostic pipe into
+an exclusive private file bounded at1MiB. Ordinary stdout/stderr keep their
+separate budget. Inherited OS file limits are unchanged, without imposing a new
+limit on unrelated writes. Whole-process timing includes the collector; Rust
+memory rows describe the native candidate, excluding the Python collector.
 System shared-cache paths are removed before applying the256-entry Apple bound.
 Neither an unchanged executable nor a version string replaces actual identity.
-[ADR 0072](adr/0072-separate-bounded-loader-image-evidence.md) records the first
-output-limit failure and this independently tested correction, not a retry grant.
+[ADR 0072](adr/0072-separate-bounded-loader-image-evidence.md) retains the earlier
+output-limit failure and global-limit mechanism.
+[ADR 0074](adr/0074-isolate-darwin-loader-image-budget.md) records its replacement
+after an unrelated-write failure; neither decision promotes old failed runs.
 Windows snapshots do not establish the history of transient unloaded images;
 the required OpenCV and ORT dependencies remain loaded for this procedure.
 
@@ -198,7 +201,7 @@ run may execute the qualification-feature transition example **once**:
 
 ```sh
 : "${OCR_BINDING_EVIDENCE:?new private binding evidence directory required}"
-python tools/setup-native.py -- python tools/ocr-text-watch/bind_replay.py \
+python tools/setup-native.py -- python tools/ocr-text-watch/bind_replay.py --mode real-cpu \
   --executable "$OCR_REPLAY_EXAMPLE" --corpus "$OCR_REPLAY_CORPUS" \
   --output "$OCR_BINDING_EVIDENCE" --execute-binding
 ```
@@ -212,6 +215,23 @@ The resulting `observed-native-images.json` must be independently reviewed befor
 it becomes an approved input to the later three-process replay cohort. Binding
 success is neither image approval nor replay/numeric/native qualification.
 Failure retains the first attempt and authorizes no retry.
+
+For the controlled executable's own image set, use a separate model-free binding:
+
+```sh
+: "${OCR_CONTROLLED_EXAMPLE:?exact controlled workload executable required}"
+: "${OCR_CONTROLLED_BINDING_EVIDENCE:?new private binding directory required}"
+python tools/setup-native.py -- python tools/ocr-text-watch/bind_replay.py --mode controlled \
+  --executable "$OCR_CONTROLLED_EXAMPLE" --output "$OCR_CONTROLLED_BINDING_EVIDENCE" \
+  --execute-binding
+```
+
+This runs one fixed `--semantic` workload process with300 seconds,15 seconds of
+cleanup and1MiB ordinary output. It accepts no corpus or model initialization.
+The canonical workload profile, harness and executable identities are fixed
+before execution. Its observed image set needs independent approval; this
+discovery run is not one of the three subsequent precursor samples. A static
+import closure or another executable's observed set is not a substitute.
 
 Metadata reads are limited to 1 MiB, identity files to 1 GiB, and non-regular or
 changing files are refused. Metadata is parsed and hashed from the same bytes.
