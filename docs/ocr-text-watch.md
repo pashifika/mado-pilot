@@ -176,8 +176,14 @@ SHA-256 values, with at most 256 entries. It includes the executable and real
 ONNX Runtime. On Windows it includes every observed module, including system
 DLLs; on macOS it includes every non-system image, with shared-cache images bound
 to the OS build. This binds OpenCV as well as ONNX. Windows records a bounded
-current-process module snapshot; macOS uses captured dyld loader output. Neither
-an unchanged executable nor a version string replaces actual dependency identity.
+current-process module snapshot; macOS uses a separate private dyld report capped
+at1MiB by `RLIMIT_FSIZE`. Its exec launcher preserves the supervisor's ordinary
+stdout/stderr budget; the file-size ceiling also applies to other candidate
+regular-file writes. Whole-process timing/peak can include launcher startup.
+System shared-cache paths are removed before applying the256-entry Apple bound.
+Neither an unchanged executable nor a version string replaces actual identity.
+[ADR 0072](adr/0072-separate-bounded-loader-image-evidence.md) records the first
+output-limit failure and this independently tested correction, not a retry grant.
 Windows snapshots do not establish the history of transient unloaded images;
 the required OpenCV and ORT dependencies remain loaded for this procedure.
 
@@ -192,6 +198,7 @@ python tools/setup-native.py -- python tools/ocr-text-watch/bind_replay.py \
 ```
 
 It has the same90-second process,10-second cleanup and64-KiB output bounds.
+The separate native-image report is bounded at1MiB; saturation remains nonpass.
 It records exact source/inputs, complete output, required executable/runtime
 membership and observed image hashes. Additional images are observed and hashed
 after execution, not preapproved or proven unchanged throughout this binding run.

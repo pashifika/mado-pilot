@@ -34,6 +34,7 @@ HARNESS = (
     "crates/mado-pilot/examples/support/ocr_watch_measurements.rs",
     "tools/ocr-text-watch/measurements.py",
     "tools/ocr-text-watch/run_replay.py",
+    "tools/ocr-text-watch/darwin_image_report.py",
     "tools/native-release-profile/_process_group.py",
     "tools/native-release-profile/_windows_process.py",
 )
@@ -61,6 +62,7 @@ def profile(path: Path) -> tuple[dict, dict]:
         "process_count": 3, "warmup_iterations": 2, "sample_count": 20,
         "process_timeout_seconds": 300, "cleanup_timeout_seconds": 15,
         "output_limit_bytes": 1048576,
+        "native_image_report_limit_bytes": 1048576,
     }
     if any(type(facts.get(key)) is not type(setting) or facts[key] != setting
            for key, setting in expected.items()):
@@ -137,6 +139,8 @@ def bindings(executable: Path, corpus: Path | None, environment: dict[str, str],
         "procedure": run_replay.identity(Path(__file__)),
         "supervisor": run_replay.identity(ROOT / "tools/native-release-profile/process_runner.py"),
     })
+    if platform.system() == "Darwin":
+        files["image_report_interpreter"] = run_replay.identity(Path(sys.executable))
     if corpus is not None:
         files["real_cpu_inputs"] = run_replay.inputs(executable, corpus, environment)
     required = [files["executable"]]
@@ -241,7 +245,7 @@ def execute(args: argparse.Namespace) -> bool:
             "documents": documents,
             "artifacts": bindings(executable, corpus, environment, approved_images),
         }
-        argv = [str(executable), str(corpus), "transition"] if real else [str(executable), "--semantic"]
+        argv = run_replay.observed_command([str(executable), str(corpus), "transition"] if real else [str(executable), "--semantic"])
         stage = "plan-evidence"
         run_replay.write_record(output / "plan.json", {
             "schema_version": 3, "mode": args.mode, "authority": "explicit --execute; this exact prospective cohort requires operator authorization",
@@ -255,6 +259,7 @@ def execute(args: argparse.Namespace) -> bool:
             "process_timeout_seconds": facts["process_timeout_seconds"],
             "cleanup_timeout_seconds": facts["cleanup_timeout_seconds"],
             "output_limit_bytes": facts["output_limit_bytes"], "retries": 0, "exclusions": 0,
+            "native_image_report_limit_bytes": run_replay.MAX_DOCUMENT_BYTES,
             "order": ["cold-startup"] if real else list(WORKLOADS),
             "clock": "supervisor monotonic launch-attempt through process-tree cleanup; Rust per-sample Instant is separate",
             "cold_startup_scope": "five fresh processes with qualification-only internal Instant/RSS stages; no OS cache flush; ready-hook session creations are not live-session counts",
@@ -330,7 +335,7 @@ def execute(args: argparse.Namespace) -> bool:
                         "reasons": row["measurements"]["failures"],
                     })
                 stage = "dependency-observation"
-                dependencies = run_replay.observe_dependencies(observed, report_paths[index], approved_images)
+                dependencies = run_replay.observe_dependencies(report_paths[index], approved_images)
                 row["native_dependencies"] = dependencies
                 row["dependencies_passed"] = dependencies["matched"] is True
                 if not row["dependencies_passed"]:

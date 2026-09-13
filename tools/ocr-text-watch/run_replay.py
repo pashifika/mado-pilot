@@ -122,36 +122,41 @@ def native_manifest(path: Path) -> tuple[dict[str, str], dict]:
 def dependency_environment(base_env: dict[str, str], report_path: Path) -> dict[str, str]:
     if any(base_env.get(name) for name in ("DYLD_INSERT_LIBRARIES", "LD_PRELOAD", "LD_AUDIT")):
         raise ValueError("injected native libraries are outside this procedure")
-    child = dict(base_env)
-    if platform.system() == "Windows":
-        child["MADO_PILOT_OCR_DEPENDENCY_REPORT"] = str(report_path.resolve())
-    elif platform.system() == "Darwin":
-        child["DYLD_PRINT_LIBRARIES"] = "1"
-    else:
+    if any(key.startswith("DYLD_PRINT_") and value for key, value in base_env.items()):
+        raise ValueError("ambient dyld diagnostics are outside this procedure")
+    if platform.system() not in ("Windows", "Darwin"):
         raise ValueError("native dependency observation is unavailable on this target")
+    child = dict(base_env)
+    child["MADO_PILOT_OCR_DEPENDENCY_REPORT"] = str(report_path.resolve())
     return child
 
 
-def observe_dependencies(process_record: dict, report_path: Path, approved_map: dict[str, str]) -> dict:
+def observed_command(command: list[str]) -> list[str]:
+    if platform.system() == "Darwin":
+        return [sys.executable, str(ROOT / "tools/ocr-text-watch/darwin_image_report.py"), *command]
+    return command
+
+
+def observe_dependencies(report_path: Path, approved_map: dict[str, str]) -> dict:
     try:
+        data, report = read_document(report_path)
+        if not data.endswith(b"\n") or len(data) >= MAX_DOCUMENT_BYTES:
+            raise ValueError("incomplete or saturated native image report")
+        lines = data.decode("utf-8", "strict").splitlines()
         if platform.system() == "Windows":
-            data, _ = read_document(report_path)
-            if not data.endswith(b"\n"):
-                raise ValueError("incomplete native image report")
-            names = data.decode("utf-8", "strict").splitlines()
+            names = lines
         else:
-            names = [line.split("> ", 1)[1].strip() for line in process_record["stderr"].splitlines()
+            names = [line.split("> ", 1)[1].strip() for line in lines
                      if line.startswith("dyld[") and "> /" in line]
+            names = [name for name in names if not name.startswith(("/System/Library/", "/usr/lib/"))]
         if not names or len(set(names)) > MAX_NATIVE_IMAGES:
             raise ValueError("missing or oversized native image observation")
         observed = {}
         for name in sorted(set(names)):
-            if platform.system() == "Darwin" and name.startswith(("/System/Library/", "/usr/lib/")):
-                continue
             entry = identity(Path(name))
             observed[entry["path"]] = entry["sha256"]
         unchanged = verify_native_manifest(approved_map)
-        return {"matched": observed == unchanged, "observed": observed}
+        return {"matched": observed == unchanged, "observed": observed, "report": report}
     except (OSError, ValueError, KeyError) as error:
         return {"matched": False, "observed": {}, "error_kind": type(error).__name__}
 
@@ -209,6 +214,9 @@ def inputs(executable: Path, corpus: Path, environment: dict[str, str]) -> dict:
         files[name] = entry
     files["procedure"] = identity(Path(__file__))
     files["supervisor"] = identity(ROOT / "tools/native-release-profile/process_runner.py")
+    files["image_report_launcher"] = identity(ROOT / "tools/ocr-text-watch/darwin_image_report.py")
+    if platform.system() == "Darwin":
+        files["image_report_interpreter"] = identity(Path(sys.executable))
     return files
 
 
@@ -244,6 +252,8 @@ def execute(executable: Path, corpus: Path, output: Path, native_images: Path) -
         "scenarios": SCENARIOS, "processes": 3, "warmups": 0, "retries": 0,
         "timeout_seconds_per_process": TIMEOUT_SECONDS, "cleanup_seconds_per_process": CLEANUP_SECONDS,
         "output_limit_bytes_per_process": OUTPUT_LIMIT_BYTES,
+        "native_image_report_limit_bytes": MAX_DOCUMENT_BYTES,
+        "native_image_report_scope": "private bounded sidecar; Darwin kernel file-size limit also applies to candidate regular-file writes",
         "scope": "Public Rust CPU replay only; no native capture or workload budget qualification",
         "private_output": "Contains controlled paths and complete process output; review before publication",
     })
@@ -258,13 +268,13 @@ def execute(executable: Path, corpus: Path, output: Path, native_images: Path) -
                     or git("status", "--porcelain")):
                 raise ValueError("cohort identity changed")
             report_path = output / f"{scenario}.images"
-            argv = [str(executable), str(corpus), scenario]
+            argv = observed_command([str(executable), str(corpus), scenario])
             observed = run_process(
                 argv, cwd=ROOT, env=dependency_environment(environment, report_path),
                 timeout_seconds=TIMEOUT_SECONDS, output_limit_bytes=OUTPUT_LIMIT_BYTES,
                 cleanup_seconds=CLEANUP_SECONDS,
             )
-            dependencies = observe_dependencies(observed, report_path, approved)
+            dependencies = observe_dependencies(report_path, approved)
             marker = f"ocr-text-watch: scenario={scenario} terminal="
             semantic = observed["exit_code"] == 0 and marker in observed["stdout"]
             passed = (semantic and dependencies["matched"] and observed["cleanup_ok"]

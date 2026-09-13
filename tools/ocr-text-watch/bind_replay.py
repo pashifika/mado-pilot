@@ -44,7 +44,7 @@ def execute(args: argparse.Namespace) -> bool:
         child = run_replay.dependency_environment(environment, image_report)
         required_images = {inputs[name]["path"]: inputs[name]["sha256"]
                            for name in ("executable", "runtime")}
-        command = [str(executable), str(corpus), "transition"]
+        command = run_replay.observed_command([str(executable), str(corpus), "transition"])
         run_replay.write_record(output / "plan.json", {
             "schema_version": 1, "purpose": result["purpose"],
             "authority": "explicit --execute-binding; one real-model process only",
@@ -55,6 +55,7 @@ def execute(args: argparse.Namespace) -> bool:
             "timeout_seconds": run_replay.TIMEOUT_SECONDS,
             "cleanup_seconds": run_replay.CLEANUP_SECONDS,
             "output_limit_bytes": run_replay.OUTPUT_LIMIT_BYTES,
+            "native_image_report_limit_bytes": run_replay.MAX_DOCUMENT_BYTES,
             "retries": 0, "native_capture": False,
             "image_policy": "discovery only; extra images are hashed after execution, not preapproved or proven stable during this binding run",
         })
@@ -79,7 +80,7 @@ def execute(args: argparse.Namespace) -> bool:
         if not result["measurements"]["complete"]:
             raise ValueError("binding semantic or measurement observations are incomplete")
         stage = "image-observation"
-        images = run_replay.observe_dependencies(observed, image_report, required_images)
+        images = run_replay.observe_dependencies(image_report, required_images)
         result["observed_native_images"] = images
         if "error_kind" in images or not images["observed"]:
             raise ValueError("binding image observation failed")
