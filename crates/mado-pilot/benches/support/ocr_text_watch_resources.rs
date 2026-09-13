@@ -54,8 +54,8 @@ pub(super) fn resident() -> Resident {
     use windows::Win32::System::ProcessStatus::{GetProcessMemoryInfo, PROCESS_MEMORY_COUNTERS_EX};
     use windows::Win32::System::Threading::GetCurrentProcess;
     let mut counters = PROCESS_MEMORY_COUNTERS_EX::default();
-    let size = u32::try_from(std::mem::size_of::<PROCESS_MEMORY_COUNTERS_EX>())
-        .expect("fixed structure size");
+    let size =
+        u32::try_from(size_of::<PROCESS_MEMORY_COUNTERS_EX>()).expect("fixed structure size");
     counters.cb = size;
     // SAFETY: the extended structure starts with PROCESS_MEMORY_COUNTERS; cb and
     // the explicit byte count include the writable PrivateUsage suffix. The

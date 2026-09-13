@@ -186,7 +186,7 @@ fn module_path(
     if length == 0 {
         return Err(Failure::Windows(
             "module-path",
-            windows::core::Error::from_win32().code().0,
+            windows::core::Error::from_thread().code().0,
         ));
     }
     let length = usize::try_from(length).map_err(|_| Failure::Rule("module-path-length"))?;
