@@ -14,6 +14,7 @@ import run_replay
 
 
 class ImageReport(unittest.TestCase):
+    @unittest.skipUnless(sys.platform == "darwin", "Darwin image paths require native absolute paths")
     def test_system_images_do_not_consume_the_non_system_manifest_limit(self):
         with tempfile.TemporaryDirectory() as temporary:
             root = Path(temporary)
