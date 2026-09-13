@@ -186,8 +186,8 @@ mod windows_procedure {
                 require(ack.paints > self.paints, "fixture-render-not-completed")?;
                 self.check_window()?;
             } else {
-                // SAFETY: This exact HWND was returned by our still-owned child, used read-only.
                 require(
+                    // SAFETY: This exact HWND was returned by our still-owned child, used read-only.
                     !unsafe { IsWindow(Some(self.hwnd)) }.as_bool(),
                     "fixture-window-not-destroyed",
                 )?;
@@ -274,10 +274,8 @@ mod windows_procedure {
                 thread::sleep(POLL);
             }
             let drained = self.reader.as_ref().is_none_or(JoinHandle::is_finished);
-            if drained {
-                if let Some(reader) = self.reader.take() {
-                    require(reader.join().is_ok(), "fixture-reader-panicked")?;
-                }
+            if drained && let Some(reader) = self.reader.take() {
+                require(reader.join().is_ok(), "fixture-reader-panicked")?;
             }
             writeln!(
                 evidence,
@@ -348,14 +346,12 @@ mod windows_procedure {
                 }
             }
         }
-        for cell in 0..18 {
-            let expected = if cell < 16 {
-                nonce[cell]
-            } else if cell == 16 {
-                ack.sequence
-            } else {
-                ack.state
-            };
+        for (cell, expected) in nonce
+            .iter()
+            .copied()
+            .chain([ack.sequence, ack.state])
+            .enumerate()
+        {
             let at = 548 * descriptor.stride() + (cell * 8 + 4) * 4;
             if bytes[at..at + 3] != [expected; 3] {
                 return Ok(false);
@@ -419,20 +415,20 @@ mod windows_procedure {
                 "premature-query-terminal",
             )?;
             let progress = query.progress();
-            if let Some(frame) = progress.last_accepted_frame() {
-                if frame == source || newer(source, frame) {
-                    if frame.geometry() == source.geometry() && frame.epoch() == source.epoch() {
-                        require(
-                            progress.confirmed_observations() == confirmations,
-                            "confirmation-count-mismatch",
-                        )?;
-                        writeln!(
-                            evidence,
-                            "accepted={frame} confirmations={confirmations} progress={progress:?}"
-                        )?;
-                        return Ok(frame);
-                    }
-                }
+            if let Some(frame) = progress.last_accepted_frame()
+                && (frame == source || newer(source, frame))
+                && frame.geometry() == source.geometry()
+                && frame.epoch() == source.epoch()
+            {
+                require(
+                    progress.confirmed_observations() == confirmations,
+                    "confirmation-count-mismatch",
+                )?;
+                writeln!(
+                    evidence,
+                    "accepted={frame} confirmations={confirmations} progress={progress:?}"
+                )?;
+                return Ok(frame);
             }
             require(Instant::now() < until, "accepted-analysis-deadline")?;
             thread::sleep(POLL);
@@ -725,7 +721,7 @@ mod windows_procedure {
 
     fn memory(evidence: &mut File) -> Checked<()> {
         let mut counters = PROCESS_MEMORY_COUNTERS {
-            cb: u32::try_from(std::mem::size_of::<PROCESS_MEMORY_COUNTERS>())?,
+            cb: u32::try_from(size_of::<PROCESS_MEMORY_COUNTERS>())?,
             ..Default::default()
         };
         let size = counters.cb;
@@ -955,11 +951,11 @@ mod windows_procedure {
         if let Err(error) = &measured {
             writeln!(evidence, "memory_error={error:?}")?;
         }
-        if let Some(fixture) = &mut fixture {
-            if let Err(error) = fixture.close(&mut evidence) {
-                cleanup_ok = false;
-                writeln!(evidence, "cleanup_error={error:?}")?;
-            }
+        if let Some(fixture) = &mut fixture
+            && let Err(error) = fixture.close(&mut evidence)
+        {
+            cleanup_ok = false;
+            writeln!(evidence, "cleanup_error={error:?}")?;
         }
         let semantic_ok = semantic.is_ok() && retention_ok;
         let resource_ok = resource.is_ok() && measured.is_ok();
