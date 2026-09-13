@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+from contextlib import contextmanager
 import hashlib
 import importlib.util
 import json
@@ -85,12 +86,12 @@ class ReplayInputBinding(unittest.TestCase):
             with self.subTest(target=target):
                 native = SCRIPT.parent / target / "run.py"
                 call = (
-                    "assert module.git(module.runner(),'rev-parse','--show-toplevel') == str(module.ROOT)"
+                    "assert module.Path(module.git(module.runner(),'rev-parse','--show-toplevel')).resolve() == module.ROOT"
                     if target == "windows" else
                     "result=module.bounded_reader()([module.GIT_EXECUTABLE,'rev-parse','--show-toplevel'],"
                     "cwd=module.ROOT,env=dict(os.environ),timeout_seconds=5,output_limit_bytes=4096,cleanup_seconds=5); "
                     "assert result['exit_code']==0 and result['cleanup_ok']; "
-                    "assert result['stdout'].strip()==str(module.ROOT)"
+                    "assert module.Path(result['stdout'].strip()).resolve()==module.ROOT"
                 )
                 program = (
                     "import importlib.util,os,sys; "
@@ -103,6 +104,72 @@ class ReplayInputBinding(unittest.TestCase):
                     capture_output=True, text=True, timeout=20,
                 )
                 self.assertEqual(result.returncode, 0, result.stderr)
+
+    def test_unchanged_file_returns_exact_bytes_and_identity_after_metadata_update(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            path = Path(temporary) / "document"
+            content = b"unchanged reviewed bytes"
+            path.write_bytes(content)
+            os.utime(path, ns=(1_000_000_000, 1_000_000_000))
+            data, observed = replay.read_document(path)
+            self.assertEqual(data, content)
+            self.assertEqual(observed, {
+                "path": str(path.resolve()), "bytes": len(content),
+                "sha256": hashlib.sha256(content).hexdigest(),
+            })
+            self.assertEqual(replay.identity(path), observed)
+
+    def test_same_size_mutation_with_restored_mtime_is_rejected(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            path = Path(temporary) / "document"
+            original, changed = b"reviewed", b"replaced"
+            path.write_bytes(original)
+            before = path.stat()
+
+            def changing_reader(*args, **kwargs):
+                stream = open(*args, **kwargs)
+                read = stream.read
+
+                def read_then_mutate(size=-1):
+                    data = read(size)
+                    if data:
+                        with path.open("r+b") as writer:
+                            writer.write(changed)
+                        os.utime(path, ns=(before.st_atime_ns, before.st_mtime_ns))
+                    return data
+
+                stream.read = read_then_mutate
+                return stream
+
+            with patch.object(replay, "open", side_effect=changing_reader, create=True):
+                with self.assertRaises(ValueError):
+                    replay.read_document(path)
+            self.assertEqual(path.read_bytes(), changed)
+            self.assertEqual(path.stat().st_mtime_ns, before.st_mtime_ns)
+
+    def test_identical_content_path_replacement_after_read_is_rejected(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            path, replacement, displaced = (root / name for name in ("document", "replacement", "displaced"))
+            content = b"identical content in distinct files"
+            path.write_bytes(content)
+            replacement.write_bytes(content)
+            before = path.stat()
+            os.utime(replacement, ns=(before.st_atime_ns, before.st_mtime_ns))
+
+            @contextmanager
+            def replacing_reader(*args, **kwargs):
+                with open(*args, **kwargs) as stream:
+                    yield stream
+                path.rename(displaced)
+                replacement.rename(path)
+
+            with patch.object(replay, "open", side_effect=replacing_reader, create=True):
+                with self.assertRaises(ValueError):
+                    replay.read_document(path)
+            self.assertEqual(path.read_bytes(), content)
+            self.assertEqual(path.stat().st_mtime_ns, before.st_mtime_ns)
+            self.assertFalse(path.samefile(displaced))
 
     def test_native_dependency_changes_require_new_approval(self):
         spec = importlib.util.spec_from_file_location("apple_preflight", SCRIPT.parent / "macos/run.py")
