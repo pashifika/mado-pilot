@@ -696,6 +696,13 @@ separately, then uses the same explicit setup; GitHub export requires both file
 options and successful validation. See
 [contributor commands](../CONTRIBUTING.md#native-development-prerequisites).
 
+macOS setup selects only the required shared OpenCV `core`, `imgproc`, and
+`imgcodecs` modules for Cargo consumers and its native probe. It does not inherit
+the complete pkg-config library list. Windows retains its versioned
+`opencv_world` distribution; transitive shared dependencies remain mandatory.
+[ADR 0073](adr/0073-link-only-required-apple-opencv-modules.md) changes link
+selection, not Rust features, dependency ownership, or qualification limits.
+
 An incomplete or incompatible development environment may fail setup or build.
 Removing eagerly linked OpenCV after setup invalidates that environment and may
 prevent process entry. No typed-recovery guarantee, private deferred-load bridge,

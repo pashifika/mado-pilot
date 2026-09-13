@@ -55,6 +55,12 @@ Windows exports include the selected MSVC include/library search paths, so later
 CI steps retain the compiler context without exporting the whole inherited environment.
 The script does not download, install, elevate, or edit global shell settings.
 
+macOS setup links only the workspace's required shared OpenCV modules: `core`,
+`imgproc`, and `imgcodecs`. It does not inherit every library from `opencv4.pc`.
+Windows retains the versioned `opencv_world` import library and DLL. Transitive
+shared dependencies remain required; see
+[ADR 0073](docs/adr/0073-link-only-required-apple-opencv-modules.md).
+
 On macOS, command mode keeps inherited `DYLD_LIBRARY_PATH` entries after the
 selected OpenCV library directory. Relative entries resolve from the caller's
 working directory before any native probe, so probes and commands use the same

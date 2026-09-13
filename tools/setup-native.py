@@ -26,6 +26,7 @@ OPENCV_DISCOVERY = (
     "OPENCV_LINK_PATHS", "OPENCV_INCLUDE_PATHS", "OPENCV_DISABLE_PROBES",
     "OPENCV_CMAKE_TOOLCHAIN_FILE", "OPENCV_CMAKE_ARGS",
 )
+OPENCV_MODULES = ("core", "imgproc", "imgcodecs")
 CPP_PROBE = r"""
 #include <opencv2/core.hpp>
 #include <opencv2/core/version.hpp>
@@ -219,7 +220,7 @@ def prepare(opencv_root: Path | None, libclang_path: Path | None,
                              "install a native LLVM or Xcode toolchain separately and select its libclang directory")
         include = root / ("build/include" if windows else "include/opencv4")
         version = header_version(include)
-        for module in ("core", "imgproc", "imgcodecs"):
+        for module in OPENCV_MODULES:
             installed(include / f"opencv2/{module}.hpp", f"OpenCV {module} header", "select a complete OpenCV 4 development installation")
         for name in ("cvconfig.h", "opencv_modules.hpp"):
             installed(include / "opencv2" / name, f"OpenCV {name}", "select a complete OpenCV 4 development installation")
@@ -241,14 +242,15 @@ def prepare(opencv_root: Path | None, libclang_path: Path | None,
             paths = [str(runtime), str(clang_dir), str(compiler.parent)]
             cflags = []
         else:
-            for module in ("core", "imgproc", "imgcodecs"):
+            for module in OPENCV_MODULES:
                 installed(libraries / f"libopencv_{module}.dylib", f"OpenCV {module} shared library",
                           "select a native shared OpenCV 4 installation")
             pkg_dir = installed(libraries / "pkgconfig", "OpenCV pkg-config directory",
                                 "select an OpenCV 4 installation providing lib/pkgconfig/opencv4.pc", directory=True)
             installed(pkg_dir / "opencv4.pc", "opencv4.pc", "install OpenCV 4 development metadata separately")
             pkg_config = executable("pkg-config", environment, "install pkg-config separately and add it to PATH")
-            settings.update(OPENCV_DISABLE_PROBES="environment,cmake,vcpkg_cmake,vcpkg", OPENCV_LINK_LIBS="+",
+            settings.update(OPENCV_DISABLE_PROBES="environment,cmake,vcpkg_cmake,vcpkg",
+                            OPENCV_LINK_LIBS=",".join(f"opencv_{module}" for module in OPENCV_MODULES),
                             OPENCV_MSVC_CRT="dynamic", OPENCV4_DYNAMIC="1")
             settings.update(target_settings("PKG_CONFIG", str(pkg_config), target))
             for name, value in (("PKG_CONFIG_PATH", str(pkg_dir)), ("PKG_CONFIG_LIBDIR", str(pkg_dir)),
@@ -283,7 +285,7 @@ def prepare(opencv_root: Path | None, libclang_path: Path | None,
                                      "select an intact installation or repair its pkg-config metadata")
             matching_version(pkg("--modversion"), version, "pkg-config")
             cflags = shlex.split(pkg("--cflags"))
-            link_flags = ["-L", str(libraries), *shlex.split(pkg("--libs")),
+            link_flags = ["-L", str(libraries), *(f"-lopencv_{module}" for module in OPENCV_MODULES),
                           "-Xlinker", "-rpath", "-Xlinker", str(libraries)]
         clang_version = checked([str(Path(sys.executable).resolve()), "-I", "-c", LIBCLANG_PROBE, str(libclang)],
                                 scratch, environment, "libclang load/API probe",
