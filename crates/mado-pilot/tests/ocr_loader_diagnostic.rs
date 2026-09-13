@@ -115,7 +115,12 @@ fn the_257th_notification_cannot_overwrite_the_256_owned_slots() {
     for _ in 0..256 {
         RECORDER.notify(1, &path);
     }
-    RECORDER.notify(2, &"C:\\synthetic\\overflow.dll".encode_utf16().collect::<Vec<_>>());
+    RECORDER.notify(
+        2,
+        &"C:\\synthetic\\overflow.dll"
+            .encode_utf16()
+            .collect::<Vec<_>>(),
+    );
     RECORDER.close();
     let (bytes, result) = RECORDER.report(Some(0), OUTPUT_LIMIT);
     assert!(result.is_err());
@@ -127,13 +132,19 @@ fn the_257th_notification_cannot_overwrite_the_256_owned_slots() {
     assert_eq!(events.len(), 256);
     assert_eq!(events[0]["ordinal"], 1);
     assert_eq!(events[255]["ordinal"], 256);
-    assert!(events.iter().all(|event| event["path"] == "C:\\synthetic\\bounded.dll"));
+    assert!(
+        events
+            .iter()
+            .all(|event| event["path"] == "C:\\synthetic\\bounded.dll")
+    );
 }
 
 #[test]
 fn the_fixed_mebibyte_cap_retains_a_partial_report_and_fails() {
     static RECORDER: Recorder = Recorder::new();
-    let path: Vec<u16> = format!("C:\\{}", "界".repeat(2045)).encode_utf16().collect();
+    let path: Vec<u16> = format!("C:\\{}", "界".repeat(2045))
+        .encode_utf16()
+        .collect();
     for _ in 0..256 {
         RECORDER.notify(1, &path);
     }
@@ -150,7 +161,12 @@ fn the_fixed_mebibyte_cap_retains_a_partial_report_and_fails() {
 #[test]
 fn closing_admission_does_not_make_a_held_writer_drained_or_its_slots_readable() {
     static RECORDER: Recorder = Recorder::new();
-    RECORDER.notify(1, &"C:\\synthetic\\before-hold.dll".encode_utf16().collect::<Vec<_>>());
+    RECORDER.notify(
+        1,
+        &"C:\\synthetic\\before-hold.dll"
+            .encode_utf16()
+            .collect::<Vec<_>>(),
+    );
     let (ready, admitted) = mpsc::channel();
     let (release, released) = mpsc::channel();
     let writer = std::thread::spawn(move || {
@@ -159,7 +175,9 @@ fn closing_admission_does_not_make_a_held_writer_drained_or_its_slots_readable()
         released.recv().expect("explicit writer release");
         drop(held);
     });
-    admitted.recv().expect("held writer established before close");
+    admitted
+        .recv()
+        .expect("held writer established before close");
     RECORDER.close();
     let drained_while_held = RECORDER.drained();
     let (partial_bytes, partial_result) = RECORDER.report(Some(0), OUTPUT_LIMIT);
@@ -179,31 +197,51 @@ fn closing_admission_does_not_make_a_held_writer_drained_or_its_slots_readable()
     assert!(RECORDER.drained());
     let (bytes, result) = RECORDER.report(Some(0), OUTPUT_LIMIT);
     result.expect("the actual writer fence has now completed");
-    assert_eq!(decoded(&bytes)["events"][0]["path"], "C:\\synthetic\\before-hold.dll");
+    assert_eq!(
+        decoded(&bytes)["events"][0]["path"],
+        "C:\\synthetic\\before-hold.dll"
+    );
 }
 
 #[test]
 fn late_entry_after_close_cannot_reopen_or_mutate_the_observation() {
     static RECORDER: Recorder = Recorder::new();
-    RECORDER.notify(1, &"C:\\synthetic\\before-close.dll".encode_utf16().collect::<Vec<_>>());
+    RECORDER.notify(
+        1,
+        &"C:\\synthetic\\before-close.dll"
+            .encode_utf16()
+            .collect::<Vec<_>>(),
+    );
     RECORDER.close();
     let late = std::thread::spawn(|| {
-        RECORDER.notify(2, &"C:\\synthetic\\late.dll".encode_utf16().collect::<Vec<_>>());
+        RECORDER.notify(
+            2,
+            &"C:\\synthetic\\late.dll".encode_utf16().collect::<Vec<_>>(),
+        );
     });
-    late.join().expect("late callback returns without slot access");
+    late.join()
+        .expect("late callback returns without slot access");
     let (bytes, result) = RECORDER.report(Some(0), OUTPUT_LIMIT);
     result.expect("late entry is excluded by the closed admission gate");
     let report = decoded(&bytes);
     assert_eq!(report["observed_events"], 1);
     assert_eq!(report["events"].as_array().expect("event array").len(), 1);
-    assert_eq!(report["events"][0]["path"], "C:\\synthetic\\before-close.dll");
+    assert_eq!(
+        report["events"][0]["path"],
+        "C:\\synthetic\\before-close.dll"
+    );
     assert_eq!(report["callbacks_drained"], true);
 }
 
 #[test]
 fn failed_unregister_retains_drained_evidence_and_never_claims_completion() {
     static RECORDER: Recorder = Recorder::new();
-    RECORDER.notify(1, &"C:\\synthetic\\retained-after-failure.dll".encode_utf16().collect::<Vec<_>>());
+    RECORDER.notify(
+        1,
+        &"C:\\synthetic\\retained-after-failure.dll"
+            .encode_utf16()
+            .collect::<Vec<_>>(),
+    );
     RECORDER.close();
     let (bytes, result) = RECORDER.report(Some(-1), OUTPUT_LIMIT);
     assert!(result.is_err());
@@ -212,7 +250,10 @@ fn failed_unregister_retains_drained_evidence_and_never_claims_completion() {
     assert_eq!(report["unregistered"], false);
     assert_eq!(report["unregister_status"], -1);
     assert_eq!(report["callbacks_drained"], true);
-    assert_eq!(report["events"][0]["path"], "C:\\synthetic\\retained-after-failure.dll");
+    assert_eq!(
+        report["events"][0]["path"],
+        "C:\\synthetic\\retained-after-failure.dll"
+    );
     // Storage still exists after failure; a hypothetical late native entry must
     // return through the closed gate rather than touch freed callback context.
     RECORDER.notify_null();

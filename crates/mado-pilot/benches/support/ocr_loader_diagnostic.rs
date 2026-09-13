@@ -97,7 +97,8 @@ const _: () = {
 };
 
 type Callback = unsafe extern "system" fn(u32, *const NotificationData, *mut c_void);
-type Register = unsafe extern "system" fn(u32, Option<Callback>, *mut c_void, *mut *mut c_void) -> i32;
+type Register =
+    unsafe extern "system" fn(u32, Option<Callback>, *mut c_void, *mut *mut c_void) -> i32;
 type Unregister = unsafe extern "system" fn(*mut c_void) -> i32;
 
 struct Slot {
@@ -228,7 +229,10 @@ impl Storage {
         if !self.drained() {
             return Err(Failure::Rule("callbacks-not-drained"));
         }
-        let count = self.observed.load(Ordering::Relaxed).min(EVENT_LIMIT as u32);
+        let count = self
+            .observed
+            .load(Ordering::Relaxed)
+            .min(EVENT_LIMIT as u32);
         let mut events = Vec::with_capacity(count as usize);
         for index in 0..count as usize {
             // SAFETY: close+acquire-drain above excludes all slot writers,
@@ -241,7 +245,8 @@ impl Storage {
                 self.malformed.store(true, Ordering::Relaxed);
                 continue;
             }
-            let Ok(path) = ocr_dependency_images::validated_path(&slot.path[..slot.length as usize])
+            let Ok(path) =
+                ocr_dependency_images::validated_path(&slot.path[..slot.length as usize])
             else {
                 self.malformed.store(true, Ordering::Relaxed);
                 continue;
@@ -341,7 +346,9 @@ unsafe fn copy_payload(
         let destination = addr_of_mut!((*slot).path).cast::<u16>();
         let mut unit = 0_usize;
         while unit < length {
-            destination.add(unit).write_volatile(source.add(unit).read_volatile());
+            destination
+                .add(unit)
+                .write_volatile(source.add(unit).read_volatile());
             unit = unit.wrapping_add(1);
         }
         addr_of_mut!((*slot).kind).write_volatile(reason);
@@ -383,8 +390,12 @@ impl Api {
         // NTSTATUS is signed i32, not HRESULT. Windows x64 ABI sizes are checked.
         Ok(unsafe {
             Self {
-                register: std::mem::transmute::<unsafe extern "system" fn() -> isize, Register>(register),
-                unregister: std::mem::transmute::<unsafe extern "system" fn() -> isize, Unregister>(unregister),
+                register: std::mem::transmute::<unsafe extern "system" fn() -> isize, Register>(
+                    register,
+                ),
+                unregister: std::mem::transmute::<unsafe extern "system" fn() -> isize, Unregister>(
+                    unregister,
+                ),
             }
         })
     }
@@ -420,7 +431,11 @@ impl Diagnostic {
             .share_mode(0)
             .open(destination)
             .map_err(|_| Failure::Rule("trace-create"))?;
-        if !file.metadata().map_err(|_| Failure::Rule("trace-metadata"))?.is_file() {
+        if !file
+            .metadata()
+            .map_err(|_| Failure::Rule("trace-metadata"))?
+            .is_file()
+        {
             return Err(Failure::Rule("trace-regular-file"));
         }
         let mut diagnostic = Self {
@@ -429,7 +444,9 @@ impl Diagnostic {
             cookie: None,
             stopped: false,
         };
-        let initialized = diagnostic.register().and_then(|()| diagnostic.checkpoint("initial"));
+        let initialized = diagnostic
+            .register()
+            .and_then(|()| diagnostic.checkpoint("initial"));
         if let Err(error) = initialized {
             let _ = diagnostic.stop(Some(error.rule()));
             return Err(error);
@@ -466,16 +483,22 @@ impl Diagnostic {
         let before = STORAGE.observed.load(Ordering::Acquire);
         // The extra two slots preserve the shared helper's conservative missing-
         // terminator boundary while permitting exactly2048 content units.
-        let images = ocr_dependency_images::stable_snapshot::<{ PATH_UNITS + 2 }>()
-            .map_err(|_| Failure::Rule(match name {
-                "initial" => "initial-snapshot-failed",
-                _ => "final-snapshot-failed",
-            }))?;
+        let images =
+            ocr_dependency_images::stable_snapshot::<{ PATH_UNITS + 2 }>().map_err(|_| {
+                Failure::Rule(match name {
+                    "initial" => "initial-snapshot-failed",
+                    _ => "final-snapshot-failed",
+                })
+            })?;
         let after = STORAGE.observed.load(Ordering::Acquire);
         self.report.checkpoint(name, before, after, &images)?;
         // Persist the initial checkpoint before workloads: a watchdog/outer kill
         // can leave a visibly incomplete JSON prefix, never a claimed complete run.
-        self.report.output.inner.sync_all().map_err(|_| Failure::Rule("trace-sync"))
+        self.report
+            .output
+            .inner
+            .sync_all()
+            .map_err(|_| Failure::Rule("trace-sync"))
     }
 
     pub(crate) fn finish(mut self, failure: Option<&'static str>) -> Result<(), Failure> {
@@ -500,7 +523,12 @@ impl Diagnostic {
         };
         let drained = STORAGE.drain(DRAIN_LIMIT);
         let result = self.report.finish(&STORAGE, status, drained, failure);
-        let synced = self.report.output.inner.sync_all().map_err(|_| Failure::Rule("trace-sync"));
+        let synced = self
+            .report
+            .output
+            .inner
+            .sync_all()
+            .map_err(|_| Failure::Rule("trace-sync"));
         result.and(synced)
     }
 }
@@ -551,7 +579,9 @@ impl<W: Write> Write for Bounded<W> {
         if self.failure.is_some() {
             return Err(io::ErrorKind::Other.into());
         }
-        self.inner.flush().inspect_err(|_| self.failure = Some("trace-flush"))
+        self.inner
+            .flush()
+            .inspect_err(|_| self.failure = Some("trace-flush"))
     }
 }
 
@@ -563,7 +593,12 @@ struct Report<W> {
 impl<W: Write> Report<W> {
     fn new(inner: W, limit: usize) -> Result<Self, Failure> {
         let mut report = Self {
-            output: Bounded { inner, written: 0, limit, failure: None },
+            output: Bounded {
+                inner,
+                written: 0,
+                limit,
+                failure: None,
+            },
             checkpoints: 0,
         };
         report.bytes(b"{\"schema_version\":1,\"scope\":\"post-registration-window\",\"pre_main_history\":false,\"numerical_qualification\":false,\"limits\":{\"events\":256,\"path_utf16_units\":2048,\"output_bytes\":1048576},\"checkpoints\":[")?;
@@ -586,7 +621,13 @@ impl<W: Write> Report<W> {
         serde_json::to_writer(&mut self.output, value).map_err(|_| self.failure())
     }
 
-    fn checkpoint(&mut self, name: &str, before: u32, after: u32, images: &[Image]) -> Result<(), Failure> {
+    fn checkpoint(
+        &mut self,
+        name: &str,
+        before: u32,
+        after: u32,
+        images: &[Image],
+    ) -> Result<(), Failure> {
         if self.checkpoints != 0 {
             self.bytes(b",")?;
         }
@@ -624,19 +665,47 @@ impl<W: Write> Report<W> {
         }
         let drained = drained && storage.drained();
         // Do not even inspect committed flags while any admitted writer remains.
-        let events = if drained { storage.events()? } else { Vec::new() };
+        let events = if drained {
+            storage.events()?
+        } else {
+            Vec::new()
+        };
         let gate = storage.gate.load(Ordering::Acquire);
         let closed = gate & CLOSED != 0;
         let overflow = storage.overflow.load(Ordering::Relaxed) || gate & ADMISSION_OVERFLOW != 0;
         let malformed = storage.malformed.load(Ordering::Relaxed);
         let unregistered = status == Some(0);
         let error = failure
-            .or(if self.checkpoints == 2 { None } else { Some("checkpoints-incomplete") })
-            .or(if closed { None } else { Some("admission-not-closed") })
-            .or(if drained { None } else { Some("callbacks-not-drained") })
-            .or(if unregistered { None } else { Some("unregister-failed") })
-            .or(if overflow { Some("notification-overflow") } else { None })
-            .or(if malformed { Some("notification-malformed") } else { None });
+            .or(if self.checkpoints == 2 {
+                None
+            } else {
+                Some("checkpoints-incomplete")
+            })
+            .or(if closed {
+                None
+            } else {
+                Some("admission-not-closed")
+            })
+            .or(if drained {
+                None
+            } else {
+                Some("callbacks-not-drained")
+            })
+            .or(if unregistered {
+                None
+            } else {
+                Some("unregister-failed")
+            })
+            .or(if overflow {
+                Some("notification-overflow")
+            } else {
+                None
+            })
+            .or(if malformed {
+                Some("notification-malformed")
+            } else {
+                None
+            });
         self.bytes(b"],\"events\":[")?;
         for (index, event) in events.iter().enumerate() {
             if index != 0 {
@@ -699,7 +768,9 @@ pub(crate) mod synthetic {
 
     impl Recorder {
         pub(crate) const fn new() -> Self {
-            Self { storage: Storage::new() }
+            Self {
+                storage: Storage::new(),
+            }
         }
 
         pub(crate) fn notify(&'static self, reason: u32, path: &[u16]) {
@@ -749,7 +820,9 @@ pub(crate) mod synthetic {
 
         pub(crate) fn hold_writer(&'static self) -> HeldWriter {
             assert!(self.storage.admit());
-            HeldWriter { storage: &self.storage }
+            HeldWriter {
+                storage: &self.storage,
+            }
         }
 
         pub(crate) fn close(&self) {
@@ -768,7 +841,10 @@ pub(crate) mod synthetic {
             let mut bytes = Vec::new();
             let result = (|| {
                 let mut report = Report::new(&mut bytes, limit)?;
-                let image = Image { base: 0x1000, path: "C:\\synthetic\\fixture.exe".to_owned() };
+                let image = Image {
+                    base: 0x1000,
+                    path: "C:\\synthetic\\fixture.exe".to_owned(),
+                };
                 report.checkpoint("initial", 0, 0, std::slice::from_ref(&image))?;
                 let observed = self.storage.observed.load(Ordering::Relaxed);
                 report.checkpoint("final", observed, observed, std::slice::from_ref(&image))?;

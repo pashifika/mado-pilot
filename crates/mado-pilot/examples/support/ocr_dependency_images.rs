@@ -212,11 +212,7 @@ fn snapshot(process: HANDLE, modules: &mut [HMODULE; MODULE_LIMIT]) -> Result<us
     Ok(count)
 }
 
-fn module_path(
-    process: HANDLE,
-    module: HMODULE,
-    buffer: &mut [u16],
-) -> Result<&[u16], Failure> {
+fn module_path(process: HANDLE, module: HMODULE, buffer: &mut [u16]) -> Result<&[u16], Failure> {
     // A sentinel makes a missing terminator observable even on buffer reuse.
     buffer.fill(u16::MAX);
     // SAFETY: Both handles refer to the current process; module is a non-null,

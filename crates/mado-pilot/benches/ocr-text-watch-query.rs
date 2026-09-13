@@ -117,7 +117,12 @@ fn main() {
     #[cfg(all(windows, target_arch = "x86_64", feature = "ocr-loader-diagnostic"))]
     {
         let image_result = ocr_dependency_images::record_if_requested();
-        let trace_result = diagnostic.finish(image_result.as_ref().err().map(|_| "end-image-writer-failed"));
+        let trace_result = diagnostic.finish(
+            image_result
+                .as_ref()
+                .err()
+                .map(|_| "end-image-writer-failed"),
+        );
         if let Err(error) = &image_result {
             eprintln!(
                 "OCR workload dependency observation failed: {error}; no dependency proof is implied"
