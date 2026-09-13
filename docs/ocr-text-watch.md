@@ -305,11 +305,19 @@ Observed detector/recognizer creation counts are not live-session counts.
 The supervisor's whole-process cleanup remains separate from internal timestamps
 and ORT process-global residency. Ambient `MADO_PILOT_ORT_PROFILE_DIR` is refused.
 
-Report schema3 separates complete observed measurements from numerical acceptance.
-Missing/duplicate/malformed required records stop later processes and keep
-measurement completeness false. Complete measurements do not accept any budget;
-`--enforce-budgets` still refuses. Process failures retain precedence over missing
-telemetry, and first failures and successful prefixes are preserved.
+Report schema4 separates complete measurements from numerical acceptance. Every
+controlled invocation now retains its exact ordered endpoint durations, including
+the mapping/inference cancellation pair, from the existing producer output.
+Missing/duplicate/malformed records stop later processes; no missing value becomes
+zero. A numeric failure does not erase otherwise complete measurement facts.
+
+`--enforce-budgets` requires accepted target-specific limits and their accepted
+ADR, the exact approved host and executable, and unchanged profile/ADR/source/input
+identities before every process and finally. An unaccepted profile always refuses.
+Each process is compared independently; a first numeric failure stops the rest.
+`passed` applies only to that complete target/mode cohort. Without the flag, the
+runner collects measurements but cannot qualify a budget. Native capture and
+whole-Change acceptance are never inferred from a single cohort result.
 
 Admission under the Windows presence-only policy requires a new, separately
 authorized three-process controlled cohort. Diagnostic rows are not precursor
@@ -326,10 +334,12 @@ Recording decision, never Accessibility. Permission refusal, unsupported-system
 refusal and absence of an acknowledged matching frame are distinct non-passes.
 Compilation in hosted CI is not evidence that either capture path ran.
 
-The [Apple prospective workload](benchmarks/ocr-text-watch-aarch64-apple-darwin.toml)
-and [Windows prospective workload](benchmarks/ocr-text-watch-x86_64-pc-windows-msvc.toml)
-remain prospective and non-normative. Collected precursor observations do not
-by themselves accept numeric ceilings: complete applicable precursor evidence,
-a justified G-013 budget ADR and final enforcement are still required. Earlier
-OCR/template budgets and historical passes or failures remain revision-bound and
-do not qualify this capability.
+The [Apple workload](benchmarks/ocr-text-watch-aarch64-apple-darwin.toml) and
+[Windows workload](benchmarks/ocr-text-watch-x86_64-pc-windows-msvc.toml) now have
+complete controlled3 and real-startup5 precursors. The
+[G-013 budget decision](adr/0075-ocr-text-watch-workload-profiles.md) accepts
+target-specific ceilings before the still-unexecuted final enforcement. All eight
+workload blocks use process-local observations, not pooled samples or substituted
+diagnostic rows. Earlier OCR/template budgets
+and historical passes or failures remain revision-bound and do not qualify this
+capability.

@@ -12,6 +12,7 @@ import subprocess
 import sys
 import tomllib
 
+import budgets
 import measurements
 import run_replay
 
@@ -32,6 +33,7 @@ HARNESS = (
     "crates/mado-pilot/examples/ocr-text-watch.rs",
     "crates/mado-pilot/examples/support/ocr_dependency_images.rs",
     "crates/mado-pilot/examples/support/ocr_watch_measurements.rs",
+    "tools/ocr-text-watch/budgets.py",
     "tools/ocr-text-watch/measurements.py",
     "tools/ocr-text-watch/run_replay.py",
     "tools/ocr-text-watch/darwin_image_report.py",
@@ -180,8 +182,6 @@ def controlled_semantics(stdout: str) -> bool:
 
 
 def execute(args: argparse.Namespace) -> bool:
-    if args.enforce_budgets:
-        raise ValueError("numeric enforcement requires an accepting target-specific budget ADR")
     if not args.execute:
         raise ValueError("explicit execution authority is required")
     if args.mode not in ("controlled", "real-cpu-cold-startup"):
@@ -189,6 +189,10 @@ def execute(args: argparse.Namespace) -> bool:
     if sys.platform == "win32" and sys.version_info < (3, 13):
         raise ValueError("private Windows evidence directories require Python 3.13 or newer")
     real = args.mode == "real-cpu-cold-startup"
+    selected = profile_identity = None
+    if args.enforce_budgets:
+        selected, profile_identity = profile(args.profile)
+        budgets.validate_profile(selected, selected["profile"]["release_target"])
     count = 5 if real else 3
     output = args.output.resolve()
     output.mkdir(mode=0o700, parents=True, exist_ok=False)
@@ -220,7 +224,8 @@ def execute(args: argparse.Namespace) -> bool:
         executable = args.executable.resolve(strict=True)
         corpus = args.corpus.resolve(strict=True) if real else None
         stage = "preflight-profile"
-        selected, profile_identity = profile(args.profile)
+        if selected is None:
+            selected, profile_identity = profile(args.profile)
         facts = selected["profile"]
         stage = "preflight-host"
         host_facts, host_identity = host(args.host_record, facts["release_target"])
@@ -245,10 +250,29 @@ def execute(args: argparse.Namespace) -> bool:
             "documents": documents,
             "artifacts": bindings(executable, corpus, environment, approved_images),
         }
+        if args.enforce_budgets:
+            stage = "preflight-budget-bindings"
+            acceptance = selected["acceptance"]
+            if acceptance["host_id"] != host_facts["observed"]["host_id"]:
+                raise ValueError("execution host differs from the accepted budget host")
+            artifact_key = "real_executable_sha256" if real else "controlled_executable_sha256"
+            if acceptance[artifact_key] != before["artifacts"]["executable"]["sha256"]:
+                raise ValueError("executable differs from the accepted budget candidate")
+            adr = (ROOT / acceptance["adr"]).resolve(strict=True)
+            if adr.parent != (ROOT / "docs/adr").resolve(strict=True):
+                raise ValueError("accepting ADR must remain within the tracked ADR directory")
+            adr_bytes, adr_identity = run_replay.read_document(adr)
+            status_lines = [
+                line for line in adr_bytes.decode("utf-8").splitlines()
+                if line.startswith("- **Status:**")
+            ]
+            if status_lines != ["- **Status:** Accepted"]:
+                raise ValueError("numeric profile requires an accepted ADR")
+            documents["accepting_adr"] = adr_identity
         argv = run_replay.observed_command([str(executable), str(corpus), "transition"] if real else [str(executable), "--semantic"])
         stage = "plan-evidence"
         run_replay.write_record(output / "plan.json", {
-            "schema_version": 3, "mode": args.mode, "authority": "explicit --execute; this exact prospective cohort requires operator authorization",
+            "schema_version": 4, "mode": args.mode, "authority": "explicit --execute; this exact cohort requires operator authorization",
             "target": facts["release_target"], "host": host_facts, "source": original_source,
             "bindings": before, "argv": argv, "process_count": count,
             "child_selection_environments": [selection_environment(child) for child in child_environments],
@@ -272,7 +296,8 @@ def execute(args: argparse.Namespace) -> bool:
             "cold_startup_scope": "five fresh processes with qualification-only internal Instant/RSS stages; no OS cache flush; ready-hook session creations are not live-session counts",
             "real_example_overrides": {"query_interval_ms": 1, "confirmation_count": 1} if real else None,
             "resource_scope": "backend-input and caller-accessor view traffic, logical cache/result extents and OS memory are distinct; no opaque total native-allocation ledger",
-            "numeric_enforcement": "refused: no accepted budget ADR", "native_capture": "unexecuted-separate-target-procedure",
+            "numeric_enforcement": "approved-target-profile" if args.enforce_budgets else "not-requested",
+            "native_capture": "unexecuted-separate-target-procedure",
             "private_record": "Contains declared and observed host facts, controlled path/digest identities, loader-selection environment and complete raw process output",
         })
         admitted = True
@@ -304,6 +329,7 @@ def execute(args: argparse.Namespace) -> bool:
                 "elapsed_scope": "whole fresh process including driver and teardown; never held-double OCR performance",
                 "measurements": None,
                 "required_measurements_complete": False, "budget_passed": False,
+                "budget_comparison": None,
             }
             stage = "before-process-bindings"
             try:
@@ -347,6 +373,19 @@ def execute(args: argparse.Namespace) -> bool:
                 row["dependencies_passed"] = dependencies["matched"] is True
                 if not row["dependencies_passed"]:
                     raise ValueError("actual loaded native images do not match the approved manifest")
+                if args.enforce_budgets and not failures:
+                    stage = "numeric-comparison"
+                    comparison = budgets.evaluate_process(
+                        selected, facts["release_target"], args.mode,
+                        row["measurements"], observed["duration_seconds"],
+                    )
+                    row["budget_comparison"] = comparison
+                    row["budget_passed"] = comparison["passed"]
+                    if not row["budget_passed"]:
+                        failures.append({
+                            "kind": "budget-exceeded", "stage": stage, "process": index + 1,
+                            "comparison": comparison["first_failure"],
+                        })
             except (Exception, KeyboardInterrupt) as error:
                 row["apparatus_failure"] = retain_failure(stage, index + 1, error)
             run_replay.write_record(output / f"process-{index + 1}.json", row)
@@ -364,12 +403,16 @@ def execute(args: argparse.Namespace) -> bool:
         admitted and unchanged and first_apparatus_failure is None and len(rows) == count
         and all(row["semantic_passed"] and row["cleanup_passed"] and row["dependencies_passed"] for row in rows)
     )
-    measurement_complete = semantic_complete and not failures and all(
+    measurement_complete = semantic_complete and all(
         row["required_measurements_complete"] for row in rows
+    )
+    numerical_complete = (
+        args.enforce_budgets and measurement_complete
+        and all(row["budget_passed"] for row in rows)
     )
     states = {row["process"]: row["execution_state"] for row in rows}
     run_replay.write_record(output / "result.json", {
-        "schema_version": 3, "mode": args.mode, "admitted": admitted, "process_count": count,
+        "schema_version": 4, "mode": args.mode, "admitted": admitted, "process_count": count,
         "identity_unchanged": unchanged, "semantic_cohort_passed": semantic_complete,
         "executed_processes": sum(state == "started" for state in states.values()),
         "attempted_processes": sum(state != "not-attempted" for state in states.values()),
@@ -381,11 +424,18 @@ def execute(args: argparse.Namespace) -> bool:
         "first_failure": failures[0] if failures else None, "failures": failures,
         "apparatus_invalid": first_apparatus_failure is not None,
         "final_binding_check": {"performed": admitted, "matched": unchanged, "failure": final_failure},
-        "required_measurements_complete": measurement_complete, "passed": False,
-        "task_8_2": "not-passed", "task_8_3": "not-passed", "numeric_budgets": "unaccepted",
+        "required_measurements_complete": measurement_complete, "passed": numerical_complete,
+        "numeric_budgets": (
+            "passed" if numerical_complete else "not-passed"
+            if args.enforce_budgets else "not-enforced"
+        ),
+        "qualification_scope": {
+            "target": selected["profile"]["release_target"] if selected is not None else None,
+            "mode": args.mode,
+        },
         "native_scope": "unexecuted; no fixture, capture, signature, permission or input operation is delegated",
     })
-    return measurement_complete
+    return numerical_complete if args.enforce_budgets else measurement_complete
 
 
 def main() -> int:
@@ -398,10 +448,8 @@ def main() -> int:
     parser.add_argument("--corpus", type=Path)
     parser.add_argument("--output", required=True, type=Path, help="new private evidence directory outside tracked source or under an ignored output path, never overwritten")
     parser.add_argument("--execute", action="store_true")
-    parser.add_argument("--enforce-budgets", action="store_true")
+    parser.add_argument("--enforce-budgets", action="store_true", help="enforce the accepted target profile and ADR after fresh authorization of this exact cohort")
     args = parser.parse_args()
-    if args.enforce_budgets:
-        parser.error("numeric enforcement is refused: no accepting target-specific budget ADR exists")
     if not args.execute:
         parser.error("--execute is required after authorization of the exact prospective cohort")
     try:
@@ -409,7 +457,10 @@ def main() -> int:
     except (OSError, ValueError, KeyError, TypeError, subprocess.SubprocessError):
         print("OCR workload procedure failed; retain and inspect private evidence without retry", file=sys.stderr)
         return 1
-    print("OCR semantic and measurement cohort completed; numerical qualification remains unaccepted" if complete else "OCR cohort failed; later processes remain unexecuted")
+    if args.enforce_budgets:
+        print("OCR target/mode budget cohort passed" if complete else "OCR budget cohort failed; retain all evidence without retry", file=sys.stdout if complete else sys.stderr)
+    else:
+        print("OCR semantic and measurement cohort completed; numerical qualification was not requested" if complete else "OCR cohort failed; later processes remain unexecuted", file=sys.stdout if complete else sys.stderr)
     return 0 if complete else 1
 
 

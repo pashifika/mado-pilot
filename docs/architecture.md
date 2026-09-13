@@ -20,8 +20,8 @@ explicit initialization-time provider policy, finite template watcher
 scheduling, runtime orchestration, engine-scoped diagnostics, the Rust facade,
 C ABI 1.5, and the header-only C++ wrapper are implemented.
 Rust OCR text-presence queries are also implemented through the explicit CPU
-bounded-v2 profile, with controlled API verification. Real CPU replay,
-target-owned native capture and OCR-watcher workload budgets remain open;
+bounded-v2 profile, with controlled API and both-target real CPU replay verified.
+ADR0075 accepts workload ceilings; native capture and final numeric enforcement remain open;
 [OCR text queries](ocr-text-watch.md) separates those acceptance lanes.
 The picker-free Windows Adapter implements window/display discovery, WGC/D3D11 capture, system input,
 and explicit exact-window `WindowMessage` submission. The macOS Adapter
@@ -143,7 +143,7 @@ spaces, performs template matching and one-shot OCR, waits for stable template
 presence through a bounded Rust query over replay or qualified native sessions,
 injects input through explicit platform capabilities, and reports structured
 outcomes. Rust OCR text queries are implemented and real CPU replay has passed
-on both release targets; their native qualification and new workload ceilings remain open.
+on both release targets; ADR0075 accepts workload ceilings, while native and final workload qualification remain open.
 
 MadoPilot does not own a GUI, tray, editor, overlay, updater, workflow catalog,
 general workflow/cron scheduler, or general scripting DSL.
@@ -1054,7 +1054,8 @@ responsibilities a later phase takes on.
 | Deep search orchestration, result envelope, final operation commit | Implemented in `mado-pilot-runtime` |
 | Input composition: same-provider adapter pairing, required-versus-optional input admission with bounded release of committed capture, per-controller sequence serialization, the one-terminal-receipt rule, and two-sided close | Implemented in `mado-pilot-runtime`. Selecting a permitted route, arbitrating focus, resolving a coordinate against live geometry, revalidating before each irreversible event, and releasing what a stopped sequence pressed stay in `mado-pilot-input` and the Adapter implementing it |
 | Bounded template-presence query and scheduling | Implemented in `mado-pilot-runtime` for Rust replay/OpenCV and maintained native WGC/ScreenCaptureKit sessions: current-once then strictly newer frame acquisition, finite latest-wins work, exact change/rate admission, confirmed-only stability, exact coalescing, two-worker fair progress, stale-generation rejection, and idempotent query/session/engine-scheduler close. ADRs 0051 and 0052 retain deterministic replay/OpenCV authority; ADR 0053 retains historical target-specific native regression budgets. ADR 0064 adds the token-driven V2 split: Lane A owns deterministic behavior, each target has one compact Lane B integration job, and Lane C statistics are optional. Both exact Lane B host contracts pass, and reviewed target-isolated applicability carries the Apple result through the final Windows evidence source |
-| OCR coalescing and wait-for-text | Not implemented |
+| Rust OCR text-presence queries | Implemented through explicit CPU bounded-v2 with immutable source/result retention, finite mixed scheduling and selective OCR shutdown. Both-target real CPU replay passes; ADR0075 accepts fixed-workload ceilings. Native capture and final numerical enforcement remain open |
+| OCR work coalescing | Not implemented; OCR query work remains distinct |
 | Public Rust operations for the deterministic replay workflow | Implemented in `mado-pilot`, including the blocking replay template watcher example with separate query/wait operation contexts |
 | Public Rust operations for native and replay workflows | Implemented in `mado-pilot`, including explicit optional backend wiring, accepted CPU default/profile constructors, owning provider-policy constructors, immutable provider descriptors, borrowed one-to-eight-zone scans, and Rust template query types over replay, WGC, and ScreenCaptureKit sessions. Replay/OpenCV and native WGC/ScreenCaptureKit watcher support is qualified on the named release targets under ADR 0064. No platform-native, `ort`, worker, channel, Tokio, or callback type crosses the facade; C ABI/C++ watcher APIs remain absent |
 | Default adapter wiring and backend rules | OpenCV matching remains required. Every pre-provider constructor preserves CPU behavior. `*_engine_with_ocr_provider` is the only integrated provider-policy path; automatic selection uses only a release-qualified target accelerator, preferred fallback is initialization-only, and required/provider inference failure never falls back |
@@ -2714,10 +2715,13 @@ OS memory follow [ADR 0071](adr/0071-ocr-watch-observable-measurement-scopes.md)
 view-byte sums are not unique allocations or an opaque native memory ledger.
 
 The [lifecycle/privacy guide and example](ocr-text-watch.md) document this
-implementation. Ordinary Rust tests and the model-free derivation do not
-qualify real ONNX replay or either native capture target. Prospective workloads
-remain non-normative until separately authorized precursors justify a new
-G-013 decision; no historical template/OCR evidence pin is refreshed.
+implementation. Both-target real CPU replay is verified separately from ordinary
+tests. [ADR0075](adr/0075-ocr-text-watch-workload-profiles.md) accepts target-specific
+controlled and real-startup ceilings from complete precursors. The Python-owned
+format2 profiles and schema4 runner preserve process-local statistics, endpoint
+pairing, target memory, exact accepted host/artifact/ADR identities and final
+fences. Native capture and final numerical enforcement remain separate; no
+historical template/OCR evidence pin is refreshed.
 
 ### Bounded template-presence queries
 

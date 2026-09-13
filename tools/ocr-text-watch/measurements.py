@@ -31,6 +31,23 @@ _CONTROLLED_MEMORY = (
     "resident_current_high_water_bytes", "resident_process_peak_bytes",
     "private_high_water_bytes", "physical_footprint_high_water_bytes",
 )
+_CONTROLLED_ENDPOINTS = {
+    "steady-nonmatch": ("publication-to-observation",) * 21 + ("query-cancel",),
+    "positive-consecutive": ("first-positive-publication-to-terminal",),
+    "slow-backend-saturation": (
+        "eligible-expiry-advance-to-terminals", "held-release-to-physical-zero",
+    ),
+    "mixed-two-session": ("mapping-release-to-physical-zero",),
+    "retained-results": (),
+    "cancellation-close": (
+        "independent-wait-cancel", "query-cancel", "session-close",
+        "last-runtime-owner-drop", "held-release-to-actual-resource-retirement",
+    ) * 2,
+    "cold-startup": (
+        "controlled-engine-construction", "controlled-session-open", "first-query-start",
+        "first-positive-to-terminal", "logical-close",
+    ),
+}
 _STAGES = (
     "process-start", "runtime-initialized", "provider-prepared", "detector-session-ready",
     "recognizer-session-ready", "engine-ready", "session-ready", "query-terminal",
@@ -110,6 +127,8 @@ def controlled_measurements(stdout: str, target: str) -> dict:
     Extents are logical views, not a deduplicated allocation total. OS high-water
     values cover existing checkpoint/retirement reads; process peak is not reset
     at the invocation boundary. Process supervision remains the runner's job.
+    Endpoint durations are observed only inside their invocation's start/raw
+    boundary; partial observations remain evidence, not zero-filled measurements.
     """
     records = []
     failures = []
@@ -118,13 +137,37 @@ def controlled_measurements(stdout: str, target: str) -> dict:
     event = 0
     summaries = 0
     kinds = ("start", "raw", "measurement")
+    active_workload = None
+    endpoints = []
     for line_number, line in enumerate(stdout.splitlines(), 1):
         candidate = line.lstrip()
+        if candidate.startswith("# ocr-endpoint"):
+            try:
+                if active_workload is None:
+                    raise ValueError("endpoint is outside its invocation start/raw boundary")
+                order = _CONTROLLED_ENDPOINTS[active_workload]
+                endpoint = _record(
+                    line, "# ocr-endpoint", frozenset(("duration_ns",)), (),
+                    {"workload": (active_workload,), "stage": order},
+                )
+                del endpoint["workload"]
+                endpoints.append(endpoint)
+                index = len(endpoints) - 1
+                if index >= len(order) or endpoint["stage"] != order[index]:
+                    raise ValueError("unexpected invocation endpoint order or extra endpoint")
+            except ValueError as error:
+                failures.append(f"line {line_number}: {error}")
+            continue
         kind = next((kind for kind in kinds if candidate.startswith(f"# ocr-{kind}")), None)
         if kind is not None:
             invocation = event // 3
             expected_kind = kinds[event % 3]
             event += 1
+            if expected_kind == "start":
+                endpoints = []
+            # A malformed boundary must not leave the prior endpoint window open.
+            started_workload = active_workload
+            active_workload = None
             try:
                 if invocation >= len(_INVOCATIONS) or kind != expected_kind:
                     raise ValueError("unexpected invocation record order or duplicate record")
@@ -133,17 +176,23 @@ def controlled_measurements(stdout: str, target: str) -> dict:
                 if kind == "start":
                     if line != f"# ocr-start {suffix}":
                         raise ValueError("unexpected workload, phase, iteration or start fields")
+                    active_workload = name
                 elif kind == "raw":
                     if not line.startswith(f"# ocr-raw {suffix} "):
                         raise ValueError("raw semantic row does not match its invocation")
+                    if started_workload != name:
+                        raise ValueError("raw row has no exact preceding invocation start")
                     semantics = [token for token in line.split(" ") if token.startswith("semantic=")]
                     if semantics != ["semantic=passed"]:
                         raise ValueError("raw invocation semantic success is missing or ambiguous")
+                    if len(endpoints) != len(_CONTROLLED_ENDPOINTS[name]):
+                        raise ValueError("required invocation endpoint rows are incomplete")
                 else:
                     record = _record(
                         line, "# ocr-measurement", _CONTROLLED_INTEGERS, _CONTROLLED_MEMORY,
                         {"workload": _WORKLOADS, "phase": ("warmup", "sample")},
                     )
+                    record["endpoints"] = endpoints
                     records.append(record)
                     if (record["workload"], record["phase"], record["iteration"]) != (name, phase, index):
                         raise ValueError("measurement does not match its ordered invocation")

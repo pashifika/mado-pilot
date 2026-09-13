@@ -12,6 +12,7 @@ import sys
 import tempfile
 import unittest
 from unittest.mock import patch
+from test_measurements import controlled_lines
 
 SCRIPT = Path(__file__).resolve().parents[1] / "workloads.py"
 sys.path.insert(0, str(SCRIPT.parent))
@@ -24,28 +25,9 @@ PROFILE = (workloads.ROOT / "docs/benchmarks" / f"ocr-text-watch-{TARGET}.toml")
 
 
 def controlled_output(*, measured=True) -> str:
-    samples = [(name, "warmup" if index < 2 else "sample", index)
-               for name in workloads.WORKLOADS[:-1] for index in range(22)]
-    samples.append(("cold-startup", "sample", 0))
-    lines = []
-    for name, phase, index in samples:
-        suffix = f"workload={name} phase={phase} iteration={index}"
-        lines.extend((f"# ocr-start {suffix}", f"# ocr-raw {suffix} semantic=passed retained=0"))
-        if measured:
-            lines.append(
-                f"# ocr-measurement {suffix} elapsed_ns=1000 "
-                "backend_input_mapped_bytes=2073600 backend_input_max_bytes=2073600 "
-                "retained_read_mapped_bytes=0 mapped_cache_high_water_bytes=2073600 "
-                "retained_source_high_water_bytes=0 retained_text_high_water_bytes=0 "
-                f"retained_index_high_water_bytes=0 separate_frame_high_water_bytes={2073600 if name == 'mixed-two-session' else 0} "
-                "resident_current_high_water_bytes=Some(2048) resident_process_peak_bytes=Some(4096) "
-                "private_high_water_bytes=None physical_footprint_high_water_bytes=Some(3072) "
-                "memory_samples=2 physical_ocr_high_water=1"
-            )
-    lines.extend((
-        "ocr-text-watch-query: 6 workloads, 20 samples each, 0 oracle failure(s)",
-        "ocr-text-watch-controlled-startup: 1 workloads, 1 samples each, 0 oracle failure(s)",
-    ))
+    lines = controlled_lines(TARGET)
+    if not measured:
+        lines = [line for line in lines if not line.startswith("# ocr-measurement ")]
     return "\n".join(lines)
 
 
@@ -144,6 +126,139 @@ class WorkloadAdmission(unittest.TestCase):
 
     def record(self, name="result.json"):
         return json.loads((self.args.output / name).read_text(encoding="utf-8"))
+
+    def approve_numeric_profile(self):
+        source = (self.root / "owned-source").resolve()
+        self.adr = source / "docs/adr/0075-ocr-text-watch-workload-profiles.md"
+        self.adr.parent.mkdir(parents=True)
+        self.adr.write_text("# Synthetic acceptance fixture\n\n- **Status:** Accepted\n", encoding="utf-8")
+        supervisor = source / "tools/native-release-profile/process_runner.py"
+        supervisor.parent.mkdir(parents=True)
+        supervisor.write_bytes(b"owned identity fixture; never imported or executed")
+        self.patch(patch.object(workloads, "ROOT", source))
+        self.source_root = source
+        selected = workloads.tomllib.loads(PROFILE.decode("utf-8"))
+        selected["benchmark"].update(
+            status="precursor-measured-budgets-accepted", normative=True, measurements_recorded=True,
+        )
+        selected["measurements"] = {"performed": True, "scope": "synthetic unit fixture, not evidence"}
+        digest = workloads.run_replay.identity(self.executable)["sha256"]
+        selected["acceptance"] = {
+            "status": "accepted", "adr": "docs/adr/0075-ocr-text-watch-workload-profiles.md",
+            "host_id": "execution-host", "controlled_executable_sha256": digest,
+            "real_executable_sha256": digest,
+        }
+        selected["measurement"] = []
+        for name, measures in workloads.budgets.REQUIRED_METRICS[TARGET].items():
+            limits = []
+            for measure in measures:
+                unit = "milliseconds" if measure.endswith("_ms") else "bytes" if measure.endswith("_bytes") else "count"
+                limit = 1000 if unit == "milliseconds" else 67108864 if unit == "bytes" else 1
+                if measure == "physical_ocr_final":
+                    limit = 0
+                limits.append({
+                    "measure": measure, "kind": "absolute", "unit": unit,
+                    "direction": "at_most", "limit": limit,
+                    "rationale": "Synthetic admission fixture; not a product budget",
+                })
+            selected["measurement"].append({"workload": name, "budget": limits})
+        self.numeric_profile = selected
+        self.patch(patch.object(workloads, "profile", return_value=(
+            selected, workloads.run_replay.identity(self.profile_path),
+        )))
+        self.args.enforce_budgets = True
+
+    def test_complete_approved_cohort_passes_only_its_target_mode(self):
+        self.approve_numeric_profile()
+        self.assertTrue(workloads.execute(self.args))
+        result = self.record()
+        self.assertTrue(result["passed"])
+        self.assertTrue(result["required_measurements_complete"])
+        self.assertEqual(result["qualification_scope"], {"target": TARGET, "mode": "controlled"})
+        self.assertEqual(result["unexecuted_processes"], [])
+        self.assertEqual(result["executed_processes"], 3)
+
+    def test_numeric_exceedance_retains_first_process_and_stops_later_launches(self):
+        self.approve_numeric_profile()
+        limit = next(row for row in self.numeric_profile["measurement"][0]["budget"]
+                     if row["measure"] == "latency_max_ms")
+        limit["limit"] = 0
+        self.assertFalse(workloads.execute(self.args))
+        result = self.record()
+        self.assertEqual(result["first_failure"]["kind"], "budget-exceeded")
+        self.assertEqual(result["unexecuted_processes"], [2, 3])
+        process = self.record("process-1.json")
+        self.assertTrue(process["required_measurements_complete"])
+        self.assertFalse(process["budget_passed"])
+        self.assertFalse(process["budget_comparison"]["passed"])
+        self.assertEqual(self.launch.call_count, 1)
+
+    def test_last_process_numeric_failure_does_not_erase_measurement_completeness(self):
+        self.approve_numeric_profile()
+        limit = next(row for row in self.numeric_profile["measurement"][0]["budget"]
+                     if row["measure"] == "latency_max_ms")
+        limit["limit"] = 0.001
+        calls = 0
+
+        def last_slow_sample(*args, **kwargs):
+            nonlocal calls
+            calls += 1
+            observed = dict(self.process_record)
+            if calls == 3:
+                observed["stdout"] = observed["stdout"].replace(
+                    "# ocr-measurement workload=steady-nonmatch phase=sample iteration=21 elapsed_ns=100 ",
+                    "# ocr-measurement workload=steady-nonmatch phase=sample iteration=21 elapsed_ns=5000 ",
+                )
+            return observed
+
+        self.launch.side_effect = last_slow_sample
+        self.assertFalse(workloads.execute(self.args))
+        result = self.record()
+        self.assertTrue(result["semantic_cohort_passed"])
+        self.assertTrue(result["required_measurements_complete"])
+        self.assertFalse(result["passed"])
+        self.assertEqual(result["first_failure"]["process"], 3)
+        self.assertEqual(result["unexecuted_processes"], [])
+
+    def test_accepting_adr_mutation_invalidates_complete_numeric_comparisons(self):
+        self.approve_numeric_profile()
+        calls = 0
+
+        def change_after_last_process(*args, **kwargs):
+            nonlocal calls
+            calls += 1
+            if calls == 3:
+                self.adr.write_text("- **Status:** Proposed\n", encoding="utf-8")
+            return self.process_record
+
+        self.launch.side_effect = change_after_last_process
+        self.assertFalse(workloads.execute(self.args))
+        result = self.record()
+        self.assertFalse(result["passed"])
+        self.assertEqual(result["first_failure"]["stage"], "final-bindings")
+        self.assertTrue(self.record("process-3.json")["budget_passed"])
+
+    def test_unaccepted_adr_or_wrong_budget_binding_prevents_launch(self):
+        self.approve_numeric_profile()
+        for field, wrong in (
+            ("host_id", "different-approved-host"),
+            ("controlled_executable_sha256", "0" * 64),
+            ("adr-status", "Proposed"),
+        ):
+            with self.subTest(field=field):
+                self.args.output = self.root / field
+                if field == "adr-status":
+                    self.adr.write_text("- **Status:** Proposed\n", encoding="utf-8")
+                else:
+                    original = self.numeric_profile["acceptance"][field]
+                    self.numeric_profile["acceptance"][field] = wrong
+                self.assertFalse(workloads.execute(self.args))
+                self.assertEqual(self.record()["first_failure"]["stage"], "preflight-budget-bindings")
+                self.assertFalse(self.record()["passed"])
+                self.launch.assert_not_called()
+                if field != "adr-status":
+                    self.numeric_profile["acceptance"][field] = original
+
 
     def test_unapproved_executable_cannot_reach_process_launch(self):
         approved = json.loads(self.native_path.read_text())
@@ -357,8 +472,11 @@ class WorkloadAdmission(unittest.TestCase):
             workloads.execute(self.args)
         self.args.execute = True
         self.args.enforce_budgets = True
-        with self.assertRaises(ValueError):
-            workloads.execute(self.args)
+        unaccepted = workloads.tomllib.loads(PROFILE.decode("utf-8"))
+        unaccepted["benchmark"]["normative"] = False
+        with patch.object(workloads, "profile", return_value=(unaccepted, {})):
+            with self.assertRaises(ValueError):
+                workloads.execute(self.args)
         self.assertFalse(self.args.output.exists())
         self.launch.assert_not_called()
 

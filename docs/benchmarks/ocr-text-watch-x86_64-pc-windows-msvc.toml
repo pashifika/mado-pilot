@@ -1,13 +1,13 @@
-# Prospective workload only. No numeric budget, host, or final execution is accepted.
+# Complete precursor observations and accepted budgets; final qualification is unexecuted.
 format_version = 2
 
 [benchmark]
 id = "ocr-text-watch-x86_64-pc-windows-msvc"
 workload = "Rust-only bounded-v2 CPU OCR maintained queries and mixed template work"
 phase = "5"
-status = "prospective-unqualified"
-normative = false
-measurements_recorded = false
+status = "precursor-measured-budgets-accepted"
+normative = true
+measurements_recorded = true
 
 [profile]
 release_target = "x86_64-pc-windows-msvc"
@@ -45,13 +45,13 @@ fairness_oracle = "two workers; one physical OCR lease; ready OCR query claim wi
 accounting_oracle = "generation-authoritative observations; disposition transitions may overlap, exact diagnostic loss counted; no text/pixels/hashes/private paths in ordinary output"
 
 [open_gates]
-host_and_display_binding = "current Windows OS host support is established; workload binding still required before precursor: exact OS/build/CPU/memory, host identity, display geometry/scale and permission state for native rows"
+host_and_display_binding = "precursor OS precision is recorded separately by cohort below; final requires its own complete host/build binding; native display/permission evidence remains separate"
 source_and_executable_binding = "required before precursor and separately before final: commit/tree, executable and controlled runtime/model/fixture digests; read-only GetSystemDirectoryW plus existing path canonicalization identifies the sole apphelp.dll exception; unidentified system path fails closed; every declared and common-image hash remains mandatory, including apphelp.dll; all other image/execution/cleanup/source/input gates unchanged"
-workload_harness_review = "structured measurement schema and qualification-only real stages require independent review and model-free checks; new presence policy requires a fresh separately authorized three-process controlled cohort, not diagnostic-row reuse or old-cohort resumption; real/native execution remains separate"
-precursor_authority = "not granted"
-numeric_ceilings = "withheld pending target-specific precursor evidence and independent justification"
-accepting_adr = "not issued; use next unused ordinal and ocr-text-watch-workload-profiles suffix"
-final_enforcement = "blocked until numeric ADR and fresh exact-candidate execution authority"
+workload_harness_review = "independent code and complete target-arithmetic reviews accepted; new presence-policy controlled3 completed without old/diagnostic-row reuse; final execution remains separate"
+precursor_authority = "consumed: complete controlled3 and real5; historical failures remain separate"
+numeric_ceilings = "accepted from complete target-specific precursors before final execution"
+accepting_adr = "ADR0075 accepted"
+final_enforcement = "unexecuted; exact bindings and fresh execution authority required"
 
 [[workload]]
 id = "steady-nonmatch"
@@ -119,7 +119,1169 @@ measurement_schema = 1
 memory_scope = "working set/private bytes sampled at all12 stages; process-global ORT residency may remain until process exit"
 mapping_scope = "cold-startup reports retained-accessor mapped view traffic, not inaccessible internal ORT allocation totals"
 
-[measurements]
+[acceptance]
+status = "accepted"
+adr = "docs/adr/0075-ocr-text-watch-workload-profiles.md"
+host_id = "PASHIFIKA-PC"
+controlled_executable_sha256 = "03ba7b8a23f78160982c1f87e1fa1eef35f0b7b80761e19f1ea88ad9b42027d9"
+real_executable_sha256 = "c71374182d397525bd1a59e517a8d9cfff3af38e6dfe404b9e11f9434d33a2a7"
+
+[precursor]
+controlled_source = "2ff66d423dfd1ba173e04827e2440097e2d49b39"
+controlled_tree = "aa2410ecd5f6dc59a5c1c81efaad6f2d974da7f0"
+real_source = "ac0eb2312ec13cb332c0dfd777d2768f4f9f4b47"
+real_tree = "65af0d1ca31aabf01da3406f513fa939d56d0296"
+candidate_build_source = "3dcae302df17945eb8d949400d2f675cccdc35ea"
+controlled_evidence = "116; new112/113 continuation,3 complete processes"
+real_evidence = "078; complete5-process precursor"
+hardware = "Intel Core i7-12700KF,20 logical CPUs,34197635072 bytes memory"
+controlled_os_version = "Windows11 Professional25H2/build26200.9445"
+real_os_version = "Windows11 10.0.26200; historical UBR was not recorded"
+controlled_processes = 3
+real_processes = 5
+statistics_scope = "worst corresponding per-process statistic; never pooled; resources include warmups"
+observer_applicability = "no compiled producer/runtime change; Python endpoint parsing/comparison runs after child return; controlled internal clocks and native memory exclude collector; real startup uses each recorded target observer"
+
+[qualification]
 performed = false
-scope = "accepted target-specific precursor and final qualification"
-reason = "No separately authorized precursor or final measurement exists; ordinary model-free semantic checks are supporting evidence only."
+scope = "each target requires a separately authorized controlled3 and real5 exact-candidate final cohort; native capture remains separate"
+
+[[measurement]]
+workload = "steady-nonmatch"
+latency_p50_ms = 46.5023
+latency_p95_ms = 47.1255
+latency_max_ms = 47.3088
+backend_input_max_bytes = 2073600
+mapped_cache_high_water_bytes = 43545600
+retained_read_mapped_bytes = 0
+retained_source_high_water_bytes = 0
+retained_text_high_water_bytes = 0
+retained_index_high_water_bytes = 0
+separate_frame_high_water_bytes = 0
+resident_current_high_water_bytes = 48775168
+resident_process_peak_bytes = 48775168
+physical_ocr_high_water = 1
+private_high_water_bytes = 44904448
+
+[[measurement.budget]]
+measure = "latency_p50_ms"
+kind = "absolute"
+unit = "milliseconds"
+direction = "at_most"
+limit = 93.005
+rationale = "ADR0075:2x corresponding worst process statistic, ceil0.001ms; maximum-only1ms floor"
+
+[[measurement.budget]]
+measure = "latency_p95_ms"
+kind = "absolute"
+unit = "milliseconds"
+direction = "at_most"
+limit = 94.251
+rationale = "ADR0075:2x corresponding worst process statistic, ceil0.001ms; maximum-only1ms floor"
+
+[[measurement.budget]]
+measure = "latency_max_ms"
+kind = "absolute"
+unit = "milliseconds"
+direction = "at_most"
+limit = 94.618
+rationale = "ADR0075:2x corresponding worst process statistic, ceil0.001ms; maximum-only1ms floor"
+
+[[measurement.budget]]
+measure = "backend_input_max_bytes"
+kind = "absolute"
+unit = "bytes"
+direction = "at_most"
+limit = 2073600
+rationale = "Exact fixed-fixture/view extent ceiling; not unique allocation or arbitrary-caller memory"
+
+[[measurement.budget]]
+measure = "mapped_cache_high_water_bytes"
+kind = "absolute"
+unit = "bytes"
+direction = "at_most"
+limit = 43545600
+rationale = "Exact fixed-fixture/view extent ceiling; not unique allocation or arbitrary-caller memory"
+
+[[measurement.budget]]
+measure = "retained_read_mapped_bytes"
+kind = "absolute"
+unit = "bytes"
+direction = "at_most"
+limit = 0
+rationale = "Exact fixed-fixture/view extent ceiling; not unique allocation or arbitrary-caller memory"
+
+[[measurement.budget]]
+measure = "retained_source_high_water_bytes"
+kind = "absolute"
+unit = "bytes"
+direction = "at_most"
+limit = 0
+rationale = "Exact fixed-fixture/view extent ceiling; not unique allocation or arbitrary-caller memory"
+
+[[measurement.budget]]
+measure = "retained_text_high_water_bytes"
+kind = "absolute"
+unit = "bytes"
+direction = "at_most"
+limit = 0
+rationale = "Exact fixed-fixture/view extent ceiling; not unique allocation or arbitrary-caller memory"
+
+[[measurement.budget]]
+measure = "retained_index_high_water_bytes"
+kind = "absolute"
+unit = "bytes"
+direction = "at_most"
+limit = 0
+rationale = "Exact fixed-fixture/view extent ceiling; not unique allocation or arbitrary-caller memory"
+
+[[measurement.budget]]
+measure = "separate_frame_high_water_bytes"
+kind = "absolute"
+unit = "bytes"
+direction = "at_most"
+limit = 0
+rationale = "Exact fixed-fixture/view extent ceiling; not unique allocation or arbitrary-caller memory"
+
+[[measurement.budget]]
+measure = "resident_current_high_water_bytes"
+kind = "absolute"
+unit = "bytes"
+direction = "at_most"
+limit = 61865984
+rationale = "ADR0075:1.25x target-native maximum, including warmups, ceil1MiB"
+
+[[measurement.budget]]
+measure = "resident_process_peak_bytes"
+kind = "absolute"
+unit = "bytes"
+direction = "at_most"
+limit = 61865984
+rationale = "ADR0075:1.25x target-native maximum, including warmups, ceil1MiB"
+
+[[measurement.budget]]
+measure = "physical_ocr_high_water"
+kind = "absolute"
+unit = "count"
+direction = "at_most"
+limit = 1
+rationale = "Existing single-lease/final-zero contract; not a construction-count liveness claim"
+
+[[measurement.budget]]
+measure = "private_high_water_bytes"
+kind = "absolute"
+unit = "bytes"
+direction = "at_most"
+limit = 56623104
+rationale = "ADR0075:1.25x target-native maximum, including warmups, ceil1MiB"
+
+[[measurement]]
+workload = "positive-consecutive"
+latency_p50_ms = 15.5094
+latency_p95_ms = 16.889
+latency_max_ms = 31.7418
+backend_input_max_bytes = 2073600
+mapped_cache_high_water_bytes = 8294400
+retained_read_mapped_bytes = 2073600
+retained_source_high_water_bytes = 2073600
+retained_text_high_water_bytes = 13
+retained_index_high_water_bytes = 2
+separate_frame_high_water_bytes = 0
+resident_current_high_water_bytes = 7266304
+resident_process_peak_bytes = 48775168
+physical_ocr_high_water = 1
+private_high_water_bytes = 3301376
+
+[[measurement.budget]]
+measure = "latency_p50_ms"
+kind = "absolute"
+unit = "milliseconds"
+direction = "at_most"
+limit = 31.019
+rationale = "ADR0075:2x corresponding worst process statistic, ceil0.001ms; maximum-only1ms floor"
+
+[[measurement.budget]]
+measure = "latency_p95_ms"
+kind = "absolute"
+unit = "milliseconds"
+direction = "at_most"
+limit = 33.778
+rationale = "ADR0075:2x corresponding worst process statistic, ceil0.001ms; maximum-only1ms floor"
+
+[[measurement.budget]]
+measure = "latency_max_ms"
+kind = "absolute"
+unit = "milliseconds"
+direction = "at_most"
+limit = 63.484
+rationale = "ADR0075:2x corresponding worst process statistic, ceil0.001ms; maximum-only1ms floor"
+
+[[measurement.budget]]
+measure = "backend_input_max_bytes"
+kind = "absolute"
+unit = "bytes"
+direction = "at_most"
+limit = 2073600
+rationale = "Exact fixed-fixture/view extent ceiling; not unique allocation or arbitrary-caller memory"
+
+[[measurement.budget]]
+measure = "mapped_cache_high_water_bytes"
+kind = "absolute"
+unit = "bytes"
+direction = "at_most"
+limit = 8294400
+rationale = "Exact fixed-fixture/view extent ceiling; not unique allocation or arbitrary-caller memory"
+
+[[measurement.budget]]
+measure = "retained_read_mapped_bytes"
+kind = "absolute"
+unit = "bytes"
+direction = "at_most"
+limit = 2073600
+rationale = "Exact fixed-fixture/view extent ceiling; not unique allocation or arbitrary-caller memory"
+
+[[measurement.budget]]
+measure = "retained_source_high_water_bytes"
+kind = "absolute"
+unit = "bytes"
+direction = "at_most"
+limit = 2073600
+rationale = "Exact fixed-fixture/view extent ceiling; not unique allocation or arbitrary-caller memory"
+
+[[measurement.budget]]
+measure = "retained_text_high_water_bytes"
+kind = "absolute"
+unit = "bytes"
+direction = "at_most"
+limit = 13
+rationale = "Exact fixed-fixture/view extent ceiling; not unique allocation or arbitrary-caller memory"
+
+[[measurement.budget]]
+measure = "retained_index_high_water_bytes"
+kind = "absolute"
+unit = "bytes"
+direction = "at_most"
+limit = 2
+rationale = "Exact fixed-fixture/view extent ceiling; not unique allocation or arbitrary-caller memory"
+
+[[measurement.budget]]
+measure = "separate_frame_high_water_bytes"
+kind = "absolute"
+unit = "bytes"
+direction = "at_most"
+limit = 0
+rationale = "Exact fixed-fixture/view extent ceiling; not unique allocation or arbitrary-caller memory"
+
+[[measurement.budget]]
+measure = "resident_current_high_water_bytes"
+kind = "absolute"
+unit = "bytes"
+direction = "at_most"
+limit = 9437184
+rationale = "ADR0075:1.25x target-native maximum, including warmups, ceil1MiB"
+
+[[measurement.budget]]
+measure = "resident_process_peak_bytes"
+kind = "absolute"
+unit = "bytes"
+direction = "at_most"
+limit = 61865984
+rationale = "ADR0075:1.25x target-native maximum, including warmups, ceil1MiB"
+
+[[measurement.budget]]
+measure = "physical_ocr_high_water"
+kind = "absolute"
+unit = "count"
+direction = "at_most"
+limit = 1
+rationale = "Existing single-lease/final-zero contract; not a construction-count liveness claim"
+
+[[measurement.budget]]
+measure = "private_high_water_bytes"
+kind = "absolute"
+unit = "bytes"
+direction = "at_most"
+limit = 4194304
+rationale = "ADR0075:1.25x target-native maximum, including warmups, ceil1MiB"
+
+[[measurement]]
+workload = "slow-backend-saturation"
+latency_p50_ms = 46.1373
+latency_p95_ms = 46.935
+latency_max_ms = 47.0773
+backend_input_max_bytes = 2073600
+mapped_cache_high_water_bytes = 0
+retained_read_mapped_bytes = 0
+retained_source_high_water_bytes = 0
+retained_text_high_water_bytes = 0
+retained_index_high_water_bytes = 0
+separate_frame_high_water_bytes = 0
+resident_current_high_water_bytes = 11882496
+resident_process_peak_bytes = 48775168
+physical_ocr_high_water = 1
+private_high_water_bytes = 8077312
+
+[[measurement.budget]]
+measure = "latency_p50_ms"
+kind = "absolute"
+unit = "milliseconds"
+direction = "at_most"
+limit = 92.275
+rationale = "ADR0075:2x corresponding worst process statistic, ceil0.001ms; maximum-only1ms floor"
+
+[[measurement.budget]]
+measure = "latency_p95_ms"
+kind = "absolute"
+unit = "milliseconds"
+direction = "at_most"
+limit = 93.87
+rationale = "ADR0075:2x corresponding worst process statistic, ceil0.001ms; maximum-only1ms floor"
+
+[[measurement.budget]]
+measure = "latency_max_ms"
+kind = "absolute"
+unit = "milliseconds"
+direction = "at_most"
+limit = 94.155
+rationale = "ADR0075:2x corresponding worst process statistic, ceil0.001ms; maximum-only1ms floor"
+
+[[measurement.budget]]
+measure = "backend_input_max_bytes"
+kind = "absolute"
+unit = "bytes"
+direction = "at_most"
+limit = 2073600
+rationale = "Exact fixed-fixture/view extent ceiling; not unique allocation or arbitrary-caller memory"
+
+[[measurement.budget]]
+measure = "mapped_cache_high_water_bytes"
+kind = "absolute"
+unit = "bytes"
+direction = "at_most"
+limit = 0
+rationale = "Exact fixed-fixture/view extent ceiling; not unique allocation or arbitrary-caller memory"
+
+[[measurement.budget]]
+measure = "retained_read_mapped_bytes"
+kind = "absolute"
+unit = "bytes"
+direction = "at_most"
+limit = 0
+rationale = "Exact fixed-fixture/view extent ceiling; not unique allocation or arbitrary-caller memory"
+
+[[measurement.budget]]
+measure = "retained_source_high_water_bytes"
+kind = "absolute"
+unit = "bytes"
+direction = "at_most"
+limit = 0
+rationale = "Exact fixed-fixture/view extent ceiling; not unique allocation or arbitrary-caller memory"
+
+[[measurement.budget]]
+measure = "retained_text_high_water_bytes"
+kind = "absolute"
+unit = "bytes"
+direction = "at_most"
+limit = 0
+rationale = "Exact fixed-fixture/view extent ceiling; not unique allocation or arbitrary-caller memory"
+
+[[measurement.budget]]
+measure = "retained_index_high_water_bytes"
+kind = "absolute"
+unit = "bytes"
+direction = "at_most"
+limit = 0
+rationale = "Exact fixed-fixture/view extent ceiling; not unique allocation or arbitrary-caller memory"
+
+[[measurement.budget]]
+measure = "separate_frame_high_water_bytes"
+kind = "absolute"
+unit = "bytes"
+direction = "at_most"
+limit = 0
+rationale = "Exact fixed-fixture/view extent ceiling; not unique allocation or arbitrary-caller memory"
+
+[[measurement.budget]]
+measure = "resident_current_high_water_bytes"
+kind = "absolute"
+unit = "bytes"
+direction = "at_most"
+limit = 15728640
+rationale = "ADR0075:1.25x target-native maximum, including warmups, ceil1MiB"
+
+[[measurement.budget]]
+measure = "resident_process_peak_bytes"
+kind = "absolute"
+unit = "bytes"
+direction = "at_most"
+limit = 61865984
+rationale = "ADR0075:1.25x target-native maximum, including warmups, ceil1MiB"
+
+[[measurement.budget]]
+measure = "physical_ocr_high_water"
+kind = "absolute"
+unit = "count"
+direction = "at_most"
+limit = 1
+rationale = "Existing single-lease/final-zero contract; not a construction-count liveness claim"
+
+[[measurement.budget]]
+measure = "private_high_water_bytes"
+kind = "absolute"
+unit = "bytes"
+direction = "at_most"
+limit = 10485760
+rationale = "ADR0075:1.25x target-native maximum, including warmups, ceil1MiB"
+
+[[measurement]]
+workload = "mixed-two-session"
+latency_p50_ms = 62.0786
+latency_p95_ms = 77.5751
+latency_max_ms = 77.826
+backend_input_max_bytes = 2073600
+mapped_cache_high_water_bytes = 0
+retained_read_mapped_bytes = 0
+retained_source_high_water_bytes = 0
+retained_text_high_water_bytes = 0
+retained_index_high_water_bytes = 0
+separate_frame_high_water_bytes = 2073600
+resident_current_high_water_bytes = 16044032
+resident_process_peak_bytes = 48775168
+physical_ocr_high_water = 1
+private_high_water_bytes = 12316672
+
+[[measurement.budget]]
+measure = "latency_p50_ms"
+kind = "absolute"
+unit = "milliseconds"
+direction = "at_most"
+limit = 124.158
+rationale = "ADR0075:2x corresponding worst process statistic, ceil0.001ms; maximum-only1ms floor"
+
+[[measurement.budget]]
+measure = "latency_p95_ms"
+kind = "absolute"
+unit = "milliseconds"
+direction = "at_most"
+limit = 155.151
+rationale = "ADR0075:2x corresponding worst process statistic, ceil0.001ms; maximum-only1ms floor"
+
+[[measurement.budget]]
+measure = "latency_max_ms"
+kind = "absolute"
+unit = "milliseconds"
+direction = "at_most"
+limit = 155.652
+rationale = "ADR0075:2x corresponding worst process statistic, ceil0.001ms; maximum-only1ms floor"
+
+[[measurement.budget]]
+measure = "backend_input_max_bytes"
+kind = "absolute"
+unit = "bytes"
+direction = "at_most"
+limit = 2073600
+rationale = "Exact fixed-fixture/view extent ceiling; not unique allocation or arbitrary-caller memory"
+
+[[measurement.budget]]
+measure = "mapped_cache_high_water_bytes"
+kind = "absolute"
+unit = "bytes"
+direction = "at_most"
+limit = 0
+rationale = "Exact fixed-fixture/view extent ceiling; not unique allocation or arbitrary-caller memory"
+
+[[measurement.budget]]
+measure = "retained_read_mapped_bytes"
+kind = "absolute"
+unit = "bytes"
+direction = "at_most"
+limit = 0
+rationale = "Exact fixed-fixture/view extent ceiling; not unique allocation or arbitrary-caller memory"
+
+[[measurement.budget]]
+measure = "retained_source_high_water_bytes"
+kind = "absolute"
+unit = "bytes"
+direction = "at_most"
+limit = 0
+rationale = "Exact fixed-fixture/view extent ceiling; not unique allocation or arbitrary-caller memory"
+
+[[measurement.budget]]
+measure = "retained_text_high_water_bytes"
+kind = "absolute"
+unit = "bytes"
+direction = "at_most"
+limit = 0
+rationale = "Exact fixed-fixture/view extent ceiling; not unique allocation or arbitrary-caller memory"
+
+[[measurement.budget]]
+measure = "retained_index_high_water_bytes"
+kind = "absolute"
+unit = "bytes"
+direction = "at_most"
+limit = 0
+rationale = "Exact fixed-fixture/view extent ceiling; not unique allocation or arbitrary-caller memory"
+
+[[measurement.budget]]
+measure = "separate_frame_high_water_bytes"
+kind = "absolute"
+unit = "bytes"
+direction = "at_most"
+limit = 2073600
+rationale = "Exact fixed-fixture/view extent ceiling; not unique allocation or arbitrary-caller memory"
+
+[[measurement.budget]]
+measure = "resident_current_high_water_bytes"
+kind = "absolute"
+unit = "bytes"
+direction = "at_most"
+limit = 20971520
+rationale = "ADR0075:1.25x target-native maximum, including warmups, ceil1MiB"
+
+[[measurement.budget]]
+measure = "resident_process_peak_bytes"
+kind = "absolute"
+unit = "bytes"
+direction = "at_most"
+limit = 61865984
+rationale = "ADR0075:1.25x target-native maximum, including warmups, ceil1MiB"
+
+[[measurement.budget]]
+measure = "physical_ocr_high_water"
+kind = "absolute"
+unit = "count"
+direction = "at_most"
+limit = 1
+rationale = "Existing single-lease/final-zero contract; not a construction-count liveness claim"
+
+[[measurement.budget]]
+measure = "private_high_water_bytes"
+kind = "absolute"
+unit = "bytes"
+direction = "at_most"
+limit = 15728640
+rationale = "ADR0075:1.25x target-native maximum, including warmups, ceil1MiB"
+
+[[measurement]]
+workload = "retained-results"
+latency_p50_ms = 12.226
+latency_p95_ms = 15.8506
+latency_max_ms = 16.1369
+backend_input_max_bytes = 2073600
+mapped_cache_high_water_bytes = 2073600
+retained_read_mapped_bytes = 16588800
+retained_source_high_water_bytes = 8294400
+retained_text_high_water_bytes = 52
+retained_index_high_water_bytes = 8
+separate_frame_high_water_bytes = 8294400
+resident_current_high_water_bytes = 5738496
+resident_process_peak_bytes = 48775168
+physical_ocr_high_water = 1
+private_high_water_bytes = 1871872
+
+[[measurement.budget]]
+measure = "latency_p50_ms"
+kind = "absolute"
+unit = "milliseconds"
+direction = "at_most"
+limit = 24.452
+rationale = "ADR0075:2x corresponding worst process statistic, ceil0.001ms; maximum-only1ms floor"
+
+[[measurement.budget]]
+measure = "latency_p95_ms"
+kind = "absolute"
+unit = "milliseconds"
+direction = "at_most"
+limit = 31.702
+rationale = "ADR0075:2x corresponding worst process statistic, ceil0.001ms; maximum-only1ms floor"
+
+[[measurement.budget]]
+measure = "latency_max_ms"
+kind = "absolute"
+unit = "milliseconds"
+direction = "at_most"
+limit = 32.274
+rationale = "ADR0075:2x corresponding worst process statistic, ceil0.001ms; maximum-only1ms floor"
+
+[[measurement.budget]]
+measure = "backend_input_max_bytes"
+kind = "absolute"
+unit = "bytes"
+direction = "at_most"
+limit = 2073600
+rationale = "Exact fixed-fixture/view extent ceiling; not unique allocation or arbitrary-caller memory"
+
+[[measurement.budget]]
+measure = "mapped_cache_high_water_bytes"
+kind = "absolute"
+unit = "bytes"
+direction = "at_most"
+limit = 2073600
+rationale = "Exact fixed-fixture/view extent ceiling; not unique allocation or arbitrary-caller memory"
+
+[[measurement.budget]]
+measure = "retained_read_mapped_bytes"
+kind = "absolute"
+unit = "bytes"
+direction = "at_most"
+limit = 16588800
+rationale = "Exact fixed-fixture/view extent ceiling; not unique allocation or arbitrary-caller memory"
+
+[[measurement.budget]]
+measure = "retained_source_high_water_bytes"
+kind = "absolute"
+unit = "bytes"
+direction = "at_most"
+limit = 8294400
+rationale = "Exact fixed-fixture/view extent ceiling; not unique allocation or arbitrary-caller memory"
+
+[[measurement.budget]]
+measure = "retained_text_high_water_bytes"
+kind = "absolute"
+unit = "bytes"
+direction = "at_most"
+limit = 52
+rationale = "Exact fixed-fixture/view extent ceiling; not unique allocation or arbitrary-caller memory"
+
+[[measurement.budget]]
+measure = "retained_index_high_water_bytes"
+kind = "absolute"
+unit = "bytes"
+direction = "at_most"
+limit = 8
+rationale = "Exact fixed-fixture/view extent ceiling; not unique allocation or arbitrary-caller memory"
+
+[[measurement.budget]]
+measure = "separate_frame_high_water_bytes"
+kind = "absolute"
+unit = "bytes"
+direction = "at_most"
+limit = 8294400
+rationale = "Exact fixed-fixture/view extent ceiling; not unique allocation or arbitrary-caller memory"
+
+[[measurement.budget]]
+measure = "resident_current_high_water_bytes"
+kind = "absolute"
+unit = "bytes"
+direction = "at_most"
+limit = 7340032
+rationale = "ADR0075:1.25x target-native maximum, including warmups, ceil1MiB"
+
+[[measurement.budget]]
+measure = "resident_process_peak_bytes"
+kind = "absolute"
+unit = "bytes"
+direction = "at_most"
+limit = 61865984
+rationale = "ADR0075:1.25x target-native maximum, including warmups, ceil1MiB"
+
+[[measurement.budget]]
+measure = "physical_ocr_high_water"
+kind = "absolute"
+unit = "count"
+direction = "at_most"
+limit = 1
+rationale = "Existing single-lease/final-zero contract; not a construction-count liveness claim"
+
+[[measurement.budget]]
+measure = "private_high_water_bytes"
+kind = "absolute"
+unit = "bytes"
+direction = "at_most"
+limit = 3145728
+rationale = "ADR0075:1.25x target-native maximum, including warmups, ceil1MiB"
+
+[[measurement]]
+workload = "cancellation-close"
+latency_p50_ms = 61.9646
+latency_p95_ms = 62.718
+latency_max_ms = 63.1791
+backend_input_max_bytes = 2073600
+mapped_cache_high_water_bytes = 0
+retained_read_mapped_bytes = 0
+retained_source_high_water_bytes = 0
+retained_text_high_water_bytes = 0
+retained_index_high_water_bytes = 0
+separate_frame_high_water_bytes = 0
+resident_current_high_water_bytes = 9822208
+resident_process_peak_bytes = 48775168
+physical_ocr_high_water = 1
+private_high_water_bytes = 6025216
+independent_wait_cancel_p95_ms = 0.0021
+independent_wait_cancel_max_ms = 0.0028
+query_cancel_p95_ms = 0.0603
+query_cancel_max_ms = 0.1156
+session_close_p95_ms = 16.0053
+session_close_max_ms = 16.4301
+last_runtime_owner_drop_p95_ms = 0.5835
+last_runtime_owner_drop_max_ms = 0.6407
+held_release_to_actual_resource_retirement_p95_ms = 0.1579
+held_release_to_actual_resource_retirement_max_ms = 0.4439
+
+[[measurement.budget]]
+measure = "latency_p50_ms"
+kind = "absolute"
+unit = "milliseconds"
+direction = "at_most"
+limit = 123.93
+rationale = "ADR0075:2x corresponding worst process statistic, ceil0.001ms; maximum-only1ms floor"
+
+[[measurement.budget]]
+measure = "latency_p95_ms"
+kind = "absolute"
+unit = "milliseconds"
+direction = "at_most"
+limit = 125.436
+rationale = "ADR0075:2x corresponding worst process statistic, ceil0.001ms; maximum-only1ms floor"
+
+[[measurement.budget]]
+measure = "latency_max_ms"
+kind = "absolute"
+unit = "milliseconds"
+direction = "at_most"
+limit = 126.359
+rationale = "ADR0075:2x corresponding worst process statistic, ceil0.001ms; maximum-only1ms floor"
+
+[[measurement.budget]]
+measure = "backend_input_max_bytes"
+kind = "absolute"
+unit = "bytes"
+direction = "at_most"
+limit = 2073600
+rationale = "Exact fixed-fixture/view extent ceiling; not unique allocation or arbitrary-caller memory"
+
+[[measurement.budget]]
+measure = "mapped_cache_high_water_bytes"
+kind = "absolute"
+unit = "bytes"
+direction = "at_most"
+limit = 0
+rationale = "Exact fixed-fixture/view extent ceiling; not unique allocation or arbitrary-caller memory"
+
+[[measurement.budget]]
+measure = "retained_read_mapped_bytes"
+kind = "absolute"
+unit = "bytes"
+direction = "at_most"
+limit = 0
+rationale = "Exact fixed-fixture/view extent ceiling; not unique allocation or arbitrary-caller memory"
+
+[[measurement.budget]]
+measure = "retained_source_high_water_bytes"
+kind = "absolute"
+unit = "bytes"
+direction = "at_most"
+limit = 0
+rationale = "Exact fixed-fixture/view extent ceiling; not unique allocation or arbitrary-caller memory"
+
+[[measurement.budget]]
+measure = "retained_text_high_water_bytes"
+kind = "absolute"
+unit = "bytes"
+direction = "at_most"
+limit = 0
+rationale = "Exact fixed-fixture/view extent ceiling; not unique allocation or arbitrary-caller memory"
+
+[[measurement.budget]]
+measure = "retained_index_high_water_bytes"
+kind = "absolute"
+unit = "bytes"
+direction = "at_most"
+limit = 0
+rationale = "Exact fixed-fixture/view extent ceiling; not unique allocation or arbitrary-caller memory"
+
+[[measurement.budget]]
+measure = "separate_frame_high_water_bytes"
+kind = "absolute"
+unit = "bytes"
+direction = "at_most"
+limit = 0
+rationale = "Exact fixed-fixture/view extent ceiling; not unique allocation or arbitrary-caller memory"
+
+[[measurement.budget]]
+measure = "resident_current_high_water_bytes"
+kind = "absolute"
+unit = "bytes"
+direction = "at_most"
+limit = 12582912
+rationale = "ADR0075:1.25x target-native maximum, including warmups, ceil1MiB"
+
+[[measurement.budget]]
+measure = "resident_process_peak_bytes"
+kind = "absolute"
+unit = "bytes"
+direction = "at_most"
+limit = 61865984
+rationale = "ADR0075:1.25x target-native maximum, including warmups, ceil1MiB"
+
+[[measurement.budget]]
+measure = "physical_ocr_high_water"
+kind = "absolute"
+unit = "count"
+direction = "at_most"
+limit = 1
+rationale = "Existing single-lease/final-zero contract; not a construction-count liveness claim"
+
+[[measurement.budget]]
+measure = "private_high_water_bytes"
+kind = "absolute"
+unit = "bytes"
+direction = "at_most"
+limit = 8388608
+rationale = "ADR0075:1.25x target-native maximum, including warmups, ceil1MiB"
+
+[[measurement.budget]]
+measure = "independent_wait_cancel_p95_ms"
+kind = "absolute"
+unit = "milliseconds"
+direction = "at_most"
+limit = 0.005
+rationale = "ADR0075:2x corresponding worst process statistic, ceil0.001ms; maximum-only1ms floor"
+
+[[measurement.budget]]
+measure = "independent_wait_cancel_max_ms"
+kind = "absolute"
+unit = "milliseconds"
+direction = "at_most"
+limit = 1.0
+rationale = "ADR0075:2x corresponding worst process statistic, ceil0.001ms; maximum-only1ms floor"
+
+[[measurement.budget]]
+measure = "query_cancel_p95_ms"
+kind = "absolute"
+unit = "milliseconds"
+direction = "at_most"
+limit = 0.121
+rationale = "ADR0075:2x corresponding worst process statistic, ceil0.001ms; maximum-only1ms floor"
+
+[[measurement.budget]]
+measure = "query_cancel_max_ms"
+kind = "absolute"
+unit = "milliseconds"
+direction = "at_most"
+limit = 1.0
+rationale = "ADR0075:2x corresponding worst process statistic, ceil0.001ms; maximum-only1ms floor"
+
+[[measurement.budget]]
+measure = "session_close_p95_ms"
+kind = "absolute"
+unit = "milliseconds"
+direction = "at_most"
+limit = 32.011
+rationale = "ADR0075:2x corresponding worst process statistic, ceil0.001ms; maximum-only1ms floor"
+
+[[measurement.budget]]
+measure = "session_close_max_ms"
+kind = "absolute"
+unit = "milliseconds"
+direction = "at_most"
+limit = 32.861
+rationale = "ADR0075:2x corresponding worst process statistic, ceil0.001ms; maximum-only1ms floor"
+
+[[measurement.budget]]
+measure = "last_runtime_owner_drop_p95_ms"
+kind = "absolute"
+unit = "milliseconds"
+direction = "at_most"
+limit = 1.167
+rationale = "ADR0075:2x corresponding worst process statistic, ceil0.001ms; maximum-only1ms floor"
+
+[[measurement.budget]]
+measure = "last_runtime_owner_drop_max_ms"
+kind = "absolute"
+unit = "milliseconds"
+direction = "at_most"
+limit = 1.282
+rationale = "ADR0075:2x corresponding worst process statistic, ceil0.001ms; maximum-only1ms floor"
+
+[[measurement.budget]]
+measure = "held_release_to_actual_resource_retirement_p95_ms"
+kind = "absolute"
+unit = "milliseconds"
+direction = "at_most"
+limit = 0.316
+rationale = "ADR0075:2x corresponding worst process statistic, ceil0.001ms; maximum-only1ms floor"
+
+[[measurement.budget]]
+measure = "held_release_to_actual_resource_retirement_max_ms"
+kind = "absolute"
+unit = "milliseconds"
+direction = "at_most"
+limit = 1.0
+rationale = "ADR0075:2x corresponding worst process statistic, ceil0.001ms; maximum-only1ms floor"
+
+[[measurement]]
+workload = "cold-startup"
+latency_p50_ms = 15.5554
+latency_p95_ms = 15.5554
+latency_max_ms = 15.5554
+backend_input_max_bytes = 2073600
+mapped_cache_high_water_bytes = 4147200
+retained_read_mapped_bytes = 0
+retained_source_high_water_bytes = 2073600
+retained_text_high_water_bytes = 13
+retained_index_high_water_bytes = 2
+separate_frame_high_water_bytes = 0
+resident_current_high_water_bytes = 7745536
+resident_process_peak_bytes = 48775168
+physical_ocr_high_water = 1
+private_high_water_bytes = 3903488
+
+[[measurement.budget]]
+measure = "latency_p50_ms"
+kind = "absolute"
+unit = "milliseconds"
+direction = "at_most"
+limit = 31.111
+rationale = "ADR0075:2x corresponding worst process statistic, ceil0.001ms; maximum-only1ms floor"
+
+[[measurement.budget]]
+measure = "latency_p95_ms"
+kind = "absolute"
+unit = "milliseconds"
+direction = "at_most"
+limit = 31.111
+rationale = "ADR0075:2x corresponding worst process statistic, ceil0.001ms; maximum-only1ms floor"
+
+[[measurement.budget]]
+measure = "latency_max_ms"
+kind = "absolute"
+unit = "milliseconds"
+direction = "at_most"
+limit = 31.111
+rationale = "ADR0075:2x corresponding worst process statistic, ceil0.001ms; maximum-only1ms floor"
+
+[[measurement.budget]]
+measure = "backend_input_max_bytes"
+kind = "absolute"
+unit = "bytes"
+direction = "at_most"
+limit = 2073600
+rationale = "Exact fixed-fixture/view extent ceiling; not unique allocation or arbitrary-caller memory"
+
+[[measurement.budget]]
+measure = "mapped_cache_high_water_bytes"
+kind = "absolute"
+unit = "bytes"
+direction = "at_most"
+limit = 4147200
+rationale = "Exact fixed-fixture/view extent ceiling; not unique allocation or arbitrary-caller memory"
+
+[[measurement.budget]]
+measure = "retained_read_mapped_bytes"
+kind = "absolute"
+unit = "bytes"
+direction = "at_most"
+limit = 0
+rationale = "Exact fixed-fixture/view extent ceiling; not unique allocation or arbitrary-caller memory"
+
+[[measurement.budget]]
+measure = "retained_source_high_water_bytes"
+kind = "absolute"
+unit = "bytes"
+direction = "at_most"
+limit = 2073600
+rationale = "Exact fixed-fixture/view extent ceiling; not unique allocation or arbitrary-caller memory"
+
+[[measurement.budget]]
+measure = "retained_text_high_water_bytes"
+kind = "absolute"
+unit = "bytes"
+direction = "at_most"
+limit = 13
+rationale = "Exact fixed-fixture/view extent ceiling; not unique allocation or arbitrary-caller memory"
+
+[[measurement.budget]]
+measure = "retained_index_high_water_bytes"
+kind = "absolute"
+unit = "bytes"
+direction = "at_most"
+limit = 2
+rationale = "Exact fixed-fixture/view extent ceiling; not unique allocation or arbitrary-caller memory"
+
+[[measurement.budget]]
+measure = "separate_frame_high_water_bytes"
+kind = "absolute"
+unit = "bytes"
+direction = "at_most"
+limit = 0
+rationale = "Exact fixed-fixture/view extent ceiling; not unique allocation or arbitrary-caller memory"
+
+[[measurement.budget]]
+measure = "resident_current_high_water_bytes"
+kind = "absolute"
+unit = "bytes"
+direction = "at_most"
+limit = 10485760
+rationale = "ADR0075:1.25x target-native maximum, including warmups, ceil1MiB"
+
+[[measurement.budget]]
+measure = "resident_process_peak_bytes"
+kind = "absolute"
+unit = "bytes"
+direction = "at_most"
+limit = 61865984
+rationale = "ADR0075:1.25x target-native maximum, including warmups, ceil1MiB"
+
+[[measurement.budget]]
+measure = "physical_ocr_high_water"
+kind = "absolute"
+unit = "count"
+direction = "at_most"
+limit = 1
+rationale = "Existing single-lease/final-zero contract; not a construction-count liveness claim"
+
+[[measurement.budget]]
+measure = "private_high_water_bytes"
+kind = "absolute"
+unit = "bytes"
+direction = "at_most"
+limit = 5242880
+rationale = "ADR0075:1.25x target-native maximum, including warmups, ceil1MiB"
+
+[[measurement]]
+workload = "real-cpu-cold-startup"
+process_elapsed_ms = 1149.9270999920554
+startup_to_session_ready_ms = 193.2311
+session_ready_to_query_terminal_ms = 839.1753
+query_terminal_to_logical_close_returned_ms = 0.025
+logical_close_returned_to_physical_ocr_zero_ms = 0.001
+parents_dropped_to_retained_results_dropped_ms = 1.4069
+process_start_to_retained_results_dropped_ms = 1040.6744
+resident_current_bytes = 111726592
+resident_process_peak_bytes = 232423424
+private_bytes = 94154752
+retained_source_extent_bytes = 2073600
+retained_text_extent_bytes = 69
+retained_index_extent_bytes = 2
+retained_read_mapped_bytes = 4147200
+physical_ocr_after_close = 0
+physical_ocr_final = 0
+
+[[measurement.budget]]
+measure = "process_elapsed_ms"
+kind = "absolute"
+unit = "milliseconds"
+direction = "at_most"
+limit = 2299.855
+rationale = "ADR0075:2x corresponding worst process statistic, ceil0.001ms; maximum-only1ms floor"
+
+[[measurement.budget]]
+measure = "startup_to_session_ready_ms"
+kind = "absolute"
+unit = "milliseconds"
+direction = "at_most"
+limit = 386.463
+rationale = "ADR0075:2x corresponding worst process statistic, ceil0.001ms; maximum-only1ms floor"
+
+[[measurement.budget]]
+measure = "session_ready_to_query_terminal_ms"
+kind = "absolute"
+unit = "milliseconds"
+direction = "at_most"
+limit = 1678.351
+rationale = "ADR0075:2x corresponding worst process statistic, ceil0.001ms; maximum-only1ms floor"
+
+[[measurement.budget]]
+measure = "query_terminal_to_logical_close_returned_ms"
+kind = "absolute"
+unit = "milliseconds"
+direction = "at_most"
+limit = 1.0
+rationale = "ADR0075:2x corresponding worst process statistic, ceil0.001ms; maximum-only1ms floor"
+
+[[measurement.budget]]
+measure = "logical_close_returned_to_physical_ocr_zero_ms"
+kind = "absolute"
+unit = "milliseconds"
+direction = "at_most"
+limit = 1.0
+rationale = "ADR0075:2x corresponding worst process statistic, ceil0.001ms; maximum-only1ms floor"
+
+[[measurement.budget]]
+measure = "parents_dropped_to_retained_results_dropped_ms"
+kind = "absolute"
+unit = "milliseconds"
+direction = "at_most"
+limit = 2.814
+rationale = "ADR0075:2x corresponding worst process statistic, ceil0.001ms; maximum-only1ms floor"
+
+[[measurement.budget]]
+measure = "process_start_to_retained_results_dropped_ms"
+kind = "absolute"
+unit = "milliseconds"
+direction = "at_most"
+limit = 2081.349
+rationale = "ADR0075:2x corresponding worst process statistic, ceil0.001ms; maximum-only1ms floor"
+
+[[measurement.budget]]
+measure = "resident_current_bytes"
+kind = "absolute"
+unit = "bytes"
+direction = "at_most"
+limit = 140509184
+rationale = "ADR0075:1.25x target-native maximum, including warmups, ceil1MiB"
+
+[[measurement.budget]]
+measure = "resident_process_peak_bytes"
+kind = "absolute"
+unit = "bytes"
+direction = "at_most"
+limit = 291504128
+rationale = "ADR0075:1.25x target-native maximum, including warmups, ceil1MiB"
+
+[[measurement.budget]]
+measure = "private_bytes"
+kind = "absolute"
+unit = "bytes"
+direction = "at_most"
+limit = 118489088
+rationale = "ADR0075:1.25x target-native maximum, including warmups, ceil1MiB"
+
+[[measurement.budget]]
+measure = "retained_source_extent_bytes"
+kind = "absolute"
+unit = "bytes"
+direction = "at_most"
+limit = 2073600
+rationale = "Exact fixed-fixture/view extent ceiling; not unique allocation or arbitrary-caller memory"
+
+[[measurement.budget]]
+measure = "retained_text_extent_bytes"
+kind = "absolute"
+unit = "bytes"
+direction = "at_most"
+limit = 69
+rationale = "Exact fixed-fixture/view extent ceiling; not unique allocation or arbitrary-caller memory"
+
+[[measurement.budget]]
+measure = "retained_index_extent_bytes"
+kind = "absolute"
+unit = "bytes"
+direction = "at_most"
+limit = 2
+rationale = "Exact fixed-fixture/view extent ceiling; not unique allocation or arbitrary-caller memory"
+
+[[measurement.budget]]
+measure = "retained_read_mapped_bytes"
+kind = "absolute"
+unit = "bytes"
+direction = "at_most"
+limit = 4147200
+rationale = "Exact fixed-fixture/view extent ceiling; not unique allocation or arbitrary-caller memory"
+
+[[measurement.budget]]
+measure = "physical_ocr_after_close"
+kind = "absolute"
+unit = "count"
+direction = "at_most"
+limit = 1
+rationale = "Single physical lease may survive logical close; final physical zero remains independent"
+
+[[measurement.budget]]
+measure = "physical_ocr_final"
+kind = "absolute"
+unit = "count"
+direction = "at_most"
+limit = 0
+rationale = "Existing single-lease/final-zero contract; not a construction-count liveness claim"

@@ -17,6 +17,23 @@ WORKLOADS = (
     "steady-nonmatch", "positive-consecutive", "slow-backend-saturation",
     "mixed-two-session", "retained-results", "cancellation-close",
 )
+ENDPOINTS = {
+    "steady-nonmatch": ("publication-to-observation",) * 21 + ("query-cancel",),
+    "positive-consecutive": ("first-positive-publication-to-terminal",),
+    "slow-backend-saturation": (
+        "eligible-expiry-advance-to-terminals", "held-release-to-physical-zero",
+    ),
+    "mixed-two-session": ("mapping-release-to-physical-zero",),
+    "retained-results": (),
+    "cancellation-close": (
+        "independent-wait-cancel", "query-cancel", "session-close",
+        "last-runtime-owner-drop", "held-release-to-actual-resource-retirement",
+    ) * 2,
+    "cold-startup": (
+        "controlled-engine-construction", "controlled-session-open", "first-query-start",
+        "first-positive-to-terminal", "logical-close",
+    ),
+}
 STAGES = (
     "process-start", "runtime-initialized", "provider-prepared", "detector-session-ready",
     "recognizer-session-ready", "engine-ready", "session-ready", "query-terminal",
@@ -42,6 +59,12 @@ def field(line: str, name: str, value: str | None) -> str:
     return " ".join(tokens)
 
 
+def record_index(lines: list[str], prefix: str, **fields) -> int:
+    expected = {f"{key}={value}" for key, value in fields.items()}
+    return next(index for index, line in enumerate(lines)
+                if line.startswith(prefix + " ") and expected.issubset(line.split(" ")))
+
+
 def controlled_lines(target: str = APPLE) -> list[str]:
     invocations = [(name, "warmup" if index < 2 else "sample", index)
                    for name in WORKLOADS for index in range(22)]
@@ -62,8 +85,11 @@ def controlled_lines(target: str = APPLE) -> list[str]:
             "physical_footprint_high_water_bytes": "Some(9000000)" if target == APPLE else "None",
             "memory_samples": 3, "physical_ocr_high_water": 1,
         }
+        lines.append(f"# ocr-start {suffix}")
+        lines.extend(row("# ocr-endpoint", {
+            "workload": name, "stage": stage, "duration_ns": index * 100 + endpoint_index,
+        }) for endpoint_index, stage in enumerate(ENDPOINTS[name]))
         lines.extend((
-            f"# ocr-start {suffix}",
             f"# ocr-raw {suffix} elapsed_ns=100 semantic=passed work=QueryWorkMetrics {{ admitted: 2 }}",
             row("# ocr-measurement", fields),
         ))
@@ -99,21 +125,36 @@ class MeasurementProtocol(unittest.TestCase):
         result = parser("\n".join(lines), target)
         self.assertFalse(result["complete"], result)
         self.assertTrue(result["failures"], result)
+        return result
 
     def test_controlled_requires_all_invocations_once_in_order(self):
         lines = controlled_lines()
         result = measurements.controlled_measurements("\n".join(lines), APPLE)
         self.assertTrue(result["complete"], result)
         self.assertEqual(len(result["records"]), 133)
+        for record in result["records"]:
+            self.assertEqual(
+                [endpoint["stage"] for endpoint in record["endpoints"]],
+                list(ENDPOINTS[record["workload"]]),
+            )
+        first = record_index(lines, "# ocr-measurement", workload="steady-nonmatch", iteration=0)
+        second = record_index(lines, "# ocr-measurement", workload="steady-nonmatch", iteration=1)
+        raw = record_index(lines, "# ocr-raw", workload="steady-nonmatch", iteration=0)
+        cold = record_index(lines, "# ocr-start", workload="cold-startup")
+        reordered = lines.copy()
+        reordered[first], reordered[second] = reordered[second], reordered[first]
+        before_raw = lines.copy()
+        before_raw[raw], before_raw[first] = before_raw[first], before_raw[raw]
         variants = {
-            "missing": lines[:2] + lines[3:],
-            "duplicate": lines[:3] + [lines[2]] + lines[3:],
-            "reordered": lines[:2] + [lines[5]] + lines[3:5] + [lines[2]] + lines[6:],
-            "measurement-before-raw": [lines[0], lines[2], lines[1]] + lines[3:],
-            "missing-cold-startup": lines[:-5] + lines[-2:],
+            "missing": lines[:first] + lines[first + 1:],
+            "duplicate": lines[:first + 1] + [lines[first]] + lines[first + 1:],
+            "reordered": reordered,
+            "measurement-before-raw": before_raw,
+            "missing-cold-startup": lines[:cold] + lines[-2:],
         }
         wrong_phase = lines.copy()
-        wrong_phase[8] = field(wrong_phase[8], "phase", "warmup")
+        sample = record_index(lines, "# ocr-measurement", workload="steady-nonmatch", iteration=2)
+        wrong_phase[sample] = field(wrong_phase[sample], "phase", "warmup")
         variants["wrong-warmup-boundary"] = wrong_phase
         for name, changed in variants.items():
             with self.subTest(name=name):
@@ -121,11 +162,13 @@ class MeasurementProtocol(unittest.TestCase):
 
     def test_controlled_requires_same_invocation_semantic_success(self):
         lines = controlled_lines()
+        start = record_index(lines, "# ocr-start", workload="steady-nonmatch", iteration=0)
+        raw = record_index(lines, "# ocr-raw", workload="steady-nonmatch", iteration=0)
         variants = {
-            "missing-start": lines[1:],
-            "failed-raw": [lines[0], field(lines[1], "semantic", "failed")] + lines[2:],
-            "ambiguous-raw": [lines[0], lines[1] + " semantic=passed"] + lines[2:],
-            "foreign-raw": [lines[0], field(lines[1], "iteration", "1")] + lines[2:],
+            "missing-start": lines[:start] + lines[start + 1:],
+            "failed-raw": lines[:raw] + [field(lines[raw], "semantic", "failed")] + lines[raw + 1:],
+            "ambiguous-raw": lines[:raw] + [lines[raw] + " semantic=passed"] + lines[raw + 1:],
+            "foreign-raw": lines[:raw] + [field(lines[raw], "iteration", "1")] + lines[raw + 1:],
             "missing-summary": lines[:-1],
             "duplicate-summary": lines + [lines[-1]],
         }
@@ -133,47 +176,153 @@ class MeasurementProtocol(unittest.TestCase):
             with self.subTest(name=name):
                 self.assert_incomplete(measurements.controlled_measurements, changed)
 
+    def test_parsed_endpoint_durations_support_per_invocation_consumers(self):
+        result = measurements.controlled_measurements("\n".join(controlled_lines()), APPLE)
+        self.assertTrue(result["complete"], result)
+        stages = ENDPOINTS["cancellation-close"][:5]
+        for iteration, expected_ns in (
+            (2, (205, 206, 207, 208, 209)),
+            (3, (305, 306, 307, 308, 309)),
+        ):
+            with self.subTest(iteration=iteration):
+                record = next(record for record in result["records"]
+                              if record["workload"] == "cancellation-close"
+                              and record["iteration"] == iteration)
+                durations_ms = {
+                    stage: max(endpoint["duration_ns"] for endpoint in record["endpoints"]
+                               if endpoint["stage"] == stage) / 1_000_000
+                    for stage in stages
+                }
+                self.assertEqual(
+                    durations_ms,
+                    {stage: duration / 1_000_000 for stage, duration in zip(stages, expected_ns)},
+                )
+
+    def test_controlled_endpoints_cannot_cross_invocation_boundaries(self):
+        lines = controlled_lines()
+        endpoint = record_index(lines, "# ocr-endpoint", workload="positive-consecutive")
+        raw = record_index(lines, "# ocr-raw", workload="positive-consecutive", iteration=0)
+        measured = record_index(lines, "# ocr-measurement", workload="positive-consecutive", iteration=0)
+        next_raw = record_index(lines, "# ocr-raw", workload="positive-consecutive", iteration=1)
+        variants = {
+            "foreign-workload": (
+                lines[:endpoint] + [field(lines[endpoint], "workload", "steady-nonmatch")]
+                + lines[endpoint + 1:]
+            ),
+            "next-invocation-same-workload": (
+                lines[:endpoint] + lines[endpoint + 1:next_raw]
+                + [lines[endpoint]] + lines[next_raw:]
+            ),
+            "before-start": [lines[endpoint]] + lines,
+            "after-raw": lines[:raw + 1] + [lines[endpoint]] + lines[raw + 1:],
+            "between-invocations": lines[:measured + 1] + [lines[endpoint]] + lines[measured + 1:],
+            "after-summaries": lines + [lines[endpoint]],
+        }
+        for name, changed in variants.items():
+            with self.subTest(name=name):
+                self.assert_incomplete(measurements.controlled_measurements, changed)
+
+    def test_controlled_requires_complete_ordered_endpoint_pairs(self):
+        lines = controlled_lines()
+        start = record_index(lines, "# ocr-start", workload="cancellation-close", iteration=0)
+        raw = record_index(lines, "# ocr-raw", workload="cancellation-close", iteration=0)
+        endpoints = lines[start + 1:raw]
+        variants = {
+            "missing-endpoint": endpoints[:-1],
+            "missing-inference-pair": endpoints[:5],
+            "duplicate-inference-pair": endpoints + endpoints[5:],
+            "reordered-inference-pair": endpoints[:5] + [endpoints[6], endpoints[5]] + endpoints[7:],
+        }
+        for name, changed in variants.items():
+            with self.subTest(name=name):
+                result = self.assert_incomplete(
+                    measurements.controlled_measurements, lines[:start + 1] + changed + lines[raw:],
+                )
+                if name == "missing-endpoint":
+                    record = next(record for record in result["records"]
+                                  if record["workload"] == "cancellation-close"
+                                  and record["iteration"] == 0)
+                    self.assertEqual(record["elapsed_ns"], 100)
+                    self.assertEqual(
+                        [endpoint["stage"] for endpoint in record["endpoints"]],
+                        list(ENDPOINTS["cancellation-close"][:-1]),
+                    )
+                    self.assertEqual(
+                        [endpoint["duration_ns"] for endpoint in record["endpoints"]],
+                        list(range(9)),
+                    )
+        retained_raw = record_index(lines, "# ocr-raw", workload="retained-results", iteration=0)
+        unexpected = row("# ocr-endpoint", {
+            "workload": "retained-results", "stage": "query-cancel", "duration_ns": 0,
+        })
+        self.assert_incomplete(
+            measurements.controlled_measurements,
+            lines[:retained_raw] + [unexpected] + lines[retained_raw:],
+        )
+
     def test_controlled_rejects_missing_duplicate_and_unknown_fields(self):
         lines = controlled_lines()
-        for changed in (
-            field(lines[2], "retained_read_mapped_bytes", None),
-            lines[2] + " elapsed_ns=100",
-            lines[2] + " extra=1",
-            field(lines[2], "memory_samples", "0"),
-            field(lines[2], "backend_input_max_bytes", "4147201"),
+        measured = record_index(lines, "# ocr-measurement", workload="steady-nonmatch", iteration=0)
+        endpoint = record_index(lines, "# ocr-endpoint", workload="steady-nonmatch")
+        for index, changed in (
+            (measured, field(lines[measured], "retained_read_mapped_bytes", None)),
+            (measured, lines[measured] + " elapsed_ns=100"),
+            (measured, lines[measured] + " extra=1"),
+            (measured, field(lines[measured], "memory_samples", "0")),
+            (measured, field(lines[measured], "backend_input_max_bytes", "4147201")),
+            (endpoint, field(lines[endpoint], "duration_ns", None)),
+            (endpoint, lines[endpoint] + " duration_ns=100"),
+            (endpoint, lines[endpoint] + " extra=1"),
+            (endpoint, field(lines[endpoint], "stage", "unobserved")),
+            (endpoint, " " + lines[endpoint]),
+            (endpoint, lines[endpoint].replace("# ocr-endpoint", "# ocr-endpoints", 1)),
         ):
             with self.subTest(row=changed):
-                self.assert_incomplete(measurements.controlled_measurements, lines[:2] + [changed] + lines[3:])
+                self.assert_incomplete(
+                    measurements.controlled_measurements, lines[:index] + [changed] + lines[index + 1:],
+                )
 
     def test_mixed_workload_cannot_hide_its_caller_owned_source(self):
         lines = controlled_lines()
-        index = next(index for index, line in enumerate(lines)
-                     if line.startswith("# ocr-measurement workload=mixed-two-session "))
+        index = record_index(lines, "# ocr-measurement", workload="mixed-two-session")
         lines[index] = field(lines[index], "separate_frame_high_water_bytes", "0")
         self.assert_incomplete(measurements.controlled_measurements, lines)
 
     def test_integer_wire_validity_is_not_a_latency_budget(self):
         lines = controlled_lines()
-        lines[2] = field(lines[2], "elapsed_ns", str((1 << 64) - 1))
+        measured = record_index(lines, "# ocr-measurement", workload="steady-nonmatch", iteration=0)
+        endpoint = record_index(lines, "# ocr-endpoint", workload="steady-nonmatch")
+        lines[measured] = field(lines[measured], "elapsed_ns", str((1 << 64) - 1))
+        lines[endpoint] = field(lines[endpoint], "duration_ns", str((1 << 64) - 1))
         result = measurements.controlled_measurements("\n".join(lines), APPLE)
         self.assertTrue(result["complete"], result)
         self.assertEqual(set(result), {"complete", "scope", "records", "failures"})
         self.assertEqual(result["records"][0]["elapsed_ns"], (1 << 64) - 1)
-        for invalid in ("True", "NaN", str(1 << 64), "-1", "1.5", "01"):
-            with self.subTest(value=invalid):
-                changed = lines.copy()
-                changed[2] = field(changed[2], "elapsed_ns", invalid)
-                self.assert_incomplete(measurements.controlled_measurements, changed)
+        self.assertEqual(result["records"][0]["endpoints"][0]["duration_ns"] + 1, 1 << 64)
+        for index, key in ((measured, "elapsed_ns"), (endpoint, "duration_ns")):
+            for invalid in ("True", "NaN", str(1 << 64), "-1", "1.5", "01"):
+                with self.subTest(field=key, value=invalid):
+                    changed = lines.copy()
+                    changed[index] = field(changed[index], key, invalid)
+                    incomplete = self.assert_incomplete(measurements.controlled_measurements, changed)
+                    if key == "duration_ns":
+                        self.assertEqual(
+                            incomplete["records"][0]["endpoints"],
+                            result["records"][0]["endpoints"][1:],
+                        )
 
     def test_both_targets_require_actual_memory_observations(self):
         for target, specific in ((APPLE, "physical_footprint"), (WINDOWS, "private")):
-            for parser, fixture, index, current, native in (
-                (measurements.controlled_measurements, controlled_lines, -3,
+            for parser, fixture, marker, current, native in (
+                (measurements.controlled_measurements, controlled_lines,
+                 "# ocr-measurement workload=cold-startup",
                  "resident_current_high_water_bytes", specific + "_high_water_bytes"),
-                (measurements.real_measurements, real_lines, -2,
+                (measurements.real_measurements, real_lines,
+                 "# ocr-real-stage stage=retained-results-dropped",
                  "resident_current_bytes", specific + "_bytes"),
             ):
                 lines = fixture(target)
+                index = record_index(lines, marker)
                 result = parser("\n".join(lines), target)
                 self.assertTrue(result["complete"], result)
                 for key, value in ((native, "None"), (current, "Some(0)"),

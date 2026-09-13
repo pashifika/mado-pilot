@@ -391,7 +391,7 @@ permitted.
 ## Rust OCR text-query verification
 
 The [OCR text-query guide](docs/ocr-text-watch.md) separates controlled contracts,
-real CPU replay, target-owned native capture and unaccepted workload budgets.
+real CPU replay, target-owned native capture, accepted workload ceilings and their separate final enforcement.
 Use a fresh purpose-specific `CARGO_TARGET_DIR`; never reuse a hash-pinned
 qualification root for ordinary tests, examples or other feature/profile builds.
 

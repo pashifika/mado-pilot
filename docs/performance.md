@@ -36,17 +36,21 @@ Nothing in this document is itself a measured result. The numbers live in the
 profiles under [benchmarks/](benchmarks/), each naming the host it was measured
 on, and the example this document references records no measurement at all.
 
-The Rust OCR text watcher adds [Apple](benchmarks/ocr-text-watch-aarch64-apple-darwin.toml)
-and [Windows](benchmarks/ocr-text-watch-x86_64-pc-windows-msvc.toml) prospective
-workload plans, not measured budgets. They explicitly withhold host/harness
-bindings and numerical acceptance pending new precursor authority and evidence.
-Result-owned source/text/index extents, native resident memory, logical close
-and physical quiescence are separate measurements. No one-shot OCR, template
-or frozen foreign-boundary ceiling is reused to qualify this workload.
-Their [measurement scopes](adr/0071-ocr-watch-observable-measurement-scopes.md)
-separate actual view traffic and logical extents from OS process memory.
-Qualification-only real startup records internal stages and native construction
-events; complete observations still do not accept a numerical ceiling.
+The Rust OCR text watcher has complete [Apple](benchmarks/ocr-text-watch-aarch64-apple-darwin.toml)
+and [Windows](benchmarks/ocr-text-watch-x86_64-pc-windows-msvc.toml) precursors.
+[ADR0075](adr/0075-ocr-text-watch-workload-profiles.md) accepts target-specific
+ceilings before final qualification. Its Python-owned format version2
+profiles extend the legacy version1 convention below without changing historical
+profiles or assigning their hard-budget constants to another executor.
+
+The [measurement scopes](adr/0071-ocr-watch-observable-measurement-scopes.md)
+separate actual view traffic, logical extents, native process memory, logical
+close and physical quiescence. Controlled percentiles stay process-local;
+resources include warmups. Real startup intervals retain their actual clock
+boundaries and exclude the collector from native-memory observations. The
+source-bound runner validates each required metric and accepted profile/ADR,
+then combines numerical comparisons with independent semantic/identity/cleanup
+gates. Complete precursor observations alone do not qualify a numerical budget.
 
 ## Where benchmark files live
 

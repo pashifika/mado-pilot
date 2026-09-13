@@ -8,7 +8,7 @@ Use one API to automate on-screen controls across Windows and macOS. MadoPilot h
 
 - **Frame-linked results:** Locate images or read text and keep the exact frame that produced each result.
 - **Template watching:** Wait for an image to remain visible, with a deadline and cancellation. Available through Rust on replayed frames and supported native sessions.
-- **Rust OCR text queries:** Wait for literal text with exact source retention. The implementation is available; real-backend/native qualification and workload budgets remain open. See [OCR text queries](docs/ocr-text-watch.md).
+- **Rust OCR text queries:** Wait for literal text with exact source retention. The Rust API and both-target real CPU replay are verified; workload ceilings are accepted, while native capture and final workload qualification remain open. See [OCR text queries](docs/ocr-text-watch.md).
 - **Explicit input control:** Choose the target and delivery mode, then inspect what was submitted. Platform permission and capability failures are reported without prompting or elevation.
 - **Reproducible workflows:** Replay supplied frames without capturing the desktop or injecting input. Ordinary diagnostics exclude images, recognized text, and input payloads.
 

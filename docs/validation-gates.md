@@ -817,20 +817,23 @@ so automatic selection remains CPU. The retained predecessor tail advances only
 the successor CUDA `zone_empty_4k` maximum to 50 ms. Every historical profile
 and frozen ADR 0047/0048 section remains byte-identical.
 
-**Rust OCR text-presence watcher budgets remain open.** The new
+**Rust OCR text-presence workload ceilings are accepted; final enforcement remains open.**
+[ADR0075](adr/0075-ocr-text-watch-workload-profiles.md) accepts separate
 [Apple](benchmarks/ocr-text-watch-aarch64-apple-darwin.toml) and
-[Windows](benchmarks/ocr-text-watch-x86_64-pc-windows-msvc.toml) workload plans
-record seven prospective workloads, fixed semantic/source/accounting rules and
-finite endpoints. They are unmeasured and non-normative: exact host/harness
-bindings, separately authorized precursors, justified numeric ceilings and a
-new accepting ADR are required before final enforcement. Fixed scheduler/storage
-safety limits are not measured budgets. Controlled API or hosted compilation
-cannot substitute for real CPU replay or target-owned WGC/ScreenCaptureKit
-evidence. Existing profiles and historical failed/partial results are unchanged.
-The [measurement-scope decision](adr/0071-ocr-watch-observable-measurement-scopes.md)
-removes no required observation and accepts no numerical budget. Structured
-view/retention/process-memory observations and qualification-only startup stages
-must be complete before a later accepting workload-budget ADR can use them.
+[Windows](benchmarks/ocr-text-watch-x86_64-pc-windows-msvc.toml) profiles from
+complete controlled3 and real-startup5 precursors per target. Independent review
+reconstructed808 process-local values and verified all248 observed values,
+ceilings and units. Historical Windows real evidence retains its recorded base
+build without importing the later controlled cohort's UBR.
+
+The schema4 Python runner enforces process-local p50/p95/max, paired cancellation
+endpoints, distinct target-native memory and fixed view/retention limits only
+after semantic, identity, dependency and cleanup gates. It binds the accepted
+profile/ADR and exact host/executable, stops at the first failure and requires
+unchanged final identities. Complete measurements are not numerical acceptance.
+Final fixed-cohort execution and target-owned WGC/ScreenCaptureKit evidence remain
+separate required gates. No historical failed/partial record or old ceiling is
+changed, and no opaque allocation or unmeasured numeric work counter is invented.
 
 ## G-014
 
