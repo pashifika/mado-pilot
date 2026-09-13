@@ -1674,7 +1674,8 @@ fn caller_owned_frame_clones_are_independent_of_live_result_extent_accounting() 
     drop(second);
     drop(first_result);
     drop(second_result);
-    assert_eq!(harness.engine.ocr_text_observation().retained_results, 0);
+    // Terminal visibility precedes the worker's final query reference release.
+    until(|| harness.engine.ocr_text_observation().retained_results == 0);
     assert_eq!(
         harness
             .engine
