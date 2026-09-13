@@ -93,9 +93,9 @@ class WorkloadAdmission(unittest.TestCase):
         }
         self.host_path.write_text(json.dumps(self.declared_host), encoding="utf-8")
         self.native_path = self.root / "native.json"
+        images = (workloads.run_replay.identity(path) for path in (self.image, self.executable))
         self.native_path.write_text(json.dumps({
-            str(self.image.resolve()): hashlib.sha256(self.image.read_bytes()).hexdigest(),
-            str(self.executable.resolve()): hashlib.sha256(self.executable.read_bytes()).hexdigest(),
+            image["path"]: image["sha256"] for image in images
         }), encoding="utf-8")
         self.actual_host = {
             "release_target": TARGET, "host_id": "execution-host", "system": "observed system",
@@ -122,7 +122,7 @@ class WorkloadAdmission(unittest.TestCase):
             **base, "MADO_PILOT_OCR_DEPENDENCY_REPORT": str(path),
         }))
         self.observe = self.patch(patch.object(workloads.run_replay, "observe_dependencies", return_value={
-            "matched": True, "observed": {str(self.image.resolve()): "test-double observation"},
+            "matched": True, "observed": {workloads.run_replay.identity(self.image)["path"]: "test-double observation"},
         }))
         self.launch = self.patch(patch.object(workloads.run_replay, "run_process", return_value=self.process_record))
 
@@ -147,7 +147,7 @@ class WorkloadAdmission(unittest.TestCase):
 
     def test_unapproved_executable_cannot_reach_process_launch(self):
         approved = json.loads(self.native_path.read_text())
-        del approved[str(self.executable.resolve())]
+        del approved[workloads.run_replay.identity(self.executable)["path"]]
         self.native_path.write_text(json.dumps(approved), encoding="utf-8")
         self.assertFalse(workloads.execute(self.args))
         self.assertTrue(self.record()["apparatus_invalid"])

@@ -48,6 +48,12 @@ MODELS = {
 
 def _read_regular(path: Path, maximum_bytes: int, collect: bool) -> tuple[bytes | None, dict]:
     canonical = path.resolve(strict=True)
+    if os.name == "nt":
+        # Match native consumers without stripping literal trailing dots/spaces.
+        # Resolve first, then retain one extended-length spelling, including UNC.
+        name = str(canonical)
+        if not name.startswith("\\\\?\\"):
+            canonical = Path("\\\\?\\UNC\\" + name[2:] if name.startswith("\\\\") else "\\\\?\\" + name)
     before = canonical.stat()
     if not stat.S_ISREG(before.st_mode) or not 0 <= before.st_size <= maximum_bytes:
         raise ValueError("bounded regular identity file required")

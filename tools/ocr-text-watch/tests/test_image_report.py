@@ -14,6 +14,61 @@ import run_replay
 
 
 class ImageReport(unittest.TestCase):
+    @unittest.skipUnless(sys.platform == "win32", "Windows extended path identity")
+    def test_normal_and_extended_paths_share_the_approved_image_identity(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            image = root / "inert-image"
+            image.write_bytes(b"reviewed bytes, never loaded")
+            extended = Path("\\\\?\\" + str(image.resolve()))
+            required = run_replay.identity(image)
+            approved = {required["path"]: required["sha256"]}
+            manifest = root / "approved.json"
+            run_replay.write_record(manifest, approved)
+            approved, _ = run_replay.native_manifest(manifest)
+            report = root / "images"
+            report.write_text(f"{image.resolve()}\n{extended}\n", encoding="utf-8")
+
+            observed = run_replay.observe_dependencies(report, approved)
+            self.assertEqual(observed["observed"], approved)
+            self.assertTrue(observed["matched"], observed)
+            self.assertEqual(run_replay.identity(extended), required)
+            with self.assertRaises(ValueError):
+                run_replay.verify_native_manifest({
+                    str(image.resolve()): required["sha256"], str(extended): required["sha256"],
+                })
+
+    @unittest.skipUnless(sys.platform == "win32", "Windows literal trailing name components")
+    def test_extended_trailing_dot_and_space_keep_distinct_file_identities(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            normal = root / "inert-image"
+            normal.write_bytes(b"ordinary name")
+            extended_root = Path("\\\\?\\" + str(root.resolve()))
+            literal_images = (
+                (extended_root / "inert-image.", b"literal trailing dot"),
+                (extended_root / "inert-image ", b"literal trailing space"),
+            )
+            required = run_replay.identity(normal)
+            approved = {required["path"]: required["sha256"]}
+            try:
+                for image, content in literal_images:
+                    image.write_bytes(content)
+                    data, entry = run_replay.read_document(image)
+                    self.assertEqual(data, content)
+                    self.assertFalse(image.samefile(normal))
+                    self.assertTrue(Path(entry["path"]).samefile(image))
+                    self.assertNotIn(entry["path"], approved)
+                    approved[entry["path"]] = entry["sha256"]
+                report = root / "images"
+                report.write_text("\n".join(approved) + "\n", encoding="utf-8")
+                observed = run_replay.observe_dependencies(report, approved)
+                self.assertTrue(observed["matched"], observed)
+                self.assertEqual(observed["observed"], approved)
+            finally:
+                for image, _ in literal_images:
+                    image.unlink(missing_ok=True)
+
     @unittest.skipUnless(sys.platform == "darwin", "Darwin image paths require native absolute paths")
     def test_system_images_do_not_consume_the_non_system_manifest_limit(self):
         with tempfile.TemporaryDirectory() as temporary:

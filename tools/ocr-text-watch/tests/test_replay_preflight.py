@@ -113,10 +113,9 @@ class ReplayInputBinding(unittest.TestCase):
             os.utime(path, ns=(1_000_000_000, 1_000_000_000))
             data, observed = replay.read_document(path)
             self.assertEqual(data, content)
-            self.assertEqual(observed, {
-                "path": str(path.resolve()), "bytes": len(content),
-                "sha256": hashlib.sha256(content).hexdigest(),
-            })
+            self.assertTrue(Path(observed["path"]).samefile(path))
+            self.assertEqual(observed["bytes"], len(content))
+            self.assertEqual(observed["sha256"], hashlib.sha256(content).hexdigest())
             self.assertEqual(replay.identity(path), observed)
 
     def test_same_size_mutation_with_restored_mtime_is_rejected(self):
