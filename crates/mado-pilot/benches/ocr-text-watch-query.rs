@@ -11,6 +11,13 @@ mod ocr_dependency_images;
 #[path = "support/ocr_loader_diagnostic.rs"]
 mod ocr_loader_diagnostic;
 
+#[cfg(all(windows, target_arch = "x86_64", feature = "ocr-loader-diagnostic"))]
+#[path = "support/ocr_loader_recording.rs"]
+mod ocr_loader_recording;
+
+#[cfg(all(windows, target_arch = "x86_64", feature = "ocr-loader-diagnostic"))]
+use ocr_dependency_images::ocr_image_path;
+
 #[path = "support/ocr_text_watch.rs"]
 mod support;
 

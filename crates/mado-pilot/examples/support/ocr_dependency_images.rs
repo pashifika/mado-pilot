@@ -21,6 +21,9 @@ use windows::Win32::Foundation::{HANDLE, HMODULE};
 use windows::Win32::System::ProcessStatus::{EnumProcessModules, GetModuleFileNameExW};
 use windows::Win32::System::Threading::GetCurrentProcess;
 
+#[path = "ocr_image_path.rs"]
+pub(crate) mod ocr_image_path;
+
 const REPORT_ENV: &str = "MADO_PILOT_OCR_DEPENDENCY_REPORT";
 const MODULE_LIMIT: usize = 256;
 const PATH_UNITS: usize = 32_768;
@@ -127,7 +130,7 @@ pub(crate) fn stable_snapshot<const PATH_CAPACITY: usize>() -> Result<Vec<Image>
     let mut output_bytes = 0_usize;
     for &module in modules {
         let path = module_path(process, module, &mut path_buffer)?;
-        let path = validated_path(path)?;
+        let path = ocr_image_path::validated_path(path).map_err(Failure::Rule)?;
         if images.iter().any(|previous| previous.path == path) {
             return Err(Failure::Rule("module-path-duplicate"));
         }
@@ -154,7 +157,7 @@ pub(crate) fn stable_snapshot<const PATH_CAPACITY: usize>() -> Result<Vec<Image>
     // Reuse the UTF-16 buffer to compare paths without another owned-string copy.
     for (&module, image) in modules.iter().zip(&images) {
         let current = module_path(process, module, &mut path_buffer)?;
-        validate_line_protocol(current)?;
+        ocr_image_path::validate_line_protocol(current).map_err(Failure::Rule)?;
         if !image.path.encode_utf16().eq(current.iter().copied()) {
             return Err(Failure::Rule("module-path-changed"));
         }
@@ -164,23 +167,6 @@ pub(crate) fn stable_snapshot<const PATH_CAPACITY: usize>() -> Result<Vec<Image>
         return Err(Failure::Rule("module-inventory-changed"));
     }
     Ok(images)
-}
-
-/// Converts UTF-16 content (without a terminator) to an absolute, line-safe path.
-pub(crate) fn validated_path(units: &[u16]) -> Result<String, Failure> {
-    validate_line_protocol(units)?;
-    let path = String::from_utf16(units).map_err(|_| Failure::Rule("module-path-encoding"))?;
-    if !Path::new(&path).is_absolute() {
-        return Err(Failure::Rule("module-path-absolute"));
-    }
-    Ok(path)
-}
-
-fn validate_line_protocol(units: &[u16]) -> Result<(), Failure> {
-    if units.iter().any(|unit| matches!(*unit, 0 | 10 | 13)) {
-        return Err(Failure::Rule("module-path-line-protocol"));
-    }
-    Ok(())
 }
 
 fn snapshot(process: HANDLE, modules: &mut [HMODULE; MODULE_LIMIT]) -> Result<usize, Failure> {

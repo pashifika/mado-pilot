@@ -6,17 +6,130 @@
 
 #![cfg(all(windows, target_arch = "x86_64", feature = "ocr-loader-diagnostic"))]
 
-#[path = "../examples/support/ocr_dependency_images.rs"]
-mod ocr_dependency_images;
-#[path = "../benches/support/ocr_loader_diagnostic.rs"]
-mod ocr_loader_diagnostic;
+#[path = "../examples/support/ocr_image_path.rs"]
+mod ocr_image_path;
+#[path = "../benches/support/ocr_loader_recording.rs"]
+mod ocr_loader_recording;
 
+use std::ffi::c_void;
+use std::ptr::addr_of;
 use std::sync::mpsc;
+use std::time::Duration;
 
-use ocr_loader_diagnostic::synthetic::Recorder;
+use ocr_loader_recording::{
+    Failure, NotificationData, NotificationPayload, Report, Storage, UnicodeString,
+    mado_pilot_ocr_loader_notification,
+};
 use serde_json::Value;
 
 const OUTPUT_LIMIT: usize = 1_048_576;
+
+// Synthetic-only helpers: no registration, process snapshot, module loading or
+// real observation. Each test supplies a distinct process-lifetime static arena.
+struct Recorder {
+    storage: Storage,
+}
+
+impl Recorder {
+    const fn new() -> Self {
+        Self {
+            storage: Storage::new(),
+        }
+    }
+
+    fn notify(&'static self, reason: u32, path: &[u16]) {
+        let length = u16::try_from(path.len() * 2).expect("bounded synthetic path");
+        self.notify_length(reason, path, length);
+    }
+
+    fn notify_length(&'static self, reason: u32, path: &[u16], length: u16) {
+        assert!(usize::from(length) <= path.len() * 2);
+        let name = UnicodeString {
+            length,
+            maximum_length: u16::try_from(path.len() * 2).expect("bounded synthetic path"),
+            buffer: path.as_ptr(),
+        };
+        let data = NotificationData {
+            loaded: NotificationPayload {
+                flags: 0,
+                full_dll_name: &name,
+                base_dll_name: &name,
+                dll_base: std::ptr::without_provenance_mut(0x1000),
+                size_of_image: 4096,
+            },
+        };
+        // SAFETY: Synthetic borrowed ABI objects and their buffers remain
+        // live throughout the call; only the declared bounded length is read.
+        // The context is a static arena, exactly as in production.
+        unsafe {
+            mado_pilot_ocr_loader_notification(
+                reason,
+                &data,
+                addr_of!(self.storage).cast_mut().cast::<c_void>(),
+            );
+        }
+    }
+
+    fn notify_null(&'static self) {
+        // SAFETY: The permanent context is valid; a null payload is rejected
+        // before dereference by the actual callback payload validation.
+        unsafe {
+            mado_pilot_ocr_loader_notification(
+                1,
+                std::ptr::null(),
+                addr_of!(self.storage).cast_mut().cast::<c_void>(),
+            );
+        }
+    }
+
+    fn hold_writer(&'static self) -> HeldWriter {
+        assert!(self.storage.admit());
+        HeldWriter {
+            storage: &self.storage,
+        }
+    }
+
+    fn close(&self) {
+        self.storage.close();
+    }
+
+    fn drained(&self) -> bool {
+        self.storage.drain(Duration::ZERO)
+    }
+
+    fn report(&self, status: Option<i32>, limit: usize) -> (Vec<u8>, Result<(), Failure>) {
+        let mut bytes = Vec::new();
+        let result = (|| {
+            let mut report = Report::new(&mut bytes, limit)?;
+            let image = (0x1000, "C:\\synthetic\\fixture.exe");
+            report.checkpoint("initial", 0, 0, [image])?;
+            let observed = self.storage.observed();
+            report.checkpoint("final", observed, observed, [image])?;
+            report.finish(
+                &self.storage,
+                status,
+                self.storage.drain(Duration::ZERO),
+                None,
+            )
+        })();
+        (bytes, result)
+    }
+}
+
+struct HeldWriter {
+    storage: &'static Storage,
+}
+
+impl Drop for HeldWriter {
+    fn drop(&mut self) {
+        // SAFETY: This guard owns the successful unmatched admission made by
+        // hold_writer. It never accesses slots and releases its admission
+        // exactly once on drop, with no slot accesses remaining.
+        unsafe {
+            self.storage.release();
+        }
+    }
+}
 
 fn decoded(bytes: &[u8]) -> Value {
     serde_json::from_slice(bytes).expect("complete synthetic report JSON")
