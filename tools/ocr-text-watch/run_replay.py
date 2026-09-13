@@ -46,7 +46,7 @@ MODELS = {
 }
 
 
-def _read_regular(path: Path, maximum_bytes: int, collect: bool) -> tuple[bytes | None, dict]:
+def _canonical_path(path: Path) -> Path:
     canonical = path.resolve(strict=True)
     if os.name == "nt":
         # Match native consumers without stripping literal trailing dots/spaces.
@@ -54,6 +54,32 @@ def _read_regular(path: Path, maximum_bytes: int, collect: bool) -> tuple[bytes 
         name = str(canonical)
         if not name.startswith("\\\\?\\"):
             canonical = Path("\\\\?\\UNC\\" + name[2:] if name.startswith("\\\\") else "\\\\?\\" + name)
+    return canonical
+
+
+def _windows_system_directory() -> Path:
+    if os.name != "nt":
+        raise ValueError("Windows system directory lookup requires Windows")
+    import ctypes
+    from ctypes import wintypes
+
+    get_system_directory = ctypes.WinDLL("kernel32", use_last_error=True).GetSystemDirectoryW
+    get_system_directory.argtypes = [wintypes.LPWSTR, wintypes.UINT]
+    get_system_directory.restype = wintypes.UINT
+    buffer = ctypes.create_unicode_buffer(32768)
+    length = get_system_directory(buffer, len(buffer))
+    if length == 0:
+        raise ctypes.WinError(ctypes.get_last_error())
+    if length >= len(buffer):
+        raise ValueError("Windows system directory exceeds the bounded path buffer")
+    directory = Path(buffer.value)
+    if not directory.is_absolute():
+        raise ValueError("absolute Windows system directory required")
+    return directory
+
+
+def _read_regular(path: Path, maximum_bytes: int, collect: bool) -> tuple[bytes | None, dict]:
+    canonical = _canonical_path(path)
     before = canonical.stat()
     if not stat.S_ISREG(before.st_mode) or not 0 <= before.st_size <= maximum_bytes:
         raise ValueError("bounded regular identity file required")
@@ -144,12 +170,15 @@ def observed_command(command: list[str]) -> list[str]:
 
 
 def observe_dependencies(report_path: Path, approved_map: dict[str, str]) -> dict:
+    observation = {"matched": False, "observed": {}, "os_managed_presence_exclusions": []}
     try:
         data, report = read_document(report_path)
+        observation["report"] = report
         if not data.endswith(b"\n") or len(data) >= MAX_DOCUMENT_BYTES:
             raise ValueError("incomplete or saturated native image report")
         lines = data.decode("utf-8", "strict").splitlines()
-        if platform.system() == "Windows":
+        windows = platform.system() == "Windows"
+        if windows:
             names = lines
         else:
             names = [line.split("> ", 1)[1].strip() for line in lines
@@ -157,14 +186,24 @@ def observe_dependencies(report_path: Path, approved_map: dict[str, str]) -> dic
             names = [name for name in names if not name.startswith(("/System/Library/", "/usr/lib/"))]
         if not names or len(set(names)) > MAX_NATIVE_IMAGES:
             raise ValueError("missing or oversized native image observation")
-        observed = {}
+        observed = observation["observed"]
         for name in sorted(set(names)):
             entry = identity(Path(name))
             observed[entry["path"]] = entry["sha256"]
+        if windows:
+            apphelp = _canonical_path(_windows_system_directory() / "apphelp.dll")
+            observation["os_managed_presence_exclusions"] = [str(apphelp)]
         unchanged = verify_native_manifest(approved_map)
-        return {"matched": observed == unchanged, "observed": observed, "report": report}
+        # Only OS-owned apphelp presence is optional; its observed and declared
+        # hashes remain subject to the same identity checks as every other image.
+        presence_changes = observed.keys() ^ unchanged.keys()
+        observation["matched"] = (
+            not presence_changes.difference(observation["os_managed_presence_exclusions"])
+            and all(observed[name] == unchanged[name] for name in observed.keys() & unchanged.keys())
+        )
     except (OSError, ValueError, KeyError) as error:
-        return {"matched": False, "observed": {}, "error_kind": type(error).__name__}
+        observation["error_kind"] = type(error).__name__
+    return observation
 
 
 def git(*args: str) -> str:

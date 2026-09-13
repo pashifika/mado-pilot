@@ -22,6 +22,7 @@ class ImageReport(unittest.TestCase):
             root = Path(temporary)
             image = root / "inert-image"
             image.write_bytes(b"reviewed bytes, never loaded")
+            (root / "apphelp.dll").write_bytes(b"owned OS-location stand-in, never loaded")
             extended = Path("\\\\?\\" + str(image.resolve()))
             required = run_replay.identity(image)
             approved = {required["path"]: required["sha256"]}
@@ -31,7 +32,8 @@ class ImageReport(unittest.TestCase):
             report = root / "images"
             report.write_text(f"{image.resolve()}\n{extended}\n", encoding="utf-8")
 
-            observed = run_replay.observe_dependencies(report, approved)
+            with patch.object(run_replay, "_windows_system_directory", return_value=root):
+                observed = run_replay.observe_dependencies(report, approved)
             self.assertEqual(observed["observed"], approved)
             self.assertTrue(observed["matched"], observed)
             self.assertEqual(run_replay.identity(extended), required)
@@ -46,6 +48,7 @@ class ImageReport(unittest.TestCase):
             root = Path(temporary)
             normal = root / "inert-image"
             normal.write_bytes(b"ordinary name")
+            (root / "apphelp.dll").write_bytes(b"owned OS-location stand-in, never loaded")
             extended_root = Path("\\\\?\\" + str(root.resolve()))
             literal_images = (
                 (extended_root / "inert-image.", b"literal trailing dot"),
@@ -64,12 +67,19 @@ class ImageReport(unittest.TestCase):
                     approved[entry["path"]] = entry["sha256"]
                 report = root / "images"
                 report.write_text("\n".join(approved) + "\n", encoding="utf-8")
-                observed = run_replay.observe_dependencies(report, approved)
+                with patch.object(run_replay, "_windows_system_directory", return_value=root):
+                    observed = run_replay.observe_dependencies(report, approved)
                 self.assertTrue(observed["matched"], observed)
                 self.assertEqual(observed["observed"], approved)
             finally:
                 for image, _ in literal_images:
                     image.unlink(missing_ok=True)
+
+    @unittest.skipUnless(sys.platform == "win32", "Windows read-only system-directory lookup")
+    def test_os_system_directory_lookup_returns_an_existing_absolute_directory(self):
+        directory = run_replay._windows_system_directory()
+        self.assertTrue(directory.is_absolute())
+        self.assertTrue(directory.is_dir())
 
     @unittest.skipUnless(sys.platform == "darwin", "Darwin image paths require native absolute paths")
     def test_system_images_do_not_consume_the_non_system_manifest_limit(self):
@@ -248,6 +258,175 @@ class ImageReport(unittest.TestCase):
             self.assertEqual(result["exit_code"], 0, result)
             self.assertTrue(result["cleanup_ok"], result)
             self.assertTrue(report.read_bytes().endswith(b"collector-tail\n"))
+
+
+class OsManagedImagePresence(unittest.TestCase):
+    def setUp(self):
+        temporary = tempfile.TemporaryDirectory()
+        self.addCleanup(temporary.cleanup)
+        self.root = Path(temporary.name)
+        self.system_directory = self.root / "owned-system"
+        self.system_directory.mkdir()
+        self.paths = {
+            "executable": self.root / "required.exe",
+            "apphelp": self.system_directory / "apphelp.dll",
+            "other": self.system_directory / "other.dll",
+            "outside": self.root / "apphelp.dll",
+        }
+        self.contents = {
+            "executable": b"owned executable, never executed",
+            "apphelp": b"owned apphelp stand-in, never loaded",
+            "other": b"owned other image, never loaded",
+            "outside": b"owned apphelp stand-in, never loaded",
+        }
+        for name, path in self.paths.items():
+            path.write_bytes(self.contents[name])
+        self.identities = {name: run_replay.identity(path) for name, path in self.paths.items()}
+        self.exclusions = [self.identities["apphelp"]["path"]]
+        self.report = self.root / "images"
+        location = patch.object(run_replay, "_windows_system_directory", return_value=self.system_directory)
+        self.location = location.start()
+        self.addCleanup(location.stop)
+        system = patch.object(run_replay.platform, "system", return_value="Windows")
+        self.system = system.start()
+        self.addCleanup(system.stop)
+
+    def images(self, *names):
+        return {self.identities[name]["path"]: self.identities[name]["sha256"] for name in names}
+
+    def observe(self, approved, *names, darwin=False):
+        paths = [self.identities[name]["path"] for name in names]
+        if darwin:
+            paths = [f"dyld[1]: <uuid> {path}" for path in paths]
+        self.report.write_text("\n".join(paths) + "\n", encoding="utf-8")
+        return run_replay.observe_dependencies(self.report, approved)
+
+    def test_missing_os_apphelp_preserves_observed_images_and_matches(self):
+        approved = self.images("executable", "apphelp")
+        observed = self.observe(approved, "executable")
+        self.assertTrue(observed["matched"], observed)
+        self.assertEqual(observed["observed"], self.images("executable"))
+        self.assertEqual(observed["os_managed_presence_exclusions"], self.exclusions)
+        self.assertEqual(observed["report"], run_replay.identity(self.report))
+        self.assertEqual(approved, self.images("executable", "apphelp"))
+
+    def test_extra_os_apphelp_preserves_observed_images_and_matches(self):
+        approved = self.images("executable")
+        observed = self.observe(approved, "executable", "apphelp")
+        self.assertTrue(observed["matched"], observed)
+        self.assertEqual(observed["observed"], self.images("executable", "apphelp"))
+        self.assertEqual(observed["os_managed_presence_exclusions"], self.exclusions)
+        self.assertEqual(approved, self.images("executable"))
+
+    def test_same_named_dll_elsewhere_is_not_presence_exempt(self):
+        for direction, approved, reported in (
+            ("missing", ("executable", "outside"), ("executable", "apphelp")),
+            ("extra", ("executable", "apphelp"), ("executable", "outside")),
+        ):
+            with self.subTest(direction=direction):
+                observed = self.observe(self.images(*approved), *reported)
+                self.assertFalse(observed["matched"], observed)
+                self.assertNotIn("error_kind", observed)
+                self.assertEqual(observed["observed"], self.images(*reported))
+                self.assertEqual(observed["os_managed_presence_exclusions"], self.exclusions)
+
+    def test_other_system_image_presence_remains_strict(self):
+        for direction, approved, reported in (
+            ("missing", ("executable", "other"), ("executable", "apphelp")),
+            ("extra", ("executable", "apphelp"), ("executable", "other")),
+        ):
+            with self.subTest(direction=direction):
+                observed = self.observe(self.images(*approved), *reported)
+                self.assertFalse(observed["matched"], observed)
+                self.assertNotIn("error_kind", observed)
+                self.assertEqual(observed["observed"], self.images(*reported))
+
+    def test_missing_required_executable_is_not_excused_by_apphelp_presence(self):
+        observed = self.observe(self.images("executable"), "apphelp")
+        self.assertFalse(observed["matched"], observed)
+        self.assertNotIn("error_kind", observed)
+        self.assertEqual(observed["observed"], self.images("apphelp"))
+
+    def test_common_image_hash_mismatch_is_not_presence_exempt(self):
+        for name in ("apphelp", "other"):
+            with self.subTest(image=name):
+                approved = self.images("executable", name)
+                changed = b"changed owned image before observation"
+                self.paths[name].write_bytes(changed)
+
+                def restore_declared_bytes():
+                    # Keep both real hash reads: the OS-location boundary lets
+                    # the final manifest match while the observed bytes differ.
+                    self.paths[name].write_bytes(self.contents[name])
+                    return self.system_directory
+
+                self.location.side_effect = restore_declared_bytes
+                observed = self.observe(approved, "executable", name)
+                self.assertFalse(observed["matched"], observed)
+                self.assertNotIn("error_kind", observed)
+                self.assertEqual(observed["observed"][self.identities[name]["path"]],
+                                 hashlib.sha256(changed).hexdigest())
+                self.assertEqual(run_replay.verify_native_manifest(approved), approved)
+
+    def test_declared_apphelp_mutation_still_fails_when_not_observed(self):
+        approved = self.images("executable", "apphelp")
+        self.paths["apphelp"].write_bytes(b"mutated owned declaration, never loaded")
+        with self.assertRaises(ValueError):
+            run_replay.verify_native_manifest(approved)
+        observed = self.observe(approved, "executable")
+        self.assertFalse(observed["matched"], observed)
+        self.assertEqual(observed["error_kind"], "ValueError")
+        self.assertEqual(observed["observed"], self.images("executable"))
+        self.assertEqual(observed["os_managed_presence_exclusions"], self.exclusions)
+
+    def test_os_location_failure_fails_closed_without_discarding_observed_facts(self):
+        self.location.side_effect = OSError("owned OS-location failure")
+        approved = self.images("executable")
+        observed = self.observe(approved, "executable")
+        self.assertFalse(observed["matched"], observed)
+        self.assertEqual(observed["error_kind"], "OSError")
+        self.assertEqual(observed["observed"], approved)
+        self.assertEqual(observed["report"], run_replay.identity(self.report))
+        self.assertEqual(observed["os_managed_presence_exclusions"], [])
+
+    def test_uncanonicalizable_os_apphelp_fails_closed(self):
+        self.paths["apphelp"].unlink()
+        approved = self.images("executable")
+        observed = self.observe(approved, "executable")
+        self.assertFalse(observed["matched"], observed)
+        self.assertEqual(observed["error_kind"], "FileNotFoundError")
+        self.assertEqual(observed["observed"], approved)
+        self.assertEqual(observed["os_managed_presence_exclusions"], [])
+
+    @unittest.skipUnless(sys.platform == "darwin", "Darwin report paths require native absolute paths")
+    def test_darwin_does_not_exempt_apphelp_presence(self):
+        self.system.return_value = "Darwin"
+        self.location.side_effect = AssertionError("Darwin must not request a Windows system directory")
+        for direction, approved, reported in (
+            ("missing", ("executable", "apphelp"), ("executable",)),
+            ("extra", ("executable",), ("executable", "apphelp")),
+        ):
+            with self.subTest(direction=direction):
+                observed = self.observe(self.images(*approved), *reported, darwin=True)
+                self.assertFalse(observed["matched"], observed)
+                self.assertNotIn("error_kind", observed)
+                self.assertEqual(observed["observed"], self.images(*reported))
+                self.assertEqual(observed["os_managed_presence_exclusions"], [])
+
+    @unittest.skipUnless(sys.platform == "win32", "Windows literal trailing name components")
+    def test_literal_apphelp_suffixes_are_not_presence_exempt(self):
+        extended_root = Path("\\\\?\\" + str(self.system_directory.resolve()))
+        for suffix in (".", " "):
+            with self.subTest(suffix=suffix):
+                literal = extended_root / f"apphelp.dll{suffix}"
+                self.addCleanup(literal.unlink, missing_ok=True)
+                literal.write_bytes(self.contents["apphelp"])
+                self.identities["literal"] = run_replay.identity(literal)
+                observed = self.observe(self.images("executable"), "executable", "literal")
+                self.assertFalse(observed["matched"], observed)
+                self.assertNotIn("error_kind", observed)
+                self.assertEqual(observed["observed"], self.images("executable", "literal"))
+                self.assertNotIn(self.identities["literal"]["path"], observed["os_managed_presence_exclusions"])
 
 
 if __name__ == "__main__":

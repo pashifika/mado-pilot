@@ -37,7 +37,7 @@ process_timeout_seconds = 300
 cleanup_timeout_seconds = 15
 output_limit_bytes = 1048576
 native_image_report_limit_bytes = 1048576
-native_image_report_scope = "existing bounded current-process module sidecar; ordinary output budget unchanged"
+native_image_report_scope = "existing bounded current-process module sidecar; retain full observed map/hashes and os_managed_presence_exclusions; exempt only canonical OS-system apphelp.dll presence equality; ordinary output budget unchanged"
 rss_method = "controlled and qualification-only real stages: GetProcessMemoryInfo current/peak working set and PrivateUsage; required missing values are nonpass"
 mapped_bytes_method = "actual backend request input view bytes including rejected Busy calls, caller retained-accessor view bytes, and logical cache high-water separately; sums are view traffic, not unique allocations"
 retained_bytes_method = "observed logical per-result source/text/index high-water and separate caller-frame extents; native memory uses OS snapshots, never alias extent sums"
@@ -45,9 +45,9 @@ fairness_oracle = "two workers; one physical OCR lease; ready OCR query claim wi
 accounting_oracle = "generation-authoritative observations; disposition transitions may overlap, exact diagnostic loss counted; no text/pixels/hashes/private paths in ordinary output"
 
 [open_gates]
-host_and_display_binding = "required before precursor: exact OS/build/CPU/memory, host identity, display geometry/scale and permission state for native rows"
-source_and_executable_binding = "required before precursor and separately before final: commit/tree, executable and controlled runtime/model/fixture digests"
-workload_harness_review = "structured measurement schema and qualification-only real stages require independent review and model-free checks; real/native execution remains separate"
+host_and_display_binding = "current Windows OS host support is established; workload binding still required before precursor: exact OS/build/CPU/memory, host identity, display geometry/scale and permission state for native rows"
+source_and_executable_binding = "required before precursor and separately before final: commit/tree, executable and controlled runtime/model/fixture digests; read-only GetSystemDirectoryW plus existing path canonicalization identifies the sole apphelp.dll exception; unidentified system path fails closed; every declared and common-image hash remains mandatory, including apphelp.dll; all other image/execution/cleanup/source/input gates unchanged"
+workload_harness_review = "structured measurement schema and qualification-only real stages require independent review and model-free checks; new presence policy requires a fresh separately authorized three-process controlled cohort, not diagnostic-row reuse or old-cohort resumption; real/native execution remains separate"
 precursor_authority = "not granted"
 numeric_ceilings = "withheld pending target-specific precursor evidence and independent justification"
 accepting_adr = "not issued; use next unused ordinal and ocr-text-watch-workload-profiles suffix"

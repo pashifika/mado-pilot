@@ -253,7 +253,14 @@ def execute(args: argparse.Namespace) -> bool:
             "bindings": before, "argv": argv, "process_count": count,
             "child_selection_environments": [selection_environment(child) for child in child_environments],
             "dependency_report_paths": [str(path) for path in report_paths],
-            "native_dependency_policy": "preapproved exact loaded-image set; rehashed before every process and finally; missing observation is nonpass",
+            "native_dependency_policy": (
+                "preapproved loaded-image set; only Windows apphelp.dll at the canonical OS system directory "
+                "identified by read-only GetSystemDirectoryW is exempt from symmetric presence equality; "
+                "full observed paths/hashes and effective os_managed_presence_exclusions are retained; "
+                "all common-image hashes and declared file identities remain strict, rehashed before every process "
+                "and finally; other missing/extra images, missing observation or OS path identification failure are nonpass; "
+                "Darwin policy is unchanged"
+            ),
             "warmups": 0 if real else 2, "samples_per_workload": 1 if real else 20,
             "controlled_startup_override": {"warmups": 0, "samples": 1} if not real else None,
             "process_timeout_seconds": facts["process_timeout_seconds"],

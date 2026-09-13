@@ -176,7 +176,12 @@ move the accepted baseline. Existing deployment metadata is unchanged.
 
 OS support and feature/workload qualification are separate. An unexecuted native
 OCR scenario, a numerical gate, or a failed measurement run does not by itself
-make either current OS unsupported. Records of an **earlier Windows execution**
+make either current OS unsupported. Prospective OCR dependency admission exempts
+only presence or absence of the canonical OS-system `apphelp.dll` on Windows,
+as defined by the [OCR procedure](ocr-text-watch.md#fixed-real-replay-procedure);
+hashes and all other image, execution and identity gates remain mandatory.
+This does not qualify every function or numerical budget.
+Records of an **earlier Windows execution**
 refer to earlier source/artifact/run identities on the supported Windows 11 host,
 not an older Windows release. Those records and their failures remain unchanged.
 

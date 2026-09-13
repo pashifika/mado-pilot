@@ -179,9 +179,10 @@ workload-budget or native-capture qualification.
 
 The native image manifest is a reviewed map of canonical absolute paths to
 SHA-256 values, with at most 256 entries. It includes the executable and real
-ONNX Runtime. On Windows it includes every observed module, including system
-DLLs; on macOS it includes every non-system image, with shared-cache images bound
-to the OS build. This binds OpenCV as well as ONNX. Windows records a bounded
+ONNX Runtime. Windows observes every module, including system DLLs; macOS
+observes every non-system image, with shared-cache images bound to the OS build.
+The approved and observed maps must agree except for the Windows presence-only
+rule below. This binds OpenCV as well as ONNX. Windows records a bounded
 current-process module snapshot; macOS collects a dedicated diagnostic pipe into
 an exclusive private file bounded at1MiB. Ordinary stdout/stderr keep their
 separate budget. Inherited OS file limits are unchanged, without imposing a new
@@ -202,8 +203,29 @@ Literal trailing dots/spaces remain distinct names. Use the recorded identity
 keys rather than constructing aliases; manifest validation accepts only that
 canonical spelling. A path-key correction does not promote a failed binding.
 
-When the exact image set is not yet known, a separately authorized binding-only
-run may execute the qualification-feature transition example **once**:
+Windows OS-managed `apphelp.dll` presence or absence alone does not reject an
+otherwise successful execution. The sole exception is the canonical
+`apphelp.dll` path within the actual OS system directory obtained read-only
+through `GetSystemDirectoryW`, using the existing path canonicalization.
+A hardcoded `C:\Windows`, an environment-derived directory or a basename match
+cannot establish that identity. Failure to identify the path is a fail-closed
+apparatus failure.
+
+Exclude only that key from symmetric missing/extra-image equality, not from
+observed image/hash evidence. Hashes of all common images must match, including
+`apphelp.dll`; every declared file identity and hash fence still applies even
+when the declared system `apphelp.dll` was not observed. Every other missing or
+extra image remains a failure. Private observation metadata retains the full
+`observed` map and report identity and adds `os_managed_presence_exclusions`:
+the sole identified key on Windows and an empty list on Darwin. No DLL loading,
+pinning, injection or OS/configuration change is part of this policy; Darwin
+acceptance is unchanged.
+
+Process success, semantics, physical cleanup, deadlines, output limits and
+source/executable/runtime/model/fixture/input identity gates remain mandatory.
+
+When the reviewed image map is not yet available, a separately authorized
+binding-only run may execute the qualification-feature transition example **once**:
 
 ```sh
 : "${OCR_BINDING_EVIDENCE:?new private binding evidence directory required}"
@@ -268,10 +290,11 @@ mapping traffic, logical cache/result extents and OS memory separate. They do
 not claim unique allocations or a total opaque native-mapping ledger.
 [ADR 0071](adr/0071-ocr-watch-observable-measurement-scopes.md) defines the scopes.
 
-`tools/ocr-text-watch/workloads.py` requires a clean committed candidate, an exact
-native image manifest and a private host record. It runs three controlled
-processes or, only in explicit `real-cpu-cold-startup` mode after separate
-authority, five fresh runs of the real transition example. Host declarations
+`tools/ocr-text-watch/workloads.py` requires a clean committed candidate, a
+reviewed native image manifest under the presence policy above and a private host
+record. It runs three controlled processes or, only in explicit
+`real-cpu-cold-startup` mode after separate authority, five fresh runs of the real
+transition example. Host declarations
 are separated from observations; only the named host and release target are
 verified by this runner. Unobserved CPU/memory facts remain unverified.
 Real startup requires an example built with the nondefault
@@ -287,6 +310,11 @@ Missing/duplicate/malformed required records stop later processes and keep
 measurement completeness false. Complete measurements do not accept any budget;
 `--enforce-budgets` still refuses. Process failures retain precedence over missing
 telemetry, and first failures and successful prefixes are preserved.
+
+Admission under the Windows presence-only policy requires a new, separately
+authorized three-process controlled cohort. Diagnostic rows are not precursor
+samples, and a failed or interrupted cohort is not resumed under the new policy.
+Every prior `NONPASS` and sealed artifact remains bound to its original run.
 
 ## Native and workload gates
 
