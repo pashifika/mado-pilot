@@ -34,6 +34,7 @@ class BindingEvidence(unittest.TestCase):
             patch.object(bind_replay.workloads, "observed_host", return_value={"host_id": "owned-host"}),
             patch.object(bind_replay.run_replay, "canonical_environment", return_value={}),
             patch.object(bind_replay.run_replay, "selected_target", return_value="aarch64-apple-darwin"),
+            patch.object(bind_replay.run_replay.platform, "system", return_value="Darwin"),
             patch.object(bind_replay.run_replay, "inputs", return_value=self.inputs),
             patch.object(bind_replay.run_replay, "observe_dependencies", return_value={"matched": False, "observed": self.images}),
         ):
@@ -78,6 +79,13 @@ class BindingEvidence(unittest.TestCase):
         with self.assertRaises(ValueError):
             bind_replay.execute(self.args)
         self.assertFalse(self.args.output.exists())
+        self.launch.assert_not_called()
+
+    def test_unsupported_host_still_refuses_before_candidate_launch(self):
+        with patch.object(bind_replay.run_replay.platform, "system", return_value="Linux"):
+            self.assertFalse(bind_replay.execute(self.args))
+        self.assertEqual(self.result()["failure"]["stage"], "preflight")
+        self.assertFalse(self.result()["binding_complete"])
         self.launch.assert_not_called()
 
 
