@@ -142,8 +142,8 @@ It discovers windows and displays, captures frame streams, maps coordinate
 spaces, performs template matching and one-shot OCR, waits for stable template
 presence through a bounded Rust query over replay or qualified native sessions,
 injects input through explicit platform capabilities, and reports structured
-outcomes. Rust OCR text queries are implemented; real-backend/native
-qualification and new workload ceilings remain open.
+outcomes. Rust OCR text queries are implemented and real CPU replay has passed
+on both release targets; their native qualification and new workload ceilings remain open.
 
 MadoPilot does not own a GUI, tray, editor, overlay, updater, workflow catalog,
 general workflow/cron scheduler, or general scripting DSL.
@@ -155,11 +155,30 @@ Version one targets two platforms, and each is verified natively:
 | Release target | Native verification host |
 |---|---|
 | `x86_64-pc-windows-msvc` | Windows 11 Pro 25H2 build family 26200 (Qualification V2 host 26200.9278; earlier accepted evidence remains revision-bound), SDK 10.0.26100.0; `windows-2025` CI remains supporting server evidence |
-| `aarch64-apple-darwin` | Apple Silicon macOS 26.5.2 (25F84), SDK 26.5 |
+| `aarch64-apple-darwin` | Supported current host: Apple Silicon macOS 26.6.2 (25G83), SDK 26.5; the deployment floor remains 26.5.2 |
 
 A cross-compiled result never stands in for native verification of the other
 target. [ADR 0019](adr/0019-windows-qualified-system-and-controlled-availability.md)
 fixes the Windows floor; ADR 0014 fixes the macOS floor. See gate [`G-001`](validation-gates.md#g-001).
+
+### OS support policy
+
+Windows 11 and later serviced desktop releases are the supported Windows family,
+subject to the exact deployment floor below. The current `win-worker` baseline,
+Windows 11 Pro 25H2 build family 26200, is a supported OS, not an experimental or
+unsupported host. This policy does not certify earlier Windows 11 builds below
+that floor or claim that every future build has already been tested.
+
+Apple Silicon macOS 26 is supported, with macOS 26.6.2 (25G83) as the current
+verification host. macOS 27.0 upgrade verification and its support decision belong
+to a separate Change. Upgrading the host does not automatically qualify 27.0 or
+move the accepted baseline. Existing deployment metadata is unchanged.
+
+OS support and feature/workload qualification are separate. An unexecuted native
+OCR scenario, a numerical gate, or a failed measurement run does not by itself
+make either current OS unsupported. Records of an **earlier Windows execution**
+refer to earlier source/artifact/run identities on the supported Windows 11 host,
+not an older Windows release. Those records and their failures remain unchanged.
 
 ### Platform baseline
 

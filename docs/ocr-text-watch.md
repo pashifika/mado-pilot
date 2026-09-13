@@ -2,9 +2,15 @@
 
 `Session::start_ocr_text_watch` waits for a literal in one explicit region of a
 maintained session. This is an additive Rust implementation. The controlled
-public-API smoke and model-free normalization proof have run; real CPU replay,
-Windows WGC, Apple ScreenCaptureKit and new workload-budget qualification remain
-separate, unexecuted acceptance gates. No new C/C++ surface is provided.
+public-API smoke, model-free normalization proof, and real CPU replay on both
+release targets have run. Windows WGC, Apple ScreenCaptureKit and new
+workload-budget qualification remain separate open acceptance gates. No new C/C++
+surface is provided.
+
+The current Windows 11 and Apple Silicon macOS 26.6.2 hosts are
+[supported OS baselines](architecture.md#os-support-policy). These feature gates
+and earlier-run failures do not classify those hosts as unsupported. macOS 27.0
+verification belongs to a separate Change and is not inherited from macOS 26.
 
 ## Selection and request
 
@@ -294,7 +300,8 @@ Compilation in hosted CI is not evidence that either capture path ran.
 
 The [Apple prospective workload](benchmarks/ocr-text-watch-aarch64-apple-darwin.toml)
 and [Windows prospective workload](benchmarks/ocr-text-watch-x86_64-pc-windows-msvc.toml)
-are unmeasured and non-normative. Exact host/harness bindings, separately approved
-precursors, justified numeric ceilings and their accepting G-013 ADR are still
-required before final enforcement. Earlier OCR/template budgets and historical
-passes or failures are unchanged and do not qualify this capability.
+remain prospective and non-normative. Collected precursor observations do not
+by themselves accept numeric ceilings: complete applicable precursor evidence,
+a justified G-013 budget ADR and final enforcement are still required. Earlier
+OCR/template budgets and historical passes or failures remain revision-bound and
+do not qualify this capability.

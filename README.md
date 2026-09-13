@@ -20,8 +20,13 @@ Use a checkout of this revision. Install **Rust 1.97.1** through rustup, **Pytho
 
 | Host | Native prerequisites |
 |---|---|
-| Apple Silicon macOS 26.5.2+ | OpenCV 4, libclang, and Xcode Command Line Tools |
-| Serviced Windows 11 25H2 x64, build family 26200 | OpenCV 4, LLVM/libclang, and Visual Studio C++ build tools with a Windows SDK |
+| Supported Apple Silicon macOS 26; current host 26.6.2 (minimum 26.5.2) | OpenCV 4, libclang, and Xcode Command Line Tools |
+| Supported Windows 11 and later serviced x64 desktop releases; minimum Windows 11 25H2 build family 26200 | OpenCV 4, LLVM/libclang, and Visual Studio C++ build tools with a Windows SDK |
+
+The current Windows 11 and macOS 26 hosts are supported OS baselines. macOS 27.0
+requires verification in a separate Change; it is not automatically qualified by
+the current host's results. Feature-specific native and performance gates remain
+separate from [OS support](docs/architecture.md#os-support-policy).
 
 Follow [native development setup](CONTRIBUTING.md#native-development-prerequisites) to acquire these dependencies and select their paths. `tools/setup-native.py` checks existing installations and configures only the command it launches. Missing or incompatible dependencies fail setup or build; the script installs nothing and leaves the calling shell unchanged.
 

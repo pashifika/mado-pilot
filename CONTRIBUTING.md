@@ -84,6 +84,9 @@ The supported macOS native host is Apple Silicon macOS 26.6.2 (25G83), SDK
 26.5; the deployment floor remains macOS 26.5.2, and earlier versions are
 unsupported investigation targets rather than compatibility claims.
 Individual revision-bound feature gates can still be unexecuted on that host.
+The current macOS 26 host is supported. macOS 27.0 upgrade verification and its
+support decision belong to a separate Change; do not inherit qualification merely
+because the verification host is upgraded.
 `.cargo/config.toml` sets the final artifact deployment metadata to 26.5.2 and
 the native build repeats that floor. The macOS native shim
 `mado-pilot-platform-macos` compiles, links, and passes its tests with the **Xcode
@@ -256,6 +259,13 @@ a currently serviced x64 desktop installation, accepted by
 [ADR 0019](docs/adr/0019-windows-qualified-system-and-controlled-availability.md).
 Windows SDK 10.0.26100.0 is the supported build input, not the runtime floor.
 Earlier Windows versions are unsupported and unqualified.
+
+Windows 11 and later serviced desktop releases are the supported OS family,
+subject to that exact floor. The current `win-worker` Windows 11 25H2 host is
+supported; a failed or unexecuted feature/workload row is not an OS non-support
+decision. "Earlier Windows execution" denotes an earlier run on that same
+supported OS, not an older Windows release. See the
+[OS support policy](docs/architecture.md#os-support-policy).
 
 The Windows capture adapter adds no prerequisite beyond that environment. The
 production adapter uses the target-gated `windows` crate for Windows Graphics
