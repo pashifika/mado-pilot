@@ -187,6 +187,12 @@ output-limit failure and this independently tested correction, not a retry grant
 Windows snapshots do not establish the history of transient unloaded images;
 the required OpenCV and ORT dependencies remain loaded for this procedure.
 
+Windows identity keys use the resolved extended-length spelling: `\\?\D:\...`
+or `\\?\UNC\server\share\...`, matching the native consumer convention.
+Literal trailing dots/spaces remain distinct names. Use the recorded identity
+keys rather than constructing aliases; manifest validation accepts only that
+canonical spelling. A path-key correction does not promote a failed binding.
+
 When the exact image set is not yet known, a separately authorized binding-only
 run may execute the qualification-feature transition example **once**:
 
