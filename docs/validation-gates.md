@@ -817,6 +817,17 @@ so automatic selection remains CPU. The retained predecessor tail advances only
 the successor CUDA `zone_empty_4k` maximum to 50 ms. Every historical profile
 and frozen ADR 0047/0048 section remains byte-identical.
 
+**Rust OCR text-presence watcher budgets remain open.** The new
+[Apple](benchmarks/ocr-text-watch-aarch64-apple-darwin.toml) and
+[Windows](benchmarks/ocr-text-watch-x86_64-pc-windows-msvc.toml) workload plans
+record seven prospective workloads, fixed semantic/source/accounting rules and
+finite endpoints. They are unmeasured and non-normative: exact host/harness
+bindings, separately authorized precursors, justified numeric ceilings and a
+new accepting ADR are required before final enforcement. Fixed scheduler/storage
+safety limits are not measured budgets. Controlled API or hosted compilation
+cannot substitute for real CPU replay or target-owned WGC/ScreenCaptureKit
+evidence. Existing profiles and historical failed/partial results are unchanged.
+
 ## G-014
 
 **Decision.** The archive entry-count, uncompressed-byte, and compression-ratio

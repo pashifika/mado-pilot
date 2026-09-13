@@ -8,6 +8,7 @@ Use one API to automate on-screen controls across Windows and macOS. MadoPilot h
 
 - **Frame-linked results:** Locate images or read text and keep the exact frame that produced each result.
 - **Template watching:** Wait for an image to remain visible, with a deadline and cancellation. Available through Rust on replayed frames and supported native sessions.
+- **Rust OCR text queries:** Wait for literal text with exact source retention. The implementation is available; real-backend/native qualification and workload budgets remain open. See [OCR text queries](docs/ocr-text-watch.md).
 - **Explicit input control:** Choose the target and delivery mode, then inspect what was submitted. Platform permission and capability failures are reported without prompting or elevation.
 - **Reproducible workflows:** Replay supplied frames without capturing the desktop or injecting input. Ordinary diagnostics exclude images, recognized text, and input payloads.
 
@@ -52,6 +53,8 @@ python3 tools/setup-native.py -- cargo run --locked --package mado-pilot --examp
 
 For real text recognition, use [the default OCR walkthrough](crates/mado-pilot/examples/ocr-default.rs) with the documented [ONNX Runtime and model prerequisites](docs/third-party-dependencies.md#implemented-onnx-runtime-prerequisite). To watch real windows or displays, follow [native template watching](docs/native-template-watch.md), including its permission requirements and supported behavior.
 
+The new [OCR text watcher example](crates/mado-pilot/examples/ocr-text-watch.rs) uses the explicit CPU bounded-v2 profile. Its [fixed replay and native procedures](docs/ocr-text-watch.md) keep controlled API checks separate from real-model and permissioned capture evidence; no new support claim follows from compilation.
+
 ## API and integration
 
 | Language | Entry point and reference |
@@ -66,7 +69,7 @@ Generate the full Rust API reference locally:
 python3 tools/setup-native.py -- cargo doc --locked --package mado-pilot --no-deps
 ```
 
-Open `target/doc/mado_pilot/index.html`. Rust API stability begins at 1.0; the C ABI has its own compatibility policy. Template watching is currently Rust-only.
+Open `target/doc/mado_pilot/index.html`. Rust API stability begins at 1.0; the C ABI has its own compatibility policy. Template and OCR text watching are currently Rust-only; OCR watcher qualification remains open.
 
 ## Documentation
 

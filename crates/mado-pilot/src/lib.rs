@@ -130,8 +130,10 @@
 //! `examples/ocr-default.rs`, `examples/ocr-profile-zones.rs`,
 //! `examples/template-watch.rs`, and `examples/native-template-watch.rs`.
 //!
-//! The watcher adds no OCR predicate, callback, Tokio/future, C/C++, automatic
-//! input, arbitrary scheduler capacity, or platform-native public type.
+//! [`Session::start_ocr_text_watch`] adds Rust-only maintained text presence for
+//! the explicit CPU bounded-v2 profile, with an exact retained source result.
+//! Neither watcher adds callbacks, Tokio/futures, C/C++, automatic input,
+//! arbitrary scheduler capacity, or platform-native public types.
 //!
 //! # Names, and what may change
 //!
@@ -1020,20 +1022,25 @@ pub use mado_pilot_runtime::{
     OcrExecutionProvider, OcrExecutionProviderPolicy, OcrFault, OcrModelComponent,
     OcrModelIdentity, OcrModelSource, OcrModelSourceRequest, OcrProfileMetadata,
     OcrProviderDescriptor, OcrProviderFallbackReason, OcrQuadrilateral, OcrRegion, OcrRequest,
-    OcrRequestedRegionDiagnostic, OcrResult, OcrZone, OcrZoneGroup, OcrZoneScanRequest,
-    OcrZoneScanResult, OpenRequest, OperationContext, OperationStartedDiagnostic, OverflowPolicy,
-    PackagePath, PackageSource, PermissionDiagnostic, PermissionKind, PermissionOutcome,
-    PermissionReport, PermissionState, PixelExtent, PixelFormat, PixelRect, PlatformCode, Point,
-    PointerButton, PointerGeometry, PreparedTemplate, PreprocessingId, PressedState, ProfileId,
-    Provenance, ProviderId, ProviderProfileId, Rect, RegionSelection, Result,
-    RetainedStoragePolicy, RouteAttemptDiagnostic, Scale, SearchDiagnostic,
-    SearchDiagnosticOutcome, SearchFrame, SequenceLimits, SequenceOutcome, Session,
-    SessionDescription, SessionRequest, Status, StreamEpoch, StreamId, SubmissionEvidence,
-    Suppression, SystemClock, TargetCapability, TargetDescription, TargetId, TargetKind,
-    TargetPlacement, TemplateAnalysisRate, TemplateDeclaration, TemplateEncoding, TemplateId,
-    TemplateOverload, TemplateQuery, TemplateQueryId, TemplateQueryOutcome, TemplateQueryProgress,
-    TemplateQueryState, TemplateSchedulerDescriptor, TemplateSource, TemplateSourceRequest,
-    TemplateStability, TemplateStabilityKind, TemplateTerminalOutcome, TemplateWatchDiagnostic,
+    OcrRequestedRegionDiagnostic, OcrResult, OcrTextAnalysisRate, OcrTextOverload, OcrTextQuery,
+    OcrTextQueryId, OcrTextQueryOutcome, OcrTextQueryProgress, OcrTextQueryState,
+    OcrTextRetainedExtent, OcrTextSchedulerDescriptor, OcrTextSchedulerObservation,
+    OcrTextStability, OcrTextStabilityKind, OcrTextTerminalOutcome, OcrTextWatchDiagnostic,
+    OcrTextWatchDiagnosticOutcome, OcrTextWatchRequest, OcrTextWatchResult, OcrTextWorkCounts,
+    OcrTextWorkDisposition, OcrZone, OcrZoneGroup, OcrZoneScanRequest, OcrZoneScanResult,
+    OpenRequest, OperationContext, OperationStartedDiagnostic, OverflowPolicy, PackagePath,
+    PackageSource, PermissionDiagnostic, PermissionKind, PermissionOutcome, PermissionReport,
+    PermissionState, PixelExtent, PixelFormat, PixelRect, PlatformCode, Point, PointerButton,
+    PointerGeometry, PreparedTemplate, PreprocessingId, PressedState, ProfileId, Provenance,
+    ProviderId, ProviderProfileId, Rect, RegionSelection, Result, RetainedStoragePolicy,
+    RouteAttemptDiagnostic, Scale, SearchDiagnostic, SearchDiagnosticOutcome, SearchFrame,
+    SequenceLimits, SequenceOutcome, Session, SessionDescription, SessionRequest, Status,
+    StreamEpoch, StreamId, SubmissionEvidence, Suppression, SystemClock, TargetCapability,
+    TargetDescription, TargetId, TargetKind, TargetPlacement, TemplateAnalysisRate,
+    TemplateDeclaration, TemplateEncoding, TemplateId, TemplateOverload, TemplateQuery,
+    TemplateQueryId, TemplateQueryOutcome, TemplateQueryProgress, TemplateQueryState,
+    TemplateSchedulerDescriptor, TemplateSource, TemplateSourceRequest, TemplateStability,
+    TemplateStabilityKind, TemplateTerminalOutcome, TemplateWatchDiagnostic,
     TemplateWatchDiagnosticOutcome, TemplateWatchRequest, TemplateWatchResult, TemplateWorkCounts,
     TemplateWorkDisposition, TransformSnapshot, UnsupportedChangeDetectionPolicy, VisionFault,
 };

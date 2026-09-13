@@ -64,5 +64,9 @@ name = "native-template-watch"
 harness = false
 required-features = ["native-template-watch-qualification"]
 
+[[bench]]
+name = "ocr-text-watch-query"
+harness = false
+
 [lints]
 workspace = true

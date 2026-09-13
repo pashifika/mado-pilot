@@ -19,6 +19,10 @@ deterministic replay, asset loading, OpenCV matching, bounded ONNX OCR with
 explicit initialization-time provider policy, finite template watcher
 scheduling, runtime orchestration, engine-scoped diagnostics, the Rust facade,
 C ABI 1.5, and the header-only C++ wrapper are implemented.
+Rust OCR text-presence queries are also implemented through the explicit CPU
+bounded-v2 profile, with controlled API verification. Real CPU replay,
+target-owned native capture and OCR-watcher workload budgets remain open;
+[OCR text queries](ocr-text-watch.md) separates those acceptance lanes.
 The picker-free Windows Adapter implements window/display discovery, WGC/D3D11 capture, system input,
 and explicit exact-window `WindowMessage` submission. The macOS Adapter
 implements discovery, ScreenCaptureKit capture, `CGEvent` system input, and
@@ -138,7 +142,8 @@ It discovers windows and displays, captures frame streams, maps coordinate
 spaces, performs template matching and one-shot OCR, waits for stable template
 presence through a bounded Rust query over replay or qualified native sessions,
 injects input through explicit platform capabilities, and reports structured
-outcomes. OCR watchers remain future work.
+outcomes. Rust OCR text queries are implemented; real-backend/native
+qualification and new workload ceilings remain open.
 
 MadoPilot does not own a GUI, tray, editor, overlay, updater, workflow catalog,
 general workflow/cron scheduler, or general scripting DSL.
@@ -2627,6 +2632,50 @@ outcome, which makes the engine's final commit the last guard rather than the
 only one — deliberately, because the alternative is an orchestration layer that
 trusts its dependencies to have checked.
 
+### Bounded OCR text-presence queries
+
+`Session::start_ocr_text_watch` adds a distinct owning Rust request/query/result
+over the same maintained `WatchRuntime`, sessions and two-worker scheduler.
+The request names one coordinate-qualified region, normalized literal, inclusive
+confidence threshold, positive analysis interval, immediate/consecutive
+confirmation, change policy and optional deadline/cancellation. Start requires
+complete initialized CPU bounded-v2 identities; it does not switch an existing
+profile/provider or manufacture an initial frame transform.
+
+The OCR contract's hidden workspace support seam prepares one exact mapped
+request and executes that owned value through the same validation used by
+one-shot recognition. Literal admission uses the pinned Unicode 17.0.0
+decomposition bound of four, 16,384 decomposed scalars and 4,096 retained UTF-8
+bytes without a raw caller-text ceiling. Complete normalized OCR validation
+precedes case-sensitive within-one-region substring evaluation. A successful
+result keeps the exact frame, immutable output and compact satisfying indexes,
+not another text array or native inference buffer.
+
+One physical OCR lease covers mapping through completion. A class-level mapping
+barrier prevents later template mappings from waiting inside OCR-held native
+conversion; existing template reservations drain before OCR mapping begins.
+The second worker remains available during OCR inference. Rotating ready
+classes/sessions/queries, acquisition-considered pending work and preserved
+eligible age keep replacement and overload observable without another capture
+loop. Template-only limits/coalescing and one-shot backend contention remain
+unchanged. [ADR 0070](adr/0070-ocr-watch-exact-bgra-change-evidence.md) records why
+compatible BGRA rows can be compared directly without an extra RGBA mapping.
+
+One immutable terminal gate rejects obsolete source/generation completions.
+Independent waits cannot change query authority; source end drains acquired
+final work. Logical close seals dispatch and diagnostics without waiting for
+an unreturned OCR call. Only that physical OCR worker may outlive final Rust
+owner release; template and acquisition joins remain. Its resources and native
+code must stay alive until actual return, and no replacement or forced
+termination is supplied. Retained-result extent counters are not de-duplicated
+native allocation/RSS measurements or a bound on arbitrary caller frame clones.
+
+The [lifecycle/privacy guide and example](ocr-text-watch.md) document this
+implementation. Ordinary Rust tests and the model-free derivation do not
+qualify real ONNX replay or either native capture target. Prospective workloads
+remain non-normative until separately authorized precursors justify a new
+G-013 decision; no historical template/OCR evidence pin is refreshed.
+
 ### Bounded template-presence queries
 
 `Session::start_template_watch` accepts one owned `TemplateWatchRequest`: prepared
@@ -2707,11 +2756,13 @@ diagnostic-emission lock precedes query state only while copying a payload;
 state-mutation paths never acquire it. Mapping-cache and worker-wake locks are
 independent. Capture waits, pixel mapping, exact byte comparison, backend work,
 caller clocks, diagnostic queue emission, waiter notification, and thread
-teardown run with no state guard held. Close refuses
-new queries, cancels pull acquisition, wakes waits, prevents later admission,
-and leaves in-flight resources owned until their late call returns; it never
-waits indefinitely for an uninterruptible backend. Query, session, and
-engine-scheduler close are idempotent.
+teardown run with no state guard held. Logical close refuses new queries,
+cancels pull acquisition, wakes waits and prevents later admission without
+joining analysis work. In-flight resources stay owned until actual return.
+Final runtime-owner release still joins template and acquisition workers; an
+unreturned template backend can therefore hold that final release. Only the
+OCR-specific physical owner follows the selective detach rule above. Query,
+session and engine-scheduler logical close are idempotent.
 Normal watcher diagnostics retain terminal state, final work counters, and exact
 loss accounting. Debug additionally retains nonterminal per-transition
 dispositions and intermediate counters; terminal-state dispositions remain

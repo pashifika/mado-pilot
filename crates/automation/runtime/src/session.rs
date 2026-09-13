@@ -33,6 +33,7 @@ use crate::diagnostic::{
     RouteAttemptDiagnostic, SearchDiagnostic, SearchDiagnosticOutcome, requested_ocr_region,
 };
 use crate::find::{FindOutcome, FindRequest, SearchFrame};
+use crate::watch::{OcrTextQuery, OcrTextWatchRequest};
 use crate::watch::{
     TemplateQuery, TemplateTerminalOutcome, TemplateWatchRequest, WatchRuntime, WatchSession,
 };
@@ -153,7 +154,7 @@ pub struct Session {
     diagnostics: Option<DiagnosticSink>,
     closing: AtomicBool,
     watch_runtime: WatchRuntime,
-    watcher: OnceLock<Arc<WatchSession>>,
+    watcher: OnceLock<Result<Arc<WatchSession>>>,
 }
 
 impl Session {
@@ -571,6 +572,7 @@ impl Session {
             self.watch_runtime
                 .register_session(Arc::clone(&self.capture))
         });
+        let watcher = watcher.as_ref().map_err(Clone::clone)?;
         if !self.accepts_work() {
             watcher.close(TemplateTerminalOutcome::SessionClosed);
             return Err(CaptureFault::SessionClosed.into());
@@ -578,13 +580,35 @@ impl Session {
         watcher.start_query(request)
     }
 
+    /// Starts one CPU bounded-v2 text-presence query over maintained frames.
+    ///
+    /// No capture or OCR call runs on this caller. Missing OCR, unsupported
+    /// initialized identity, known geometry, interruption or shared capacity
+    /// can refuse publication. An unknown initial transform waits for a frame.
+    pub fn start_ocr_text_watch(&self, request: OcrTextWatchRequest) -> Result<OcrTextQuery> {
+        if !self.accepts_work() {
+            return Err(CaptureFault::SessionClosed.into());
+        }
+        let watcher = self.watcher.get_or_init(|| {
+            self.watch_runtime
+                .register_session(Arc::clone(&self.capture))
+        });
+        let watcher = watcher.as_ref().map_err(Clone::clone)?;
+        if !self.accepts_work() {
+            watcher.close(TemplateTerminalOutcome::SessionClosed);
+            return Err(CaptureFault::SessionClosed.into());
+        }
+        watcher.start_ocr_query(request, self.ocr.as_ref())
+    }
+
     /// Waits until this session's watcher acquisition worker has exited.
     #[cfg(feature = "benchmark-instrumentation")]
     #[doc(hidden)]
     pub fn benchmark_wait_template_watcher_idle(&self, wait: &OperationContext) -> Result<()> {
-        self.watcher
-            .get()
-            .map_or(Ok(()), |watcher| watcher.wait_idle_for_benchmark(wait))
+        self.watcher.get().map_or(Ok(()), |watcher| match watcher {
+            Ok(watcher) => watcher.wait_idle_for_benchmark(wait),
+            Err(error) => Err(error.clone()),
+        })
     }
 
     /// Searches one of this session's frames for one prepared template.
@@ -820,7 +844,7 @@ impl Session {
     /// rather than two that diverged.
     pub fn close(&self, operation: &OperationContext) -> Result<()> {
         self.closing.swap(true, Ordering::AcqRel);
-        if let Some(watcher) = self.watcher.get() {
+        if let Some(Ok(watcher)) = self.watcher.get() {
             watcher.close(TemplateTerminalOutcome::SessionClosed);
         }
         let observed = self.observe(operation, DiagnosticOperationKind::SessionClose)?;

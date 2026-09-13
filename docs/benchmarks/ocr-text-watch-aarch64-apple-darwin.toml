@@ -1,0 +1,119 @@
+# Prospective workload only. No numeric budget, host, or final execution is accepted.
+format_version = 1
+
+[benchmark]
+id = "ocr-text-watch-aarch64-apple-darwin"
+workload = "Rust-only bounded-v2 CPU OCR maintained queries and mixed template work"
+phase = "5"
+status = "prospective-unqualified"
+normative = false
+measurements_recorded = false
+
+[profile]
+release_target = "aarch64-apple-darwin"
+fixture = "controlled: source-bound solid BGRA frames/scripted OCR; real CPU startup: tools/ocr-text-watch/replay_corpus.py and fixtures/ocr/g-004/hud.png"
+fixture_sha256 = "10f0163cf298453e55922cc6104ee3066f59a328a55e9bac6c04f24d36c9e288"
+fixture_sha256_scope = "real CPU source PNG only; controlled fixtures bind to harness source/tree/executable"
+harness = "crates/mado-pilot/benches/ocr-text-watch-query.rs"
+cohort_runner = "tools/ocr-text-watch/workloads.py"
+source_width = 960
+source_height = 540
+source_format = "bgra8"
+roi = [0, 0, 960, 540]
+source_bytes = 2073600
+provider = "Cpu"
+model_profile = "phase-3-1-rapidocr-ppocrv4-det-v6-rec-small-bounded-v2"
+runtime_profile = "onnxruntime-1.29.0-api17-cpu"
+query_minimum_interval_ms = 50
+capture_period_ms = 16
+cadence_scope = "controlled manual-clock ticks, with explicit rate-eligibility advances; not real 16ms capture throughput"
+process_count = 3
+warmup_iterations = 2
+sample_count = 20
+sample_order = "listed order in each fresh process; every warmup and sample must satisfy semantics"
+clock = "std::time::Instant within each process; never compare instants from distinct query clocks"
+percentile = "nearest-rank p95 within each process; no pooling, exclusion, or retry"
+process_timeout_seconds = 300
+cleanup_timeout_seconds = 15
+output_limit_bytes = 1048576
+rss_method = "controlled: TASK_VM_INFO rev1 resident_size/phys_footprint plus getrusage peak; real example RSS remains unmeasured-nonpass"
+mapped_bytes_method = "admitted backend-input CpuMapping descriptor bytes, retained-accessor mapping bytes and engine cache current/high-water separately; total physical mapping ledger unmeasured-nonpass"
+retained_bytes_method = "sample live result-owned source/text/index extent and result count; separately record native RSS and caller-owned frame retention"
+fairness_oracle = "two workers; one physical OCR lease; ready OCR query claim within S*Q successful OCR turns; ready template turn preserved between repeated OCR mappings"
+accounting_oracle = "generation-authoritative observations; disposition transitions may overlap, exact diagnostic loss counted; no text/pixels/hashes/private paths in ordinary output"
+
+[open_gates]
+host_and_display_binding = "required before precursor: exact OS/build/CPU/memory, host identity, display geometry/scale and permission state for native rows"
+source_and_executable_binding = "required before precursor and separately before final: commit/tree, executable and controlled runtime/model/fixture digests"
+workload_harness_review = "model-free harness exists; independent review and execution are required, separate from real/native measurement authority"
+precursor_authority = "not granted"
+numeric_ceilings = "withheld pending target-specific precursor evidence and independent justification"
+accepting_adr = "not issued; use next unused ordinal and ocr-text-watch-workload-profiles suffix"
+final_enforcement = "blocked until numeric ADR and fresh exact-candidate execution authority"
+
+[[workload]]
+id = "steady-nonmatch"
+queries = 1
+sessions = 1
+script = "publish blank then 20 distinct acknowledged blank sources; routine unchanged evidence may skip, never confirm"
+expected = "Pending with zero confirmations until explicit cancel; one current source considered once; no repeated inference on polling"
+endpoints = "publication/checkpoint to accepted observation or skip; final query cancel and physical lease return"
+
+[[workload]]
+id = "positive-consecutive"
+queries = 1
+sessions = 1
+confirmations = 3
+script = "controlled acknowledged negative checkpoint; publish solid fill127 with scripted positive OCR; after each confirmation publish a distinct positive source until third"
+expected = "Matched on exact third confirmed source; unchanged comparison cannot skip needed confirmations"
+endpoints = "acknowledged first text publication to terminal; retain each confirmation's full stamp"
+
+[[workload]]
+id = "slow-backend-saturation"
+queries = 64
+sessions = 1
+script = "hold first controlled OCR call; create newer pending work; advance20s across20 replacements, then11s: original obligation expires but last replacement is younger than30s; release held call last"
+expected = "one physical lease; latest pending age preserved, including held query's own newer obligation; QueueExpired wins; late completion cannot publish success"
+endpoints = "queue-eligible instant to overload; cancellation/close to logical terminal; held release to physical zero"
+
+[[workload]]
+id = "mixed-two-session"
+queries = 4
+sessions = 2
+script = "8 gated OCR turns with2 OCR/2 template queries;3 class-return rounds leave both classes ready at physical OCR return; separate held-mapping phase has initial pending publication plus21 replacements"
+expected = "template progress while inference held and next template turn when both classes remain ready; preserved eligible age behind mapping barrier; S*Q OCR turn bound; single-slot test-double one-shot Busy is not real ONNX evidence"
+endpoints = "claim ordinal and per-class admission; logical cancel/close and physical return measured separately"
+
+[[workload]]
+id = "retained-results"
+queries = 4
+sessions = 1
+retained_results = 4
+separate_frame_clones = 4
+script = "retain four matching results and four exact frame clones; publish 20 newer sources; close parents; read every original result/frame; release results then frame clones"
+expected = "capture progresses; exact source pixels and text survive; aggregate logical extent recorded without counting same Arc clone as another result; native resources observed independently"
+endpoints = "before retain, all retained, parents closed, result owners dropped, separate frame owners dropped, physical cleanup"
+
+[[workload]]
+id = "cancellation-close"
+queries = 2
+sessions = 1
+script = "1 OCR and1 template query; held OCR mapping and separately held inference; independent wait cancellation; query cancellation; close; final runtime owner drop before releasing held call"
+expected = "wait/query/logical close return under independent authority; one outstanding physical OCR lease retained; no joined template mapper waits behind OCR; no late diagnostics"
+endpoints = "each authority invocation to return and terminal; held release to actual resource retirement"
+
+[[workload]]
+id = "cold-startup"
+queries = 1
+sessions = 1
+process_count = 5
+warmup_iterations = 0
+sample_count = 1
+script = "controlled startup:0 warmups/1 sample; separately authorized real startup:5 fresh processes, public transition example interval1ms/immediate, no model initialization per query"
+expected = "controlled lifecycle semantics; real example exact bounded-v2/model/runtime and fixed source/output oracle; actual native pair/session count remains unmeasured-nonpass"
+endpoints = "controlled construction/open/query/close; real mode only process launch-to-owned-cleanup wall time; internal real engine-open/first-query/physical-zero timings unmeasured-nonpass"
+
+[measurements]
+performed = false
+scope = "accepted target-specific precursor and final qualification"
+reason = "No separately authorized precursor or final measurement exists; ordinary model-free semantic checks are supporting evidence only."

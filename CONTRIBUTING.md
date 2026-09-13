@@ -366,6 +366,37 @@ the native and fixture resource baseline. No interval includes fixture launch,
 and no hidden retry, sleep, deadline extension, or replacement sample is
 permitted.
 
+## Rust OCR text-query verification
+
+The [OCR text-query guide](docs/ocr-text-watch.md) separates controlled contracts,
+real CPU replay, target-owned native capture and unaccepted workload budgets.
+Use a fresh purpose-specific `CARGO_TARGET_DIR`; never reuse a hash-pinned
+qualification root for ordinary tests, examples or other feature/profile builds.
+
+Ordinary CI compiles the Rust examples and new owned native fixtures without
+launching them. It runs the model-free Unicode derivation and replay-input
+identity regressions. The existing backend test lane is unchanged; a new OCR
+watcher model/native cohort requires its own reviewed inputs and execution
+authority, not a prior template/foreign campaign grant.
+
+Focused deterministic checks are:
+
+```sh
+: "${CARGO_TARGET_DIR:?set a new deterministic target root}"
+: "${OCR_NORMALIZATION_PROOF_TARGET:?set a separate new proof target root}"
+cargo test --locked --package mado-pilot-ocr --lib
+cargo run --locked --release --package mado-pilot-ocr --example ocr-normalization-bound --target-dir "$OCR_NORMALIZATION_PROOF_TARGET"
+python3 tools/setup-native.py -- cargo test --locked --package mado-pilot-runtime --tests
+python3 tools/setup-native.py -- cargo test --locked --package mado-pilot --example ocr-text-watch
+python3 -m unittest discover -s tools/ocr-text-watch/tests -v
+```
+
+Set `CARGO_TARGET_DIR` on the non-proof commands before running them. Windows
+uses the existing explicit `--opencv-root`/`--libclang-path` setup options.
+The Python tests use inert files and an owned Python child, not ONNX or capture.
+The example's test verifies its independent Retina oracle; it does not execute
+the real-model example main.
+
 ## Verification
 
 Run this sequence from the repository root before opening a pull request. The

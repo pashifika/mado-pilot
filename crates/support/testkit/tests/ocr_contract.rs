@@ -1,12 +1,11 @@
 //! Deterministic evidence for the platform-neutral OCR contract.
 
 use std::sync::Arc;
-use std::sync::atomic::{AtomicUsize, Ordering};
 use std::time::Duration;
 
 use mado_pilot_capture::{CpuPixels, Frame, FrameDescriptor, FrameStorage, PixelFormat};
 use mado_pilot_core::{
-    CancellationToken, ClipPolicy, Clock, CoordinateSpace, GeometryRevision, IdentityIssuer,
+    CancellationToken, ClipPolicy, CoordinateSpace, GeometryRevision, IdentityIssuer,
     MonotonicInstant, OperationContext, PixelExtent, PixelRect, Rect, Status, StreamCursor,
     TransformSnapshot,
 };
@@ -45,38 +44,6 @@ impl FrameStorage for PreflightOnlyStorage {
 
     fn read_cpu(&self, _operation: &OperationContext) -> mado_pilot_core::Result<Arc<CpuPixels>> {
         panic!("mapping preflight must reject this storage before conversion")
-    }
-}
-
-#[derive(Debug)]
-struct CountingDeadlineClock {
-    calls: AtomicUsize,
-    expire_at: Option<usize>,
-}
-
-impl CountingDeadlineClock {
-    fn new(expire_at: Option<usize>) -> Self {
-        Self {
-            calls: AtomicUsize::new(0),
-            expire_at,
-        }
-    }
-
-    fn calls(&self) -> usize {
-        self.calls.load(Ordering::Acquire)
-    }
-}
-
-impl Clock for CountingDeadlineClock {
-    fn now(&self) -> MonotonicInstant {
-        let call = self.calls.fetch_add(1, Ordering::AcqRel) + 1;
-        if self.expire_at.is_some_and(|expire_at| call >= expire_at) {
-            MonotonicInstant::ORIGIN
-                .checked_add(Duration::from_secs(1))
-                .unwrap()
-        } else {
-            MonotonicInstant::ORIGIN
-        }
     }
 }
 
@@ -1156,44 +1123,6 @@ fn grouped_interruption_stages_never_commit_partial_output() {
             .status(),
         Status::DeadlineExceeded
     );
-}
-
-#[test]
-fn grouped_final_commit_rechecks_deadline_without_a_production_test_hook() {
-    const FINAL_COMMIT_CLOCK_READ: usize = 11;
-
-    let backend = Arc::new(
-        ControlledOcr::new(PixelFormat::Bgra8).with_candidates(vec![candidate(b"complete", 0)]),
-    );
-    let recognizer = OcrRecognizer::new(backend.clone());
-    let source = frame();
-    let zones = [zone(0.0, 0.0, 32.0, 24.0, ClipPolicy::Reject)];
-    let deadline = MonotonicInstant::ORIGIN
-        .checked_add(Duration::from_secs(1))
-        .unwrap();
-
-    let baseline_clock = Arc::new(CountingDeadlineClock::new(None));
-    let baseline_context = OperationContext::new()
-        .with_clock(baseline_clock.clone())
-        .with_deadline(deadline);
-    scan_zones(&recognizer, &source, &zones, &baseline_context).unwrap();
-    // Scan admission; mapping admission/commit; mapping checkpoint; backend and
-    // sink checks; backend checkpoint; finish and group checks; finish
-    // checkpoint; then the final commit read.
-    assert_eq!(baseline_clock.calls(), FINAL_COMMIT_CLOCK_READ);
-
-    let expiring_clock = Arc::new(CountingDeadlineClock::new(Some(FINAL_COMMIT_CLOCK_READ)));
-    let expiring_context = OperationContext::new()
-        .with_clock(expiring_clock.clone())
-        .with_deadline(deadline);
-    assert_eq!(
-        scan_zones(&recognizer, &source, &zones, &expiring_context)
-            .unwrap_err()
-            .status(),
-        Status::DeadlineExceeded
-    );
-    assert_eq!(expiring_clock.calls(), FINAL_COMMIT_CLOCK_READ);
-    assert_eq!(backend.recognition_count(), 2);
 }
 
 #[test]

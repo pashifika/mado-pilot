@@ -36,6 +36,14 @@ Nothing in this document is itself a measured result. The numbers live in the
 profiles under [benchmarks/](benchmarks/), each naming the host it was measured
 on, and the example this document references records no measurement at all.
 
+The Rust OCR text watcher adds [Apple](benchmarks/ocr-text-watch-aarch64-apple-darwin.toml)
+and [Windows](benchmarks/ocr-text-watch-x86_64-pc-windows-msvc.toml) prospective
+workload plans, not measured budgets. They explicitly withhold host/harness
+bindings and numerical acceptance pending new precursor authority and evidence.
+Result-owned source/text/index extents, native resident memory, logical close
+and physical quiescence are separate measurements. No one-shot OCR, template
+or frozen foreign-boundary ceiling is reused to qualify this workload.
+
 ## Where benchmark files live
 
 A phase commits one file per **run** under `docs/benchmarks/`, named
