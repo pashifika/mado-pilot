@@ -53,10 +53,9 @@ impl Resources {
         let sampled = sampler
             .finish()
             .map_err(|_| Failure::Rule("sampler-finish"))?;
-        let lossless = sampled.sample_losses == 0;
         report.metrics.gpu_reason = sampled.gpu_reason.clone();
         report.metrics.process = Some(sampled);
-        report.check("sample_loss", lossless)
+        Ok(())
     }
 
     fn cleanup(&mut self, report: &mut Report) -> Check<()> {

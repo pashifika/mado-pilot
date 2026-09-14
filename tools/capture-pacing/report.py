@@ -41,7 +41,7 @@ METRIC_KEYS = frozenset((
     "max_mapping_bytes", "max_retained_layout_bytes", "process", "gpu_reason",
 ))
 PROCESS_UINTS = frozenset((
-    "sampler_elapsed_ns", "sample_count", "sample_losses", "max_sample_gap_ns",
+    "sampler_elapsed_ns", "sample_count", "missed_poll_deadlines", "max_sample_gap_ns",
     "callback_invalid_intervals", "gpu_sample_count", "gpu_sampled_ns",
 ))
 PROCESS_OPTIONAL_UINTS = frozenset((
@@ -95,7 +95,9 @@ def _label(value: object, reason: str, *, optional: bool = False) -> None:
 
 def _report_schema(report: dict) -> None:
     _keys(report, ROOT_KEYS, "consumer-schema-invalid")
-    _require(type(report["schema"]) is int and report["schema"] == 1, "consumer-schema-invalid")
+    if type(report["schema"]) is int and report["schema"] == 1:
+        raise ValueError("consumer-v1-evidence-requires-bound-reporter")
+    _require(type(report["schema"]) is int and report["schema"] == 2, "consumer-schema-invalid")
     _require(report["case"] in ALL_CASES, "consumer-case-invalid")
     _require(report["semantic_status"] in ("pass", "fail", "not-run"), "consumer-status-invalid")
     _require(report["cleanup_status"] in ("pass", "fail"), "consumer-cleanup-invalid")
@@ -132,6 +134,8 @@ def _report_schema(report: dict) -> None:
     _label(metrics["gpu_reason"], "gpu-reason-invalid", optional=True)
     process = metrics["process"]
     if process is not None:
+        _require(type(process) is not dict or "sample_losses" not in process,
+                 "legacy-sampler-accounting-requires-bound-reporter")
         _keys(process, PROCESS_KEYS, "process-metrics-schema-invalid")
         _require(process["platform"] in ("macos", "windows", "unsupported"), "process-platform-invalid")
         for key in PROCESS_UINTS:
@@ -329,7 +333,11 @@ def analyze_case(report: dict, fixture: dict | None, stderr: str) -> dict:
     """Return privacy-safe verdicts and scoped rates; malformed evidence never passes."""
     result = {"case": None, "status": "fail", "failures": [], "unavailable": [], "gates": {},
               "metrics": {}, "native": None, "reason": None,
-              "withheld_claims": ["device-gpu-utilization-savings", "native-callback-rate-savings"]}
+              "withheld_claims": [
+                  "device-gpu-utilization-savings", "native-callback-rate-savings",
+                  "continuous-private-memory-peak-savings", "continuous-footprint-peak-savings",
+                  "instantaneous-gpu-engine-peak-savings", "ideal-100ms-sampling-resolution",
+              ]}
     if type(report) is dict and report.get("case") in ALL_CASES:
         result["case"] = report["case"]
     try:
@@ -453,13 +461,13 @@ def analyze_case(report: dict, fixture: dict | None, stderr: str) -> dict:
     if case not in ("semantic", "capture-off"):
         gate("ocr-p95-budget", None if ocr["p95_ns"] is None else ocr["p95_ns"] <= GATES["ocr_p95_ns"])
     gate("process-samples", None if process is None else 2 <= process["sample_count"] <= GATES["process_samples_max"])
-    gate("process-sample-loss", None if process is None else process["sample_losses"] == 0)
     gate("process-memory-budget", None if process is None or process["max_resident_bytes"] is None
          or process["resident_reason"] is not None else process["max_resident_bytes"] <= GATES["process_peak_rss_bytes"])
     if process is not None:
         gate("sampler-wall", 0 < process["sampler_elapsed_ns"] <= limit)
-        gate("sampler-cadence", process["sample_count"] + process["sample_losses"] >=
+        gate("sampler-cadence", process["sample_count"] + process["missed_poll_deadlines"] >=
              process["sampler_elapsed_ns"] // 100_000_000 and
+             process["missed_poll_deadlines"] <= process["sampler_elapsed_ns"] // 100_000_000 and
              process["max_sample_gap_ns"] <= process["sampler_elapsed_ns"])
         if process["platform"] == "macos" and case != "capture-off":
             gate("native-close-diagnostics", None if result["native"] is None else
@@ -496,6 +504,10 @@ def analyze_case(report: dict, fixture: dict | None, stderr: str) -> dict:
         "ocr_admissions": metrics["ocr_admissions"], "ocr_committed": metrics["ocr_committed"],
         "ocr_attempt_samples": len(samples),
         "callback_invalid_intervals": process["callback_invalid_intervals"] if process else None,
+        "process_sample_count": process["sample_count"] if process else None,
+        "missed_poll_deadlines": process["missed_poll_deadlines"] if process else None,
+        "max_sample_gap_ns": process["max_sample_gap_ns"] if process else None,
+        "process_polling_scope": "target-cadence-with-observed-gaps-not-discarded-observations",
         "ocr_per_second": _rate(metrics["ocr_committed"], elapsed),
         "ocr_latency": ocr,
         "frame_age": _percentiles([row["frame_age_ns"] for row in samples if row["frame_age_ns"] is not None]),
@@ -631,7 +643,7 @@ def _aggregate_status(statuses: list[str], *, failures: bool = False) -> str:
 
 def compare_cases(cases: list[dict]) -> dict:
     """Analyze one record per fresh case; ratios use each counter's actual scope."""
-    result = {"schema": 1, "status": "fail", "failures": [], "cases": [], "comparisons": [],
+    result = {"schema": 2, "status": "fail", "failures": [], "cases": [], "comparisons": [],
               "predeclared_gates": dict(GATES),
               "scope": "owned-gdi-appkit-renderer-not-compositor-gpu-or-general-game-fps",
               "normalization": {"ocr_and_caller_mapping": "consumer.metrics.measurement_ns",

@@ -135,11 +135,14 @@ pub(super) struct SampledMetrics {
     pub(super) capture_metrics_reason: Option<String>,
     pub(super) platform: &'static str,
     pub(super) sampler_elapsed_ns: u64,
+    // Completed poll aggregations, including the initial and final endpoints.
     pub(super) sample_count: u64,
-    pub(super) sample_losses: u64,
+    // Whole nominal periods beyond the due poll, not discarded observations.
+    pub(super) missed_poll_deadlines: u64,
     pub(super) max_sample_gap_ns: u64,
     pub(super) cpu_reason: Option<String>,
     pub(super) resident_reason: Option<String>,
+    // Sampled maxima, unlike the OS resident high-water counter.
     pub(super) max_private_bytes: Option<u64>,
     pub(super) max_footprint_bytes: Option<u64>,
     pub(super) callback_invalid_intervals: u64,
@@ -239,7 +242,7 @@ impl Observations {
                 platform,
                 sampler_elapsed_ns: 0,
                 sample_count: 0,
-                sample_losses: 0,
+                missed_poll_deadlines: 0,
                 max_sample_gap_ns: 0,
                 cpu_reason: None,
                 resident_reason: None,
@@ -397,8 +400,9 @@ impl Observations {
                 .map_err(|_| "metric-duration-overflow".to_owned())?;
             self.metrics.max_sample_gap_ns = self.metrics.max_sample_gap_ns.max(gap);
             self.last_sample = now;
+            // Cumulative CPU/RSS and coherent copy intervals still cover a late poll.
             let missed = now.saturating_duration_since(next).as_nanos() / INTERVAL.as_nanos();
-            self.metrics.sample_losses +=
+            self.metrics.missed_poll_deadlines +=
                 u64::try_from(missed).map_err(|_| "metric-duration-overflow".to_owned())?;
             if finishing {
                 #[cfg(windows)]

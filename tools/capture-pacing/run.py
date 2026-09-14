@@ -454,7 +454,7 @@ def execute(authority_path: Path) -> tuple[dict, int]:
     except (OSError, ValueError, subprocess.SubprocessError):
         binding_unchanged = False
     status = aggregate_status(rows, comparison, binding_unchanged)
-    report = {"schema": 1, "status": status,
+    report = {"schema": 2, "status": status,
               "source_commit": authority["source_commit"], "source_tree": authority["source_tree"],
               "bound_host": observed_host, "target": authority["target"], "binding_unchanged": binding_unchanged,
               "native_binding": native_binding,

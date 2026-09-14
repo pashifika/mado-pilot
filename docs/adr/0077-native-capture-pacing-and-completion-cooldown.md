@@ -100,3 +100,32 @@ runs deterministic checks on both release targets. Native pacing and the
 capture-off/source-default/cooldown-only/native-only/combined resource comparison
 remain unexecuted. [The usage guide](../capture-pacing.md) records that boundary
 and the exact caller invocation.
+
+## Qualification apparatus correction: report schema 2
+
+The verification paragraph above records the initial `06d845a` implementation
+snapshot. Later version-one native attempts are retained separately, including
+permission refusal, fixture startup failures and the first Windows observations;
+none establishes a completed five-case comparison.
+
+Windows campaign 02 reported one `sample_losses` event with an approximately
+241.7ms process-sampler gap. Inspection showed that the field counted crossed
+100ms polling deadlines **after aggregating a successful observation**. There
+is no process-observation queue to lose that sample. CPU is cumulative, RSS
+includes the OS high-water mark, and native-copy intervals have independent
+coherence/overwrite checks. Calling scheduler delay a dropped observation
+incorrectly invalidated otherwise available evidence.
+
+New consumer report schema 2 calls the same counter `missed_poll_deadlines`.
+Its value, sample count and maximum gap remain visible; delayed polling does not
+claim ideal 100ms coverage or continuous instantaneous peaks. Sampler/consumer
+capacity failures, missing required memory evidence, fixture sample loss,
+native-copy invalidation and every pacing, ownership, latency and cleanup gate
+remain enforced. Do not replace the removed mislabel with a fabricated zero.
+
+This is a separately predeclared apparatus protocol for new attempts, not a
+rescore or budget edit of old results. Schema-one authorities, raw reports,
+failure classifications and binaries remain immutable. The schema-two analyzer
+rejects schema-one evidence rather than applying the corrected interpretation
+retroactively. Product API behavior, OS support and historical product budgets
+are unchanged.

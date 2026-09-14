@@ -60,7 +60,7 @@ def consumer(case="baseline", platform="windows"):
         "callback_copied_bytes": 600 * MIB if platform == "windows" and not off else None,
         "capture_metrics_reason": "capture-disabled" if off else
             "native-copy-bytes-not-exposed" if platform != "windows" else None,
-        "platform": platform, "sampler_elapsed_ns": 6 * NS, "sample_count": 62, "sample_losses": 0,
+        "platform": platform, "sampler_elapsed_ns": 6 * NS, "sample_count": 62, "missed_poll_deadlines": 0,
         "max_sample_gap_ns": 101_000_000, "cpu_reason": None, "resident_reason": None,
         "max_private_bytes": 100 * MIB if platform == "windows" else None,
         "max_footprint_bytes": 100 * MIB if platform == "macos" else None,
@@ -70,7 +70,7 @@ def consumer(case="baseline", platform="windows"):
         "gpu_engine_percent_mean": None, "gpu_engine_percent_max": None,
         "gpu_sample_count": 0, "gpu_sampled_ns": 0, "gpu_reason": gpu_reason,
     }
-    return {"schema": 1, "case": case, "semantic_status": "pass", "cleanup_status": "pass", "reason": None,
+    return {"schema": 2, "case": case, "semantic_status": "pass", "cleanup_status": "pass", "reason": None,
             "permission": "granted" if platform == "macos" else "not-required", "startup_ns": NS,
             "pacing": policies, "checks": checks, "samples": samples,
             "metrics": {"measurement_ns": 6 * NS, "ocr_admissions": len(samples), "ocr_committed": len(samples),
@@ -311,15 +311,65 @@ class CaseValidationTests(unittest.TestCase):
 
     def test_sampler_and_fixture_loss_or_missing_measurement_fail(self):
         value, producer = consumer(), fixture()
-        value["metrics"]["process"]["sample_losses"] = 1
+        value["metrics"]["process"]["sample_count"] = 1
         producer["lost_samples"] = 1
         value["metrics"]["measurement_ns"] = 0
         result = reporter.analyze_case(value, producer, "")
-        for gate in ("process-sample-loss", "fixture-sample-loss", "measurement-wall"):
+        for gate in ("process-samples", "fixture-sample-loss", "measurement-wall"):
             self.assertIn(gate, result["failures"])
         value = consumer()
         value["metrics"]["process"]["sample_count"] = 2
         self.assertIn("sampler-cadence", reporter.analyze_case(value, fixture(), "")["failures"])
+
+    def test_delayed_poll_keeps_cumulative_evidence_without_claiming_ideal_resolution(self):
+        value = consumer()
+        process = value["metrics"]["process"]
+        process.update(sample_count=61, missed_poll_deadlines=1, max_sample_gap_ns=241_741_500)
+        result = reporter.analyze_case(value, fixture(), "")
+        self.assertEqual(result["status"], "pass")
+        self.assertEqual(result["metrics"]["process_sample_count"], 61)
+        self.assertEqual(result["metrics"]["missed_poll_deadlines"], 1)
+        self.assertEqual(result["metrics"]["max_sample_gap_ns"], 241_741_500)
+        self.assertEqual(result["metrics"]["process_peak_rss_bytes"], 128 * MIB)
+        self.assertEqual(result["metrics"]["process_cpu_cores"], 0.5)
+        self.assertEqual(result["metrics"]["callback_copied_bytes"], 600 * MIB)
+        self.assertIn("ideal-100ms-sampling-resolution", result["withheld_claims"])
+        self.assertIn("continuous-private-memory-peak-savings", result["withheld_claims"])
+        self.assertIn("instantaneous-gpu-engine-peak-savings", result["withheld_claims"])
+
+    def test_poll_delay_cannot_hide_read_failures_copy_invalidation_or_capacity(self):
+        value = consumer()
+        process = value["metrics"]["process"]
+        process.update(sample_count=61, missed_poll_deadlines=1, max_sample_gap_ns=241_741_500,
+                       callback_invalid_intervals=1, callback_copied_bytes=None,
+                       capture_metrics_reason="callback-copy-interval-invalidated")
+        result = reporter.analyze_case(value, fixture(), "")
+        self.assertEqual(result["status"], "pass")
+        self.assertIsNone(result["metrics"]["callback_copied_bytes"])
+        self.assertEqual(result["metrics"]["callback_invalid_intervals"], 1)
+        self.assertIn("native-copy-byte-savings", result["withheld_claims"])
+        process.update(max_resident_bytes=None, resident_reason="process-resident-observation-incomplete")
+        result = reporter.analyze_case(value, fixture(), "")
+        self.assertEqual(result["status"], "incomplete")
+        self.assertIn("process-memory-budget", result["unavailable"])
+        process["sample_count"] = 2049
+        self.assertIn("process-sample-cap-exceeded", reporter.analyze_case(value, fixture(), "")["failures"])
+
+    def test_v1_poll_loss_evidence_requires_its_bound_reporter_without_mutation(self):
+        legacy = consumer()
+        legacy.update(schema=1, semantic_status="fail", reason="owned-pixel-color")
+        process = legacy["metrics"]["process"]
+        del process["missed_poll_deadlines"]
+        process.update(sample_losses=1, max_sample_gap_ns=241_741_500)
+        before = copy.deepcopy(legacy)
+        result = reporter.analyze_case(legacy, fixture(), "")
+        self.assertEqual(result["status"], "fail")
+        self.assertIn("consumer-v1-evidence-requires-bound-reporter", result["failures"])
+        self.assertEqual(legacy, before)
+        legacy["schema"] = 2
+        result = reporter.analyze_case(legacy, fixture(), "")
+        self.assertEqual(result["status"], "fail")
+        self.assertIn("legacy-sampler-accounting-requires-bound-reporter", result["failures"])
 
     def test_malformed_records_are_bounded_and_do_not_echo_payloads(self):
         bad_values = (True, -1, 1 << 64, float("nan"), "private-recognized-text")

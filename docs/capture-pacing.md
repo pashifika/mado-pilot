@@ -199,7 +199,7 @@ behavior, completion timing/freshness/ownership/interruption, and the actual
 call-local macOS configuration/start/resize/close seam plus C/Rust layout
 agreement. Windows cross-compilation checks types and cfg, not native execution.
 Both hosted target jobs run the deterministic example; native pacing qualification
-and the five-case performance comparison remain separate unexecuted gates.
+and the five-case performance comparison remain separate incomplete gates.
 See [ADR0077](adr/0077-native-capture-pacing-and-completion-cooldown.md).
 
 ## Owned native verification apparatus
@@ -267,9 +267,9 @@ with a separate ten-second outer cleanup allowance and a 1MiB output cap.
 Startup is limited to 60 seconds, process peak RSS to 2GiB, fixture peak RSS to
 256MiB, and OCR p95 to five seconds. A padded mapping is limited to 8MiB;
 distinct retained logical layouts to 24MiB in semantic and 8MiB in comparison.
-Sample capacities are 1024 consumer / 2048 process sampler / 4096 fixture, with
-zero sample loss. Capturing comparisons require three committed OCR samples;
-capture-off admits none.
+Sample capacities are 1024 consumer / 2048 process sampler / 4096 fixture.
+Capacity failures and fixture render-sample loss prevent qualification.
+Capturing comparisons require three committed OCR samples; capture-off admits none.
 
 `records.json` retains actual process, consumer, fixture and cleanup evidence.
 `run.json` distinguishes observed failure, incomplete evidence, unexecuted work
@@ -279,3 +279,16 @@ hard-gate memory evidence cannot establish qualification. macOS callback counts
 cover closed-session lifetimes, not just the measurement window. Fixture draw
 intervals are application-requested work, not display FPS or general game
 performance. Source, host and bound native inputs are checked again after the run.
+
+Consumer and aggregate report schema 2 use `missed_poll_deadlines` for process
+polls delayed across their nominal 100ms deadlines. The count and maximum gap
+remain visible. A delayed poll is not a dropped stored observation: cumulative
+CPU, OS peak RSS and coherent copy intervals retain their own validity checks.
+Do not infer ideal polling coverage or continuous instantaneous peaks from
+sampled maxima. Required memory evidence and all other hard gates still apply.
+The authority and fixture-stat schemas remain version 1.
+
+Schema-one reports and their failures are immutable and are not rescored by the
+new analyzer. The corrected accounting and complete-frame Windows presentation
+belong to separately bound new runs; they do not change historical product
+budgets. See the schema-two apparatus decision in [ADR0077](adr/0077-native-capture-pacing-and-completion-cooldown.md#qualification-apparatus-correction-report-schema-2).

@@ -266,7 +266,7 @@ impl Report {
             "sample_capacity",
         ];
         Self {
-            schema: 1,
+            schema: 2,
             case: "unselected",
             semantic_status: "not-run",
             cleanup_status: "pass",

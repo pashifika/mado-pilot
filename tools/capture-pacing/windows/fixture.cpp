@@ -6,6 +6,7 @@
 #include <aclapi.h>
 #include <dwmapi.h>
 #include <psapi.h>
+#include <algorithm>
 #include <array>
 #include <cstdarg>
 #include <cstddef>
@@ -22,6 +23,7 @@ constexpr wchar_t ClassName[] = L"MadoPilot.Private.CapturePacing.Windows.1";
 constexpr DWORD FuseMilliseconds = 180000;
 constexpr uint64_t AnimationNanoseconds = 16000000;
 constexpr size_t ImageBytes = 960 * 540 * 4;
+constexpr size_t SurfacePixels = 1040 * 640;
 constexpr size_t SampleLimit = 4096;
 constexpr size_t JsonLimit = 131072;
 
@@ -359,6 +361,9 @@ struct Fixture {
     HINSTANCE instance = nullptr;
     std::array<char, 17> nonce{};
     std::vector<unsigned char> image;
+    std::vector<uint32_t> surface;
+    int surfaceWidth = 0, surfaceHeight = 0;
+    uint32_t surfaceState = 0;
     uint32_t sequence = 0, counter = 0, state = 0;
     Operation lastOperation = Operation::Blank;
     unsigned burstRemaining = 0;
@@ -385,29 +390,51 @@ struct Fixture {
         fail(Error::Geometry);
         return false;
     }
-    void draw(HDC dc) {
-        RECT bounds{0, 0, width, height};
-        HBRUSH brush = reinterpret_cast<HBRUSH>(GetStockObject(DC_BRUSH));
-        if (!counter || !brush || SetDCBrushColor(dc, RGB(255, 255, 255)) == CLR_INVALID ||
-            !FillRect(dc, &bounds, brush)) { fail(Error::Render); return; }
-        if (state == 1) {
-            BITMAPINFO info{};
-            info.bmiHeader.biSize = sizeof(BITMAPINFOHEADER);
-            info.bmiHeader.biWidth = 960;
-            info.bmiHeader.biHeight = -540;
-            info.bmiHeader.biPlanes = 1;
-            info.bmiHeader.biBitCount = 32;
-            info.bmiHeader.biCompression = BI_RGB;
-            if (StretchDIBits(dc, 0, 0, 960, 540, 0, 0, 960, 540, image.data(),
-                &info, DIB_RGB_COLORS, SRCCOPY) != 540) { fail(Error::Render); return; }
+    bool compose() {
+        if (!counter || state > 1 || surface.size() != SurfacePixels ||
+            !((width == 960 && height == 576) || (width == 1040 && height == 640)) ||
+            (state == 1 && image.size() != ImageBytes)) { fail(Error::Render); return false; }
+        const bool rebuild = surfaceWidth != width || surfaceHeight != height || surfaceState != state;
+        if (rebuild) {
+            std::fill_n(surface.data(), static_cast<size_t>(width) * height, uint32_t{0xffffffff});
+            if (state == 1) {
+                for (size_t row = 0; row < 540; ++row)
+                    std::memcpy(surface.data() + row * width, image.data() + row * 960 * 4, 960 * 4);
+            }
         }
-        for (unsigned cell = 0; cell < 128; ++cell) {
+        // Stable frames need only new counter cells; the full retained BGRA surface stays valid.
+        const unsigned first = rebuild ? 0 : 64;
+        const unsigned end = rebuild ? 128 : 96;
+        for (unsigned cell = first; cell < end; ++cell) {
             const bool one = cell < 64 ? ((nonceBits >> (63 - cell)) & 1) != 0 :
                 cell < 96 ? ((counter >> (95 - cell)) & 1) != 0 : ((state >> (127 - cell)) & 1) != 0;
-            RECT marker{static_cast<LONG>(cell * 4), 544, static_cast<LONG>(cell * 4 + 4), 560};
-            if (SetDCBrushColor(dc, one ? RGB(255, 255, 0) : RGB(0, 0, 255)) == CLR_INVALID ||
-                !FillRect(dc, &marker, brush)) { fail(Error::Render); return; }
+            const uint32_t color = one ? 0xffffff00 : 0xff0000ff; // Opaque yellow/blue, BGRA in memory.
+            for (size_t row = 544; row < 560; ++row)
+                std::fill_n(surface.data() + row * width + cell * 4, 4, color);
         }
+        surfaceWidth = width;
+        surfaceHeight = height;
+        surfaceState = state;
+        return true;
+    }
+
+    void draw(HDC dc) {
+        if (!counter || !surfaceWidth || surfaceWidth != width || surfaceHeight != height) {
+            fail(Error::Render); return;
+        }
+        BITMAPINFO info{};
+        info.bmiHeader.biSize = sizeof(BITMAPINFOHEADER);
+        info.bmiHeader.biWidth = surfaceWidth;
+        info.bmiHeader.biHeight = -surfaceHeight;
+        info.bmiHeader.biPlanes = 1;
+        info.bmiHeader.biBitCount = 32;
+        info.bmiHeader.biCompression = BI_RGB;
+        // One complete presentation: no window-DC erase, image, or individual marker draws.
+        if (StretchDIBits(dc, 0, 0, surfaceWidth, surfaceHeight, 0, 0, surfaceWidth, surfaceHeight,
+            surface.data(), &info, DIB_RGB_COLORS, SRCCOPY) != surfaceHeight || !GdiFlush()) {
+            fail(Error::Render); return;
+        }
+        // Flush exposure restores too, before a later requested render reuses the CPU surface.
         painted = true;
     }
 
@@ -448,10 +475,11 @@ struct Fixture {
         uint64_t start = 0, end = 0;
         if (!clock.now(start)) { fail(Error::Clock); return false; }
         ++counter;
+        if (!compose()) return false;
         painted = false;
         if (first) ShowWindow(window, SW_SHOWNOACTIVATE);
         if (!RedrawWindow(window, nullptr, nullptr, RDW_INVALIDATE | RDW_UPDATENOW) ||
-            !painted || !GdiFlush()) fail(Error::Render);
+            !painted) fail(Error::Render);
         // Count requested renders only. Exposure restores the same token, without a new event.
         if (!clock.now(end) || !statistics.record(start, end)) fail(Error::Clock);
         return error == Error::None && foreground_unchanged() && geometry_valid();
@@ -635,6 +663,7 @@ struct Fixture {
         image.resize(ImageBytes);
         if (!ReadFile(source.value, image.data(), static_cast<DWORD>(ImageBytes), &count, nullptr) ||
             count != ImageBytes || !source.close()) { fail(Error::Image); return; }
+        surface.resize(SurfacePixels);
         if (!SetProcessDpiAwarenessContext(DPI_AWARENESS_CONTEXT_PER_MONITOR_AWARE_V2)) { fail(Error::Native); return; }
         MONITORINFO monitor{sizeof(MONITORINFO)};
         const POINT origin{0, 0};
