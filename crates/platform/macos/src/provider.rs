@@ -658,6 +658,10 @@ mod tests {
 
     #[test]
     fn successive_discoveries_mint_fresh_ids_and_keep_the_previous_generation_openable() {
+        // Native scenarios observe the same process-wide lifecycle counters.
+        let _serial = crate::shim::NATIVE_LIFECYCLE_TEST_SERIAL
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
         let provider = MacosCaptureProvider::new(Arc::new(IdentityIssuer::new()));
         let first = match provider.discover(&OperationContext::new()) {
             Ok(first) => first,

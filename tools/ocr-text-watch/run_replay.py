@@ -83,27 +83,33 @@ def _read_regular(path: Path, maximum_bytes: int, collect: bool) -> tuple[bytes 
     before = canonical.stat()
     if not stat.S_ISREG(before.st_mode) or not 0 <= before.st_size <= maximum_bytes:
         raise ValueError("bounded regular identity file required")
-    # Windows path stat and fstat can use different ctime meanings. Bind their
-    # comparable fields, but retain each domain's full before/after mutation fence.
+    # Path stat and fstat may have different ctime meanings on Windows. Metadata
+    # is a fast fence, not payload proof: two unbuffered passes must agree too.
     signature = lambda value: (value.st_dev, value.st_ino, value.st_size, value.st_mtime_ns)
     mutation_signature = lambda value: (*signature(value), value.st_ctime_ns)
     digest = hashlib.sha256()
     data = bytearray() if collect else None
-    with open(canonical, "rb", opener=lambda name, flags: os.open(name, flags | getattr(os, "O_NONBLOCK", 0))) as stream:
+    with open(canonical, "rb", buffering=0, opener=lambda name, flags: os.open(name, flags | getattr(os, "O_NONBLOCK", 0))) as stream:
         opened = os.fstat(stream.fileno())
         if not stat.S_ISREG(opened.st_mode) or signature(before) != signature(opened):
             raise ValueError("identity file changed before read")
-        remaining = opened.st_size
-        while remaining:
-            chunk = stream.read(min(1 << 20, remaining))
-            if not chunk:
-                raise ValueError("identity file shortened")
-            remaining -= len(chunk)
-            digest.update(chunk)
-            if data is not None:
-                data.extend(chunk)
-        if stream.read(1) or mutation_signature(opened) != mutation_signature(os.fstat(stream.fileno())):
-            raise ValueError("identity file changed during read")
+        for confirmation in (False, True):
+            if confirmation:
+                stream.seek(0)
+            observed_digest = hashlib.sha256() if confirmation else digest
+            remaining = opened.st_size
+            while remaining:
+                chunk = stream.read(min(1 << 20, remaining))
+                if not chunk:
+                    raise ValueError("identity file shortened")
+                remaining -= len(chunk)
+                observed_digest.update(chunk)
+                if data is not None and not confirmation:
+                    data.extend(chunk)
+            if stream.read(1) or mutation_signature(opened) != mutation_signature(os.fstat(stream.fileno())):
+                raise ValueError("identity file changed during read")
+            if confirmation and observed_digest.digest() != digest.digest():
+                raise ValueError("identity file content changed during read")
     if mutation_signature(before) != mutation_signature(canonical.stat()):
         raise ValueError("identity path changed during read")
     return (bytes(data) if data is not None else None), {
