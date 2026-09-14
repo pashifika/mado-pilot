@@ -839,6 +839,11 @@ pub(super) fn run(arguments: &Arguments, report: &mut Report) -> Check<()> {
     let work = (|| {
         // Permission is decided before spawning a fixture or touching model files.
         permission(&setup, report)?;
+        if arguments.case != Case::CaptureOff {
+            metrics::begin_capture_diagnostics()
+                .map_err(|_| Failure::Rule("capture-diagnostics-start"))?;
+            resources.diagnostics = true;
+        }
         resources.fixture = Some(Fixture::spawn(arguments, &setup)?);
         resources
             .fixture
@@ -875,9 +880,6 @@ pub(super) fn run(arguments: &Arguments, report: &mut Report) -> Check<()> {
             .ok_or(Failure::Rule("fixture-owner"))?
             .title();
         let target = select(&api(engine.discover(&setup))?, &title)?;
-        metrics::begin_capture_diagnostics()
-            .map_err(|_| Failure::Rule("capture-diagnostics-start"))?;
-        resources.diagnostics = true;
         let inherited = arguments.case.pacing()?;
         if arguments.case == Case::Semantic {
             let initial = open(
