@@ -19,6 +19,10 @@ deterministic replay, asset loading, OpenCV matching, bounded ONNX OCR with
 explicit initialization-time provider policy, finite template watcher
 scheduling, runtime orchestration, engine-scoped diagnostics, the Rust facade,
 C ABI 1.5, and the header-only C++ wrapper are implemented.
+Rust OCR text-presence queries are also implemented through the explicit CPU
+bounded-v2 profile, with controlled API and both-target real CPU replay verified.
+ADR0075 accepts workload ceilings; native capture and final numeric enforcement remain open;
+[OCR text queries](ocr-text-watch.md) separates those acceptance lanes.
 The picker-free Windows Adapter implements window/display discovery, WGC/D3D11 capture, system input,
 and explicit exact-window `WindowMessage` submission. The macOS Adapter
 implements discovery, ScreenCaptureKit capture, `CGEvent` system input, and
@@ -138,7 +142,8 @@ It discovers windows and displays, captures frame streams, maps coordinate
 spaces, performs template matching and one-shot OCR, waits for stable template
 presence through a bounded Rust query over replay or qualified native sessions,
 injects input through explicit platform capabilities, and reports structured
-outcomes. OCR watchers remain future work.
+outcomes. Rust OCR text queries are implemented and real CPU replay has passed
+on both release targets; ADR0075 accepts workload ceilings, while native and final workload qualification remain open.
 
 MadoPilot does not own a GUI, tray, editor, overlay, updater, workflow catalog,
 general workflow/cron scheduler, or general scripting DSL.
@@ -150,11 +155,35 @@ Version one targets two platforms, and each is verified natively:
 | Release target | Native verification host |
 |---|---|
 | `x86_64-pc-windows-msvc` | Windows 11 Pro 25H2 build family 26200 (Qualification V2 host 26200.9278; earlier accepted evidence remains revision-bound), SDK 10.0.26100.0; `windows-2025` CI remains supporting server evidence |
-| `aarch64-apple-darwin` | Apple Silicon macOS 26.5.2 (25F84), SDK 26.5 |
+| `aarch64-apple-darwin` | Supported current host: Apple Silicon macOS 26.6.2 (25G83), SDK 26.5; the deployment floor remains 26.5.2 |
 
 A cross-compiled result never stands in for native verification of the other
 target. [ADR 0019](adr/0019-windows-qualified-system-and-controlled-availability.md)
 fixes the Windows floor; ADR 0014 fixes the macOS floor. See gate [`G-001`](validation-gates.md#g-001).
+
+### OS support policy
+
+Windows 11 and later serviced desktop releases are the supported Windows family,
+subject to the exact deployment floor below. The current `win-worker` baseline,
+Windows 11 Pro 25H2 build family 26200, is a supported OS, not an experimental or
+unsupported host. This policy does not certify earlier Windows 11 builds below
+that floor or claim that every future build has already been tested.
+
+Apple Silicon macOS 26 is supported, with macOS 26.6.2 (25G83) as the current
+verification host. macOS 27.0 upgrade verification and its support decision belong
+to a separate Change. Upgrading the host does not automatically qualify 27.0 or
+move the accepted baseline. Existing deployment metadata is unchanged.
+
+OS support and feature/workload qualification are separate. An unexecuted native
+OCR scenario, a numerical gate, or a failed measurement run does not by itself
+make either current OS unsupported. Prospective OCR dependency admission exempts
+only presence or absence of the canonical OS-system `apphelp.dll` on Windows,
+as defined by the [OCR procedure](ocr-text-watch.md#fixed-real-replay-procedure);
+hashes and all other image, execution and identity gates remain mandatory.
+This does not qualify every function or numerical budget.
+Records of an **earlier Windows execution**
+refer to earlier source/artifact/run identities on the supported Windows 11 host,
+not an older Windows release. Those records and their failures remain unchanged.
 
 ### Platform baseline
 
@@ -185,7 +214,7 @@ One limit on reading the macOS row applies to every macOS capture claim in this
 document. macOS grants Screen Recording per application, and this Adapter will not
 prompt, so a host that has neither granted nor denied it — a continuous-integration
 runner, for instance — reaches the non-prompting refusal rather than the capture
-path. The Adapter's controlled scenarios report a skip with that reason there
+path. The Adapter's capture scenarios report a skip with that reason there
 instead of a pass, so a green run on such a host is not evidence that capture ran.
 
 #### The macOS native boundary
@@ -196,6 +225,11 @@ is a defect the Rust side cannot see. Gate `G-003` is resolved by
 [ADR 0012](adr/0012-macos-shim-language-and-containment.md) on the measurements in
 [evidence/g-003/](evidence/g-003/README.md). `mado-pilot-platform-macos` now
 implements that boundary and carries the tests ADR 0012 named.
+
+Frame-callback containment tests use owned CoreMedia samples through the actual
+native callback and Rust trampolines. They check commit ordering, terminal delivery,
+callback drain, and escaped-frame ownership without a live capture stream or
+permission probe. Those cases do not establish capture support.
 
 The shim is **Objective-C with Automatic Reference Counting, compiled with
 `-fobjc-arc-exceptions`**. Objective-C++ is not used and C++ is not admitted into
@@ -691,6 +725,13 @@ separately, then uses the same explicit setup; GitHub export requires both file
 options and successful validation. See
 [contributor commands](../CONTRIBUTING.md#native-development-prerequisites).
 
+macOS setup selects only the required shared OpenCV `core`, `imgproc`, and
+`imgcodecs` modules for Cargo consumers and its native probe. It does not inherit
+the complete pkg-config library list. Windows retains its versioned
+`opencv_world` distribution; transitive shared dependencies remain mandatory.
+[ADR 0073](adr/0073-link-only-required-apple-opencv-modules.md) changes link
+selection, not Rust features, dependency ownership, or qualification limits.
+
 An incomplete or incompatible development environment may fail setup or build.
 Removing eagerly linked OpenCV after setup invalidates that environment and may
 prevent process entry. No typed-recovery guarantee, private deferred-load bridge,
@@ -1013,7 +1054,8 @@ responsibilities a later phase takes on.
 | Deep search orchestration, result envelope, final operation commit | Implemented in `mado-pilot-runtime` |
 | Input composition: same-provider adapter pairing, required-versus-optional input admission with bounded release of committed capture, per-controller sequence serialization, the one-terminal-receipt rule, and two-sided close | Implemented in `mado-pilot-runtime`. Selecting a permitted route, arbitrating focus, resolving a coordinate against live geometry, revalidating before each irreversible event, and releasing what a stopped sequence pressed stay in `mado-pilot-input` and the Adapter implementing it |
 | Bounded template-presence query and scheduling | Implemented in `mado-pilot-runtime` for Rust replay/OpenCV and maintained native WGC/ScreenCaptureKit sessions: current-once then strictly newer frame acquisition, finite latest-wins work, exact change/rate admission, confirmed-only stability, exact coalescing, two-worker fair progress, stale-generation rejection, and idempotent query/session/engine-scheduler close. ADRs 0051 and 0052 retain deterministic replay/OpenCV authority; ADR 0053 retains historical target-specific native regression budgets. ADR 0064 adds the token-driven V2 split: Lane A owns deterministic behavior, each target has one compact Lane B integration job, and Lane C statistics are optional. Both exact Lane B host contracts pass, and reviewed target-isolated applicability carries the Apple result through the final Windows evidence source |
-| OCR coalescing and wait-for-text | Not implemented |
+| Rust OCR text-presence queries | Implemented through explicit CPU bounded-v2 with immutable source/result retention, finite mixed scheduling and selective OCR shutdown. Both-target real CPU replay passes; ADR0075 accepts fixed-workload ceilings. Native capture and final numerical enforcement remain open |
+| OCR work coalescing | Not implemented; OCR query work remains distinct |
 | Public Rust operations for the deterministic replay workflow | Implemented in `mado-pilot`, including the blocking replay template watcher example with separate query/wait operation contexts |
 | Public Rust operations for native and replay workflows | Implemented in `mado-pilot`, including explicit optional backend wiring, accepted CPU default/profile constructors, owning provider-policy constructors, immutable provider descriptors, borrowed one-to-eight-zone scans, and Rust template query types over replay, WGC, and ScreenCaptureKit sessions. Replay/OpenCV and native WGC/ScreenCaptureKit watcher support is qualified on the named release targets under ADR 0064. No platform-native, `ort`, worker, channel, Tokio, or callback type crosses the facade; C ABI/C++ watcher APIs remain absent |
 | Default adapter wiring and backend rules | OpenCV matching remains required. Every pre-provider constructor preserves CPU behavior. `*_engine_with_ocr_provider` is the only integrated provider-policy path; automatic selection uses only a release-qualified target accelerator, preferred fallback is initialization-only, and required/provider inference failure never falls back |
@@ -2627,6 +2669,66 @@ outcome, which makes the engine's final commit the last guard rather than the
 only one — deliberately, because the alternative is an orchestration layer that
 trusts its dependencies to have checked.
 
+### Bounded OCR text-presence queries
+
+`Session::start_ocr_text_watch` adds a distinct owning Rust request/query/result
+over the same maintained `WatchRuntime`, sessions and two-worker scheduler.
+The request names one coordinate-qualified region, normalized literal, inclusive
+confidence threshold, positive analysis interval, immediate/consecutive
+confirmation, change policy and optional deadline/cancellation. Start requires
+complete initialized CPU bounded-v2 identities; it does not switch an existing
+profile/provider or manufacture an initial frame transform.
+
+The OCR contract's hidden workspace support seam prepares one exact mapped
+request and executes that owned value through the same validation used by
+one-shot recognition. Literal admission uses the pinned Unicode 17.0.0
+decomposition bound of four, 16,384 decomposed scalars and 4,096 retained UTF-8
+bytes without a raw caller-text ceiling. Complete normalized OCR validation
+precedes case-sensitive within-one-region substring evaluation. A successful
+result keeps the exact frame, immutable output and compact satisfying indexes,
+not another text array or native inference buffer.
+
+One physical OCR lease covers mapping through completion. A class-level mapping
+barrier prevents later template mappings from waiting inside OCR-held native
+conversion; existing template reservations drain before OCR mapping begins.
+The second worker remains available during OCR inference. Rotating ready
+classes/sessions/queries, acquisition-considered pending work and preserved
+eligible age keep replacement and overload observable without another capture
+loop. Template-only limits/coalescing and one-shot backend contention remain
+unchanged. [ADR 0070](adr/0070-ocr-watch-exact-bgra-change-evidence.md) records why
+compatible BGRA rows can be compared directly without an extra RGBA mapping.
+
+One immutable terminal gate rejects obsolete source/generation completions.
+Independent waits cannot change query authority; source end drains acquired
+final work. Logical close seals dispatch and diagnostics without waiting for
+an unreturned OCR call. Only that physical OCR worker may outlive final Rust
+owner release; template and acquisition joins remain. Its resources and native
+code must stay alive until actual return, and no replacement or forced
+termination is supplied. Retained-result extent counters are not de-duplicated
+native allocation/RSS measurements or a bound on arbitrary caller frame clones.
+
+Qualification-only startup observation uses the nondefault
+`ocr-text-watch-qualification` facade feature, forwarding only the existing ONNX
+benchmark hooks. It changes neither default wiring nor public query contracts.
+Ordered native-open and lifecycle stages, scoped mapping/retention extents and
+OS memory follow [ADR 0071](adr/0071-ocr-watch-observable-measurement-scopes.md);
+view-byte sums are not unique allocations or an opaque native memory ledger.
+
+The [lifecycle/privacy guide and example](ocr-text-watch.md) document this
+implementation. Both-target real CPU replay is verified separately from ordinary
+tests. [ADR0075](adr/0075-ocr-text-watch-workload-profiles.md) accepts target-specific
+controlled and real-startup ceilings from complete precursors. The Python-owned
+format2 profiles and schema4 runner preserve process-local statistics, endpoint
+pairing, target memory, exact accepted host/artifact/ADR identities and final
+fences. Native capture and final numerical enforcement remain separate; no
+historical template/OCR evidence pin is refreshed.
+
+The private Apple native procedure uses the direct-child bounded evidence
+channels in [ADR0076](adr/0076-bound-native-ocr-evidence-channels.md). Loader
+diagnostics are isolated from ordinary output without changing inherited
+file-size limits, native process ownership or accepted workload ceilings.
+Model-free apparatus verification does not qualify ScreenCaptureKit scenarios.
+
 ### Bounded template-presence queries
 
 `Session::start_template_watch` accepts one owned `TemplateWatchRequest`: prepared
@@ -2707,11 +2809,13 @@ diagnostic-emission lock precedes query state only while copying a payload;
 state-mutation paths never acquire it. Mapping-cache and worker-wake locks are
 independent. Capture waits, pixel mapping, exact byte comparison, backend work,
 caller clocks, diagnostic queue emission, waiter notification, and thread
-teardown run with no state guard held. Close refuses
-new queries, cancels pull acquisition, wakes waits, prevents later admission,
-and leaves in-flight resources owned until their late call returns; it never
-waits indefinitely for an uninterruptible backend. Query, session, and
-engine-scheduler close are idempotent.
+teardown run with no state guard held. Logical close refuses new queries,
+cancels pull acquisition, wakes waits and prevents later admission without
+joining analysis work. In-flight resources stay owned until actual return.
+Final runtime-owner release still joins template and acquisition workers; an
+unreturned template backend can therefore hold that final release. Only the
+OCR-specific physical owner follows the selective detach rule above. Query,
+session and engine-scheduler logical close are idempotent.
 Normal watcher diagnostics retain terminal state, final work counters, and exact
 loss accounting. Debug additionally retains nonterminal per-transition
 dispositions and intermediate counters; terminal-state dispositions remain

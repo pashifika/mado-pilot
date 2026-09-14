@@ -263,8 +263,6 @@ struct SessionCore {
     clock_anchor: (u64, MonotonicInstant),
     #[cfg(test)]
     testing_sites: u32,
-    #[cfg(test)]
-    terminal_reports: AtomicU64,
 }
 
 /// What the stream last received from this Adapter.
@@ -625,8 +623,6 @@ impl NativeSession {
             clock_anchor: anchor,
             #[cfg(test)]
             testing_sites: testing_raise_sites,
-            #[cfg(test)]
-            terminal_reports: AtomicU64::new(0),
         });
 
         let pending = PendingRegistration::new(&core);
@@ -729,11 +725,6 @@ impl NativeSession {
                 _ => Ok(()),
             },
         }
-    }
-
-    #[cfg(test)]
-    pub(crate) fn terminal_reports(&self) -> u64 {
-        self.core.terminal_reports.load(Ordering::Acquire)
     }
 
     #[cfg(test)]
@@ -867,10 +858,6 @@ impl SessionCore {
     }
 
     fn stage_frame(&self, borrowed: &BorrowedFrame<'_>, info: &FrameInfo) -> ShimStatus {
-        #[cfg(test)]
-        if (self.testing_sites & shim::PANIC_IN_RUST_CALLBACK) != 0 {
-            panic!("injected Rust frame callback panic");
-        }
         #[cfg(test)]
         if (self.testing_sites & shim::DELAY_IN_RUST_CALLBACK) != 0 {
             TESTING_DELAYED_CALLBACK_ACTIVE.store(true, Ordering::Release);
@@ -1029,8 +1016,6 @@ impl SessionCore {
     }
 
     fn on_stopped(&self, status: ShimStatus) {
-        #[cfg(test)]
-        self.terminal_reports.fetch_add(1, Ordering::AcqRel);
         let fault = match status {
             // The framework names a deliberate stop, so it is reported as one
             // rather than as a target that went away.
@@ -1460,8 +1445,6 @@ mod tests {
             clock_anchor: (0, MonotonicInstant::from_origin(Duration::ZERO)),
             #[cfg(test)]
             testing_sites: 0,
-            #[cfg(test)]
-            terminal_reports: AtomicU64::new(0),
         })
     }
 

@@ -1,4 +1,4 @@
-//! Bounded template-presence queries over maintained session frames.
+//! Bounded template and OCR text-presence queries over maintained session frames.
 //!
 //! One engine owns one finite scheduler. Sessions contribute maintained frames;
 //! query handles own terminal authority. Capture acquisition, mapping, backend
@@ -39,6 +39,16 @@ use mado_pilot_vision::prepared::PreparedTemplateInstance;
 use mado_pilot_vision::{
     ChangeDecision, ChangeDetectionPolicy, ChangeDetector, MappedMatch, MatchOptions, MatchRequest,
     MatchResult, Matcher, PreparedTemplate, RegionSelection, TemplateId,
+};
+
+#[path = "ocr_watch.rs"]
+mod ocr;
+use ocr::{OcrQueryShared, RetentionCounts};
+pub use ocr::{
+    OcrTextAnalysisRate, OcrTextOverload, OcrTextQuery, OcrTextQueryId, OcrTextQueryOutcome,
+    OcrTextQueryProgress, OcrTextQueryState, OcrTextRetainedExtent, OcrTextSchedulerDescriptor,
+    OcrTextSchedulerObservation, OcrTextStability, OcrTextStabilityKind, OcrTextTerminalOutcome,
+    OcrTextWatchRequest, OcrTextWatchResult, OcrTextWorkCounts, OcrTextWorkDisposition,
 };
 
 const WORKER_WAIT: Duration = Duration::from_millis(10);
@@ -817,6 +827,7 @@ struct QueryData {
     generation: u64,
     last_admitted: Option<MonotonicInstant>,
     rate_eligible_at: Option<MonotonicInstant>,
+    barrier_deferred: bool,
     stability: StabilityState,
     work: TemplateWorkCounts,
     #[cfg(feature = "benchmark-instrumentation")]
@@ -1087,6 +1098,10 @@ impl QueryShared {
 
     fn enqueue(self: &Arc<Self>, frame: Frame, now: MonotonicInstant) {
         let stamp = frame.stamp();
+        let barrier = self
+            .scheduler
+            .upgrade()
+            .is_some_and(|scheduler| scheduler.mapping_barrier.load(Ordering::Acquire));
         let mut state = lock(&self.state);
         if state.terminal.is_some() || stamp.stream() != self.session_stream() {
             return;
@@ -1119,11 +1134,20 @@ impl QueryShared {
                 }
             }
         }
+        let preserve_age = state.barrier_deferred || barrier;
+        let eligible_since = if preserve_age {
+            state
+                .pending
+                .as_ref()
+                .map_or(now, |pending| pending.eligible_since)
+        } else {
+            now
+        };
         let superseded = state
             .pending
             .replace(PendingFrame {
                 frame,
-                eligible_since: now,
+                eligible_since,
             })
             .is_some();
         if superseded {
@@ -1132,12 +1156,51 @@ impl QueryShared {
         for _ in 0..superseded_count {
             state.work.increment(TemplateWorkDisposition::Superseded);
         }
-        state.rate_eligible_at = None;
+        if !preserve_age {
+            state.rate_eligible_at = None;
+        }
+        let deferred = preserve_age && self.apply_mapping_barrier(&mut state);
         drop(state);
         if superseded_count != 0 {
             self.emit(Some(TemplateWorkDisposition::Superseded), false);
         }
+        if deferred {
+            self.emit(Some(TemplateWorkDisposition::DeferredRate), false);
+        }
         self.changed.notify_all();
+    }
+
+    // The scheduler calls this under admission before closing the OCR mapping
+    // barrier. No host clock is needed: a rate floor cannot predate this
+    // pending obligation, even if the last admission was a long time ago.
+    fn defer_mapping_barrier(&self) -> bool {
+        self.apply_mapping_barrier(&mut lock(&self.state))
+    }
+
+    fn apply_mapping_barrier(&self, state: &mut QueryData) -> bool {
+        if state.terminal.is_some() || state.pending.is_none() {
+            return false;
+        }
+        state.barrier_deferred = true;
+        if self.rate.minimum_interval().is_zero() {
+            return false;
+        }
+        let Some(eligible) = state
+            .last_admitted
+            .and_then(|last| last.checked_add(self.rate.minimum_interval()))
+        else {
+            return false;
+        };
+        let Some(pending) = state.pending.as_mut() else {
+            return false;
+        };
+        if eligible <= pending.eligible_since {
+            return false;
+        }
+        pending.eligible_since = eligible;
+        state.rate_eligible_at = Some(eligible);
+        state.work.increment(TemplateWorkDisposition::DeferredRate);
+        true
     }
 
     fn session_stream(&self) -> mado_pilot_core::StreamId {
@@ -1154,8 +1217,18 @@ impl QueryShared {
     }
 
     fn has_admitted_or_considered(&self, stamp: FrameStamp) -> bool {
+        let barrier = self
+            .scheduler
+            .upgrade()
+            .is_some_and(|scheduler| scheduler.mapping_barrier.load(Ordering::Acquire));
+        let deferred = barrier && self.defer_mapping_barrier();
         let state = lock(&self.state);
-        state.terminal.is_some()
+        let considered = state.terminal.is_some()
+            || (barrier
+                && state
+                    .pending
+                    .as_ref()
+                    .is_some_and(|pending| pending.frame.stamp() == stamp))
             || state
                 .in_flight
                 .iter()
@@ -1173,7 +1246,12 @@ impl QueryShared {
                     .is_some_and(|pending| pending.frame.stamp() == stamp))
             || state
                 .last_frame
-                .is_some_and(|last| !matches!(last.order(&stamp), Ok(FrameOrder::Before)))
+                .is_some_and(|last| !matches!(last.order(&stamp), Ok(FrameOrder::Before)));
+        drop(state);
+        if deferred {
+            self.emit(Some(TemplateWorkDisposition::DeferredRate), false);
+        }
+        considered
     }
 
     fn candidate(&self) -> Option<CandidateSnapshot> {
@@ -1292,7 +1370,8 @@ impl QueryShared {
                 || now.saturating_duration_since(
                     candidate
                         .rate_eligible_at
-                        .unwrap_or(candidate.eligible_since),
+                        .unwrap_or(candidate.eligible_since)
+                        .max(candidate.eligible_since),
                 ) <= expiry
             {
                 false
@@ -1461,6 +1540,7 @@ impl QueryShared {
             state.last_frame = Some(stamp);
             state.previous_mapping = mapping;
             state.rate_eligible_at = None;
+            state.barrier_deferred = false;
             state.work.increment(TemplateWorkDisposition::SkippedChange);
             drop(state);
             drop(authority);
@@ -1526,6 +1606,7 @@ impl QueryShared {
         state.generation = generation;
         state.last_admitted = Some(now);
         state.rate_eligible_at = None;
+        state.barrier_deferred = false;
         state.pending = None;
         state.processing = None;
         let Some(in_flight) = state.in_flight.iter_mut().find(|slot| slot.is_none()) else {
@@ -1758,6 +1839,7 @@ pub(crate) struct WatchSession {
     activated: AtomicBool,
     active_queries: AtomicUsize,
     activation: Mutex<()>,
+    physical_ocr: AtomicUsize,
     terminal_authority: Mutex<Option<TemplateTerminalOutcome>>,
     state: Mutex<WatchSessionState>,
     progress: Condvar,
@@ -1767,6 +1849,8 @@ pub(crate) struct WatchSession {
 struct WatchSessionState {
     queries: Vec<Weak<QueryShared>>,
     query_cursor: usize,
+    ocr_queries: Vec<Weak<OcrQueryShared>>,
+    ocr_query_cursor: u64,
     acquisition_cancel: Option<mado_pilot_core::CancellationToken>,
     acquisition_running: bool,
     acquisition_exiting: bool,
@@ -1791,6 +1875,7 @@ impl WatchSession {
             source_ended: AtomicBool::new(false),
             activated: AtomicBool::new(false),
             active_queries: AtomicUsize::new(0),
+            physical_ocr: AtomicUsize::new(0),
             activation: Mutex::new(()),
             terminal_authority: Mutex::new(None),
             state: Mutex::new(WatchSessionState::default()),
@@ -1925,6 +2010,7 @@ impl WatchSession {
                 generation: 0,
                 last_admitted: None,
                 rate_eligible_at: None,
+                barrier_deferred: false,
                 stability: StabilityState::default(),
                 work: TemplateWorkCounts::new(),
                 #[cfg(feature = "benchmark-instrumentation")]
@@ -2113,7 +2199,11 @@ impl WatchSession {
             let needs_current = self
                 .query_snapshot()
                 .iter()
-                .any(|query| query.needs_current());
+                .any(|query| query.needs_current())
+                || self
+                    .ocr_snapshot()
+                    .iter()
+                    .any(|query| query.needs_current());
             let request = match (needs_current, last) {
                 (true, _) | (_, None) => FrameRequest::latest(),
                 (false, Some(last)) => FrameRequest::newer_than(last),
@@ -2175,6 +2265,10 @@ impl WatchSession {
     fn publish(&self, frame: Frame) {
         let scheduler = self.scheduler.upgrade();
         if let Some(scheduler) = &scheduler {
+            // Publication starts at the same gate as class selection. Release
+            // before querying clocks or enqueueing, while `publishing` fences
+            // every worker until the complete session snapshot is visible.
+            let _admission = lock(&scheduler.admission);
             scheduler.publishing.fetch_add(1, Ordering::AcqRel);
         }
         let queries = self.query_snapshot();
@@ -2185,6 +2279,9 @@ impl WatchSession {
             }
             let now = query.operation.now();
             query.enqueue(frame.clone(), now);
+        }
+        for query in self.ocr_snapshot() {
+            query.enqueue(frame.clone());
         }
         if let Some(scheduler) = scheduler {
             scheduler
@@ -2251,6 +2348,10 @@ impl WatchSession {
                 .query_snapshot()
                 .iter()
                 .all(|query| query.has_admitted_or_considered(stamp))
+                && self
+                    .ocr_snapshot()
+                    .iter()
+                    .all(|query| query.considered(stamp))
             {
                 return;
             }
@@ -2359,6 +2460,9 @@ impl WatchSession {
     }
 
     fn deactivate_locked(&self) -> bool {
+        if self.physical_ocr.load(Ordering::Acquire) != 0 {
+            return false;
+        }
         let deactivated = self.activated.swap(false, Ordering::AcqRel);
         if deactivated && let Some(scheduler) = self.scheduler.upgrade() {
             scheduler.active_sessions.fetch_sub(1, Ordering::AcqRel);
@@ -2373,6 +2477,9 @@ impl WatchSession {
         for query in self.query_snapshot() {
             query.terminate(outcome.clone());
         }
+        for query in self.ocr_snapshot() {
+            query.terminate(ocr::source_outcome(&outcome));
+        }
     }
 
     fn terminate_idle_queries(&self) {
@@ -2380,6 +2487,9 @@ impl WatchSession {
             if query.is_idle() {
                 query.terminate(TemplateTerminalOutcome::SessionClosed);
             }
+        }
+        for query in self.ocr_snapshot() {
+            query.sweep();
         }
     }
 }
@@ -2394,6 +2504,7 @@ struct WatchThreadState {
     workers: Vec<JoinHandle<()>>,
     supervisor: Option<JoinHandle<()>>,
     acquisitions: Vec<AcquisitionThread>,
+    scheduler: Weak<WatchScheduler>,
 }
 
 #[derive(Debug)]
@@ -2404,12 +2515,13 @@ struct AcquisitionThread {
 impl WatchThreadOwner {
     fn ensure_scheduler_threads(&self, scheduler: &Arc<WatchScheduler>) -> Result<()> {
         let mut state = lock(&self.state);
+        state.scheduler = Arc::downgrade(scheduler);
         while state.workers.len() < MAX_IN_FLIGHT_ANALYSES {
             let index = state.workers.len();
             let scheduler = Arc::clone(scheduler);
             let worker = thread::Builder::new()
                 .name(format!("mado-watch-worker-{index}"))
-                .spawn(move || scheduler.worker_loop())
+                .spawn(move || scheduler.worker_loop(index))
                 .map_err(|error| {
                     Error::new(
                         Status::Internal,
@@ -2498,6 +2610,15 @@ impl WatchThreadOwner {
 
 impl Drop for WatchThreadOwner {
     fn drop(&mut self) {
+        let scheduler = lock(&self.state).scheduler.upgrade();
+        if let Some(scheduler) = &scheduler {
+            scheduler.close();
+        }
+        // Dispatch is sealed before classification. Only the physical OCR
+        // owner can detach; all existing acquisition/template joins remain.
+        let detached_ocr = scheduler
+            .as_ref()
+            .and_then(|scheduler| lock(&scheduler.admission).ocr_worker);
         let current = thread::current().id();
         let state = self
             .state
@@ -2511,8 +2632,8 @@ impl Drop for WatchThreadOwner {
                 let _joined = acquisition.handle.join();
             }
         }
-        for worker in workers {
-            if worker.thread().id() != current {
+        for (index, worker) in workers.into_iter().enumerate() {
+            if worker.thread().id() != current && detached_ocr != Some(index) {
                 let _joined = worker.join();
             }
         }
@@ -2544,10 +2665,52 @@ pub(crate) struct WatchScheduler {
     publishing: AtomicUsize,
     publication_generation: AtomicU64,
     registry: Mutex<SchedulerRegistry>,
-    admission: Mutex<()>,
+    admission: Mutex<DispatchState>,
     cache: Mutex<MappingCache>,
     wake_state: Mutex<u64>,
     wake_condition: Condvar,
+    ocr_used: AtomicBool,
+    mapping_barrier: AtomicBool,
+    retention: std::sync::LazyLock<Arc<Mutex<RetentionCounts>>>,
+}
+
+#[derive(Debug, Default)]
+struct DispatchState {
+    template_mappings: usize,
+    ocr_turn: bool,
+    ocr_mapping: bool,
+    ocr_worker: Option<usize>,
+    ocr_query: Option<Weak<OcrQueryShared>>,
+    ocr_high_water: u32,
+    next_ocr: bool,
+    ocr_ready: bool,
+    ocr_session_cursor: u64,
+}
+
+enum WatchWork {
+    Template(ClaimedWork),
+    Ocr(ocr::OcrWork),
+}
+
+struct TemplateMappingStage<'a> {
+    scheduler: &'a WatchScheduler,
+    reserved: bool,
+}
+
+impl TemplateMappingStage<'_> {
+    fn release(&mut self) {
+        if self.reserved {
+            self.reserved = false;
+            lock(&self.scheduler.admission).template_mappings -= 1;
+            self.scheduler.wake();
+        }
+    }
+}
+
+impl Drop for TemplateMappingStage<'_> {
+    fn drop(&mut self) {
+        self.release();
+    }
 }
 
 #[derive(Debug, Default)]
@@ -2560,6 +2723,7 @@ struct SchedulerRegistry {
 struct MappingCache {
     entries: std::collections::VecDeque<MappingCacheEntry>,
     bytes: usize,
+    high_water: usize,
 }
 
 #[derive(Debug)]
@@ -2570,7 +2734,10 @@ struct MappingCacheEntry {
 
 impl MappingCache {
     fn remember(&mut self, mapped: &MappedMatch) -> Option<Weak<CpuMapping>> {
-        let mapping = mapped.pixels()?;
+        self.remember_pixels(mapped.pixels()?)
+    }
+
+    fn remember_pixels(&mut self, mapping: &CpuMapping) -> Option<Weak<CpuMapping>> {
         let bytes = mapping.bytes().len();
         if bytes > MAPPED_CACHE_BYTES {
             return None;
@@ -2597,6 +2764,7 @@ impl MappingCache {
         let weak = Arc::downgrade(&mapping);
         self.entries.push_back(MappingCacheEntry { mapping, bytes });
         self.bytes = self.bytes.saturating_add(bytes);
+        self.high_water = self.high_water.max(self.bytes);
         Some(weak)
     }
 }
@@ -2617,10 +2785,15 @@ impl WatchRuntime {
             publishing: AtomicUsize::new(0),
             publication_generation: AtomicU64::new(0),
             registry: Mutex::new(SchedulerRegistry::default()),
-            admission: Mutex::new(()),
+            admission: Mutex::new(DispatchState::default()),
             cache: Mutex::new(MappingCache::default()),
             wake_state: Mutex::new(0),
             wake_condition: Condvar::new(),
+            ocr_used: AtomicBool::new(false),
+            mapping_barrier: AtomicBool::new(false),
+            retention: std::sync::LazyLock::new(|| {
+                Arc::new(Mutex::new(RetentionCounts::default()))
+            }),
         });
         Self {
             scheduler,
@@ -2632,7 +2805,10 @@ impl WatchRuntime {
         self.scheduler.descriptor()
     }
 
-    pub(crate) fn register_session(&self, capture: Arc<dyn CaptureSession>) -> Arc<WatchSession> {
+    pub(crate) fn register_session(
+        &self,
+        capture: Arc<dyn CaptureSession>,
+    ) -> Result<Arc<WatchSession>> {
         self.scheduler.register_session(capture)
     }
 
@@ -2659,15 +2835,23 @@ impl WatchScheduler {
     pub(crate) fn register_session(
         self: &Arc<Self>,
         capture: Arc<dyn CaptureSession>,
-    ) -> Arc<WatchSession> {
-        let id = self.next_session.fetch_add(1, Ordering::AcqRel);
-        Arc::new(WatchSession::new(
+    ) -> Result<Arc<WatchSession>> {
+        let id = self
+            .next_session
+            .fetch_update(Ordering::AcqRel, Ordering::Acquire, |id| id.checked_add(1))
+            .map_err(|_| {
+                Error::new(
+                    Status::LimitExceeded,
+                    "watcher session identity space was exhausted",
+                )
+            })?;
+        Ok(Arc::new(WatchSession::new(
             id,
             capture.description(),
             capture,
             Arc::downgrade(self),
             self.threads.clone(),
-        ))
+        )))
     }
 
     fn issue_query_id(&self) -> Option<TemplateQueryId> {
@@ -2772,17 +2956,24 @@ impl WatchScheduler {
                     ready = true;
                 }
             }
+            for query in session.ocr_snapshot() {
+                query.sweep();
+                ready |= query.ready_for_dispatch();
+            }
         }
         if ready {
             self.wake();
         }
     }
 
-    fn worker_loop(self: Arc<Self>) {
+    fn worker_loop(self: Arc<Self>, index: usize) {
         let mut observed_wake = 0;
         while !self.closed.load(Ordering::Acquire) {
-            if let Some(work) = self.next_work() {
-                self.process(work);
+            if let Some(work) = self.next_dispatch(index) {
+                match work {
+                    WatchWork::Template(work) => self.process(work),
+                    WatchWork::Ocr(work) => self.process_ocr(work),
+                }
                 continue;
             }
             let state = lock(&self.wake_state);
@@ -2841,10 +3032,16 @@ impl WatchScheduler {
                 let peers = self.eligible_coalescing_peers(&query, stamp, generation);
                 #[cfg(test)]
                 run_pre_admission_test_hook();
-                let _admission = lock(&self.admission);
+                let mut admission = lock(&self.admission);
                 if self.closed.load(Ordering::Acquire)
                     || self.publishing.load(Ordering::Acquire) != 0
                 {
+                    return None;
+                }
+                if admission.ocr_mapping || admission.ocr_turn {
+                    return None;
+                }
+                if admission.ocr_worker.is_none() && admission.next_ocr && admission.ocr_ready {
                     return None;
                 }
                 let Some(session) = query.session.upgrade() else {
@@ -2859,7 +3056,7 @@ impl WatchScheduler {
                 });
                 if let Some(outcome) = authority {
                     drop(_session_authority);
-                    drop(_admission);
+                    drop(admission);
                     query.terminate(outcome);
                     continue;
                 }
@@ -2875,6 +3072,8 @@ impl WatchScheduler {
                         release_work_claims(&work);
                         return None;
                     }
+                    admission.template_mappings += 1;
+                    admission.next_ocr = true;
                     return Some(work);
                 }
             }
@@ -2918,7 +3117,8 @@ impl WatchScheduler {
                 if now.saturating_duration_since(
                     candidate
                         .rate_eligible_at
-                        .unwrap_or(candidate.eligible_since),
+                        .unwrap_or(candidate.eligible_since)
+                        .max(candidate.eligible_since),
                 ) > expiry
                 {
                     query.expire_if_current(candidate, now, expiry);
@@ -3015,6 +3215,10 @@ impl WatchScheduler {
     }
 
     fn process(&self, work: ClaimedWork) {
+        let mut mapping_stage = TemplateMappingStage {
+            scheduler: self,
+            reserved: true,
+        };
         let mut claimed = Vec::with_capacity(work.peers.len() + 1);
         claimed.push((work.query, work.frame));
         claimed.extend(work.peers);
@@ -3039,7 +3243,9 @@ impl WatchScheduler {
             &representative.template,
             representative.options,
         );
-        let mapped = match self.matcher.map_match(&request, &representative.operation) {
+        let mapping_result = self.matcher.map_match(&request, &representative.operation);
+        mapping_stage.release();
+        let mapped = match mapping_result {
             Ok(mapped) => mapped,
             Err(error)
                 if matches!(error.status(), Status::Cancelled | Status::DeadlineExceeded)
@@ -3197,6 +3403,11 @@ impl WatchScheduler {
         let sessions = std::mem::take(&mut lock(&self.registry).sessions);
         for session in sessions {
             session.close(TemplateTerminalOutcome::SchedulerClosed);
+        }
+        if self.ocr_used.load(Ordering::Acquire)
+            && let Some(diagnostics) = &self.diagnostics
+        {
+            diagnostics.release_producer();
         }
         self.wake();
     }
@@ -3448,7 +3659,9 @@ mod tests {
                 &OperationContext::new(),
             )
             .expect("opened controlled capture");
-        let session = runtime.register_session(capture_session);
+        let session = runtime
+            .register_session(capture_session)
+            .expect("registered watch session");
         let query = session
             .start_query(TemplateWatchRequest::new(
                 template.clone(),
@@ -3563,7 +3776,9 @@ mod tests {
                 &OperationContext::new(),
             )
             .expect("opened controlled capture");
-        let session = runtime.register_session(capture_session);
+        let session = runtime
+            .register_session(capture_session)
+            .expect("registered watch session");
         let first = session
             .start_query(TemplateWatchRequest::new(
                 template.clone(),

@@ -19,6 +19,7 @@ use std::sync::{Arc, Mutex};
 use std::thread;
 use std::time::Duration;
 
+use crate::controlled_ocr::CompletionGate;
 use mado_pilot_capture::{
     CaptureFault, Continuity, CpuPixels, FrameDescriptor, FrameStorage, PixelFormat,
     StoragePublication,
@@ -57,6 +58,9 @@ struct ProducerState {
     conversion: Mutex<Conversion>,
     conversions: AtomicUsize,
     drops: AtomicUsize,
+    conversion_gate: Mutex<Option<Arc<CompletionGate>>>,
+    device_mapping: Mutex<()>,
+    conversion_attempts: AtomicUsize,
 }
 
 impl ControlledProducer {
@@ -83,6 +87,9 @@ impl ControlledProducer {
                 conversion: Mutex::new(Conversion::Immediate),
                 conversions: AtomicUsize::new(0),
                 drops: AtomicUsize::new(0),
+                conversion_gate: Mutex::new(None),
+                device_mapping: Mutex::new(()),
+                conversion_attempts: AtomicUsize::new(0),
             }),
         })
     }
@@ -90,6 +97,17 @@ impl ControlledProducer {
     /// Sets what the next conversions do.
     pub fn set_conversion(&self, conversion: Conversion) {
         *self.inner.conversion.lock().expect("uncontended") = conversion;
+    }
+
+    /// Holds conversion independently of operation cancellation, like a native driver.
+    pub fn set_conversion_gate(&self, gate: Option<Arc<CompletionGate>>) {
+        *self.inner.conversion_gate.lock().expect("uncontended") = gate;
+    }
+
+    /// Counts conversion entries, including callers waiting on shared-device mapping.
+    #[must_use]
+    pub fn conversion_attempts(&self) -> usize {
+        self.inner.conversion_attempts.load(Ordering::Acquire)
     }
 
     /// Changes the extent the producer captures, as a resize does.
@@ -144,6 +162,7 @@ impl ControlledProducer {
             producer: Arc::clone(&self.inner),
             descriptor: self.descriptor(),
             fill,
+            mapping: Mutex::new(()),
         }))
     }
 
@@ -225,6 +244,7 @@ struct ControlledStorage {
     producer: Arc<ProducerState>,
     descriptor: FrameDescriptor,
     fill: u8,
+    mapping: Mutex<()>,
 }
 
 impl fmt::Debug for ControlledStorage {
@@ -244,6 +264,16 @@ impl Drop for ControlledStorage {
     }
 }
 
+struct ConversionCompletion(Option<Arc<CompletionGate>>);
+
+impl Drop for ConversionCompletion {
+    fn drop(&mut self) {
+        if let Some(gate) = &self.0 {
+            gate.complete();
+        }
+    }
+}
+
 impl FrameStorage for ControlledStorage {
     fn descriptor(&self) -> FrameDescriptor {
         self.descriptor
@@ -257,6 +287,22 @@ impl FrameStorage for ControlledStorage {
 
     fn read_cpu(&self, operation: &OperationContext) -> Result<Arc<CpuPixels>> {
         let mut attempt = Operation::admit(operation)?;
+        self.producer
+            .conversion_attempts
+            .fetch_add(1, Ordering::AcqRel);
+        let _frame_mapping = self.mapping.lock().expect("uncontended");
+        let _device_mapping = self.producer.device_mapping.lock().expect("uncontended");
+        let gate = self
+            .producer
+            .conversion_gate
+            .lock()
+            .expect("uncontended")
+            .clone();
+        if let Some(gate) = &gate {
+            gate.enter_and_wait();
+        }
+        let _completion = ConversionCompletion(gate);
+        attempt.checkpoint()?;
         let conversion = *self.producer.conversion.lock().expect("uncontended");
         if let Conversion::Fails(fault) = conversion {
             return Err(fault.into());

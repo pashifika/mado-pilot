@@ -1,13 +1,12 @@
 //! Backend-independent OCR admission, validation, normalization, and commit.
 
-use std::{mem::size_of, sync::Arc};
+use std::{fmt, mem::size_of, sync::Arc};
 
-use mado_pilot_capture::{Frame, FrameView, PixelFormat};
+use mado_pilot_capture::{CpuMapping, Frame, FrameView, PixelFormat};
 use mado_pilot_core::{
     CoordinateSpace, Error, GeometryFault, Operation, OperationContext, PixelRect, Point, Result,
     TransformSnapshot,
 };
-use unicode_normalization::{IsNormalized, UnicodeNormalization, is_nfc_quick};
 
 use crate::backend::{
     BackendCandidate, BackendInterests, BackendRequest, OcrBackend, OcrBackendDescriptor,
@@ -15,6 +14,7 @@ use crate::backend::{
 };
 use crate::fault::OcrFault;
 use crate::model::OcrModelIdentity;
+use crate::normalization::normalize_backend;
 use crate::request::{MAX_OCR_ZONES, OcrRegion, OcrRequest, OcrZone, OcrZoneScanRequest};
 use crate::result::{Confidence, OcrQuadrilateral, OcrResult, OcrZoneScanResult, RecognizedRegion};
 
@@ -71,46 +71,7 @@ impl OcrRecognizer {
     /// Returns typed identity, geometry, malformed-output, backend, deadline, or
     /// cancellation failures. No partial result is committed.
     pub fn recognize(&self, request: OcrRequest<'_>) -> Result<OcrResult> {
-        let operation = request.operation();
-        let mut attempt = Operation::admit(operation)?;
-        let descriptor = self.backend.descriptor();
-        validate_selection(&descriptor, request.backend(), request.model_identity())?;
-
-        let frame = request.frame();
-        let transform = *frame.transform();
-        let effective_region = resolve_region(&transform, request.source_region())?;
-        preflight_output(&transform, effective_region, request.output_space())?;
-
-        let view = FrameView::new(frame.clone(), effective_region)?;
-        let pixels = view.map(descriptor.format(), operation)?;
-        attempt.checkpoint()?;
-
-        let mut normalized = Normalizer::new(
-            operation,
-            effective_region,
-            &transform,
-            request.output_space(),
-        );
-        let backend_outcome = self.backend.recognize(
-            &BackendRequest::new(&pixels, None, MAX_CANDIDATES, MAX_BACKEND_TEXT_BYTES),
-            &mut normalized,
-            operation,
-        );
-        attempt.checkpoint()?;
-        backend_outcome?;
-        let regions_outcome = normalized.finish();
-        attempt.checkpoint()?;
-        let regions = regions_outcome?;
-
-        let result = OcrResult::new(
-            frame.stamp(),
-            transform,
-            effective_region,
-            request.output_space(),
-            descriptor,
-            Arc::from(regions),
-        );
-        attempt.commit(result).map_err(Error::from)
+        prepare(self, request)?.execute()
     }
 
     /// Scans one through eight zones through one shared source envelope.
@@ -194,6 +155,132 @@ impl OcrRecognizer {
         backend_outcome?;
         attempt.commit(()).map_err(Error::from)
     }
+}
+
+/// One validated, mapped OCR operation bound to its original source and authority.
+///
+/// Construction is restricted to [`prepare`]; execution consumes this value and
+/// accepts no replacement request, context, frame, or backend.
+#[doc(hidden)]
+pub struct PreparedOcr {
+    view: FrameView,
+    pixels: CpuMapping,
+    output_space: CoordinateSpace,
+    descriptor: OcrBackendDescriptor,
+    backend: Arc<dyn OcrBackend>,
+    operation: OperationContext,
+}
+
+impl fmt::Debug for PreparedOcr {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        formatter
+            .debug_struct("PreparedOcr")
+            .field("stamp", &self.view.stamp())
+            .field("effective_region", &self.view.region())
+            .field("output_space", &self.output_space)
+            .field("backend", self.descriptor.backend_identity())
+            .field("model", self.descriptor.model())
+            .field("profile", self.descriptor.profile())
+            .field("mapped_bytes", &self.pixels.bytes().len())
+            .finish()
+    }
+}
+
+impl PreparedOcr {
+    /// Returns the original immutable source frame.
+    #[must_use]
+    pub const fn frame(&self) -> &Frame {
+        self.view.frame()
+    }
+
+    /// Returns the exact mapping that execution will consume.
+    #[must_use]
+    pub const fn pixels(&self) -> &CpuMapping {
+        &self.pixels
+    }
+
+    /// Returns the resolved capture-pixel source region.
+    #[must_use]
+    pub const fn effective_region(&self) -> PixelRect {
+        self.view.region()
+    }
+
+    /// Returns the requested output coordinate space.
+    #[must_use]
+    pub const fn output_space(&self) -> CoordinateSpace {
+        self.output_space
+    }
+
+    /// Returns the identity used to validate and map this operation.
+    #[must_use]
+    pub const fn descriptor(&self) -> &OcrBackendDescriptor {
+        &self.descriptor
+    }
+
+    /// Executes and commits this exact operation without mapping again.
+    ///
+    /// # Errors
+    ///
+    /// Returns the original authority's interruption ahead of a simultaneous
+    /// backend or malformed-output failure. No partial result is committed.
+    pub fn execute(self) -> Result<OcrResult> {
+        let operation = &self.operation;
+        let mut attempt = Operation::admit(operation)?;
+        let transform = *self.view.transform();
+        let effective_region = self.view.region();
+        let mut normalized =
+            Normalizer::new(operation, effective_region, &transform, self.output_space);
+        let backend_outcome = self.backend.recognize(
+            &BackendRequest::new(&self.pixels, None, MAX_CANDIDATES, MAX_BACKEND_TEXT_BYTES),
+            &mut normalized,
+            operation,
+        );
+        attempt.checkpoint()?;
+        backend_outcome?;
+        let regions_outcome = normalized.finish();
+        attempt.checkpoint()?;
+        let regions = regions_outcome?;
+        let result = OcrResult::new(
+            self.view.stamp(),
+            transform,
+            effective_region,
+            self.output_space,
+            self.descriptor,
+            Arc::from(regions),
+        );
+        attempt.commit(result).map_err(Error::from)
+    }
+}
+
+/// Validates and maps one exact singular OCR request without running its backend.
+///
+/// The watch-only source/mapping ceiling is a runtime admission policy, not a
+/// new restriction on one-shot recognition.
+///
+/// # Errors
+///
+/// Preserves singular operation, selection, geometry, and mapping error order.
+#[doc(hidden)]
+pub fn prepare(recognizer: &OcrRecognizer, request: OcrRequest<'_>) -> Result<PreparedOcr> {
+    let operation = request.operation();
+    let mut attempt = Operation::admit(operation)?;
+    let descriptor = recognizer.backend.descriptor();
+    validate_selection(&descriptor, request.backend(), request.model_identity())?;
+    let frame = request.frame();
+    let transform = frame.transform();
+    let effective_region = resolve_region(transform, request.source_region())?;
+    preflight_output(transform, effective_region, request.output_space())?;
+    let view = FrameView::new(frame.clone(), effective_region)?;
+    let pixels = view.map(descriptor.format(), operation)?;
+    attempt.checkpoint()?;
+    Ok(PreparedOcr {
+        view,
+        pixels,
+        output_space: request.output_space(),
+        descriptor,
+        backend: Arc::clone(&recognizer.backend),
+        operation: operation.clone(),
+    })
 }
 
 fn validate_selection(
@@ -392,7 +479,7 @@ impl<'a> Normalizer<'a> {
             self.transform,
             self.output_space,
         )?;
-        let text = normalize_text(candidate.text())?;
+        let text = normalize_backend(candidate.text(), self.operation)?;
         let region = if text.is_empty() {
             None
         } else {
@@ -529,7 +616,7 @@ impl<'a> GroupedNormalizer<'a> {
             self.transform,
             self.output_space,
         )?;
-        let text = normalize_text(candidate.text())?;
+        let text = normalize_backend(candidate.text(), self.operation)?;
 
         let region = if membership == 0 || text.is_empty() {
             None
@@ -623,25 +710,6 @@ impl OcrCandidateSink for GroupedNormalizer<'_> {
     }
 }
 
-fn normalize_text(raw: &[u8]) -> Result<Arc<str>> {
-    if raw.len() > MAX_BACKEND_TEXT_BYTES {
-        return Err(OcrFault::BackendTextAboveCeiling.into());
-    }
-    let text = std::str::from_utf8(raw).map_err(|_| Error::from(OcrFault::BackendTextNotUtf8))?;
-    let owned;
-    let nfc = if is_nfc_quick(text.chars()) == IsNormalized::Yes {
-        text
-    } else {
-        owned = text.nfc().collect::<String>();
-        &owned
-    };
-    let trimmed = nfc.trim();
-    if trimmed.len() > MAX_TEXT_BYTES {
-        return Err(OcrFault::BackendTextAboveCeiling.into());
-    }
-    Ok(Arc::from(trimmed))
-}
-
 fn normalize_confidence(value: f64) -> Result<Confidence> {
     if !value.is_finite() || !(0.0..=1.0).contains(&value) {
         return Err(OcrFault::BackendConfidenceOutOfRange.into());
@@ -698,21 +766,27 @@ fn validate_relative_quad(points: [(f64, f64); 4], region: PixelRect) -> Result<
 
 #[cfg(test)]
 mod tests {
-    use std::mem::size_of;
+    use std::sync::Arc;
+    use std::sync::atomic::{AtomicUsize, Ordering};
+    use std::time::Duration;
 
     use super::{
-        GroupedNormalizedCandidate, MAX_AGGREGATE_NORMALIZED_TEXT_BYTES,
-        MAX_AGGREGATE_RAW_TEXT_BYTES, MAX_BACKEND_TEXT_BYTES, MAX_CANDIDATES,
-        MAX_GROUPED_RESULT_BYTES, MAX_MAPPING_BYTES, MAX_MEMBERSHIP_INDEX_BYTES, MAX_OCR_ZONES,
-        MAX_TEMPORARY_GROUPED_BYTES, MAX_TEXT_BYTES, MAX_ZONE_MEMBERSHIPS, enforce_mapping_ceiling,
-        normalize_confidence, normalize_text, validate_relative_quad,
+        BackendCandidate, BackendRequest, MAX_BACKEND_TEXT_BYTES, MAX_MAPPING_BYTES,
+        MAX_TEXT_BYTES, OcrBackend, OcrBackendDescriptor, OcrBackendIdentity, OcrCandidateSink,
+        OcrRecognizer, OcrRegion, OcrRequest, enforce_mapping_ceiling, normalize_backend,
+        normalize_confidence, prepare, validate_relative_quad,
     };
-    use crate::{OcrFault, OcrZoneScanResult, RecognizedRegion};
-    use mado_pilot_core::{PixelRect, Status};
+    use crate::{BackendId, BackendVersion, OcrFault, OcrModelIdentity};
+    use mado_pilot_capture::{CpuPixels, Frame, FrameDescriptor, FrameStorage, PixelFormat};
+    use mado_pilot_core::{
+        CancellationToken, ClipPolicy, Clock, CoordinateSpace, GeometryRevision, IdentityIssuer,
+        MonotonicInstant, OperationContext, PixelExtent, PixelRect, Rect, Result, Status,
+        StreamCursor, TransformSnapshot,
+    };
 
     #[test]
     fn text_is_nfc_normalized_trimmed_and_confidence_is_rounded() {
-        let text = normalize_text("  e\u{301}  ".as_bytes()).unwrap();
+        let text = normalize_backend("  e\u{301}  ".as_bytes(), &OperationContext::new()).unwrap();
         let confidence = normalize_confidence(0.123_456).unwrap();
 
         assert_eq!(&*text, "é");
@@ -728,7 +802,7 @@ mod tests {
 
     #[test]
     fn malformed_utf8_and_non_convex_geometry_are_refused() {
-        let error = normalize_text(&[0xff]).unwrap_err();
+        let error = normalize_backend(&[0xff], &OperationContext::new()).unwrap_err();
         assert_eq!(error.status(), Status::VisionFailed);
         let region = PixelRect::new(0, 0, 20, 20).unwrap();
         let error =
@@ -738,35 +812,32 @@ mod tests {
     }
 
     #[test]
-    fn aggregate_grouped_ceilings_are_entailed_by_admission_bounds() {
-        assert_eq!(MAX_CANDIDATES * MAX_OCR_ZONES, MAX_ZONE_MEMBERSHIPS);
-        assert_eq!(
-            MAX_CANDIDATES * MAX_BACKEND_TEXT_BYTES,
-            MAX_AGGREGATE_RAW_TEXT_BYTES
-        );
-        assert_eq!(
-            MAX_CANDIDATES * MAX_TEXT_BYTES,
-            MAX_AGGREGATE_NORMALIZED_TEXT_BYTES
-        );
+    fn backend_text_keeps_raw_limits_and_empty_output_separate_from_literal_admission() {
+        let context = OperationContext::new();
+        let maximum_edges = vec![b' '; MAX_BACKEND_TEXT_BYTES];
         assert!(
-            MAX_CANDIDATES
-                * (size_of::<GroupedNormalizedCandidate>()
-                    + size_of::<RecognizedRegion>()
-                    + size_of::<u8>())
-                <= MAX_TEMPORARY_GROUPED_BYTES
+            normalize_backend(&maximum_edges, &context)
+                .unwrap()
+                .is_empty()
+        );
+        let oversized_edges = vec![b' '; MAX_BACKEND_TEXT_BYTES + 1];
+        assert_eq!(
+            normalize_backend(&oversized_edges, &context)
+                .unwrap_err()
+                .status(),
+            Status::VisionFailed
+        );
+        let exact = "e\u{301}".repeat(MAX_TEXT_BYTES / 2);
+        assert_eq!(
+            &*normalize_backend(exact.as_bytes(), &context).unwrap(),
+            "é".repeat(MAX_TEXT_BYTES / 2)
         );
         assert_eq!(
-            MAX_ZONE_MEMBERSHIPS * size_of::<u16>(),
-            MAX_MEMBERSHIP_INDEX_BYTES
+            normalize_backend(format!("{exact}x").as_bytes(), &context)
+                .unwrap_err()
+                .status(),
+            Status::VisionFailed
         );
-
-        let maximum_result_bytes = size_of::<OcrZoneScanResult>()
-            + MAX_OCR_ZONES * size_of::<PixelRect>()
-            + MAX_CANDIDATES * size_of::<RecognizedRegion>()
-            + MAX_AGGREGATE_NORMALIZED_TEXT_BYTES
-            + MAX_MEMBERSHIP_INDEX_BYTES;
-        assert!(maximum_result_bytes <= MAX_GROUPED_RESULT_BYTES);
-        assert_eq!(MAX_ZONE_MEMBERSHIPS + 1, 8_001);
     }
 
     #[test]
@@ -778,5 +849,191 @@ mod tests {
                 .status(),
             Status::LimitExceeded
         );
+    }
+
+    #[derive(Debug)]
+    struct CountedStorage {
+        descriptor: FrameDescriptor,
+        pixels: Arc<CpuPixels>,
+        conversions: Arc<AtomicUsize>,
+    }
+
+    impl FrameStorage for CountedStorage {
+        fn descriptor(&self) -> FrameDescriptor {
+            self.descriptor
+        }
+
+        fn cpu_pixels(&self) -> Option<Arc<CpuPixels>> {
+            None
+        }
+
+        fn read_cpu(&self, _operation: &OperationContext) -> Result<Arc<CpuPixels>> {
+            self.conversions.fetch_add(1, Ordering::AcqRel);
+            Ok(Arc::clone(&self.pixels))
+        }
+    }
+
+    #[derive(Debug)]
+    struct PixelBackend {
+        descriptor: OcrBackendDescriptor,
+        calls: Arc<AtomicUsize>,
+    }
+
+    impl OcrBackend for PixelBackend {
+        fn descriptor(&self) -> OcrBackendDescriptor {
+            self.descriptor.clone()
+        }
+
+        fn recognize(
+            &self,
+            request: &BackendRequest<'_>,
+            output: &mut dyn OcrCandidateSink,
+            _operation: &OperationContext,
+        ) -> Result<()> {
+            self.calls.fetch_add(1, Ordering::AcqRel);
+            let text: &[u8] = if request.pixels().bytes()[0] == 9 {
+                b"frame-nine"
+            } else {
+                b"another-frame"
+            };
+            output.push(BackendCandidate::new(
+                text,
+                [(0.0, 0.0), (1.0, 0.0), (1.0, 1.0), (0.0, 1.0)],
+                1.0,
+                0,
+            ))
+        }
+
+        fn close(&self, _operation: &OperationContext) -> Result<()> {
+            Ok(())
+        }
+    }
+
+    fn prepared_fixture() -> (Frame, Arc<AtomicUsize>, Arc<AtomicUsize>, OcrRecognizer) {
+        let descriptor =
+            FrameDescriptor::packed(PixelExtent::new(4, 3), PixelFormat::Bgra8).unwrap();
+        let conversions = Arc::new(AtomicUsize::new(0));
+        let storage = Arc::new(CountedStorage {
+            descriptor,
+            pixels: Arc::new(CpuPixels::new(
+                vec![9; descriptor.byte_len()].into_boxed_slice(),
+            )),
+            conversions: Arc::clone(&conversions),
+        });
+        let mut cursor = StreamCursor::new(IdentityIssuer::new().issue_stream().unwrap());
+        let stamp = cursor.publish(GeometryRevision::FIRST).unwrap();
+        let frame = Frame::from_storage(
+            stamp,
+            MonotonicInstant::ORIGIN,
+            TransformSnapshot::frame_only(stamp.geometry(), descriptor.extent()),
+            storage,
+        )
+        .unwrap();
+        let calls = Arc::new(AtomicUsize::new(0));
+        let backend = Arc::new(PixelBackend {
+            descriptor: OcrBackendDescriptor::new(
+                OcrBackendIdentity::new(
+                    BackendId::new("prepared-ocr-fixture").unwrap(),
+                    BackendVersion::new("1").unwrap(),
+                ),
+                OcrModelIdentity::accepted_bounded_detector(),
+                PixelFormat::Bgra8,
+            ),
+            calls: Arc::clone(&calls),
+        });
+        (frame, conversions, calls, OcrRecognizer::new(backend))
+    }
+
+    #[test]
+    fn prepared_execution_keeps_original_source_backend_and_mapping_after_owner_drop() {
+        let (frame, conversions, calls, recognizer) = prepared_fixture();
+        let stamp = frame.stamp();
+        let descriptor = recognizer.descriptor();
+        let context = OperationContext::new();
+        let work = prepare(
+            &recognizer,
+            OcrRequest::new(
+                &frame,
+                descriptor.backend_identity(),
+                descriptor.model_identity(),
+                OcrRegion::Region {
+                    rect: Rect::new(CoordinateSpace::CapturePixels, 1.0, 1.0, 3.0, 3.0).unwrap(),
+                    policy: ClipPolicy::Reject,
+                },
+                CoordinateSpace::CapturePixels,
+                &context,
+            ),
+        )
+        .unwrap();
+        let retained_mapping = work.pixels().clone();
+        drop(frame);
+        drop(recognizer);
+        drop(context);
+
+        let result = work.execute().unwrap();
+        assert_eq!(result.stamp(), stamp);
+        assert_eq!(result.backend(), &descriptor);
+        assert_eq!(
+            result.effective_region(),
+            PixelRect::new(1, 1, 3, 3).unwrap()
+        );
+        assert_eq!(result.regions()[0].text(), "frame-nine");
+        assert_eq!(result.regions()[0].geometry().points()[0].x(), 1.0);
+        assert_eq!(result.regions()[0].geometry().points()[0].y(), 1.0);
+        assert_eq!(retained_mapping.bytes(), &[9; 16]);
+        assert_eq!(conversions.load(Ordering::Acquire), 1);
+        assert_eq!(calls.load(Ordering::Acquire), 1);
+    }
+
+    #[derive(Debug)]
+    struct PreparedClock(AtomicUsize);
+
+    impl Clock for PreparedClock {
+        fn now(&self) -> MonotonicInstant {
+            MonotonicInstant::from_origin(Duration::from_secs(
+                u64::try_from(self.0.load(Ordering::Acquire)).unwrap(),
+            ))
+        }
+    }
+
+    #[test]
+    fn prepared_execution_keeps_original_interruption_authority_before_backend_entry() {
+        for cancelled in [false, true] {
+            let (frame, conversions, calls, recognizer) = prepared_fixture();
+            let descriptor = recognizer.descriptor();
+            let clock = Arc::new(PreparedClock(AtomicUsize::new(0)));
+            let token = CancellationToken::new();
+            let context = OperationContext::new()
+                .with_clock(clock.clone())
+                .with_cancellation(token.clone())
+                .with_deadline(MonotonicInstant::from_origin(Duration::from_secs(1)));
+            let work = prepare(
+                &recognizer,
+                OcrRequest::new(
+                    &frame,
+                    descriptor.backend_identity(),
+                    descriptor.model_identity(),
+                    OcrRegion::FullFrame,
+                    CoordinateSpace::CapturePixels,
+                    &context,
+                ),
+            )
+            .unwrap();
+            clock.0.store(1, Ordering::Release);
+            if cancelled {
+                token.cancel();
+            }
+            drop(context);
+            assert_eq!(
+                work.execute().unwrap_err().status(),
+                if cancelled {
+                    Status::Cancelled
+                } else {
+                    Status::DeadlineExceeded
+                }
+            );
+            assert_eq!(calls.load(Ordering::Acquire), 0);
+            assert_eq!(conversions.load(Ordering::Acquire), 1);
+        }
     }
 }

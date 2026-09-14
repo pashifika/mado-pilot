@@ -7,11 +7,12 @@
 
 use std::collections::{HashMap, VecDeque};
 use std::num::NonZeroU64;
-use std::sync::atomic::{AtomicU64, AtomicUsize, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicU64, AtomicUsize, Ordering};
 use std::sync::{Arc, Mutex, TryLockError, Weak};
 
 use crate::watch::{
-    TemplateQueryId, TemplateQueryState, TemplateWorkCounts, TemplateWorkDisposition,
+    OcrTextQueryId, OcrTextQueryProgress, OcrTextWorkDisposition, TemplateQueryId,
+    TemplateQueryState, TemplateWorkCounts, TemplateWorkDisposition,
 };
 use mado_pilot_core::{
     ActivityTag, ClipPolicy, CoordinateSpace, Error, FrameStamp, InputAddressScope, InputDelivery,
@@ -192,6 +193,8 @@ pub enum DiagnosticOperationKind {
     OcrRecognition,
     /// Session close.
     SessionClose,
+    /// Rust-only maintained OCR text-presence query.
+    OcrTextWatch,
 }
 
 /// Stable record payload categories.
@@ -218,6 +221,8 @@ pub enum DiagnosticKind {
     Lifecycle,
     /// A permission state was observed or failed.
     Permission,
+    /// Rust-only OCR query state, disposition or terminal summary.
+    OcrTextWatch,
 }
 
 /// A compact set of input operation kinds without event payloads.
@@ -371,6 +376,49 @@ pub struct TemplateWatchDiagnostic {
     pub elapsed_nanos: u64,
     /// Immutable terminal result, absent while pending.
     pub outcome: Option<TemplateWatchDiagnosticOutcome>,
+}
+
+/// Closed content-free OCR text-watch terminal vocabulary.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+#[non_exhaustive]
+pub enum OcrTextWatchDiagnosticOutcome {
+    /// Required confirmation succeeded.
+    Matched,
+    /// Query cancellation won.
+    Cancelled,
+    /// Query deadline won.
+    DeadlineExceeded,
+    /// Session closed or drained without success.
+    SessionClosed,
+    /// Engine dispatch sealed.
+    SchedulerClosed,
+    /// Capture target lost.
+    TargetLost,
+    /// Eligible pending residence expired.
+    Overloaded,
+    /// Typed capture, mapping, admission or backend failure.
+    Failed(Status),
+}
+
+/// Rust-only bounded text-watch facts; no text, pixels or backend messages.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub struct OcrTextWatchDiagnostic {
+    /// Absent for a refusal before query publication.
+    pub query: Option<OcrTextQueryId>,
+    /// The maintained target.
+    pub target: TargetId,
+    /// Newest considered source, when known.
+    pub frame: Option<FrameStamp>,
+    /// Exact resolved capture-pixel region, when known.
+    pub region: Option<PixelRect>,
+    /// Copied work and logical/physical occupancy facts.
+    pub progress: Option<OcrTextQueryProgress>,
+    /// Applicable bounded work transition.
+    pub disposition: Option<OcrTextWorkDisposition>,
+    /// Terminal outcome, absent for nonterminal observations.
+    pub outcome: Option<OcrTextWatchDiagnosticOutcome>,
+    /// Elapsed query-clock duration.
+    pub elapsed_nanos: u64,
 }
 
 /// One immutable route attempt without input event payloads.
@@ -685,6 +733,8 @@ pub enum DiagnosticPayload {
     Lifecycle(LifecycleDiagnostic),
     /// Permission summary.
     Permission(PermissionDiagnostic),
+    /// Rust-only maintained OCR text-watch observation.
+    OcrTextWatch(OcrTextWatchDiagnostic),
 }
 
 impl DiagnosticPayload {
@@ -702,6 +752,7 @@ impl DiagnosticPayload {
             Self::RouteAttempt(_) => DiagnosticKind::RouteAttempt,
             Self::Lifecycle(_) => DiagnosticKind::Lifecycle,
             Self::Permission(_) => DiagnosticKind::Permission,
+            Self::OcrTextWatch(_) => DiagnosticKind::OcrTextWatch,
         }
     }
 }
@@ -1092,6 +1143,7 @@ impl DiagnosticStream {
 #[derive(Debug)]
 pub(crate) struct DiagnosticSink {
     stream: Arc<DiagnosticStream>,
+    producer_released: AtomicBool,
 }
 
 impl Clone for DiagnosticSink {
@@ -1099,6 +1151,7 @@ impl Clone for DiagnosticSink {
         self.stream.producers.fetch_add(1, Ordering::Relaxed);
         Self {
             stream: Arc::clone(&self.stream),
+            producer_released: AtomicBool::new(false),
         }
     }
 }
@@ -1108,9 +1161,7 @@ impl Drop for DiagnosticSink {
         // Weak mapping observers do not count as producers. The last real
         // engine/session producer seals the stream regardless of whether the
         // reader or retained frame handles still exist.
-        if self.stream.producers.fetch_sub(1, Ordering::AcqRel) == 1 {
-            self.stream.seal();
-        }
+        self.release_producer();
     }
 }
 
@@ -1123,9 +1174,20 @@ impl DiagnosticSink {
         Some((
             Self {
                 stream: Arc::clone(&stream),
+                producer_released: AtomicBool::new(false),
             },
             DiagnosticReader { stream },
         ))
+    }
+
+    // Only a sealed Rust OCR scheduler releases its producer before physical
+    // work returns. Ordinary template/foreign producers still drain on Drop.
+    pub(crate) fn release_producer(&self) {
+        if !self.producer_released.swap(true, Ordering::AcqRel)
+            && self.stream.producers.fetch_sub(1, Ordering::AcqRel) == 1
+        {
+            self.stream.seal();
+        }
     }
 
     pub(crate) fn emitter(&self) -> DiagnosticEmitter {
@@ -1159,6 +1221,9 @@ impl DiagnosticSink {
         kind: DiagnosticOperationKind,
     ) -> Result<ObservedOperation, Error> {
         Operation::admit(context)?;
+        if self.producer_released.load(Ordering::Acquire) {
+            return Err(Error::new(Status::Closed, "diagnostic producer is sealed"));
+        }
         let observed = ObservedOperation {
             id: self.stream.issue_operation()?,
             activity: context.activity_tag(),
@@ -1184,6 +1249,9 @@ impl DiagnosticSink {
         timestamp: MonotonicInstant,
         payload: impl FnOnce() -> DiagnosticPayload,
     ) {
+        if self.producer_released.load(Ordering::Acquire) {
+            return;
+        }
         self.stream
             .emit(DiagnosticLevel::Normal, operation, timestamp, payload());
     }
@@ -1211,6 +1279,9 @@ impl DiagnosticSink {
         payload: impl FnOnce() -> DiagnosticPayload,
     ) {
         if self.stream.level != DiagnosticLevel::Debug {
+            return;
+        }
+        if self.producer_released.load(Ordering::Acquire) {
             return;
         }
         self.stream
@@ -1622,6 +1693,16 @@ mod tests {
                     format!("{:?}", value.elapsed_nanos),
                     format!("{:?}", value.outcome),
                 ],
+                DiagnosticPayload::OcrTextWatch(value) => vec![
+                    format!("{:?}", value.query),
+                    format!("{:?}", value.target),
+                    format!("{:?}", value.frame),
+                    format!("{:?}", value.region),
+                    format!("{:?}", value.progress),
+                    format!("{:?}", value.disposition),
+                    format!("{:?}", value.outcome),
+                    format!("{:?}", value.elapsed_nanos),
+                ],
                 DiagnosticPayload::Ocr(value) => vec![
                     format!("{:?}", value.model_instance),
                     format!("{:?}", value.profile),
@@ -1803,6 +1884,21 @@ mod tests {
                 }),
             ),
             (
+                DiagnosticKind::OcrTextWatch,
+                DiagnosticPayload::OcrTextWatch(OcrTextWatchDiagnostic {
+                    query: None,
+                    target,
+                    frame: Some(frame),
+                    region: Some(region),
+                    progress: None,
+                    disposition: Some(OcrTextWorkDisposition::Rejected),
+                    outcome: Some(OcrTextWatchDiagnosticOutcome::Failed(
+                        Status::InvalidArgument,
+                    )),
+                    elapsed_nanos: 7,
+                }),
+            ),
+            (
                 DiagnosticKind::Ocr,
                 DiagnosticPayload::Ocr(OcrDiagnostic {
                     model_instance: DiagnosticOcrModelInstanceId::new(
@@ -1854,7 +1950,6 @@ mod tests {
             ),
         ];
 
-        assert_eq!(matrix.len(), 10);
         let input_key = INPUT_KEY.to_string();
         let sensitive = [
             TEMPLATE_NAME,

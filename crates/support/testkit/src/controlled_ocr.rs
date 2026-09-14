@@ -342,6 +342,7 @@ impl Drop for LatestCandidateCountsGuard<'_> {
 /// A backend whose candidates, latency, interruption, failures, and completion are scripted.
 pub struct ControlledOcr {
     descriptor: OcrBackendDescriptor,
+    provider: Option<mado_pilot_ocr::OcrProviderDescriptor>,
     clock: Option<Arc<ManualClock>>,
     cancel_during_recognize: Option<CancellationToken>,
     cancel_after_candidates: Option<(CancellationToken, usize)>,
@@ -389,6 +390,7 @@ impl ControlledOcr {
                 model,
                 format,
             ),
+            provider: None,
             clock: None,
             cancel_during_close: None,
             cancel_during_recognize: None,
@@ -410,6 +412,16 @@ impl ControlledOcr {
     #[must_use]
     pub fn with_descriptor(mut self, descriptor: OcrBackendDescriptor) -> Self {
         self.descriptor = descriptor;
+        self
+    }
+
+    /// Supplies explicit initialized provider facts without changing model identity.
+    #[must_use]
+    pub fn with_provider_descriptor(
+        mut self,
+        provider: mado_pilot_ocr::OcrProviderDescriptor,
+    ) -> Self {
+        self.provider = Some(provider);
         self
     }
 
@@ -579,6 +591,10 @@ impl fmt::Debug for ControlledOcr {
 impl OcrBackend for ControlledOcr {
     fn descriptor(&self) -> OcrBackendDescriptor {
         self.descriptor.clone()
+    }
+
+    fn provider_descriptor(&self) -> Option<mado_pilot_ocr::OcrProviderDescriptor> {
+        self.provider.clone()
     }
 
     fn recognize(

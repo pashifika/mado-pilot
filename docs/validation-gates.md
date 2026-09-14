@@ -817,6 +817,24 @@ so automatic selection remains CPU. The retained predecessor tail advances only
 the successor CUDA `zone_empty_4k` maximum to 50 ms. Every historical profile
 and frozen ADR 0047/0048 section remains byte-identical.
 
+**Rust OCR text-presence workload ceilings are accepted; final enforcement remains open.**
+[ADR0075](adr/0075-ocr-text-watch-workload-profiles.md) accepts separate
+[Apple](benchmarks/ocr-text-watch-aarch64-apple-darwin.toml) and
+[Windows](benchmarks/ocr-text-watch-x86_64-pc-windows-msvc.toml) profiles from
+complete controlled3 and real-startup5 precursors per target. Independent review
+reconstructed808 process-local values and verified all248 observed values,
+ceilings and units. Historical Windows real evidence retains its recorded base
+build without importing the later controlled cohort's UBR.
+
+The schema4 Python runner enforces process-local p50/p95/max, paired cancellation
+endpoints, distinct target-native memory and fixed view/retention limits only
+after semantic, identity, dependency and cleanup gates. It binds the accepted
+profile/ADR and exact host/executable, stops at the first failure and requires
+unchanged final identities. Complete measurements are not numerical acceptance.
+Final fixed-cohort execution and target-owned WGC/ScreenCaptureKit evidence remain
+separate required gates. No historical failed/partial record or old ceiling is
+changed, and no opaque allocation or unmeasured numeric work counter is invented.
+
 ## G-014
 
 **Decision.** The archive entry-count, uncompressed-byte, and compression-ratio

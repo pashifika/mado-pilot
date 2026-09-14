@@ -28,6 +28,7 @@ use crate::diagnostic::{
     PermissionDiagnostic,
 };
 use crate::session::Session;
+use crate::watch::{OcrTextSchedulerDescriptor, OcrTextSchedulerObservation};
 use crate::watch::{TemplateSchedulerDescriptor, WatchRuntime};
 
 /// How long the release of an already-opened capture session or input
@@ -259,6 +260,21 @@ impl Engine {
     #[must_use]
     pub fn template_scheduler(&self) -> TemplateSchedulerDescriptor {
         self.watcher.descriptor()
+    }
+
+    /// Returns fixed OCR watch safety policy, shared with template scheduling.
+    #[must_use]
+    pub const fn ocr_text_scheduler(&self) -> OcrTextSchedulerDescriptor {
+        OcrTextSchedulerDescriptor
+    }
+
+    /// Observes logical work, physical retirement and live result extents.
+    ///
+    /// Logical close is not physical quiescence. Retention counts logical
+    /// result-owned extents, not RSS, native allocations or separate frame clones.
+    #[must_use]
+    pub fn ocr_text_observation(&self) -> OcrTextSchedulerObservation {
+        self.watcher.ocr_observation()
     }
 
     /// Returns the configured OCR backend/model/profile descriptor, if any.

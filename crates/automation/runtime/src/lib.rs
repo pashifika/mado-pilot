@@ -59,8 +59,9 @@
 //! The watcher consumes ADR 0050's closed exact-RGBA default through one owning
 //! poll/wait/cancel handle, fixed latest-wins queues, confirmed-only stability,
 //! exact coalescing, fair two-worker progress, and stale-generation rejection.
-//! It adds no OCR predicate, callback, Tokio/future, C/C++, automatic input,
-//! arbitrary capacity, or native watcher support claim.
+//! OCR text presence adds explicit CPU bounded-v2 identity admission and exact
+//! retained source ownership. Neither watcher adds callbacks, Tokio/futures,
+//! C/C++ entry points, automatic input, or arbitrary capacity.
 //!
 //! **The public names here are reviewed, not yet stable.**
 //! `docs/adr/0006-public-rust-names-and-compatibility-policy.md` records the
@@ -154,13 +155,18 @@ pub use diagnostic::{
     DiagnosticRecordSequence, DiagnosticTemplateId, FrameDiagnostic, InputDiagnostic,
     InputOperationSet, LifecycleDiagnostic, MAX_DIAGNOSTIC_CAPACITY, MappingDiagnostic,
     OcrDiagnostic, OcrDiagnosticOutcome, OcrDiagnosticProfile, OcrRequestedRegionDiagnostic,
-    OperationStartedDiagnostic, PermissionDiagnostic, RouteAttemptDiagnostic, SearchDiagnostic,
-    SearchDiagnosticOutcome, TemplateWatchDiagnostic, TemplateWatchDiagnosticOutcome,
+    OcrTextWatchDiagnostic, OcrTextWatchDiagnosticOutcome, OperationStartedDiagnostic,
+    PermissionDiagnostic, RouteAttemptDiagnostic, SearchDiagnostic, SearchDiagnosticOutcome,
+    TemplateWatchDiagnostic, TemplateWatchDiagnosticOutcome,
 };
 pub use engine::{Engine, EngineOptions, EngineWiring, SessionRequest};
 pub use find::{FindOutcome, FindRequest, SearchFrame};
 pub use session::{MappingObserver, Session};
 pub use watch::{
+    OcrTextAnalysisRate, OcrTextOverload, OcrTextQuery, OcrTextQueryId, OcrTextQueryOutcome,
+    OcrTextQueryProgress, OcrTextQueryState, OcrTextRetainedExtent, OcrTextSchedulerDescriptor,
+    OcrTextSchedulerObservation, OcrTextStability, OcrTextStabilityKind, OcrTextTerminalOutcome,
+    OcrTextWatchRequest, OcrTextWatchResult, OcrTextWorkCounts, OcrTextWorkDisposition,
     TemplateAnalysisRate, TemplateOverload, TemplateQuery, TemplateQueryId, TemplateQueryOutcome,
     TemplateQueryProgress, TemplateQueryState, TemplateSchedulerDescriptor, TemplateStability,
     TemplateStabilityKind, TemplateTerminalOutcome, TemplateWatchRequest, TemplateWatchResult,

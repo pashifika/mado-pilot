@@ -8,6 +8,7 @@ Use one API to automate on-screen controls across Windows and macOS. MadoPilot h
 
 - **Frame-linked results:** Locate images or read text and keep the exact frame that produced each result.
 - **Template watching:** Wait for an image to remain visible, with a deadline and cancellation. Available through Rust on replayed frames and supported native sessions.
+- **Rust OCR text queries:** Wait for literal text with exact source retention. The Rust API and both-target real CPU replay are verified; workload ceilings are accepted, while native capture and final workload qualification remain open. See [OCR text queries](docs/ocr-text-watch.md).
 - **Explicit input control:** Choose the target and delivery mode, then inspect what was submitted. Platform permission and capability failures are reported without prompting or elevation.
 - **Reproducible workflows:** Replay supplied frames without capturing the desktop or injecting input. Ordinary diagnostics exclude images, recognized text, and input payloads.
 
@@ -19,8 +20,13 @@ Use a checkout of this revision. Install **Rust 1.97.1** through rustup, **Pytho
 
 | Host | Native prerequisites |
 |---|---|
-| Apple Silicon macOS 26.5.2+ | OpenCV 4, libclang, and Xcode Command Line Tools |
-| Serviced Windows 11 25H2 x64, build family 26200 | OpenCV 4, LLVM/libclang, and Visual Studio C++ build tools with a Windows SDK |
+| Supported Apple Silicon macOS 26; current host 26.6.2 (minimum 26.5.2) | OpenCV 4, libclang, and Xcode Command Line Tools |
+| Supported Windows 11 and later serviced x64 desktop releases; minimum Windows 11 25H2 build family 26200 | OpenCV 4, LLVM/libclang, and Visual Studio C++ build tools with a Windows SDK |
+
+The current Windows 11 and macOS 26 hosts are supported OS baselines. macOS 27.0
+requires verification in a separate Change; it is not automatically qualified by
+the current host's results. Feature-specific native and performance gates remain
+separate from [OS support](docs/architecture.md#os-support-policy).
 
 Follow [native development setup](CONTRIBUTING.md#native-development-prerequisites) to acquire these dependencies and select their paths. `tools/setup-native.py` checks existing installations and configures only the command it launches. Missing or incompatible dependencies fail setup or build; the script installs nothing and leaves the calling shell unchanged.
 
@@ -52,6 +58,8 @@ python3 tools/setup-native.py -- cargo run --locked --package mado-pilot --examp
 
 For real text recognition, use [the default OCR walkthrough](crates/mado-pilot/examples/ocr-default.rs) with the documented [ONNX Runtime and model prerequisites](docs/third-party-dependencies.md#implemented-onnx-runtime-prerequisite). To watch real windows or displays, follow [native template watching](docs/native-template-watch.md), including its permission requirements and supported behavior.
 
+The new [OCR text watcher example](crates/mado-pilot/examples/ocr-text-watch.rs) uses the explicit CPU bounded-v2 profile. Its [fixed replay and native procedures](docs/ocr-text-watch.md) keep controlled API checks separate from real-model and permissioned capture evidence; no new support claim follows from compilation.
+
 ## API and integration
 
 | Language | Entry point and reference |
@@ -66,7 +74,7 @@ Generate the full Rust API reference locally:
 python3 tools/setup-native.py -- cargo doc --locked --package mado-pilot --no-deps
 ```
 
-Open `target/doc/mado_pilot/index.html`. Rust API stability begins at 1.0; the C ABI has its own compatibility policy. Template watching is currently Rust-only.
+Open `target/doc/mado_pilot/index.html`. Rust API stability begins at 1.0; the C ABI has its own compatibility policy. Template and OCR text watching are currently Rust-only; OCR watcher qualification remains open.
 
 ## Documentation
 

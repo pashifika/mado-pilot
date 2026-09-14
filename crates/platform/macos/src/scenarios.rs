@@ -1,16 +1,18 @@
-//! Controlled adapter scenarios against real ScreenCaptureKit targets.
+//! Real-target capture and controlled native callback-boundary scenarios.
 //!
 //! These live inside the package rather than in `tests/` because the containment
-//! and failure-path ownership cases ADR 0012 requires are reached through the
-//! session-scoped raise sites, which are not part of any public surface.
+//! and failure-path ownership cases ADR 0012 requires use internal raise sites and
+//! callback seams, which are not part of any public surface.
 //!
 //! # What a skip means
 //!
-//! Every scenario needs a host that offers the capture framework *and* has granted
-//! Screen Recording to the process running the tests. A continuous-integration
-//! runner has neither granted nor denied it, and this Adapter will not prompt, so
-//! these scenarios report a skip there instead of a pass. The skip is printed with
-//! its reason so a green run cannot be read as evidence the scenario ran.
+//! Real-target scenarios need a host that offers the capture framework *and* has
+//! granted Screen Recording to the process running the tests. Without that grant
+//! they print a skip with its reason rather than claiming live capture evidence.
+//! Controlled frame callback cases instead deliver owned samples synchronously
+//! through the production native delegate and Rust containment trampolines. They
+//! perform no discovery, stream open, Screen Recording probe, or input, and never
+//! skip for lack of capture authorization.
 
 use std::ffi::c_void;
 use std::sync::{Arc, Barrier, MutexGuard};
@@ -65,9 +67,9 @@ const FRAME_TIME_LEAD: Duration = Duration::from_millis(50);
 /// Runs the scenarios one at a time, for two reasons rather than one.
 ///
 /// The ownership cases compare the shim's process-wide count of the native objects
-/// it owns, and that count only means something in a quiet process. And every
-/// scenario captures the same display, so running them together would have them
-/// competing for the producer they are measuring. A poisoned gate is taken anyway:
+/// it owns, and that count only means something in a quiet process. Real-target
+/// scenarios also share displays, so running them together would have them competing
+/// for the producer. A poisoned gate is taken anyway:
 /// one scenario's failure should report itself rather than turn every later
 /// scenario into a second, less informative failure.
 fn serialized() -> MutexGuard<'static, ()> {
@@ -1462,7 +1464,7 @@ fn a_reconfigure_semaphore_allocation_failure_is_typed_before_framework_submissi
 #[test]
 fn a_contained_exception_at_the_start_site_leaves_no_native_object_alive() {
     let _serial = serialized();
-    contained_site("start", RAISE_AT_START, FrameExpectation::Any);
+    contained_site("start", RAISE_AT_START);
 }
 
 #[test]
@@ -1517,11 +1519,7 @@ fn a_contained_exception_in_the_start_completion_leaves_no_native_object_alive()
     let _serial = serialized();
     let submissions =
         shim::testing_capture_lifecycle_counts().expect("read lifecycle submission baseline");
-    if !contained_site(
-        "the start completion",
-        RAISE_IN_START_COMPLETION,
-        FrameExpectation::Any,
-    ) {
+    if !contained_site("the start completion", RAISE_IN_START_COMPLETION) {
         return;
     }
     let settled =
@@ -1556,62 +1554,120 @@ fn a_contained_exception_in_the_stop_completion_is_reported_once_and_retryable()
 }
 
 #[test]
+fn valid_samples_cross_the_frame_callback_boundary_and_commit() {
+    let _serial = serialized();
+    let observed = controlled_frame_callback_boundary(0);
+
+    assert_eq!(
+        [observed.stages, observed.commits, observed.terminal_reports],
+        [2, 2, 0],
+        "both valid samples must stage and commit through the production delegate"
+    );
+    assert_eq!(observed.terminal_status, None);
+}
+
+#[test]
 fn a_contained_exception_before_a_frame_callback_leaves_no_native_object_alive() {
     let _serial = serialized();
-    // A raise before the callback means the Adapter is never handed the frame, so
-    // nothing is ever published. Requiring that observable is what proves the
-    // raise fired rather than the display having gone quiet.
-    contained_site(
-        "before frame callback",
-        RAISE_BEFORE_CALLBACK,
-        FrameExpectation::None,
+    let observed = controlled_frame_callback_boundary(RAISE_BEFORE_CALLBACK);
+
+    assert_eq!(
+        [observed.stages, observed.commits, observed.terminal_reports],
+        [0, 0, 1],
+        "the first delivery faults before staging and the second is refused"
+    );
+    assert_eq!(
+        observed.terminal_status,
+        Some(shim::ShimStatus::NativeException)
     );
 }
 
 #[test]
 fn a_contained_exception_after_a_frame_callback_leaves_no_native_object_alive() {
     let _serial = serialized();
-    // The first callback staged its detached frame before this raise. Native
-    // terminalization must discard it before the separate commit callback can make
-    // it observable, so the fault deterministically outranks the candidate.
-    contained_site(
-        "after frame callback",
-        RAISE_AFTER_CALLBACK,
-        FrameExpectation::None,
+    let observed = controlled_frame_callback_boundary(RAISE_AFTER_CALLBACK);
+
+    assert_eq!(
+        [observed.stages, observed.commits, observed.terminal_reports],
+        [1, 0, 1],
+        "terminalization clears the staged frame without committing either delivery"
+    );
+    assert_eq!(
+        observed.terminal_status,
+        Some(shim::ShimStatus::NativeException)
     );
 }
 
 #[test]
 fn a_panicking_rust_frame_callback_terminalizes_the_session_once() {
     let _serial = serialized();
-    contained_site(
-        "a Rust frame callback panic",
-        PANIC_IN_RUST_CALLBACK,
-        FrameExpectation::None,
+    let observed = controlled_frame_callback_boundary(PANIC_IN_RUST_CALLBACK);
+
+    assert!(
+        observed.panic_reached,
+        "the deliberate panic must run inside the real contained frame trampoline"
+    );
+    assert_eq!(
+        [observed.stages, observed.commits, observed.terminal_reports],
+        [1, 0, 1],
+        "the panic discards its staged frame and terminal admission refuses the second sample"
+    );
+    assert_eq!(
+        observed.terminal_status,
+        Some(shim::ShimStatus::PlatformFailure)
     );
 }
 
 #[test]
 fn a_contained_exception_at_teardown_leaves_no_native_object_alive() {
     let _serial = serialized();
-    contained_site("teardown", RAISE_AT_TEARDOWN, FrameExpectation::Any);
+    contained_site("teardown", RAISE_AT_TEARDOWN);
 }
 
-/// What a raise site implies about whether a frame can still reach a caller.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-enum FrameExpectation {
-    /// A callback-boundary fault outranks any frame queued before terminalization.
-    None,
-    /// The raise is outside the frame path and says nothing about frames.
-    Any,
+/// Runs with the shared native lifecycle gate held by the scenario. The wrapper
+/// returns only scalars, so the final count includes release of every detached
+/// observation owner as well as the helper's sample, delegate, and session owners.
+fn controlled_frame_callback_boundary(site: u32) -> shim::FrameCallbackBoundaryObservation {
+    let baseline = shim::live_objects();
+    let submissions =
+        shim::testing_capture_lifecycle_counts().expect("read native submission baseline");
+    let observed = shim::testing_frame_callback_boundary(site);
+    assert_eq!(
+        shim::testing_capture_lifecycle_counts().expect("read native submissions after the seam"),
+        submissions,
+        "owned sample delivery must not submit a native stream start or stop"
+    );
+    assert_eq!(
+        shim::live_objects(),
+        baseline,
+        "the synchronous callback boundary must release every native owner"
+    );
+    let observed = observed.expect("the controlled native sample setup succeeds");
+
+    assert_eq!(observed.fence, shim::ShimStatus::Ok);
+    assert!(
+        observed.ordered,
+        "stage precedes commit or terminal, and no callback follows terminalization"
+    );
+    assert!(
+        !observed.pending_frame,
+        "commit or terminal must clear the staged frame"
+    );
+    assert_eq!(
+        observed.valid_samples, observed.stages,
+        "every staged owner retains its complete 4x4 BGRA 0x31 pixels and same-frame metadata"
+    );
+    if let Some(status) = observed.terminal_status {
+        assert_eq!(
+            mado_pilot_core::Error::from(status).status(),
+            Status::CaptureFailed,
+            "a callback failure keeps the defined typed capture outcome"
+        );
+    }
+    observed
 }
 
-/// Asserts that a native exception raised at one boundary position is contained,
-/// reported as a typed outcome, and costs no native object.
-///
-/// These are the cases that stop holding if `-fobjc-arc-exceptions` is ever
-/// dropped from the build script, which is how a compiler flag becomes a tested
-/// invariant rather than a comment.
+/// Asserts that refusing a start allocation reports a typed failure without leaking.
 fn start_allocation_failure(name: &str, site: u32) {
     let Some(harness) = Harness::acquire(&format!("{name} allocation failure")) else {
         return;
@@ -1627,16 +1683,10 @@ fn start_allocation_failure(name: &str, site: u32) {
     );
 }
 
-fn contained_site(name: &str, site: u32, expectation: FrameExpectation) -> bool {
+/// Exercises the remaining stream lifecycle exception sites against a real target.
+fn contained_site(name: &str, site: u32) -> bool {
     let scenario = format!("containment at {name}");
-    // The frame sites need a display that is actually producing, or the raise
-    // never fires and the case passes without having run.
-    let harness = if expectation == FrameExpectation::Any {
-        Harness::acquire(&scenario)
-    } else {
-        Harness::acquire_producing(&scenario)
-    };
-    let Some(harness) = harness else {
+    let Some(harness) = Harness::acquire(&scenario) else {
         return false;
     };
     let baseline = shim::live_objects();
@@ -1644,47 +1694,15 @@ fn contained_site(name: &str, site: u32, expectation: FrameExpectation) -> bool 
     let opened = harness.open(site);
     match opened {
         Ok(session) => {
-            // Whatever it produced is released here: the question is what the
-            // contained failure cost, not what a caller is still holding.
-            let arrived = next_frame(&session, FrameRequest::latest());
-            let terminal_request = match expectation {
-                FrameExpectation::None => {
-                    assert_eq!(
-                        arrived.err().map(|error| error.status()),
-                        Some(Status::CaptureFailed),
-                        "a callback failure becomes the defined typed session outcome"
-                    );
-                    Some(FrameRequest::latest())
-                }
-                FrameExpectation::Any => {
-                    drop(arrived);
-                    None
-                }
-            };
-            let expects_terminal = terminal_request.is_some();
-            if let Some(request) = terminal_request {
-                let error = next_frame(&session, request)
-                    .expect_err("the callback boundary failure terminalized the session");
-                assert_eq!(error.status(), Status::CaptureFailed);
-                assert_eq!(
-                    session.terminal_reports(),
-                    1,
-                    "native and Rust callback failure paths share one terminal gate"
-                );
-            }
+            // A lifecycle raise says nothing about frames; release any arrival
+            // before checking what the contained failure cost.
+            drop(next_frame(&session, FrameRequest::latest()));
             let closed = close(&session);
             if let Err(error) = closed {
                 assert_ne!(
                     error.status(),
                     Status::Internal,
                     "a contained exception reports a typed outcome"
-                );
-            }
-            if expects_terminal {
-                assert_eq!(
-                    session.terminal_reports(),
-                    1,
-                    "close cannot deliver a second terminal callback"
                 );
             }
             drop(session);

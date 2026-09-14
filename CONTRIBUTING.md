@@ -55,6 +55,12 @@ Windows exports include the selected MSVC include/library search paths, so later
 CI steps retain the compiler context without exporting the whole inherited environment.
 The script does not download, install, elevate, or edit global shell settings.
 
+macOS setup links only the workspace's required shared OpenCV modules: `core`,
+`imgproc`, and `imgcodecs`. It does not inherit every library from `opencv4.pc`.
+Windows retains the versioned `opencv_world` import library and DLL. Transitive
+shared dependencies remain required; see
+[ADR 0073](docs/adr/0073-link-only-required-apple-opencv-modules.md).
+
 On macOS, command mode keeps inherited `DYLD_LIBRARY_PATH` entries after the
 selected OpenCV library directory. Relative entries resolve from the caller's
 working directory before any native probe, so probes and commands use the same
@@ -78,6 +84,9 @@ The supported macOS native host is Apple Silicon macOS 26.6.2 (25G83), SDK
 26.5; the deployment floor remains macOS 26.5.2, and earlier versions are
 unsupported investigation targets rather than compatibility claims.
 Individual revision-bound feature gates can still be unexecuted on that host.
+The current macOS 26 host is supported. macOS 27.0 upgrade verification and its
+support decision belong to a separate Change; do not inherit qualification merely
+because the verification host is upgraded.
 `.cargo/config.toml` sets the final artifact deployment metadata to 26.5.2 and
 the native build repeats that floor. The macOS native shim
 `mado-pilot-platform-macos` compiles, links, and passes its tests with the **Xcode
@@ -93,6 +102,12 @@ compiled with `-fobjc-arc-exceptions`, which
 [docs/adr/0012-macos-shim-language-and-containment.md](docs/adr/0012-macos-shim-language-and-containment.md)
 records as a correctness requirement rather than a style choice: without it, an
 exception unwinding out of a scope that holds a native object leaks it.
+
+The four frame-callback boundary cases feed owned CoreMedia samples to the real
+callback. They cover successful commit, native exceptions before/after delivery,
+and a Rust callback panic without opening a capture stream or probing permissions.
+They run without Screen Recording, including under ASAN; they do not qualify
+capture, target discovery, or native input.
 
 Running that adapter's capture scenarios needs one thing the build does not:
 **Screen Recording granted to the process running the tests**. MadoPilot never
@@ -245,6 +260,13 @@ a currently serviced x64 desktop installation, accepted by
 Windows SDK 10.0.26100.0 is the supported build input, not the runtime floor.
 Earlier Windows versions are unsupported and unqualified.
 
+Windows 11 and later serviced desktop releases are the supported OS family,
+subject to that exact floor. The current `win-worker` Windows 11 25H2 host is
+supported; a failed or unexecuted feature/workload row is not an OS non-support
+decision. "Earlier Windows execution" denotes an earlier run on that same
+supported OS, not an older Windows release. See the
+[OS support policy](docs/architecture.md#os-support-policy).
+
 The Windows capture adapter adds no prerequisite beyond that environment. The
 production adapter uses the target-gated `windows` crate for Windows Graphics
 Capture, Direct3D 11, and DXGI, and needs no NuGet package, Windows App SDK,
@@ -365,6 +387,39 @@ terminal outcome; teardown begins at explicit close/finalize and ends only at
 the native and fixture resource baseline. No interval includes fixture launch,
 and no hidden retry, sleep, deadline extension, or replacement sample is
 permitted.
+
+## Rust OCR text-query verification
+
+The [OCR text-query guide](docs/ocr-text-watch.md) separates controlled contracts,
+real CPU replay, target-owned native capture, accepted workload ceilings and their separate final enforcement.
+Use a fresh purpose-specific `CARGO_TARGET_DIR`; never reuse a hash-pinned
+qualification root for ordinary tests, examples or other feature/profile builds.
+
+Ordinary CI compiles the Rust examples and new owned native fixtures without
+launching them. It runs the model-free Unicode derivation and replay-input
+identity regressions. The existing backend test lane is unchanged; a new OCR
+watcher model/native cohort requires its own reviewed inputs and execution
+authority, not a prior template/foreign campaign grant.
+
+Focused deterministic checks are:
+
+```sh
+: "${CARGO_TARGET_DIR:?set a new deterministic target root}"
+: "${OCR_NORMALIZATION_PROOF_TARGET:?set a separate new proof target root}"
+: "${OCR_QUALIFICATION_CHECK_TARGET:?set a separate new qualification-feature check root}"
+cargo test --locked --package mado-pilot-ocr --lib
+cargo run --locked --release --package mado-pilot-ocr --example ocr-normalization-bound --target-dir "$OCR_NORMALIZATION_PROOF_TARGET"
+python3 tools/setup-native.py -- cargo test --locked --package mado-pilot-runtime --tests
+python3 tools/setup-native.py -- cargo test --locked --package mado-pilot --example ocr-text-watch
+python3 tools/setup-native.py -- cargo test --locked --package mado-pilot --features ocr-text-watch-qualification --example ocr-text-watch --target-dir "$OCR_QUALIFICATION_CHECK_TARGET"
+python3 -m unittest discover -s tools/ocr-text-watch/tests -v
+```
+
+Set `CARGO_TARGET_DIR` on the non-proof commands before running them. Windows
+uses the existing explicit `--opencv-root`/`--libclang-path` setup options.
+The Python tests use inert files and an owned Python child, not ONNX or capture.
+The example tests verify its independent Retina oracle and qualification-only
+stage-record rejection; neither test configuration executes the real-model main.
 
 ## Verification
 

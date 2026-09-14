@@ -27,10 +27,20 @@
 pub mod backend;
 pub mod fault;
 pub mod model;
+
+mod normalization;
+mod normalization_bound;
 pub mod provider;
 pub mod recognizer;
 pub mod request;
 pub mod result;
+
+/// Workspace-only composition seam for maintained OCR text watches.
+#[doc(hidden)]
+pub mod watch_support {
+    pub use crate::normalization::normalize_literal;
+    pub use crate::recognizer::{PreparedOcr, prepare};
+}
 
 pub use backend::{
     BackendCandidate, BackendInterests, BackendRequest, OcrBackend, OcrBackendDescriptor,
