@@ -55,6 +55,7 @@ pub mod discovery;
 pub mod fault;
 pub mod frame;
 pub mod mapping;
+pub mod pacing;
 pub mod session;
 pub mod storage;
 pub mod stream;
@@ -67,6 +68,10 @@ pub use discovery::DiscoveryRequest;
 pub use fault::CaptureFault;
 pub use frame::{Frame, FrameView};
 pub use mapping::CpuMapping;
+pub use pacing::{
+    CapturePacingOutcome, CapturePacingReport, CapturePacingRequest, PacingUnsupportedReason,
+    ResolvedCapturePacing,
+};
 pub use session::{CaptureProvider, CaptureSession, OpenRequest};
 pub use storage::{CpuFrameStorage, CpuPixels, FrameStorage};
 pub use stream::{

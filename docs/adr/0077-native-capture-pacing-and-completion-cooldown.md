@@ -1,0 +1,102 @@
+# ADR 0077: Native capture pacing and caller completion cooldown
+
+- **Status:** Accepted
+- **Date:** 2026-09-14
+- **Resolves gate:** none
+- **Supersedes:** none
+
+## Context
+
+A caller's delay between OCR operations does not configure native capture work.
+A watcher admission rate also does not wait after OCR and caller interpretation
+finish. The requested workflow needs both controls without another scheduler or
+mutable process-global configuration.
+
+The facade already owns target-specific constructors and consuming
+`NativeEngineRequest` options, but the architecture's blanket prohibition on
+platform re-exports also excluded declarative OS configuration. That restriction
+is narrower than the needed public contract; native handles and provider objects
+must remain private, not configuration values.
+
+## Decision
+
+Permit target-gated `WindowsConfig` and `MacosConfig` re-exports only as immutable,
+declarative native engine configuration. Keep neutral pacing requests/reports in
+capture contracts, resolve defaults in the existing facade constructor inners,
+and negotiate each session in its native provider. Runtime remains unaware of
+concrete OS configuration.
+
+Select one whole request in the order session > selected OS > common engine >
+source default. Inheritance and explicit source-default reset differ; setters
+replace whole selections/blocks. Required/preferred durations are positive, and
+only selected values receive target representation checks before expensive work.
+Existing constructor/default/const-value behavior is preserved.
+
+Windows establishes `MinUpdateInterval` before callbacks/start using upward-rounded
+signed 64-bit 100ns ticks. macOS establishes `minimumFrameInterval` before stream
+creation/start with exact signed 64-bit nanoseconds and integer `CMTime` conversion.
+Readback must not shorten the requested minimum. Only verified capability absence
+permits an unapplied preference; real configuration and lifecycle errors still fail.
+Session reports describe configuration, never measured FPS. Resize retains the
+negotiated interval without a callback-side timer, software drop gate or additional
+producer-storage retention.
+
+Extend only the private macOS scalar handshake and matching version 22 layout
+checks. Public C ABI 1.5, old-header prefixes and C++ default projections are
+unchanged. Replay/ControlledCapture truthfully reject required native pacing and
+report preferences unapplied without changing publication behavior.
+
+Keep the completion loop in the Rust example: exact-frame OCR, bounded caller
+interpretation, release unnecessary owners, full extra cooldown, then newest
+same-stream observation after the last checked stamp. Use one absolute operation
+authority and a local bounded 2ms polling wait. Preserve live-idle eligibility,
+terminal-first acquisition, existing one-shot commit rules and independently
+bounded cleanup. Add no public timer, watcher policy or automatic input.
+
+## Alternatives
+
+- **Reader throttling alone:** does not configure native callbacks/copies and
+  cannot satisfy producer pacing.
+- **A second builder or generic options interpreter:** duplicates the existing
+  consuming request without adding capability.
+- **Concrete defaults in runtime:** spreads platform selection into orchestration
+  and separates direct-provider negotiation from facade behavior.
+- **Separate interval and required flags:** can merge contradictory policies from
+  different layers. Atomic selection preserves intent.
+- **A public OCR runner/timer:** takes ownership of caller interpretation and adds
+  an abstraction demonstrated by only one example.
+
+## Consequences
+
+Existing callers need no migration. Opt-in callers inspect the immutable session
+report, keep input policy explicit and accept that longer intervals may miss
+transient states or increase detection latency. Native conversion and private
+bridge changes must remain coherent; the public foreign ABI has no pacing option.
+
+The same dependency allowlist remains enforced. Private example support uses the
+existing testkit dependency and its contract re-export pattern rather than a new
+facade-to-capture development edge. Architecture, usage guidance, README and both
+hosted target smoke steps are synchronized.
+
+No performance budget, OS floor, permission behavior, historical evidence or
+native support decision changes. A separately authorized five-case comparison
+must bind workload, source/binaries, native inputs, hosts, intervals, duration,
+cleanup, metrics and budgets before observation. Missing metrics are not zero.
+
+## Verification
+
+Observed local checks include 361 capture/replay/testkit tests (one intentional
+watchdog-child ignore, with its parent test passing), 178 runtime tests, four facade
+configuration tests, 20 completion-loop tests and the executable controlled smoke.
+Eleven no-capture macOS tests exercise the production configuration/start/resize/
+close path with call-local Objective-C doubles; two linked Rust/C agreement tests
+check sizes/offsets. Windows cross-target Clippy passes but is not Windows runtime
+proof. C/C++ ABI 1.5 ownership, frozen 1.0/1.2/1.3/1.4 headers and CMake consumers pass;
+real-model foreign examples are compiled but deliberately not run.
+
+Local OS is macOS 26.6.2 (25G83); the installed compiler selects SDK 27.0. This does
+not qualify macOS 27 or replace revision-bound SDK 26.5 native evidence. Hosted CI
+runs deterministic checks on both release targets. Native pacing and the
+capture-off/source-default/cooldown-only/native-only/combined resource comparison
+remain unexecuted. [The usage guide](../capture-pacing.md) records that boundary
+and the exact caller invocation.

@@ -37,11 +37,41 @@ pub(crate) fn catch_panic<T>(body: impl FnOnce() -> T) -> Result<T, ()> {
     }
 }
 
-use mado_pilot_capture::CaptureFault;
+use mado_pilot_capture::{
+    CaptureFault, CapturePacingReport, PacingUnsupportedReason, ResolvedCapturePacing,
+};
 use mado_pilot_core::{OperationContext, PermissionState, PixelExtent};
 
 /// The internal surface version this build was written against.
-pub(crate) const ABI_VERSION: u32 = 21;
+pub(crate) const ABI_VERSION: u32 = 22;
+
+const PACING_SOURCE_DEFAULT: u32 = 0;
+const PACING_REQUIRED: u32 = 1;
+const PACING_PREFERRED: u32 = 2;
+const PACING_APPLIED: u32 = 1;
+const PACING_UNAVAILABLE: u32 = 2;
+
+/// Converts an explicit interval exactly, independently of bounded native waits.
+pub(crate) fn capture_pacing_nanos(pacing: ResolvedCapturePacing) -> Result<i64, ShimStatus> {
+    let Some(interval) = pacing.interval() else {
+        return Ok(0);
+    };
+    let nanos = i64::try_from(interval.as_nanos()).map_err(|_| ShimStatus::InvalidArgument)?;
+    if nanos <= 0 {
+        return Err(ShimStatus::InvalidArgument);
+    }
+    Ok(nanos)
+}
+
+const fn capture_pacing_mode(pacing: ResolvedCapturePacing) -> u32 {
+    if pacing.is_required() {
+        PACING_REQUIRED
+    } else if pacing.is_preferred() {
+        PACING_PREFERRED
+    } else {
+        PACING_SOURCE_DEFAULT
+    }
+}
 
 /// Largest wait the shim is ever asked for, so one native call cannot consume a
 /// caller's whole budget.
@@ -771,6 +801,8 @@ pub(crate) struct OpenRequest {
     pub(crate) testing_stop_delay: Duration,
     /// Zero in the product. See the shim's `MP_SHIM_RAISE_*` seams.
     pub(crate) testing_raise_sites: u32,
+    /// Already-resolved session pacing, checked before native allocation.
+    pub(crate) capture_pacing: ResolvedCapturePacing,
 }
 
 /// One open native session.
@@ -797,8 +829,9 @@ impl Session {
         frame: FrameCallback,
         frame_commit: FrameCommitCallback,
         stopped: StoppedCallback,
-    ) -> Result<Self, ShimStatus> {
+    ) -> Result<(Self, CapturePacingReport), ShimStatus> {
         validate_open_shape_and_metadata(request)?;
+        let pacing_interval_nanos = capture_pacing_nanos(request.capture_pacing)?;
         if request.target.as_ptr().is_null() {
             return Err(ShimStatus::InvalidArgument);
         }
@@ -822,13 +855,22 @@ impl Session {
             frame_callback: Some(frame),
             frame_commit_callback: Some(frame_commit),
             stopped_callback: Some(stopped),
+            pacing_mode: capture_pacing_mode(request.capture_pacing),
+            pacing_interval_nanos,
         };
         let mut session = std::ptr::null_mut();
+        let mut report = NativeOpenReport::requested();
         // SAFETY: `native` outlives the call, carries its own size, and
-        // `session` is a writable output for one handle.
-        let status = unsafe { mp_shim_session_open(&raw const native, &raw mut session) };
+        // `session` and `report` are writable outputs.
+        let status =
+            unsafe { mp_shim_session_open(&raw const native, &raw mut session, &raw mut report) };
         match (ShimStatus::from_raw(status), NonNull::new(session)) {
-            (ShimStatus::Ok, Some(handle)) => Ok(Self { handle }),
+            (ShimStatus::Ok, Some(handle)) => {
+                let session = Self { handle };
+                // A contradictory native report drops the unstarted owner.
+                let capture_pacing = report.capture_pacing(request.capture_pacing)?;
+                Ok((session, capture_pacing))
+            }
             (ShimStatus::Ok, None) => Err(ShimStatus::PlatformFailure),
             (status, _) => Err(status),
         }
@@ -2026,10 +2068,10 @@ pub(crate) fn input_prepare_text(units: &[u16], flags: u32) -> Result<PreparedIn
 
 /// Returns the version, structure sizes, and process-field offsets compiled into
 /// the linked shim.
-pub(crate) fn linked_layout() -> (u32, [u32; 6], [u32; 6]) {
+pub(crate) fn linked_layout() -> (u32, [u32; 7], [u32; 6]) {
     // SAFETY: the version call takes no arguments.
     let version = unsafe { mp_shim_abi_version() };
-    let mut sizes = [0; 6];
+    let mut sizes = [0; 7];
     let [
         target_info,
         frame_info,
@@ -2037,8 +2079,9 @@ pub(crate) fn linked_layout() -> (u32, [u32; 6], [u32; 6]) {
         process_authority,
         process_post_request,
         process_post_report,
+        open_report,
     ] = &mut sizes;
-    // SAFETY: all six outputs are writable for one u32 each.
+    // SAFETY: all seven outputs are writable for one u32 each.
     let size_status = unsafe {
         mp_shim_struct_sizes(
             &raw mut *target_info,
@@ -2047,10 +2090,11 @@ pub(crate) fn linked_layout() -> (u32, [u32; 6], [u32; 6]) {
             &raw mut *process_authority,
             &raw mut *process_post_request,
             &raw mut *process_post_report,
+            &raw mut *open_report,
         )
     };
     if ShimStatus::from_raw(size_status) != ShimStatus::Ok {
-        return (version, [0; 6], [0; 6]);
+        return (version, [0; 7], [0; 6]);
     }
 
     let mut offsets = [0; 6];
@@ -2080,7 +2124,7 @@ pub(crate) fn linked_layout() -> (u32, [u32; 6], [u32; 6]) {
 }
 
 /// The sizes this build compiled its mirrored structures to.
-pub(crate) fn declared_layout() -> [u32; 6] {
+pub(crate) fn declared_layout() -> [u32; 7] {
     [
         u32::try_from(size_of::<TargetInfo>()).expect("structure size fits u32"),
         u32::try_from(size_of::<FrameInfo>()).expect("structure size fits u32"),
@@ -2088,6 +2132,7 @@ pub(crate) fn declared_layout() -> [u32; 6] {
         u32::try_from(size_of::<NativeProcessAuthority>()).expect("structure size fits u32"),
         u32::try_from(size_of::<NativeProcessPostRequest>()).expect("structure size fits u32"),
         u32::try_from(size_of::<NativeProcessPostReport>()).expect("structure size fits u32"),
+        u32::try_from(size_of::<NativeOpenReport>()).expect("structure size fits u32"),
     ]
 }
 
@@ -2119,6 +2164,31 @@ pub(crate) fn declared_process_offsets() -> [u32; 6] {
         ))
         .expect("field offset fits u32"),
     ]
+}
+
+pub(crate) fn linked_open_offsets() -> [u32; 9] {
+    let mut offsets = [0; 9];
+    // SAFETY: the array is writable for its declared length.
+    let status = unsafe { mp_shim_open_struct_offsets(offsets.as_mut_ptr(), offsets.len()) };
+    if ShimStatus::from_raw(status) != ShimStatus::Ok {
+        return [0; 9];
+    }
+    offsets
+}
+
+pub(crate) fn declared_open_offsets() -> [u32; 9] {
+    [
+        std::mem::offset_of!(NativeOpenRequest, target),
+        std::mem::offset_of!(NativeOpenRequest, callback_context),
+        std::mem::offset_of!(NativeOpenRequest, frame_callback),
+        std::mem::offset_of!(NativeOpenRequest, frame_commit_callback),
+        std::mem::offset_of!(NativeOpenRequest, stopped_callback),
+        std::mem::offset_of!(NativeOpenRequest, pacing_mode),
+        std::mem::offset_of!(NativeOpenRequest, pacing_interval_nanos),
+        std::mem::offset_of!(NativeOpenReport, pacing_outcome),
+        std::mem::offset_of!(NativeOpenReport, configured_interval_nanos),
+    ]
+    .map(|offset| u32::try_from(offset).expect("field offset fits u32"))
 }
 
 /// What a shim entry point reported.
@@ -3272,6 +3342,128 @@ struct NativeOpenRequest {
     frame_callback: Option<FrameCallback>,
     frame_commit_callback: Option<FrameCommitCallback>,
     stopped_callback: Option<StoppedCallback>,
+    pacing_mode: u32,
+    pacing_interval_nanos: i64,
+}
+
+#[repr(C)]
+#[derive(Debug, Clone, Copy)]
+struct NativeOpenReport {
+    struct_size: u32,
+    pacing_outcome: u32,
+    configured_interval_nanos: i64,
+}
+
+impl NativeOpenReport {
+    fn requested() -> Self {
+        Self {
+            struct_size: u32::try_from(size_of::<Self>()).expect("structure size fits u32"),
+            pacing_outcome: u32::MAX,
+            configured_interval_nanos: 0,
+        }
+    }
+
+    fn capture_pacing(
+        self,
+        request: ResolvedCapturePacing,
+    ) -> Result<CapturePacingReport, ShimStatus> {
+        if self.struct_size < u32::try_from(size_of::<Self>()).expect("structure size fits u32") {
+            return Err(ShimStatus::PlatformFailure);
+        }
+        match (self.pacing_outcome, self.configured_interval_nanos) {
+            (PACING_SOURCE_DEFAULT, 0) if request.interval().is_none() => {
+                Ok(CapturePacingReport::source_default())
+            }
+            (PACING_APPLIED, nanos) if nanos > 0 => CapturePacingReport::applied(
+                request,
+                Duration::from_nanos(
+                    u64::try_from(nanos).map_err(|_| ShimStatus::PlatformFailure)?,
+                ),
+            )
+            .map_err(|_| ShimStatus::PlatformFailure),
+            (PACING_UNAVAILABLE, 0) if request.is_preferred() => CapturePacingReport::unsupported(
+                request,
+                PacingUnsupportedReason::NativeControlUnavailable,
+            )
+            .map_err(|_| ShimStatus::PlatformFailure),
+            _ => Err(ShimStatus::PlatformFailure),
+        }
+    }
+}
+
+#[cfg(test)]
+#[repr(u32)]
+#[derive(Debug, Clone, Copy)]
+enum TestingCapturePacing {
+    Applied = 0,
+    MissingSetter = 1,
+    MissingGetter = 2,
+    SetterException = 3,
+    GetterException = 4,
+    ShortReadback = 5,
+    InvalidReadback = 6,
+    StartException = 7,
+    StartFailure = 8,
+    ResizeException = 9,
+    ResizeLosesInterval = 10,
+    ProbeException = 11,
+    StreamException = 12,
+    OutputException = 13,
+}
+
+#[cfg(test)]
+#[repr(C)]
+#[derive(Debug)]
+struct CapturePacingObservation {
+    struct_size: u32,
+    open_status: u32,
+    start_status: u32,
+    resize_status: u32,
+    close_status: u32,
+    open_report: NativeOpenReport,
+    assigned_value: i64,
+    assigned_timescale: i32,
+    stream_creations: u32,
+    created_interval_nanos: i64,
+    started_interval_nanos: i64,
+    resized_interval_nanos: i64,
+    resized_width: u32,
+    resized_height: u32,
+    live_owners: u32,
+    live_native_objects: u64,
+}
+
+#[cfg(test)]
+fn testing_capture_pacing(
+    mode: u32,
+    nanos: i64,
+    scenario: TestingCapturePacing,
+) -> Result<CapturePacingObservation, ShimStatus> {
+    let mut observed = CapturePacingObservation {
+        struct_size: u32::try_from(size_of::<CapturePacingObservation>())
+            .expect("structure size fits u32"),
+        open_status: u32::MAX,
+        start_status: u32::MAX,
+        resize_status: u32::MAX,
+        close_status: u32::MAX,
+        open_report: NativeOpenReport::requested(),
+        assigned_value: 0,
+        assigned_timescale: 0,
+        stream_creations: 0,
+        created_interval_nanos: 0,
+        started_interval_nanos: 0,
+        resized_interval_nanos: 0,
+        resized_width: 0,
+        resized_height: 0,
+        live_owners: 0,
+        live_native_objects: 0,
+    };
+    // SAFETY: the size-versioned output stays writable for the entire synchronous
+    // seam. It uses local fake objects and settles every callback before returning.
+    let status =
+        unsafe { mp_shim_testing_capture_pacing(mode, nanos, scenario as u32, &raw mut observed) };
+    ShimStatus::from_raw(status).into_result()?;
+    Ok(observed)
 }
 
 #[repr(C)]
@@ -3342,6 +3534,7 @@ unsafe extern "C" {
         out_process_authority: *mut u32,
         out_process_post_request: *mut u32,
         out_process_post_report: *mut u32,
+        out_open_report: *mut u32,
     ) -> u32;
     fn mp_shim_process_struct_offsets(
         out_authority_target_match_count: *mut u32,
@@ -3350,6 +3543,14 @@ unsafe extern "C" {
         out_request_timeout_nanos: *mut u32,
         out_report_target_match_count: *mut u32,
         out_report_invoked_native_units: *mut u32,
+    ) -> u32;
+    fn mp_shim_open_struct_offsets(out_offsets: *mut u32, count: usize) -> u32;
+    #[cfg(test)]
+    fn mp_shim_testing_capture_pacing(
+        mode: u32,
+        nanos: i64,
+        scenario: u32,
+        out_report: *mut CapturePacingObservation,
     ) -> u32;
     fn mp_shim_capture_available() -> u32;
     fn mp_shim_probe_screen_capture(out_state: *mut u32) -> u32;
@@ -3595,8 +3796,11 @@ unsafe extern "C" {
     ) -> u32;
     fn mp_shim_inventory_release(inventory: *mut OpaqueInventory);
     fn mp_shim_target_release(target: *mut OpaqueTarget);
-    fn mp_shim_session_open(request: *const NativeOpenRequest, out: *mut *mut OpaqueSession)
-    -> u32;
+    fn mp_shim_session_open(
+        request: *const NativeOpenRequest,
+        out: *mut *mut OpaqueSession,
+        out_report: *mut NativeOpenReport,
+    ) -> u32;
     fn mp_shim_session_start(session: *mut OpaqueSession, timeout_nanos: u64) -> u32;
     fn mp_shim_session_reconfigure(
         session: *mut OpaqueSession,
@@ -3798,6 +4002,318 @@ mod tests {
         assert_eq!(version, ABI_VERSION);
         assert_eq!(sizes, declared_layout());
         assert_eq!(offsets, declared_process_offsets());
+        assert_eq!(super::linked_open_offsets(), super::declared_open_offsets());
+    }
+
+    #[test]
+    fn capture_pacing_private_handshake_preserves_existing_pointer_offsets() {
+        assert_eq!(
+            super::declared_open_offsets(),
+            [24, 72, 80, 88, 96, 104, 112, 4, 8],
+        );
+        assert_eq!(super::linked_open_offsets(), super::declared_open_offsets());
+    }
+
+    #[test]
+    fn capture_pacing_nanosecond_boundaries_do_not_use_the_native_wait_ceiling() {
+        use mado_pilot_capture::{CapturePacingRequest, ResolvedCapturePacing};
+
+        let maximum = Duration::from_nanos(i64::MAX.unsigned_abs());
+        for interval in [
+            Duration::from_nanos(1),
+            Duration::from_nanos(2_000_000_001),
+            maximum,
+        ] {
+            let request = CapturePacingRequest::required(interval)
+                .expect("positive duration")
+                .resolve(ResolvedCapturePacing::source_default());
+            assert_eq!(
+                super::capture_pacing_nanos(request),
+                Ok(i64::try_from(interval.as_nanos()).expect("representable")),
+            );
+        }
+        let too_large = maximum + Duration::from_nanos(1);
+        for request in [
+            CapturePacingRequest::required(too_large).expect("positive"),
+            CapturePacingRequest::preferred(too_large).expect("positive"),
+            CapturePacingRequest::preferred(Duration::MAX).expect("positive"),
+        ] {
+            assert_eq!(
+                super::capture_pacing_nanos(
+                    request.resolve(ResolvedCapturePacing::source_default())
+                ),
+                Err(ShimStatus::InvalidArgument),
+            );
+        }
+    }
+
+    #[test]
+    fn capture_pacing_is_exact_before_creation_start_and_retained_configuration_resize() {
+        use super::{TestingCapturePacing, testing_capture_pacing};
+        use mado_pilot_capture::{
+            CapturePacingOutcome, CapturePacingRequest, ResolvedCapturePacing,
+        };
+
+        let _serial = serialized_fixture_test();
+        for nanos in [1, 3_500_000_001, i64::MAX] {
+            let interval = Duration::from_nanos(u64::try_from(nanos).expect("positive"));
+            let request = CapturePacingRequest::required(interval)
+                .expect("positive")
+                .resolve(ResolvedCapturePacing::source_default());
+            let observed = testing_capture_pacing(
+                super::PACING_REQUIRED,
+                nanos,
+                TestingCapturePacing::Applied,
+            )
+            .expect("local native configuration seam");
+            assert_eq!(ShimStatus::from_raw(observed.open_status), ShimStatus::Ok);
+            assert_eq!(ShimStatus::from_raw(observed.start_status), ShimStatus::Ok);
+            assert_eq!(ShimStatus::from_raw(observed.resize_status), ShimStatus::Ok);
+            assert_eq!(observed.assigned_value, nanos);
+            assert_eq!(observed.assigned_timescale, 1_000_000_000);
+            assert_eq!(observed.created_interval_nanos, nanos);
+            assert_eq!(observed.started_interval_nanos, nanos);
+            assert_eq!(observed.resized_interval_nanos, nanos);
+            assert_eq!((observed.resized_width, observed.resized_height), (128, 96));
+            let report = observed
+                .open_report
+                .capture_pacing(request)
+                .expect("truthful report");
+            assert_eq!(report.request(), request);
+            assert_eq!(report.configured_interval(), Some(interval));
+            assert_eq!(report.outcome(), CapturePacingOutcome::Applied);
+            assert_eq!(ShimStatus::from_raw(observed.close_status), ShimStatus::Ok);
+            assert_eq!((observed.live_owners, observed.live_native_objects), (0, 0));
+        }
+    }
+
+    #[test]
+    fn capture_pacing_missing_accessors_only_allow_explicit_preferences() {
+        use super::{TestingCapturePacing, testing_capture_pacing};
+        use mado_pilot_capture::{
+            CapturePacingOutcome, CapturePacingRequest, PacingUnsupportedReason,
+            ResolvedCapturePacing,
+        };
+
+        let _serial = serialized_fixture_test();
+        let interval = Duration::from_millis(75);
+        let preference = CapturePacingRequest::preferred(interval)
+            .expect("positive")
+            .resolve(ResolvedCapturePacing::source_default());
+        for scenario in [
+            TestingCapturePacing::MissingSetter,
+            TestingCapturePacing::MissingGetter,
+        ] {
+            let required = testing_capture_pacing(super::PACING_REQUIRED, 75_000_000, scenario)
+                .expect("local capability seam");
+            assert_eq!(
+                ShimStatus::from_raw(required.open_status),
+                ShimStatus::Unsupported
+            );
+            assert_eq!(required.stream_creations, 0);
+            assert_eq!((required.live_owners, required.live_native_objects), (0, 0));
+
+            let preferred = testing_capture_pacing(super::PACING_PREFERRED, 75_000_000, scenario)
+                .expect("local capability seam");
+            assert_eq!(ShimStatus::from_raw(preferred.open_status), ShimStatus::Ok);
+            assert_eq!(ShimStatus::from_raw(preferred.start_status), ShimStatus::Ok);
+            let report = preferred
+                .open_report
+                .capture_pacing(preference)
+                .expect("unapplied report");
+            assert_eq!(report.request(), preference);
+            assert_eq!(report.configured_interval(), None);
+            assert_eq!(
+                report.outcome(),
+                CapturePacingOutcome::PreferredUnapplied(
+                    PacingUnsupportedReason::NativeControlUnavailable
+                ),
+            );
+            assert_eq!(preferred.created_interval_nanos, 17_000_000);
+            assert_eq!(preferred.resized_interval_nanos, 17_000_000);
+            assert_eq!(
+                (preferred.live_owners, preferred.live_native_objects),
+                (0, 0)
+            );
+        }
+
+        let default = testing_capture_pacing(
+            super::PACING_SOURCE_DEFAULT,
+            0,
+            TestingCapturePacing::ProbeException,
+        )
+        .expect("source default never probes pacing");
+        assert_eq!(ShimStatus::from_raw(default.start_status), ShimStatus::Ok);
+        assert_eq!(default.created_interval_nanos, 17_000_000);
+        assert_eq!(
+            default
+                .open_report
+                .capture_pacing(ResolvedCapturePacing::source_default())
+                .expect("source default report")
+                .outcome(),
+            CapturePacingOutcome::SourceDefault,
+        );
+        assert_eq!((default.live_owners, default.live_native_objects), (0, 0));
+    }
+
+    #[test]
+    fn capture_pacing_configuration_failures_never_become_preferred_fallback() {
+        use super::{TestingCapturePacing, testing_capture_pacing};
+
+        let _serial = serialized_fixture_test();
+        for (scenario, expected) in [
+            (
+                TestingCapturePacing::SetterException,
+                ShimStatus::NativeException,
+            ),
+            (
+                TestingCapturePacing::GetterException,
+                ShimStatus::NativeException,
+            ),
+            (
+                TestingCapturePacing::ProbeException,
+                ShimStatus::NativeException,
+            ),
+            (
+                TestingCapturePacing::ShortReadback,
+                ShimStatus::PlatformFailure,
+            ),
+            (
+                TestingCapturePacing::InvalidReadback,
+                ShimStatus::PlatformFailure,
+            ),
+        ] {
+            let observed = testing_capture_pacing(super::PACING_PREFERRED, 50_000_000, scenario)
+                .expect("local rejected-configuration seam");
+            assert_eq!(ShimStatus::from_raw(observed.open_status), expected);
+            assert_eq!(observed.stream_creations, 0);
+            assert_eq!(observed.open_report.pacing_outcome, u32::MAX);
+            assert_eq!((observed.live_owners, observed.live_native_objects), (0, 0));
+        }
+    }
+
+    #[test]
+    fn capture_pacing_native_scalars_refuse_invalid_requests_without_creating_a_stream() {
+        let _serial = serialized_fixture_test();
+        for (mode, nanos) in [(1, 0), (2, -1), (3, 1), (0, 1)] {
+            let observed =
+                super::testing_capture_pacing(mode, nanos, super::TestingCapturePacing::Applied)
+                    .expect("local scalar-validation seam");
+            assert_eq!(
+                ShimStatus::from_raw(observed.open_status),
+                ShimStatus::InvalidArgument
+            );
+            assert_eq!(observed.stream_creations, 0);
+            assert_eq!((observed.live_owners, observed.live_native_objects), (0, 0));
+        }
+    }
+
+    #[test]
+    fn capture_pacing_start_and_registration_failures_release_native_owners() {
+        use super::{TestingCapturePacing, testing_capture_pacing};
+
+        let _serial = serialized_fixture_test();
+        for scenario in [
+            TestingCapturePacing::StreamException,
+            TestingCapturePacing::OutputException,
+        ] {
+            let observed = testing_capture_pacing(super::PACING_PREFERRED, 50_000_000, scenario)
+                .expect("local creation failure seam");
+            assert_eq!(
+                ShimStatus::from_raw(observed.open_status),
+                ShimStatus::NativeException
+            );
+            assert_eq!(observed.open_report.pacing_outcome, u32::MAX);
+            assert_eq!((observed.live_owners, observed.live_native_objects), (0, 0));
+        }
+        for (scenario, expected) in [
+            (
+                TestingCapturePacing::StartException,
+                ShimStatus::NativeException,
+            ),
+            (
+                TestingCapturePacing::StartFailure,
+                ShimStatus::PlatformFailure,
+            ),
+        ] {
+            let observed = testing_capture_pacing(super::PACING_PREFERRED, 50_000_000, scenario)
+                .expect("local start failure seam");
+            assert_eq!(ShimStatus::from_raw(observed.open_status), ShimStatus::Ok);
+            assert_eq!(ShimStatus::from_raw(observed.start_status), expected);
+            assert_eq!(observed.open_report.pacing_outcome, super::PACING_APPLIED);
+            assert_eq!(ShimStatus::from_raw(observed.close_status), expected);
+            assert_eq!((observed.live_owners, observed.live_native_objects), (0, 0));
+        }
+    }
+
+    #[test]
+    fn capture_pacing_resize_rejects_lost_configuration_and_preserves_failure_cleanup() {
+        use super::{TestingCapturePacing, testing_capture_pacing};
+
+        let _serial = serialized_fixture_test();
+        for (scenario, expected) in [
+            (
+                TestingCapturePacing::ResizeException,
+                ShimStatus::NativeException,
+            ),
+            (
+                TestingCapturePacing::ResizeLosesInterval,
+                ShimStatus::PlatformFailure,
+            ),
+        ] {
+            let observed = testing_capture_pacing(super::PACING_REQUIRED, 50_000_000, scenario)
+                .expect("local resize failure seam");
+            assert_eq!(ShimStatus::from_raw(observed.start_status), ShimStatus::Ok);
+            assert_eq!(observed.started_interval_nanos, 50_000_000);
+            assert_eq!(ShimStatus::from_raw(observed.resize_status), expected);
+            assert_eq!(observed.resized_width, 0);
+            assert_eq!(observed.open_report.configured_interval_nanos, 50_000_000);
+            assert_eq!(ShimStatus::from_raw(observed.close_status), ShimStatus::Ok);
+            assert_eq!((observed.live_owners, observed.live_native_objects), (0, 0));
+        }
+    }
+
+    #[test]
+    fn capture_pacing_private_reports_reject_contradictions() {
+        use mado_pilot_capture::{CapturePacingRequest, ResolvedCapturePacing};
+
+        let request = CapturePacingRequest::required(Duration::from_nanos(5))
+            .expect("positive")
+            .resolve(ResolvedCapturePacing::source_default());
+        for (pacing_outcome, configured_interval_nanos) in [
+            (super::PACING_SOURCE_DEFAULT, 0),
+            (super::PACING_APPLIED, 4),
+            (super::PACING_APPLIED, -1),
+            (super::PACING_UNAVAILABLE, 0),
+            (u32::MAX, 5),
+        ] {
+            let report = super::NativeOpenReport {
+                pacing_outcome,
+                configured_interval_nanos,
+                ..super::NativeOpenReport::requested()
+            };
+            assert_eq!(
+                report.capture_pacing(request),
+                Err(ShimStatus::PlatformFailure)
+            );
+        }
+        let applied = super::NativeOpenReport {
+            pacing_outcome: super::PACING_APPLIED,
+            configured_interval_nanos: 5,
+            ..super::NativeOpenReport::requested()
+        };
+        assert_eq!(
+            applied.capture_pacing(ResolvedCapturePacing::source_default()),
+            Err(ShimStatus::PlatformFailure),
+        );
+        let truncated = super::NativeOpenReport {
+            struct_size: 8,
+            ..applied
+        };
+        assert_eq!(
+            truncated.capture_pacing(request),
+            Err(ShimStatus::PlatformFailure)
+        );
     }
 
     #[test]
@@ -4805,6 +5321,7 @@ mod tests {
                 testing_start_delay: Duration::ZERO,
                 testing_stop_delay: Duration::ZERO,
                 testing_raise_sites: 0,
+                capture_pacing: mado_pilot_capture::ResolvedCapturePacing::source_default(),
             };
             validate_open_shape_and_metadata(&request).err()
         };
@@ -4841,6 +5358,7 @@ mod tests {
                 testing_start_delay: Duration::ZERO,
                 testing_stop_delay: Duration::ZERO,
                 testing_raise_sites: 0,
+                capture_pacing: mado_pilot_capture::ResolvedCapturePacing::source_default(),
             };
             validate_open_shape_and_metadata(&request).err()
         };

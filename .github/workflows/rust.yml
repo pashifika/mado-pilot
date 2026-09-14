@@ -336,6 +336,10 @@ jobs:
         shell: bash
         run: cargo test --locked --workspace --all-targets
 
+      - name: Exercise completion-paced OCR without capture or models
+        shell: bash
+        run: cargo run --locked --package mado-pilot --example completion-paced-ocr -- --controlled-smoke
+
       - name: Prove bounded OCR literal normalization
         shell: bash
         run: cargo run --locked --release --package mado-pilot-ocr --example ocr-normalization-bound --target-dir target/ocr-normalization-proof
@@ -618,6 +622,10 @@ jobs:
       - name: Test the workspace
         shell: bash
         run: cargo test --locked --workspace --all-targets
+
+      - name: Exercise completion-paced OCR without capture or models
+        shell: bash
+        run: cargo run --locked --package mado-pilot --example completion-paced-ocr -- --controlled-smoke
 
       - name: Prove bounded OCR literal normalization
         shell: bash

@@ -1035,6 +1035,8 @@ responsibilities a later phase takes on.
 | macOS native capture ownership policy | Implemented for the production Adapter's fixed-depth producer queue, finite eight-buffer detached budget, off-queue reconfiguration, callback fence, reference-counted native session lifetime, bounded source-geometry history, and idempotent teardown. Permissioned AddressSanitizer ownership scenarios remain part of the contributing sequence. [ADR 0021](adr/0021-invalidate-phase-2-native-performance-evidence.md) keeps the former input-stimulus capture/transition profiles historical, [ADR 0029](adr/0029-macos-process-directed-input.md) accepts the separate controlled-stimulus lineage, and [ADR 0030](adr/0030-macos-production-capture-performance-budgets.md) accepts the final production capture/transition matrix |
 | macOS input route and focus authority | Decided in [ADR 0016](adr/0016-macos-input-delivery-surface-and-focus-authority.md), refined by [ADR 0023](adr/0023-input-submission-observation-and-abi-1-2.md), and extended by [ADR 0029](adr/0029-macos-process-directed-input.md): separate `System` and explicit owning-process `ProcessDirected` routes with no exact-window pair on any macOS target; the public `CGPreflightPostEventAccess` decision is re-read before every irreversible event with the legacy Accessibility observation retained as a paired qualification-only fact; `System` alone uses application activation and bounded public Accessibility read-back. Process-directed preflight retains mutable authority for delay-only or fallback-eligible routes, while a terminal native-event route defers duplicate mutable window authority and source-geometry comparison to one final native commit. Cleanup still revalidates the original process lifetime without a window inventory read. Independent `single`, exact two-display non-mirrored `same-scale`, and `mixed-scale` matrices pass; release publication is qualified for all fourteen controlled pairs |
 | Native window and display capture | Implemented on both targets, and reachable from the public composition root through the target-specific facade constructors |
+| Engine/session native capture pacing | Implemented in Rust with immutable common/target defaults, atomic session overrides, native WGC/ScreenCaptureKit configuration and truthful session reports. Public C/C++ defaults and ABI layouts are unchanged. New native cadence/performance qualification remains unexecuted; see [capture pacing](capture-pacing.md) and ADR0077 |
+| Caller-owned completion-paced OCR | Complete Rust example uses one absolute operation authority, exact-frame OCR, full post-interpretation cooldown and newest eligible live observations. Deterministic timing/freshness/ownership tests and model-free smoke pass; this adds no public scheduler, watcher semantics or input |
 | Template sources, prepared templates, requests, results, backend contract | Implemented in `mado-pilot-vision` |
 | Deterministic result ordering, suppression, and limiting | Implemented in `mado-pilot-vision` |
 | Closed change-detection policy and recorded-sequence evaluator | Implemented in `mado-pilot-vision` and `mado-pilot-testkit`. ADR 0050 selects exact RGBA for compatible mapped regions, keeps analysis-always as fail-safe, and limits unchanged authority to routine-analysis admission. Both hosted release targets reproduced canonical report v2 and independent review is clean; the Rust template watcher consumes this descriptor without giving unchanged transitions stability authority |
@@ -1161,6 +1163,55 @@ This is an additive Rust-only contract. It changes no facade behavior, C
 function table, C layout, header, or C++ wrapper. The decision and its native
 performance acceptance conditions are recorded in
 [ADR 0011](adr/0011-recoverable-stream-publication.md).
+
+### Native capture pacing configuration
+
+`CapturePacingRequest` selects inheritance, source default, or one validated
+required/preferred positive interval. The pure resolver selects the whole value:
+session > selected OS block > common engine > source default. Repeated setters
+replace values; replacing an OS block also replaces its inherited fields.
+These are defaults, not hard caps. Only selected values receive native range
+validation, before backend initialization or native session allocation.
+
+`WindowsConfig` and `MacosConfig` are target-owned declarative values re-exported
+by the facade on their target. All native constructor variants retain immutable
+provider defaults; runtime orchestration remains concrete-adapter-neutral.
+No configuration operation opens capture, probes permissions or initializes input.
+Existing constructors, const/Copy session requests and foreign callers retain
+source-default behavior.
+
+Windows negotiates `IGraphicsCaptureSession5` and the writable runtime property,
+configures positive signed 64-bit 100ns ticks rounded upward, and reads back before
+callbacks/start. macOS negotiates the dynamic getter/setter, configures exact
+positive signed 64-bit nanoseconds with `CMTimeMake` at timescale1000000000, and
+reads back before stream creation/start. Its private scalar handshake is ABI22
+with matching Rust/C size and offset checks; the public C ABI is unchanged.
+Both adapters retain configuration across pool/dimension changes without adding
+callback sleeps, software throttle gates or producer storage retention.
+
+`SessionDescription::capture_pacing` reports source default, applied native
+configuration, or an unsupported unapplied preference. A successful required-
+unapplied state is not representable. Capability absence alone permits preference
+fallback; configuration, permission, target/device, exception, start and operation
+failures remain failures. Replay and ControlledCapture cannot apply native pacing:
+requirements fail and preferences report `SourceCannotPace`, without changing
+their existing pull/script publication.
+
+The complete `completion-paced-ocr` example separates producer configuration from
+caller completion cooldown and watcher admission rate. It recognizes one exact
+frame, completes interpretation, releases unnecessary owners, waits a full
+additional cooldown with bounded2ms polling, then requests the newest stamp after
+the last checked one. A live update during cooldown remains eligible after it
+becomes idle; actual terminal state still precedes retained latest state.
+One absolute deadline/cancellation authority spans the loop, and independent
+bounded cleanup retains both work and cleanup failures.
+
+[ADR0077](adr/0077-native-capture-pacing-and-completion-cooldown.md) records the
+narrow facade exception and compatibility boundary. [The usage guide](capture-pacing.md)
+records precise conversions, ownership, examples and unexecuted native gates.
+Configured intervals are not observed FPS or performance guarantees. Historical
+support decisions and budgets are unchanged; the five-case native/model comparison
+requires separate explicit authority and pre-bound workloads/metrics/budgets.
 
 ### The opaque frame-storage seam
 
@@ -2939,27 +2990,21 @@ deadline leaves no engine. Ordinary constructors acquire neither dependency, an
 injected backend and integrated selection are mutually exclusive, and neither
 integrated constructor substitutes the other profile.
 
-Native construction is target-specific and is one constructor per release
-target, present only in a build for that target. Which platform is therefore not
-a runtime argument and cannot name a platform the build does not contain. The
-same ordering applies: the backend is the one step that can fail on its own and
-it runs first, and nothing constructed after it holds a native resource, so a
-refused construction yields no engine rather than a half-configured one. What the
-platforms do not share is reported rather than smoothed over — an engine reports
-whether it can read an authorization at all, and macOS is the only target where
-that is true today.
+Native construction is target-specific, with ordinary/default-OCR/profile/provider
+variants sharing one inner constructor per release target. The platform is not a
+runtime argument. After interruption admission, the selected pacing default is
+validated before either backend initializes. Failed construction yields no engine
+and opens no capture/input resource. Platforms report their distinct capabilities;
+macOS remains the only target with non-prompting authorization observations.
 
-The facade's dependency row still lists no contract package, so every core,
-capture, input, vision, OCR, or asset type its public API exposes is re-exported
-by `mado-pilot-runtime`. The one exception a reader will notice is
-`mado_pilot::replay`, which re-exports the replay adapter's own configuration
-types: those describe a concrete adapter the facade is entitled to name. No
-platform-native type is re-exported at all, and neither are the platform
-packages' documentation-hidden fixture-protocol modules — the facade names a
-platform package in exactly three places, all of them local adapter constructions
-inside the two target-gated constructors. The native workflow is therefore
-written once in platform-neutral vocabulary, and a host that compiles for both
-targets writes it once too.
+The facade's production dependency row still lists no contract package: its
+neutral public types are re-exported by `mado-pilot-runtime`. Adapter configuration
+has two explicit exceptions: `mado_pilot::replay` and the target-gated declarative
+`WindowsConfig`/`MacosConfig` values accepted by `NativeEngineRequest`.
+These contain no native handle, provider/backend object or executor type.
+Platform implementation and documentation-hidden fixture modules are not
+re-exported. Operational flow remains platform-neutral; ADR0077 records the
+configuration-only exception.
 
 ### The ABI 1.2 input/diagnostic, ABI 1.3 singular OCR, ABI 1.4 grouped OCR, and ABI 1.5 provider slices
 

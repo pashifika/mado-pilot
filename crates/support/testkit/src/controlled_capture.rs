@@ -12,9 +12,10 @@ use std::fmt;
 use std::sync::{Arc, Mutex};
 
 use mado_pilot_capture::{
-    CaptureFault, CaptureProvider, CaptureSession, Continuity, CoordinateSupport, Frame,
-    FrameDescriptor, FrameRequest, Lifecycle, OpenRequest, PixelFormat, Publication,
-    SessionDescription, StreamState, TargetDescription,
+    CaptureFault, CapturePacingReport, CaptureProvider, CaptureSession, Continuity,
+    CoordinateSupport, Frame, FrameDescriptor, FrameRequest, Lifecycle, OpenRequest,
+    PacingUnsupportedReason, PixelFormat, Publication, ResolvedCapturePacing, SessionDescription,
+    StreamState, TargetDescription,
 };
 use mado_pilot_core::{
     Error, IdentityIssuer, MonotonicInstant, OperationContext, PixelExtent, ProviderId, Result,
@@ -360,6 +361,12 @@ impl CaptureProvider for ControlledCapture {
         {
             return Err(CaptureFault::UnsupportedOption.into());
         }
+        let pacing = CapturePacingReport::unsupported(
+            request
+                .capture_pacing()
+                .resolve(ResolvedCapturePacing::source_default()),
+            PacingUnsupportedReason::SourceCannotPace,
+        )?;
 
         let stream = self.issuer.issue_stream()?;
         let session = Arc::new(ControlledSession {
@@ -369,7 +376,8 @@ impl CaptureProvider for ControlledCapture {
                 self.descriptor.extent(),
                 self.descriptor.format(),
                 CoordinateSupport::frame_only(),
-            ),
+            )
+            .with_capture_pacing(pacing),
             state: StreamState::new(stream),
         });
         self.sessions().push(Arc::clone(&session));

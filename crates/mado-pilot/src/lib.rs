@@ -28,9 +28,9 @@
 //! authorizations that platform grants, discover real windows and displays, open
 //! a session that also establishes input, capture and map frames, search them,
 //! submit a bounded input sequence to the target the frames came from, inspect
-//! the receipt's route, threshold, and evidence, and close. Every value in that
-//! flow is platform-neutral: no Windows or macOS type is re-exported here, and a
-//! host that compiles for both targets writes the flow once.
+//! the receipt's route, threshold, and evidence, and close. Operational values
+//! remain platform-neutral. Target-gated [`NativeEngineRequest`] setters accept
+//! declarative OS configuration, never native handles or provider objects.
 //!
 //! The two constructors are separate because the platforms are. One is present
 //! per build, named for the target it wires: `windows_engine` on Windows and
@@ -208,6 +208,11 @@ use mado_pilot_runtime::{
 use mado_pilot_runtime::InputProvider;
 #[cfg(target_os = "macos")]
 use mado_pilot_runtime::PermissionProbe;
+
+#[cfg(target_os = "macos")]
+pub use mado_pilot_platform_macos::MacosConfig;
+#[cfg(windows)]
+pub use mado_pilot_platform_windows::WindowsConfig;
 
 /// Replay capture configuration.
 ///
@@ -708,6 +713,11 @@ pub struct NativeEngineRequest {
     limits: AssetLimits,
     diagnostics: DiagnosticOptions,
     ocr: Option<Arc<dyn OcrBackend>>,
+    capture_pacing: CapturePacingRequest,
+    #[cfg(windows)]
+    windows_config: WindowsConfig,
+    #[cfg(target_os = "macos")]
+    macos_config: MacosConfig,
 }
 
 impl NativeEngineRequest {
@@ -718,6 +728,11 @@ impl NativeEngineRequest {
             limits: AssetLimits::default(),
             diagnostics: DiagnosticOptions::off(),
             ocr: None,
+            capture_pacing: CapturePacingRequest::inherit(),
+            #[cfg(windows)]
+            windows_config: WindowsConfig::new(),
+            #[cfg(target_os = "macos")]
+            macos_config: MacosConfig::new(),
         }
     }
 
@@ -745,6 +760,49 @@ impl NativeEngineRequest {
     pub fn with_ocr_backend(mut self, backend: Arc<dyn OcrBackend>) -> Self {
         self.ocr = Some(backend);
         self
+    }
+
+    /// Replaces the common capture default; an explicit OS or session value wins.
+    #[must_use]
+    pub const fn with_capture_pacing(mut self, pacing: CapturePacingRequest) -> Self {
+        self.capture_pacing = pacing;
+        self
+    }
+
+    /// Replaces the Windows configuration block, including inherited values.
+    #[cfg(windows)]
+    #[must_use]
+    pub const fn with_windows_config(mut self, config: WindowsConfig) -> Self {
+        self.windows_config = config;
+        self
+    }
+
+    /// Replaces the macOS configuration block, including inherited values.
+    #[cfg(target_os = "macos")]
+    #[must_use]
+    pub const fn with_macos_config(mut self, config: MacosConfig) -> Self {
+        self.macos_config = config;
+        self
+    }
+
+    /// Returns the common selection before OS and session overrides.
+    #[must_use]
+    pub const fn capture_pacing(&self) -> CapturePacingRequest {
+        self.capture_pacing
+    }
+
+    /// Returns the complete Windows configuration block.
+    #[cfg(windows)]
+    #[must_use]
+    pub const fn windows_config(&self) -> WindowsConfig {
+        self.windows_config
+    }
+
+    /// Returns the complete macOS configuration block.
+    #[cfg(target_os = "macos")]
+    #[must_use]
+    pub const fn macos_config(&self) -> MacosConfig {
+        self.macos_config
     }
 
     /// Returns the limits the engine will apply.
@@ -787,17 +845,14 @@ impl From<AssetLimits> for NativeEngineRequest {
 ///
 /// # Atomic construction
 ///
-/// The one step that can fail on its own is the matching backend, and it runs
-/// first, so a build whose OpenCV is unusable fails before an identity space or
-/// an adapter exists. Nothing constructed after it holds a native resource — the
-/// provider acquires those per operation — so a later refusal leaves nothing
-/// open, and a failed construction yields no engine at all rather than a
-/// half-configured one.
+/// Selected pacing is validated before backend initialization. The matching
+/// backend is required; a failed construction publishes no engine. Native
+/// capture and input resources are acquired only by later operations.
 ///
 /// # Errors
 ///
-/// Returns [`Status::VisionFailed`] when the required matching backend cannot be
-/// initialized.
+/// Returns [`Status::InvalidArgument`] for unrepresentable selected pacing and
+/// [`Status::VisionFailed`] when the required matching backend cannot initialize.
 #[cfg(windows)]
 pub fn windows_engine(request: impl Into<NativeEngineRequest>) -> Result<Engine> {
     windows_engine_inner(request.into(), None)
@@ -849,20 +904,24 @@ fn windows_engine_inner(
 ) -> Result<Engine> {
     let operation = integrated_ocr.map(IntegratedOcr::operation);
     construction_checkpoint(operation)?;
+    let pacing = request.windows_config().capture_pacing().resolve(
+        request
+            .capture_pacing()
+            .resolve(ResolvedCapturePacing::source_default()),
+    );
+    mado_pilot_platform_windows::WindowsCaptureProvider::validate_capture_pacing(pacing)?;
     let diagnostics = request.diagnostics();
     let limits = request.limits();
 
-    // Required, not preferred, and first: constructing the backend is what
-    // proves this host's OpenCV is usable, and a failure here leaves no adapter
-    // and no identity space behind.
+    // Validate the selected default before initializing either backend.
     let backend = OpenCvBackend::new()?;
     let ocr = configured_ocr(request.ocr, integrated_ocr)?;
 
     let issuer = Arc::new(IdentityIssuer::new());
     let engine = issuer.engine();
-    let provider = Arc::new(mado_pilot_platform_windows::WindowsCaptureProvider::new(
-        issuer,
-    ));
+    let provider = Arc::new(
+        mado_pilot_platform_windows::WindowsCaptureProvider::with_capture_pacing(issuer, pacing)?,
+    );
     #[cfg(feature = "native-template-watch-qualification")]
     mado_pilot_platform_windows::fixture_observation::register_provider(&provider);
 
@@ -901,15 +960,14 @@ fn windows_engine_inner(
 ///
 /// # Atomic construction
 ///
-/// As the Windows constructor: the matching backend runs first and is the one
-/// step that can fail on its own, nothing constructed after it holds a native
-/// resource, and a failed construction yields no engine rather than a
-/// half-configured one.
+/// Selected pacing is validated before either backend initializes. A failed
+/// construction publishes no engine; capture/input resources belong to later
+/// operations.
 ///
 /// # Errors
 ///
-/// Returns [`Status::VisionFailed`] when the required matching backend cannot be
-/// initialized.
+/// Returns [`Status::InvalidArgument`] for unrepresentable selected pacing and
+/// [`Status::VisionFailed`] when the required matching backend cannot initialize.
 #[cfg(target_os = "macos")]
 pub fn macos_engine(request: impl Into<NativeEngineRequest>) -> Result<Engine> {
     macos_engine_inner(request.into(), None)
@@ -961,6 +1019,12 @@ fn macos_engine_inner(
 ) -> Result<Engine> {
     let operation = integrated_ocr.map(IntegratedOcr::operation);
     construction_checkpoint(operation)?;
+    let pacing = request.macos_config().capture_pacing().resolve(
+        request
+            .capture_pacing()
+            .resolve(ResolvedCapturePacing::source_default()),
+    );
+    mado_pilot_platform_macos::MacosCaptureProvider::validate_capture_pacing(pacing)?;
     let diagnostics = request.diagnostics();
     let limits = request.limits();
 
@@ -969,7 +1033,9 @@ fn macos_engine_inner(
 
     let issuer = Arc::new(IdentityIssuer::new());
     let engine = issuer.engine();
-    let provider = Arc::new(mado_pilot_platform_macos::MacosCaptureProvider::new(issuer));
+    let provider = Arc::new(
+        mado_pilot_platform_macos::MacosCaptureProvider::with_capture_pacing(issuer, pacing)?,
+    );
     #[cfg(feature = "native-template-watch-qualification")]
     mado_pilot_platform_macos::fixture_observation::register_provider(&provider);
 
@@ -999,48 +1065,48 @@ pub use mado_pilot_runtime::{
     ACCEPTED_G004_PREPROCESSING_ID, ACCEPTED_G004_PROFILE_ID, ACCEPTED_G004_VOCABULARY_ENTRIES,
     ANALYSIS_ALWAYS_POLICY_CODE, ActivityTag, AssetFault, AssetFaultKind, AssetLimits,
     AssetPackage, BackendCandidate, BackendDescriptor, BackendId, CancellationToken,
-    CapabilitySupport, CaptureFault, ChangeDetectionDescriptor, ChangeDetectionPolicy,
-    CleanupBudget, CleanupState, ClipPolicy, Clock, Confidence, ContentDigest, Continuity,
-    CoordinateSpace, CoordinateSupport, CpuMapping, DEFAULT_CHANGE_DETECTION_DESCRIPTOR, DecoderId,
-    DeliveryPlan, DiagnosticBatch, DiagnosticCategory, DiagnosticDrain, DiagnosticKind,
-    DiagnosticLevel, DiagnosticLosses, DiagnosticOcrModelInstanceId, DiagnosticOperationId,
-    DiagnosticOperationKind, DiagnosticOptions, DiagnosticPayload, DiagnosticReader,
-    DiagnosticRecord, DiagnosticRecordSequence, DiagnosticTemplateId, EXACT_RGBA_POLICY_CODE,
-    Engine, EngineId, EngineOptions, Error, FindOutcome, FindRequest, FocusPolicy, Frame,
-    FrameDescriptor, FrameDiagnostic, FrameOrder, FrameRequest, FrameSelection, FrameSequence,
-    FrameStamp, FrameView, GeometryFault, GeometryPolicy, GeometryRevision, IdentityFault,
-    InputAddressScope, InputAttempt, InputCapability, InputDelivery, InputDescriptor,
-    InputDiagnostic, InputEvent, InputFault, InputOpenRequest, InputOperationKind,
-    InputOperationSet, InputReceipt, InputRequest, InputRequirement, InputRouteCapability,
-    InputSequence, Interruption, Key, LanguageProfileId, Lifecycle, LifecycleDiagnostic, LoadStage,
-    MAX_BACKEND_TEXT_BYTES, MAX_DIAGNOSTIC_CAPACITY, MAX_MODEL_COMPONENT_BYTES, MAX_OCR_CANDIDATES,
-    MAX_OCR_ZONES, MAX_TEXT_BYTES, Manifest, MappingDiagnostic, MappingObserver, Match,
-    MatchDefaults, MatchOptions, MatchResult, MemoryEntry, MemoryPackage, ModelComponentIdentity,
-    ModelId, ModelVersion, Modifier, MonotonicInstant, NormalizationId, OcrBackend,
-    OcrBackendDescriptor, OcrBackendId, OcrBackendIdentity, OcrBackendRequest, OcrBackendVersion,
-    OcrCandidateSink, OcrDiagnostic, OcrDiagnosticOutcome, OcrDiagnosticProfile,
-    OcrExecutionProvider, OcrExecutionProviderPolicy, OcrFault, OcrModelComponent,
-    OcrModelIdentity, OcrModelSource, OcrModelSourceRequest, OcrProfileMetadata,
-    OcrProviderDescriptor, OcrProviderFallbackReason, OcrQuadrilateral, OcrRegion, OcrRequest,
-    OcrRequestedRegionDiagnostic, OcrResult, OcrTextAnalysisRate, OcrTextOverload, OcrTextQuery,
-    OcrTextQueryId, OcrTextQueryOutcome, OcrTextQueryProgress, OcrTextQueryState,
-    OcrTextRetainedExtent, OcrTextSchedulerDescriptor, OcrTextSchedulerObservation,
-    OcrTextStability, OcrTextStabilityKind, OcrTextTerminalOutcome, OcrTextWatchDiagnostic,
-    OcrTextWatchDiagnosticOutcome, OcrTextWatchRequest, OcrTextWatchResult, OcrTextWorkCounts,
-    OcrTextWorkDisposition, OcrZone, OcrZoneGroup, OcrZoneScanRequest, OcrZoneScanResult,
-    OpenRequest, OperationContext, OperationStartedDiagnostic, OverflowPolicy, PackagePath,
-    PackageSource, PermissionDiagnostic, PermissionKind, PermissionOutcome, PermissionReport,
-    PermissionState, PixelExtent, PixelFormat, PixelRect, PlatformCode, Point, PointerButton,
-    PointerGeometry, PreparedTemplate, PreprocessingId, PressedState, ProfileId, Provenance,
-    ProviderId, ProviderProfileId, Rect, RegionSelection, Result, RetainedStoragePolicy,
-    RouteAttemptDiagnostic, Scale, SearchDiagnostic, SearchDiagnosticOutcome, SearchFrame,
-    SequenceLimits, SequenceOutcome, Session, SessionDescription, SessionRequest, Status,
-    StreamEpoch, StreamId, SubmissionEvidence, Suppression, SystemClock, TargetCapability,
-    TargetDescription, TargetId, TargetKind, TargetPlacement, TemplateAnalysisRate,
-    TemplateDeclaration, TemplateEncoding, TemplateId, TemplateOverload, TemplateQuery,
-    TemplateQueryId, TemplateQueryOutcome, TemplateQueryProgress, TemplateQueryState,
-    TemplateSchedulerDescriptor, TemplateSource, TemplateSourceRequest, TemplateStability,
-    TemplateStabilityKind, TemplateTerminalOutcome, TemplateWatchDiagnostic,
+    CapabilitySupport, CaptureFault, CapturePacingOutcome, CapturePacingReport,
+    CapturePacingRequest, ChangeDetectionDescriptor, ChangeDetectionPolicy, CleanupBudget,
+    CleanupState, ClipPolicy, Clock, Confidence, ContentDigest, Continuity, CoordinateSpace,
+    CoordinateSupport, CpuMapping, DEFAULT_CHANGE_DETECTION_DESCRIPTOR, DecoderId, DeliveryPlan,
+    DiagnosticBatch, DiagnosticCategory, DiagnosticDrain, DiagnosticKind, DiagnosticLevel,
+    DiagnosticLosses, DiagnosticOcrModelInstanceId, DiagnosticOperationId, DiagnosticOperationKind,
+    DiagnosticOptions, DiagnosticPayload, DiagnosticReader, DiagnosticRecord,
+    DiagnosticRecordSequence, DiagnosticTemplateId, EXACT_RGBA_POLICY_CODE, Engine, EngineId,
+    EngineOptions, Error, FindOutcome, FindRequest, FocusPolicy, Frame, FrameDescriptor,
+    FrameDiagnostic, FrameOrder, FrameRequest, FrameSelection, FrameSequence, FrameStamp,
+    FrameView, GeometryFault, GeometryPolicy, GeometryRevision, IdentityFault, InputAddressScope,
+    InputAttempt, InputCapability, InputDelivery, InputDescriptor, InputDiagnostic, InputEvent,
+    InputFault, InputOpenRequest, InputOperationKind, InputOperationSet, InputReceipt,
+    InputRequest, InputRequirement, InputRouteCapability, InputSequence, Interruption, Key,
+    LanguageProfileId, Lifecycle, LifecycleDiagnostic, LoadStage, MAX_BACKEND_TEXT_BYTES,
+    MAX_DIAGNOSTIC_CAPACITY, MAX_MODEL_COMPONENT_BYTES, MAX_OCR_CANDIDATES, MAX_OCR_ZONES,
+    MAX_TEXT_BYTES, Manifest, MappingDiagnostic, MappingObserver, Match, MatchDefaults,
+    MatchOptions, MatchResult, MemoryEntry, MemoryPackage, ModelComponentIdentity, ModelId,
+    ModelVersion, Modifier, MonotonicInstant, NormalizationId, OcrBackend, OcrBackendDescriptor,
+    OcrBackendId, OcrBackendIdentity, OcrBackendRequest, OcrBackendVersion, OcrCandidateSink,
+    OcrDiagnostic, OcrDiagnosticOutcome, OcrDiagnosticProfile, OcrExecutionProvider,
+    OcrExecutionProviderPolicy, OcrFault, OcrModelComponent, OcrModelIdentity, OcrModelSource,
+    OcrModelSourceRequest, OcrProfileMetadata, OcrProviderDescriptor, OcrProviderFallbackReason,
+    OcrQuadrilateral, OcrRegion, OcrRequest, OcrRequestedRegionDiagnostic, OcrResult,
+    OcrTextAnalysisRate, OcrTextOverload, OcrTextQuery, OcrTextQueryId, OcrTextQueryOutcome,
+    OcrTextQueryProgress, OcrTextQueryState, OcrTextRetainedExtent, OcrTextSchedulerDescriptor,
+    OcrTextSchedulerObservation, OcrTextStability, OcrTextStabilityKind, OcrTextTerminalOutcome,
+    OcrTextWatchDiagnostic, OcrTextWatchDiagnosticOutcome, OcrTextWatchRequest, OcrTextWatchResult,
+    OcrTextWorkCounts, OcrTextWorkDisposition, OcrZone, OcrZoneGroup, OcrZoneScanRequest,
+    OcrZoneScanResult, OpenRequest, OperationContext, OperationStartedDiagnostic, OverflowPolicy,
+    PacingUnsupportedReason, PackagePath, PackageSource, PermissionDiagnostic, PermissionKind,
+    PermissionOutcome, PermissionReport, PermissionState, PixelExtent, PixelFormat, PixelRect,
+    PlatformCode, Point, PointerButton, PointerGeometry, PreparedTemplate, PreprocessingId,
+    PressedState, ProfileId, Provenance, ProviderId, ProviderProfileId, Rect, RegionSelection,
+    ResolvedCapturePacing, Result, RetainedStoragePolicy, RouteAttemptDiagnostic, Scale,
+    SearchDiagnostic, SearchDiagnosticOutcome, SearchFrame, SequenceLimits, SequenceOutcome,
+    Session, SessionDescription, SessionRequest, Status, StreamEpoch, StreamId, SubmissionEvidence,
+    Suppression, SystemClock, TargetCapability, TargetDescription, TargetId, TargetKind,
+    TargetPlacement, TemplateAnalysisRate, TemplateDeclaration, TemplateEncoding, TemplateId,
+    TemplateOverload, TemplateQuery, TemplateQueryId, TemplateQueryOutcome, TemplateQueryProgress,
+    TemplateQueryState, TemplateSchedulerDescriptor, TemplateSource, TemplateSourceRequest,
+    TemplateStability, TemplateStabilityKind, TemplateTerminalOutcome, TemplateWatchDiagnostic,
     TemplateWatchDiagnosticOutcome, TemplateWatchRequest, TemplateWatchResult, TemplateWorkCounts,
     TemplateWorkDisposition, TransformSnapshot, UnsupportedChangeDetectionPolicy, VisionFault,
 };

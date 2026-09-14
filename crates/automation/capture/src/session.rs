@@ -9,28 +9,30 @@ use crate::descriptor::{PixelFormat, SessionDescription, TargetDescription};
 use crate::discovery::DiscoveryRequest;
 use crate::fault::CaptureFault;
 use crate::frame::Frame;
+use crate::pacing::CapturePacingRequest;
 use crate::stream::{FrameRequest, Lifecycle};
 
 /// What a caller asks for when opening a session.
 ///
-/// Required options and preferences are separate axes on purpose. A required
-/// option that cannot be honored fails the open; a preference that cannot be
-/// honored falls back, and the session description then reports what was
-/// actually accepted. Collapsing the two would mean a caller either cannot
-/// express "I need this" or cannot tell whether they got it.
+/// Required pixel format and preferred pixel format are separate options. Native
+/// capture pacing instead selects its interval and required/preferred policy as
+/// one value. A requirement that cannot be honored fails the open; an unsupported
+/// preference is reported unapplied in the session description.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
 pub struct OpenRequest {
     required_format: Option<PixelFormat>,
     preferred_format: Option<PixelFormat>,
+    capture_pacing: CapturePacingRequest,
 }
 
 impl OpenRequest {
-    /// Returns a request with no constraints.
+    /// Returns a request with no format constraints and inherited capture pacing.
     #[must_use]
     pub const fn new() -> Self {
         Self {
             required_format: None,
             preferred_format: None,
+            capture_pacing: CapturePacingRequest::inherit(),
         }
     }
 
@@ -48,6 +50,15 @@ impl OpenRequest {
         self
     }
 
+    /// Replaces this session's entire capture pacing selection.
+    ///
+    /// Inheritance restores the provider default; source default bypasses it.
+    #[must_use]
+    pub const fn with_capture_pacing(mut self, pacing: CapturePacingRequest) -> Self {
+        self.capture_pacing = pacing;
+        self
+    }
+
     /// Returns the required pixel format, if any.
     #[must_use]
     pub const fn required_format(&self) -> Option<PixelFormat> {
@@ -58,6 +69,12 @@ impl OpenRequest {
     #[must_use]
     pub const fn preferred_format(&self) -> Option<PixelFormat> {
         self.preferred_format
+    }
+
+    /// Returns this session's native capture pacing selection.
+    #[must_use]
+    pub const fn capture_pacing(&self) -> CapturePacingRequest {
+        self.capture_pacing
     }
 }
 

@@ -11,8 +11,9 @@ use std::thread;
 use std::time::{Duration, Instant};
 
 use mado_pilot_capture::{
-    CaptureFault, CaptureSession, Continuity, Frame, FrameRequest, Lifecycle, OverflowPolicy,
-    QueuePolicy, SessionDescription, StoragePublication, StreamState,
+    CaptureFault, CapturePacingReport, CaptureSession, Continuity, Frame, FrameRequest, Lifecycle,
+    OverflowPolicy, QueuePolicy, ResolvedCapturePacing, SessionDescription, StoragePublication,
+    StreamState,
 };
 use mado_pilot_core::{
     Clock, MonotonicInstant, Operation, OperationContext, PixelExtent, Result, StreamId,
@@ -32,6 +33,7 @@ use windows::core::{IInspectable, Interface};
 use crate::availability::{create_free_threaded_frame_pool, ensure_winrt_apartment};
 use crate::discovery::{NativeKey, TargetMetadata, current_placement};
 use crate::input::GeometryLedger;
+use crate::pacing::configure_capture_pacing;
 use crate::storage::{
     DeviceDomain, DeviceTerminal, RetainedBytes, SessionMemory, StorageFailureSink, TexturePool,
     WindowsFrameStorage, descriptor_from_native, native_fault, retained_storage_capacity,
@@ -252,6 +254,7 @@ struct WorkerGuard {
 impl NativeSession {
     pub(crate) fn open(
         source: NativeSessionSource,
+        pacing: ResolvedCapturePacing,
         operation: &mut Operation<'_>,
     ) -> Result<Arc<Self>> {
         let NativeSessionSource {
@@ -324,6 +327,11 @@ impl NativeSession {
         let capture = frame_pool
             .CreateCaptureSession(&item)
             .map_err(|error| native_target_fault(error, kind))?;
+        let pacing = configure_pending_capture(
+            || configure_capture_pacing(&capture, pacing, kind, operation),
+            || capture.Close(),
+            || frame_pool.Close(),
+        )?;
 
         let frame_weak = Arc::downgrade(&core);
         let frame_callbacks = Arc::clone(&callbacks);
@@ -391,7 +399,8 @@ impl NativeSession {
             mado_pilot_capture::PixelFormat::Bgra8,
             mado_pilot_capture::CoordinateSupport::with_target_placement(),
         )
-        .with_queue(session_queue_policy(retained_storage_capacity));
+        .with_queue(session_queue_policy(retained_storage_capacity))
+        .with_capture_pacing(pacing);
         let session = Arc::new(Self {
             description,
             core,
@@ -405,7 +414,7 @@ impl NativeSession {
             close_gate: Mutex::new(()),
             teardown: Mutex::new(teardown),
         });
-        {
+        start_capture(session, operation, |session| {
             let runtime = session.runtime();
             runtime
                 .resources
@@ -414,9 +423,8 @@ impl NativeSession {
                 .native
                 .capture
                 .StartCapture()
-                .map_err(|error| native_target_fault(error, kind))?;
-        }
-        Ok(session)
+                .map_err(|error| native_target_fault(error, kind).into())
+        })
     }
 
     fn runtime(&self) -> MutexGuard<'_, RuntimeState> {
@@ -561,6 +569,35 @@ impl NativeSession {
             attempt.checkpoint()?;
         }
     }
+}
+
+fn configure_pending_capture(
+    configure: impl FnOnce() -> Result<CapturePacingReport>,
+    close_capture: impl FnOnce() -> windows::core::Result<()>,
+    close_pool: impl FnOnce() -> windows::core::Result<()>,
+) -> Result<CapturePacingReport> {
+    match configure() {
+        Ok(report) => Ok(report),
+        Err(error) => {
+            // No callbacks or producer have started. Close both pending owners
+            // on this initialized apartment without replacing the open failure.
+            let _capture = close_capture();
+            let _pool = close_pool();
+            Err(error)
+        }
+    }
+}
+
+fn start_capture<T>(
+    session: T,
+    operation: &mut Operation<'_>,
+    start: impl FnOnce(&T) -> Result<()>,
+) -> Result<T> {
+    operation.checkpoint()?;
+    let result = start(&session);
+    operation.checkpoint()?;
+    result?;
+    Ok(session)
 }
 
 fn session_queue_policy(retained_storage_capacity: NonZeroU32) -> QueuePolicy {
@@ -1486,6 +1523,7 @@ fn lock_with_operation<'mutex>(
 
 #[cfg(test)]
 mod tests {
+    use std::cell::Cell;
     use std::io;
     use std::mem::ManuallyDrop;
     use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
@@ -1502,6 +1540,7 @@ mod tests {
         CancellationToken, Clock, IdentityIssuer, MonotonicInstant, Operation, OperationContext,
         PixelExtent, ProviderId, Scale, Status, TargetPlacement,
     };
+    use mado_pilot_testkit::ManualClock;
     use windows::Graphics::SizeInt32;
     use windows::Win32::Foundation::RO_E_CLOSED;
 
@@ -1514,11 +1553,11 @@ mod tests {
     use super::{
         CallbackControl, GeometryRegistration, NativeOwnership, TEARDOWN_QUEUE_CAPACITY,
         TEARDOWN_WORKER_COUNT, TeardownExecutorSlot, TeardownPermits, TransitionState,
-        WGC_PRODUCER_POOL_SIZE, capture_already_ended_after_drain, frame_time,
-        frame_with_target_liveness, map_worker_start, native_close_result, native_size,
+        WGC_PRODUCER_POOL_SIZE, capture_already_ended_after_drain, configure_pending_capture,
+        frame_time, frame_with_target_liveness, map_worker_start, native_close_result, native_size,
         normalize_native_fault, positive_extent, record_authoritative_native_end,
-        session_queue_policy, start_teardown_executor_with, target_fault, teardown_channel,
-        teardown_executor_from_slot,
+        session_queue_policy, start_capture, start_teardown_executor_with, target_fault,
+        teardown_channel, teardown_executor_from_slot,
     };
 
     static STALLED_INITIALIZERS: AtomicUsize = AtomicUsize::new(0);
@@ -1567,6 +1606,135 @@ mod tests {
             );
             self.observed.store(true, Ordering::Release);
         }
+    }
+
+    #[test]
+    fn pacing_failure_closes_both_pending_owners_without_replacing_the_failure() {
+        let capture_closed = Cell::new(false);
+        let pool_closed = Cell::new(false);
+        let error = configure_pending_capture(
+            || Err(CaptureFault::UnsupportedOption.into()),
+            || {
+                capture_closed.set(true);
+                Err(windows::core::Error::from_hresult(RO_E_CLOSED))
+            },
+            || {
+                assert!(capture_closed.get(), "capture closes before its pool");
+                pool_closed.set(true);
+                Ok(())
+            },
+        )
+        .expect_err("required pacing cannot open without its control");
+        assert_eq!(error.status(), Status::Unsupported);
+        assert!(
+            pool_closed.get(),
+            "capture close failure cannot skip pool cleanup"
+        );
+    }
+
+    #[test]
+    fn capture_start_failure_releases_uncommitted_native_ownership() {
+        let memory = SessionMemory::testing_isolated(512, 512);
+        let dropped = Arc::new(AtomicBool::new(false));
+        let owner = NativeOwnership::new(
+            NativeDropProbe {
+                memory: Arc::clone(&memory),
+                observed: Arc::clone(&dropped),
+                expected: 64,
+            },
+            memory.reserve(64).expect("producer reservation"),
+        );
+        let context = OperationContext::new();
+        let error = start_capture(
+            owner,
+            &mut Operation::admit(&context).expect("admitted"),
+            |_| Err(CaptureFault::DeviceRemoved.into()),
+        )
+        .err()
+        .expect("failed native start cannot publish a session");
+        assert_eq!(error.status(), Status::CaptureFailed);
+        assert!(dropped.load(Ordering::Acquire));
+        assert_eq!(memory.usage(), (0, 0));
+    }
+
+    #[test]
+    fn capture_start_success_transfers_native_ownership_until_session_release() {
+        let memory = SessionMemory::testing_isolated(512, 512);
+        let dropped = Arc::new(AtomicBool::new(false));
+        let owner = NativeOwnership::new(
+            NativeDropProbe {
+                memory: Arc::clone(&memory),
+                observed: Arc::clone(&dropped),
+                expected: 64,
+            },
+            memory.reserve(64).expect("producer reservation"),
+        );
+        let context = OperationContext::new();
+        let mut attempt = Operation::admit(&context).expect("admitted");
+        let session = start_capture(owner, &mut attempt, |_| Ok(())).expect("native start");
+        let session = attempt.commit(session).expect("open commits");
+        assert!(!dropped.load(Ordering::Acquire));
+        assert_eq!(memory.usage(), (64, 64));
+        drop(session);
+        assert!(dropped.load(Ordering::Acquire));
+        assert_eq!(memory.usage(), (0, 0));
+    }
+
+    #[test]
+    fn cancellation_before_start_releases_ownership_without_starting_capture() {
+        let memory = SessionMemory::testing_isolated(512, 512);
+        let dropped = Arc::new(AtomicBool::new(false));
+        let owner = NativeOwnership::new(
+            NativeDropProbe {
+                memory: Arc::clone(&memory),
+                observed: Arc::clone(&dropped),
+                expected: 64,
+            },
+            memory.reserve(64).expect("producer reservation"),
+        );
+        let token = CancellationToken::new();
+        let context = OperationContext::new().with_cancellation(token.clone());
+        let mut attempt = Operation::admit(&context).expect("admitted");
+        token.cancel();
+        let error = start_capture(owner, &mut attempt, |_| {
+            panic!("authority ended after configuration and before start")
+        })
+        .err()
+        .expect("cancelled open cannot start");
+        assert_eq!(error.status(), Status::Cancelled);
+        assert!(dropped.load(Ordering::Acquire));
+        assert_eq!(memory.usage(), (0, 0));
+    }
+
+    #[test]
+    fn deadline_during_successful_start_discards_the_uncommitted_session() {
+        let memory = SessionMemory::testing_isolated(512, 512);
+        let dropped = Arc::new(AtomicBool::new(false));
+        let owner = NativeOwnership::new(
+            NativeDropProbe {
+                memory: Arc::clone(&memory),
+                observed: Arc::clone(&dropped),
+                expected: 64,
+            },
+            memory.reserve(64).expect("producer reservation"),
+        );
+        let clock = Arc::new(ManualClock::new());
+        let context = OperationContext::new()
+            .with_clock(clock.clone())
+            .with_deadline(MonotonicInstant::from_origin(Duration::from_secs(1)));
+        let error = start_capture(
+            owner,
+            &mut Operation::admit(&context).expect("admitted"),
+            |_| {
+                clock.advance(Duration::from_secs(1));
+                Ok(())
+            },
+        )
+        .err()
+        .expect("late successful native start cannot return a session");
+        assert_eq!(error.status(), Status::DeadlineExceeded);
+        assert!(dropped.load(Ordering::Acquire));
+        assert_eq!(memory.usage(), (0, 0));
     }
 
     #[test]
