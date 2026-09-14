@@ -4,11 +4,19 @@
 The strict Apple fixture build and Rust example passed CI and scoped verification
 on the delivered `fd5468f` tree. Earlier compile failures remain recorded with
 their original revisions; they were fixed without warning suppression.
-No new watcher signing, model inference, fixture launch, capture, permission
-change, focus action or input action is claimed. Compilation is not native
-qualification; native support and A9 remain open.
+Fresh task-7.4 preparation built isolated consumer/fixture bundles from unchanged
+`4a9dc5b` Rust/fixture inputs and ad-hoc signed only those new bundles. Their SDK
+is 27.0 and deployment minimum 26.5.2; the actual OS is macOS 26.6.2 (25G83),
+not macOS 27. No model inference, fixture launch, capture, permission change,
+focus action or input action is claimed. Native support and A9 remain open.
 The frozen foreign/native-template controllers, evidence, grants, and binaries
 are neither consumed nor changed.
+
+The prospective `ocr-text-watch-apple-v2` channel contract follows
+[ADR 0076](adr/0076-bound-native-ocr-evidence-channels.md). Its
+[verification obligations](adr/0076-bound-native-ocr-evidence-channels.md#verification)
+must pass before native admission. The inert pre-main loader probe is apparatus
+evidence only, not an OCR result or a failed native qualification attempt.
 
 ## Scope and fixed oracle
 
@@ -65,9 +73,10 @@ result backend identity with that bound descriptor. It probes **only**
 Accessibility nor opens an input controller. Recognition uses
 `Session::start_ocr_text_watch`, not a caller OCR polling loop.
 
-`tools/ocr-text-watch/macos/run.py` owns exactly the consumer and fixture children.
-It launches the consumer first, then the fixture only after the consumer reports
-an already-granted non-prompting Screen Recording decision. It uses the existing
+`tools/ocr-text-watch/macos/run.py` owns exactly two direct native `Popen`
+children: consumer first, then fixture only after the consumer reports an
+already-granted non-prompting Screen Recording decision. Their owned PIDs remain
+the actual executable PIDs, not wrappers or collectors. It uses the existing
 `tools/native-release-profile/process_runner.py` unchanged for bounded provenance
 commands, and a small private supervisor for the two interacting children.
 It does not invoke a shell, LaunchServices, `open`, process-name kill, or a foreign
@@ -114,11 +123,42 @@ The exact machine-readable limits are `BOUNDS` in `run.py`: construction 45s;
 permission/launch stage 65s; fixture readiness 10s; each control, frame checkpoint,
 mapping, session close and physical drain 5s; semantic wait 15s; query lifetime
 100s; consumer wall clock 200s; fixture independent fuse 210s. Child exit gets 5s
-grace, then 2s termination and 2s kill/reap. No close retry. Child output files
-are individually hard-capped at 64 KiB with `RLIMIT_FSIZE`, total private live
-output at 256 KiB; core dumps are disabled. Provenance subprocesses have their
-own 10s/64 KiB limits (the bounded source diff permits 2 MiB). These are safety
-endpoints, **not** accepted task-8 latency/RSS budgets.
+grace, then 2s termination and 2s kill/reap. No close retry. Core dumps remain
+disabled with `RLIMIT_CORE=0`; inherited `RLIMIT_FSIZE` is unchanged, never raised
+or replaced with an evidence-channel limit. This is not a sandbox for arbitrary
+native regular-file writes. Provenance subprocesses retain their own 10s/64 KiB
+limits (the bounded source diff permits 2 MiB).
+
+The complete authority `bounds` must equal `run.py::BOUNDS`, including these
+byte limits; process counts remain one consumer and one fixture, with zero
+warmups and one sample:
+
+| `BOUNDS` key | Bytes | Scope |
+|---|---|---|
+| `each_output_file_bytes` | `65536` | Each ordinary stdout/stderr file; the existing 64 KiB `consumer.report` admission limit also remains. |
+| `total_output_bytes` | `262144` | All ordinary/control/report output, including `record.json`; exclude only the two named native-image files below. |
+| `each_native_image_file_bytes` | `1048576` | Each separate native-image file. |
+| `total_native_image_bytes` | `2097152` | Both native-image files together. |
+
+Each child has separate anonymous stdout, stderr and native-image pipes, drained
+with nonblocking parent reads into exclusive mode-0600 private files.
+`DYLD_PRINT_LIBRARIES=1` and `DYLD_PRINT_TO_FILE=/dev/fd/N` direct loader output
+to that child's inherited image descriptor. `consumer.native-images` and
+`fixture.native-images` contain the complete loader streams, including system
+images; neither consumes the ordinary-output budget. No other file is excluded.
+This extends [ADR 0074](adr/0074-isolate-darwin-loader-image-budget.md)'s pipe
+mechanism inside the existing two-child supervisor, without importing its
+replay collector topology or changing replay evidence.
+
+The supervisor bounds work per loop and drains every channel during execution
+and graceful/terminate/kill cleanup, including final exit tails. It never waits
+on a child without servicing its pipes. Every started exact child must still be
+reaped and every endpoint closed after a pump or storage failure. Completeness
+requires EOF and successful bounded collection; saturation, incomplete or
+malformed image observation, and collection failure remain failures, never a
+silently truncated pass. Successful cleanup cannot replace the first failure.
+These are apparatus safety endpoints, **not** changes to any accepted `G-013`
+ceiling, task-8 qualification, deployment floor or numeric floor.
 
 | Observation | Classification |
 |---|---|
@@ -128,16 +168,28 @@ endpoints, **not** accepted task-8 latency/RSS budgets.
 | `Unavailable` / unsupported host or adapter | Explicit unsupported prerequisite/outcome; never pass/skip inflation. |
 | No owned source/checkpoint or no acknowledged text frame by its bound | Producer-progress/semantic failure once native execution starts, not a skip. |
 | Correct match, failed close/drain/exit | Semantic success may remain recorded; resource/cleanup fail independently; overall does not pass. |
+| Channel saturation, incomplete/malformed image observation or collection failure | Failed apparatus/resource admission; no partial-image-set pass or automatic retry. |
 | Unreached scenario | `not-run`; earlier executed failures remain failed. |
 
 Private `consumer.report` contains source stamps, backend/provider descriptors,
 work observations, actual retained/mapped extents and row verdicts. `record.json`
-adds exact commands/outputs, host, approval/build-record hashes, clean Git head/tree,
+uses `procedure: "ocr-text-watch-apple-v2"` and adds exact commands/outputs,
+host, approval/build-record hashes, clean Git head/tree,
 consumer/fixture/model/runtime/source hashes, valid signing metadata, actual
-dyld-loaded image paths/hashes, exit status and cleanup facts. A bounded approved
-non-system image manifest is checked before launch and against the exact observed
-image set after exit. System shared-cache libraries bind to OS build. Missing,
-additional or changed developer-owned images fail resource admission.
+dyld-loaded image paths/hashes, exit status and cleanup facts. Private channel
+facts record observed/retained bytes, EOF/completeness and failures without
+replacing the existing semantic/resource/cleanup/status fields.
+Only complete `consumer.native-images` and `fixture.native-images` supply
+dependency-image records. Strict decoding and row parsing reject malformed
+records or an incomplete final row; ordinary stderr is never an image fallback.
+The exact owned-PID `move loaded to delayed: <basename>` diagnostic is retained
+but supplies no image identity; other non-image syntax is rejected.
+The bounded approved canonical non-system manifest is checked before launch,
+against the exact observed union after both channels finish, and against disk
+hashes again after exit. System shared-cache libraries bind to OS build, but
+their raw loader bytes still count toward the image budgets. Missing, additional,
+noncanonical or changed developer-owned images fail resource admission.
+Ordinary consumer error interpretation still reads `consumer.stderr`.
 Ordinary output contains only closed verdict/reason labels, never
 recognized text, pixels/hashes, model/runtime paths or signing identifiers.
 No RSS ceiling, native thread-unload fence, arbitrary retained-clone memory bound,
@@ -186,7 +238,7 @@ The consumer depends on the new public OCR watch/result/progress/observation
 accessors agreed with the runtime owner. Do not add private adapter hooks to
 make this procedure pass.
 
-## Fresh authority and later execution — not authorized here
+## Fresh authority and bounded execution
 
 `OCR_APPLE_AUTHORITY` must name an independently reviewed private JSON document,
 not a generated consent flag. Required fields: `approved: true`, `task: "7.4"`,
@@ -201,6 +253,9 @@ stays in private evidence; it is neither a permission probe nor a permission gra
 `rust-toolchain.toml`, Rust consumer, fixture, runner, this document and generic
 process-runner paths to their SHA-256 values. The candidate must be committed
 and clean, including no untracked product/procedure source.
+
+The v2 bounds and updated procedure hashes require independent exact-binding
+review; this document does not grant execution or permission authority.
 
 `native_images` is a finite map of canonical absolute paths to approved SHA-256
 values for the exact union of non-system dyld images loaded by both children.

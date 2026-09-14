@@ -2723,6 +2723,12 @@ pairing, target memory, exact accepted host/artifact/ADR identities and final
 fences. Native capture and final numerical enforcement remain separate; no
 historical template/OCR evidence pin is refreshed.
 
+The private Apple native procedure uses the direct-child bounded evidence
+channels in [ADR0076](adr/0076-bound-native-ocr-evidence-channels.md). Loader
+diagnostics are isolated from ordinary output without changing inherited
+file-size limits, native process ownership or accepted workload ceilings.
+Model-free apparatus verification does not qualify ScreenCaptureKit scenarios.
+
 ### Bounded template-presence queries
 
 `Session::start_template_watch` accepts one owned `TemplateWatchRequest`: prepared
