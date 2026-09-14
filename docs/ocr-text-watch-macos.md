@@ -157,6 +157,10 @@ reaped and every endpoint closed after a pump or storage failure. Completeness
 requires EOF and successful bounded collection; saturation, incomplete or
 malformed image observation, and collection failure remain failures, never a
 silently truncated pass. Successful cleanup cannot replace the first failure.
+After child cleanup and evidence validation, interruption admission closes before
+the final bounded record snapshot. Every earlier accepted signal is retained;
+signals after this commit point do not invalidate completed work. Publication
+and storage failures still fail the command rather than producing success.
 These are apparatus safety endpoints, **not** changes to any accepted `G-013`
 ceiling, task-8 qualification, deployment floor or numeric floor.
 

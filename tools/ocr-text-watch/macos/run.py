@@ -94,12 +94,17 @@ class NativeCapture:
         self.failure = None
         self.cleanup_results = None
         self._closed = False
+        self._accept_interrupts = True
 
     def fail(self, reason: str, detail: str | None = None):
         if self.failure is None:
             self.failure = {"reason": reason}
             if detail is not None:
                 self.failure["detail"] = detail
+
+    def interrupt(self, signum, _frame=None):
+        if self._accept_interrupts:
+            self.fail("interrupted", signal.Signals(signum).name)
 
     def _channel_failure(self, channel: dict, reason: str, error=None):
         if channel["failure"] is None:
@@ -499,6 +504,10 @@ def write_record(record: dict, capture: NativeCapture) -> bool:
     """Publish the complete JSON only if it fits the ordinary aggregate too."""
     try:
         ordinary = capture.check_output()
+        # Python signal handlers run on this same main thread. This assignment
+        # closes interruption admission before the immutable verdict snapshot;
+        # every earlier accepted signal is included by the following refresh.
+        capture._accept_interrupts = False
         update_capture_record(record, capture)
         payload = (json.dumps(record, indent=2, ensure_ascii=False) + "\n").encode("utf-8")
         if ordinary + len(payload) > BOUNDS["total_output_bytes"]:
@@ -539,7 +548,7 @@ def main() -> int:
     started = time.monotonic()
     try:
         for number in handlers:
-            signal.signal(number, lambda signum, _frame: capture.fail("interrupted", signal.Signals(signum).name))
+            signal.signal(number, capture.interrupt)
         if platform.system() != "Darwin" or platform.machine() != "arm64":
             record["reason"] = "unsupported-host"
             return 2

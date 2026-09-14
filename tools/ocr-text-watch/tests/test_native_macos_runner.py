@@ -262,6 +262,43 @@ class NativeMacosRunner(unittest.TestCase):
         self.assertFalse(record["passed"])
         self.assertEqual(record["reason"], "record-output-failed")
 
+    def test_interruption_fence_keeps_saved_and_returned_verdicts_consistent(self):
+        for moment in ("before-commit", "serialization", "write"):
+            with self.subTest(moment=moment):
+                capture = self.new_capture(moment)
+                record = self.record()
+                record.update(passed=True, semantic="passed", resource="passed", cleanup="passed")
+                original_dumps, original_open = json.dumps, Path.open
+
+                def serialize(*args, **kwargs):
+                    if moment == "serialization":
+                        signal.raise_signal(signal.SIGTERM)
+                    return original_dumps(*args, **kwargs)
+
+                def open_record(path, *args, **kwargs):
+                    stream = original_open(path, *args, **kwargs)
+                    if moment == "write" and path.name == "record.json":
+                        signal.raise_signal(signal.SIGTERM)
+                    return stream
+
+                previous = signal.signal(signal.SIGTERM, capture.interrupt)
+                try:
+                    if moment == "before-commit":
+                        signal.raise_signal(signal.SIGTERM)
+                    with patch.object(runner.json, "dumps", side_effect=serialize), \
+                            patch.object(Path, "open", open_record):
+                        self.assertTrue(runner.write_record(record, capture))
+                finally:
+                    signal.signal(signal.SIGTERM, previous)
+                saved = json.loads((capture.evidence / "record.json").read_text())
+                self.assertEqual(saved["passed"], moment != "before-commit")
+                self.assertEqual(record["passed"], saved["passed"])
+                self.assertEqual(saved["private_first_failure"], capture.failure)
+                if moment == "before-commit":
+                    self.assertEqual(saved["reason"], "interrupted")
+                else:
+                    self.assertIsNone(capture.failure)
+
     def test_malformed_or_unterminated_image_records_are_never_dependency_proof(self):
         for name, suffix in (("utf8", b"\xff\n"), ("syntax", b"not-a-dyld-record\n"),
                              ("partial", b"dyld[1]: <00000000-0000-0000-0000-000000000001> /incomplete")):

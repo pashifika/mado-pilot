@@ -45,6 +45,10 @@ pipe. Pump or storage failure cannot skip exact-child reaping or descriptor
 closure. Completeness requires EOF and successful bounded collection; saturation,
 incomplete observation or malformed data fails. Preserve the first failure even
 when cleanup succeeds; a retained prefix cannot become complete evidence.
+After child cleanup and evidence validation, one same-main-thread assignment
+closes interruption admission before the final record snapshot. Earlier accepted
+signals are included in that snapshot; later signals cannot retroactively
+invalidate completed work. Publication/storage failure remains a failure.
 
 Parse images only from complete separate image channels with strict text and row
 validation, including the final row. Retain dyld's exact owned-PID
@@ -85,8 +89,8 @@ evidence collection is not a sandbox for arbitrary native file writes.
 
 ## Verification
 
-The model-free OCR procedure suite ran 118 tests: 114 passed and four
-platform-specific cases skipped. Its 16 native-supervisor regressions cover
+The model-free OCR procedure suite ran 119 tests: 115 passed and four
+platform-specific cases skipped. Its 17 native-supervisor regressions cover
 ordinary/image saturation, control/report and final-record accounting,
 independent channels, complete exit tails, inherited file-size limits and
 disabled core dumps, an unrelated 2 MiB regular-file write, malformed image
@@ -103,6 +107,10 @@ without granting image identity or weakening the ordinary limits.
 
 Private Change records 134, 139, 140 and 141 retain the original pre-main
 failure, first parser failure, repaired probe, and complete regression output.
+An independent review then found accepted interruption could be omitted during
+record serialization. Records 142–143 retain that reproduction and the repaired
+admission fence: actual pre-commit SIGTERM is saved as failure; serialization/
+write-stage signals are explicitly post-commit, not accepted-and-lost failures.
 Records 135–138 and the independent prepared-input review bind the new isolated
 build/signing, written-export reconstruction, macOS 26.6.2 host, SDK 27.0,
 deployment minimum 26.5.2 and prospective image set. Historical ADR 0074,
