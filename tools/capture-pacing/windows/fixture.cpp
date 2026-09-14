@@ -81,6 +81,7 @@ struct Control {
     alignas(SID) unsigned char user[SECURITY_MAX_SID_SIZE]{};
     alignas(SID) unsigned char system[SECURITY_MAX_SID_SIZE]{};
     alignas(SID) unsigned char administrators[SECURITY_MAX_SID_SIZE]{};
+    alignas(SID) unsigned char ownerRights[SECURITY_MAX_SID_SIZE]{};
     alignas(ACL) unsigned char aclBytes[sizeof(ACL) + sizeof(ACCESS_ALLOWED_ACE) + SECURITY_MAX_SID_SIZE]{};
     SECURITY_DESCRIPTOR descriptor{};
     SECURITY_ATTRIBUTES attributes{sizeof(SECURITY_ATTRIBUTES), &descriptor, FALSE};
@@ -109,7 +110,9 @@ struct Control {
                 if (!IsValidSid(sid) || GetLengthSid(sid) > header->AceSize - offsetof(ACCESS_ALLOWED_ACE, SidStart)) {
                     valid = false; break;
                 }
-                const bool own = EqualSid(sid, const_cast<unsigned char*>(user)) != FALSE;
+                // OWNER RIGHTS applies to the already-verified current-user owner.
+                const bool own = EqualSid(sid, const_cast<unsigned char*>(user)) != FALSE ||
+                    EqualSid(sid, const_cast<unsigned char*>(ownerRights)) != FALSE;
                 if (!own && !EqualSid(sid, const_cast<unsigned char*>(system)) &&
                     !EqualSid(sid, const_cast<unsigned char*>(administrators))) { valid = false; break; }
                 if (own && !(header->AceFlags & INHERIT_ONLY_ACE) &&
@@ -133,6 +136,8 @@ struct Control {
         if (!CreateWellKnownSid(WinLocalSystemSid, nullptr, system, &bytes)) return false;
         bytes = sizeof(administrators);
         if (!CreateWellKnownSid(WinBuiltinAdministratorsSid, nullptr, administrators, &bytes)) return false;
+        bytes = sizeof(ownerRights);
+        if (!CreateWellKnownSid(WinCreatorOwnerRightsSid, nullptr, ownerRights, &bytes)) return false;
         auto* acl = reinterpret_cast<ACL*>(aclBytes);
         if (!InitializeAcl(acl, sizeof(aclBytes), ACL_REVISION) ||
             !AddAccessAllowedAce(acl, ACL_REVISION, FILE_ALL_ACCESS, user) ||
