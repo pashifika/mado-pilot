@@ -140,7 +140,11 @@ class ReplayInputBinding(unittest.TestCase):
                 stream.read = read_then_mutate
                 return stream
 
-            with patch.object(replay, "open", side_effect=changing_reader, create=True):
+            # Timestamp identity can collide (notably Windows creation-time
+            # ctime). Keep real byte mutation, but make metadata inconclusive.
+            with patch.object(replay, "open", side_effect=changing_reader, create=True), \
+                    patch.object(replay.os, "fstat", return_value=before), \
+                    patch.object(Path, "stat", return_value=before):
                 with self.assertRaises(ValueError):
                     replay.read_document(path)
             self.assertEqual(path.read_bytes(), changed)
