@@ -1,6 +1,6 @@
 # Private Apple Silicon OCR text-watch procedure
 
-**Task 7.3 preparation is compiled and reviewed. Task 7.4 is not run.**
+**Task 7.3 is compiled/reviewed. Task 7.4 reached the permission gate; capture remains not-run.**
 The strict Apple fixture build and Rust example passed CI and scoped verification
 on the delivered `fd5468f` tree. Earlier compile failures remain recorded with
 their original revisions; they were fixed without warning suppression.
@@ -11,6 +11,16 @@ not macOS 27. No model inference, fixture launch, capture, permission change,
 focus action or input action is claimed. Native support and A9 remain open.
 The frozen foreign/native-template controllers, evidence, grants, and binaries
 are neither consumed nor changed.
+
+The one approved attempt on `959ba687` returned `ScreenCapture: NotGranted`
+(`permission-denied-or-undetermined`) on 2026-09-14. The valid ad-hoc consumer
+exited 1 and was reaped without force; no fixture started and all six scenario
+rows remain `not-run`. The complete 87,298-byte loader channel contains 29
+approved consumer-side images; the full two-child union is not satisfied because
+the fixture was never launched. This is not native success. The attempt is spent.
+Resumption requires already-granted permission for the actual execution context,
+outside this procedure, plus fresh applicability review and one-attempt authority.
+No permission request/settings change or automatic retry was performed.
 
 The prospective `ocr-text-watch-apple-v2` channel contract follows
 [ADR 0076](adr/0076-bound-native-ocr-evidence-channels.md). Its
