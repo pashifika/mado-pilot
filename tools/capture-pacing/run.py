@@ -218,7 +218,13 @@ def windows_dll_directory_length() -> int:
     ctypes.set_last_error(0)
     count = kernel.GetDllDirectoryW(0, None)
     require(count != 0 or ctypes.get_last_error() == 0, "dll-directory-query-failed")
-    return count
+    require(count <= 32768, "dll-directory-bound")
+    buffer = ctypes.create_unicode_buffer(max(count, 1))
+    ctypes.set_last_error(0)
+    copied = kernel.GetDllDirectoryW(len(buffer), buffer)
+    require(copied < len(buffer) and (copied != 0 or ctypes.get_last_error() == 0)
+            and buffer[copied] == "\0", "dll-directory-readback-failed")
+    return copied
 
 
 def verify_native_bindings(authority: dict, inputs: dict[str, Path]) -> dict:

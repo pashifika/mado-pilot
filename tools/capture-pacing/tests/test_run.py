@@ -172,6 +172,33 @@ class AdmissionTests(unittest.TestCase):
                 with self.assertRaisesRegex(runner.Refusal, "external-loader-redirection"):
                     runner.verify_native_bindings(authority, inputs)
 
+    def test_dll_directory_size_query_does_not_prove_a_custom_directory(self):
+        import ctypes
+        from types import SimpleNamespace
+        for directory in ("", "owned"):
+            with self.subTest(directory=directory):
+                def get_directory(capacity, buffer):
+                    if capacity == 0:
+                        return len(directory) + 1
+                    buffer.value = directory
+                    return len(directory)
+                function = mock.Mock(side_effect=get_directory)
+                kernel = SimpleNamespace(GetDllDirectoryW=function)
+                with mock.patch.object(ctypes, "WinDLL", return_value=kernel, create=True), \
+                     mock.patch.object(ctypes, "set_last_error", create=True), \
+                     mock.patch.object(ctypes, "get_last_error", return_value=0, create=True):
+                    self.assertEqual(runner.windows_dll_directory_length(), len(directory))
+
+    def test_dll_directory_growth_cannot_be_accepted_as_empty(self):
+        import ctypes
+        from types import SimpleNamespace
+        kernel = SimpleNamespace(GetDllDirectoryW=mock.Mock(side_effect=[1, 8]))
+        with mock.patch.object(ctypes, "WinDLL", return_value=kernel, create=True), \
+             mock.patch.object(ctypes, "set_last_error", create=True), \
+             mock.patch.object(ctypes, "get_last_error", return_value=0, create=True):
+            with self.assertRaisesRegex(runner.Refusal, "dll-directory-readback-failed"):
+                runner.windows_dll_directory_length()
+
 
 if __name__ == "__main__":
     unittest.main()
