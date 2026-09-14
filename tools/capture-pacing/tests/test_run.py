@@ -91,7 +91,8 @@ class AdmissionTests(unittest.TestCase):
                          "native_inspector": binding(inspector), "native_inputs": [binding(first)]}
             def inspect(path, tool):
                 imports = [{"name": str(second), "kind": "LC_LOAD_DYLIB"}] if path == first else []
-                return {"architecture": "ARM64", "imports": imports, "rpaths": []}
+                return {"architecture": "ARM64", "imports": imports,
+                        "rpaths": ["@loader_path", "@executable_path"]}
             with mock.patch.object(runner.platform, "system", return_value="Darwin"), \
                  mock.patch.object(runner, "inspect_file", side_effect=inspect):
                 with self.assertRaisesRegex(runner.Refusal, "unbound-native-import"):

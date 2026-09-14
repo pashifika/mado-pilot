@@ -257,6 +257,10 @@ def verify_native_bindings(authority: dict, inputs: dict[str, Path]) -> dict:
             return path.is_relative_to(windows_root / "System32") or path.parent == windows_root
         return str(path).startswith(("/usr/lib/", "/System/Library/"))
     def expand(token: str, owner: Path, executable: Path) -> Path:
+        if token == "@loader_path":
+            return owner.parent
+        if token == "@executable_path":
+            return executable.parent
         if token.startswith("@loader_path/"):
             return owner.parent / token[len("@loader_path/"):]
         if token.startswith("@executable_path/"):

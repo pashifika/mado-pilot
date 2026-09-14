@@ -78,9 +78,9 @@ constexpr const wchar_t* FileNames[FileCount] = {
 struct Control {
     Handle root;
     std::array<std::wstring, FileCount> paths;
-    alignas(void*) unsigned char user[SECURITY_MAX_SID_SIZE]{};
-    alignas(void*) unsigned char system[SECURITY_MAX_SID_SIZE]{};
-    alignas(void*) unsigned char administrators[SECURITY_MAX_SID_SIZE]{};
+    alignas(SID) unsigned char user[SECURITY_MAX_SID_SIZE]{};
+    alignas(SID) unsigned char system[SECURITY_MAX_SID_SIZE]{};
+    alignas(SID) unsigned char administrators[SECURITY_MAX_SID_SIZE]{};
     alignas(ACL) unsigned char aclBytes[sizeof(ACL) + sizeof(ACCESS_ALLOWED_ACE) + SECURITY_MAX_SID_SIZE]{};
     SECURITY_DESCRIPTOR descriptor{};
     SECURITY_ATTRIBUTES attributes{sizeof(SECURITY_ATTRIBUTES), &descriptor, FALSE};
@@ -177,8 +177,8 @@ struct Control {
     }
 
     bool stop_requested(Error& error) const {
-        const DWORD attributes = GetFileAttributesW(paths[Stop].c_str());
-        if (attributes != INVALID_FILE_ATTRIBUTES) return true; // Existence alone authorizes owned cleanup.
+        const DWORD stopAttributes = GetFileAttributesW(paths[Stop].c_str());
+        if (stopAttributes != INVALID_FILE_ATTRIBUTES) return true; // Existence alone authorizes owned cleanup.
         if (GetLastError() != ERROR_FILE_NOT_FOUND) error = Error::File;
         return false;
     }
@@ -665,7 +665,7 @@ struct Fixture {
             if (quitting) break;
             MSG message{};
             // A bounded pump prevents queued GUI messages from starving stop/command files.
-            for (unsigned count = 0; count < 64 && PeekMessageW(&message, nullptr, 0, 0, PM_REMOVE); ++count) {
+            for (unsigned pumped = 0; pumped < 64 && PeekMessageW(&message, nullptr, 0, 0, PM_REMOVE); ++pumped) {
                 if (message.message == WM_QUIT) { fail(Error::Native); break; }
                 TranslateMessage(&message);
                 DispatchMessageW(&message);
