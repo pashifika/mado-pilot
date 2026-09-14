@@ -81,13 +81,16 @@ gets credit.
    query is dropped; cancellation after match must return the same terminal.
 2. Publish and observe a newer blank frame while the first result is retained.
    Start the three-observation query, establish its blank checkpoint, show text,
-   and observe exactly one accepted positive. Record that accepted source before
-   resize. Resize **without changing or blanking the text**. Require a newer
-   same-stream source with changed geometry and exactly one accepted successor
-   positive, not two: a negative observation cannot supply the reset oracle.
-   Two separately acknowledged marker ticks produce counts two then three.
-   The final result's first-confirmed source must belong to the successor epoch
-   and geometry. Every result uses its own output extent, never old geometry.
+   and observe exactly one accepted positive. Freeze its accepted source and
+   `Completed=C` from that same progress snapshot before resize. Resize **without
+   changing or blanking the text**. Require newer same-stream successor geometry,
+   exactly one positive and `Completed=C+1`: a hidden negative or extra accepted
+   analysis fails even if it preceded the captured successor checkpoint.
+   Two separately acknowledged marker ticks must produce counts two then three,
+   with exactly `C+2` then `C+3` completions. Check the frozen terminal counter and
+   require `first_confirmed_frame` to equal the observed first successor positive.
+   Keep rejected progress in private evidence. Every result uses its own output
+   extent, never old geometry.
 3. Observe a newer blank frame, start and observe a pending negative query, then
    command destruction of that exact HWND while its owning process stays alive.
    `IsWindow` must be false and the query must yield `TargetLost`, not timeout,

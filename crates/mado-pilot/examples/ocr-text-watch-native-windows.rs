@@ -406,8 +406,9 @@ mod windows_procedure {
         query: &OcrTextQuery,
         source: FrameStamp,
         confirmations: u32,
+        expected_completed: Option<u64>,
         evidence: &mut File,
-    ) -> Checked<FrameStamp> {
+    ) -> Checked<mado_pilot::OcrTextQueryProgress> {
         let until = Instant::now() + STEP;
         loop {
             require(
@@ -415,20 +416,34 @@ mod windows_procedure {
                 "premature-query-terminal",
             )?;
             let progress = query.progress();
+            let completed = progress
+                .work()
+                .get(mado_pilot::OcrTextWorkDisposition::Completed);
+            if expected_completed.is_some_and(|expected| completed > expected) {
+                writeln!(
+                    evidence,
+                    "rejected_progress={progress:?} expected_completed={expected_completed:?}"
+                )?;
+                return Err("extra-accepted-analysis".into());
+            }
             if let Some(frame) = progress.last_accepted_frame()
                 && (frame == source || newer(source, frame))
                 && frame.geometry() == source.geometry()
                 && frame.epoch() == source.epoch()
             {
+                writeln!(
+                    evidence,
+                    "accepted={frame} confirmations={confirmations} expected_completed={expected_completed:?} progress={progress:?}"
+                )?;
                 require(
                     progress.confirmed_observations() == confirmations,
                     "confirmation-count-mismatch",
                 )?;
-                writeln!(
-                    evidence,
-                    "accepted={frame} confirmations={confirmations} progress={progress:?}"
+                require(
+                    expected_completed.is_none_or(|expected| completed == expected),
+                    "completed-count-mismatch",
                 )?;
-                return Ok(frame);
+                return Ok(progress);
             }
             require(Instant::now() < until, "accepted-analysis-deadline")?;
             thread::sleep(POLL);
@@ -632,7 +647,7 @@ mod windows_procedure {
         let first = start_query(session, 1)?;
         let blank = fixture.command("blank", evidence)?;
         let before = checkpoint(session, None, blank, nonce, image, evidence)?;
-        accepted(&first, before, 0, evidence)?;
+        accepted(&first, before, 0, None, evidence)?;
         let shown = fixture.command("show", evidence)?;
         retained.push(retain(&first, before, shown, 1, false)?);
         inspect(&retained[0], nonce, image, evidence)?;
@@ -650,24 +665,51 @@ mod windows_procedure {
         )?;
         writeln!(evidence, "producer_progress_while_result_retained=passed")?;
         let resizing = start_query(session, 3)?;
-        accepted(&resizing, before, 0, evidence)?;
+        accepted(&resizing, before, 0, None, evidence)?;
         let shown = fixture.command("show", evidence)?;
         let shown_stamp = checkpoint(session, Some(before), shown, nonce, image, evidence)?;
-        let pre_resize = accepted(&resizing, shown_stamp, 1, evidence)?;
-        // Keep text identical: a negative frame cannot masquerade as a geometry reset.
+        let before_resize = accepted(&resizing, shown_stamp, 1, None, evidence)?;
+        let pre_resize = before_resize
+            .last_accepted_frame()
+            .ok_or("resize-accepted-source-missing")?;
+        let completed = mado_pilot::OcrTextWorkDisposition::Completed;
+        let completed_before = before_resize.work().get(completed);
+        let next_completed = |steps| {
+            completed_before
+                .checked_add(steps)
+                .ok_or("completion-counter-overflow")
+        };
+        // Completed includes negatives: each successor/tick must add exactly one.
         let resized = fixture.command("resize", evidence)?;
         let successor = checkpoint(session, Some(pre_resize), resized, nonce, image, evidence)?;
         require(
             successor.geometry() != pre_resize.geometry(),
             "resize-revision-not-observed",
         )?;
-        accepted(&resizing, successor, 1, evidence)?;
+        let reset = accepted(&resizing, successor, 1, Some(next_completed(1)?), evidence)?;
+        let reset_frame = reset
+            .last_accepted_frame()
+            .ok_or("resize-successor-source-missing")?;
+        writeln!(
+            evidence,
+            "resize_before={pre_resize} completed_before={completed_before} resize_checkpoint={successor} reset={reset:?}"
+        )?;
         let tick = fixture.command("tick", evidence)?;
         let second = checkpoint(session, Some(successor), tick, nonce, image, evidence)?;
-        accepted(&resizing, second, 2, evidence)?;
+        accepted(&resizing, second, 2, Some(next_completed(2)?), evidence)?;
         let final_tick = fixture.command("tick", evidence)?;
         retained.push(retain(&resizing, pre_resize, final_tick, 3, true)?);
         inspect(&retained[1], nonce, image, evidence)?;
+        let OcrTextTerminalOutcome::Matched(result) = retained[1].outcome.as_ref() else {
+            return Err("resize-matched-result-missing".into());
+        };
+        let final_progress = resizing.progress();
+        writeln!(evidence, "resize_final_progress={final_progress:?}")?;
+        require(
+            final_progress.work().get(completed) == next_completed(3)?
+                && result.first_confirmed_frame() == reset_frame,
+            "resize-consecutive-completion-authority",
+        )?;
         drop(resizing);
         writeln!(evidence, "resize_reset=passed")?;
 
@@ -681,7 +723,7 @@ mod windows_procedure {
             evidence,
         )?;
         let lost = start_query(session, 1)?;
-        accepted(&lost, before_loss, 0, evidence)?;
+        accepted(&lost, before_loss, 0, None, evidence)?;
         fixture.check_window()?;
         fixture.command("destroy", evidence)?;
         let terminal = lost.wait(&context(STEP)?)?;
