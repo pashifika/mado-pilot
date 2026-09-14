@@ -93,9 +93,11 @@ pub(super) fn marker(descriptor: FrameDescriptor, bytes: &[u8], nonce: u64) -> C
         let pixel = bytes
             .get(offset..offset + 4)
             .ok_or(Failure::Rule("marker-layout"))?;
-        let one = if pixel[0] < 40 && pixel[1] > 215 && pixel[2] > 215 {
+        // Color management can lift the low channel without changing blue/yellow dominance.
+        let [blue, green, red] = [pixel[0], pixel[1], pixel[2]].map(u16::from);
+        let one = if red >= blue + 96 && green >= blue + 96 {
             1
-        } else if pixel[0] > 215 && pixel[1] < 40 && pixel[2] < 40 {
+        } else if blue >= red + 96 && blue >= green + 96 {
             0
         } else {
             return Err(Failure::Rule("owned-pixel-color"));
@@ -405,6 +407,35 @@ mod tests {
         bytes[high_state_bit..high_state_bit + 4].copy_from_slice(&[255, 0, 0, 255]);
         let offset = 552 * descriptor.stride() + (127 * 4 + 2) * 4;
         bytes[offset..offset + 4].fill(128);
+        assert!(marker(descriptor, &bytes, nonce).is_err());
+    }
+
+    #[test]
+    fn color_managed_marker_channels_preserve_ownership_but_erasure_does_not() {
+        let descriptor = FrameDescriptor::new(PixelExtent::new(960, 576), PixelFormat::Bgra8, 3840)
+            .expect("marker layout");
+        let nonce = u64::MAX;
+        let payload = (2_u64 << 32) | 1;
+        let mut bytes = vec![0; descriptor.byte_len()];
+        for bit in 0..128 {
+            let word = if bit < 64 { nonce } else { payload };
+            let one = (word >> (63 - bit % 64)) & 1 != 0;
+            let offset = 552 * descriptor.stride() + (bit * 4 + 2) * 4;
+            bytes[offset..offset + 4].copy_from_slice(if one {
+                &[84, 255, 255, 255]
+            } else {
+                &[255, 64, 64, 255]
+            });
+        }
+        assert_eq!(
+            marker(descriptor, &bytes, nonce).expect("color-managed owned marker"),
+            Marker {
+                counter: 2,
+                state: 1
+            }
+        );
+        let offset = 552 * descriptor.stride() + 2 * 4;
+        bytes[offset..offset + 4].fill(255);
         assert!(marker(descriptor, &bytes, nonce).is_err());
     }
 }

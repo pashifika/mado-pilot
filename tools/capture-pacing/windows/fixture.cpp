@@ -22,6 +22,7 @@ namespace {
 constexpr wchar_t ClassName[] = L"MadoPilot.Private.CapturePacing.Windows.1";
 constexpr DWORD FuseMilliseconds = 180000;
 constexpr uint64_t AnimationNanoseconds = 16000000;
+constexpr uint64_t ResizeNanoseconds = 125000000;
 constexpr size_t ImageBytes = 960 * 540 * 4;
 constexpr size_t SurfacePixels = 1040 * 640;
 constexpr size_t SampleLimit = 4096;
@@ -367,6 +368,8 @@ struct Fixture {
     uint32_t sequence = 0, counter = 0, state = 0;
     Operation lastOperation = Operation::Blank;
     unsigned burstRemaining = 0;
+    uint64_t renderInterval = AnimationNanoseconds;
+    bool resizeAckPending = false;
     int width = 960, height = 576;
     bool classRegistered = false, painted = false, animating = false, quitting = false;
     Error error = Error::None;
@@ -582,6 +585,11 @@ struct Fixture {
     bool execute(Operation operation, uint32_t next) {
         sequence = next;
         lastOperation = operation;
+        if (resizeAckPending) {
+            resizeAckPending = false;
+            animating = false;
+            burstRemaining = 0;
+        }
         bool repaint = false;
         switch (operation) {
         case Operation::Blank: state = 0; repaint = true; break;
@@ -617,13 +625,28 @@ struct Fixture {
             quitting = true;
             break;
         }
-        if ((repaint && !render()) || !acknowledge()) return false;
+        if (repaint && !render()) return false;
+        if (operation == Operation::Resize) {
+            uint64_t now = 0;
+            if (!clock.now(now) || now > std::numeric_limits<uint64_t>::max() - ResizeNanoseconds) {
+                fail(Error::Clock); return false;
+            }
+            // Four bounded repaints span the required 100ms capture interval and pool recreation.
+            renderInterval = ResizeNanoseconds;
+            nextRender = now + renderInterval;
+            burstRemaining = 3;
+            resizeAckPending = true;
+            animating = true;
+            return true;
+        }
+        if (!acknowledge()) return false;
         if (operation == Operation::Animate || operation == Operation::Burst) {
             uint64_t now = 0;
             if (!clock.now(now) || now > std::numeric_limits<uint64_t>::max() - AnimationNanoseconds) {
                 fail(Error::Clock); return false;
             }
             // Start after ACK, including all eight burst frames.
+            renderInterval = AnimationNanoseconds;
             nextRender = now + AnimationNanoseconds;
             burstRemaining = operation == Operation::Burst ? 8 : 0;
             animating = true;
@@ -709,12 +732,22 @@ struct Fixture {
             if (!clock.now(now)) { fail(Error::Clock); break; }
             if (animating && now >= nextRender) {
                 if (!render()) break;
-                if (burstRemaining && --burstRemaining == 0) animating = false;
-                if (!clock.now(now) || now > std::numeric_limits<uint64_t>::max() - AnimationNanoseconds) {
+                if (burstRemaining && --burstRemaining == 0) {
+                    animating = false;
+                    if (resizeAckPending) {
+                        resizeAckPending = false;
+                        if (!acknowledge()) break;
+                    }
+                }
+                if (!clock.now(now) || now > std::numeric_limits<uint64_t>::max() - renderInterval) {
                     fail(Error::Clock); break;
                 }
-                nextRender += AnimationNanoseconds;
-                if (nextRender <= now) nextRender = now + AnimationNanoseconds; // No catch-up burst.
+                if (resizeAckPending) {
+                    nextRender = now + renderInterval;
+                } else {
+                    nextRender += renderInterval;
+                    if (nextRender <= now) nextRender = now + renderInterval; // No catch-up burst.
+                }
             }
             DWORD wait = 8;
             if (animating && nextRender > now) {

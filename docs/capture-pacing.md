@@ -292,3 +292,11 @@ Schema-one reports and their failures are immutable and are not rescored by the
 new analyzer. The corrected accounting and complete-frame Windows presentation
 belong to separately bound new runs; they do not change historical product
 budgets. See the schema-two apparatus decision in [ADR0077](adr/0077-native-capture-pacing-and-completion-cooldown.md#qualification-apparatus-correction-report-schema-2).
+
+Protocol revision 3 also keeps the macOS fixture's preexisting `Prohibited`
+activation policy rather than promoting a CLI process to `Accessory`. Marker
+decoding requires a 96-channel blue/yellow dominance margin, not exact primary
+colors, and still checks all ownership bits. On Windows, resize acknowledges the
+last of four bounded renders, with at least 125ms between each completion and the
+next render, so capture can pass through pool recreation. The resize case does not claim a solitary final repaint remains
+available when no subsequent publication occurs.

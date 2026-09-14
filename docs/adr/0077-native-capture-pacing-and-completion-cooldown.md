@@ -129,3 +129,31 @@ failure classifications and binaries remain immutable. The schema-two analyzer
 rejects schema-one evidence rather than applying the corrected interpretation
 retroactively. Product API behavior, OS support and historical product budgets
 are unchanged.
+
+## Fixture boundary correction: protocol revision 3
+
+Normal macOS launches showed the fixture become frontmost after promotion to
+`Accessory`, despite non-key/non-main windows and an inactive AppKit state.
+Debugger launches did not reproduce that transition. Keep the CLI's existing
+`Prohibited` activation policy instead of changing it. A diagnostic run using
+that policy reached native capture without changing foreground.
+
+The captured owned yellow marker was BGRA `[84, 255, 255, 255]`, not the original
+near-primary color. Decode blue/yellow using a minimum 96-channel dominance
+margin with widened arithmetic. This preserves a separated code alphabet after
+color management; all 128 bits and the nonce still must match, and erased or
+ambiguous colors fail. The corrected native diagnostic completed five OCR
+observations, resize/retention and terminal/interruption checks with clean exit.
+It is diagnostic evidence, not a substitute for the bound release campaign.
+
+Windows pool recreation drops its transition frame and may require another
+eligible publication. The resize fixture presents the initial resize and three
+bounded repaints, each at least 125ms after the previous render completes, then
+acknowledges the final one. This spans
+the required 100ms pacing interval while leaving stop processing responsive.
+The consumer still requires the actual final pixels and newer epoch/geometry.
+This does not claim single-repaint-then-indefinite-idle resize support.
+
+Protocol revision 3 keeps report schema 2 and every existing numerical resource,
+latency, deadline and cleanup gate. Earlier protocol files, runs and failures
+remain unchanged; only fresh, fully bound attempts use the corrected fixtures.

@@ -601,7 +601,8 @@ static NSImage *load_image(const char *path) {
     if (_foreground <= 0 || _foreground == getpid()) { [self fail:ErrorForeground]; return; }
     if (!reset_statistics(&_statistics)) { [self fail:ErrorClock]; return; }
     [NSApplication sharedApplication];
-    if (![NSApp setActivationPolicy:NSApplicationActivationPolicyAccessory]) { [self fail:ErrorNative]; return; }
+    // Preserve the CLI's nonactivating policy; promoting to Accessory can take foreground.
+    if (NSApp.activationPolicy != NSApplicationActivationPolicyProhibited) { [self fail:ErrorNative]; return; }
     NSApp.delegate = self;
     __weak Fixture *weakSelf = self;
     _foregroundObserver = [NSWorkspace.sharedWorkspace.notificationCenter
