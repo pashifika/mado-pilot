@@ -27,7 +27,8 @@ use std::time::{Duration, Instant};
 
 use mado_pilot_capture::{
     CaptureFault, CaptureSession, Continuity, CoordinateSupport, Frame, FrameRequest, Lifecycle,
-    OverflowPolicy, PixelFormat, QueuePolicy, SessionDescription, StoragePublication, StreamState,
+    OverflowPolicy, PixelFormat, QueuePolicy, ResolvedCapturePacing, SessionDescription,
+    StoragePublication, StreamState,
 };
 use mado_pilot_core::{
     Clock, MonotonicInstant, Operation, OperationContext, PixelExtent, Result, StreamId,
@@ -562,9 +563,17 @@ impl NativeSession {
     /// Opens and starts a session for the target `metadata` describes.
     pub(crate) fn open(
         selected: SessionTarget,
+        pacing: ResolvedCapturePacing,
         operation: &mut Operation<'_>,
     ) -> Result<Arc<Self>> {
-        Self::open_inner(selected, 0, Duration::ZERO, Duration::ZERO, operation)
+        Self::open_inner(
+            selected,
+            pacing,
+            0,
+            Duration::ZERO,
+            Duration::ZERO,
+            operation,
+        )
     }
 
     /// Opens a session that raises a contained native exception at `sites`.
@@ -577,7 +586,14 @@ impl NativeSession {
         sites: u32,
         operation: &mut Operation<'_>,
     ) -> Result<Arc<Self>> {
-        Self::open_inner(selected, sites, Duration::ZERO, Duration::ZERO, operation)
+        Self::open_inner(
+            selected,
+            ResolvedCapturePacing::source_default(),
+            sites,
+            Duration::ZERO,
+            Duration::ZERO,
+            operation,
+        )
     }
 
     #[cfg(test)]
@@ -587,16 +603,25 @@ impl NativeSession {
         stop_delay: Duration,
         operation: &mut Operation<'_>,
     ) -> Result<Arc<Self>> {
-        Self::open_inner(selected, 0, start_delay, stop_delay, operation)
+        Self::open_inner(
+            selected,
+            ResolvedCapturePacing::source_default(),
+            0,
+            start_delay,
+            stop_delay,
+            operation,
+        )
     }
 
     fn open_inner(
         selected: SessionTarget,
+        pacing: ResolvedCapturePacing,
         testing_raise_sites: u32,
         testing_start_delay: Duration,
         testing_stop_delay: Duration,
         operation: &mut Operation<'_>,
     ) -> Result<Arc<Self>> {
+        shim::capture_pacing_nanos(pacing)?;
         let SessionTarget {
             target,
             stream,
@@ -639,17 +664,23 @@ impl NativeSession {
             testing_start_delay,
             testing_stop_delay,
             testing_raise_sites,
+            capture_pacing: pacing,
         };
         // Every exit from here to the `NativeSession` below drops `pending`, which
         // closes whatever was opened and reclaims the registration.
-        let session = shim::Session::open(
+        let (session, capture_pacing) = match shim::Session::open(
             &request,
             pending.context(),
             on_frame,
             on_frame_commit,
             on_stopped,
-        )
-        .map_err(|status| open_error(status, key.kind()))?;
+        ) {
+            Ok(session) => session,
+            Err(status) => {
+                operation.checkpoint()?;
+                return Err(open_error(status, key.kind()));
+            }
+        };
         if let Err(unused) = core.session.set(session) {
             // Unreachable: the `OnceLock` was created a few statements above and
             // nothing else can have set it. Handled rather than discarded so that the
@@ -671,7 +702,8 @@ impl NativeSession {
         .with_queue(
             QueuePolicy::new(std::num::NonZeroU32::MIN, OverflowPolicy::Reject)
                 .with_retained_storage(DETACHED_BUFFER_BUDGET),
-        );
+        )
+        .with_capture_pacing(capture_pacing);
         // Consumed before `core` moves, which is also what ends the guard's borrow.
         let registered = pending.into_owned();
         let session = Arc::new(Self {
@@ -686,7 +718,10 @@ impl NativeSession {
             match session.core.session().start(native_wait(operation)) {
                 Ok(()) => break,
                 Err(ShimStatus::TimedOut) => operation.checkpoint()?,
-                Err(status) => return Err(open_error(status, key.kind())),
+                Err(status) => {
+                    operation.checkpoint()?;
+                    return Err(open_error(status, key.kind()));
+                }
             }
         }
         operation.checkpoint()?;

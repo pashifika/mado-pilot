@@ -5,11 +5,14 @@ use std::sync::Arc;
 use std::thread;
 use std::time::Duration;
 
-use mado_pilot_capture::{CaptureProvider, Continuity, FrameRequest, OpenRequest, PixelFormat};
+use mado_pilot_capture::{
+    CapturePacingOutcome, CapturePacingReport, CapturePacingRequest, CaptureProvider, Continuity,
+    FrameRequest, OpenRequest, PacingUnsupportedReason, PixelFormat, ResolvedCapturePacing,
+};
 use mado_pilot_core::{
     CancellationToken, GeometryRevision, IdentityIssuer, OperationContext, PixelExtent, Status,
 };
-use mado_pilot_testkit::{ControlledCapture, capture_contract};
+use mado_pilot_testkit::{ControlledCapture, ManualClock, capture_contract};
 
 /// Every wait in this file carries a deadline, so a contract regression fails
 /// the run instead of hanging it.
@@ -28,6 +31,205 @@ fn provider() -> Arc<ControlledCapture> {
         )
         .expect("built"),
     )
+}
+
+#[test]
+fn required_pacing_is_unsupported_and_source_default_remains_available() {
+    let capture = provider();
+    let operation = bounded();
+    let required = OpenRequest::new().with_capture_pacing(
+        CapturePacingRequest::required(Duration::from_millis(200)).expect("positive"),
+    );
+    assert_eq!(
+        capture
+            .open(capture.target(), &required, &operation)
+            .expect_err("controlled publication cannot satisfy native pacing")
+            .status(),
+        Status::Unsupported
+    );
+    let session = capture
+        .open(
+            capture.target(),
+            &required.with_capture_pacing(CapturePacingRequest::source_default()),
+            &operation,
+        )
+        .expect("source default clears the requirement");
+    assert_eq!(
+        session.description().capture_pacing(),
+        CapturePacingReport::source_default()
+    );
+    capture
+        .publish(0x11, Continuity::Continuous)
+        .expect("publication remains controlled");
+    let frame = session
+        .frame(&FrameRequest::latest(), &operation)
+        .expect("first publication");
+    assert_eq!(frame.stamp().sequence().value(), 0);
+    assert!(
+        frame
+            .map(PixelFormat::Rgba8, &operation)
+            .expect("mapped")
+            .bytes()
+            .iter()
+            .all(|byte| *byte == 0x11)
+    );
+}
+
+#[test]
+fn unapplied_pacing_keeps_scripted_bursts_resize_and_sessions_independent() {
+    let capture = provider();
+    let clock = Arc::new(ManualClock::new());
+    let operation = OperationContext::new()
+        .with_clock(clock.clone())
+        .with_timeout(Duration::from_secs(10))
+        .expect("bounded");
+    let preference = CapturePacingRequest::preferred(Duration::from_millis(200)).expect("positive");
+    let preferred = capture
+        .open(
+            capture.target(),
+            &OpenRequest::new().with_capture_pacing(preference),
+            &operation,
+        )
+        .expect("a preference cannot invent native pacing");
+    let baseline = capture
+        .open(capture.target(), &OpenRequest::new(), &operation)
+        .expect("independent source-default session");
+    let report = preferred.description().capture_pacing();
+    assert_eq!(
+        report.request(),
+        preference.resolve(ResolvedCapturePacing::source_default())
+    );
+    assert_eq!(report.configured_interval(), None);
+    assert_eq!(
+        report.outcome(),
+        CapturePacingOutcome::PreferredUnapplied(PacingUnsupportedReason::SourceCannotPace)
+    );
+    assert_eq!(
+        baseline.description().capture_pacing(),
+        CapturePacingReport::source_default()
+    );
+
+    capture
+        .publish(0x11, Continuity::Continuous)
+        .expect("first publication");
+    let first = preferred
+        .frame(&FrameRequest::latest(), &operation)
+        .expect("first");
+    clock.advance(Duration::from_secs(1));
+    assert_eq!(
+        preferred
+            .frame(&FrameRequest::latest(), &operation)
+            .expect("no scripted update")
+            .stamp(),
+        first.stamp()
+    );
+    capture
+        .publish(0x22, Continuity::Continuous)
+        .expect("burst starts");
+    capture
+        .publish(0x33, Continuity::Continuous)
+        .expect("burst finishes at the same clock time");
+    let newest = preferred
+        .frame(&FrameRequest::newer_than(first.stamp()), &operation)
+        .expect("caller-controlled publications are not rate limited");
+    assert_eq!(newest.stamp().sequence().value(), 2);
+    assert!(
+        newest
+            .map(PixelFormat::Rgba8, &operation)
+            .expect("mapped")
+            .bytes()
+            .iter()
+            .all(|byte| *byte == 0x33)
+    );
+    let baseline_frame = baseline
+        .frame(&FrameRequest::latest(), &operation)
+        .expect("same burst");
+    assert_eq!(baseline_frame.stamp().sequence().value(), 2);
+    assert_ne!(baseline_frame.stamp().stream(), newest.stamp().stream());
+
+    capture
+        .publish_reshaped(PixelExtent::new(16, 12), 0x44)
+        .expect("scripted reshape");
+    let resized = preferred
+        .frame(&FrameRequest::newer_than(newest.stamp()), &operation)
+        .expect("new geometry is not blocked by the preference");
+    assert_eq!(resized.stamp().epoch().value(), 1);
+    assert_eq!(resized.descriptor().extent(), PixelExtent::new(16, 12));
+    assert_eq!(preferred.description().capture_pacing(), report);
+    preferred.close(&operation).expect("closed");
+    let independent = baseline
+        .frame(
+            &FrameRequest::newer_than(baseline_frame.stamp()),
+            &operation,
+        )
+        .expect("closing the preferred session leaves its sibling usable");
+    assert_eq!(independent.descriptor().extent(), PixelExtent::new(16, 12));
+    assert_eq!(
+        baseline.description().capture_pacing(),
+        CapturePacingReport::source_default()
+    );
+    assert!(
+        first
+            .map(PixelFormat::Rgba8, &operation)
+            .expect("the old frame remains independent of resize and close")
+            .bytes()
+            .iter()
+            .all(|byte| *byte == 0x11)
+    );
+}
+
+#[test]
+fn pacing_does_not_hide_controlled_target_loss_identity_or_format_errors() {
+    let issuer = Arc::new(IdentityIssuer::new());
+    let capture = ControlledCapture::new(
+        Arc::clone(&issuer),
+        PixelExtent::new(8, 6),
+        PixelFormat::Rgba8,
+    )
+    .expect("provider");
+    let operation = bounded();
+    let foreign = IdentityIssuer::new()
+        .issue_target(capture.provider())
+        .expect("foreign");
+    let unknown = issuer
+        .issue_target(capture.provider())
+        .expect("not offered by the source");
+    let required = OpenRequest::new().with_capture_pacing(
+        CapturePacingRequest::required(Duration::from_millis(200)).expect("positive"),
+    );
+    for target in [foreign, unknown] {
+        assert_eq!(
+            capture
+                .open(target, &required, &operation)
+                .expect_err("identity precedes pacing")
+                .status(),
+            Status::InvalidArgument
+        );
+    }
+    let preferred = OpenRequest::new().with_capture_pacing(
+        CapturePacingRequest::preferred(Duration::from_millis(60)).expect("positive"),
+    );
+    assert_eq!(
+        capture
+            .open(
+                capture.target(),
+                &preferred.require_format(PixelFormat::Bgra8),
+                &operation,
+            )
+            .expect_err("an unapplied preference cannot hide required-format failure")
+            .status(),
+        Status::Unsupported
+    );
+    capture.lose(capture.target());
+    for request in [required, preferred] {
+        assert_eq!(
+            capture
+                .open(capture.target(), &request, &operation)
+                .expect_err("target loss remains authoritative")
+                .status(),
+            Status::TargetLost
+        );
+    }
 }
 
 #[test]

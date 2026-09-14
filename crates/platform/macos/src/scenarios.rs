@@ -275,12 +275,14 @@ impl Harness {
                 testing_start_delay: start_delay,
                 testing_stop_delay: stop_delay,
                 testing_raise_sites: failure_sites,
+                capture_pacing: mado_pilot_capture::ResolvedCapturePacing::source_default(),
             },
             std::ptr::null_mut(),
             ignore_frame,
             ignore_frame_commit,
             ignore_stopped,
         )
+        .map(|(session, _)| session)
     }
 }
 

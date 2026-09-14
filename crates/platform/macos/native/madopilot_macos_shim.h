@@ -30,7 +30,7 @@ extern "C" {
 #endif
 
 /* The version of this internal surface. Rust asserts it at load. */
-#define MP_SHIM_ABI_VERSION 21u
+#define MP_SHIM_ABI_VERSION 22u
 
 /* The largest extent, budget, and default wait the shim will accept or apply. */
 #define MP_SHIM_MAX_PIXEL_EXTENT 32768u
@@ -161,6 +161,13 @@ typedef uint32_t mp_shim_status;
 /* A same-sample, bounded producer-capacity recommendation is present. */
 #define MP_SHIM_FRAME_INFO_SURFACE_RECOMMENDATION (1u << 1)
 
+/* Resolved pacing requests and successful open outcomes. */
+#define MP_SHIM_PACING_SOURCE_DEFAULT 0u
+#define MP_SHIM_PACING_REQUIRED 1u
+#define MP_SHIM_PACING_PREFERRED 2u
+#define MP_SHIM_PACING_APPLIED 1u
+#define MP_SHIM_PACING_UNAVAILABLE 2u
+
 /* Opaque handles. Each has a complete lifecycle below. */
 typedef struct mp_shim_inventory mp_shim_inventory;
 typedef struct mp_shim_target mp_shim_target;
@@ -290,7 +297,17 @@ typedef struct mp_shim_open_request {
     mp_shim_status (*frame_commit_callback)(void *context);
     /* Invoked once if the producer stops for a reason of its own. */
     void (*stopped_callback)(void *context, mp_shim_status status);
+    /* Appended in ABI 22. Explicit intervals are positive signed nanoseconds. */
+    uint32_t pacing_mode;
+    int64_t pacing_interval_nanos;
 } mp_shim_open_request;
+
+/* Valid only after successful configuration and session creation, before start. */
+typedef struct mp_shim_open_report {
+    uint32_t struct_size;
+    uint32_t pacing_outcome;
+    int64_t configured_interval_nanos;
+} mp_shim_open_report;
 
 /* Returns MP_SHIM_ABI_VERSION as the linked shim was compiled with it. */
 uint32_t mp_shim_abi_version(void);
@@ -305,7 +322,8 @@ mp_shim_status mp_shim_struct_sizes(uint32_t *out_target_info, uint32_t *out_fra
                                     uint32_t *out_open_request,
                                     uint32_t *out_process_authority,
                                     uint32_t *out_process_post_request,
-                                    uint32_t *out_process_post_report);
+                                    uint32_t *out_process_post_report,
+                                    uint32_t *out_open_report);
 
 /*
  * Reports offsets for every process-post pointer/count field whose placement
@@ -316,6 +334,48 @@ mp_shim_status mp_shim_process_struct_offsets(
     uint32_t *out_authority_target_match_count, uint32_t *out_request_target,
     uint32_t *out_request_event_source, uint32_t *out_request_timeout_nanos,
     uint32_t *out_report_target_match_count, uint32_t *out_report_invoked_native_units);
+
+/* Nine offsets: retained target, callback context, three callbacks, pacing mode,
+ * interval, and the open report's outcome and configured interval. */
+mp_shim_status mp_shim_open_struct_offsets(uint32_t *out_offsets, size_t count);
+
+/* Production configuration/lifecycle with local objects, never native capture. */
+#define MP_SHIM_TEST_PACING_APPLIED 0u
+#define MP_SHIM_TEST_PACING_MISSING_SETTER 1u
+#define MP_SHIM_TEST_PACING_MISSING_GETTER 2u
+#define MP_SHIM_TEST_PACING_SETTER_EXCEPTION 3u
+#define MP_SHIM_TEST_PACING_GETTER_EXCEPTION 4u
+#define MP_SHIM_TEST_PACING_SHORT_READBACK 5u
+#define MP_SHIM_TEST_PACING_INVALID_READBACK 6u
+#define MP_SHIM_TEST_PACING_START_EXCEPTION 7u
+#define MP_SHIM_TEST_PACING_START_FAILURE 8u
+#define MP_SHIM_TEST_PACING_RESIZE_EXCEPTION 9u
+#define MP_SHIM_TEST_PACING_RESIZE_LOSES_INTERVAL 10u
+#define MP_SHIM_TEST_PACING_PROBE_EXCEPTION 11u
+#define MP_SHIM_TEST_PACING_STREAM_EXCEPTION 12u
+#define MP_SHIM_TEST_PACING_OUTPUT_EXCEPTION 13u
+
+typedef struct mp_shim_pacing_test_report {
+    uint32_t struct_size;
+    mp_shim_status open_status;
+    mp_shim_status start_status;
+    mp_shim_status resize_status;
+    mp_shim_status close_status;
+    mp_shim_open_report open_report;
+    int64_t assigned_value;
+    int32_t assigned_timescale;
+    uint32_t stream_creations;
+    int64_t created_interval_nanos;
+    int64_t started_interval_nanos;
+    int64_t resized_interval_nanos;
+    uint32_t resized_width;
+    uint32_t resized_height;
+    uint32_t live_owners;
+    uint64_t live_native_objects;
+} mp_shim_pacing_test_report;
+
+mp_shim_status mp_shim_testing_capture_pacing(uint32_t mode, int64_t nanos, uint32_t scenario,
+                                              mp_shim_pacing_test_report *out_report);
 
 /*
  * Reports whether this host offers the capture capability at all.
@@ -753,7 +813,8 @@ void mp_shim_target_release(mp_shim_target *target);
  * On success the caller owns the handle and must release it with
  * mp_shim_session_release after mp_shim_session_close.
  */
-mp_shim_status mp_shim_session_open(const mp_shim_open_request *request, mp_shim_session **out);
+mp_shim_status mp_shim_session_open(const mp_shim_open_request *request, mp_shim_session **out,
+                                    mp_shim_open_report *out_report);
 
 /* Starts the producer. `timeout_nanos` bounds the native start. */
 mp_shim_status mp_shim_session_start(mp_shim_session *session, uint64_t timeout_nanos);

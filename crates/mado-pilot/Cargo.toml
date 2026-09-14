@@ -47,6 +47,8 @@ libc.workspace = true
 
 [dev-dependencies]
 mado-pilot-testkit = { path = "../support/testkit" }
+serde.workspace = true
+serde_json.workspace = true
 
 [[bench]]
 name = "deterministic-slice"

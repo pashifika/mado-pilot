@@ -60,6 +60,11 @@ For real text recognition, use [the default OCR walkthrough](crates/mado-pilot/e
 
 The new [OCR text watcher example](crates/mado-pilot/examples/ocr-text-watch.rs) uses the explicit CPU bounded-v2 profile. Its [fixed replay and native procedures](docs/ocr-text-watch.md) keep controlled API checks separate from real-model and permissioned capture evidence; no new support claim follows from compilation.
 
+To configure native capture intervals and wait a full cooldown after OCR and caller
+interpretation, use [capture pacing](docs/capture-pacing.md). Its model-free
+`completion-paced-ocr --controlled-smoke` example runs without capture or input.
+Native cadence/performance qualification remains separate from these deterministic checks.
+
 ## API and integration
 
 | Language | Entry point and reference |

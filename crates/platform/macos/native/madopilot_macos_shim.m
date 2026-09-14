@@ -624,6 +624,7 @@ mp_shim_status mp_shim_executable_identity_for_process(
 @property(nonatomic, assign) BOOL showsCursor;
 @property(nonatomic, assign) NSInteger queueDepth;
 @property(nonatomic, assign) BOOL scalesToFit;
+@property(nonatomic, assign) CMTime minimumFrameInterval;
 @end
 
 @protocol MPShimStream <NSObject>
@@ -637,6 +638,63 @@ mp_shim_status mp_shim_executable_identity_for_process(
 - (void)stopCaptureWithCompletionHandler:(void (^)(NSError *error))handler;
 - (void)updateConfiguration:(id)configuration completionHandler:(void (^)(NSError *error))handler;
 @end
+
+static bool mp_shim_pacing_request_valid(uint32_t mode, int64_t nanos) {
+    return mode == MP_SHIM_PACING_SOURCE_DEFAULT
+               ? nanos == 0
+               : ((mode == MP_SHIM_PACING_REQUIRED || mode == MP_SHIM_PACING_PREFERRED) &&
+                  nanos > 0);
+}
+
+static mp_shim_status mp_shim_pacing_readback(id<MPShimStreamConfiguration> configuration,
+                                               int64_t *out_nanos) {
+    CMTime interval = configuration.minimumFrameInterval;
+    if (!CMTIME_IS_NUMERIC(interval) || interval.epoch != 0 || interval.value <= 0 ||
+        interval.timescale <= 0) {
+        return MP_SHIM_PLATFORM_FAILURE;
+    }
+    /* Exact integer conversion, including a getter that normalizes the timescale. */
+    __int128 numerator = (__int128)interval.value * 1000000000;
+    __int128 nanos = numerator / interval.timescale;
+    if (numerator % interval.timescale != 0 || nanos <= 0 || nanos > INT64_MAX) {
+        return MP_SHIM_PLATFORM_FAILURE;
+    }
+    *out_nanos = (int64_t)nanos;
+    return MP_SHIM_OK;
+}
+
+static mp_shim_status mp_shim_configure_capture_pacing(
+    id<MPShimStreamConfiguration> configuration, uint32_t mode, int64_t nanos,
+    mp_shim_open_report *report) {
+    if (!mp_shim_pacing_request_valid(mode, nanos)) {
+        return MP_SHIM_INVALID_ARGUMENT;
+    }
+    report->pacing_outcome = MP_SHIM_PACING_SOURCE_DEFAULT;
+    report->configured_interval_nanos = 0;
+    if (mode == MP_SHIM_PACING_SOURCE_DEFAULT) {
+        return MP_SHIM_OK;
+    }
+    if (![configuration respondsToSelector:@selector(setMinimumFrameInterval:)] ||
+        ![configuration respondsToSelector:@selector(minimumFrameInterval)]) {
+        if (mode == MP_SHIM_PACING_REQUIRED) {
+            return MP_SHIM_UNSUPPORTED;
+        }
+        report->pacing_outcome = MP_SHIM_PACING_UNAVAILABLE;
+        return MP_SHIM_OK;
+    }
+    configuration.minimumFrameInterval = CMTimeMake(nanos, 1000000000);
+    int64_t configured = 0;
+    mp_shim_status status = mp_shim_pacing_readback(configuration, &configured);
+    if (status != MP_SHIM_OK) {
+        return status;
+    }
+    if (configured < nanos) {
+        return MP_SHIM_PLATFORM_FAILURE;
+    }
+    report->pacing_outcome = MP_SHIM_PACING_APPLIED;
+    report->configured_interval_nanos = configured;
+    return MP_SHIM_OK;
+}
 
 /* SCStreamOutputType.screen */
 static const NSInteger MPShimStreamOutputTypeScreen = 0;
@@ -1569,6 +1627,8 @@ struct mp_shim_session {
     uint32_t testing_raise_sites;
     uint64_t testing_start_delay_nanos;
     uint64_t testing_stop_delay_nanos;
+    /* Immutable negotiated interval; zero means no native pacing was selected. */
+    int64_t configured_pacing_nanos;
 
     /*
      * Native ownership. Each slot is retained exactly once and released by
@@ -1987,10 +2047,11 @@ mp_shim_status mp_shim_struct_sizes(uint32_t *out_target_info, uint32_t *out_fra
                                    uint32_t *out_open_request,
                                    uint32_t *out_process_authority,
                                    uint32_t *out_process_post_request,
-                                   uint32_t *out_process_post_report) {
+                                   uint32_t *out_process_post_report,
+                                   uint32_t *out_open_report) {
     if (out_target_info == NULL || out_frame_info == NULL || out_open_request == NULL ||
         out_process_authority == NULL || out_process_post_request == NULL ||
-        out_process_post_report == NULL) {
+        out_process_post_report == NULL || out_open_report == NULL) {
         return MP_SHIM_INVALID_ARGUMENT;
     }
     *out_target_info = (uint32_t)sizeof(mp_shim_target_info);
@@ -1999,6 +2060,7 @@ mp_shim_status mp_shim_struct_sizes(uint32_t *out_target_info, uint32_t *out_fra
     *out_process_authority = (uint32_t)sizeof(mp_shim_process_authority_report);
     *out_process_post_request = (uint32_t)sizeof(mp_shim_process_post_request);
     *out_process_post_report = (uint32_t)sizeof(mp_shim_process_post_report);
+    *out_open_report = (uint32_t)sizeof(mp_shim_open_report);
     return MP_SHIM_OK;
 }
 
@@ -2022,6 +2084,25 @@ mp_shim_status mp_shim_process_struct_offsets(
         (uint32_t)offsetof(mp_shim_process_post_report, target_match_count);
     *out_report_invoked_native_units =
         (uint32_t)offsetof(mp_shim_process_post_report, invoked_native_units);
+    return MP_SHIM_OK;
+}
+
+mp_shim_status mp_shim_open_struct_offsets(uint32_t *out_offsets, size_t count) {
+    if (out_offsets == NULL || count != 9) {
+        return MP_SHIM_INVALID_ARGUMENT;
+    }
+    const uint32_t offsets[9] = {
+        (uint32_t)offsetof(mp_shim_open_request, target),
+        (uint32_t)offsetof(mp_shim_open_request, callback_context),
+        (uint32_t)offsetof(mp_shim_open_request, frame_callback),
+        (uint32_t)offsetof(mp_shim_open_request, frame_commit_callback),
+        (uint32_t)offsetof(mp_shim_open_request, stopped_callback),
+        (uint32_t)offsetof(mp_shim_open_request, pacing_mode),
+        (uint32_t)offsetof(mp_shim_open_request, pacing_interval_nanos),
+        (uint32_t)offsetof(mp_shim_open_report, pacing_outcome),
+        (uint32_t)offsetof(mp_shim_open_report, configured_interval_nanos),
+    };
+    memcpy(out_offsets, offsets, sizeof(offsets));
     return MP_SHIM_OK;
 }
 
@@ -4112,59 +4193,11 @@ static id<MPShimStreamConfiguration> mp_shim_session_copy_configuration(
                                                                     &session->configuration);
 }
 
-mp_shim_status mp_shim_session_open(const mp_shim_open_request *request, mp_shim_session **out) {
-    if (out == NULL) {
-        return MP_SHIM_INVALID_ARGUMENT;
-    }
-    *out = NULL;
-    if (request == NULL || request->struct_size < sizeof(mp_shim_open_request) ||
-        request->frame_callback == NULL || request->frame_commit_callback == NULL ||
-        request->target == NULL ||
-        request->target->magic != MP_SHIM_TARGET_MAGIC || request->target->filter == NULL ||
-        request->target->kind != request->kind ||
-        request->target->native_id != request->native_id ||
-        request->target->owner_process != request->owner_process || request->pixel_width == 0 ||
-        request->pixel_height == 0 || request->pixel_width > MP_SHIM_MAX_PIXEL_EXTENT ||
-        request->pixel_height > MP_SHIM_MAX_PIXEL_EXTENT ||
-        !mp_shim_surface_within_limit(request->pixel_width, request->pixel_height) ||
-        request->detached_budget == 0 ||
-        request->detached_budget > MP_SHIM_MAX_DETACHED_BUDGET ||
-        (request->kind != MP_SHIM_TARGET_WINDOW && request->kind != MP_SHIM_TARGET_DISPLAY) ||
-        /*
-         * A window request carries the owning process the caller resolved it against,
-         * and discovery lists no window without one, so a non-positive value is either a
-         * caller that invented an identity or one carrying a fingerprint from before
-         * this rule. Refused rather than matched: zero used to match another window
-         * whose owner was equally unknown, which is the recycled-number capture the
-         * owner check exists to prevent.
-         */
-        (request->kind == MP_SHIM_TARGET_WINDOW && request->owner_process <= 0)) {
-        return MP_SHIM_INVALID_ARGUMENT;
-    }
-
-    MP_SHIM_BEGIN
-    const MPShimFramework *framework = mp_shim_capture_framework();
-    if (framework == NULL) {
-        return MP_SHIM_UNSUPPORTED;
-    }
-    if (!mp_shim_screen_capture_preflight()) {
-        return MP_SHIM_PERMISSION_DENIED;
-    }
-
-    /*
-     * Everything fallible happens while these strong locals own the native
-     * objects, so an exception unwinding out of this scope releases every one of
-     * them. Ownership moves into the session struct only after the last failure
-     * point, which is what makes the failure path leak nothing.
-     */
-    /* The originating inventory already constructed this exact filter. No fresh
-     * wrapper, numeric identifier, or process lookup is consulted here. */
-    id<MPShimContentFilterInit> filter = (__bridge id)request->target->filter;
-
-    id<MPShimStreamConfiguration> configuration = [[framework->stream_configuration alloc] init];
-    if (configuration == nil) {
-        return MP_SHIM_PLATFORM_FAILURE;
-    }
+static mp_shim_status mp_shim_session_open_configured(
+    const mp_shim_open_request *request, id<MPShimStreamConfiguration> configuration,
+    id<MPShimContentFilterInit> filter, Class stream_class, mp_shim_session **out,
+    mp_shim_open_report *out_report) {
+    mp_shim_open_report report = {.struct_size = sizeof(mp_shim_open_report)};
     uint32_t depth = request->queue_depth;
     if (depth < MP_SHIM_MIN_QUEUE_DEPTH) {
         depth = MP_SHIM_MIN_QUEUE_DEPTH;
@@ -4177,9 +4210,14 @@ mp_shim_status mp_shim_session_open(const mp_shim_open_request *request, mp_shim
     configuration.showsCursor = request->shows_cursor;
     configuration.queueDepth = (NSInteger)depth;
     configuration.scalesToFit = NO;
+    mp_shim_status pacing = mp_shim_configure_capture_pacing(
+        configuration, request->pacing_mode, request->pacing_interval_nanos, &report);
+    if (pacing != MP_SHIM_OK) {
+        return pacing;
+    }
 
     MPShimStreamOutput *output = [MPShimStreamOutput new];
-    id<MPShimStream> stream = [(id<MPShimStream>)[framework->stream alloc]
+    id<MPShimStream> stream = [(id<MPShimStream>)[stream_class alloc]
         initWithFilter:filter
          configuration:configuration
               delegate:output];
@@ -4271,6 +4309,7 @@ mp_shim_status mp_shim_session_open(const mp_shim_open_request *request, mp_shim
     session->testing_raise_sites = request->testing_raise_sites;
     session->testing_start_delay_nanos = request->testing_start_delay_nanos;
     session->testing_stop_delay_nanos = request->testing_stop_delay_nanos;
+    session->configured_pacing_nanos = report.configured_interval_nanos;
     session->close_active = false;
     session->close_phase = MP_SHIM_CLOSE_START;
     session->close_error = MP_SHIM_OK;
@@ -4325,7 +4364,72 @@ mp_shim_status mp_shim_session_open(const mp_shim_open_request *request, mp_shim
     }
 #endif
     *out = session;
+    *out_report = report;
     return MP_SHIM_OK;
+}
+
+mp_shim_status mp_shim_session_open(const mp_shim_open_request *request, mp_shim_session **out,
+                                    mp_shim_open_report *out_report) {
+    if (out == NULL) {
+        return MP_SHIM_INVALID_ARGUMENT;
+    }
+    *out = NULL;
+    if (out_report == NULL || out_report->struct_size < sizeof(mp_shim_open_report)) {
+        return MP_SHIM_INVALID_ARGUMENT;
+    }
+    out_report->pacing_outcome = UINT32_MAX;
+    out_report->configured_interval_nanos = 0;
+    if (request == NULL || request->struct_size < sizeof(mp_shim_open_request) ||
+        !mp_shim_pacing_request_valid(request->pacing_mode, request->pacing_interval_nanos) ||
+        request->frame_callback == NULL || request->frame_commit_callback == NULL ||
+        request->target == NULL ||
+        request->target->magic != MP_SHIM_TARGET_MAGIC || request->target->filter == NULL ||
+        request->target->kind != request->kind ||
+        request->target->native_id != request->native_id ||
+        request->target->owner_process != request->owner_process || request->pixel_width == 0 ||
+        request->pixel_height == 0 || request->pixel_width > MP_SHIM_MAX_PIXEL_EXTENT ||
+        request->pixel_height > MP_SHIM_MAX_PIXEL_EXTENT ||
+        !mp_shim_surface_within_limit(request->pixel_width, request->pixel_height) ||
+        request->detached_budget == 0 ||
+        request->detached_budget > MP_SHIM_MAX_DETACHED_BUDGET ||
+        (request->kind != MP_SHIM_TARGET_WINDOW && request->kind != MP_SHIM_TARGET_DISPLAY) ||
+        /*
+         * A window request carries the owning process the caller resolved it against,
+         * and discovery lists no window without one, so a non-positive value is either a
+         * caller that invented an identity or one carrying a fingerprint from before
+         * this rule. Refused rather than matched: zero used to match another window
+         * whose owner was equally unknown, which is the recycled-number capture the
+         * owner check exists to prevent.
+         */
+        (request->kind == MP_SHIM_TARGET_WINDOW && request->owner_process <= 0)) {
+        return MP_SHIM_INVALID_ARGUMENT;
+    }
+
+    MP_SHIM_BEGIN
+    const MPShimFramework *framework = mp_shim_capture_framework();
+    if (framework == NULL) {
+        return MP_SHIM_UNSUPPORTED;
+    }
+    if (!mp_shim_screen_capture_preflight()) {
+        return MP_SHIM_PERMISSION_DENIED;
+    }
+
+    /*
+     * Everything fallible happens while these strong locals own the native
+     * objects, so an exception unwinding out of this scope releases every one of
+     * them. Ownership moves into the session struct only after the last failure
+     * point, which is what makes the failure path leak nothing.
+     */
+    /* The originating inventory already constructed this exact filter. No fresh
+     * wrapper, numeric identifier, or process lookup is consulted here. */
+    id<MPShimContentFilterInit> filter = (__bridge id)request->target->filter;
+
+    id<MPShimStreamConfiguration> configuration = [[framework->stream_configuration alloc] init];
+    if (configuration == nil) {
+        return MP_SHIM_PLATFORM_FAILURE;
+    }
+    return mp_shim_session_open_configured(request, configuration, filter, framework->stream,
+                                            out, out_report);
     MP_SHIM_END
 }
 
@@ -4448,6 +4552,17 @@ mp_shim_status mp_shim_session_reconfigure(mp_shim_session *session, uint32_t pi
     }
     configuration.width = pixel_width;
     configuration.height = pixel_height;
+    /* Retain the negotiated configuration; resizing never reapplies a setter. */
+    if (session->configured_pacing_nanos != 0) {
+        int64_t configured = 0;
+        mp_shim_status pacing = mp_shim_pacing_readback(configuration, &configured);
+        if (pacing != MP_SHIM_OK) {
+            return pacing;
+        }
+        if (configured != session->configured_pacing_nanos) {
+            return MP_SHIM_PLATFORM_FAILURE;
+        }
+    }
 
     __block NSError *failure = nil;
     dispatch_semaphore_t ready = nil;
@@ -4834,6 +4949,227 @@ mp_shim_status mp_shim_session_live_objects(const mp_shim_session *session, uint
     pthread_mutex_unlock(&owner->native_mutex);
     *out_live = live;
     return MP_SHIM_OK;
+}
+
+#pragma mark - Capture pacing contract seam
+
+@interface MPShimPacingTestConfiguration : NSObject <MPShimStreamConfiguration> {
+  @public
+    uint32_t scenario;
+    mp_shim_pacing_test_report *observation;
+    CMTime interval;
+    size_t configured_width;
+    __weak id observed_stream;
+    __weak id observed_output;
+}
+@property(nonatomic, assign) size_t width;
+@property(nonatomic, assign) size_t height;
+@property(nonatomic, assign) OSType pixelFormat;
+@property(nonatomic, assign) BOOL showsCursor;
+@property(nonatomic, assign) NSInteger queueDepth;
+@property(nonatomic, assign) BOOL scalesToFit;
+@property(nonatomic, assign) CMTime minimumFrameInterval;
+@end
+
+@implementation MPShimPacingTestConfiguration
+- (instancetype)init {
+    self = [super init];
+    if (self != nil) {
+        interval = CMTimeMake(17000000, 1000000000);
+    }
+    return self;
+}
+- (BOOL)respondsToSelector:(SEL)selector {
+    if (selector == @selector(setMinimumFrameInterval:) ||
+        selector == @selector(minimumFrameInterval)) {
+        if (scenario == MP_SHIM_TEST_PACING_PROBE_EXCEPTION) {
+            [NSException raise:@"MPShimInjectedFailure" format:@"pacing capability"];
+        }
+        if ((selector == @selector(setMinimumFrameInterval:) &&
+             scenario == MP_SHIM_TEST_PACING_MISSING_SETTER) ||
+            (selector == @selector(minimumFrameInterval) &&
+             scenario == MP_SHIM_TEST_PACING_MISSING_GETTER)) {
+            return NO;
+        }
+    }
+    return [super respondsToSelector:selector];
+}
+- (size_t)width { return configured_width; }
+- (void)setWidth:(size_t)value {
+    if (configured_width != 0 && scenario == MP_SHIM_TEST_PACING_RESIZE_LOSES_INTERVAL) {
+        interval = kCMTimeZero;
+    }
+    configured_width = value;
+}
+- (CMTime)minimumFrameInterval {
+    if (scenario == MP_SHIM_TEST_PACING_GETTER_EXCEPTION) {
+        [NSException raise:@"MPShimInjectedFailure" format:@"pacing getter"];
+    }
+    return interval;
+}
+- (void)setMinimumFrameInterval:(CMTime)value {
+    observation->assigned_value = value.value;
+    observation->assigned_timescale = value.timescale;
+    if (scenario == MP_SHIM_TEST_PACING_SETTER_EXCEPTION) {
+        [NSException raise:@"MPShimInjectedFailure" format:@"pacing setter"];
+    }
+    interval = value;
+    if (scenario == MP_SHIM_TEST_PACING_SHORT_READBACK) {
+        interval.value -= 1;
+    } else if (scenario == MP_SHIM_TEST_PACING_INVALID_READBACK) {
+        interval = kCMTimeIndefinite;
+    }
+}
+@end
+
+@interface MPShimPacingTestStream : NSObject <MPShimStream>
+@end
+
+@implementation MPShimPacingTestStream {
+    MPShimPacingTestConfiguration *_configuration;
+}
+- (instancetype)initWithFilter:(id)filter configuration:(id)configuration delegate:(id)delegate {
+    (void)filter;
+    self = [super init];
+    if (self != nil) {
+        _configuration = configuration;
+        _configuration->observed_stream = self;
+        _configuration->observed_output = delegate;
+        _configuration->observation->stream_creations += 1;
+        _configuration->observation->created_interval_nanos = _configuration->interval.value;
+        if (_configuration->scenario == MP_SHIM_TEST_PACING_STREAM_EXCEPTION) {
+            [NSException raise:@"MPShimInjectedFailure" format:@"stream creation"];
+        }
+    }
+    return self;
+}
+- (BOOL)addStreamOutput:(id)output type:(NSInteger)type
+     sampleHandlerQueue:(dispatch_queue_t)queue error:(NSError **)error {
+    (void)output; (void)type; (void)queue; (void)error;
+    if (_configuration->scenario == MP_SHIM_TEST_PACING_OUTPUT_EXCEPTION) {
+        [NSException raise:@"MPShimInjectedFailure" format:@"output registration"];
+    }
+    return YES;
+}
+- (BOOL)removeStreamOutput:(id)output type:(NSInteger)type error:(NSError **)error {
+    (void)output; (void)type; (void)error;
+    return YES;
+}
+- (void)startCaptureWithCompletionHandler:(void (^)(NSError *))handler {
+    _configuration->observation->started_interval_nanos = _configuration->interval.value;
+    if (_configuration->scenario == MP_SHIM_TEST_PACING_START_EXCEPTION) {
+        [NSException raise:@"MPShimInjectedFailure" format:@"capture start"];
+    }
+    handler(nil);
+}
+- (void)stopCaptureWithCompletionHandler:(void (^)(NSError *))handler { handler(nil); }
+- (void)updateConfiguration:(id)configuration completionHandler:(void (^)(NSError *))handler {
+    MPShimPacingTestConfiguration *updated = configuration;
+    if (updated->scenario == MP_SHIM_TEST_PACING_RESIZE_EXCEPTION) {
+        [NSException raise:@"MPShimInjectedFailure" format:@"configuration update"];
+    }
+    updated->observation->resized_interval_nanos = updated->interval.value;
+    updated->observation->resized_width = (uint32_t)updated.width;
+    updated->observation->resized_height = (uint32_t)updated.height;
+    handler(nil);
+}
+@end
+
+static mp_shim_status mp_shim_pacing_test_frame(void *context, mp_shim_frame *frame,
+                                                const mp_shim_frame_info *info) {
+    (void)context; (void)frame; (void)info;
+    return MP_SHIM_OK;
+}
+
+static mp_shim_status mp_shim_pacing_test_commit(void *context) {
+    (void)context;
+    return MP_SHIM_OK;
+}
+
+mp_shim_status mp_shim_testing_capture_pacing(uint32_t mode, int64_t nanos, uint32_t scenario,
+                                              mp_shim_pacing_test_report *out_report) {
+    if (out_report == NULL || out_report->struct_size < sizeof(*out_report) ||
+        scenario > MP_SHIM_TEST_PACING_OUTPUT_EXCEPTION) {
+        return MP_SHIM_INVALID_ARGUMENT;
+    }
+    *out_report = (mp_shim_pacing_test_report){
+        .struct_size = sizeof(*out_report),
+        .open_status = UINT32_MAX,
+        .start_status = UINT32_MAX,
+        .resize_status = UINT32_MAX,
+        .close_status = UINT32_MAX,
+        .open_report = {.struct_size = sizeof(mp_shim_open_report), .pacing_outcome = UINT32_MAX},
+    };
+    MP_SHIM_BEGIN
+    __weak id weak_configuration = nil;
+    __weak id weak_stream = nil;
+    __weak id weak_output = nil;
+    __weak id weak_filter = nil;
+    @autoreleasepool {
+        MPShimPacingTestConfiguration *configuration = [MPShimPacingTestConfiguration new];
+        id filter = [NSObject new];
+        if (configuration == nil || filter == nil) {
+            return MP_SHIM_PLATFORM_FAILURE;
+        }
+        configuration->scenario = scenario;
+        configuration->observation = out_report;
+        weak_configuration = configuration;
+        weak_filter = filter;
+        mp_shim_open_request request = {
+            .struct_size = sizeof(mp_shim_open_request),
+            .kind = MP_SHIM_TARGET_DISPLAY,
+            .pixel_width = 64,
+            .pixel_height = 48,
+            .queue_depth = 3,
+            .detached_budget = 2,
+            .frame_callback = mp_shim_pacing_test_frame,
+            .frame_commit_callback = mp_shim_pacing_test_commit,
+            .pacing_mode = mode,
+            .pacing_interval_nanos = nanos,
+        };
+        if (scenario == MP_SHIM_TEST_PACING_START_FAILURE) {
+            request.testing_raise_sites = MP_SHIM_FAIL_IN_START_COMPLETION;
+        }
+        mp_shim_session *session = NULL;
+        @try {
+            @try {
+                out_report->open_status = mp_shim_session_open_configured(
+                    &request, configuration, filter, [MPShimPacingTestStream class],
+                    &session, &out_report->open_report);
+            } @catch (...) {
+                out_report->open_status = MP_SHIM_NATIVE_EXCEPTION;
+            }
+            weak_stream = configuration->observed_stream;
+            weak_output = configuration->observed_output;
+            configuration = nil;
+            filter = nil;
+            if (out_report->open_status == MP_SHIM_OK) {
+                out_report->start_status =
+                    mp_shim_session_start(session, MP_SHIM_DEFAULT_TIMEOUT_NANOS);
+                if (out_report->start_status == MP_SHIM_OK) {
+                    out_report->resize_status =
+                        mp_shim_session_reconfigure(session, 128, 96, MP_SHIM_DEFAULT_TIMEOUT_NANOS);
+                }
+            }
+        } @finally {
+            if (session != NULL) {
+                out_report->close_status =
+                    mp_shim_session_close(session, MP_SHIM_DEFAULT_TIMEOUT_NANOS);
+                mp_shim_status observed =
+                    mp_shim_session_live_objects(session, &out_report->live_native_objects);
+                if (observed != MP_SHIM_OK) {
+                    out_report->live_native_objects = UINT64_MAX;
+                }
+                mp_shim_session_release(session);
+            }
+        }
+    }
+    out_report->live_owners = (weak_configuration == nil ? 0u : 1u) +
+                              (weak_stream == nil ? 0u : 1u) +
+                              (weak_output == nil ? 0u : 1u) +
+                              (weak_filter == nil ? 0u : 1u);
+    return MP_SHIM_OK;
+    MP_SHIM_END
 }
 
 #pragma mark - Controlled process-directed Core Graphics loading

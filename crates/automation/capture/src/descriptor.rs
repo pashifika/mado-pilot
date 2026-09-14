@@ -8,6 +8,7 @@ use mado_pilot_core::{
 };
 
 use crate::fault::CaptureFault;
+use crate::pacing::CapturePacingReport;
 
 /// A CPU pixel layout MadoPilot can read and produce.
 ///
@@ -516,10 +517,11 @@ pub struct SessionDescription {
     coordinates: CoordinateSupport,
     input: InputCapability,
     queue: QueuePolicy,
+    capture_pacing: CapturePacingReport,
 }
 
 impl SessionDescription {
-    /// Describes an opened capture-only session with a synchronous queue.
+    /// Describes capture-only, synchronous-queue, source-default pacing behavior.
     #[must_use]
     pub const fn new(
         target: TargetId,
@@ -536,6 +538,7 @@ impl SessionDescription {
             coordinates,
             input: InputCapability::none(),
             queue: QueuePolicy::synchronous(),
+            capture_pacing: CapturePacingReport::source_default(),
         }
     }
 
@@ -550,6 +553,13 @@ impl SessionDescription {
     #[must_use]
     pub const fn with_queue(mut self, queue: QueuePolicy) -> Self {
         self.queue = queue;
+        self
+    }
+
+    /// Reports the native capture pacing this session actually established.
+    #[must_use]
+    pub const fn with_capture_pacing(mut self, pacing: CapturePacingReport) -> Self {
+        self.capture_pacing = pacing;
         self
     }
 
@@ -596,6 +606,12 @@ impl SessionDescription {
     #[must_use]
     pub const fn queue(&self) -> QueuePolicy {
         self.queue
+    }
+
+    /// Returns native capture configuration, not measured output cadence.
+    #[must_use]
+    pub const fn capture_pacing(&self) -> CapturePacingReport {
+        self.capture_pacing
     }
 }
 
