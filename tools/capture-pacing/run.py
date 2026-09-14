@@ -21,6 +21,9 @@ sys.path.insert(0, str(ROOT / "tools/native-release-profile"))
 from process_runner import run_process
 from inspect_native import inspect_file
 
+sys.path.insert(0, str(ROOT / "tools/ocr-text-watch"))
+from run_replay import MAX_IDENTITY_BYTES, identity
+
 sys.path.insert(0, str(HERE))
 from report import analyze_case, compare_cases
 
@@ -74,21 +77,10 @@ def read_json(path: Path, maximum: int = JSON_LIMIT):
 
 
 def digest(path: Path) -> tuple[int, str]:
-    before = regular(path, 2 * 1024 * 1024 * 1024)
-    hasher = hashlib.sha256()
-    with path.open("rb") as source:
-        opened = os.fstat(source.fileno())
-        require((opened.st_dev, opened.st_ino) == (before.st_dev, before.st_ino), "input-replaced")
-        total = 0
-        while block := source.read(1024 * 1024):
-            total += len(block)
-            require(total <= before.st_size, "input-grew")
-            hasher.update(block)
-        after = os.fstat(source.fileno())
-    current = path.stat()
-    identity = lambda item: (item.st_dev, item.st_ino, item.st_size, item.st_mtime_ns, item.st_ctime_ns)
-    require(total == before.st_size and identity(before) == identity(after) == identity(current), "input-changed")
-    return total, hasher.hexdigest()
+    regular(path, MAX_IDENTITY_BYTES)
+    observed = identity(path)
+    regular(path, MAX_IDENTITY_BYTES)
+    return observed["bytes"], observed["sha256"]
 
 
 def bound_file(record: dict) -> Path:

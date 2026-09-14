@@ -432,8 +432,8 @@ mod gpu {
     };
     use windows::core::PCWSTR;
 
-    const BUFFER_WORDS: usize = 8_192;
-    const BUFFER_BYTES: u32 = (BUFFER_WORDS * size_of::<u64>()) as u32;
+    const BUFFER_BYTES: u32 = 64 * 1024;
+    const BUFFER_WORDS: usize = BUFFER_BYTES as usize / size_of::<u64>();
     const MAX_ITEMS: u32 = 256;
 
     pub(super) struct Query {

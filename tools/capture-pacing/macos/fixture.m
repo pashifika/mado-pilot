@@ -352,7 +352,8 @@ static NSImage *load_image(const char *path) {
 
 - (BOOL)geometryValid {
     NSRect backing = [_view convertRectToBacking:_view.bounds];
-    if (_window && _window.backingScaleFactor == 2.0 && backing.origin.x == 0 && backing.origin.y == 0 &&
+    // Flipped views can have a negative backing origin; frame size uses only its extent.
+    if (_window && _window.backingScaleFactor == 2.0 &&
         backing.size.width == _width && backing.size.height == _height &&
         (!_windowId || _window.windowNumber == (NSInteger)_windowId)) return YES;
     [self fail:ErrorGeometry];
