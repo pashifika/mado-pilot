@@ -201,3 +201,81 @@ agreement. Windows cross-compilation checks types and cfg, not native execution.
 Both hosted target jobs run the deterministic example; native pacing qualification
 and the five-case performance comparison remain separate unexecuted gates.
 See [ADR0077](adr/0077-native-capture-pacing-and-completion-cooldown.md).
+
+## Owned native verification apparatus
+
+[`capture-pacing-native.rs`](../crates/mado-pilot/examples/capture-pacing-native.rs)
+and [`tools/capture-pacing/run.py`](../tools/capture-pacing/run.py) are private
+verification tools, not a second application API. They reuse the caller example's
+exact-frame recognition and full-cooldown helper. Hosted CI runs only model-free
+checks and compiles the GDI/AppKit fixtures; it does not launch this campaign.
+
+Prepare new consumer/fixture binaries in separate `.rasen/` build directories.
+Never rebuild a hash-bound candidate in place. The run supervisor never builds,
+downloads, changes permissions, injects input, activates a window or retries.
+Its six fixed cases are `semantic`, `capture-off`, `baseline`, `cooldown-only`,
+`native-only`, and `combined`; `baseline` uses native source-default pacing.
+
+Before approving a run:
+
+- Obtain `python3 -B tools/capture-pacing/run.py --host-snapshot` on that host.
+  This reads OS/build, architecture, CPU, memory, processor count and a hashed
+  machine identity; it performs no discovery, capture or model initialization.
+- Bind source commit/tree and canonical project root, that exact host object,
+  consumer, fixture, CPU runtime, G-004 detector/recognizer, and fixture image.
+  Each file binding has `path`, `bytes`, and `sha256`. Windows uses the verified
+  raw BGRA conversion of G-004 `hud.png`; macOS uses the PNG.
+- Bind `native_inspector` (`dumpbin` or `otool`) and `native_inputs`, including
+  transitive non-OS imports. Use explicit canonical `loader_directories` with
+  only bound DLL/dylib candidates. The supervisor also checks candidates beside
+  the executables/runtime and, on Windows, in the working directory.
+  This is static import and lookup-path evidence, **not actual loaded-image
+  enumeration**.
+- Set authority schema1, purpose `capture-pacing-native`, `approved: true`,
+  target, `attempts: 1`, the exact ordered `cases`, six distinct nonzero
+  16-digit hexadecimal `nonces`, and a nonexistent `.rasen/` `output_root`.
+  Set `native_interval_ns: 100000000`, `cooldown_ns: 250000000`,
+  `warmup_seconds: 2`, `measurement_seconds: 6`, `model_root`,
+  `input_authorized: false`, and `permission_changes_authorized: false`.
+
+Run only the reviewed authority:
+
+```sh
+python3 -B tools/capture-pacing/run.py --authority .rasen/approved-pacing-run.json
+```
+
+The fixture is an owned nonactivating child identified by exact title, PID and
+nonce pixels outside the OCR ROI. Every captured marker bit is checked before
+OCR. Windows requires the fixture's physical geometry to fit the work area;
+macOS requires a 2x main screen. Unsupported geometry or changed foreground
+state fails rather than moving focus or changing display settings.
+macOS probes current Screen Recording access before starting the fixture or
+CPU model; denial is `not-run`, not successful zero-resource measurement.
+
+The native idle/burst oracle authenticates the final publication, releases its
+frame/mapping owners, waits the full cooldown, then validates the **first**
+acquisition against that witness. It cannot drain old frames until a desired
+answer appears. Publication specifically during OCR/cooldown and coalescing
+remain deterministic controlled-source proof. Native static comparison preserves
+the OCR ROI, not the whole frame: the private footer marker changes.
+
+Every comparison initializes the same CPU model, including capture-off. After
+two seconds of warmup, measurement admits work for nominally six seconds and
+finishes the admitted OCR/interpretation/full cooldown. Rates use actual elapsed
+time. Consumer deadlines are 180 seconds for semantic and 120 for comparison,
+with a separate ten-second outer cleanup allowance and a 1MiB output cap.
+Startup is limited to 60 seconds, process peak RSS to 2GiB, fixture peak RSS to
+256MiB, and OCR p95 to five seconds. A padded mapping is limited to 8MiB;
+distinct retained logical layouts to 24MiB in semantic and 8MiB in comparison.
+Sample capacities are 1024 consumer / 2048 process sampler / 4096 fixture, with
+zero sample loss. Capturing comparisons require three committed OCR samples;
+capture-off admits none.
+
+`records.json` retains actual process, consumer, fixture and cleanup evidence.
+`run.json` distinguishes observed failure, incomplete evidence, unexecuted work
+and success. First non-pass stops later cases without fabricating samples.
+Missing optional CPU/GPU/copy metrics withhold those savings claims; missing
+hard-gate memory evidence cannot establish qualification. macOS callback counts
+cover closed-session lifetimes, not just the measurement window. Fixture draw
+intervals are application-requested work, not display FPS or general game
+performance. Source, host and bound native inputs are checked again after the run.

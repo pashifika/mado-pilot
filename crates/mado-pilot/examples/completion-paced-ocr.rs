@@ -19,16 +19,19 @@ use std::path::PathBuf;
 use std::time::Duration;
 
 use mado_pilot::{
-    CapturePacingRequest, CoordinateSpace, DefaultOcrConfig, Engine, Error, FrameRequest,
-    FrameStamp, NativeEngineRequest, OcrBackendDescriptor, OcrRegion, OcrRequest, OcrResult,
-    OpenRequest, OperationContext, Result, Session, Status, TargetDescription, TargetId,
-    TargetKind,
+    CapturePacingRequest, DefaultOcrConfig, Engine, Error, FrameRequest, FrameStamp,
+    NativeEngineRequest, OcrBackendDescriptor, OcrRegion, OcrResult, OpenRequest, OperationContext,
+    Result, Session, Status, TargetDescription, TargetId, TargetKind,
 };
 
+#[path = "support/completion_cooldown.rs"]
+mod completion_cooldown;
 #[path = "support/completion_paced_ocr.rs"]
 mod controlled;
 
-const WAIT_SLICE: Duration = Duration::from_millis(2);
+use completion_cooldown::WAIT_SLICE;
+use completion_cooldown::{checkpoint, cooldown, recognize_exact};
+
 const CLOSE_TIMEOUT: Duration = Duration::from_secs(5);
 const USAGE: &str = "usage: completion-paced-ocr --controlled-smoke | --native <window|display> <exact-target-name> <model-root> <runtime-file> <source-default|required:MS|preferred:MS> <cooldown-ms> <operation-ms> <exact-stop-text>";
 
@@ -69,14 +72,7 @@ fn consume(
         checkpoint(operation)?;
         let (stamp, decision) = {
             let frame = session.acquire_frame(&request, operation)?;
-            let result = session.recognize(OcrRequest::new(
-                &frame,
-                backend.backend_identity(),
-                backend.model_identity(),
-                policy.region,
-                CoordinateSpace::CapturePixels,
-                operation,
-            ))?;
+            let result = recognize_exact(session, backend, &frame, policy.region, operation)?;
             checkpoint(operation)?;
             let decision = interpret(&result, operation)?;
             checkpoint(operation)?;
@@ -95,39 +91,6 @@ fn consume(
         cooldown(policy.cooldown, operation, &mut sleep)?;
         // No capture-time fence: a publication during OCR or cooldown is eligible.
         request = FrameRequest::newer_than(stamp);
-    }
-}
-
-fn cooldown(
-    interval: Duration,
-    operation: &OperationContext,
-    sleep: &mut impl FnMut(Duration),
-) -> Result<()> {
-    checkpoint(operation)?;
-    let started = operation.now();
-    loop {
-        checkpoint(operation)?;
-        // Elapsed arithmetic cannot overflow near the end of the clock domain.
-        let elapsed = operation.now().saturating_duration_since(started);
-        if elapsed >= interval {
-            return checkpoint(operation);
-        }
-        let remaining = interval.saturating_sub(elapsed);
-        let slice = WAIT_SLICE
-            .min(remaining)
-            .min(operation.remaining().unwrap_or(remaining));
-        if !slice.is_zero() {
-            sleep(slice);
-        }
-        // A zero deadline remainder reaches the interruption checkpoint, not a
-        // zero-duration sleep. One absolute deadline is never replenished here.
-    }
-}
-
-fn checkpoint(operation: &OperationContext) -> Result<()> {
-    match operation.interruption() {
-        Some(interruption) => Err(interruption.into()),
-        None => Ok(()),
     }
 }
 
