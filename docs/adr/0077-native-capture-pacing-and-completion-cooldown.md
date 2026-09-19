@@ -173,3 +173,24 @@ count and withhold `complete-native-status-history`. Missing rows, malformed
 overflow/count combinations, missing sessions or failed teardown still fail.
 This changes no native buffer, numerical workload budget or producer behavior.
 Prior failed run records remain unchanged; a new reporting authority is required.
+
+## Accepted native qualification
+
+The separately authorized Windows protocol-3 and macOS protocol-4 cohorts passed
+the semantic case and all five pre-bound comparisons. Native binaries on both
+hosts were built from `2db68d000c595ed7deb37153424579ab23b363f9`; the macOS
+supervisor/reporting source is `01adac8387e80e0471200ec2ea93377491093fd9`.
+Later reporting fixes changed no native executable input or numerical budget.
+All child exits, cleanup and pre/post bindings passed.
+
+The [usage guide](../capture-pacing.md#accepted-owned-workload-qualification)
+records exact hosts, measurements, artifact digests and unavailable scope.
+Combined/baseline CPU ratios were 0.7145 on Windows and 0.6558 on macOS; the
+Windows callback-copy ratio was 0.1686. Native-only pacing did not substantially
+reduce CPU in this OCR-heavy workload. These observations support keeping native
+capture pacing separate from completion cooldown, not a proportional-saving promise.
+
+Windows target closure reported target loss; macOS exercised the bounded
+quiescent-deadline outcome. No GPU-device, macOS copy-byte, complete rolling-history
+or compositor-FPS claim follows. The initial verification snapshot above remains
+historical; previous failures, protocols, support floors and budgets are unchanged.

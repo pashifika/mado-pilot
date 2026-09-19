@@ -4,9 +4,9 @@ Rust callers can select an engine default, override it per session, and inspect
 what native configuration was established. The separate caller-side OCR example
 waits a full cooldown after recognition and interpretation finish.
 
-Both native adapters and the caller flow are implemented. Deterministic checks,
-configuration seams and compilation are not native cadence or performance
-qualification. The new both-host capture/model comparison remains unexecuted.
+Both native adapters and the caller flow are implemented. Separately authorized
+owned-fixture native semantics and all five comparison cases passed on Windows
+and Apple Silicon; see [the scoped results](#accepted-owned-workload-qualification).
 Existing OS support, deployment floors and historical qualification are unchanged.
 
 ## Engine and session configuration
@@ -198,8 +198,8 @@ Local deterministic checks cover precedence/report invariants, replay/controlled
 behavior, completion timing/freshness/ownership/interruption, and the actual
 call-local macOS configuration/start/resize/close seam plus C/Rust layout
 agreement. Windows cross-compilation checks types and cfg, not native execution.
-Both hosted target jobs run the deterministic example; native pacing qualification
-and the five-case performance comparison remain separate incomplete gates.
+Both hosted target jobs run the deterministic example. Native pacing qualification
+and the five-case comparison were exercised separately on the two bound hosts below.
 See [ADR0077](adr/0077-native-capture-pacing-and-completion-cooldown.md).
 
 ## Owned native verification apparatus
@@ -305,3 +305,73 @@ Native macOS status diagnostics are a rolling 16-transition tail. Truncation is
 reported and withholds a complete-status-history claim; it does not invalidate
 the independently retained closed-session counters and ownership fences.
 Missing session/retained-transition records or failed teardown still fail.
+
+## Accepted owned-workload qualification
+
+Both hosts passed the semantic case and `capture-off`, `baseline` (source default),
+`cooldown-only`, `native-only` and `combined`. Every child exited successfully,
+cleanup passed, and pre/post source and native-input bindings matched. These are
+single, predeclared owned-fixture cohorts, not general application performance
+guarantees or new OS-floor qualification.
+
+- Windows: Windows 11 Pro 25H2, build `26200.9445`, Intel Core i7-12700KF;
+  native binaries and supervisor at `2db68d000c595ed7deb37153424579ab23b363f9`,
+  protocol revision 3.
+- macOS: macOS `26.6.2` (`25G83`), Apple M1 Pro, 2x display; native binaries at
+  the same `2db68d0` source, supervisor/reporting at
+  `01adac8387e80e0471200ec2ea93377491093fd9`, protocol revision 4.
+  The later source changes only reporting/tests/docs, not native executable inputs.
+- Each comparison initializes the same CPU G004 models, including capture-off,
+  then uses a two-second warmup and nominal six-second measurement. Admitted OCR
+  and its full cooldown finish before measurement ends; rates use actual elapsed
+  time. Native pacing is 100 ms; completion cooldown is 250 ms.
+
+Observed consumer-process measurements follow. CPU cores means process CPU time
+divided by elapsed time, not whole-host utilization. RSS is the process high-water
+mark; OCR p95 uses that case's bounded samples. Copy rate is Windows callback-copy
+bytes over coherent measurement intervals, not caller mapping or macOS native work.
+
+| Host | Case | CPU cores | Peak RSS MiB | OCR/s | OCR p95 ms | Native copy MiB/s |
+|---|---|---:|---:|---:|---:|---:|
+| Windows | capture-off | 0.0286 | 104.68 | 0 | — | — |
+| Windows | baseline | 1.0629 | 254.54 | 1.417 | 724.622 | 124.231 |
+| Windows | cooldown-only | 0.7756 | 254.04 | 1.043 | 709.617 | 124.514 |
+| Windows | native-only | 1.0565 | 253.59 | 1.428 | 711.985 | 20.757 |
+| Windows | combined | 0.7595 | 254.05 | 1.037 | 723.182 | 20.943 |
+| macOS | capture-off | 0.0029 | 114.39 | 0 | — | — |
+| macOS | baseline | 1.0161 | 366.52 | 2.032 | 494.077 | — |
+| macOS | cooldown-only | 0.6839 | 360.02 | 1.342 | 497.526 | — |
+| macOS | native-only | 1.0049 | 366.95 | 2.034 | 494.145 | — |
+| macOS | combined | 0.6664 | 364.28 | 1.337 | 502.000 | — |
+
+Relative to each host's baseline, combined CPU usage was 0.7145x on Windows and
+0.6558x on macOS; Windows callback-copy rate was 0.1686x. Native-only pacing barely
+changed CPU usage in this OCR-heavy workload. Cooldown reduced OCR admissions:
+it does not make recognition faster or preserve every transient state.
+
+The native semantic case covered applied/default/preferred reports, final-update
+then idle, newest owned publication, resize with retained mapping, interruption
+and close. Windows target closure reported `target-lost`; macOS reached the bounded
+`quiescent-deadline`, not a claimed `TargetLost` notification. Resize proof uses
+the bounded repaints described above. During-OCR coalescing timing remains separately
+proved by deterministic tests, not inferred from these native observations.
+
+Unavailable or narrower measurements remain explicit:
+
+- macOS native copy bytes and GPU measurements are unavailable. ScreenCaptureKit
+  callback totals cover closed-session lifetime, including warmup/teardown, not
+  the measurement interval. A rolling status tail is not complete transition history.
+- Windows GPU counters describe the consumer's own GPU engines, not device-wide
+  utilization or instantaneous peaks. Neither host establishes continuous private/
+  footprint peaks or ideal 100 ms sampling coverage.
+- Fixture render intervals/durations describe application drawing requests, not
+  compositor/display FPS or a general game frame-time improvement. Render-interval
+  p95 ranged from 16.218–16.572 ms on Windows and 19.348–20.880 ms on macOS.
+- Native dependencies have pre/post static import/lookup bindings; a complete
+  runtime loaded-image inventory was not observed.
+
+The immutable raw result archives are retained with the Change's private evidence:
+Windows SHA-256 `a375ef9c77b7e6fe82309d32b45d6a9efbd315d2b35acd445dcb009d4463e025`;
+macOS SHA-256 `91708052834e432dae32f9126f1cc0d66c16231c9f415165677f8f5cc7a60510`.
+Earlier failed attempts, protocol files and qualified binaries remain unchanged.
+No input injection, activation or permission/settings changes were performed.

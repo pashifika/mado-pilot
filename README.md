@@ -63,7 +63,8 @@ The new [OCR text watcher example](crates/mado-pilot/examples/ocr-text-watch.rs)
 To configure native capture intervals and wait a full cooldown after OCR and caller
 interpretation, use [capture pacing](docs/capture-pacing.md). Its model-free
 `completion-paced-ocr --controlled-smoke` example runs without capture or input.
-Native cadence/performance qualification remains separate from these deterministic checks.
+Its separately authorized Windows/macOS owned-workload results are documented with
+metric limits; they do not change deployment floors or promise general application performance.
 
 ## API and integration
 

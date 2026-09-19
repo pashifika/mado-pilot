@@ -1035,8 +1035,8 @@ responsibilities a later phase takes on.
 | macOS native capture ownership policy | Implemented for the production Adapter's fixed-depth producer queue, finite eight-buffer detached budget, off-queue reconfiguration, callback fence, reference-counted native session lifetime, bounded source-geometry history, and idempotent teardown. Permissioned AddressSanitizer ownership scenarios remain part of the contributing sequence. [ADR 0021](adr/0021-invalidate-phase-2-native-performance-evidence.md) keeps the former input-stimulus capture/transition profiles historical, [ADR 0029](adr/0029-macos-process-directed-input.md) accepts the separate controlled-stimulus lineage, and [ADR 0030](adr/0030-macos-production-capture-performance-budgets.md) accepts the final production capture/transition matrix |
 | macOS input route and focus authority | Decided in [ADR 0016](adr/0016-macos-input-delivery-surface-and-focus-authority.md), refined by [ADR 0023](adr/0023-input-submission-observation-and-abi-1-2.md), and extended by [ADR 0029](adr/0029-macos-process-directed-input.md): separate `System` and explicit owning-process `ProcessDirected` routes with no exact-window pair on any macOS target; the public `CGPreflightPostEventAccess` decision is re-read before every irreversible event with the legacy Accessibility observation retained as a paired qualification-only fact; `System` alone uses application activation and bounded public Accessibility read-back. Process-directed preflight retains mutable authority for delay-only or fallback-eligible routes, while a terminal native-event route defers duplicate mutable window authority and source-geometry comparison to one final native commit. Cleanup still revalidates the original process lifetime without a window inventory read. Independent `single`, exact two-display non-mirrored `same-scale`, and `mixed-scale` matrices pass; release publication is qualified for all fourteen controlled pairs |
 | Native window and display capture | Implemented on both targets, and reachable from the public composition root through the target-specific facade constructors |
-| Engine/session native capture pacing | Implemented in Rust with immutable common/target defaults, atomic session overrides, native WGC/ScreenCaptureKit configuration and truthful session reports. Public C/C++ defaults and ABI layouts are unchanged. New native cadence/performance qualification remains unexecuted; see [capture pacing](capture-pacing.md) and ADR0077 |
-| Caller-owned completion-paced OCR | Complete Rust example uses one absolute operation authority, exact-frame OCR, full post-interpretation cooldown and newest eligible live observations. Deterministic timing/freshness/ownership tests and model-free smoke pass; this adds no public scheduler, watcher semantics or input |
+| Engine/session native capture pacing | Implemented in Rust with immutable common/target defaults, atomic session overrides, native WGC/ScreenCaptureKit configuration and truthful session reports. Public C/C++ defaults and ABI layouts are unchanged. Both-host owned-workload native semantics and the five-case comparison pass; see the bounded evidence and unavailable metric scopes in [capture pacing](capture-pacing.md) and ADR0077 |
+| Caller-owned completion-paced OCR | Complete Rust example uses one absolute operation authority, exact-frame OCR, full post-interpretation cooldown and newest eligible live observations. Deterministic timing/freshness/ownership tests, model-free smoke and both-host owned-fixture native checks pass; this adds no public scheduler, watcher semantics or input |
 | Template sources, prepared templates, requests, results, backend contract | Implemented in `mado-pilot-vision` |
 | Deterministic result ordering, suppression, and limiting | Implemented in `mado-pilot-vision` |
 | Closed change-detection policy and recorded-sequence evaluator | Implemented in `mado-pilot-vision` and `mado-pilot-testkit`. ADR 0050 selects exact RGBA for compatible mapped regions, keeps analysis-always as fail-safe, and limits unchanged authority to routine-analysis admission. Both hosted release targets reproduced canonical report v2 and independent review is clean; the Rust template watcher consumes this descriptor without giving unchanged transitions stability authority |
@@ -1208,10 +1208,11 @@ bounded cleanup retains both work and cleanup failures.
 
 [ADR0077](adr/0077-native-capture-pacing-and-completion-cooldown.md) records the
 narrow facade exception and compatibility boundary. [The usage guide](capture-pacing.md)
-records precise conversions, ownership, examples and unexecuted native gates.
-Configured intervals are not observed FPS or performance guarantees. Historical
-support decisions and budgets are unchanged; the five-case native/model comparison
-requires separate explicit authority and pre-bound workloads/metrics/budgets.
+records precise conversions, ownership, examples and the accepted both-host owned
+workload. Configured intervals are not observed FPS or performance guarantees.
+The separately authorized, pre-bound five-case comparison passed its applicable
+gates; unavailable metrics and retained-history limits remain explicit. Historical
+support decisions, deployment floors and budgets are unchanged.
 
 ### The opaque frame-storage seam
 
