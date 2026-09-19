@@ -326,7 +326,7 @@ explicitly enumerated members. The root is not a product package.
 ```text
 mado-pilot/
 ├── Cargo.toml                  # virtual workspace manifest
-├── Cargo.lock                  # the single committed lockfile
+├── Cargo.lock                  # the committed product-workspace lockfile
 ├── rust-toolchain.toml         # pinned toolchain
 ├── rustfmt.toml                # formatting policy
 ├── deny.toml                   # dependency policy
@@ -370,6 +370,8 @@ mado-pilot/
 │   ├── adr/
 │   ├── benchmarks/
 │   └── evidence/               # measurements a resolved gate rests on
+├── examples/
+│   └── rust-input-workflow/     # independent Cargo consumer, not a workspace member
 ├── fixtures/                   # tracked test and evidence data
 └── tools/
     └── dependency-check/       # named maintenance tool
@@ -382,6 +384,18 @@ what it binds, supports, automates, or adapts. There is no `utils` layer, and
 
 `tools/` holds named executable maintenance programs only. It must never become a
 library dependency or a home for miscellaneous code.
+
+`examples/rust-input-workflow/` is a complete independent Cargo application with
+its own workspace boundary, lockfile, Rust toolchain and deployment configuration.
+It depends directly only on the public facade for product behavior. Its
+[external-build procedure](rust-input-workflow.md) runs from a copy physically
+outside this checkout, with fresh Cargo roots and existing native setup.
+The caller composes a CPU bounded-detector text query, one explicitly authorized
+input sequence, its immutable receipt and a strictly-newer-frame postcondition.
+Capture and input require separate opt-in. No product API, automatic library
+action, fixture protocol, runtime crate, C ABI or C++ extension is introduced.
+Build/model-free evidence does not qualify real application consumption,
+causation, native timing, packaging or an upgraded OS.
 
 `fixtures/` holds test and evidence data that outlives the change that created
 it, grouped by the subject it exercises. Data belongs here rather than beside one
