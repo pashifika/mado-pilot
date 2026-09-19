@@ -272,6 +272,25 @@ jobs:
           call "%VSROOT%\VC\Auxiliary\Build\vcvars64.bat" || exit /b 1
           python tools/setup-native.py --opencv-root C:\opencv --libclang-path "%MADO_SETUP_LIBCLANG_PATH%" --github-env "%GITHUB_ENV%" --github-path "%GITHUB_PATH%" || exit /b 1
 
+      # This runs before model provisioning and invokes only --help/--smoke.
+      # Its Cargo cwd, home, target root and lockfile belong to an external copy.
+      - name: Prove the independent Rust consumer
+        shell: cmd
+        run: |
+          python tools/check-external-rust-consumer.py --work-root "%RUNNER_TEMP%\external-rust-consumer-${{ github.run_id }}-${{ github.run_attempt }}" --opencv-root C:\opencv --libclang-path "%MADO_SETUP_LIBCLANG_PATH%" || exit /b 1
+
+      - name: Retain independent Rust consumer evidence
+        if: ${{ always() }}
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        with:
+          name: external-rust-consumer-windows-${{ github.run_id }}-${{ github.run_attempt }}
+          path: |
+            ${{ runner.temp }}/external-rust-consumer-${{ github.run_id }}-${{ github.run_attempt }}/evidence
+            ${{ runner.temp }}/external-rust-consumer-${{ github.run_id }}-${{ github.run_attempt }}/consumer
+          include-hidden-files: true
+          if-no-files-found: warn
+          retention-days: 14
+
       - name: Provision the reviewed ONNX runtime and G-004 models
         shell: bash
         run: |
@@ -566,6 +585,28 @@ jobs:
         run: |
           set -euo pipefail
           python3 tools/setup-native.py --github-env "${GITHUB_ENV}" --github-path "${GITHUB_PATH}"
+
+      # This runs before model provisioning and invokes only --help/--smoke.
+      # The copied consumer owns and verifies its macOS deployment floor.
+      - name: Prove the independent Rust consumer
+        shell: bash
+        run: |
+          set -euo pipefail
+          python3 tools/check-external-rust-consumer.py \
+            --work-root "${RUNNER_TEMP}/external-rust-consumer-${{ github.run_id }}-${{ github.run_attempt }}" \
+            --opencv-root "$(brew --prefix opencv@4)" --libclang-path "${LIBCLANG_PATH}"
+
+      - name: Retain independent Rust consumer evidence
+        if: ${{ always() }}
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        with:
+          name: external-rust-consumer-macos-${{ github.run_id }}-${{ github.run_attempt }}
+          path: |
+            ${{ runner.temp }}/external-rust-consumer-${{ github.run_id }}-${{ github.run_attempt }}/evidence
+            ${{ runner.temp }}/external-rust-consumer-${{ github.run_id }}-${{ github.run_attempt }}/consumer
+          include-hidden-files: true
+          if-no-files-found: warn
+          retention-days: 14
 
       - name: Provision the reviewed ONNX runtime and G-004 models
         shell: bash

@@ -66,6 +66,13 @@ interpretation, use [capture pacing](docs/capture-pacing.md). Its model-free
 Its separately authorized Windows/macOS owned-workload results are documented with
 metric limits; they do not change deployment floors or promise general application performance.
 
+For an independent Rust application, copy the
+[standalone input workflow](examples/rust-input-workflow/) and follow its
+[external build and usage guide](docs/rust-input-workflow.md). It composes an OCR
+wait, one explicitly authorized action, a receipt, and newer-frame postcondition
+observation. Model-free smoke sends no input; real application use requires
+separate target/action authorization.
+
 ## API and integration
 
 | Language | Entry point and reference |

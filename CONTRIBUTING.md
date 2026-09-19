@@ -15,6 +15,12 @@ member has its own lockfile. Run verification with `--locked` so that a check
 fails instead of silently changing dependency resolution, and commit the lockfile
 change in the same pull request whenever a manifest requirement changes.
 
+The independent [`examples/rust-input-workflow`](examples/rust-input-workflow/)
+application is not a workspace member. It owns its lockfile, pinned toolchain
+and deployment configuration. The [external build procedure](docs/rust-input-workflow.md)
+copies it outside the checkout and verifies it from that directory; workspace
+checks alone do not cover this consumer.
+
 ## Native development prerequisites
 
 Developers acquire and maintain the native prerequisites; this source-only
