@@ -280,6 +280,10 @@ def prove(args: argparse.Namespace, checkout: Path, work: Path) -> int:
             checkout / "tools/native-release-profile/_windows_process.py",
             checkout / "tools/native-release-profile/_process_group.py",
         )}
+        compiler = Path(command("rustc-path", [str(rustup), "which", "--toolchain", TOOLCHAIN, "rustc"],
+                                baseline).strip()).resolve(strict=True)
+        # Cargo subprocesses also need the toolchain when rustup proxies are absent.
+        baseline["PATH"] = os.pathsep.join((str(compiler.parent), baseline["PATH"]))
         rustc = command("rustc-version", [str(rustup), "run", TOOLCHAIN, "rustc", "-vV"], baseline)
         command("cargo-version", [str(rustup), "run", TOOLCHAIN, "cargo", "-V"], baseline)
         native = {("darwin", "arm64"): "aarch64-apple-darwin",
