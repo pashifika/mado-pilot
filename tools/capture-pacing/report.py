@@ -179,7 +179,7 @@ def _report_schema(report: dict) -> None:
         _keys(sample, SAMPLE_KEYS, "sample-schema-invalid")
         for key in SAMPLE_KEYS:
             _uint(sample[key], "sample-value-invalid", optional=key in ("frame_age_ns", "cooldown_gap_ns"))
-        _require(sample["sequence"] > 0 and sample["stream_id"] > 0, "sample-identity-invalid")
+        _require(sample["stream_id"] > 0, "sample-identity-invalid")
     _require(metrics["ocr_committed"] <= len(samples) <= metrics["ocr_admissions"],
              "ocr-observation-count-mismatch")
 

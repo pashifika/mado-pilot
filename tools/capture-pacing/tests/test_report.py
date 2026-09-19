@@ -264,6 +264,16 @@ class CaseValidationTests(unittest.TestCase):
         value["samples"][-1]["sequence"] = 99
         self.assertIn("publication-stamp-order", reporter.analyze_case(value, fixture(), "")["failures"])
 
+    def test_zero_based_frame_sequences_and_epoch_restart_remain_ordered(self):
+        value = consumer("semantic")
+        for sample, epoch, sequence in zip(value["samples"], (0, 0, 1), (0, 1, 0)):
+            sample.update(epoch=epoch, sequence=sequence, geometry_revision=epoch)
+        result = reporter.analyze_case(value, fixture(), "")
+        self.assertEqual(result["status"], "pass")
+        self.assertEqual(result["metrics"]["publication_sequence_gaps"], 0)
+        value["samples"][1]["sequence"] = 0
+        self.assertIn("publication-stamp-order", reporter.analyze_case(value, fixture(), "")["failures"])
+
     def test_semantic_requires_both_required_reports_and_validates_each(self):
         missing = consumer("semantic")
         missing["pacing"].pop()
