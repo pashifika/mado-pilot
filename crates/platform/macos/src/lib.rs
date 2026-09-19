@@ -101,4 +101,4 @@ mod storage;
 #[cfg(target_os = "macos")]
 pub use permission::MacosPermissionProbe;
 #[cfg(target_os = "macos")]
-pub use provider::{MacosCaptureProvider, PROVIDER};
+pub use provider::{MacosCaptureProvider, MacosConfig, PROVIDER};

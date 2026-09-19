@@ -98,6 +98,13 @@ jobs:
         shell: bash
         run: python3 -m unittest discover -s tools/ocr-text-watch/tests -v
 
+      - name: Test capture pacing evidence without native execution
+        shell: bash
+        run: |
+          mkdir -p .rasen/ci-capture-pacing/tmp
+          TMPDIR="${PWD}/.rasen/ci-capture-pacing/tmp" PYTHONDONTWRITEBYTECODE=1 \
+            python3 -B -m unittest discover -s tools/capture-pacing/tests -v
+
       - name: Install the pinned toolchain
         shell: bash
         run: |
@@ -336,6 +343,10 @@ jobs:
         shell: bash
         run: cargo test --locked --workspace --all-targets
 
+      - name: Exercise completion-paced OCR without capture or models
+        shell: bash
+        run: cargo run --locked --package mado-pilot --example completion-paced-ocr -- --controlled-smoke
+
       - name: Prove bounded OCR literal normalization
         shell: bash
         run: cargo run --locked --release --package mado-pilot-ocr --example ocr-normalization-bound --target-dir target/ocr-normalization-proof
@@ -355,6 +366,13 @@ jobs:
         run: |
           if not exist "%RUNNER_TEMP%\ocr-text-watch-fixture" mkdir "%RUNNER_TEMP%\ocr-text-watch-fixture"
           cl.exe /nologo /std:c++17 /EHsc /W4 /WX /DUNICODE /D_UNICODE tools\ocr-text-watch\windows\fixture.cpp "/Fe:%RUNNER_TEMP%\ocr-text-watch-fixture\fixture.exe" "/Fo:%RUNNER_TEMP%\ocr-text-watch-fixture\fixture.obj" /link user32.lib gdi32.lib dwmapi.lib /SUBSYSTEM:CONSOLE
+          if errorlevel 1 exit /b 1
+
+      - name: Compile the owned pacing fixture without launching it
+        shell: cmd
+        run: |
+          if not exist ".rasen\ci-capture-pacing" mkdir ".rasen\ci-capture-pacing"
+          cl.exe /nologo /std:c++17 /EHsc /W4 /WX tools\capture-pacing\windows\fixture.cpp "/Fe:.rasen\ci-capture-pacing\fixture.exe" "/Fo:.rasen\ci-capture-pacing\fixture.obj" /link user32.lib gdi32.lib dwmapi.lib advapi32.lib psapi.lib /SUBSYSTEM:CONSOLE
           if errorlevel 1 exit /b 1
 
       # Lane A owns deterministic scheduler/query behavior. Cargo's benchmark
@@ -619,6 +637,10 @@ jobs:
         shell: bash
         run: cargo test --locked --workspace --all-targets
 
+      - name: Exercise completion-paced OCR without capture or models
+        shell: bash
+        run: cargo run --locked --package mado-pilot --example completion-paced-ocr -- --controlled-smoke
+
       - name: Prove bounded OCR literal normalization
         shell: bash
         run: cargo run --locked --release --package mado-pilot-ocr --example ocr-normalization-bound --target-dir target/ocr-normalization-proof
@@ -641,6 +663,16 @@ jobs:
             -framework AppKit -framework QuartzCore \
             tools/ocr-text-watch/macos/fixture.m \
             -o "${RUNNER_TEMP}/ocr-owned-fixture"
+
+      - name: Compile the owned pacing fixture without launching it
+        shell: bash
+        run: |
+          mkdir -p .rasen/ci-capture-pacing
+          xcrun clang -arch arm64 -mmacosx-version-min=26.5.2 \
+            -fobjc-arc -fobjc-arc-exceptions -fblocks -Wall -Wextra -Werror \
+            -framework AppKit -framework QuartzCore \
+            tools/capture-pacing/macos/fixture.m \
+            -o .rasen/ci-capture-pacing/fixture
 
       # Hosted macOS has no Screen Recording grant, so this executes only Lane A.
       # The approved interactive host runs Lane B separately; hosted CI still

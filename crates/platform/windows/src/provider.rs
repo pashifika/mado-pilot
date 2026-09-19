@@ -8,7 +8,8 @@ use std::thread;
 use std::time::Duration;
 
 use mado_pilot_capture::{
-    CaptureFault, CaptureProvider, CaptureSession, OpenRequest, PixelFormat, TargetDescription,
+    CaptureFault, CaptureProvider, CaptureSession, OpenRequest, PixelFormat, ResolvedCapturePacing,
+    TargetDescription,
 };
 use mado_pilot_core::{IdentityIssuer, Operation, OperationContext, ProviderId, Result, TargetId};
 use mado_pilot_input::{
@@ -26,6 +27,7 @@ use crate::availability::ensure_capture_available;
 use crate::discovery::{Candidate, CaptureItem, NativeKey, TargetMetadata, inventory};
 use crate::input::{GeometryLedger, WindowsInputController};
 use crate::native::{NativeSession, NativeSessionSource, native_target_fault};
+use crate::pacing::interval_ticks;
 use crate::storage::validate_surface;
 use crate::window_authority::{RetainedWindowAuthority, WindowAuthorityStatus};
 
@@ -39,6 +41,7 @@ pub const PROVIDER: ProviderId = ProviderId::new("windows");
 /// making an unresolved minimum-Windows claim.
 pub struct WindowsCaptureProvider {
     issuer: Arc<IdentityIssuer>,
+    capture_pacing: ResolvedCapturePacing,
     discovery_gate: Mutex<()>,
     registry: Mutex<Registry>,
 }
@@ -76,9 +79,42 @@ impl WindowsCaptureProvider {
     pub fn new(issuer: Arc<IdentityIssuer>) -> Self {
         Self {
             issuer,
+            capture_pacing: ResolvedCapturePacing::source_default(),
             discovery_gate: Mutex::new(()),
             registry: Mutex::new(Registry::default()),
         }
+    }
+
+    /// Creates a provider with an immutable, already-resolved capture default.
+    ///
+    /// Only the selected interval's representation is checked. Construction
+    /// performs no discovery, capture allocation, or native capability probe.
+    pub fn with_capture_pacing(
+        issuer: Arc<IdentityIssuer>,
+        pacing: ResolvedCapturePacing,
+    ) -> Result<Self> {
+        Self::validate_capture_pacing(pacing)?;
+        Ok(Self {
+            capture_pacing: pacing,
+            ..Self::new(issuer)
+        })
+    }
+
+    /// Checks selected Windows interval representability without native work.
+    ///
+    /// Both required and preferred values must fit positive signed 64-bit
+    /// 100-nanosecond ticks after rounding upward.
+    pub fn validate_capture_pacing(pacing: ResolvedCapturePacing) -> Result<()> {
+        if let Some(interval) = pacing.interval() {
+            interval_ticks(interval)?;
+        }
+        Ok(())
+    }
+
+    fn session_pacing(&self, request: &OpenRequest) -> Result<ResolvedCapturePacing> {
+        let pacing = request.capture_pacing().resolve(self.capture_pacing);
+        Self::validate_capture_pacing(pacing)?;
+        Ok(pacing)
     }
 
     #[cfg(feature = "benchmark-instrumentation")]
@@ -242,6 +278,7 @@ impl fmt::Debug for WindowsCaptureProvider {
         formatter
             .debug_struct("WindowsCaptureProvider")
             .field("engine", &self.issuer.engine())
+            .field("capture_pacing", &self.capture_pacing)
             .field("known_targets", &registry.records.len())
             .field("retained_generations", &registry.generations.len())
             .finish()
@@ -266,6 +303,7 @@ impl CaptureProvider for WindowsCaptureProvider {
     ) -> Result<Arc<dyn CaptureSession>> {
         let mut attempt = Operation::admit(operation)?;
         CaptureProvider::accepts_target(self, target, self.issuer.engine())?;
+        let pacing = self.session_pacing(request)?;
         ensure_capture_available()?;
         if let Some(required) = request.required_format()
             && required != PixelFormat::Bgra8
@@ -293,6 +331,7 @@ impl CaptureProvider for WindowsCaptureProvider {
                 item,
                 Arc::clone(&record.geometry),
             ),
+            pacing,
             &mut attempt,
         )?;
         Ok(attempt.commit(session as Arc<dyn CaptureSession>)?)
@@ -455,12 +494,15 @@ mod tests {
     use std::thread;
     use std::time::Duration;
 
-    use mado_pilot_capture::{CaptureProvider, OpenRequest, PixelFormat};
+    use mado_pilot_capture::{
+        CapturePacingRequest, CaptureProvider, OpenRequest, PixelFormat, ResolvedCapturePacing,
+    };
     use mado_pilot_core::{
-        Clock, IdentityIssuer, MonotonicInstant, OperationContext, PixelExtent, Scale, Status,
-        TargetPlacement,
+        CancellationToken, Clock, IdentityIssuer, MonotonicInstant, OperationContext, PixelExtent,
+        Scale, Status, TargetPlacement,
     };
 
+    use crate::WindowsConfig;
     use crate::discovery::{Candidate, CaptureItem, NativeKey, TargetMetadata};
 
     use super::{RETAINED_DISCOVERY_GENERATIONS, WindowsCaptureProvider};
@@ -509,6 +551,132 @@ mod tests {
                 MonotonicInstant::ORIGIN
             }
         }
+    }
+
+    #[test]
+    fn windows_configuration_validates_only_the_selected_layer() {
+        let source = ResolvedCapturePacing::source_default();
+        let common = CapturePacingRequest::preferred(Duration::MAX)
+            .expect("positive common request")
+            .resolve(source);
+        let selected = CapturePacingRequest::required(Duration::from_millis(200))
+            .expect("positive Windows request");
+        let config = WindowsConfig::new().with_capture_pacing(selected);
+        let provider = WindowsCaptureProvider::with_capture_pacing(
+            Arc::new(IdentityIssuer::new()),
+            config.capture_pacing().resolve(common),
+        )
+        .expect("overridden common overflow is irrelevant");
+        assert_eq!(
+            provider
+                .session_pacing(&OpenRequest::new())
+                .expect("inherit"),
+            selected.resolve(source)
+        );
+
+        const RESET: WindowsConfig =
+            WindowsConfig::new().with_capture_pacing(CapturePacingRequest::source_default());
+        let reset = WindowsCaptureProvider::with_capture_pacing(
+            Arc::new(IdentityIssuer::new()),
+            RESET.capture_pacing().resolve(common),
+        )
+        .expect("source default bypasses an unrepresentable common interval");
+        assert_eq!(
+            reset
+                .session_pacing(&OpenRequest::new())
+                .expect("reset session"),
+            source
+        );
+        let error = WindowsCaptureProvider::with_capture_pacing(
+            Arc::new(IdentityIssuer::new()),
+            WindowsConfig::new().capture_pacing().resolve(common),
+        )
+        .expect_err("replacing the OS block with inheritance exposes common overflow");
+        assert_eq!(error.status(), Status::InvalidArgument);
+    }
+
+    #[test]
+    fn provider_defaults_and_session_overrides_remain_independent() {
+        let source = ResolvedCapturePacing::source_default();
+        let required = CapturePacingRequest::required(Duration::from_millis(200))
+            .expect("required")
+            .resolve(source);
+        let preferred = CapturePacingRequest::preferred(Duration::from_millis(70))
+            .expect("preferred")
+            .resolve(source);
+        let first =
+            WindowsCaptureProvider::with_capture_pacing(Arc::new(IdentityIssuer::new()), required)
+                .expect("first provider");
+        let second =
+            WindowsCaptureProvider::with_capture_pacing(Arc::new(IdentityIssuer::new()), preferred)
+                .expect("second provider");
+        let override_request =
+            CapturePacingRequest::preferred(Duration::from_millis(60)).expect("session preference");
+        let request = OpenRequest::new().with_capture_pacing(override_request);
+        assert_eq!(
+            first.session_pacing(&request).expect("session override"),
+            override_request.resolve(source)
+        );
+        assert_eq!(
+            first
+                .session_pacing(&request.with_capture_pacing(CapturePacingRequest::inherit()))
+                .expect("cleared override"),
+            required
+        );
+        assert_eq!(
+            first
+                .session_pacing(
+                    &OpenRequest::new().with_capture_pacing(CapturePacingRequest::source_default())
+                )
+                .expect("explicit reset"),
+            source
+        );
+        assert_eq!(
+            first
+                .session_pacing(&OpenRequest::new())
+                .expect("first unchanged"),
+            required
+        );
+        assert_eq!(
+            second
+                .session_pacing(&OpenRequest::new())
+                .expect("second unchanged"),
+            preferred
+        );
+        let legacy = WindowsCaptureProvider::new(Arc::new(IdentityIssuer::new()));
+        assert_eq!(
+            legacy
+                .session_pacing(&OpenRequest::new())
+                .expect("legacy open default"),
+            source
+        );
+    }
+
+    #[test]
+    fn selected_session_overflow_fails_before_native_work_but_after_interruption_admission() {
+        let issuer = Arc::new(IdentityIssuer::new());
+        let target = issuer
+            .issue_target(super::PROVIDER)
+            .expect("owned identity");
+        let provider = WindowsCaptureProvider::new(issuer);
+        let request = OpenRequest::new().with_capture_pacing(
+            CapturePacingRequest::preferred(Duration::MAX).expect("positive preference"),
+        );
+        let error = provider
+            .open(target, &request, &OperationContext::new())
+            .expect_err("overflow fails without a native availability probe or target allocation");
+        assert_eq!(error.status(), Status::InvalidArgument);
+
+        let token = CancellationToken::new();
+        token.cancel();
+        let error = provider
+            .open(
+                target,
+                &request,
+                &OperationContext::new().with_cancellation(token),
+            )
+            .expect_err("existing interruption admission wins");
+        assert_eq!(error.status(), Status::Cancelled);
     }
 
     #[test]

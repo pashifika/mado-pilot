@@ -7,11 +7,12 @@ use std::thread;
 use std::time::Duration;
 
 use mado_pilot_capture::{
-    CaptureFault, CaptureProvider, CaptureSession, OpenRequest, PixelFormat, TargetDescription,
+    CaptureFault, CapturePacingRequest, CaptureProvider, CaptureSession, OpenRequest, PixelFormat,
+    ResolvedCapturePacing, TargetDescription,
 };
 use mado_pilot_core::{
-    IdentityIssuer, Operation, OperationContext, PermissionKind, ProviderId, Result, TargetId,
-    TargetKind,
+    Error, IdentityIssuer, Operation, OperationContext, PermissionKind, ProviderId, Result, Status,
+    TargetId, TargetKind,
 };
 use mado_pilot_input::{
     InputController, InputDescriptor, InputFault, InputOpenRequest, InputProvider,
@@ -34,6 +35,35 @@ const DISCOVERY_POLL_INTERVAL: Duration = Duration::from_millis(2);
 /// Current and immediately previous discovery selections remain openable.
 const RETAINED_DISCOVERY_GENERATIONS: usize = 2;
 
+/// Declarative macOS defaults, selected before any native capture is opened.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub struct MacosConfig {
+    capture_pacing: CapturePacingRequest,
+}
+
+impl MacosConfig {
+    /// Creates an inheriting configuration.
+    #[must_use]
+    pub const fn new() -> Self {
+        Self {
+            capture_pacing: CapturePacingRequest::inherit(),
+        }
+    }
+
+    /// Replaces this configuration's complete capture pacing selection.
+    #[must_use]
+    pub const fn with_capture_pacing(mut self, pacing: CapturePacingRequest) -> Self {
+        self.capture_pacing = pacing;
+        self
+    }
+
+    /// Returns this configuration's capture pacing selection.
+    #[must_use]
+    pub const fn capture_pacing(&self) -> CapturePacingRequest {
+        self.capture_pacing
+    }
+}
+
 /// Picker-free macOS target discovery and ScreenCaptureKit capture.
 ///
 /// Construction touches no native API and requests no authorization. Discovery
@@ -44,6 +74,7 @@ const RETAINED_DISCOVERY_GENERATIONS: usize = 2;
 /// the user.
 pub struct MacosCaptureProvider {
     issuer: Arc<IdentityIssuer>,
+    capture_pacing: ResolvedCapturePacing,
     discovery_gate: Mutex<()>,
     registry: Mutex<Registry>,
 }
@@ -75,9 +106,50 @@ impl MacosCaptureProvider {
     pub fn new(issuer: Arc<IdentityIssuer>) -> Self {
         Self {
             issuer,
+            capture_pacing: ResolvedCapturePacing::source_default(),
             discovery_gate: Mutex::new(()),
             registry: Mutex::new(Registry::default()),
         }
+    }
+
+    /// Creates a provider with an immutable, already-resolved capture default.
+    ///
+    /// # Errors
+    ///
+    /// Returns an invalid argument if the selected interval does not fit signed
+    /// 64-bit nanoseconds. No native API or permission probe is called.
+    pub fn with_capture_pacing(
+        issuer: Arc<IdentityIssuer>,
+        pacing: ResolvedCapturePacing,
+    ) -> Result<Self> {
+        Self::validate_capture_pacing(pacing)?;
+        Ok(Self {
+            capture_pacing: pacing,
+            ..Self::new(issuer)
+        })
+    }
+
+    /// Validates only the selected native duration representation.
+    ///
+    /// # Errors
+    ///
+    /// Returns an invalid argument if the interval does not fit positive signed
+    /// 64-bit nanoseconds, including when it is preferred.
+    pub fn validate_capture_pacing(pacing: ResolvedCapturePacing) -> Result<()> {
+        crate::shim::capture_pacing_nanos(pacing)
+            .map(|_| ())
+            .map_err(|_| {
+                Error::new(
+                    Status::InvalidArgument,
+                    "macOS capture pacing interval must fit positive signed 64-bit nanoseconds",
+                )
+            })
+    }
+
+    fn resolve_capture_pacing(&self, request: &OpenRequest) -> Result<ResolvedCapturePacing> {
+        let pacing = request.capture_pacing().resolve(self.capture_pacing);
+        Self::validate_capture_pacing(pacing)?;
+        Ok(pacing)
     }
 
     fn discover_with<F>(
@@ -260,6 +332,7 @@ impl CaptureProvider for MacosCaptureProvider {
         {
             return Err(CaptureFault::UnsupportedOption.into());
         }
+        let pacing = self.resolve_capture_pacing(request)?;
 
         // accepts_target established this engine and provider. TargetId is
         // snapshot-scoped, so only the current and previous discovery leases are
@@ -280,7 +353,7 @@ impl CaptureProvider for MacosCaptureProvider {
             record.metadata.clone(),
             Arc::clone(&record.geometry),
         );
-        let session = NativeSession::open(selected, &mut attempt)?;
+        let session = NativeSession::open(selected, pacing, &mut attempt)?;
         Ok(attempt.commit(session as Arc<dyn CaptureSession>)?)
     }
 }
@@ -464,7 +537,9 @@ mod tests {
     use std::thread;
     use std::time::Duration;
 
-    use mado_pilot_capture::{CaptureProvider, OpenRequest, PixelFormat};
+    use mado_pilot_capture::{
+        CapturePacingRequest, CaptureProvider, OpenRequest, PixelFormat, ResolvedCapturePacing,
+    };
     use mado_pilot_core::{
         Clock, IdentityIssuer, MonotonicInstant, OperationContext, PixelExtent, Scale, Status,
         TargetKind, TargetPlacement,
@@ -478,6 +553,82 @@ mod tests {
         RETAINED_DISCOVERY_GENERATIONS, ShimStatus, inventory_wait,
         process_authority_supports_route,
     };
+
+    #[test]
+    fn capture_pacing_defaults_are_isolated_and_session_overrides_replace_the_whole_request() {
+        let source = ResolvedCapturePacing::source_default();
+        let required = CapturePacingRequest::required(Duration::from_millis(200))
+            .expect("positive")
+            .resolve(source);
+        let preferred = CapturePacingRequest::preferred(Duration::from_millis(20))
+            .expect("positive")
+            .resolve(source);
+        let first =
+            MacosCaptureProvider::with_capture_pacing(Arc::new(IdentityIssuer::new()), required)
+                .expect("representable default");
+        let second =
+            MacosCaptureProvider::with_capture_pacing(Arc::new(IdentityIssuer::new()), preferred)
+                .expect("representable default");
+        let override_request = OpenRequest::new().with_capture_pacing(
+            CapturePacingRequest::preferred(Duration::from_millis(60)).expect("positive"),
+        );
+        let selected = first
+            .resolve_capture_pacing(&override_request)
+            .expect("session override");
+        assert!(selected.is_preferred());
+        assert_eq!(selected.interval(), Some(Duration::from_millis(60)));
+        assert_eq!(
+            first
+                .resolve_capture_pacing(
+                    &OpenRequest::new()
+                        .with_capture_pacing(CapturePacingRequest::source_default(),)
+                )
+                .expect("explicit reset"),
+            source,
+        );
+        assert_eq!(
+            first
+                .resolve_capture_pacing(&OpenRequest::new())
+                .expect("inherited"),
+            required
+        );
+        assert_eq!(
+            second
+                .resolve_capture_pacing(&OpenRequest::new())
+                .expect("independent"),
+            preferred
+        );
+    }
+
+    #[test]
+    fn capture_pacing_provider_validation_rejects_unrepresentable_preferences_without_native_work()
+    {
+        let request = CapturePacingRequest::preferred(
+            Duration::from_nanos(i64::MAX.unsigned_abs()) + Duration::from_nanos(1),
+        )
+        .expect("positive neutral interval");
+        let selected = request.resolve(ResolvedCapturePacing::source_default());
+        assert_eq!(
+            MacosCaptureProvider::with_capture_pacing(Arc::new(IdentityIssuer::new()), selected)
+                .expect_err("unrepresentable engine default")
+                .status(),
+            Status::InvalidArgument,
+        );
+        let provider = MacosCaptureProvider::new(Arc::new(IdentityIssuer::new()));
+        assert_eq!(
+            provider
+                .resolve_capture_pacing(&OpenRequest::new().with_capture_pacing(request))
+                .expect_err("unrepresentable session preference")
+                .status(),
+            Status::InvalidArgument,
+        );
+        assert_eq!(
+            provider
+                .resolve_capture_pacing(&OpenRequest::new())
+                .expect("default unchanged"),
+            ResolvedCapturePacing::source_default(),
+        );
+    }
 
     fn window_candidate(incarnation: u64) -> Candidate {
         let extent = PixelExtent::new(64, 48);

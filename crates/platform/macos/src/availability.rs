@@ -34,7 +34,7 @@ pub(crate) fn ensure_capture_available() -> Result<()> {
     })
 }
 
-/// Reports whether the linked shim's version, structure sizes, and process-field
+/// Reports whether the linked shim's version, sizes, and process/open field
 /// offsets are the ones this build mirrors.
 ///
 /// A mismatch means the compiled shim and these declarations disagree about the
@@ -47,6 +47,7 @@ pub(crate) fn linked_shim_agrees() -> bool {
         version == shim::ABI_VERSION
             && sizes == shim::declared_layout()
             && offsets == shim::declared_process_offsets()
+            && shim::linked_open_offsets() == shim::declared_open_offsets()
     })
 }
 

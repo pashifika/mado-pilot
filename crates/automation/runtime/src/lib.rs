@@ -179,9 +179,11 @@ pub use mado_pilot_assets::{
     PackageSource, Provenance, SCHEMA_VERSION, TemplateDeclaration,
 };
 pub use mado_pilot_capture::{
-    CaptureFault, CaptureProvider, Continuity, CoordinateSupport, CpuMapping, Frame,
-    FrameDescriptor, FrameRequest, FrameSelection, FrameView, OpenRequest, OverflowPolicy,
-    PixelFormat, QueuePolicy, RetainedStoragePolicy, SessionDescription, TargetDescription,
+    CaptureFault, CapturePacingOutcome, CapturePacingReport, CapturePacingRequest, CaptureProvider,
+    Continuity, CoordinateSupport, CpuMapping, Frame, FrameDescriptor, FrameRequest,
+    FrameSelection, FrameView, OpenRequest, OverflowPolicy, PacingUnsupportedReason, PixelFormat,
+    QueuePolicy, ResolvedCapturePacing, RetainedStoragePolicy, SessionDescription,
+    TargetDescription,
 };
 pub use mado_pilot_core::{
     ActivityTag, CancellationToken, CapabilitySupport, ClipPolicy, Clock, CoordinateSpace,

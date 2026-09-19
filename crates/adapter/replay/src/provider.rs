@@ -21,8 +21,9 @@ use std::thread;
 use std::time::Duration;
 
 use mado_pilot_capture::{
-    CaptureFault, CaptureProvider, CaptureSession, CoordinateSupport, Frame, FrameRequest,
-    FrameSelection, Lifecycle, OpenRequest, SessionDescription, StreamState, TargetDescription,
+    CaptureFault, CapturePacingReport, CaptureProvider, CaptureSession, CoordinateSupport, Frame,
+    FrameRequest, FrameSelection, Lifecycle, OpenRequest, PacingUnsupportedReason,
+    ResolvedCapturePacing, SessionDescription, StreamState, TargetDescription,
 };
 use mado_pilot_core::{
     FrameOrder, GeometryRevision, IdentityIssuer, Operation, OperationContext, ProviderId, Result,
@@ -133,6 +134,12 @@ impl CaptureProvider for ReplayProvider {
             return Err(CaptureFault::UnsupportedOption.into());
         }
         validate_placements(source)?;
+        let pacing = CapturePacingReport::unsupported(
+            request
+                .capture_pacing()
+                .resolve(ResolvedCapturePacing::source_default()),
+            PacingUnsupportedReason::SourceCannotPace,
+        )?;
 
         let stream = self.issuer.issue_stream()?;
         let description = SessionDescription::new(
@@ -141,7 +148,8 @@ impl CaptureProvider for ReplayProvider {
             source.extent(),
             format,
             coordinate_support(source),
-        );
+        )
+        .with_capture_pacing(pacing);
         let session = ReplaySession {
             description,
             state: StreamState::with_target_extent(stream),
@@ -406,7 +414,7 @@ mod tests {
     use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
     use std::sync::{Arc, Condvar, Mutex, Weak};
 
-    use mado_pilot_capture::{Continuity, FrameDescriptor, PixelFormat};
+    use mado_pilot_capture::{CapturePacingRequest, Continuity, FrameDescriptor, PixelFormat};
     use mado_pilot_core::{
         Clock, GeometryRevision, MonotonicInstant, PixelExtent, Scale, Status, StreamCursor,
         TargetPlacement,
@@ -767,6 +775,35 @@ mod tests {
         let operation = OperationContext::new();
         let targets = provider.discover(&operation).expect("discovered");
         provider.open(targets[0].id(), &OpenRequest::new(), &operation)
+    }
+
+    #[test]
+    fn pacing_does_not_mask_invalid_replay_source_geometry() {
+        let extent = PixelExtent::new(8, 6);
+        let inconsistent =
+            TargetPlacement::new((0.0, 0.0), (4.0, 3.0), Scale::new(1.0, 1.0).expect("valid"))
+                .expect("valid");
+        let provider = ReplayProvider::new(
+            Arc::new(IdentityIssuer::new()),
+            placed_source(extent, inconsistent),
+        )
+        .expect("provider");
+        let operation = OperationContext::new();
+        let target = provider.discover(&operation).expect("discovered")[0].id();
+
+        for pacing in [
+            CapturePacingRequest::required(Duration::from_millis(200)).expect("positive"),
+            CapturePacingRequest::preferred(Duration::from_millis(60)).expect("positive"),
+        ] {
+            let error = provider
+                .open(
+                    target,
+                    &OpenRequest::new().with_capture_pacing(pacing),
+                    &operation,
+                )
+                .expect_err("source geometry remains authoritative before pacing");
+            assert_eq!(error.status(), Status::InvalidArgument);
+        }
     }
 
     #[test]
