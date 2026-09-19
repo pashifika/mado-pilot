@@ -157,3 +157,19 @@ This does not claim single-repaint-then-indefinite-idle resize support.
 Protocol revision 3 keeps report schema 2 and every existing numerical resource,
 latency, deadline and cleanup gate. Earlier protocol files, runs and failures
 remain unchanged; only fresh, fully bound attempts use the corrected fixtures.
+
+## Bounded native diagnostic history
+
+ScreenCaptureKit diagnostics retain the last 16 status transitions per session.
+The serial producer deliberately overwrites older entries and sets an overflow
+flag; closed-session snapshots, cumulative callback counts and final ownership/
+fence fields are separate records. A native baseline completed cleanly but the
+reporter incorrectly rejected this normal rolling-history state.
+
+Keep every closed-session record, all retained transition rows, callback-accounting
+equalities and release/fence checks mandatory. A full 16-entry tail with overflow
+is valid scoped evidence, not a complete history: report the truncated-session
+count and withhold `complete-native-status-history`. Missing rows, malformed
+overflow/count combinations, missing sessions or failed teardown still fail.
+This changes no native buffer, numerical workload budget or producer behavior.
+Prior failed run records remain unchanged; a new reporting authority is required.

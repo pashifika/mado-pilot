@@ -433,6 +433,25 @@ class NativeDiagnosticsTests(unittest.TestCase):
         self.assertIsNone(result["metrics"]["native_callbacks_per_second"])
         self.assertEqual(result["native"]["scope"], "closed-session-lifetime-including-warmup")
 
+    def test_rolling_status_tail_preserves_lifetime_evidence_without_full_history_claim(self):
+        log = sck_log().replace("transition_count=0", "transition_count=16").replace(
+            "transition_overflow=0", "transition_overflow=1")
+        for index in range(16):
+            row = {"event": "transition", "session_sequence": 1, "index": index,
+                   "raw": index % 2, "normalized": index % 2,
+                   "normalized_name": "idle" if index % 2 else "complete",
+                   "status_sequence": 101 + index, "monotonic_nanos": NS + index}
+            log += "benchmark-sck-diagnostics " + " ".join(f"{key}={value}" for key, value in row.items()) + "\n"
+        result = reporter.analyze_case(consumer(platform="macos"), fixture(), log)
+        self.assertEqual(result["status"], "pass")
+        self.assertEqual(result["native"]["callbacks_received"], 500)
+        self.assertFalse(result["native"]["status_history_complete"])
+        self.assertEqual(result["native"]["status_history_truncated_sessions"], 1)
+        self.assertIn("complete-native-status-history", result["withheld_claims"])
+        missing = "\n".join(log.splitlines()[:-1]) + "\n"
+        self.assertIn("native-transition-loss", reporter.analyze_case(
+            consumer(platform="macos"), fixture(), missing)["failures"])
+
     def test_incomplete_or_overwritten_diagnostics_do_not_pass(self):
         logs = (
             sck_log().splitlines()[1] + "\n",

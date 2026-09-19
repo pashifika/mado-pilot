@@ -300,3 +300,8 @@ colors, and still checks all ownership bits. On Windows, resize acknowledges the
 last of four bounded renders, with at least 125ms between each completion and the
 next render, so capture can pass through pool recreation. The resize case does not claim a solitary final repaint remains
 available when no subsequent publication occurs.
+
+Native macOS status diagnostics are a rolling 16-transition tail. Truncation is
+reported and withholds a complete-status-history claim; it does not invalidate
+the independently retained closed-session counters and ownership fences.
+Missing session/retained-transition records or failed teardown still fail.

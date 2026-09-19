@@ -297,7 +297,8 @@ def _sck_diagnostics(stderr: str) -> dict | None:
         _require(row["callbacks_received"] == row["callbacks_admitted"] + row["callbacks_refused"]
                  and row["callbacks_admitted"] == row["callbacks_entered"] == row["callbacks_exited"],
                  "native-callback-accounting-invalid")
-        _require(row["transition_count"] <= 16 and row["transition_overflow"] == 0,
+        _require(row["transition_count"] <= 16 and row["transition_overflow"] in (0, 1)
+                 and (row["transition_overflow"] == 0 or row["transition_count"] == 16),
                  "native-transition-loss")
         _require(row["close_error"] == "ok" and row["stop_status"] == "ok" and row["stop_error"] == 0,
                  "native-close-failed")
@@ -308,6 +309,9 @@ def _sck_diagnostics(stderr: str) -> dict | None:
     return {
         "scope": "closed-session-lifetime-including-warmup",
         "closed_sessions": len(sessions),
+        "status_history_complete": not any(row["transition_overflow"] for row in sessions.values()),
+        "status_history_truncated_sessions": sum(row["transition_overflow"] for row in sessions.values()),
+        "retained_status_transitions": len(transitions),
         "callbacks_received": sum(row["callbacks_received"] for row in sessions.values()),
         "callbacks_admitted": sum(row["callbacks_admitted"] for row in sessions.values()),
         "callbacks_refused": sum(row["callbacks_refused"] for row in sessions.values()),
@@ -349,6 +353,8 @@ def analyze_case(report: dict, fixture: dict | None, stderr: str) -> dict:
         result["failures"] = [str(error) if type(error) is ValueError else "evidence-schema-invalid"]
         result["reason"] = "evidence-invalid"
         return result
+    if result["native"] is not None and not result["native"]["status_history_complete"]:
+        result["withheld_claims"].append("complete-native-status-history")
     case = report["case"]
     metrics, samples = report["metrics"], report["samples"]
     previous_by_stream = {}
