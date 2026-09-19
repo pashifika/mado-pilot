@@ -340,6 +340,16 @@ pub(crate) fn decode(bytes: &[u8]) -> Result<Config> {
 }
 
 pub(crate) fn load(path: &Path) -> Result<Config> {
+    // Opening a FIFO can block before the handle's metadata is available.
+    if !path
+        .metadata()
+        .map_err(|_| Failure::Policy("config_metadata"))?
+        .is_file()
+    {
+        return Err(Failure::Policy(
+            "config_requires_regular_file_at_most_64_kib",
+        ));
+    }
     let file = File::open(path).map_err(|_| Failure::Policy("config_open"))?;
     let metadata = file
         .metadata()

@@ -272,7 +272,7 @@ jobs:
           call "%VSROOT%\VC\Auxiliary\Build\vcvars64.bat" || exit /b 1
           python tools/setup-native.py --opencv-root C:\opencv --libclang-path "%MADO_SETUP_LIBCLANG_PATH%" --github-env "%GITHUB_ENV%" --github-path "%GITHUB_PATH%" || exit /b 1
 
-      # This runs before model provisioning and invokes only --help/--smoke.
+      # This runs only model-free help, smoke and configuration refusal checks.
       # Its Cargo cwd, home, target root and lockfile belong to an external copy.
       - name: Prove the independent Rust consumer
         shell: cmd
@@ -586,7 +586,7 @@ jobs:
           set -euo pipefail
           python3 tools/setup-native.py --github-env "${GITHUB_ENV}" --github-path "${GITHUB_PATH}"
 
-      # This runs before model provisioning and invokes only --help/--smoke.
+      # This runs only model-free help, smoke and configuration refusal checks.
       # The copied consumer owns and verifies its macOS deployment floor.
       - name: Prove the independent Rust consumer
         shell: bash

@@ -54,6 +54,8 @@ an external working directory, retains commands and outputs under
 execution and (on macOS) deployment metadata. It does not acquire native
 libraries or models, prompt for permission, open capture or send input. Cargo may
 fetch Rust dependencies into the new Cargo home.
+The configuration-refusal check passes a non-regular path (a FIFO on macOS,
+a directory on Windows) and requires a bounded failure before engine construction.
 
 OpenCV 4 and its shared dependencies must be loadable even for `--help` and
 `--smoke`: they are linked into the executable. Build setup also needs libclang
@@ -71,6 +73,10 @@ MSVC context shown above. Setup affects only its child; it does not modify the
 calling shell. The path dependency still reads the selected source checkout;
 keep that checkout unchanged throughout a run and retain its commit/tree and any
 working-tree changes with the build record.
+The proof refuses untracked files in the product manifest/crate/native-setup
+source scope, even when Git ignore rules hide them; generated native-runner
+Python bytecode is the only exception. Add intended source files to Git before
+running the proof. Tracked working-tree changes are retained as a binary diff.
 
 A revision-pinned Git dependency is an alternative source selection:
 
@@ -183,9 +189,9 @@ capture or input. Ordinary startup without a valid configuration refuses.
 
 Operational mode requires `--config PATH --allow-capture`. Input additionally
 requires `--allow-input`; an OCR match alone is never consent. Observation-only
-mode opens no input capability. The JSON configuration is bounded to 64 KiB and
-rejects unknown fields. Keep configuration files private: target names, literals,
-input text and model/runtime paths are sensitive caller data.
+mode opens no input capability. The JSON configuration must be a regular file,
+is bounded to 64 KiB and rejects unknown fields. Keep configuration files private:
+target names, literals, input text and model/runtime paths are sensitive caller data.
 
 The application initializes the explicit CPU bounded-detector OCR profile once
 and maintains one session. Supply the reviewed ONNX Runtime **1.29.0** and model
@@ -260,9 +266,18 @@ Both native CI jobs run the external path build and model-free smoke. Their
 artifacts describe only the source, compiler, dependencies and scenarios actually
 exercised. A local build on a newer macOS does not independently qualify that OS.
 
-No real consuming application is selected or operationally verified by this
-Change's build proof. Before an operational run, record the exact authorized
-application workflow and retain every refusal, receipt, newer-frame observation
-and cleanup result. An unselected platform remains build-only, not operationally
-verified. Existing A9/A10, native/OCR workload evidence, benchmark ceilings,
+Build proof alone does not verify a real application's workflow. A separate
+operator-authorized run exercised SSR.app 1.0.461 on Apple Silicon macOS 27:
+reveal the menu, select its combatant control, then return. The first run stopped
+when the host decision wait expired; the return action completed only after new
+explicit authority. All three click receipts were complete, cleanup owed/released
+was 0/0, both session closes succeeded, and the continuation observed the expected
+state on a strictly newer frame. This was an attended, application-specific
+exercise using private caller policy, not one uninterrupted unattended run.
+
+Windows remains build/model-free verified only. The SSR result does not qualify
+arbitrary applications, macOS 27 generally, text/chord input, other delivery
+routes, latency, or causation. Before each operational run, record its exact
+authority and retain every refusal, receipt, newer-frame observation and cleanup
+result. Existing A9/A10, native/OCR workload evidence, benchmark ceilings,
 C/C++ compatibility, packaging gates G-007/G-012 and release status are unchanged.
