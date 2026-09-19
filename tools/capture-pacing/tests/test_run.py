@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import hashlib
+import io
 import importlib.util
 import json
 import os
@@ -26,6 +27,22 @@ class AdmissionTests(unittest.TestCase):
                  mock.patch.object(runner, "run_process", side_effect=AssertionError("unapproved native work")):
                 with self.assertRaisesRegex(runner.Refusal, "execution-not-approved"):
                     runner.execute(authority)
+
+    def test_cli_refuses_list_shaped_nonces_before_host_observation(self):
+        value = {"schema": 1, "approved": True, "purpose": "capture-pacing-native",
+                 "target": "aarch64-apple-darwin", "project_root": str(runner.ROOT),
+                 "source_commit": "a" * 40, "source_tree": "b" * 40,
+                 "cases": list(runner.CASES), "attempts": 1, "nonces": list(runner.CASES)}
+        with tempfile.TemporaryDirectory() as temporary:
+            authority = Path(temporary) / "authority.json"
+            authority.write_text(json.dumps(value), encoding="utf-8")
+            with mock.patch.object(runner.platform, "system", return_value="Darwin"), \
+                 mock.patch.object(runner, "verify_host", side_effect=AssertionError("invalid authority reached host")), \
+                 mock.patch.object(runner.sys, "argv", [str(RUNNER_PATH), "--authority", str(authority)]), \
+                 mock.patch.object(runner.sys, "stdout", new_callable=io.StringIO) as output:
+                self.assertEqual(runner.main(), 1)
+            self.assertEqual(json.loads(output.getvalue()),
+                             {"status": "fail", "reason": "authority-or-runner-refused"})
 
     def test_cargo_hardlinked_binary_is_accepted_only_with_exact_bytes(self):
         with tempfile.TemporaryDirectory() as temporary:

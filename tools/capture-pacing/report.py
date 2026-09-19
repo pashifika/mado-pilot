@@ -382,7 +382,8 @@ def analyze_case(report: dict, fixture: dict | None, stderr: str) -> dict:
     gate("consumer-reason-consistency", (report["reason"] is None) == (report["semantic_status"] == "pass"))
     if report["semantic_status"] == "not-run":
         gate("not-run-no-observations", not samples and process is None and fixture is None and
-             result["native"] is None and report["startup_ns"] is None and not report["pacing"] and
+             (result["native"] is None or result["native"]["closed_sessions"] == 0) and
+             report["startup_ns"] is None and not report["pacing"] and
              all(value in ("not-run", "not-applicable") or
                  (name in ("capture_cleanup", "fixture_cleanup") and value == "pass")
                  for name, value in report["checks"].items()) and

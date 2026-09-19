@@ -425,6 +425,21 @@ class CaseValidationTests(unittest.TestCase):
 
 
 class NativeDiagnosticsTests(unittest.TestCase):
+    def test_empty_native_diagnostics_preserve_unexecuted_case_classification(self):
+        value = permission_refusal()["consumer"]
+        value.update(permission="granted", reason="fixture-unavailable")
+        empty = sck_log().splitlines()[0].replace("closed_sessions=1", "closed_sessions=0") + "\n"
+        result = reporter.analyze_case(value, None, empty)
+        self.assertEqual(result["status"], "not-run")
+        self.assertEqual(result["reason"], "consumer-not-run")
+        self.assertEqual(result["metrics"], {})
+        observed = reporter.analyze_case(value, None, sck_log())
+        self.assertEqual(observed["status"], "fail")
+        self.assertIn("not-run-no-observations", observed["failures"])
+        leaked = reporter.analyze_case(value, None, empty.replace("native_objects=0", "native_objects=1"))
+        self.assertEqual(leaked["status"], "fail")
+        self.assertIn("native-owners-not-released", leaked["failures"])
+
     def test_closed_session_callback_count_is_not_publication_or_six_second_rate(self):
         result = reporter.analyze_case(consumer(platform="macos"), fixture(), sck_log(publication=9000, callbacks=500))
         self.assertEqual(result["status"], "pass")

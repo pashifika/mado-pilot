@@ -125,7 +125,7 @@ def validate_authority(authority: dict) -> None:
     require(re.fullmatch(r"[0-9a-f]{40}", authority["source_tree"]) is not None, "source-tree-shape")
     require(authority.get("cases") == list(CASES), "case-order-or-scope")
     require(authority.get("attempts") == 1 and type(authority["attempts"]) is int, "attempt-bound")
-    require(set(authority["nonces"]) == set(CASES), "nonce-scope")
+    require(isinstance(authority["nonces"], dict) and set(authority["nonces"]) == set(CASES), "nonce-scope")
     values = list(authority["nonces"].values())
     require(all(isinstance(value, str) and re.fullmatch(r"[0-9a-f]{16}", value) and int(value, 16) for value in values), "nonce-shape")
     require(len(set(values)) == len(values), "duplicate-nonce")

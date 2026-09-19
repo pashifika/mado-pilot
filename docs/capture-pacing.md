@@ -216,6 +216,10 @@ downloads, changes permissions, injects input, activates a window or retries.
 Its six fixed cases are `semantic`, `capture-off`, `baseline`, `cooldown-only`,
 `native-only`, and `combined`; `baseline` uses native source-default pacing.
 
+Offline analysis keeps an unexecuted case `not-run` when validated native
+diagnostics contain zero sessions and no other observations exist. A session
+record or unreleased native owner still invalidates that claim.
+
 Before approving a run:
 
 - Obtain `python3 -B tools/capture-pacing/run.py --host-snapshot` on that host.
@@ -232,8 +236,10 @@ Before approving a run:
   This is static import and lookup-path evidence, **not actual loaded-image
   enumeration**.
 - Set authority schema1, purpose `capture-pacing-native`, `approved: true`,
-  target, `attempts: 1`, the exact ordered `cases`, six distinct nonzero
-  16-digit hexadecimal `nonces`, and a nonexistent `.rasen/` `output_root`.
+  target, `attempts: 1`, the exact ordered `cases`, a `nonces` object mapping
+  those six cases to distinct nonzero 16-digit hexadecimal strings, and a
+  nonexistent `.rasen/` `output_root`. A non-object nonce field is refused with
+  payload-free JSON before host observation.
   Set `native_interval_ns: 100000000`, `cooldown_ns: 250000000`,
   `warmup_seconds: 2`, `measurement_seconds: 6`, `model_root`,
   `input_authorized: false`, and `permission_changes_authorized: false`.
