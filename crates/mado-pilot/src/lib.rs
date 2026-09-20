@@ -1103,12 +1103,13 @@ pub use mado_pilot_runtime::{
     SearchDiagnostic, SearchDiagnosticOutcome, SearchFrame, SequenceLimits, SequenceOutcome,
     Session, SessionDescription, SessionRequest, Status, StreamEpoch, StreamId, SubmissionEvidence,
     Suppression, SystemClock, TargetCapability, TargetDescription, TargetId, TargetKind,
-    TargetPlacement, TemplateAnalysisRate, TemplateDeclaration, TemplateEncoding, TemplateId,
-    TemplateOverload, TemplateQuery, TemplateQueryId, TemplateQueryOutcome, TemplateQueryProgress,
-    TemplateQueryState, TemplateSchedulerDescriptor, TemplateSource, TemplateSourceRequest,
-    TemplateStability, TemplateStabilityKind, TemplateTerminalOutcome, TemplateWatchDiagnostic,
-    TemplateWatchDiagnosticOutcome, TemplateWatchRequest, TemplateWatchResult, TemplateWorkCounts,
-    TemplateWorkDisposition, TransformSnapshot, UnsupportedChangeDetectionPolicy, VisionFault,
+    TargetPlacement, TargetProcessIdentity, TemplateAnalysisRate, TemplateDeclaration,
+    TemplateEncoding, TemplateId, TemplateOverload, TemplateQuery, TemplateQueryId,
+    TemplateQueryOutcome, TemplateQueryProgress, TemplateQueryState, TemplateSchedulerDescriptor,
+    TemplateSource, TemplateSourceRequest, TemplateStability, TemplateStabilityKind,
+    TemplateTerminalOutcome, TemplateWatchDiagnostic, TemplateWatchDiagnosticOutcome,
+    TemplateWatchRequest, TemplateWatchResult, TemplateWorkCounts, TemplateWorkDisposition,
+    TransformSnapshot, UnsupportedChangeDetectionPolicy, VisionFault,
 };
 
 /// The asset vocabulary's three module-level constants, qualified.

@@ -30,13 +30,15 @@ extern "C" {
 #endif
 
 /* The version of this internal surface. Rust asserts it at load. */
-#define MP_SHIM_ABI_VERSION 22u
+#define MP_SHIM_ABI_VERSION 23u
 
 /* The largest extent, budget, and default wait the shim will accept or apply. */
 #define MP_SHIM_MAX_PIXEL_EXTENT 32768u
 #define MP_SHIM_MAX_DETACHED_BUDGET 256u
 #define MP_SHIM_DEFAULT_TIMEOUT_NANOS 1000000000ull
 #define MP_SHIM_MAX_NATIVE_WAIT_NANOS 2000000000ull
+/* Including the NUL terminator; longer process paths have no public provenance. */
+#define MP_SHIM_MAX_PROCESS_PATH_BYTES 4096u
 
 /*
  * The largest surface the shim will accept, in bytes.
@@ -548,6 +550,16 @@ mp_shim_status mp_shim_testing_target_without_process_lifetime(
     uint32_t *out_capture_metadata_retained, uint32_t *out_process_metadata_retained);
 
 /*
+ * Exercises the production provenance read with retained in-memory applications.
+ * Scenarios: complete, no lifetime, stale launch, no executable, death during
+ * path read, no bundle, short buffer, non-file URL. No native target is queried.
+ * The five observations are status, PID, lifetime bits, executable and bundle
+ * byte lengths, respectively.
+ */
+mp_shim_status mp_shim_testing_target_process_identity(
+    uint32_t scenario, uint64_t *out_observations, size_t count);
+
+/*
  * Proves activation uses one retained target and refuses a process-lifetime
  * replacement observed immediately after the activation attempt.
  */
@@ -800,6 +812,21 @@ mp_shim_status mp_shim_inventory_name(const mp_shim_inventory *inventory, size_t
  */
 mp_shim_status mp_shim_inventory_target(const mp_shim_inventory *inventory, size_t index,
                                         mp_shim_target **out);
+
+/*
+ * Reads provenance only from the retained NSRunningApplication, bracketed by
+ * the same process-lifetime revalidation used for input. No target is reopened.
+ * Paths use filesystem bytes, exclude the trailing NUL from reported lengths,
+ * and require capacities in 1..=MP_SHIM_MAX_PROCESS_PATH_BYTES. Both buffers are
+ * caller-owned and must not overlap. A missing bundle has length zero.
+ * The lifetime is the exact retained launch-date double bit pattern.
+ * Scalar outputs remain zero on failure; path bytes are usable only on OK.
+ * Unavailable metadata does not invalidate the independently retained filter.
+ */
+mp_shim_status mp_shim_target_process_identity(
+    const mp_shim_target *target, uint32_t *out_process, uint64_t *out_lifetime,
+    uint8_t *out_executable, size_t executable_capacity, size_t *out_executable_len,
+    uint8_t *out_bundle, size_t bundle_capacity, size_t *out_bundle_len);
 
 /* Releases the inventory and every view borrowed from it. Accepts NULL. */
 void mp_shim_inventory_release(mp_shim_inventory *inventory);

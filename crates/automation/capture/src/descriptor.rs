@@ -2,9 +2,12 @@
 
 use std::fmt;
 use std::num::NonZeroU32;
+use std::path::{Path, PathBuf};
+use std::sync::Arc;
 
 use mado_pilot_core::{
-    CoordinateSpace, InputCapability, PixelExtent, ProviderId, StreamId, TargetCapability, TargetId,
+    CoordinateSpace, Error, InputCapability, PixelExtent, ProviderId, Status, StreamId,
+    TargetCapability, TargetId,
 };
 
 use crate::fault::CaptureFault;
@@ -237,6 +240,107 @@ impl CoordinateSupport {
     }
 }
 
+/// Process provenance supplied by the provider retaining a native window.
+///
+/// The lifetime is an opaque, provider-scoped value, not a timestamp for time
+/// arithmetic. Together with the process identifier and paths it lets a caller
+/// constrain initial selection. It neither replaces [`TargetId`] nor authorizes
+/// input: the adapter must still validate its retained native target at open and
+/// before delivery. Providers without verified provenance leave it absent.
+///
+/// Clones share immutable storage. Debug output redacts every identity field;
+/// callers must explicitly opt into reading machine-local paths and identifiers.
+#[derive(Clone, PartialEq, Eq)]
+pub struct TargetProcessIdentity {
+    data: Arc<TargetProcessIdentityData>,
+}
+
+#[derive(Clone, PartialEq, Eq)]
+struct TargetProcessIdentityData {
+    process_id: NonZeroU32,
+    lifetime: u64,
+    executable_path: PathBuf,
+    application_bundle_path: Option<PathBuf>,
+}
+
+impl TargetProcessIdentity {
+    /// Describes the executable belonging to one retained process lifetime.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`Status::InvalidArgument`] if the executable path is not absolute.
+    /// The path is not canonicalized or probed: native provenance and filesystem
+    /// alias policy remain the provider's and caller's respective responsibilities.
+    pub fn new(
+        process_id: NonZeroU32,
+        lifetime: u64,
+        executable_path: PathBuf,
+    ) -> mado_pilot_core::Result<Self> {
+        if !executable_path.is_absolute() {
+            return Err(Error::new(
+                Status::InvalidArgument,
+                "target process executable path must be absolute",
+            ));
+        }
+        Ok(Self {
+            data: Arc::new(TargetProcessIdentityData {
+                process_id,
+                lifetime,
+                executable_path,
+                application_bundle_path: None,
+            }),
+        })
+    }
+
+    /// Adds the application bundle reported for the same retained process.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`Status::InvalidArgument`] if the bundle path is not absolute.
+    pub fn with_application_bundle_path(mut self, path: PathBuf) -> mado_pilot_core::Result<Self> {
+        if !path.is_absolute() {
+            return Err(Error::new(
+                Status::InvalidArgument,
+                "target process application bundle path must be absolute",
+            ));
+        }
+        Arc::make_mut(&mut self.data).application_bundle_path = Some(path);
+        Ok(self)
+    }
+
+    /// Returns the native process identifier, which alone is reusable.
+    #[must_use]
+    pub fn process_id(&self) -> NonZeroU32 {
+        self.data.process_id
+    }
+
+    /// Returns the opaque lifetime value in this provider's identity domain.
+    #[must_use]
+    pub fn lifetime(&self) -> u64 {
+        self.data.lifetime
+    }
+
+    /// Returns the machine-local executable path supplied by the provider.
+    #[must_use]
+    pub fn executable_path(&self) -> &Path {
+        &self.data.executable_path
+    }
+
+    /// Returns the machine-local application bundle when the provider has one.
+    #[must_use]
+    pub fn application_bundle_path(&self) -> Option<&Path> {
+        self.data.application_bundle_path.as_deref()
+    }
+}
+
+impl fmt::Debug for TargetProcessIdentity {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        formatter
+            .debug_struct("TargetProcessIdentity")
+            .finish_non_exhaustive()
+    }
+}
+
 /// One discovered capture target, as its provider describes it.
 ///
 /// `name` is descriptive only. It never establishes that two observations are
@@ -256,6 +360,7 @@ pub struct TargetDescription {
     format: PixelFormat,
     coordinates: CoordinateSupport,
     capability: TargetCapability,
+    process_identity: Option<TargetProcessIdentity>,
 }
 
 impl TargetDescription {
@@ -275,6 +380,7 @@ impl TargetDescription {
             format,
             coordinates,
             capability: TargetCapability::unclassified(),
+            process_identity: None,
         }
     }
 
@@ -283,6 +389,22 @@ impl TargetDescription {
     pub fn with_capability(mut self, capability: TargetCapability) -> Self {
         self.capability = capability;
         self
+    }
+
+    /// Attaches provenance for the native process retained by this provider.
+    ///
+    /// This metadata narrows caller selection; it grants no capture or input
+    /// capability and does not replace the adapter's native lifetime guards.
+    #[must_use]
+    pub fn with_process_identity(mut self, identity: TargetProcessIdentity) -> Self {
+        self.process_identity = Some(identity);
+        self
+    }
+
+    /// Returns verified native process provenance, when the provider has it.
+    #[must_use]
+    pub fn process_identity(&self) -> Option<&TargetProcessIdentity> {
+        self.process_identity.as_ref()
     }
 
     /// Returns the target identity.
@@ -621,14 +743,71 @@ mod tests {
 
     use super::{
         CoordinateSupport, FrameDescriptor, OverflowPolicy, PixelFormat, QueuePolicy,
-        RetainedStoragePolicy, SessionDescription, TargetDescription,
+        RetainedStoragePolicy, SessionDescription, TargetDescription, TargetProcessIdentity,
     };
     use crate::fault::CaptureFault;
     use mado_pilot_core::{
         CapabilitySupport, CoordinateSpace, IdentityIssuer, InputCapability, InputDelivery,
-        InputOperationKind, PermissionKind, PixelExtent, ProviderId, SubmissionEvidence,
+        InputOperationKind, PermissionKind, PixelExtent, ProviderId, Status, SubmissionEvidence,
         TargetCapability, TargetKind,
     };
+
+    #[test]
+    fn process_provenance_refuses_relative_executable_and_bundle_paths() {
+        let executable = std::env::current_dir()
+            .expect("absolute test directory")
+            .join("private-executable");
+        for relative in ["", "relative/private-executable"] {
+            assert_eq!(
+                TargetProcessIdentity::new(NonZeroU32::MIN, 0, relative.into())
+                    .expect_err("relative executable")
+                    .status(),
+                Status::InvalidArgument
+            );
+            assert_eq!(
+                TargetProcessIdentity::new(NonZeroU32::MIN, 0, executable.clone())
+                    .expect("absolute executable")
+                    .with_application_bundle_path(relative.into())
+                    .expect_err("relative application bundle")
+                    .status(),
+                Status::InvalidArgument
+            );
+        }
+    }
+
+    #[test]
+    fn target_debug_redacts_native_process_provenance() {
+        let root = std::env::current_dir().expect("absolute test directory");
+        let identity = TargetProcessIdentity::new(
+            NonZeroU32::new(71_283_491).expect("non-zero"),
+            u64::MAX,
+            root.join("private-executable"),
+        )
+        .expect("absolute executable")
+        .with_application_bundle_path(root.join("private-application.app"))
+        .expect("absolute bundle");
+        let issuer = IdentityIssuer::new();
+        let target = TargetDescription::new(
+            issuer
+                .issue_target(ProviderId::new("test"))
+                .expect("target"),
+            "test window",
+            PixelExtent::new(8, 6),
+            PixelFormat::Rgba8,
+            CoordinateSupport::frame_only(),
+        )
+        .with_process_identity(identity);
+        for debug in [format!("{target:?}"), format!("{target:#?}")] {
+            for sensitive in [
+                "private-executable",
+                "private-application.app",
+                "71283491",
+                "18446744073709551615",
+            ] {
+                assert!(!debug.contains(sensitive));
+            }
+        }
+    }
 
     #[test]
     fn a_packed_descriptor_has_no_row_padding() {

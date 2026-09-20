@@ -10,9 +10,12 @@
 //! a test asserts that the two sides agree on version and structure sizes rather
 //! than trusting that they do.
 
-use std::ffi::{c_char, c_void};
+use std::ffi::{OsString, c_char, c_void};
 use std::fmt;
 use std::marker::PhantomData;
+use std::num::NonZeroU32;
+use std::os::unix::ffi::OsStringExt;
+use std::path::PathBuf;
 use std::ptr::NonNull;
 use std::slice;
 use std::str;
@@ -39,11 +42,12 @@ pub(crate) fn catch_panic<T>(body: impl FnOnce() -> T) -> Result<T, ()> {
 
 use mado_pilot_capture::{
     CaptureFault, CapturePacingReport, PacingUnsupportedReason, ResolvedCapturePacing,
+    TargetProcessIdentity,
 };
 use mado_pilot_core::{OperationContext, PermissionState, PixelExtent};
 
 /// The internal surface version this build was written against.
-pub(crate) const ABI_VERSION: u32 = 22;
+pub(crate) const ABI_VERSION: u32 = 23;
 
 const PACING_SOURCE_DEFAULT: u32 = 0;
 const PACING_REQUIRED: u32 = 1;
@@ -89,6 +93,8 @@ pub(crate) const KIND_DISPLAY: u32 = 1;
 /// The only pixel layout the shim publishes.
 pub(crate) const PIXEL_BGRA8: u32 = 0;
 const TARGET_INFO_PROCESS_DIRECTED: u32 = 1;
+/// Includes the NUL terminator, mirroring `MP_SHIM_MAX_PROCESS_PATH_BYTES`.
+const MAX_PROCESS_PATH_BYTES: usize = 4096;
 
 /// `FrameInfo` carries a validated same-frame `SCStreamFrameInfoScreenRect`.
 pub(crate) const FRAME_INFO_SCREEN_RECT: u32 = 1;
@@ -720,6 +726,46 @@ impl TargetToken {
         self.inner.synthetic_live.store(false, Ordering::Release);
     }
 
+    /// Reads optional provenance from this selection's retained process lifetime.
+    ///
+    /// Failure never invalidates capture. Discovery stores the successful value
+    /// once, so later descriptions share paths instead of calling AppKit again.
+    pub(crate) fn process_identity(&self) -> Result<TargetProcessIdentity, ShimStatus> {
+        let mut process = 0;
+        let mut lifetime = 0;
+        let mut executable = [0u8; MAX_PROCESS_PATH_BYTES];
+        let mut executable_len = 0;
+        let mut bundle = [0u8; MAX_PROCESS_PATH_BYTES];
+        let mut bundle_len = 0;
+        // SAFETY: this token owns the retained target throughout the call. Every
+        // scalar output is writable; the distinct path buffers supply exactly
+        // the declared capacities. The shim retains no caller pointer.
+        let status = unsafe {
+            mp_shim_target_process_identity(
+                self.as_ptr(),
+                &raw mut process,
+                &raw mut lifetime,
+                executable.as_mut_ptr(),
+                executable.len(),
+                &raw mut executable_len,
+                bundle.as_mut_ptr(),
+                bundle.len(),
+                &raw mut bundle_len,
+            )
+        };
+        ShimStatus::from_raw(status).into_result()?;
+        let process = NonZeroU32::new(process).ok_or(ShimStatus::PlatformFailure)?;
+        let executable = process_identity_path(&executable, executable_len)?;
+        let identity = TargetProcessIdentity::new(process, lifetime, executable)
+            .map_err(|_| ShimStatus::PlatformFailure)?;
+        if bundle_len == 0 {
+            return Ok(identity);
+        }
+        identity
+            .with_application_bundle_path(process_identity_path(&bundle, bundle_len)?)
+            .map_err(|_| ShimStatus::PlatformFailure)
+    }
+
     /// Reads bounds from a fresh observation of this retained selection.
     pub(crate) fn input_bounds(&self, wait: Duration) -> Result<NativeBounds, ShimStatus> {
         input_target_bounds(self, wait)
@@ -757,6 +803,18 @@ impl TargetToken {
     ) -> Result<ProcessPostOutcome, ProcessPostFailure> {
         process_post(self, source, request, operation)
     }
+}
+
+/// Copies each bounded native path once into its eventual shared Rust owner.
+fn process_identity_path(bytes: &[u8], len: usize) -> Result<PathBuf, ShimStatus> {
+    if len == 0 || bytes.get(len) != Some(&0) {
+        return Err(ShimStatus::PlatformFailure);
+    }
+    let path = bytes.get(..len).ok_or(ShimStatus::PlatformFailure)?;
+    if path.first() != Some(&b'/') || path.contains(&0) {
+        return Err(ShimStatus::PlatformFailure);
+    }
+    Ok(PathBuf::from(OsString::from_vec(path.to_vec())))
 }
 
 impl fmt::Debug for TargetToken {
@@ -3654,6 +3712,12 @@ unsafe extern "C" {
         out_process_metadata_retained: *mut u32,
     ) -> u32;
     #[cfg(test)]
+    fn mp_shim_testing_target_process_identity(
+        scenario: u32,
+        out_observations: *mut u64,
+        count: usize,
+    ) -> u32;
+    #[cfg(test)]
     fn mp_shim_testing_resource_allocation_failures(
         out_semaphore_status: *mut u32,
         out_session_hold_status: *mut u32,
@@ -3793,6 +3857,17 @@ unsafe extern "C" {
         inventory: *const OpaqueInventory,
         index: usize,
         out: *mut *mut OpaqueTarget,
+    ) -> u32;
+    fn mp_shim_target_process_identity(
+        target: *const OpaqueTarget,
+        out_process: *mut u32,
+        out_lifetime: *mut u64,
+        out_executable: *mut u8,
+        executable_capacity: usize,
+        out_executable_len: *mut usize,
+        out_bundle: *mut u8,
+        bundle_capacity: usize,
+        out_bundle_len: *mut usize,
     ) -> u32;
     fn mp_shim_inventory_release(inventory: *mut OpaqueInventory);
     fn mp_shim_target_release(target: *mut OpaqueTarget);
@@ -4587,6 +4662,81 @@ mod tests {
             !process_metadata_retained,
             "capture identity survives without inventing process-post authority"
         );
+    }
+
+    #[test]
+    fn process_provenance_requires_a_live_retained_lifetime_and_bounded_paths() {
+        let rows = [
+            (0, ShimStatus::Ok, true),
+            (1, ShimStatus::Unsupported, false),
+            (2, ShimStatus::TargetLost, false),
+            (3, ShimStatus::Unsupported, false),
+            (4, ShimStatus::TargetLost, false),
+            (5, ShimStatus::Ok, false),
+            (6, ShimStatus::Unsupported, false),
+            (7, ShimStatus::Unsupported, false),
+        ];
+        for (scenario, expected_status, has_bundle) in rows {
+            let mut observations = [u64::MAX; 5];
+            // SAFETY: the writable array has the declared count. The seam uses
+            // in-memory retained objects, never a native target or permission.
+            let status = unsafe {
+                super::mp_shim_testing_target_process_identity(
+                    scenario,
+                    observations.as_mut_ptr(),
+                    observations.len(),
+                )
+            };
+            assert_eq!(ShimStatus::from_raw(status), ShimStatus::Ok);
+            assert_eq!(
+                ShimStatus::from_raw(u32::try_from(observations[0]).expect("native status")),
+                expected_status,
+                "scenario {scenario}",
+            );
+            if expected_status == ShimStatus::Ok {
+                assert_eq!(observations[1], 123);
+                assert_eq!(observations[2], 1000.25f64.to_bits());
+                assert_eq!(
+                    observations[3],
+                    u64::try_from(b"/MadoPilotIdentityFixture.app/Contents/MacOS/fixture".len())
+                        .expect("fixture path fits"),
+                );
+                assert_eq!(
+                    observations[4],
+                    if has_bundle {
+                        u64::try_from(b"/MadoPilotIdentityFixture.app".len())
+                            .expect("fixture path fits")
+                    } else {
+                        0
+                    },
+                );
+            } else {
+                assert_eq!(
+                    &observations[1..],
+                    &[0; 4],
+                    "failed provenance must not publish partial authority",
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn process_paths_preserve_filesystem_bytes_and_reject_malformed_native_views() {
+        let path = super::process_identity_path(b"/tmp/\xff\0", 6)
+            .expect("filesystem bytes need not be UTF-8");
+        assert_eq!(path.as_os_str().as_encoded_bytes(), b"/tmp/\xff");
+        for (bytes, len) in [
+            (&b"\0"[..], 0),
+            (&b"relative\0"[..], 8),
+            (&b"/a\0b\0"[..], 4),
+            (&b"/path"[..], 5),
+            (&b"/path\0"[..], usize::MAX),
+        ] {
+            assert_eq!(
+                super::process_identity_path(bytes, len),
+                Err(ShimStatus::PlatformFailure),
+            );
+        }
     }
 
     #[test]

@@ -31,6 +31,7 @@ use crate::availability::capture_item_factory;
 use crate::input::input_capability;
 use crate::optional_api::{logical_to_physical, monitor_scale, window_dpi};
 use crate::storage::validate_surface;
+use crate::window_authority::{RetainedWindowAuthority, WindowAuthorityStatus};
 
 const DEFAULT_DPI: u32 = 96;
 
@@ -136,6 +137,7 @@ pub(crate) struct Candidate {
     pub(crate) key: NativeKey,
     pub(crate) metadata: TargetMetadata,
     pub(crate) item: CaptureItem,
+    pub(crate) authority: Option<RetainedWindowAuthority>,
 }
 
 pub(crate) fn inventory() -> Result<Vec<Candidate>> {
@@ -187,6 +189,10 @@ fn window_candidates(factory: &IGraphicsCaptureItemInterop) -> Result<Vec<Candid
             continue;
         };
         let class_name = window_class(hwnd);
+        // Retain the owner before WGC binds this HWND. A later capture cannot
+        // establish provenance for an item that may already name an old window.
+        let authority =
+            RetainedWindowAuthority::capture(NativeKey::Window(raw), class_name.as_deref());
         // SAFETY: factory is the documented GraphicsCaptureItem desktop interop
         // factory, and hwnd was just validated. A protected/uncapturable window
         // is filtered by the returned error without prompting.
@@ -202,6 +208,10 @@ fn window_candidates(factory: &IGraphicsCaptureItemInterop) -> Result<Vec<Candid
         let Some(placement) = window_placement(hwnd, extent) else {
             continue;
         };
+        // Never join the capture item to authority observed after a replacement.
+        // Missing or changed authority leaves capture available without identity.
+        let authority =
+            authority.filter(|authority| authority.status() == WindowAuthorityStatus::SameTarget);
 
         candidates.push(Candidate {
             key: NativeKey::Window(raw),
@@ -212,6 +222,7 @@ fn window_candidates(factory: &IGraphicsCaptureItemInterop) -> Result<Vec<Candid
                 placement,
             },
             item: CaptureItem::Native(item),
+            authority,
         });
     }
     Ok(candidates)
@@ -248,6 +259,7 @@ fn display_candidates(factory: &IGraphicsCaptureItemInterop) -> Result<Vec<Candi
                 placement,
             },
             item: CaptureItem::Native(item),
+            authority: None,
         });
     }
     Ok(candidates)
