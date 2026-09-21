@@ -19,6 +19,9 @@ Independent disconnected `single` and exact two-display non-mirrored
 applicable display scenarios. No topology result was substituted for another.
 Nothing here qualifies arbitrary applications, arbitrary games, exact-window
 delivery, or application consumption.
+The opt-in `AppKitBackground` pointer construction has one separately authorized
+full-workflow result at `acc5d98ae8cfc4958970be826a28011bc12185c9`, described below.
+Neither that case nor the historical results qualify it for arbitrary targets.
 
 ## Capability boundary
 
@@ -70,6 +73,77 @@ through dynamically loaded public Security.framework code-signing APIs.
 Structured diagnostic records contain only reviewed enums, numbers, identifiers,
 counts, and flags. They never carry the signing identifier; the dedicated
 fixture prints that identifier only on its explicit evidence line.
+
+## Opt-in AppKit background pointer construction
+
+Rust callers select the policy before engine construction, without a permission
+probe or native operation:
+
+```rust
+use mado_pilot::{MacosConfig, MacosProcessPointerMode, NativeEngineRequest};
+
+let request = NativeEngineRequest::new().with_macos_config(
+    MacosConfig::new()
+        .with_process_pointer_mode(MacosProcessPointerMode::AppKitBackground),
+);
+```
+
+`CoreGraphics` remains the default. The selection affects only mouse moves,
+drags, presses, and releases sent through `ProcessDirected`. System events,
+keyboard, text, and scroll keep their existing construction. It is a Rust-only
+macOS option: no public C layout, function table, or foreign default changes.
+
+**Every selected pointer event carries Command in addition to the sequence's
+held modifiers.** No Command key is synthesized. Applications may interpret this
+as a modified click or drag, so callers must opt in deliberately.
+The NSEvent factory supplies the authorized window number, bounded unique event
+number, click count, and pressure; its retained CGEvent is explicitly assigned
+the sequence-private source and activity tag. Global coordinates are preserved;
+the runtime-resolved private `CGEventSetWindowLocation` receives the point
+relative to the final authorized current window bounds, including signed and
+fractional desktop positions.
+
+Ordinary pointer events refuse with `UnsupportedCombination` if the target is
+observed frontmost, background state cannot be established, or the construction
+capability is unavailable. This selection never falls back to another
+construction or route. The observation is a pre-post guard, not an atomic OS
+focus guarantee. A foreground transition after a press does not block bounded
+release of state owned by that sequence: cleanup uses its retained pointer
+position and last authorized bounds without needing a visible window or a
+background predicate. Original-process lifetime, post authorization, cancellation
+and deadline checks still apply; a failed release remains truthfully owed.
+
+The transport remains one `CGEventPostToPid` invocation per native unit.
+Receipts prove invocation, not queue admission or consumption. Non-posting
+construction/refusal/ownership regressions run with
+`cargo test --locked -p mado-pilot-platform-macos --lib appkit_pointer`.
+These tests do not qualify application compatibility, physical noninterference,
+concurrent typing, or macOS 27. Real effects require a separately authorized,
+revision-bound background workload with independent visual postconditions.
+
+### Revision-bound consumer observation
+
+On macOS 27.0 arm64, MadoMata's unchanged private character-guide workflow passed
+once using published Git revision `acc5d98ae8cfc4958970be826a28011bc12185c9`,
+Rust 1.98.1, explicit `AppKitBackground`, and a 50 ms press/release hold.
+Independent OCR and image-template postconditions verified character selection,
+switch on/off transitions, and return navigation within one retained session and
+process lifetime. No compiler shim, sibling dependency, activation, System
+fallback, game modification, or retry was used.
+
+The invocation completed in 30.867 seconds with ten logical clicks and forty SDK
+events, including ten delays. Cleanup reported no outstanding sequence state,
+no remaining script handles or queued work, and a closed session. Across 2,498
+available passive samples, the target stayed background, foreground identity and
+cursor position were unchanged, and no activation or Space-change notification
+was recorded. Sampling is not atomic continuous evidence; concurrent ordinary
+typing was not exercised.
+
+This is one application's observed workflow, not the ADR 0029 qualification
+matrix, generic macOS 27 support, or repeated-run reliability. Route compatibility
+remains `Unknown`; receipts remain `InvocationOnly`. Windows and foreign-language
+native scenarios were not rerun. Private target identity, images, plans, and raw
+execution evidence remain in the separately owned consumer's private storage.
 
 ## Coordinates
 
@@ -872,11 +946,13 @@ Revision-bound current-display and shared-display matrices remain release gaps.
 
 Input adds no crate and no eager framework. `CGEvent`, `CGWindowList`, and the
 legacy Accessibility observation come from frameworks the build script already
-declares, and the process route's `CGEventPostToPid` and
-`CGPreflightPostEventAccess` entry points are resolved by symbol from the
-absolute CoreGraphics framework path on first use, so a host that cannot supply
-them reports a typed unsupported result instead of failing a load. AppKit — for
-application activation — HIToolbox — for the keyboard-layout lookup — and
+declares. The process route's `CGEventPostToPid`,
+`CGPreflightPostEventAccess`, and selected pointer mode's private
+`CGEventSetWindowLocation` entry points are resolved by symbol from the
+absolute CoreGraphics framework path on first use, so missing capability
+reports a typed unsupported result instead of failing a load. AppKit — for
+application activation and explicitly selected NSEvent construction —
+HIToolbox — for the keyboard-layout lookup — and
 Security.framework — for public code-signature inspection — are opened from
 their absolute system paths on first use, exactly as ScreenCaptureKit is, so a
 headless library adds a load command for none and the operation that needed one

@@ -210,7 +210,7 @@ use mado_pilot_runtime::InputProvider;
 use mado_pilot_runtime::PermissionProbe;
 
 #[cfg(target_os = "macos")]
-pub use mado_pilot_platform_macos::MacosConfig;
+pub use mado_pilot_platform_macos::{MacosConfig, MacosProcessPointerMode};
 #[cfg(windows)]
 pub use mado_pilot_platform_windows::WindowsConfig;
 
@@ -1027,6 +1027,7 @@ fn macos_engine_inner(
     mado_pilot_platform_macos::MacosCaptureProvider::validate_capture_pacing(pacing)?;
     let diagnostics = request.diagnostics();
     let limits = request.limits();
+    let process_pointer_mode = request.macos_config().process_pointer_mode();
 
     let backend = OpenCvBackend::new()?;
     let ocr = configured_ocr(request.ocr, integrated_ocr)?;
@@ -1034,7 +1035,8 @@ fn macos_engine_inner(
     let issuer = Arc::new(IdentityIssuer::new());
     let engine = issuer.engine();
     let provider = Arc::new(
-        mado_pilot_platform_macos::MacosCaptureProvider::with_capture_pacing(issuer, pacing)?,
+        mado_pilot_platform_macos::MacosCaptureProvider::with_capture_pacing(issuer, pacing)?
+            .with_process_pointer_mode(process_pointer_mode),
     );
     #[cfg(feature = "native-template-watch-qualification")]
     mado_pilot_platform_macos::fixture_observation::register_provider(&provider);

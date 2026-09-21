@@ -47,7 +47,7 @@ use mado_pilot_capture::{
 use mado_pilot_core::{OperationContext, PermissionState, PixelExtent};
 
 /// The internal surface version this build was written against.
-pub(crate) const ABI_VERSION: u32 = 23;
+pub(crate) const ABI_VERSION: u32 = 24;
 
 const PACING_SOURCE_DEFAULT: u32 = 0;
 const PACING_REQUIRED: u32 = 1;
@@ -621,18 +621,26 @@ impl ProcessEventSource {
     /// A nonzero activity tag is copied to the source's documented event
     /// user-data field. It remains observational metadata and never affects
     /// admission, posting, or receipt accounting.
-    pub(crate) fn new(activity_tag: u64) -> Result<Self, ShimStatus> {
+    pub(crate) fn new(
+        activity_tag: u64,
+        mode: crate::provider::MacosProcessPointerMode,
+    ) -> Result<Self, ShimStatus> {
         let mut source = std::ptr::null_mut();
+        let mode = match mode {
+            crate::provider::MacosProcessPointerMode::CoreGraphics => 0,
+            crate::provider::MacosProcessPointerMode::AppKitBackground => 1,
+        };
         // SAFETY: `source` is writable for one opaque handle and the native
         // boundary either leaves it null or transfers exactly one owned handle.
-        let status = unsafe { mp_shim_process_event_source_create(activity_tag, &raw mut source) };
+        let status =
+            unsafe { mp_shim_process_event_source_create(activity_tag, mode, &raw mut source) };
         ShimStatus::from_raw(status).into_result()?;
         NonNull::new(source)
             .map(|handle| Self { handle })
             .ok_or(ShimStatus::PlatformFailure)
     }
 
-    fn as_ptr(&self) -> *const OpaqueProcessEventSource {
+    fn as_ptr(&self) -> *mut OpaqueProcessEventSource {
         self.handle.as_ptr()
     }
 }
@@ -3542,7 +3550,7 @@ struct NativeProcessPostRequest {
     struct_size: u32,
     event_kind: u32,
     target: *const OpaqueTarget,
-    event_source: *const OpaqueProcessEventSource,
+    event_source: *mut OpaqueProcessEventSource,
     timeout_nanos: u64,
     flags: u32,
     geometry_check: u32,
@@ -3603,6 +3611,17 @@ unsafe extern "C" {
         out_report_invoked_native_units: *mut u32,
     ) -> u32;
     fn mp_shim_open_struct_offsets(out_offsets: *mut u32, count: usize) -> u32;
+    #[cfg(test)]
+    fn mp_shim_testing_appkit_pointer(
+        action: u32,
+        button: u32,
+        scenario: u32,
+        out_construction: *mut u32,
+        out_points: *mut f64,
+        point_count: usize,
+        out_fields: *mut i64,
+        field_count: usize,
+    ) -> u32;
     #[cfg(test)]
     fn mp_shim_testing_capture_pacing(
         mode: u32,
@@ -3920,6 +3939,7 @@ unsafe extern "C" {
     ) -> u32;
     fn mp_shim_process_event_source_create(
         activity_tag: u64,
+        pointer_mode: u32,
         out_source: *mut *mut OpaqueProcessEventSource,
     ) -> u32;
     fn mp_shim_process_event_source_release(source: *mut OpaqueProcessEventSource);
@@ -4391,10 +4411,184 @@ mod tests {
         );
     }
 
+    fn appkit_pointer_observation(
+        action: u32,
+        button: u32,
+        scenario: u32,
+    ) -> (ShimStatus, [f64; 4], [i64; 11]) {
+        let mut construction = u32::MAX;
+        let mut points = [0.0; 4];
+        let mut fields = [0; 11];
+        // SAFETY: the arrays and scalar are writable for their declared extents.
+        // This seam only constructs/inspects/releases events and never posts.
+        let status = unsafe {
+            super::mp_shim_testing_appkit_pointer(
+                action,
+                button,
+                scenario,
+                &raw mut construction,
+                points.as_mut_ptr(),
+                points.len(),
+                fields.as_mut_ptr(),
+                fields.len(),
+            )
+        };
+        assert_eq!(ShimStatus::from_raw(status), ShimStatus::Ok);
+        (ShimStatus::from_raw(construction), points, fields)
+    }
+
+    #[test]
+    fn appkit_pointer_preserves_private_source_metadata_and_button_semantics() {
+        // NSEvent and CGEvent share these public mouse-type numeric values.
+        let cases = [
+            (super::INPUT_POINTER_MOVE, super::INPUT_BUTTON_NONE, 5, 0),
+            (super::INPUT_POINTER_MOVE, super::INPUT_BUTTON_PRIMARY, 6, 0),
+            (
+                super::INPUT_POINTER_MOVE,
+                super::INPUT_BUTTON_SECONDARY,
+                7,
+                1,
+            ),
+            (super::INPUT_POINTER_MOVE, super::INPUT_BUTTON_MIDDLE, 27, 2),
+            (
+                super::INPUT_POINTER_PRESS,
+                super::INPUT_BUTTON_PRIMARY,
+                1,
+                0,
+            ),
+            (
+                super::INPUT_POINTER_RELEASE,
+                super::INPUT_BUTTON_PRIMARY,
+                2,
+                0,
+            ),
+            (
+                super::INPUT_POINTER_PRESS,
+                super::INPUT_BUTTON_SECONDARY,
+                3,
+                1,
+            ),
+            (
+                super::INPUT_POINTER_RELEASE,
+                super::INPUT_BUTTON_SECONDARY,
+                4,
+                1,
+            ),
+            (
+                super::INPUT_POINTER_PRESS,
+                super::INPUT_BUTTON_MIDDLE,
+                25,
+                2,
+            ),
+            (
+                super::INPUT_POINTER_RELEASE,
+                super::INPUT_BUTTON_MIDDLE,
+                26,
+                2,
+            ),
+        ];
+        let mut previous_number = 0;
+        for (action, button, event_type, native_button) in cases {
+            let (status, points, fields) = appkit_pointer_observation(action, button, 0);
+            assert_eq!(status, ShimStatus::Ok, "action {action}, button {button}");
+            assert_eq!(points, [-150.5, 210.25, 49.5, 30.25]);
+            // Private is a creation selector; the resulting source has its own ID.
+            assert!(
+                !matches!(fields[10], 0 | 1),
+                "not combined-session or HID state"
+            );
+            let click_count = if action == super::INPUT_POINTER_MOVE {
+                0
+            } else {
+                2
+            };
+            assert_eq!(
+                &fields[..9],
+                &[
+                    (1 << 17) | (1 << 19) | (1 << 20), // Shift, Option, Command.
+                    fields[10],                        // The exact sequence-owned private source.
+                    42,
+                    event_type,
+                    native_button,
+                    click_count,
+                    3,
+                    123,
+                    123,
+                ],
+            );
+            assert!(fields[9] > previous_number && fields[9] <= i64::from(i32::MAX));
+            previous_number = fields[9];
+        }
+    }
+
+    #[test]
+    fn appkit_pointer_missing_factory_or_window_location_setter_refuses_without_an_owner() {
+        for scenario in [1, 2] {
+            let (status, points, fields) = appkit_pointer_observation(
+                super::INPUT_POINTER_PRESS,
+                super::INPUT_BUTTON_PRIMARY,
+                scenario,
+            );
+            assert_eq!(status, ShimStatus::Unsupported);
+            assert_eq!(points, [0.0; 4]);
+            assert_eq!(fields, [0; 11]);
+        }
+    }
+
+    #[test]
+    fn appkit_pointer_refuses_foreground_transitions_and_releases_prepared_events() {
+        for (scenario, expected_release_count, focus) in [
+            (37, 0, ProcessFocusObservation::Refused),
+            (38, 1, ProcessFocusObservation::Refused),
+            (39, 0, ProcessFocusObservation::NotApplicable),
+            (42, 0, ProcessFocusObservation::Unavailable),
+            (43, 1, ProcessFocusObservation::Refused),
+        ] {
+            let observed = testing_process_post(scenario).expect("non-posting native seam");
+            assert_eq!(observed.delivery, ShimStatus::Unsupported);
+            assert_eq!(observed.invoked_native_units, 0);
+            assert!(!observed.native_effect_may_have_occurred);
+            assert_eq!(observed.focus, focus);
+            assert_eq!(observed.calls[5], 0, "no transport invocation");
+            assert_eq!(observed.calls[6], expected_release_count);
+        }
+    }
+
+    #[test]
+    fn appkit_pointer_owned_release_survives_foreground_change_after_press() {
+        let observed = testing_process_post(40).expect("non-posting native seam");
+        assert_eq!(observed.delivery, ShimStatus::Ok);
+        assert_eq!(observed.invoked_native_units, 1, "one owned release");
+        assert_eq!(
+            observed.target_match_count, 0,
+            "cleanup needs no live window"
+        );
+        assert_eq!(
+            observed.calls[0], 1,
+            "only the press observes window geometry"
+        );
+        assert_eq!(
+            observed.calls[5], 2,
+            "press and owned release, no ordinary release"
+        );
+        assert_eq!(observed.calls[6], 2, "both prepared events are released");
+    }
+
+    #[test]
+    fn appkit_pointer_location_exception_balances_event_ownership_without_posting() {
+        let observed = testing_process_post(41).expect("non-posting native seam");
+        assert_eq!(observed.delivery, ShimStatus::NativeException);
+        assert_eq!(observed.invoked_native_units, 0);
+        assert!(!observed.native_effect_may_have_occurred);
+        assert_eq!(observed.calls[5], 0);
+        assert_eq!(observed.calls[6], 1);
+    }
+
     #[test]
     fn process_event_source_has_an_owned_native_lifecycle() {
-        let source = ProcessEventSource::new(0)
-            .expect("this host can create a private Core Graphics source");
+        let source =
+            ProcessEventSource::new(0, crate::provider::MacosProcessPointerMode::CoreGraphics)
+                .expect("this host can create a private Core Graphics source");
         drop(source);
     }
 
