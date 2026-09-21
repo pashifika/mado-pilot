@@ -5178,7 +5178,7 @@ mp_shim_status mp_shim_testing_capture_pacing(uint32_t mode, int64_t nanos, uint
 #pragma mark - Controlled process-directed Core Graphics loading
 
 /*
- * These are the exact public Core Graphics signatures from the qualified SDK.
+ * Typed Core Graphics entry points include the private window-location setter.
  * They are resolved from an absolute framework path so symbol availability is a
  * typed operation result rather than an ambient lookup or eager load failure.
  */

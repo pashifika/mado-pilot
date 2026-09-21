@@ -1552,7 +1552,9 @@ System, keyboard, text, and scroll construction are unchanged. Posting remains
 one `CGEventPostToPid` call per native unit with invocation-only evidence and
 unknown compatibility. The historical controlled matrices above do not qualify
 this opt-in mode, arbitrary applications/games, concurrent typing, or macOS 27.
-Revision-bound native acceptance for this mode is not yet recorded.
+One revision-bound consumer workflow passed at `acc5d98`; its evidence and limits
+are recorded in [the input verification guide](macos-input-verification.md#revision-bound-consumer-observation).
+It does not upgrade route compatibility or replace the controlled qualification matrix.
 
 The system route invokes `CGEventPost` at the HID event tap; the process route
 invokes `CGEventPostToPid` against the owning process. macOS discards a
