@@ -35,10 +35,27 @@ const DISCOVERY_POLL_INTERVAL: Duration = Duration::from_millis(2);
 /// Current and immediately previous discovery selections remain openable.
 const RETAINED_DISCOVERY_GENERATIONS: usize = 2;
 
+/// Construction policy for process-directed mouse movement and button events.
+///
+/// This selection never changes System, keyboard, text, or scroll input.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum MacosProcessPointerMode {
+    /// Uses the existing private-source Core Graphics construction.
+    #[default]
+    CoreGraphics,
+    /// Uses AppKit construction with an event-local Command modifier.
+    ///
+    /// Ordinary pointer input refuses a foreground target or unavailable native
+    /// capability. No Command key is posted and no alternative route is selected.
+    /// Compatibility remains unknown and receipts prove invocation only.
+    AppKitBackground,
+}
+
 /// Declarative macOS defaults, selected before any native capture is opened.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
 pub struct MacosConfig {
     capture_pacing: CapturePacingRequest,
+    process_pointer_mode: MacosProcessPointerMode,
 }
 
 impl MacosConfig {
@@ -47,6 +64,7 @@ impl MacosConfig {
     pub const fn new() -> Self {
         Self {
             capture_pacing: CapturePacingRequest::inherit(),
+            process_pointer_mode: MacosProcessPointerMode::CoreGraphics,
         }
     }
 
@@ -62,6 +80,19 @@ impl MacosConfig {
     pub const fn capture_pacing(&self) -> CapturePacingRequest {
         self.capture_pacing
     }
+
+    /// Replaces the immutable process-directed pointer construction policy.
+    #[must_use]
+    pub const fn with_process_pointer_mode(mut self, mode: MacosProcessPointerMode) -> Self {
+        self.process_pointer_mode = mode;
+        self
+    }
+
+    /// Returns the process-directed pointer construction policy.
+    #[must_use]
+    pub const fn process_pointer_mode(&self) -> MacosProcessPointerMode {
+        self.process_pointer_mode
+    }
 }
 
 /// Picker-free macOS target discovery and ScreenCaptureKit capture.
@@ -75,6 +106,7 @@ impl MacosConfig {
 pub struct MacosCaptureProvider {
     issuer: Arc<IdentityIssuer>,
     capture_pacing: ResolvedCapturePacing,
+    process_pointer_mode: MacosProcessPointerMode,
     discovery_gate: Mutex<()>,
     registry: Mutex<Registry>,
 }
@@ -107,6 +139,7 @@ impl MacosCaptureProvider {
         Self {
             issuer,
             capture_pacing: ResolvedCapturePacing::source_default(),
+            process_pointer_mode: MacosProcessPointerMode::CoreGraphics,
             discovery_gate: Mutex::new(()),
             registry: Mutex::new(Registry::default()),
         }
@@ -127,6 +160,13 @@ impl MacosCaptureProvider {
             capture_pacing: pacing,
             ..Self::new(issuer)
         })
+    }
+
+    /// Selects process-directed pointer construction without touching native APIs.
+    #[must_use]
+    pub const fn with_process_pointer_mode(mut self, mode: MacosProcessPointerMode) -> Self {
+        self.process_pointer_mode = mode;
+        self
     }
 
     /// Validates only the selected native duration representation.
@@ -407,7 +447,7 @@ impl InputProvider for MacosCaptureProvider {
         let descriptor = record.input_descriptor(inventory_wait(operation.remaining()));
         attempt.checkpoint()?;
         request.check(descriptor.capability())?;
-        let controller = MacosInputController::new(record, descriptor);
+        let controller = MacosInputController::new(record, descriptor, self.process_pointer_mode);
         Ok(attempt.commit(controller as Arc<dyn InputController>)?)
     }
 }

@@ -329,11 +329,18 @@ trait ProcessGeometrySource {
 
 pub(crate) struct NativeInputDriver {
     record: Arc<TargetRecord>,
+    process_pointer_mode: crate::provider::MacosProcessPointerMode,
 }
 
 impl NativeInputDriver {
-    pub(crate) fn new(record: Arc<TargetRecord>) -> Self {
-        Self { record }
+    pub(crate) fn new(
+        record: Arc<TargetRecord>,
+        process_pointer_mode: crate::provider::MacosProcessPointerMode,
+    ) -> Self {
+        Self {
+            record,
+            process_pointer_mode,
+        }
     }
 
     /// Reads public post-event access without requesting it.
@@ -1337,8 +1344,11 @@ impl InputDriver for NativeInputDriver {
         state.process_event_source = match delivery {
             InputDelivery::System => None,
             InputDelivery::ProcessDirected => Some(
-                shim::ProcessEventSource::new(operation.activity_tag().map_or(0, |tag| tag.get()))
-                    .map_err(|status| self.classify_process_status(status, operation))?,
+                shim::ProcessEventSource::new(
+                    operation.activity_tag().map_or(0, |tag| tag.get()),
+                    self.process_pointer_mode,
+                )
+                .map_err(|status| self.classify_process_status(status, operation))?,
             ),
             _ => return Err(InputFault::UnsupportedCombination),
         };

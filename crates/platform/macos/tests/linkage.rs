@@ -29,7 +29,11 @@ const DEFERRED_FRAMEWORKS: [&str; 3] = ["ScreenCaptureKit", "AppKit", "OpenGL"];
 
 /// Process-directed entry points that must be resolved through the controlled
 /// CoreGraphics loader rather than emitted as eager undefined references.
-const DEFERRED_PROCESS_SYMBOLS: [&str; 2] = ["_CGEventPostToPid", "_CGPreflightPostEventAccess"];
+const DEFERRED_PROCESS_SYMBOLS: [&str; 3] = [
+    "_CGEventPostToPid",
+    "_CGPreflightPostEventAccess",
+    "_CGEventSetWindowLocation",
+];
 
 /// Forces the shim into this binary's link.
 ///

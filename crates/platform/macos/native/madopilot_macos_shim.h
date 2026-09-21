@@ -30,7 +30,7 @@ extern "C" {
 #endif
 
 /* The version of this internal surface. Rust asserts it at load. */
-#define MP_SHIM_ABI_VERSION 23u
+#define MP_SHIM_ABI_VERSION 24u
 
 /* The largest extent, budget, and default wait the shim will accept or apply. */
 #define MP_SHIM_MAX_PIXEL_EXTENT 32768u
@@ -691,6 +691,18 @@ mp_shim_status mp_shim_testing_target_release_exception(
 #define MP_SHIM_TEST_PROCESS_FOCUS_LOST_DURING_AUTHORITY 34u
 #define MP_SHIM_TEST_PROCESS_GEOMETRY_CHANGED_DURING_FOCUS 35u
 #define MP_SHIM_TEST_PROCESS_GEOMETRY_MOVED_WITHOUT_REQUIRE_UNCHANGED 36u
+#define MP_SHIM_TEST_PROCESS_APPKIT_FOREGROUND 37u
+#define MP_SHIM_TEST_PROCESS_APPKIT_FOREGROUND_AFTER_PREPARE 38u
+#define MP_SHIM_TEST_PROCESS_APPKIT_CAPABILITY_UNAVAILABLE 39u
+#define MP_SHIM_TEST_PROCESS_APPKIT_OWNED_RELEASE 40u
+#define MP_SHIM_TEST_PROCESS_APPKIT_LOCATE_EXCEPTION 41u
+#define MP_SHIM_TEST_PROCESS_APPKIT_BACKGROUND_UNAVAILABLE 42u
+#define MP_SHIM_TEST_PROCESS_APPKIT_FOREGROUND_DURING_LIFETIME 43u
+
+/* Non-posting NSEvent construction, scalar observations after autorelease drain. */
+mp_shim_status mp_shim_testing_appkit_pointer(
+    uint32_t action, uint32_t button, uint32_t scenario, mp_shim_status *out_construction,
+    double *out_points, size_t point_count, int64_t *out_fields, size_t field_count);
 
 /* Process-post request and capture-only target-shape validation scenarios. */
 #define MP_SHIM_TEST_PROCESS_VALIDATE_NULL_REQUEST 0u
@@ -982,6 +994,10 @@ mp_shim_status mp_shim_frame_copy_out(const mp_shim_frame *frame, uint8_t *desti
 #define MP_SHIM_PROCESS_EVENT_KEY 2u
 #define MP_SHIM_PROCESS_EVENT_TEXT 3u
 
+/* Immutable construction selection owned by each process-directed sequence. */
+#define MP_SHIM_PROCESS_POINTER_CORE_GRAPHICS 0u
+#define MP_SHIM_PROCESS_POINTER_APPKIT_BACKGROUND 1u
+
 /* Whether one post is ordinary input or a bounded sequence-owned release. */
 #define MP_SHIM_PROCESS_POST_INPUT 0u
 #define MP_SHIM_PROCESS_POST_RELEASE 1u
@@ -1046,7 +1062,7 @@ typedef struct mp_shim_process_post_request {
     uint32_t struct_size;
     uint32_t event_kind;
     const mp_shim_target *target;
-    const mp_shim_process_event_source *event_source;
+    mp_shim_process_event_source *event_source;
     uint64_t timeout_nanos;
     uint32_t flags;
     uint32_t geometry_check;
@@ -1130,9 +1146,12 @@ mp_shim_status mp_shim_process_authority(const mp_shim_target *target,
  * NULL. Every event and sequence-owned cleanup release passes the same source.
  * A nonzero activity tag is copied to the documented event-source user-data
  * field as observational, non-control-flow metadata.
+ * The immutable pointer mode applies only to mouse movement/button events.
+ * The caller serializes use; the source retains only last authorized pointer
+ * geometry for bounded owned releases after the window or foreground changes.
  */
 mp_shim_status mp_shim_process_event_source_create(
-    uint64_t activity_tag, mp_shim_process_event_source **out_source);
+    uint64_t activity_tag, uint32_t pointer_mode, mp_shim_process_event_source **out_source);
 void mp_shim_process_event_source_release(mp_shim_process_event_source *source);
 
 /*

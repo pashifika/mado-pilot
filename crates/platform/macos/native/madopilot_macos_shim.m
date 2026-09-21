@@ -1557,7 +1557,10 @@ struct mp_shim_target {
  */
 struct mp_shim_process_event_source {
     uint32_t magic;
+    uint32_t pointer_mode;
     CGEventSourceRef source;
+    CGRect pointer_bounds;
+    bool has_pointer_bounds;
 };
 
 typedef mp_shim_status (*MPShimFixtureLifetimeProbe)(
@@ -5181,11 +5184,13 @@ mp_shim_status mp_shim_testing_capture_pacing(uint32_t mode, int64_t nanos, uint
  */
 typedef bool (*MPShimCGPreflightPostEventAccess)(void);
 typedef void (*MPShimCGEventPostToPid)(pid_t pid, CGEventRef event);
+typedef void (*MPShimCGEventSetWindowLocation)(CGEventRef event, CGPoint location);
 
 typedef struct MPShimProcessEventApi {
     bool loaded;
     MPShimCGPreflightPostEventAccess preflight;
     MPShimCGEventPostToPid post_to_pid;
+    MPShimCGEventSetWindowLocation set_window_location;
 } MPShimProcessEventApi;
 
 static MPShimProcessEventApi mp_shim_process_event_api;
@@ -5208,6 +5213,8 @@ static void mp_shim_load_process_event_api(void) {
     loaded.preflight =
         (MPShimCGPreflightPostEventAccess)dlsym(handle, "CGPreflightPostEventAccess");
     loaded.post_to_pid = (MPShimCGEventPostToPid)dlsym(handle, "CGEventPostToPid");
+    loaded.set_window_location =
+        (MPShimCGEventSetWindowLocation)dlsym(handle, "CGEventSetWindowLocation");
     loaded.loaded = loaded.preflight != NULL && loaded.post_to_pid != NULL;
     if (loaded.loaded) {
         mp_shim_process_event_api = loaded;
@@ -5380,6 +5387,7 @@ static const NSUInteger MPShimActivateAllWindows = 1u << 0;
 static Class mp_shim_running_application_class = Nil;
 static Class mp_shim_workspace_class = Nil;
 static Class mp_shim_workspace_configuration_class = Nil;
+static Class mp_shim_event_class = Nil;
 static pthread_once_t mp_shim_appkit_once = PTHREAD_ONCE_INIT;
 
 static void mp_shim_load_appkit(void) {
@@ -5395,6 +5403,7 @@ static void mp_shim_load_appkit(void) {
     mp_shim_workspace_class = NSClassFromString(@"NSWorkspace");
     mp_shim_workspace_configuration_class =
         NSClassFromString(@"NSWorkspaceOpenConfiguration");
+    mp_shim_event_class = NSClassFromString(@"NSEvent");
 }
 
 #define MP_SHIM_MAX_FIXTURE_ARGUMENTS 16u
@@ -8131,7 +8140,7 @@ static void *mp_shim_production_process_event_source_allocate(size_t size, void 
 }
 
 static mp_shim_status mp_shim_process_event_source_create_with_ops(
-    uint64_t activity_tag, mp_shim_process_event_source **out_source,
+    uint64_t activity_tag, uint32_t pointer_mode, mp_shim_process_event_source **out_source,
     mp_shim_process_event_source_create_op create,
     mp_shim_process_event_source_allocate_op allocate,
     mp_shim_process_event_source_release_op release, void *context) {
@@ -8139,6 +8148,10 @@ static mp_shim_status mp_shim_process_event_source_create_with_ops(
         return MP_SHIM_INVALID_ARGUMENT;
     }
     *out_source = NULL;
+    if (pointer_mode != MP_SHIM_PROCESS_POINTER_CORE_GRAPHICS &&
+        pointer_mode != MP_SHIM_PROCESS_POINTER_APPKIT_BACKGROUND) {
+        return MP_SHIM_INVALID_ARGUMENT;
+    }
     CGEventSourceRef native_source = create(context);
     if (native_source == NULL) {
         return MP_SHIM_PLATFORM_FAILURE;
@@ -8151,19 +8164,22 @@ static mp_shim_status mp_shim_process_event_source_create_with_ops(
     CGEventSourceSetUserData(native_source, (int64_t)activity_tag);
     source->magic = MP_SHIM_PROCESS_EVENT_SOURCE_MAGIC;
     source->source = native_source;
+    source->pointer_mode = pointer_mode;
+    source->pointer_bounds = CGRectNull;
+    source->has_pointer_bounds = false;
     *out_source = source;
     mp_shim_note_owned();
     return MP_SHIM_OK;
 }
 
 mp_shim_status mp_shim_process_event_source_create(
-    uint64_t activity_tag, mp_shim_process_event_source **out_source) {
+    uint64_t activity_tag, uint32_t pointer_mode, mp_shim_process_event_source **out_source) {
     if (out_source != NULL) {
         *out_source = NULL;
     }
     MP_SHIM_BEGIN
     return mp_shim_process_event_source_create_with_ops(
-        activity_tag, out_source, mp_shim_production_process_event_source_create,
+        activity_tag, pointer_mode, out_source, mp_shim_production_process_event_source_create,
         mp_shim_production_process_event_source_allocate,
         mp_shim_production_process_event_source_release, NULL);
     MP_SHIM_END
@@ -8281,7 +8297,8 @@ mp_shim_status mp_shim_testing_process_event_source_allocation_failure(
     mp_shim_process_event_source_allocation_probe probe = {.scenario = scenario};
     mp_shim_process_event_source *source = (mp_shim_process_event_source *)(uintptr_t)1;
     mp_shim_status status = mp_shim_process_event_source_create_with_ops(
-        42, &source, mp_shim_testing_process_event_source_create,
+        42, MP_SHIM_PROCESS_POINTER_CORE_GRAPHICS, &source,
+        mp_shim_testing_process_event_source_create,
         mp_shim_testing_process_event_source_allocate,
         mp_shim_testing_process_event_source_release, &probe);
     *out_creation_status = status;
@@ -8857,6 +8874,9 @@ typedef struct {
     mp_shim_status (*focus)(const mp_shim_target *target, uint64_t deadline, bool *out_focused,
                             CGRect *out_bounds, uint32_t *out_target_match_count,
                             void *context);
+    mp_shim_status (*background)(uint32_t *out_frontmost, void *context);
+    mp_shim_status (*locate_pointer)(const mp_shim_process_post_request *request,
+                                     CGEventRef event, CGRect bounds, void *context);
     double (*scale)(CGRect bounds, void *context);
     uint64_t (*now)(void *context);
     mp_shim_status (*prepare)(const mp_shim_process_post_request *request,
@@ -8909,6 +8929,10 @@ mp_shim_validate_process_post(const mp_shim_process_post_request *request,
         request->interruption_callback == NULL || request->cancellation_context == NULL ||
         request->cancellation_callback == NULL || request->timeout_nanos == 0 ||
         request->timeout_nanos > MP_SHIM_MAX_NATIVE_WAIT_NANOS) {
+        return MP_SHIM_INVALID_ARGUMENT;
+    }
+    if (request->event_source->pointer_mode != MP_SHIM_PROCESS_POINTER_CORE_GRAPHICS &&
+        request->event_source->pointer_mode != MP_SHIM_PROCESS_POINTER_APPKIT_BACKGROUND) {
         return MP_SHIM_INVALID_ARGUMENT;
     }
     if (request->target->process_lifetime == NULL) {
@@ -8995,15 +9019,149 @@ mp_shim_process_native_unit_count(const mp_shim_process_post_request *request) {
     return request->event_kind == MP_SHIM_PROCESS_EVENT_TEXT ? 2 : 1;
 }
 
+/* Exact NSEvent mouse factory signature, without eagerly linking AppKit. */
+@protocol MPShimMouseEvent <NSObject>
+- (CGEventRef)CGEvent;
+@end
+@protocol MPShimMouseEventClass <NSObject>
++ (id<MPShimMouseEvent>)mouseEventWithType:(NSUInteger)type
+                                location:(NSPoint)location
+                           modifierFlags:(NSUInteger)flags
+                               timestamp:(NSTimeInterval)timestamp
+                            windowNumber:(NSInteger)window_number
+                                 context:(id)graphics_context
+                             eventNumber:(NSInteger)event_number
+                              clickCount:(NSInteger)click_count
+                                pressure:(float)pressure;
+@end
+
+static bool mp_shim_uses_appkit_pointer(const mp_shim_process_post_request *request) {
+    return request->event_kind == MP_SHIM_PROCESS_EVENT_POINTER &&
+           request->event_source->pointer_mode == MP_SHIM_PROCESS_POINTER_APPKIT_BACKGROUND;
+}
+
+/* Never wrap an AppKit event number or borrow the ambient event source. */
+static atomic_uint mp_shim_appkit_event_number = ATOMIC_VAR_INIT(0);
+
+static mp_shim_status mp_shim_prepare_appkit_pointer(
+    const mp_shim_process_post_request *request, Class event_class,
+    MPShimCGEventSetWindowLocation set_window_location, CGEventRef *out_event) {
+    *out_event = NULL;
+    if (set_window_location == NULL || event_class == Nil ||
+        ![event_class respondsToSelector:@selector(mouseEventWithType:location:modifierFlags:
+                                                   timestamp:windowNumber:context:eventNumber:
+                                                   clickCount:pressure:)]) {
+        return MP_SHIM_UNSUPPORTED;
+    }
+    CGEventType type;
+    CGMouseButton button = kCGMouseButtonLeft;
+    if (!mp_shim_input_pointer_type(request->action, request->button, &type) ||
+        (request->button != MP_SHIM_INPUT_BUTTON_NONE &&
+         !mp_shim_input_mouse_button(request->button, &button)) ||
+        request->target->native_id > INT_MAX) {
+        return MP_SHIM_UNSUPPORTED;
+    }
+    unsigned int number = atomic_load_explicit(&mp_shim_appkit_event_number, memory_order_relaxed);
+    do {
+        if (number >= INT_MAX) {
+            return MP_SHIM_UNSUPPORTED;
+        }
+    } while (!atomic_compare_exchange_weak_explicit(
+        &mp_shim_appkit_event_number, &number, number + 1, memory_order_relaxed,
+        memory_order_relaxed));
+
+    CGEventFlags flags = mp_shim_input_event_flags(request->flags) | kCGEventFlagMaskCommand;
+    /*
+     * Public NSEvent mouse type values match the corresponding CGEvent types,
+     * including right/other buttons and dragged variants. The explicit button
+     * field below distinguishes the middle button from a left-button event.
+     */
+    id<MPShimMouseEvent> mouse = [(Class<MPShimMouseEventClass>)event_class
+        mouseEventWithType:(NSUInteger)type
+                 location:NSMakePoint(request->x, request->y)
+            modifierFlags:(NSUInteger)flags
+                timestamp:NSProcessInfo.processInfo.systemUptime
+             windowNumber:(NSInteger)request->target->native_id
+                  context:nil
+              eventNumber:(NSInteger)(number + 1)
+               clickCount:request->action == MP_SHIM_INPUT_POINTER_MOVE
+                              ? 0 : (NSInteger)request->click_state
+                 pressure:1.0f];
+    if (mouse == nil || ![mouse respondsToSelector:@selector(CGEvent)]) {
+        return MP_SHIM_UNSUPPORTED;
+    }
+    CGEventRef borrowed = [mouse CGEvent];
+    if (borrowed == NULL || CGEventGetType(borrowed) != type) {
+        return MP_SHIM_UNSUPPORTED;
+    }
+    /*
+     * Publish ownership before any subsequent work can throw. The surrounding
+     * per-unit @finally releases this retain on every success/failure path,
+     * independently of ARC's ownership of the autoreleased NSEvent.
+     */
+    *out_event = (CGEventRef)CFRetain(borrowed);
+    CGEventSetSource(*out_event, request->event_source->source);
+    CGEventSetIntegerValueField(*out_event, kCGEventSourceUserData,
+                                CGEventSourceGetUserData(request->event_source->source));
+    CGEventSetLocation(*out_event, CGPointMake(request->x, request->y));
+    CGEventSetFlags(*out_event, flags);
+    CGEventSetIntegerValueField(*out_event, kCGMouseEventSubtype, 3);
+    CGEventSetIntegerValueField(*out_event, kCGMouseEventButtonNumber, button);
+    CGEventSetIntegerValueField(*out_event, kCGMouseEventWindowUnderMousePointer,
+                                request->target->native_id);
+    CGEventSetIntegerValueField(*out_event,
+                                kCGMouseEventWindowUnderMousePointerThatCanHandleThisEvent,
+                                request->target->native_id);
+    return MP_SHIM_OK;
+}
+
+static mp_shim_status mp_shim_locate_appkit_pointer(
+    const mp_shim_process_post_request *request, CGEventRef event, CGRect bounds,
+    MPShimCGEventSetWindowLocation set_window_location) {
+    if (set_window_location == NULL) {
+        return MP_SHIM_UNSUPPORTED;
+    }
+    if (request->purpose == MP_SHIM_PROCESS_POST_RELEASE) {
+        if (request->action != MP_SHIM_INPUT_POINTER_RELEASE ||
+            !request->event_source->has_pointer_bounds) {
+            return MP_SHIM_UNSUPPORTED;
+        }
+        bounds = request->event_source->pointer_bounds;
+    }
+    if (!mp_shim_process_bounds_valid(bounds.origin.x, bounds.origin.y, bounds.size.width,
+                                      bounds.size.height, 1.0)) {
+        return MP_SHIM_UNSUPPORTED;
+    }
+    CGPoint local = CGPointMake(request->x - bounds.origin.x, request->y - bounds.origin.y);
+    set_window_location(event, local);
+    if (request->purpose == MP_SHIM_PROCESS_POST_INPUT) {
+        request->event_source->pointer_bounds = bounds;
+        request->event_source->has_pointer_bounds = true;
+    }
+    return MP_SHIM_OK;
+}
+
+static mp_shim_status mp_shim_production_process_locate_pointer(
+    const mp_shim_process_post_request *request, CGEventRef event, CGRect bounds, void *context) {
+    const MPShimProcessEventApi *api = context;
+    return mp_shim_locate_appkit_pointer(request, event, bounds, api->set_window_location);
+}
+
+
 static mp_shim_status
 mp_shim_prepare_process_event(const mp_shim_process_post_request *request,
                               size_t native_unit_index, CGEventRef *out_event,
                               void *context) {
-    (void)context;
+    const MPShimProcessEventApi *api = context;
     if (out_event == NULL || native_unit_index >= mp_shim_process_native_unit_count(request)) {
         return MP_SHIM_INVALID_ARGUMENT;
     }
     *out_event = NULL;
+    if (mp_shim_uses_appkit_pointer(request)) {
+        pthread_once(&mp_shim_appkit_once, mp_shim_load_appkit);
+        return mp_shim_prepare_appkit_pointer(
+            request, mp_shim_event_class, api->set_window_location, out_event);
+    }
     CGEventFlags flags = mp_shim_input_event_flags(request->flags);
     CGEventRef event = NULL;
     switch (request->event_kind) {
@@ -9125,6 +9283,26 @@ static void mp_shim_process_report_reset_gate(const mp_shim_process_post_request
                                : MP_SHIM_PROCESS_FOCUS_NOT_EVALUATED;
 }
 
+static mp_shim_status mp_shim_process_check_background(
+    const mp_shim_process_post_request *request, mp_shim_process_post_report *report,
+    const mp_shim_process_post_ops *ops) {
+    if (!mp_shim_uses_appkit_pointer(request) ||
+        request->purpose == MP_SHIM_PROCESS_POST_RELEASE) {
+        return MP_SHIM_OK;
+    }
+    uint32_t frontmost = 0;
+    mp_shim_status status = ops->background(&frontmost, ops->context);
+    if (status != MP_SHIM_OK || frontmost == 0) {
+        report->focus_result = MP_SHIM_PROCESS_FOCUS_UNAVAILABLE;
+        return MP_SHIM_UNSUPPORTED;
+    }
+    if (frontmost == (uint32_t)request->target->owner_process) {
+        report->focus_result = MP_SHIM_PROCESS_FOCUS_REFUSED;
+        return MP_SHIM_UNSUPPORTED;
+    }
+    return MP_SHIM_OK;
+}
+
 /*
  * Refuses cheap, process-wide failures before constructing a native event.
  *
@@ -9144,6 +9322,10 @@ static mp_shim_status mp_shim_process_check_prepare_eligibility(
         return status;
     }
     status = ops->lifetime(request->target, ops->context);
+    if (status != MP_SHIM_OK) {
+        return status;
+    }
+    status = mp_shim_process_check_background(request, report, ops);
     if (status != MP_SHIM_OK) {
         return status;
     }
@@ -9216,10 +9398,10 @@ static bool mp_shim_process_geometry_matches(
  */
 static mp_shim_status mp_shim_process_check_commit_authority(
     const mp_shim_process_post_request *request, mp_shim_process_post_report *report,
-    const mp_shim_process_post_ops *ops, uint64_t deadline) {
+    const mp_shim_process_post_ops *ops, uint64_t deadline, CGEventRef event) {
     mp_shim_status status = MP_SHIM_OK;
+    CGRect current_bounds = CGRectNull;
     if (request->purpose == MP_SHIM_PROCESS_POST_INPUT) {
-        CGRect current_bounds = CGRectNull;
         status = ops->authority(request->target, deadline, &current_bounds,
                                 &report->target_match_count, ops->context);
         if (status != MP_SHIM_OK) {
@@ -9256,6 +9438,12 @@ static mp_shim_status mp_shim_process_check_commit_authority(
                 return MP_SHIM_GEOMETRY_CHANGED;
             }
             report->geometry_result = MP_SHIM_PROCESS_GEOMETRY_PASSED;
+        }
+    }
+    if (mp_shim_uses_appkit_pointer(request)) {
+        status = ops->locate_pointer(request, event, current_bounds, ops->context);
+        if (status != MP_SHIM_OK) {
+            return status;
         }
     }
 
@@ -9308,7 +9496,7 @@ mp_shim_process_post_with_ops(const mp_shim_process_post_request *request,
     if (ops == NULL || ops->authority == NULL || ops->preflight == NULL ||
         ops->lifetime == NULL || ops->focus == NULL || ops->scale == NULL ||
         ops->now == NULL || ops->prepare == NULL || ops->post == NULL ||
-        ops->release == NULL) {
+        ops->release == NULL || ops->background == NULL || ops->locate_pointer == NULL) {
         return MP_SHIM_INVALID_ARGUMENT;
     }
     out_report->target_match_count = 0;
@@ -9347,8 +9535,8 @@ mp_shim_process_post_with_ops(const mp_shim_process_post_request *request,
             if (status != MP_SHIM_OK) {
                 return status;
             }
-            status =
-                mp_shim_process_check_commit_authority(request, out_report, ops, deadline);
+            status = mp_shim_process_check_commit_authority(
+                request, out_report, ops, deadline, event);
             if (status != MP_SHIM_OK) {
                 return status;
             }
@@ -9362,6 +9550,10 @@ mp_shim_process_post_with_ops(const mp_shim_process_post_request *request,
              * by an earlier observation invalidated from the checkpoint seam.
              */
             status = ops->lifetime(request->target, ops->context);
+            if (status != MP_SHIM_OK) {
+                return status;
+            }
+            status = mp_shim_process_check_background(request, out_report, ops);
             if (status != MP_SHIM_OK) {
                 return status;
             }
@@ -9421,6 +9613,8 @@ mp_shim_status mp_shim_process_post(const mp_shim_process_post_request *request,
         .preflight = mp_shim_production_process_preflight,
         .lifetime = mp_shim_production_process_lifetime,
         .focus = mp_shim_production_process_focus,
+        .background = mp_shim_production_input_environment_frontmost_process,
+        .locate_pointer = mp_shim_production_process_locate_pointer,
         .scale = mp_shim_production_process_scale,
         .now = mp_shim_production_process_now,
         .prepare = mp_shim_prepare_process_event,
@@ -10025,6 +10219,48 @@ static double mp_shim_testing_process_scale(CGRect bounds, void *context) {
     return 2.0;
 }
 
+static mp_shim_status mp_shim_testing_process_background(
+    uint32_t *out_frontmost, void *context) {
+    mp_shim_process_test_probe *probe = context;
+    *out_frontmost = 0;
+    if (probe->scenario == MP_SHIM_TEST_PROCESS_APPKIT_BACKGROUND_UNAVAILABLE) {
+        return MP_SHIM_PLATFORM_FAILURE;
+    }
+    *out_frontmost = 456;
+    if (probe->scenario == MP_SHIM_TEST_PROCESS_APPKIT_FOREGROUND ||
+        (probe->scenario == MP_SHIM_TEST_PROCESS_APPKIT_FOREGROUND_AFTER_PREPARE &&
+         probe->prepare_calls != 0) ||
+        (probe->scenario == MP_SHIM_TEST_PROCESS_APPKIT_FOREGROUND_DURING_LIFETIME &&
+         probe->lifetime_calls >= 2) ||
+        (probe->scenario == MP_SHIM_TEST_PROCESS_APPKIT_OWNED_RELEASE &&
+         probe->post_calls != 0)) {
+        *out_frontmost = 123;
+    }
+    return MP_SHIM_OK;
+}
+
+static _Thread_local CGPoint mp_shim_testing_window_location;
+
+static void mp_shim_testing_set_window_location(CGEventRef event, CGPoint location) {
+    (void)event;
+    mp_shim_testing_window_location = location;
+}
+
+static mp_shim_status mp_shim_testing_process_locate_pointer(
+    const mp_shim_process_post_request *request, CGEventRef event, CGRect bounds, void *context) {
+    mp_shim_process_test_probe *probe = context;
+    mp_shim_status status = mp_shim_locate_appkit_pointer(
+        request, event, bounds, mp_shim_testing_set_window_location);
+    if (probe->scenario == MP_SHIM_TEST_PROCESS_APPKIT_LOCATE_EXCEPTION) {
+        [NSException raise:@"MPShimInjectedFailure" format:@"AppKit pointer location"];
+    }
+    if (status == MP_SHIM_OK &&
+        !CGPointEqualToPoint(mp_shim_testing_window_location, CGPointMake(20.0, 20.0))) {
+        return MP_SHIM_PLATFORM_FAILURE;
+    }
+    return status;
+}
+
 static mp_shim_status mp_shim_testing_prepare_process_event(
     const mp_shim_process_post_request *request, size_t native_unit_index,
     CGEventRef *out_event, void *context) {
@@ -10036,6 +10272,9 @@ static mp_shim_status mp_shim_testing_prepare_process_event(
     }
     if (probe->scenario == MP_SHIM_TEST_PROCESS_CONSTRUCTION_FAILED) {
         return MP_SHIM_PLATFORM_FAILURE;
+    }
+    if (probe->scenario == MP_SHIM_TEST_PROCESS_APPKIT_CAPABILITY_UNAVAILABLE) {
+        return MP_SHIM_UNSUPPORTED;
     }
     *out_event = (CGEventRef)(uintptr_t)(native_unit_index + 1);
     if (probe->scenario == MP_SHIM_TEST_PROCESS_NATIVE_EXCEPTION) {
@@ -10076,7 +10315,7 @@ mp_shim_status mp_shim_testing_process_post(
         out_lifetime_calls == NULL || out_focus_calls == NULL || out_prepare_calls == NULL ||
         out_post_calls == NULL || out_release_calls == NULL || out_checkpoint_calls == NULL ||
         out_cancellation_calls == NULL ||
-        scenario > MP_SHIM_TEST_PROCESS_GEOMETRY_MOVED_WITHOUT_REQUIRE_UNCHANGED) {
+        scenario > MP_SHIM_TEST_PROCESS_APPKIT_FOREGROUND_DURING_LIFETIME) {
         return MP_SHIM_INVALID_ARGUMENT;
     }
     *out_delivery_status = MP_SHIM_PLATFORM_FAILURE;
@@ -10139,6 +10378,14 @@ mp_shim_status mp_shim_testing_process_post(
             .cancellation_context = &probe,
             .cancellation_callback = mp_shim_testing_process_cancellation,
         };
+        if (scenario >= MP_SHIM_TEST_PROCESS_APPKIT_FOREGROUND) {
+            event_source.pointer_mode = MP_SHIM_PROCESS_POINTER_APPKIT_BACKGROUND;
+        }
+        if (scenario == MP_SHIM_TEST_PROCESS_APPKIT_OWNED_RELEASE) {
+            request.action = MP_SHIM_INPUT_POINTER_PRESS;
+            request.button = MP_SHIM_INPUT_BUTTON_PRIMARY;
+            request.click_state = 1;
+        }
         if (scenario == MP_SHIM_TEST_PROCESS_INVALID_EVENT) {
             request.event_kind = UINT32_MAX;
         } else if (scenario == MP_SHIM_TEST_PROCESS_REVOKED_AFTER_FIRST ||
@@ -10178,6 +10425,8 @@ mp_shim_status mp_shim_testing_process_post(
             .preflight = mp_shim_testing_process_preflight,
             .lifetime = mp_shim_testing_process_lifetime,
             .focus = mp_shim_testing_process_focus,
+            .background = mp_shim_testing_process_background,
+            .locate_pointer = mp_shim_testing_process_locate_pointer,
             .scale = mp_shim_testing_process_scale,
             .now = mp_shim_testing_process_now,
             .prepare = mp_shim_testing_prepare_process_event,
@@ -10187,6 +10436,19 @@ mp_shim_status mp_shim_testing_process_post(
         };
         @try {
             delivery = mp_shim_process_post_with_ops(&request, &report, &ops);
+            if (scenario == MP_SHIM_TEST_PROCESS_APPKIT_OWNED_RELEASE &&
+                delivery == MP_SHIM_OK) {
+                /* A successful press is followed by a foreground transition. */
+                request.action = MP_SHIM_INPUT_POINTER_RELEASE;
+                delivery = mp_shim_process_post_with_ops(&request, &report, &ops);
+                if (delivery == MP_SHIM_UNSUPPORTED && report.invoked_native_units == 0 &&
+                    !report.native_effect_may_have_occurred) {
+                    request.purpose = MP_SHIM_PROCESS_POST_RELEASE;
+                    delivery = mp_shim_process_post_with_ops(&request, &report, &ops);
+                } else {
+                    delivery = MP_SHIM_PLATFORM_FAILURE;
+                }
+            }
         } @catch (NSException *exception) {
             (void)exception;
             delivery = MP_SHIM_NATIVE_EXCEPTION;
@@ -10207,6 +10469,81 @@ mp_shim_status mp_shim_testing_process_post(
     *out_checkpoint_calls = probe.checkpoint_calls;
     *out_cancellation_calls = probe.cancellation_calls;
     return MP_SHIM_OK;
+    MP_SHIM_END
+}
+
+mp_shim_status mp_shim_testing_appkit_pointer(
+    uint32_t action, uint32_t button, uint32_t scenario, mp_shim_status *out_construction,
+    double *out_points, size_t point_count, int64_t *out_fields, size_t field_count) {
+    if (out_construction == NULL || out_points == NULL || point_count != 4 ||
+        out_fields == NULL || field_count != 11 || scenario > 2) {
+        return MP_SHIM_INVALID_ARGUMENT;
+    }
+    *out_construction = MP_SHIM_PLATFORM_FAILURE;
+    memset(out_points, 0, sizeof(double) * point_count);
+    memset(out_fields, 0, sizeof(int64_t) * field_count);
+    MP_SHIM_BEGIN
+    mp_shim_process_event_source *source = NULL;
+    CGEventRef event = NULL;
+    @try {
+        mp_shim_status status = mp_shim_process_event_source_create(
+            42, MP_SHIM_PROCESS_POINTER_APPKIT_BACKGROUND, &source);
+        if (status != MP_SHIM_OK) {
+            return status;
+        }
+        const mp_shim_target target = {.native_id = 123};
+        const mp_shim_process_post_request request = {
+            .event_kind = MP_SHIM_PROCESS_EVENT_POINTER,
+            .target = &target,
+            .event_source = source,
+            .flags = MP_SHIM_INPUT_FLAG_SHIFT | MP_SHIM_INPUT_FLAG_ALT,
+            .action = action,
+            .button = button,
+            .click_state = 2,
+            .x = -150.5,
+            .y = 210.25,
+        };
+        @autoreleasepool {
+            pthread_once(&mp_shim_appkit_once, mp_shim_load_appkit);
+            status = mp_shim_prepare_appkit_pointer(
+                &request, scenario == 1 ? Nil : mp_shim_event_class,
+                scenario == 2 ? NULL : mp_shim_testing_set_window_location, &event);
+        }
+        *out_construction = status;
+        if (status != MP_SHIM_OK) {
+            return event == NULL ? MP_SHIM_OK : MP_SHIM_PLATFORM_FAILURE;
+        }
+        /* Only the transferred CGEvent retain survives the autorelease pool. */
+        status = mp_shim_locate_appkit_pointer(
+            &request, event, CGRectMake(-200.0, 180.0, 320.0, 240.0),
+            mp_shim_testing_set_window_location);
+        if (status != MP_SHIM_OK) {
+            return status;
+        }
+        CGPoint global = CGEventGetLocation(event);
+        out_points[0] = global.x;
+        out_points[1] = global.y;
+        out_points[2] = mp_shim_testing_window_location.x;
+        out_points[3] = mp_shim_testing_window_location.y;
+        out_fields[0] = (int64_t)CGEventGetFlags(event);
+        out_fields[1] = CGEventGetIntegerValueField(event, kCGEventSourceStateID);
+        out_fields[2] = CGEventGetIntegerValueField(event, kCGEventSourceUserData);
+        out_fields[3] = CGEventGetType(event);
+        out_fields[4] = CGEventGetIntegerValueField(event, kCGMouseEventButtonNumber);
+        out_fields[5] = CGEventGetIntegerValueField(event, kCGMouseEventClickState);
+        out_fields[6] = CGEventGetIntegerValueField(event, kCGMouseEventSubtype);
+        out_fields[7] = CGEventGetIntegerValueField(event, kCGMouseEventWindowUnderMousePointer);
+        out_fields[8] = CGEventGetIntegerValueField(
+            event, kCGMouseEventWindowUnderMousePointerThatCanHandleThisEvent);
+        out_fields[9] = CGEventGetIntegerValueField(event, kCGMouseEventNumber);
+        out_fields[10] = CGEventSourceGetSourceStateID(source->source);
+        return MP_SHIM_OK;
+    } @finally {
+        if (event != NULL) {
+            CFRelease(event);
+        }
+        mp_shim_process_event_source_release(source);
+    }
     MP_SHIM_END
 }
 typedef struct {

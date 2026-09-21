@@ -1222,7 +1222,7 @@ Windows negotiates `IGraphicsCaptureSession5` and the writable runtime property,
 configures positive signed 64-bit 100ns ticks rounded upward, and reads back before
 callbacks/start. macOS negotiates the dynamic getter/setter, configures exact
 positive signed 64-bit nanoseconds with `CMTimeMake` at timescale1000000000, and
-reads back before stream creation/start. Its private scalar handshake is ABI23
+reads back before stream creation/start. Its private scalar handshake is ABI24
 with matching Rust/C size and offset checks; the public C ABI is unchanged.
 Both adapters retain configuration across pool/dimension changes without adding
 callback sleeps, software throttle gates or producer storage retention.
@@ -1531,6 +1531,29 @@ the caller explicitly listed that ordered fallback, its focus policy permits
 it, and the process route refused during its fallback-preserving early
 preflight with zero possible effect.
 
+`MacosConfig::with_process_pointer_mode` explicitly selects
+`MacosProcessPointerMode::AppKitBackground`; `CoreGraphics` remains the default,
+including for foreign callers. The target-gated enum is part of the existing
+declarative Rust-only OS configuration exception. Only process-directed mouse
+movement/button construction changes: NSEvent supplies the authorized window
+metadata, and the retained CGEvent is explicitly assigned the sequence-private
+source and activity tag. Caller-held modifiers are preserved and **Command is
+ORed into each pointer event**; no Command key is posted. This can change an
+application's click/drag semantics and is never implicit.
+
+The selected mode uses a runtime-resolved `CGEventSetWindowLocation` with the
+global point translated against the final authorized current window bounds.
+Missing construction capability, an unobservable background state, or an
+observed frontmost target refuses ordinary pointer input without alternative
+construction or route fallback. Bounded owned releases retain the last
+authorized pointer bounds and bypass ordinary visibility/background predicates;
+process lifetime, permission, cancellation, and deadline gates still apply.
+System, keyboard, text, and scroll construction are unchanged. Posting remains
+one `CGEventPostToPid` call per native unit with invocation-only evidence and
+unknown compatibility. The historical controlled matrices above do not qualify
+this opt-in mode, arbitrary applications/games, concurrent typing, or macOS 27.
+Revision-bound native acceptance for this mode is not yet recorded.
+
 The system route invokes `CGEventPost` at the HID event tap; the process route
 invokes `CGEventPostToPid` against the owning process. macOS discards a
 synthesized event from an unauthorized process rather than failing the call, so
@@ -1705,8 +1728,9 @@ procedure are in [macos-input-verification.md](macos-input-verification.md).
 
 Input adds no crate and no eager framework: AppKit, HIToolbox, and the public
 Security.framework code-signing API are opened from absolute system paths on
-first use, exactly as ScreenCaptureKit is; `CGEventPostToPid` and
-`CGPreflightPostEventAccess` are resolved by symbol from the absolute
+first use, exactly as ScreenCaptureKit is; `CGEventPostToPid`,
+`CGPreflightPostEventAccess`, and the opt-in pointer mode's
+`CGEventSetWindowLocation` are resolved by symbol from the absolute
 CoreGraphics path so their availability is a typed result; and the fixture's
 window, control protocol, and event recorder are compiled into a separate
 archive no released artifact links.
@@ -3039,7 +3063,8 @@ macOS remains the only target with non-prompting authorization observations.
 The facade's production dependency row still lists no contract package: its
 neutral public types are re-exported by `mado-pilot-runtime`. Adapter configuration
 has two explicit exceptions: `mado_pilot::replay` and the target-gated declarative
-`WindowsConfig`/`MacosConfig` values accepted by `NativeEngineRequest`.
+`WindowsConfig`/`MacosConfig` values accepted by `NativeEngineRequest` and their
+declarative selections, including `MacosProcessPointerMode` on macOS.
 These contain no native handle, provider/backend object or executor type.
 Platform implementation and documentation-hidden fixture modules are not
 re-exported. Operational flow remains platform-neutral; ADR0077 records the
