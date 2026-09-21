@@ -19,9 +19,9 @@ Independent disconnected `single` and exact two-display non-mirrored
 applicable display scenarios. No topology result was substituted for another.
 Nothing here qualifies arbitrary applications, arbitrary games, exact-window
 delivery, or application consumption.
-The opt-in `AppKitBackground` pointer construction described below has no
-revision-bound native acceptance recorded yet; the historical results above
-do not qualify that selection.
+The opt-in `AppKitBackground` pointer construction has one separately authorized
+full-workflow result at `acc5d98ae8cfc4958970be826a28011bc12185c9`, described below.
+Neither that case nor the historical results qualify it for arbitrary targets.
 
 ## Capability boundary
 
@@ -120,6 +120,30 @@ construction/refusal/ownership regressions run with
 These tests do not qualify application compatibility, physical noninterference,
 concurrent typing, or macOS 27. Real effects require a separately authorized,
 revision-bound background workload with independent visual postconditions.
+
+### Revision-bound consumer observation
+
+On macOS 27.0 arm64, MadoMata's unchanged private character-guide workflow passed
+once using published Git revision `acc5d98ae8cfc4958970be826a28011bc12185c9`,
+Rust 1.98.1, explicit `AppKitBackground`, and a 50 ms press/release hold.
+Independent OCR and image-template postconditions verified character selection,
+switch on/off transitions, and return navigation within one retained session and
+process lifetime. No compiler shim, sibling dependency, activation, System
+fallback, game modification, or retry was used.
+
+The invocation completed in 30.867 seconds with ten logical clicks and forty SDK
+events, including ten delays. Cleanup reported no outstanding sequence state,
+no remaining script handles or queued work, and a closed session. Across 2,498
+available passive samples, the target stayed background, foreground identity and
+cursor position were unchanged, and no activation or Space-change notification
+was recorded. Sampling is not atomic continuous evidence; concurrent ordinary
+typing was not exercised.
+
+This is one application's observed workflow, not the ADR 0029 qualification
+matrix, generic macOS 27 support, or repeated-run reliability. Route compatibility
+remains `Unknown`; receipts remain `InvocationOnly`. Windows and foreign-language
+native scenarios were not rerun. Private target identity, images, plans, and raw
+execution evidence remain in the separately owned consumer's private storage.
 
 ## Coordinates
 
