@@ -5330,6 +5330,11 @@ static const MPShimKeyboardLayoutApi *mp_shim_keyboard_layout_api(void) {
 @property(readonly, getter=isTerminated) BOOL terminated;
 @property(readonly, copy) NSDate *launchDate;
 @end
+/* Public NSRunningApplication metadata; paths never come from a PID re-open. */
+@protocol MPShimProcessIdentityApplication <MPShimProcessLifetimeApplication>
+@property(readonly, copy) NSURL *executableURL;
+@property(readonly, copy) NSURL *bundleURL;
+@end
 @protocol MPShimLaunchedApplication <MPShimProcessLifetimeApplication>
 - (BOOL)terminate;
 - (BOOL)forceTerminate;
@@ -6930,6 +6935,100 @@ static mp_shim_status mp_shim_process_lifetime_status(const struct mp_shim_targe
         return status;
     }
     return mp_shim_process_lifetime_matches(target, current, current_launch_time);
+}
+
+/*
+ * Keep the read bounded and preserve filesystem bytes, rather than converting
+ * through a lossy display string. NSURL writes a NUL-terminated representation.
+ */
+static bool mp_shim_process_identity_path(NSURL *url, uint8_t *out, size_t capacity,
+                                          size_t *out_len) {
+    if (url == nil || !url.isFileURL ||
+        ![url getFileSystemRepresentation:(char *)out maxLength:capacity]) {
+        return false;
+    }
+    size_t len = strnlen((const char *)out, capacity);
+    if (len == 0 || len >= capacity || out[0] != '/') {
+        return false;
+    }
+    *out_len = len;
+    return true;
+}
+
+static mp_shim_status mp_shim_target_process_identity_with(
+    const mp_shim_target *target, uint32_t *out_process, uint64_t *out_lifetime,
+    uint8_t *out_executable, size_t executable_capacity, size_t *out_executable_len,
+    uint8_t *out_bundle, size_t bundle_capacity, size_t *out_bundle_len,
+    mp_shim_status (*lifetime_status)(const mp_shim_target *)) {
+    if (out_process == NULL || out_lifetime == NULL || out_executable_len == NULL ||
+        out_bundle_len == NULL) {
+        return MP_SHIM_INVALID_ARGUMENT;
+    }
+    *out_process = 0;
+    *out_lifetime = 0;
+    *out_executable_len = 0;
+    *out_bundle_len = 0;
+    if (target == NULL || target->magic != MP_SHIM_TARGET_MAGIC || target->filter == NULL ||
+        out_executable == NULL || out_bundle == NULL || executable_capacity == 0 ||
+        executable_capacity > MP_SHIM_MAX_PROCESS_PATH_BYTES || bundle_capacity == 0 ||
+        bundle_capacity > MP_SHIM_MAX_PROCESS_PATH_BYTES || lifetime_status == NULL) {
+        return MP_SHIM_INVALID_ARGUMENT;
+    }
+    if (target->kind != MP_SHIM_TARGET_WINDOW || target->process_lifetime == NULL) {
+        return MP_SHIM_UNSUPPORTED;
+    }
+    if (target->owner_process <= 0 || target->owner_process > INT32_MAX ||
+        target->shareable_owner == NULL || !isfinite(target->process_launch_time)) {
+        return MP_SHIM_TARGET_LOST;
+    }
+    MP_SHIM_BEGIN
+    @autoreleasepool {
+        id<MPShimRunningApplication> owner =
+            (__bridge id<MPShimRunningApplication>)target->shareable_owner;
+        if (owner.processID != (pid_t)target->owner_process) {
+            return MP_SHIM_TARGET_LOST;
+        }
+        mp_shim_status status = lifetime_status(target);
+        if (status != MP_SHIM_OK) {
+            return status;
+        }
+        id<MPShimProcessIdentityApplication> retained =
+            (__bridge id<MPShimProcessIdentityApplication>)target->process_lifetime;
+        size_t executable_len = 0;
+        size_t bundle_len = 0;
+        if (!mp_shim_process_identity_path(retained.executableURL, out_executable,
+                                           executable_capacity, &executable_len)) {
+            return MP_SHIM_UNSUPPORTED;
+        }
+        NSURL *bundle = retained.bundleURL;
+        if (bundle != nil &&
+            !mp_shim_process_identity_path(bundle, out_bundle, bundle_capacity, &bundle_len)) {
+            return MP_SHIM_UNSUPPORTED;
+        }
+        status = lifetime_status(target);
+        if (status != MP_SHIM_OK) {
+            return status;
+        }
+        _Static_assert(sizeof(double) == sizeof(uint64_t), "launch date is a 64-bit double");
+        uint64_t lifetime = 0;
+        memcpy(&lifetime, &target->process_launch_time, sizeof(lifetime));
+        *out_process = (uint32_t)target->owner_process;
+        *out_lifetime = lifetime;
+        *out_executable_len = executable_len;
+        *out_bundle_len = bundle_len;
+        return MP_SHIM_OK;
+    }
+    MP_SHIM_END
+}
+
+mp_shim_status mp_shim_target_process_identity(
+    const mp_shim_target *target, uint32_t *out_process, uint64_t *out_lifetime,
+    uint8_t *out_executable, size_t executable_capacity, size_t *out_executable_len,
+    uint8_t *out_bundle, size_t bundle_capacity, size_t *out_bundle_len) {
+    return mp_shim_target_process_identity_with(
+        target, out_process, out_lifetime, out_executable, executable_capacity,
+        out_executable_len, out_bundle, bundle_capacity, out_bundle_len,
+        mp_shim_process_lifetime_status);
 }
 
 #pragma mark - Input: window-server observations
@@ -9559,15 +9658,25 @@ mp_shim_status mp_shim_testing_validate_process_post(
 
 
 @interface MPShimAuthorityTestApplication
-    : NSObject <MPShimRunningApplication, MPShimProcessLifetimeApplication>
+    : NSObject <MPShimRunningApplication, MPShimProcessIdentityApplication>
 @property(nonatomic, assign) pid_t processID;
 @property(nonatomic, copy) NSString *applicationName;
 @property(nonatomic, assign) pid_t processIdentifier;
 @property(nonatomic, assign, getter=isTerminated) BOOL terminated;
 @property(nonatomic, copy) NSDate *launchDate;
+@property(nonatomic, copy) NSURL *executableURL;
+@property(nonatomic, copy) NSURL *bundleURL;
+@property(nonatomic, assign) BOOL terminateOnExecutableRead;
 @end
 
 @implementation MPShimAuthorityTestApplication
+@synthesize executableURL = _executableURL;
+- (NSURL *)executableURL {
+    if (self.terminateOnExecutableRead) {
+        self.terminated = YES;
+    }
+    return _executableURL;
+}
 @end
 
 @interface MPShimAuthorityTestWindow : NSObject <MPShimWindow>
@@ -9590,6 +9699,69 @@ static MPShimAuthorityTestApplication *mp_shim_testing_application(pid_t process
     application.applicationName = @"MadoPilot authority test";
     application.launchDate = [NSDate dateWithTimeIntervalSinceReferenceDate:launch_time];
     return application;
+}
+
+static mp_shim_status mp_shim_testing_identity_lifetime(const mp_shim_target *target) {
+    id<MPShimProcessLifetimeApplication> retained =
+        (__bridge id<MPShimProcessLifetimeApplication>)target->process_lifetime;
+    return mp_shim_process_lifetime_matches(
+        target, retained, retained.launchDate.timeIntervalSinceReferenceDate);
+}
+
+mp_shim_status mp_shim_testing_target_process_identity(
+    uint32_t scenario, uint64_t *out_observations, size_t count) {
+    if (scenario > 7 || out_observations == NULL || count != 5) {
+        return MP_SHIM_INVALID_ARGUMENT;
+    }
+    MP_SHIM_BEGIN
+    @autoreleasepool {
+        MPShimAuthorityTestApplication *application =
+            mp_shim_testing_application(123, 1000.25);
+        application.executableURL =
+            [NSURL fileURLWithPath:@"/MadoPilotIdentityFixture.app/Contents/MacOS/fixture"];
+        application.bundleURL = [NSURL fileURLWithPath:@"/MadoPilotIdentityFixture.app"];
+        NSObject *filter = [NSObject new];
+        mp_shim_target target = {
+            .magic = MP_SHIM_TARGET_MAGIC,
+            .kind = MP_SHIM_TARGET_WINDOW,
+            .native_id = 42,
+            .owner_process = 123,
+            .filter = (__bridge CFTypeRef)filter,
+            .shareable_owner = (__bridge CFTypeRef)application,
+            .process_lifetime = (__bridge CFTypeRef)application,
+            .process_launch_time = 1000.25,
+        };
+        if (scenario == 1) {
+            target.process_lifetime = NULL;
+        } else if (scenario == 2) {
+            application.launchDate = [NSDate dateWithTimeIntervalSinceReferenceDate:1001.25];
+        } else if (scenario == 3) {
+            application.executableURL = nil;
+        } else if (scenario == 4) {
+            application.terminateOnExecutableRead = YES;
+        } else if (scenario == 5) {
+            application.bundleURL = nil;
+        } else if (scenario == 7) {
+            application.executableURL = [NSURL URLWithString:@"https://invalid.example/fixture"];
+        }
+        uint32_t process = UINT32_MAX;
+        uint64_t lifetime = UINT64_MAX;
+        uint8_t executable[MP_SHIM_MAX_PROCESS_PATH_BYTES] = {0};
+        uint8_t bundle[MP_SHIM_MAX_PROCESS_PATH_BYTES] = {0};
+        size_t executable_len = SIZE_MAX;
+        size_t bundle_len = SIZE_MAX;
+        mp_shim_status status = mp_shim_target_process_identity_with(
+            &target, &process, &lifetime, executable,
+            scenario == 6 ? 2 : sizeof(executable), &executable_len, bundle, sizeof(bundle),
+            &bundle_len, mp_shim_testing_identity_lifetime);
+        out_observations[0] = status;
+        out_observations[1] = process;
+        out_observations[2] = lifetime;
+        out_observations[3] = executable_len;
+        out_observations[4] = bundle_len;
+        return MP_SHIM_OK;
+    }
+    MP_SHIM_END
 }
 
 static MPShimAuthorityTestWindow *

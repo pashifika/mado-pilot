@@ -646,6 +646,7 @@ mod tests {
                 )
                 .expect("placement"),
                 process_directed: true,
+                process_identity: None,
             },
         }
     }

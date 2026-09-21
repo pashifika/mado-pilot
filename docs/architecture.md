@@ -1151,6 +1151,30 @@ dependency rules is a review rule enforced through
 [third-party-dependencies.md](third-party-dependencies.md) and `cargo deny`
 rather than through the architecture checker.
 
+### Native target process provenance
+
+The Rust `TargetDescription` optionally exposes `TargetProcessIdentity` for a
+window whose provider retains its owning process lifetime. The value contains a
+nonzero process identifier, an opaque provider-scoped lifetime, an absolute
+executable path, and an optional absolute application-bundle path. Clones share
+immutable storage; debug output redacts all identity fields. Explicit path getters
+are machine-local data, not suitable for ordinary diagnostics or portable exports.
+
+macOS reads paths from the retained `NSRunningApplication` and publishes the exact
+bits of its retained launch-time value after lifetime checks before and after the
+read. Windows reads the executable path from its retained process handle and
+uses that handle's creation `FILETIME`; the authority is captured before creating
+the window capture item and revalidated afterward. Neither adapter substitutes
+a newly opened process for the retained lifetime to obtain these paths.
+
+Provenance is a discovery snapshot, not a continuing liveness or authorization
+claim. Missing or unverified metadata remains absent without removing capture
+support. Callers may use it to constrain initial selection; native open and input
+still enforce their existing retained-target guards. The value performs no
+canonicalization, executable hashing, launching, permission request, or focus
+change. This additive contract is re-exported through runtime and facade, with no
+change to the public C ABI or C++ surface.
+
 ### Capture publication and replay ownership
 
 `mado-pilot-capture` owns authoritative stream identity and geometry. An Adapter
@@ -1198,7 +1222,7 @@ Windows negotiates `IGraphicsCaptureSession5` and the writable runtime property,
 configures positive signed 64-bit 100ns ticks rounded upward, and reads back before
 callbacks/start. macOS negotiates the dynamic getter/setter, configures exact
 positive signed 64-bit nanoseconds with `CMTimeMake` at timescale1000000000, and
-reads back before stream creation/start. Its private scalar handshake is ABI22
+reads back before stream creation/start. Its private scalar handshake is ABI23
 with matching Rust/C size and offset checks; the public C ABI is unchanged.
 Both adapters retain configuration across pool/dimension changes without adding
 callback sleeps, software throttle gates or producer storage retention.

@@ -207,10 +207,6 @@ impl WindowsCaptureProvider {
 
     fn create_record(&self, candidate: Candidate) -> Result<Arc<TargetRecord>> {
         let id = self.issuer.issue_target(PROVIDER)?;
-        let authority = RetainedWindowAuthority::capture(
-            candidate.key,
-            candidate.metadata.class_name.as_deref(),
-        );
         let lost = Arc::new(AtomicBool::new(false));
         let closed_lost = Arc::clone(&lost);
         let closed_handler =
@@ -233,7 +229,7 @@ impl WindowsCaptureProvider {
             item: candidate.item,
             lost,
             geometry: Arc::new(GeometryLedger::default()),
-            authority,
+            authority: candidate.authority,
             closed_token,
         }))
     }
@@ -388,11 +384,21 @@ fn lock_with_operation<'mutex>(
 
 impl TargetRecord {
     fn description(&self) -> TargetDescription {
-        self.metadata.describe(
-            self.id,
-            self.key.kind(),
-            self.window_message_authority_is_current(),
-        )
+        let authority_is_current =
+            !self.lost.load(Ordering::Acquire) && self.window_message_authority_is_current();
+        let description = self
+            .metadata
+            .describe(self.id, self.key.kind(), authority_is_current);
+        if authority_is_current
+            && let Some(identity) = self
+                .authority
+                .as_ref()
+                .and_then(RetainedWindowAuthority::process_identity)
+        {
+            description.with_process_identity(identity.clone())
+        } else {
+            description
+        }
     }
 
     fn window_message_authority_is_current(&self) -> bool {
@@ -523,6 +529,7 @@ mod tests {
                 .expect("placement"),
             },
             item: CaptureItem::Synthetic(incarnation),
+            authority: None,
         }
     }
 

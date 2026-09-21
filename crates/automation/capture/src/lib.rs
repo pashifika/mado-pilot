@@ -62,7 +62,7 @@ pub mod stream;
 
 pub use descriptor::{
     CoordinateSupport, FrameDescriptor, OverflowPolicy, PixelFormat, QueuePolicy,
-    RetainedStoragePolicy, SessionDescription, TargetDescription,
+    RetainedStoragePolicy, SessionDescription, TargetDescription, TargetProcessIdentity,
 };
 pub use discovery::DiscoveryRequest;
 pub use fault::CaptureFault;

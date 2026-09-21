@@ -22,7 +22,9 @@
 //! Normalization here is the choice not to mix the two rather than arithmetic that
 //! reconciles them, which is why there is no flip to find in this module.
 
-use mado_pilot_capture::{CaptureFault, CoordinateSupport, PixelFormat, TargetDescription};
+use mado_pilot_capture::{
+    CaptureFault, CoordinateSupport, PixelFormat, TargetDescription, TargetProcessIdentity,
+};
 use mado_pilot_core::{
     CapabilitySupport, GeometryFault, PermissionKind, PermissionState, PixelExtent, Result, Scale,
     TargetCapability, TargetId, TargetKind, TargetPlacement,
@@ -113,6 +115,8 @@ pub(crate) struct TargetMetadata {
     #[allow(dead_code)] // Read by the authorized-host screenRect acceptance matrix.
     pub(crate) placement: TargetPlacement,
     pub(crate) process_directed: bool,
+    /// Verified once against `Candidate::target`; clones share immutable path storage.
+    pub(crate) process_identity: Option<TargetProcessIdentity>,
 }
 
 impl TargetMetadata {
@@ -124,7 +128,7 @@ impl TargetMetadata {
     /// only when this inventory snapshot admitted one ordinary window for the
     /// owning process. Exact-window `WindowMessage` delivery remains absent.
     pub(crate) fn describe(&self, id: TargetId, kind: TargetKind) -> TargetDescription {
-        TargetDescription::new(
+        let description = TargetDescription::new(
             id,
             self.name.clone(),
             self.extent,
@@ -141,7 +145,11 @@ impl TargetMetadata {
                 input_capability(kind, self.process_directed),
             )
             .with_capture_permission(PermissionKind::ScreenCapture),
-        )
+        );
+        match &self.process_identity {
+            Some(identity) => description.with_process_identity(identity.clone()),
+            None => description,
+        }
     }
 }
 
@@ -191,6 +199,10 @@ pub(crate) fn inventory(wait: std::time::Duration) -> Result<Vec<Candidate>> {
         let Ok(target) = inventory.target(index) else {
             continue;
         };
+        let process_identity = match key {
+            NativeKey::Window(_) => target.process_identity().ok(),
+            NativeKey::Display(_) => None,
+        };
         candidates.push(Candidate {
             key,
             fingerprint: fingerprint(key, &info, extent),
@@ -200,6 +212,7 @@ pub(crate) fn inventory(wait: std::time::Duration) -> Result<Vec<Candidate>> {
                 extent,
                 placement,
                 process_directed: info.process_directed() && process_post_available,
+                process_identity,
             },
         });
     }
@@ -303,6 +316,7 @@ mod tests {
             placement: placement_from_points((0.0, 0.0), (1280.0, 800.0), 2.0, extent)
                 .expect("a doubled backing scale covers the frame"),
             process_directed: true,
+            process_identity: None,
         }
     }
 

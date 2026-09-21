@@ -183,7 +183,7 @@ pub use mado_pilot_capture::{
     Continuity, CoordinateSupport, CpuMapping, Frame, FrameDescriptor, FrameRequest,
     FrameSelection, FrameView, OpenRequest, OverflowPolicy, PacingUnsupportedReason, PixelFormat,
     QueuePolicy, ResolvedCapturePacing, RetainedStoragePolicy, SessionDescription,
-    TargetDescription,
+    TargetDescription, TargetProcessIdentity,
 };
 pub use mado_pilot_core::{
     ActivityTag, CancellationToken, CapabilitySupport, ClipPolicy, Clock, CoordinateSpace,
