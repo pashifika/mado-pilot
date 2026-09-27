@@ -147,6 +147,10 @@ impl CaptureSession for Session {
         }
     }
 
+    fn commit_frame(&self, frame: &Frame, operation: &OperationContext) -> Result<()> {
+        self.state.commit_frame(frame, operation)
+    }
+
     fn close(&self, operation: &OperationContext) -> Result<()> {
         self.state.drain(operation)
     }

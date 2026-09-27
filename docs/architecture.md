@@ -1202,6 +1202,28 @@ function table, C layout, header, or C++ wrapper. The decision and its native
 performance acceptance conditions are recorded in
 [ADR 0011](adr/0011-recoverable-stream-publication.md).
 
+`CaptureSession::commit_frame` adds a separate consumer commitment boundary.
+Adapters must implement it against the same state that records capture termination;
+`StreamState::commit_frame` provides that implementation. It accepts one exact
+retained frame from the session's stream, checks interruption outside the stream
+lock, and orders commitment against the first terminal fault and close admission.
+It does not acquire, map, or copy a frame and does not require the newest geometry.
+
+Runtime `Session::commit_frame` exposes this boundary through the Rust facade.
+Singular/grouped OCR and template search commit through it. Acquisition instead
+relies on `CaptureSession::frame` to order its returned frame against capture
+termination, followed immediately by runtime explicit-close arbitration; it does
+not repeat `commit_frame`. Capture-terminal refusal preserves the first fault.
+No caller clock or backend work runs under either commitment gate. A host prepares
+its bounded candidate first and treats successful commitment as acceptance.
+
+Termination ordered after commitment does not revoke immutable historical values.
+Mapping a retained frame remains legal after termination, but commitment does not
+prove continued target readiness, permission, application effect, or completed
+native cleanup. C/C++ synchronous calls inherit the runtime ordering without
+changing an ABI prefix or layout. See
+[ADR 0078](adr/0078-capture-terminal-publication.md).
+
 ### Native capture pacing configuration
 
 `CapturePacingRequest` selects inheritance, source default, or one validated
@@ -2676,10 +2698,11 @@ promises terminal authority, not thread preemption.
 out-of-order completion has nothing it can replace. Backend close is explicit and
 idempotent, with only bounded post-interruption cleanup permitted.
 
-`mado-pilot-runtime::Session::recognize` adds session admission around the
-contract call: it rejects another stream's retained frame and an unconfigured
-backend, then orders final publication against a runtime-owned atomic close gate.
-Backend work and caller clock calls run outside locks. The facade engine requests
+`mado-pilot-runtime::Session::recognize` and `Session::scan_ocr_zones` add
+exact-stream admission and final capture-terminal/explicit-close commitment
+around the contract call. An already recorded target-loss fault is preserved
+rather than converted to ordinary closure. Backend work and caller clock calls
+run outside locks. The facade engine requests
 accept an explicit `Arc<dyn OcrBackend>` and default to no OCR backend; no
 watcher, retry, scheduler, callback, automatic input, or executor-specific type
 is introduced.
@@ -2774,7 +2797,7 @@ decides where each rule lives:
 | Selecting a permitted mechanism, arbitrating focus, resolving a coordinate, revalidating before each irreversible event, and releasing what a stopped sequence pressed | `mado-pilot-input` and the Adapter implementing it |
 | Which capture adapter, input adapter, permission probe, matching backend, and accepted default OCR backend exist at all | `mado-pilot` |
 | The curated public surface, and which contract types reach a caller | `mado-pilot` |
-| Exact-frame singular/grouped OCR admission and final deadline/cancellation/close publication | `mado-pilot-runtime` |
+| Exact-frame singular/grouped OCR admission and final deadline/cancellation/capture-terminal/explicit-close publication | `mado-pilot-runtime` |
 | Explicit injected OCR backend selection | the facade composition request supplied by the caller |
 | Accepted default and explicit bounded-profile prerequisite validation | `mado-pilot` plus `mado-pilot-backend-onnx`, under ADRs 0034, 0036, and 0043 |
 

@@ -42,7 +42,7 @@ pub enum CaptureFault {
     UnsupportedOption,
     /// The configured source is malformed or unreadable.
     SourceInvalid,
-    /// A frame request named a stamp from a different stream.
+    /// A frame request or retained-frame commitment names a different stream.
     ForeignStream,
     /// The stream produced no further frames and never will.
     StreamEnded,

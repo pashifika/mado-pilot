@@ -171,10 +171,11 @@ I-frames.
 
 Actual terminal state precedes retained latest state during acquisition. `Closed`
 and `TargetLost` are preserved; there is no post-terminal final-frame drain or
-parsing of diagnostic text to distinguish closed causes. Capture loss during
-already-admitted one-shot OCR may still allow its exact held-frame result to
-commit. That result does not establish that the target is still live; the next
-acquisition observes loss. Session close has its existing stronger commit fence.
+parsing of diagnostic text to distinguish closed causes. Capture loss before
+one-shot OCR commitment rejects the result as `TargetLost`; interpretation and
+cooldown do not run. Capture termination and explicit session close both fence
+publication. Results committed before termination remain historical values, not
+evidence of continued target liveness.
 
 ## Performance and verification boundary
 

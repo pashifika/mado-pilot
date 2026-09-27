@@ -9,8 +9,8 @@
 //!
 //! One absolute operation governs the loop. Owners are released before bounded
 //! 2ms polling; OS wakeup latency is additional. Live updates during cooldown
-//! remain eligible, but terminal sources are not drained. Already-admitted OCR
-//! may finish on its held frame after capture loss. Native pacing and watcher
+//! remain eligible, but terminal sources are not drained. Capture loss during
+//! admitted OCR prevents interpretation and cooldown. Native pacing and watcher
 //! admission rate are distinct from this completion cooldown.
 
 use std::ffi::OsString;

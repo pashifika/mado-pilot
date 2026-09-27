@@ -110,7 +110,7 @@ impl<'a> OcrZoneScanRequest<'a> {
 
     /// Returns the exact immutable source frame.
     #[must_use]
-    pub const fn frame(&self) -> &Frame {
+    pub const fn frame(&self) -> &'a Frame {
         self.frame
     }
 
@@ -194,7 +194,7 @@ impl<'a> OcrRequest<'a> {
 
     /// Returns the exact immutable source frame.
     #[must_use]
-    pub const fn frame(&self) -> &Frame {
+    pub const fn frame(&self) -> &'a Frame {
         self.frame
     }
 

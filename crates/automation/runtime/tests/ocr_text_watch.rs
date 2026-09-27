@@ -1020,6 +1020,9 @@ impl CaptureSession for ExactSource {
     fn frame(&self, request: &FrameRequest, operation: &OperationContext) -> Result<Frame> {
         self.state.frame(request, operation)
     }
+    fn commit_frame(&self, frame: &Frame, operation: &OperationContext) -> Result<()> {
+        self.state.commit_frame(frame, operation)
+    }
     fn close(&self, operation: &OperationContext) -> Result<()> {
         self.state.drain(operation)
     }

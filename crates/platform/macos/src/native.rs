@@ -789,6 +789,10 @@ impl CaptureSession for NativeSession {
         self.core.state.frame(request, operation)
     }
 
+    fn commit_frame(&self, frame: &Frame, operation: &OperationContext) -> Result<()> {
+        self.core.state.commit_frame(frame, operation)
+    }
+
     fn close(&self, operation: &OperationContext) -> Result<()> {
         self.core.state.begin_close();
         self.core.session().disable_callbacks();

@@ -566,11 +566,14 @@ impl StreamState {
 
     /// Returns the frame `request` asks for, waiting when necessary.
     ///
+    /// Final operation arbitration precedes the terminal-aware commitment of the
+    /// selected frame. Later termination does not revoke that historical value.
+    ///
     /// # Errors
     ///
     /// Returns [`CaptureFault::ForeignStream`] for a stamp from another stream,
-    /// [`CaptureFault::SessionClosed`] when the stream closes while waiting, and
-    /// the operation's terminal outcome when cancellation or the deadline wins.
+    /// the original terminal fault when capture ends, [`CaptureFault::SessionClosed`]
+    /// after ordinary close admission, and the operation's terminal outcome.
     pub fn frame(&self, request: &FrameRequest, operation: &OperationContext) -> Result<Frame> {
         let mut attempt = Operation::admit(operation)?;
         loop {
@@ -587,7 +590,9 @@ impl StreamState {
                 }
                 if let Some(frame) = qualifying(&inner, request)? {
                     drop(inner);
-                    return Ok(attempt.commit(frame)?);
+                    let frame = attempt.commit(frame)?;
+                    self.commit_frame_after_operation(&frame)?;
+                    return Ok(frame);
                 }
                 inner.waiters += 1;
                 let (mut inner, _) = self
@@ -606,6 +611,42 @@ impl StreamState {
             // deadlocks are built.
             attempt.checkpoint()?;
         }
+    }
+
+    /// Commits a prepared candidate associated with an exact retained frame.
+    ///
+    /// Operation arbitration runs before taking the stream mutex. That mutex
+    /// then orders commitment against the first terminal fault and close
+    /// admission. The frame need not be current: newer frames, epochs and geometry
+    /// revisions do not invalidate a retained frame of this stream.
+    ///
+    /// Success preserves a historical candidate after later termination; it
+    /// grants no ongoing target readiness, input authority or completed cleanup.
+    /// No pixels are copied or mapped and no caller work runs under the mutex.
+    ///
+    /// # Errors
+    ///
+    /// Returns the operation's interruption, [`CaptureFault::ForeignStream`] for
+    /// another stream's frame, the original terminal fault, or
+    /// [`CaptureFault::SessionClosed`] after ordinary close admission.
+    pub fn commit_frame(&self, frame: &Frame, operation: &OperationContext) -> Result<()> {
+        Operation::admit(operation)?.commit(())?;
+        self.commit_frame_after_operation(frame)
+    }
+
+    /// Orders a candidate whose final operation check has already succeeded.
+    fn commit_frame_after_operation(&self, frame: &Frame) -> Result<()> {
+        let inner = self.lock();
+        if frame.stamp().stream() != inner.cursor.stream() {
+            return Err(CaptureFault::ForeignStream.into());
+        }
+        if let Some(terminal) = inner.terminal {
+            return Err(terminal.into());
+        }
+        if inner.lifecycle != Lifecycle::Open {
+            return Err(CaptureFault::SessionClosed.into());
+        }
+        Ok(())
     }
 
     /// Ends the stream with a typed terminal fault.
@@ -865,6 +906,30 @@ mod tests {
             MonotonicInstant::ORIGIN
                 .checked_add(elapsed)
                 .expect("test instant is representable")
+        }
+    }
+
+    #[derive(Debug)]
+    struct StopAtCommitClock {
+        state: Arc<StreamState>,
+        reads: AtomicUsize,
+        fault: Option<CaptureFault>,
+    }
+
+    impl Clock for StopAtCommitClock {
+        fn now(&self) -> MonotonicInstant {
+            if self.reads.fetch_add(1, Ordering::Relaxed) == 1 {
+                assert!(
+                    self.state.inner.try_lock().is_ok(),
+                    "the reentrant clock must run outside the stream mutex"
+                );
+                if let Some(fault) = self.fault {
+                    self.state.terminate(fault);
+                } else {
+                    self.state.begin_close();
+                }
+            }
+            MonotonicInstant::ORIGIN
         }
     }
 
@@ -1482,6 +1547,173 @@ mod tests {
                 .map(|error| error.status()),
             Some(Status::Closed)
         );
+    }
+
+    #[test]
+    fn frame_refuses_a_stop_from_the_final_operation_clock() {
+        for fault in [Some(CaptureFault::TargetLost), None] {
+            let state = Arc::new(state());
+            state
+                .publish(publication(4, 4, 1, Continuity::Continuous))
+                .expect("published");
+            let clock = Arc::new(StopAtCommitClock {
+                state: Arc::clone(&state),
+                reads: AtomicUsize::new(0),
+                fault,
+            });
+            let operation = OperationContext::new().with_clock(clock).with_deadline(
+                MonotonicInstant::ORIGIN
+                    .checked_add(Duration::from_secs(1))
+                    .expect("deadline"),
+            );
+
+            let error = state
+                .frame(&FrameRequest::latest(), &operation)
+                .expect_err("stop during final arbitration refuses the selected frame");
+
+            assert_eq!(error, fault.unwrap_or(CaptureFault::SessionClosed).into());
+        }
+    }
+
+    #[test]
+    fn retained_frame_commit_refuses_a_stop_from_the_final_operation_clock() {
+        for fault in [Some(CaptureFault::DeviceRemoved), None] {
+            let state = Arc::new(state());
+            let frame = state
+                .publish(publication(4, 4, 1, Continuity::Continuous))
+                .expect("published");
+            let clock = Arc::new(StopAtCommitClock {
+                state: Arc::clone(&state),
+                reads: AtomicUsize::new(0),
+                fault,
+            });
+            let operation = OperationContext::new().with_clock(clock).with_deadline(
+                MonotonicInstant::ORIGIN
+                    .checked_add(Duration::from_secs(1))
+                    .expect("deadline"),
+            );
+
+            let error = state
+                .commit_frame(&frame, &operation)
+                .expect_err("stop during final arbitration refuses the candidate");
+
+            assert_eq!(error, fault.unwrap_or(CaptureFault::SessionClosed).into());
+        }
+    }
+
+    #[test]
+    fn retained_frame_commit_preserves_the_first_fault_after_cleanup() {
+        let state = state();
+        let frame = state
+            .publish(publication(4, 4, 1, Continuity::Continuous))
+            .expect("published");
+        let operation = OperationContext::new();
+
+        state.terminate(CaptureFault::DeviceReset);
+        state.terminate(CaptureFault::TargetLost);
+        state.drain(&operation).expect("cleanup finishes");
+
+        assert_eq!(
+            state
+                .commit_frame(&frame, &operation)
+                .expect_err("cleanup cannot replace the first fault"),
+            CaptureFault::DeviceReset.into()
+        );
+    }
+
+    #[test]
+    fn retained_frame_commit_refuses_ordinary_close_admission() {
+        let state = state();
+        let frame = state
+            .publish(publication(4, 4, 1, Continuity::Continuous))
+            .expect("published");
+        state.begin_close();
+
+        assert_eq!(
+            state
+                .commit_frame(&frame, &OperationContext::new())
+                .expect_err("close already stopped admission"),
+            CaptureFault::SessionClosed.into()
+        );
+    }
+
+    #[test]
+    fn an_older_committed_frame_remains_readable_after_termination_and_close() {
+        let state = state();
+        let retained = state
+            .publish(publication(4, 4, 17, Continuity::Continuous))
+            .expect("published");
+        let stamp = retained.stamp();
+        state
+            .publish(publication(8, 4, 29, Continuity::Discontinuous))
+            .expect("new epoch and geometry");
+        let operation = OperationContext::new();
+
+        state
+            .commit_frame(&retained, &operation)
+            .expect("a newer frame does not invalidate this candidate");
+        state.terminate(CaptureFault::TargetLost);
+        state.drain(&operation).expect("cleanup finishes");
+
+        assert_eq!(retained.stamp(), stamp);
+        assert_eq!(retained.descriptor().extent(), PixelExtent::new(4, 4));
+        assert_eq!(
+            retained
+                .map(PixelFormat::Rgba8, &operation)
+                .expect("historical frame maps after cleanup")
+                .bytes(),
+            &[17; 64]
+        );
+    }
+
+    #[test]
+    fn retained_frame_commit_refuses_a_foreign_stream() {
+        let foreign = state()
+            .publish(publication(4, 4, 1, Continuity::Continuous))
+            .expect("foreign frame");
+        let state = state();
+
+        assert_eq!(
+            state
+                .commit_frame(&foreign, &OperationContext::new())
+                .expect_err("a foreign candidate cannot commit"),
+            CaptureFault::ForeignStream.into()
+        );
+    }
+
+    #[test]
+    fn retained_frame_commit_refuses_cancelled_and_expired_operations() {
+        let state = state();
+        let frame = state
+            .publish(publication(4, 4, 1, Continuity::Continuous))
+            .expect("published");
+        let token = CancellationToken::new();
+        token.cancel();
+        let cancelled = OperationContext::new().with_cancellation(token);
+        let expired = OperationContext::new()
+            .with_clock(Arc::new(OriginClock))
+            .with_deadline(MonotonicInstant::ORIGIN);
+        let expiring = OperationContext::new()
+            .with_clock(Arc::new(ExpireAtCommitClock::default()))
+            .with_deadline(
+                MonotonicInstant::ORIGIN
+                    .checked_add(Duration::from_millis(1))
+                    .expect("deadline"),
+            );
+
+        for (operation, status) in [
+            (cancelled, Status::Cancelled),
+            (expired, Status::DeadlineExceeded),
+            (expiring, Status::DeadlineExceeded),
+        ] {
+            assert_eq!(
+                state
+                    .commit_frame(&frame, &operation)
+                    .expect_err("interrupted candidates cannot commit")
+                    .status(),
+                status
+            );
+        }
     }
 
     #[test]
