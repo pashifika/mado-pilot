@@ -474,9 +474,11 @@ impl TargetRecord {
         required: Option<WindowGeometry>,
     ) -> std::result::Result<NativeWindowDescription, CaptureFault> {
         self.retained_window_status()?;
+        #[cfg(not(test))]
+        let CaptureItem::Native(item) = &self.item;
+        #[cfg(test)]
         let item = match &self.item {
             CaptureItem::Native(item) => item,
-            #[cfg(test)]
             CaptureItem::Synthetic(_) => return Err(CaptureFault::UnsupportedOption),
         };
         let size = item.Size().map_err(|_| CaptureFault::TargetLost)?;

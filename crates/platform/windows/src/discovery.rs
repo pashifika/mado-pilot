@@ -247,9 +247,10 @@ pub(crate) fn current_window_geometry(
     };
     // SAFETY: both POINT values are writable; per-monitor awareness makes these
     // physical virtual-desktop coordinates, including negative origins.
-    if !unsafe { ClientToScreen(hwnd, &raw mut origin) }.as_bool()
-        || !unsafe { ClientToScreen(hwnd, &raw mut far) }.as_bool()
-    {
+    if !unsafe {
+        ClientToScreen(hwnd, &raw mut origin).as_bool()
+            && ClientToScreen(hwnd, &raw mut far).as_bool()
+    } {
         return Err(CaptureFault::UnsupportedOption);
     }
     let client = RECT {
