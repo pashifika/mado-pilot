@@ -275,10 +275,10 @@ impl Session {
     ///
     /// # Errors
     ///
-    /// Returns a closed outcome once the session is closing, the capture's
-    /// terminal fault when capture ended before the frame was ordered, an
-    /// invalid-argument outcome for a stamp from another stream, and the
-    /// operation's terminal outcome when cancellation or the deadline wins.
+    /// Returns the capture's first terminal fault even after later cleanup,
+    /// a closed outcome for ordinary close, an invalid-argument outcome for a
+    /// stamp from another stream, and the operation's terminal outcome when
+    /// cancellation or the deadline wins.
     pub fn acquire_frame(
         &self,
         request: &FrameRequest,
@@ -312,10 +312,12 @@ impl Session {
     /// Commits acquisition in the adapter, then checks runtime close without
     /// repeating the adapter's clock or stream-lock checks.
     fn acquire(&self, request: &FrameRequest, operation: &OperationContext) -> Result<Frame> {
-        if self.close_started() {
+        if self.close_started() && self.capture.lifecycle() == Lifecycle::Open {
             Operation::admit(operation)?;
             return Err(CaptureFault::SessionClosed.into());
         }
+        // A stopped capture returns its first fault (or ordinary closure)
+        // immediately, without acquiring another frame.
         let frame = self.capture.frame(request, operation)?;
         self.commit_while_open(frame)
     }

@@ -36,6 +36,17 @@ candidate with its original cause; commitment-first permits a historical immutab
 value even if termination follows before the call returns. No continuing target
 readiness or completed cleanup is promised.
 
+In Rust, the first capture fault also survives successful cleanup at latest-frame
+acquisition and latest-frame template search. Runtime close still refuses new
+acquisition while capture is open; stopped capture returns its immediate terminal
+or closed outcome, preserving interruption and foreign-stream checks.
+A completed close freezes its original fault or ordinary closure. Later adapter
+reports cannot invent a fault; pending or interrupted cleanup may still record one.
+
+C ABI OCR and template-search errors report `TargetLost` and `CaptureFailed` as
+capture failures without backend attribution. Ordinary close keeps its lifecycle
+message, and vision failures retain their backend identity. No ABI layout changes.
+
 ## Alternatives
 
 - Lifecycle polling or a second acquisition: neither atomically orders the
@@ -53,10 +64,14 @@ rewind a frame already published; prepublication refusal still restores its exac
 source reservation. Mapping historical frames and independently completing or
 retrying cleanup remain unchanged.
 
-C/C++ synchronous visual operations inherit the runtime fix without adding a C
-entry or changing ABI prefixes/layouts. Native adapters share the ordering seam,
-but controlled tests do not grant permissions, qualify OS upgrades, or close
-native workload/release gates. No dependencies or performance budgets change.
+C/C++ operations that reach the runtime inherit its commitment ordering without
+new entries or ABI layout changes. Template search retains its earlier
+completed-close gate before request-pointer validation: after successful cleanup
+it reports Closed, even if capture ended with a fault. Aligning that cause and
+interruption precedence is deferred pending C ABI compatibility review.
+Native adapters share the ordering seam, but controlled tests do not grant
+permissions, qualify OS upgrades, or close native workload/release gates.
+No dependencies or performance budgets change.
 
 ## Verification
 

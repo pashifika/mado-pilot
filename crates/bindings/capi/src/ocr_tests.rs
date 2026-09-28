@@ -1460,3 +1460,65 @@ fn concurrent_close_wins_before_grouped_c_result_publication() {
         unsafe { (api.error_release)(error as *mut madopilot_error_t) };
     });
 }
+
+#[test]
+fn recognition_errors_report_the_origin_through_the_c_error_accessor() {
+    use crate::status::{
+        MADOPILOT_STATUS_CAPTURE_FAILED, MADOPILOT_STATUS_TARGET_LOST,
+        MADOPILOT_STATUS_VISION_FAILED,
+    };
+    use crate::types::{MADOPILOT_ERROR_HAS_BACKEND, madopilot_error_detail_t};
+
+    for (status, expected, category, has_backend) in [
+        (
+            Status::TargetLost,
+            MADOPILOT_STATUS_TARGET_LOST,
+            MADOPILOT_ERROR_CATEGORY_CAPTURE,
+            false,
+        ),
+        (
+            Status::CaptureFailed,
+            MADOPILOT_STATUS_CAPTURE_FAILED,
+            MADOPILOT_ERROR_CATEGORY_CAPTURE,
+            false,
+        ),
+        (
+            Status::Closed,
+            MADOPILOT_STATUS_CLOSED,
+            MADOPILOT_ERROR_CATEGORY_CAPTURE,
+            false,
+        ),
+        (
+            Status::VisionFailed,
+            MADOPILOT_STATUS_VISION_FAILED,
+            MADOPILOT_ERROR_CATEGORY_VISION,
+            true,
+        ),
+    ] {
+        let failure = Error::new(status, "recognition refused");
+        let error: *mut madopilot_error_t =
+            handle::into_raw(recognition_failure(&failure, BACKEND_ID));
+        let mut detail = <madopilot_error_detail_t as Versioned>::failure(struct_size::<
+            madopilot_error_detail_t,
+        >());
+        assert_eq!(
+            // SAFETY: the error is retained and the complete output is writable.
+            unsafe { (api().error_describe)(error, &raw mut detail) },
+            MADOPILOT_STATUS_OK
+        );
+        assert_eq!(detail.status, expected);
+        assert_eq!(detail.category, category);
+        assert_eq!(detail.flags & MADOPILOT_ERROR_HAS_BACKEND != 0, has_backend);
+        if has_backend {
+            assert_eq!(text(detail.backend), BACKEND_ID);
+        } else {
+            assert!(detail.backend.data.is_null());
+            assert_eq!(detail.backend.len, 0);
+        }
+        if status != Status::Closed {
+            assert_eq!(text(detail.message), failure.detail());
+        }
+        // SAFETY: this is the error's final owned reference; no views are used after it.
+        unsafe { (api().error_release)(error) };
+    }
+}

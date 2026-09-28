@@ -59,6 +59,7 @@ pub mod pacing;
 pub mod session;
 pub mod storage;
 pub mod stream;
+pub mod window;
 
 pub use descriptor::{
     CoordinateSupport, FrameDescriptor, OverflowPolicy, PixelFormat, QueuePolicy,
@@ -77,4 +78,8 @@ pub use storage::{CpuFrameStorage, CpuPixels, FrameStorage};
 pub use stream::{
     Continuity, FrameRequest, FrameSelection, Lifecycle, Publication, RefusedPublication,
     RefusedStorage, StoragePublication, StreamState,
+};
+pub use window::{
+    CaptureResourceLimits, NativeDesktopUnit, NativeWindowDescription, NativeWindowId,
+    WindowCaptureArea, WindowGeometry,
 };

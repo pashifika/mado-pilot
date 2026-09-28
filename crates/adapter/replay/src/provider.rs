@@ -135,6 +135,9 @@ impl CaptureProvider for ReplayProvider {
         {
             return Err(CaptureFault::UnsupportedOption.into());
         }
+        if request.window_geometry().is_some() || request.resource_limits().is_some() {
+            return Err(CaptureFault::UnsupportedOption.into());
+        }
         validate_placements(source)?;
         let pacing = CapturePacingReport::unsupported(
             request
@@ -815,6 +818,53 @@ mod tests {
         let operation = OperationContext::new();
         let targets = provider.discover(&operation).expect("discovered");
         provider.open(targets[0].id(), &OpenRequest::new(), &operation)
+    }
+
+    #[test]
+    fn native_requirements_are_refused_without_consuming_replay() {
+        use mado_pilot_capture::{CaptureResourceLimits, WindowCaptureArea, WindowGeometry};
+
+        let extent = PixelExtent::new(8, 6);
+        let placement = TargetPlacement::new(
+            (-20.0, 10.0),
+            (4.0, 3.0),
+            Scale::new(2.0, 2.0).expect("scale"),
+        )
+        .expect("placement");
+        let provider = ReplayProvider::new(
+            Arc::new(IdentityIssuer::new()),
+            placed_source(extent, placement),
+        )
+        .expect("provider");
+        let operation = OperationContext::new();
+        let target = provider.discover(&operation).expect("discovery")[0].id();
+        for request in [
+            OpenRequest::new().require_window_geometry(WindowGeometry::new(
+                WindowCaptureArea::MacosWindow,
+                placement,
+                extent,
+            )),
+            OpenRequest::new().with_resource_limits(
+                CaptureResourceLimits::new(192, 1024).expect("nonzero limits"),
+            ),
+        ] {
+            assert_eq!(
+                provider
+                    .open(target, &request, &operation)
+                    .expect_err("replay cannot honor native constraints")
+                    .status(),
+                Status::Unsupported,
+            );
+        }
+        let session = provider
+            .open(target, &OpenRequest::new(), &operation)
+            .expect("ordinary replay");
+        let frame = session
+            .frame(&FrameRequest::latest(), &operation)
+            .expect("original frame");
+        assert_eq!(frame.descriptor().extent(), extent);
+        assert_eq!(frame.stamp().sequence().value(), 0);
+        session.close(&operation).expect("cleanup");
     }
 
     #[test]

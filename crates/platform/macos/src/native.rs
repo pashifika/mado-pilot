@@ -26,9 +26,9 @@ use std::thread::{self, JoinHandle};
 use std::time::{Duration, Instant};
 
 use mado_pilot_capture::{
-    CaptureFault, CaptureSession, Continuity, CoordinateSupport, Frame, FrameRequest, Lifecycle,
-    OverflowPolicy, PixelFormat, QueuePolicy, ResolvedCapturePacing, SessionDescription,
-    StoragePublication, StreamState,
+    CaptureFault, CaptureResourceLimits, CaptureSession, Continuity, CoordinateSupport, Frame,
+    FrameRequest, Lifecycle, OverflowPolicy, PixelFormat, QueuePolicy, ResolvedCapturePacing,
+    SessionDescription, StoragePublication, StreamState, WindowCaptureArea, WindowGeometry,
 };
 use mado_pilot_core::{
     Clock, MonotonicInstant, Operation, OperationContext, PixelExtent, Result, StreamId,
@@ -47,6 +47,21 @@ use crate::storage::{DETACHED_BUFFER_BUDGET, MacosFrameStorage, descriptor_from_
 /// recommends: deep enough that one slow work item does not starve delivery,
 /// shallow enough that a stalled consumer cannot accumulate stale surfaces.
 const PRODUCER_QUEUE_DEPTH: u32 = 3;
+
+fn session_queue_policy(
+    extent: PixelExtent,
+    limits: Option<CaptureResourceLimits>,
+) -> std::result::Result<QueuePolicy, ShimStatus> {
+    let queue = QueuePolicy::new(std::num::NonZeroU32::MIN, OverflowPolicy::Reject);
+    if let Some(limits) = limits {
+        shim::storage_preflight(extent, PRODUCER_QUEUE_DEPTH, limits)?;
+        // Producer padding and CPU mappings share these bytes. No stable
+        // retained-frame count is guaranteed by a caller's byte ceiling.
+        Ok(queue)
+    } else {
+        Ok(queue.with_retained_storage(DETACHED_BUFFER_BUDGET))
+    }
+}
 
 /// How long a caller contending for the close gate sleeps between attempts.
 const CLOSE_POLL_INTERVAL: Duration = Duration::from_millis(2);
@@ -195,6 +210,8 @@ pub(crate) struct SessionTarget {
     /// later input request can resolve a coordinate against the frame it came
     /// from rather than against whatever the target looks like now.
     geometry: Arc<GeometryLedger>,
+    required_window: Option<WindowGeometry>,
+    resource_limits: Option<CaptureResourceLimits>,
 }
 
 impl SessionTarget {
@@ -215,7 +232,19 @@ impl SessionTarget {
             selection,
             metadata,
             geometry,
+            required_window: None,
+            resource_limits: None,
         }
+    }
+
+    pub(crate) fn with_requirements(
+        mut self,
+        geometry: Option<WindowGeometry>,
+        limits: Option<CaptureResourceLimits>,
+    ) -> Self {
+        self.required_window = geometry;
+        self.resource_limits = limits;
+        self
     }
 }
 
@@ -255,6 +284,7 @@ impl Drop for GeometryRegistration {
 
 struct SessionCore {
     target_kind: TargetKind,
+    required_window: Option<WindowGeometry>,
     geometry: GeometryRegistration,
     state: StreamState,
     session: OnceLock<shim::Session>,
@@ -628,13 +658,27 @@ impl NativeSession {
             key,
             fingerprint,
             selection,
-            metadata,
+            mut metadata,
             geometry,
+            required_window,
+            resource_limits,
         } = selected;
+        if let Some(required) = required_window {
+            if key.kind() != TargetKind::Window {
+                return Err(CaptureFault::UnsupportedOption.into());
+            }
+            // Native open revalidates the retained selection before allocating
+            // image storage. Do not perform a second inventory query here.
+            metadata.extent = required.extent();
+            metadata.placement = required.placement();
+        }
+        let queue = session_queue_policy(metadata.extent, resource_limits)
+            .map_err(|status| open_error(status, key.kind()))?;
         let anchor = clock_calibration().ok_or(CaptureFault::SourceInvalid)?;
         let (reconfigure, reconfigure_receiver) = Reconfigure::new();
         let core = Arc::new(SessionCore {
             target_kind: key.kind(),
+            required_window,
             geometry: GeometryRegistration::new(geometry, stream),
             state: StreamState::with_target_extent(stream),
             session: OnceLock::new(),
@@ -665,6 +709,9 @@ impl NativeSession {
             testing_stop_delay,
             testing_raise_sites,
             capture_pacing: pacing,
+            required_window,
+            resource_limits,
+            validation_wait: native_wait(operation),
         };
         // Every exit from here to the `NativeSession` below drops `pending`, which
         // closes whatever was opened and reclaims the registration.
@@ -699,10 +746,7 @@ impl NativeSession {
             PixelFormat::Bgra8,
             CoordinateSupport::with_target_placement(),
         )
-        .with_queue(
-            QueuePolicy::new(std::num::NonZeroU32::MIN, OverflowPolicy::Reject)
-                .with_retained_storage(DETACHED_BUFFER_BUDGET),
-        )
+        .with_queue(queue)
         .with_capture_pacing(capture_pacing);
         // Consumed before `core` moves, which is also what ends the guard's borrow.
         let registered = pending.into_owned();
@@ -903,6 +947,13 @@ impl SessionCore {
             thread::sleep(DEFAULT_NATIVE_WAIT.saturating_add(Duration::from_millis(250)));
             TESTING_DELAYED_CALLBACK_ACTIVE.store(false, Ordering::Release);
         }
+        if let Err(fault) = validate_required_window(self.required_window, info) {
+            return if fault == CaptureFault::WindowGeometryChanged {
+                ShimStatus::GeometryChanged
+            } else {
+                ShimStatus::FrameIncomplete
+            };
+        }
         if info.screen_rect().is_none() {
             // A complete image without the required same-frame placement
             // is a rejected publication, not a silent capability downgrade.
@@ -911,8 +962,8 @@ impl SessionCore {
         }
         let detached = match borrowed.detach() {
             Ok(detached) => detached,
-            // Finite pressure: every unit of the budget is retained by a caller.
-            // The candidate is dropped rather than blocking the producer.
+            // Pool contention and retained-storage pressure drop a candidate
+            // rather than blocking or terminating the producer.
             Err(ShimStatus::BudgetExhausted | ShimStatus::FrameIncomplete) => {
                 let _drop = self.state.try_record_drop();
                 return ShimStatus::Ok;
@@ -956,6 +1007,7 @@ impl SessionCore {
         detached: DetachedFrame,
         info: &FrameInfo,
     ) -> std::result::Result<(), CaptureFault> {
+        validate_required_window(self.required_window, info)?;
         let mut transition = self
             .transition
             .lock()
@@ -984,8 +1036,11 @@ impl SessionCore {
         // The hint is prospective producer capacity derived and bounded beside this
         // sample's metadata. It never changes the placement or extent published for
         // the current pixels, and a later inventory never participates.
-        if let Some(wanted) = surface_request(self.target_kind, info) {
-            // The worker performs the native call off this queue.
+        if self.required_window.is_none()
+            && let Some(wanted) = surface_request(self.target_kind, info)
+        {
+            // A required geometry fixes source resolution; it never opts into
+            // an automatic producer resize. Other sessions reconfigure off queue.
             self.request_reconfigure(wanted);
         }
         if !extent_ready_for_publication(&mut transition, extent) {
@@ -1076,6 +1131,28 @@ impl SessionCore {
     }
 }
 
+fn validate_required_window(
+    required: Option<WindowGeometry>,
+    info: &FrameInfo,
+) -> std::result::Result<(), CaptureFault> {
+    let Some(required) = required else {
+        return Ok(());
+    };
+    let (origin, size) = info
+        .screen_rect()
+        .ok_or(CaptureFault::WindowGeometryChanged)?;
+    let extent = info.extent().ok_or(CaptureFault::WindowGeometryChanged)?;
+    let placement =
+        crate::discovery::window_placement_from_points(origin, size, info.scale_factor, extent)
+            .map_err(|_| CaptureFault::WindowGeometryChanged)?;
+    if info.backing_scale() != Some(required.placement().scale().x())
+        || WindowGeometry::new(WindowCaptureArea::MacosWindow, placement, extent) != required
+    {
+        return Err(CaptureFault::WindowGeometryChanged);
+    }
+    Ok(())
+}
+
 fn spawn_reconfigure_worker(
     core: &Arc<SessionCore>,
     reconfigure: Arc<Reconfigure>,
@@ -1131,10 +1208,14 @@ fn run_reconfigure_worker(
         let Some(core) = core.upgrade() else {
             return;
         };
-        // The native call happens here rather than in the producer callback, and
-        // its own failure is not terminal: the session keeps publishing the
-        // content that fits the surface it already has.
-        let _reconfigured = core.session().reconfigure(extent, MAX_NATIVE_WAIT);
+        // Byte ceilings remain mandatory on resize. A refused replacement
+        // terminalizes instead of silently ignoring the caller's resource option.
+        if let Err(ShimStatus::BudgetExhausted) =
+            core.session().reconfigure(extent, MAX_NATIVE_WAIT)
+        {
+            core.fail_native(CaptureFault::StorageBudgetExhausted);
+            return;
+        }
         // Collapse any redundant queued wake token. A request that arrived while
         // the native call ran remains in the atomic slot and one token is enough.
         match receiver.try_recv() {
@@ -1156,6 +1237,16 @@ unsafe extern "C" fn on_frame(
     frame: *mut shim::OpaqueFrameHandle,
     info: *const FrameInfo,
 ) -> u32 {
+    if frame.is_null() && info.is_null() {
+        // SAFETY: producer pressure uses the same registered context and admission
+        // fence as a frame, but owns no image. Accounting itself is lock-free.
+        return unsafe {
+            shim::contained_frame_commit_callback::<SessionCore>(context, |core| {
+                let _drop = core.state.try_record_drop();
+                ShimStatus::Ok
+            })
+        };
+    }
     // SAFETY: the shim passes the registered context and its own live pointers.
     unsafe {
         shim::contained_frame_callback::<SessionCore>(
@@ -1375,6 +1466,38 @@ mod tests {
     }
 
     #[test]
+    fn required_window_rejects_movement_resize_scale_and_missing_publication_geometry() {
+        use mado_pilot_capture::{WindowCaptureArea, WindowGeometry};
+        let extent = PixelExtent::new(128, 96);
+        let selected = FrameInfo::testing_screen_rect(extent, 2.0, (-64.0, -48.0), (64.0, 48.0));
+        let required = WindowGeometry::new(
+            WindowCaptureArea::MacosWindow,
+            crate::discovery::frame_placement(&selected).expect("signed geometry"),
+            extent,
+        );
+        assert_eq!(
+            super::validate_required_window(Some(required), &selected),
+            Ok(())
+        );
+        for changed in [
+            FrameInfo::testing_screen_rect(extent, 2.0, (-63.0, -48.0), (64.0, 48.0)),
+            FrameInfo::testing_screen_rect(
+                PixelExtent::new(130, 96),
+                2.0,
+                (-64.0, -48.0),
+                (65.0, 48.0),
+            ),
+            FrameInfo::testing_screen_rect(extent, 1.0, (-64.0, -48.0), (128.0, 96.0)),
+            FrameInfo::empty(),
+        ] {
+            assert_eq!(
+                super::validate_required_window(Some(required), &changed),
+                Err(CaptureFault::WindowGeometryChanged),
+            );
+        }
+    }
+
+    #[test]
     fn terminal_discard_outranks_a_staged_commit_and_releases_the_value() {
         struct DropProbe(Arc<AtomicU64>);
 
@@ -1471,6 +1594,7 @@ mod tests {
         let stream = issuer.issue_stream().expect("stream identity");
         Arc::new(SessionCore {
             target_kind: TargetKind::Display,
+            required_window: None,
             geometry: GeometryRegistration::new(Arc::new(GeometryLedger::default()), stream),
             state: StreamState::with_target_extent(stream),
             session: OnceLock::new(),
@@ -1485,6 +1609,385 @@ mod tests {
             #[cfg(test)]
             testing_sites: 0,
         })
+    }
+
+    #[test]
+    fn limited_storage_admits_usable_bytes_without_promising_a_retained_frame_count() {
+        use mado_pilot_capture::{CaptureResourceLimits, RetainedStoragePolicy};
+
+        let extent = PixelExtent::new(5, 2);
+        // Three packed producers use 120 bytes; each padded detached image uses 64.
+        for retained in [184, 248, 632] {
+            let limits = CaptureResourceLimits::new(64, retained).expect("limits");
+            let queue = super::session_queue_policy(extent, Some(limits)).expect("usable budget");
+            assert_eq!(queue.retained_storage(), None);
+            assert_eq!(queue.retained_storage_policy(), None);
+        }
+        let default = super::session_queue_policy(extent, None).expect("default storage");
+        assert_eq!(
+            default.retained_storage(),
+            Some(super::DETACHED_BUFFER_BUDGET)
+        );
+        assert_eq!(
+            default.retained_storage_policy(),
+            Some(RetainedStoragePolicy::Guaranteed)
+        );
+    }
+
+    #[test]
+    fn limited_storage_refuses_zero_detached_capacity_and_padded_frame_overflow_before_open() {
+        use crate::shim::ShimStatus;
+        use mado_pilot_capture::CaptureResourceLimits;
+
+        for (extent, max_frame, retained) in [
+            (PixelExtent::new(5, 2), 64, 183),
+            (PixelExtent::new(5, 2), 63, 1_000),
+            (PixelExtent::new(8191, 8193), u64::MAX, u64::MAX),
+        ] {
+            let limits = CaptureResourceLimits::new(max_frame, retained).expect("limits");
+            assert_eq!(
+                super::session_queue_policy(extent, Some(limits)),
+                Err(ShimStatus::BudgetExhausted)
+            );
+        }
+    }
+
+    #[derive(Debug, PartialEq, Eq)]
+    struct DeliveryObservation {
+        stamp: Option<mado_pilot_core::FrameStamp>,
+        lifecycle: mado_pilot_capture::Lifecycle,
+        terminal: Option<CaptureFault>,
+        frame_calls: usize,
+    }
+
+    fn delivery_pressure(
+        scenario: u32,
+    ) -> (Vec<DeliveryObservation>, Vec<crate::shim::ShimStatus>) {
+        use std::ffi::c_void;
+
+        use crate::shim::{self, OpaqueFrame, ShimStatus};
+
+        struct Probe {
+            core: Arc<SessionCore>,
+            observations: Mutex<Vec<DeliveryObservation>>,
+            terminals: Mutex<Vec<ShimStatus>>,
+            frame_calls: AtomicUsize,
+        }
+
+        unsafe extern "C" fn stage(
+            context: *mut c_void,
+            frame: *mut OpaqueFrame,
+            info: *const FrameInfo,
+        ) -> u32 {
+            // SAFETY: the synchronous delegate borrows this live Probe, and the
+            // production trampoline receives the exact native frame arguments.
+            unsafe {
+                shim::contained_frame_commit_callback::<Probe>(context, |probe| {
+                    probe.frame_calls.fetch_add(1, Ordering::Relaxed);
+                    ShimStatus::from_raw(super::on_frame(
+                        Arc::as_ptr(&probe.core).cast_mut().cast(),
+                        frame,
+                        info,
+                    ))
+                })
+            }
+        }
+
+        unsafe extern "C" fn commit(context: *mut c_void) -> u32 {
+            // SAFETY: the synchronous helper retains the Probe and core.
+            unsafe {
+                shim::contained_frame_commit_callback::<Probe>(context, |probe| {
+                    ShimStatus::from_raw(super::on_frame_commit(
+                        Arc::as_ptr(&probe.core).cast_mut().cast(),
+                    ))
+                })
+            }
+        }
+
+        unsafe extern "C" fn stopped(context: *mut c_void, status: u32) {
+            // SAFETY: terminal delivery is inside the same synchronous fence.
+            unsafe {
+                shim::contained_stopped_callback::<Probe>(context, status, |probe, status| {
+                    probe.terminals.lock().expect("terminals").push(status);
+                    probe.core.discard_pending_frame();
+                    probe.core.state.terminate(status.fault());
+                });
+            }
+        }
+
+        unsafe extern "C" fn observe(context: *mut c_void) -> u32 {
+            // SAFETY: observations borrow the Probe only during this native call.
+            unsafe {
+                shim::contained_frame_commit_callback::<Probe>(context, |probe| {
+                    probe
+                        .observations
+                        .lock()
+                        .expect("observations")
+                        .push(DeliveryObservation {
+                            stamp: probe.core.state.current().map(|frame| frame.stamp()),
+                            lifecycle: probe.core.state.lifecycle(),
+                            terminal: probe.core.state.terminal(),
+                            frame_calls: probe.frame_calls.load(Ordering::Relaxed),
+                        });
+                    ShimStatus::Ok
+                })
+            }
+        }
+
+        let core = unregistered_core();
+        {
+            let mut transition = core.transition.lock().expect("transition");
+            transition.extent = PixelExtent::new(4, 4);
+            transition.surface = PixelExtent::new(4, 4);
+        }
+        let probe = Probe {
+            core,
+            observations: Mutex::new(Vec::new()),
+            terminals: Mutex::new(Vec::new()),
+            frame_calls: AtomicUsize::new(0),
+        };
+        let mut fence = u32::MAX;
+        // SAFETY: the helper only creates synthetic samples and invokes these
+        // contained callbacks synchronously. No registered context escapes.
+        let status = unsafe {
+            shim::mp_shim_testing_delivery_pressure(
+                scenario,
+                (&raw const probe).cast_mut().cast(),
+                Some(stage),
+                Some(commit),
+                Some(stopped),
+                Some(observe),
+                &raw mut fence,
+            )
+        };
+        assert_eq!(
+            ShimStatus::from_raw(status),
+            ShimStatus::Ok,
+            "scenario {scenario}"
+        );
+        assert_eq!(
+            ShimStatus::from_raw(fence),
+            ShimStatus::Ok,
+            "callback fence"
+        );
+        assert!(probe.core.pending_frame.take().is_none());
+        (
+            probe.observations.into_inner().expect("observations"),
+            probe.terminals.into_inner().expect("terminals"),
+        )
+    }
+
+    #[test]
+    fn producer_delivery_pressure_records_exactly_one_gap_after_recovery() {
+        // Producer bytes, producer mutex, detached pool mutex, detached bytes.
+        for scenario in [0, 4, 5, 6] {
+            let (observations, terminals) = delivery_pressure(scenario);
+            assert_eq!(
+                observations
+                    .iter()
+                    .map(|observation| observation.stamp.map(|stamp| stamp.sequence().value()))
+                    .collect::<Vec<_>>(),
+                [Some(0), Some(0), Some(2), Some(3), Some(3)],
+                "scenario {scenario}",
+            );
+            assert!(terminals.is_empty(), "scenario {scenario}");
+            let epoch = observations[0].stamp.expect("initial frame").epoch();
+            assert!(observations.iter().all(|observation| {
+                observation.lifecycle == mado_pilot_capture::Lifecycle::Open
+                    && observation.terminal.is_none()
+                    && observation
+                        .stamp
+                        .is_some_and(|stamp| stamp.epoch() == epoch)
+            }));
+            assert_eq!(observations[0].stamp, observations[1].stamp);
+            assert_eq!(
+                observations[3], observations[4],
+                "fenced callback is refused"
+            );
+        }
+    }
+
+    #[test]
+    fn producer_delivery_pressure_before_first_frame_creates_no_sequence_debt() {
+        let (observations, terminals) = delivery_pressure(1);
+        assert_eq!(
+            observations
+                .iter()
+                .map(|observation| observation.stamp.map(|stamp| stamp.sequence().value()))
+                .collect::<Vec<_>>(),
+            [None, None, Some(0), Some(1), Some(1)],
+        );
+        assert!(terminals.is_empty());
+        assert!(observations.iter().all(|observation| {
+            observation.lifecycle == mado_pilot_capture::Lifecycle::Open
+                && observation.terminal.is_none()
+        }));
+        assert_eq!(observations[1].frame_calls, 1, "pressure reached Rust");
+        assert_eq!(observations[3], observations[4]);
+    }
+
+    #[test]
+    fn producer_delivery_incomplete_framework_sample_creates_no_drop() {
+        let (observations, terminals) = delivery_pressure(3);
+        assert_eq!(
+            observations
+                .iter()
+                .map(|observation| observation.stamp.map(|stamp| stamp.sequence().value()))
+                .collect::<Vec<_>>(),
+            [Some(0), Some(0), Some(1), Some(2), Some(2)],
+        );
+        assert!(terminals.is_empty());
+        assert_eq!(
+            observations[0], observations[1],
+            "no Rust callback for incomplete sample"
+        );
+        assert_eq!(observations[3], observations[4]);
+    }
+
+    #[test]
+    fn producer_delivery_per_frame_refusal_terminalizes_once_without_recovery() {
+        let (observations, terminals) = delivery_pressure(2);
+        assert_eq!(terminals, [crate::shim::ShimStatus::BudgetExhausted]);
+        assert_eq!(
+            observations[0].lifecycle,
+            mado_pilot_capture::Lifecycle::Open
+        );
+        assert!(observations[0].terminal.is_none());
+        assert_eq!(
+            observations[0]
+                .stamp
+                .expect("initial frame")
+                .sequence()
+                .value(),
+            0
+        );
+        for observation in &observations[1..] {
+            assert_eq!(observation.stamp, observations[0].stamp);
+            assert_eq!(
+                observation.lifecycle,
+                mado_pilot_capture::Lifecycle::Closing
+            );
+            assert_eq!(
+                observation.terminal,
+                Some(CaptureFault::StorageBudgetExhausted)
+            );
+            assert_eq!(observation.frame_calls, 1, "terminal refusal is not a drop");
+        }
+    }
+
+    #[test]
+    fn producer_delivery_pressure_keeps_shutdown_fenced_until_callback_returns() {
+        let (observations, terminals) = delivery_pressure(7);
+        assert!(terminals.is_empty());
+        assert_eq!(
+            observations[0]
+                .stamp
+                .expect("initial frame")
+                .sequence()
+                .value(),
+            0
+        );
+        assert_eq!(observations[0].frame_calls, 1);
+        for observation in &observations[1..] {
+            assert_eq!(observation.stamp, observations[0].stamp);
+            assert_eq!(
+                observation.frame_calls, 2,
+                "only the admitted drop reaches Rust"
+            );
+            assert_eq!(observation.lifecycle, mado_pilot_capture::Lifecycle::Open);
+            assert!(observation.terminal.is_none());
+        }
+    }
+
+    #[test]
+    fn limited_storage_pressure_drops_without_terminal_and_recovers_after_owner_release() {
+        use std::ffi::c_void;
+
+        use crate::shim::{self, OpaqueFrame, ShimStatus};
+
+        struct Probe {
+            core: Arc<SessionCore>,
+            retained: Mutex<Vec<super::PendingFrame>>,
+            admitted: AtomicUsize,
+        }
+
+        unsafe extern "C" fn stage(
+            context: *mut c_void,
+            frame: *mut OpaqueFrame,
+            info: *const FrameInfo,
+        ) -> u32 {
+            // SAFETY: the synchronous native seam borrows the live Probe and
+            // owns the synthetic frame and sized report throughout this call.
+            unsafe {
+                shim::contained_frame_callback::<Probe>(
+                    context,
+                    frame,
+                    info,
+                    |probe, frame, info| {
+                        let status = probe.core.stage_frame(&frame, info);
+                        if let Some(pending) = probe.core.pending_frame.take() {
+                            let mut pixels = [0xff; 40];
+                            if let Err(status) = pending.detached.copy_out(&mut pixels, 20) {
+                                return status;
+                            }
+                            assert_eq!(pixels, [0; 40]);
+                            probe.admitted.fetch_add(1, Ordering::Relaxed);
+                            probe.retained.lock().expect("retained").push(pending);
+                        }
+                        status
+                    },
+                )
+            }
+        }
+
+        unsafe extern "C" fn release(context: *mut c_void) -> u32 {
+            // SAFETY: the same live Probe is borrowed until the helper returns.
+            unsafe {
+                shim::contained_frame_commit_callback::<Probe>(context, |probe| {
+                    probe.core.discard_pending_frame();
+                    probe.retained.lock().expect("retained").clear();
+                    ShimStatus::Ok
+                })
+            }
+        }
+
+        // Pool trylock contention, detached-count pressure, and retained-byte pressure.
+        for scenario in 0..=2 {
+            let probe = Probe {
+                core: unregistered_core(),
+                retained: Mutex::new(Vec::new()),
+                admitted: AtomicUsize::new(0),
+            };
+            let mut statuses = [u32::MAX; 3];
+            // SAFETY: callbacks and context remain live for the synchronous
+            // helper, which releases every native owner before returning.
+            let status = unsafe {
+                shim::mp_shim_testing_storage_pressure(
+                    scenario,
+                    (&raw const probe).cast_mut().cast(),
+                    Some(stage),
+                    Some(release),
+                    statuses.as_mut_ptr(),
+                )
+            };
+            assert_eq!(
+                ShimStatus::from_raw(status),
+                ShimStatus::Ok,
+                "scenario {scenario}"
+            );
+            assert_eq!(statuses.map(ShimStatus::from_raw), [ShimStatus::Ok; 3]);
+            assert_eq!(
+                probe.admitted.load(Ordering::Relaxed),
+                2,
+                "scenario {scenario}"
+            );
+            assert_eq!(
+                probe.core.state.lifecycle(),
+                mado_pilot_capture::Lifecycle::Open
+            );
+            assert!(probe.core.pending_frame.take().is_none());
+            assert!(probe.retained.lock().expect("retained").is_empty());
+        }
     }
 
     #[test]

@@ -11,6 +11,7 @@ use crate::fault::CaptureFault;
 use crate::frame::Frame;
 use crate::pacing::CapturePacingRequest;
 use crate::stream::{FrameRequest, Lifecycle};
+use crate::window::{CaptureResourceLimits, WindowGeometry};
 
 /// What a caller asks for when opening a session.
 ///
@@ -23,6 +24,8 @@ pub struct OpenRequest {
     required_format: Option<PixelFormat>,
     preferred_format: Option<PixelFormat>,
     capture_pacing: CapturePacingRequest,
+    window_geometry: Option<WindowGeometry>,
+    resource_limits: Option<CaptureResourceLimits>,
 }
 
 impl OpenRequest {
@@ -33,6 +36,8 @@ impl OpenRequest {
             required_format: None,
             preferred_format: None,
             capture_pacing: CapturePacingRequest::inherit(),
+            window_geometry: None,
+            resource_limits: None,
         }
     }
 
@@ -76,6 +81,32 @@ impl OpenRequest {
     pub const fn capture_pacing(&self) -> CapturePacingRequest {
         self.capture_pacing
     }
+
+    /// Requires the retained window's exact geometry, without moving or resizing it.
+    #[must_use]
+    pub const fn require_window_geometry(mut self, geometry: WindowGeometry) -> Self {
+        self.window_geometry = Some(geometry);
+        self
+    }
+
+    /// Returns the required window geometry, if selected.
+    #[must_use]
+    pub const fn window_geometry(&self) -> Option<WindowGeometry> {
+        self.window_geometry
+    }
+
+    /// Requires these allocation ceilings; unsupported providers must refuse them.
+    #[must_use]
+    pub const fn with_resource_limits(mut self, limits: CaptureResourceLimits) -> Self {
+        self.resource_limits = Some(limits);
+        self
+    }
+
+    /// Returns the required frame and session image-storage ceilings.
+    #[must_use]
+    pub const fn resource_limits(&self) -> Option<CaptureResourceLimits> {
+        self.resource_limits
+    }
 }
 
 /// A source of capture targets.
@@ -114,6 +145,23 @@ pub trait CaptureProvider: Debug + Send + Sync {
         let mut targets = self.discover(operation)?;
         targets.retain(|target| request.accepts(target));
         Ok(targets)
+    }
+
+    /// Describes the same retained native window after read-only revalidation.
+    ///
+    /// Native keys are descriptive only. The provider must refuse retired,
+    /// replaced, ineligible or unverifiable targets without rediscovering by key.
+    ///
+    /// # Errors
+    /// Returns foreign-target, target-loss, unsupported or interruption outcomes.
+    fn describe_window(
+        &self,
+        target: TargetId,
+        operation: &OperationContext,
+    ) -> Result<TargetDescription> {
+        let _attempt = mado_pilot_core::Operation::admit(operation)?;
+        let _ = target;
+        Err(CaptureFault::UnsupportedOption.into())
     }
 
     /// Confirms that this provider issued `target`, for `engine`.

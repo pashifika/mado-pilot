@@ -358,6 +358,34 @@ impl CaptureProvider for MacosCaptureProvider {
         self.discover_with(operation, || inventory(wait))
     }
 
+    fn describe_window(
+        &self,
+        target: TargetId,
+        operation: &OperationContext,
+    ) -> Result<TargetDescription> {
+        let mut attempt = Operation::admit(operation)?;
+        CaptureProvider::accepts_target(self, target, self.issuer.engine())?;
+        let record = self
+            .registry()
+            .records
+            .get(&target)
+            .cloned()
+            .ok_or(CaptureFault::TargetLost)?;
+        if record.kind() != TargetKind::Window {
+            return Err(CaptureFault::UnsupportedOption.into());
+        }
+        let observed = record
+            .selection
+            .window_description(inventory_wait(operation.remaining()));
+        attempt.checkpoint()?;
+        let window = observed?;
+        let mut metadata = record.metadata.clone();
+        metadata.extent = window.geometry().extent();
+        metadata.placement = window.geometry().placement();
+        metadata.window = Some(window);
+        Ok(attempt.commit(metadata.describe(target, TargetKind::Window))?)
+    }
+
     fn open(
         &self,
         target: TargetId,
@@ -392,7 +420,8 @@ impl CaptureProvider for MacosCaptureProvider {
             record.selection.clone(),
             record.metadata.clone(),
             Arc::clone(&record.geometry),
-        );
+        )
+        .with_requirements(request.window_geometry(), request.resource_limits());
         let session = NativeSession::open(selected, pacing, &mut attempt)?;
         Ok(attempt.commit(session as Arc<dyn CaptureSession>)?)
     }
@@ -687,6 +716,7 @@ mod tests {
                 .expect("placement"),
                 process_directed: true,
                 process_identity: None,
+                window: None,
             },
         }
     }
@@ -1039,5 +1069,92 @@ mod tests {
         assert_eq!(registry.records.len(), RETAINED_DISCOVERY_GENERATIONS);
         assert!(registry.records.contains_key(&first));
         assert!(registry.records.contains_key(&second));
+    }
+
+    #[test]
+    fn retained_window_description_preserves_signed_scaled_geometry_and_rejects_reuse() {
+        let provider = MacosCaptureProvider::new(Arc::new(IdentityIssuer::new()));
+        let candidate = window_candidate(1);
+        let retained = candidate.target.clone();
+        let id = commit_candidates(&provider, vec![candidate])[0].id();
+        let description = provider
+            .describe_window(id, &OperationContext::new())
+            .expect("retained synthetic window");
+        let window = description.window().expect("native metadata");
+        assert_eq!(
+            window.geometry().placement().desktop_origin(),
+            (-64.0, -48.0)
+        );
+        assert_eq!(window.geometry().placement().scale().x(), 2.0);
+        assert_eq!(window.geometry().extent(), PixelExtent::new(128, 96));
+        assert_eq!(description.extent(), window.geometry().extent());
+        retained.mark_synthetic_lost();
+        let replacement = commit_candidates(&provider, vec![window_candidate(2)])[0].id();
+        assert_eq!(
+            provider
+                .describe_window(id, &OperationContext::new())
+                .expect_err("equal native key cannot rebind the retained record")
+                .status(),
+            Status::TargetLost
+        );
+        provider
+            .describe_window(replacement, &OperationContext::new())
+            .expect("new incarnation has independent authority");
+    }
+
+    #[test]
+    fn retained_window_description_rejects_foreign_retired_and_cancelled_requests() {
+        let provider = MacosCaptureProvider::new(Arc::new(IdentityIssuer::new()));
+        let foreign = IdentityIssuer::new()
+            .issue_target(super::PROVIDER)
+            .expect("foreign identity");
+        assert_eq!(
+            provider
+                .describe_window(foreign, &OperationContext::new())
+                .expect_err("foreign")
+                .status(),
+            Status::InvalidArgument
+        );
+        let retired = commit_candidates(&provider, vec![window_candidate(1)])[0].id();
+        commit_candidates(&provider, vec![window_candidate(2)]);
+        commit_candidates(&provider, vec![window_candidate(3)]);
+        assert_eq!(
+            provider
+                .describe_window(retired, &OperationContext::new())
+                .expect_err("retired")
+                .status(),
+            Status::TargetLost
+        );
+        let cancellation = mado_pilot_core::CancellationToken::new();
+        cancellation.cancel();
+        let operation = OperationContext::new().with_cancellation(cancellation);
+        assert_eq!(
+            provider
+                .describe_window(retired, &operation)
+                .expect_err("cancellation precedes stale-record lookup")
+                .status(),
+            Status::Cancelled
+        );
+        let expired = OperationContext::new().with_deadline(MonotonicInstant::ORIGIN);
+        assert_eq!(
+            provider
+                .describe_window(retired, &expired)
+                .expect_err("deadline precedes stale-record lookup")
+                .status(),
+            Status::DeadlineExceeded
+        );
+        let mut display = window_candidate(4);
+        display.key = NativeKey::Display(7);
+        display.fingerprint = Fingerprint::Display {
+            extent: display.metadata.extent,
+        };
+        let display = commit_candidates(&provider, vec![display])[0].id();
+        assert_eq!(
+            provider
+                .describe_window(display, &OperationContext::new())
+                .expect_err("display cannot acquire window metadata")
+                .status(),
+            Status::Unsupported
+        );
     }
 }

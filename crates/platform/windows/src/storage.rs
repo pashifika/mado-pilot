@@ -3,11 +3,13 @@
 use std::fmt;
 use std::num::NonZeroU32;
 use std::sync::atomic::{AtomicU8, AtomicU64, AtomicUsize, Ordering};
-use std::sync::{Arc, Condvar, Mutex, MutexGuard, OnceLock, TryLockError, Weak};
+use std::sync::{Arc, Condvar, LazyLock, Mutex, MutexGuard, TryLockError, Weak};
 use std::thread;
 use std::time::Duration;
 
-use mado_pilot_capture::{CaptureFault, CpuPixels, FrameDescriptor, FrameStorage, PixelFormat};
+use mado_pilot_capture::{
+    CaptureFault, CaptureResourceLimits, CpuPixels, FrameDescriptor, FrameStorage, PixelFormat,
+};
 use mado_pilot_core::{Operation, OperationContext, PixelExtent, Result};
 use windows::Graphics::DirectX::Direct3D11::IDirect3DDevice;
 use windows::Win32::Foundation::{E_ACCESSDENIED, HMODULE, RO_E_CLOSED};
@@ -17,8 +19,7 @@ use windows::Win32::Graphics::Direct3D::{
 use windows::Win32::Graphics::Direct3D11::{
     D3D11_CPU_ACCESS_READ, D3D11_CREATE_DEVICE_BGRA_SUPPORT, D3D11_MAP_READ,
     D3D11_MAPPED_SUBRESOURCE, D3D11_SDK_VERSION, D3D11_TEXTURE2D_DESC, D3D11_USAGE_DEFAULT,
-    D3D11_USAGE_STAGING, D3D11CreateDevice, ID3D11Device, ID3D11DeviceContext, ID3D11Resource,
-    ID3D11Texture2D,
+    D3D11_USAGE_STAGING, D3D11CreateDevice, ID3D11Device, ID3D11DeviceContext, ID3D11Texture2D,
 };
 use windows::Win32::Graphics::Dxgi::{
     DXGI_ERROR_ACCESS_LOST, DXGI_ERROR_DEVICE_HUNG, DXGI_ERROR_DEVICE_REMOVED,
@@ -76,6 +77,7 @@ impl SurfaceLayout {
 /// reserved under the session byte ceiling.
 pub(crate) fn retained_storage_capacity(
     layout: SurfaceLayout,
+    retained_limit: u64,
 ) -> std::result::Result<NonZeroU32, CaptureFault> {
     const REQUIRED_OVERHEAD_SURFACES: u64 = 4;
 
@@ -83,7 +85,7 @@ pub(crate) fn retained_storage_capacity(
         .bytes()
         .checked_mul(REQUIRED_OVERHEAD_SURFACES)
         .ok_or(CaptureFault::ResourceLimitExceeded)?;
-    let available = SESSION_RETAINED_BYTES
+    let available = retained_limit
         .checked_sub(overhead)
         .ok_or(CaptureFault::ResourceLimitExceeded)?;
     let by_bytes = available / layout.bytes();
@@ -176,17 +178,81 @@ impl Drop for ByteLease {
 pub(crate) struct SessionMemory {
     session: Arc<ByteBudget>,
     global: Arc<ByteBudget>,
+    max_frame_bytes: u64,
+    caller_limited: bool,
 }
 
 impl SessionMemory {
-    pub(crate) fn production() -> Arc<Self> {
-        static GLOBAL: OnceLock<Arc<ByteBudget>> = OnceLock::new();
+    pub(crate) fn production(limits: Option<CaptureResourceLimits>) -> Arc<Self> {
+        static GLOBAL: LazyLock<Arc<ByteBudget>> =
+            LazyLock::new(|| Arc::new(ByteBudget::new(GLOBAL_RETAINED_BYTES)));
+        let (frame_limit, session_limit) = effective_limits(limits);
         Arc::new(Self {
-            session: Arc::new(ByteBudget::new(SESSION_RETAINED_BYTES)),
-            global: Arc::clone(
-                GLOBAL.get_or_init(|| Arc::new(ByteBudget::new(GLOBAL_RETAINED_BYTES))),
-            ),
+            session: Arc::new(ByteBudget::new(session_limit)),
+            global: Arc::clone(&GLOBAL),
+            max_frame_bytes: frame_limit,
+            caller_limited: limits.is_some(),
         })
+    }
+
+    pub(crate) fn validate_surface(
+        &self,
+        width: u32,
+        height: u32,
+    ) -> std::result::Result<SurfaceLayout, CaptureFault> {
+        let layout = validate_surface(width, height)?;
+        self.validate_frame_bytes(layout.bytes())?;
+        Ok(layout)
+    }
+
+    fn validate_texture(
+        &self,
+        descriptor: &D3D11_TEXTURE2D_DESC,
+    ) -> std::result::Result<SurfaceLayout, CaptureFault> {
+        let layout = texture_layout(descriptor)?;
+        self.validate_frame_bytes(layout.bytes())?;
+        Ok(layout)
+    }
+
+    fn validate_frame_bytes(&self, bytes: u64) -> std::result::Result<(), CaptureFault> {
+        if bytes > self.max_frame_bytes {
+            Err(CaptureFault::ResourceLimitExceeded)
+        } else {
+            Ok(())
+        }
+    }
+
+    pub(crate) fn retained_storage_capacity(
+        &self,
+        layout: SurfaceLayout,
+    ) -> std::result::Result<NonZeroU32, CaptureFault> {
+        retained_storage_capacity(layout, self.session.limit)
+    }
+
+    /// The GPU layout is opaque; this admits its declared BGRA payload. Linear
+    /// row padding becomes observable only after Map and is charged before any
+    /// CPU allocation or copy, for the complete mapped-resource lifetime.
+    fn mapped_padding(
+        self: &Arc<Self>,
+        layout: SurfaceLayout,
+        row_pitch: u32,
+        height: u32,
+    ) -> Result<Option<RetainedBytes>> {
+        if u64::from(row_pitch) < layout.row_bytes {
+            return Err(CaptureFault::InconsistentDescriptor.into());
+        }
+        let bytes = u64::from(row_pitch)
+            .checked_mul(u64::from(height))
+            .ok_or(CaptureFault::ResourceLimitExceeded)?;
+        self.validate_frame_bytes(bytes)?;
+        let padding = bytes
+            .checked_sub(layout.bytes())
+            .ok_or(CaptureFault::InconsistentDescriptor)?;
+        if padding == 0 {
+            Ok(None)
+        } else {
+            self.reserve(padding).map(Some)
+        }
     }
 
     fn try_reserve(self: &Arc<Self>, bytes: u64) -> Option<RetainedBytes> {
@@ -203,11 +269,36 @@ impl SessionMemory {
             .ok_or_else(|| CaptureFault::ResourceLimitExceeded.into())
     }
 
+    fn reserve_cpu_copy(self: &Arc<Self>, bytes: usize) -> Result<Option<Arc<dyn Send + Sync>>> {
+        if !self.caller_limited {
+            return Ok(None);
+        }
+        let bytes = u64::try_from(bytes).map_err(|_| CaptureFault::ResourceLimitExceeded)?;
+        self.validate_frame_bytes(bytes)?;
+        Ok(Some(Arc::new(self.reserve(bytes)?)))
+    }
+
     #[cfg(test)]
     fn testing(session_limit: u64, global: Arc<ByteBudget>) -> Arc<Self> {
         Arc::new(Self {
             session: Arc::new(ByteBudget::new(session_limit)),
             global,
+            max_frame_bytes: MAX_SURFACE_BYTES,
+            caller_limited: false,
+        })
+    }
+
+    #[cfg(test)]
+    pub(crate) fn testing_with_limits(
+        limits: CaptureResourceLimits,
+        global_limit: u64,
+    ) -> Arc<Self> {
+        let (max_frame_bytes, retained_bytes) = effective_limits(Some(limits));
+        Arc::new(Self {
+            session: Arc::new(ByteBudget::new(retained_bytes)),
+            global: Arc::new(ByteBudget::new(global_limit)),
+            max_frame_bytes,
+            caller_limited: true,
         })
     }
 
@@ -232,6 +323,15 @@ impl SessionMemory {
     pub(crate) fn usage(&self) -> (u64, u64) {
         (self.session.used(), self.global.used())
     }
+}
+
+fn effective_limits(limits: Option<CaptureResourceLimits>) -> (u64, u64) {
+    limits.map_or((MAX_SURFACE_BYTES, SESSION_RETAINED_BYTES), |limits| {
+        (
+            limits.max_frame_bytes().min(MAX_SURFACE_BYTES),
+            limits.max_retained_bytes().min(SESSION_RETAINED_BYTES),
+        )
+    })
 }
 
 /// Keeps both byte reservations alive for exactly the native/CPU owner lifetime.
@@ -366,13 +466,14 @@ impl DeviceDomain {
         let mut source_descriptor = D3D11_TEXTURE2D_DESC::default();
         // SAFETY: source_descriptor is writable for the complete native struct.
         unsafe { texture.GetDesc(&raw mut source_descriptor) };
-        let staging_layout = validate_surface(source_descriptor.Width, source_descriptor.Height)?;
+        let staging_layout = memory.validate_texture(&source_descriptor)?;
         let cpu_bytes = u64::try_from(descriptor.byte_len())
             .map_err(|_| CaptureFault::ResourceLimitExceeded)?;
+        memory.validate_frame_bytes(cpu_bytes)?;
         let retained_bytes = mapping_retained_bytes(staging_layout.bytes(), cpu_bytes)?;
-        // R1-2: both the staging texture and exact CPU output are admitted before
-        // either allocation. Keeping the conservative combined lease with the
-        // returned bytes also bounds mappings that outlive their source session.
+        // Preserve the existing conservative staging-plus-output lease on the
+        // returned pixels. Map's additional observable linear padding is charged
+        // separately below and remains owned until the mapped resource releases.
         let mapping_bytes = memory.reserve(retained_bytes)?;
         let mut staging_descriptor = source_descriptor;
         staging_descriptor.Usage = D3D11_USAGE_STAGING;
@@ -401,10 +502,13 @@ impl DeviceDomain {
                 .Map(&staging, 0, D3D11_MAP_READ, 0, Some(&raw mut mapped))
         }
         .map_err(classify_native_error)?;
-        let mapped_guard = MappedGuard {
+        let mut mapped_guard = MappedGuard {
             context: &self.context,
-            resource: staging.cast().map_err(classify_native_error)?,
+            resource: staging,
+            padding: None,
         };
+        mapped_guard.padding =
+            memory.mapped_padding(staging_layout, mapped.RowPitch, source_descriptor.Height)?;
 
         let row_pitch =
             usize::try_from(mapped.RowPitch).map_err(|_| CaptureFault::InconsistentDescriptor)?;
@@ -504,7 +608,9 @@ fn create_device(
 
 struct MappedGuard<'context> {
     context: &'context ID3D11DeviceContext,
-    resource: ID3D11Resource,
+    resource: ID3D11Texture2D,
+    // Unmap runs in Drop, then the resource is released before its padding lease.
+    padding: Option<RetainedBytes>,
 }
 
 impl Drop for MappedGuard<'_> {
@@ -591,7 +697,7 @@ impl TexturePool {
         self: &Arc<Self>,
         descriptor: D3D11_TEXTURE2D_DESC,
     ) -> Result<Option<TextureLease>> {
-        let layout = validate_surface(descriptor.Width, descriptor.Height)?;
+        let layout = self.memory.validate_texture(&descriptor)?;
         let mut state = match self.state.try_lock() {
             Ok(state) => state,
             Err(TryLockError::WouldBlock) => return Ok(None),
@@ -795,6 +901,10 @@ impl FrameStorage for WindowsFrameStorage {
         self.descriptor
     }
 
+    fn reserve_cpu_copy(&self, bytes: usize) -> Result<Option<Arc<dyn Send + Sync>>> {
+        self.memory.reserve_cpu_copy(bytes)
+    }
+
     fn cpu_pixels(&self) -> Option<Arc<CpuPixels>> {
         // The answer is fixed for this storage's lifetime. Even after a lazy
         // conversion is cached, native storage remains a conversion path rather
@@ -886,14 +996,29 @@ fn lock_with_operation<'mutex>(
     }
 }
 
+fn texture_layout(
+    descriptor: &D3D11_TEXTURE2D_DESC,
+) -> std::result::Result<SurfaceLayout, CaptureFault> {
+    if descriptor.Format != windows::Win32::Graphics::Dxgi::Common::DXGI_FORMAT_B8G8R8A8_UNORM {
+        return Err(CaptureFault::UnsupportedFormat);
+    }
+    // Accounting covers a single BGRA image, not extra array slices, mipmaps
+    // or multisample storage carried by an unexpected source descriptor.
+    if descriptor.MipLevels != 1
+        || descriptor.ArraySize != 1
+        || descriptor.SampleDesc.Count != 1
+        || descriptor.SampleDesc.Quality != 0
+    {
+        return Err(CaptureFault::InconsistentDescriptor);
+    }
+    validate_surface(descriptor.Width, descriptor.Height)
+}
+
 pub(crate) fn descriptor_from_native(
     descriptor: &D3D11_TEXTURE2D_DESC,
     content_extent: PixelExtent,
 ) -> std::result::Result<Option<FrameDescriptor>, CaptureFault> {
-    if descriptor.Format != windows::Win32::Graphics::Dxgi::Common::DXGI_FORMAT_B8G8R8A8_UNORM {
-        return Err(CaptureFault::UnsupportedFormat);
-    }
-    validate_surface(descriptor.Width, descriptor.Height)?;
+    texture_layout(descriptor)?;
     validate_surface(content_extent.width(), content_extent.height())?;
     if descriptor.Width < content_extent.width() || descriptor.Height < content_extent.height() {
         return Ok(None);
@@ -940,8 +1065,14 @@ mod tests {
         TexturePool, checked_bgra_bytes, descriptor_from_native, finish_mapping_cache,
         mapping_retained_bytes, native_fault, retained_storage_capacity, validate_surface,
     };
-    use mado_pilot_capture::{CaptureFault, CpuPixels};
-    use mado_pilot_core::{PixelExtent, Status};
+    use mado_pilot_capture::{
+        CaptureFault, CaptureResourceLimits, Continuity, CpuPixels, Frame, FrameDescriptor,
+        FrameStorage, PixelFormat, StoragePublication, StreamState,
+    };
+    use mado_pilot_core::{
+        ClipPolicy, CoordinateSpace, IdentityIssuer, MonotonicInstant, OperationContext,
+        PixelExtent, Rect, Result, Status,
+    };
 
     fn descriptor(width: u32, height: u32) -> D3D11_TEXTURE2D_DESC {
         D3D11_TEXTURE2D_DESC {
@@ -959,6 +1090,58 @@ mod tests {
             CPUAccessFlags: 0,
             MiscFlags: 0,
         }
+    }
+
+    // A completed readback with the real Windows memory accounting, without a
+    // D3D device. Common mapping still owns conversion, cropping and pixel leases.
+    #[derive(Debug)]
+    struct AccountedCpuStorage {
+        descriptor: FrameDescriptor,
+        pixels: Arc<CpuPixels>,
+        memory: Arc<SessionMemory>,
+    }
+
+    impl FrameStorage for AccountedCpuStorage {
+        fn descriptor(&self) -> FrameDescriptor {
+            self.descriptor
+        }
+
+        fn cpu_pixels(&self) -> Option<Arc<CpuPixels>> {
+            Some(Arc::clone(&self.pixels))
+        }
+
+        fn read_cpu(&self, _operation: &OperationContext) -> Result<Arc<CpuPixels>> {
+            Ok(Arc::clone(&self.pixels))
+        }
+
+        fn reserve_cpu_copy(&self, bytes: usize) -> Result<Option<Arc<dyn Send + Sync>>> {
+            self.memory.reserve_cpu_copy(bytes)
+        }
+    }
+
+    fn accounted_frame(memory: &Arc<SessionMemory>) -> (StreamState, Frame) {
+        let descriptor =
+            FrameDescriptor::packed(PixelExtent::new(2, 2), PixelFormat::Bgra8).expect("layout");
+        let reservation = memory.reserve(16).expect("source pixels");
+        let storage = Arc::new(AccountedCpuStorage {
+            descriptor,
+            pixels: Arc::new(CpuPixels::with_retainer(
+                (1u8..=16).collect::<Vec<_>>().into_boxed_slice(),
+                Arc::new(reservation),
+            )),
+            memory: Arc::clone(memory),
+        });
+        let stream = IdentityIssuer::new().issue_stream().expect("stream");
+        let state = StreamState::with_target_extent(stream);
+        let frame = state
+            .publish_storage(StoragePublication {
+                captured_at: MonotonicInstant::ORIGIN,
+                placement: None,
+                storage,
+                continuity: Continuity::Continuous,
+            })
+            .expect("frame");
+        (state, frame)
     }
 
     #[test]
@@ -1034,10 +1217,16 @@ mod tests {
 
     #[test]
     fn r1_2_reported_capacity_is_truthful_for_4k_and_reduced_for_8k() {
-        let four_k = retained_storage_capacity(validate_surface(3840, 2160).expect("4K"))
-            .expect("4K retained capacity");
-        let eight_k = retained_storage_capacity(validate_surface(7680, 4320).expect("8K"))
-            .expect("8K retained capacity");
+        let four_k = retained_storage_capacity(
+            validate_surface(3840, 2160).expect("4K"),
+            SESSION_RETAINED_BYTES,
+        )
+        .expect("4K retained capacity");
+        let eight_k = retained_storage_capacity(
+            validate_surface(7680, 4320).expect("8K"),
+            SESSION_RETAINED_BYTES,
+        )
+        .expect("8K retained capacity");
 
         assert_eq!(four_k, DETACHED_TEXTURE_BUDGET);
         assert_eq!(eight_k.get(), 12);
@@ -1124,12 +1313,14 @@ mod tests {
     #[test]
     fn r1_2_derived_4k_capacity_admits_first_and_fortieth_then_refuses_forty_one() {
         let domain = DeviceDomain::create().expect("D3D11 device");
-        let retained_storage_capacity =
-            retained_storage_capacity(validate_surface(3840, 2160).expect("4K"))
-                .expect("4K retained-storage capacity");
+        let retained_storage_capacity = retained_storage_capacity(
+            validate_surface(3840, 2160).expect("4K"),
+            SESSION_RETAINED_BYTES,
+        )
+        .expect("4K retained-storage capacity");
         let pool = TexturePool::new(
             domain,
-            SessionMemory::production(),
+            SessionMemory::production(None),
             retained_storage_capacity,
         );
         let mut leases = Vec::new();
@@ -1169,9 +1360,11 @@ mod tests {
     #[test]
     fn r1_2_derived_8k_capacity_admits_the_first_and_twelfth_then_refuses_thirteen() {
         let domain = DeviceDomain::create().expect("D3D11 device");
-        let retained_storage_capacity =
-            retained_storage_capacity(validate_surface(7680, 4320).expect("8K"))
-                .expect("8K retained-storage capacity");
+        let retained_storage_capacity = retained_storage_capacity(
+            validate_surface(7680, 4320).expect("8K"),
+            SESSION_RETAINED_BYTES,
+        )
+        .expect("8K retained-storage capacity");
         assert_eq!(retained_storage_capacity.get(), 12);
         let pool = TexturePool::new(
             domain,
@@ -1243,7 +1436,11 @@ mod tests {
     #[test]
     fn lease_release_never_waits_for_the_pool_mutex() {
         let domain = DeviceDomain::create().expect("D3D11 device");
-        let pool = TexturePool::new(domain, SessionMemory::production(), DETACHED_TEXTURE_BUDGET);
+        let pool = TexturePool::new(
+            domain,
+            SessionMemory::production(None),
+            DETACHED_TEXTURE_BUDGET,
+        );
         let lease = pool
             .try_acquire(descriptor(4, 4))
             .expect("acquire")
@@ -1299,5 +1496,334 @@ mod tests {
             result.expect_err("device terminal rejects cache").status(),
             Status::CaptureFailed
         );
+    }
+
+    #[test]
+    fn required_limits_narrow_frame_and_retained_capacity_without_raising_defaults() {
+        use mado_pilot_capture::CaptureResourceLimits;
+
+        let limits = CaptureResourceLimits::new(64, 320).expect("limits");
+        let memory = SessionMemory::testing_with_limits(limits, 1024);
+        let layout = memory.validate_surface(4, 4).expect("exact frame limit");
+        assert_eq!(
+            memory
+                .retained_storage_capacity(layout)
+                .expect("one retained slot")
+                .get(),
+            1
+        );
+        assert_eq!(
+            memory.validate_surface(5, 4),
+            Err(CaptureFault::ResourceLimitExceeded)
+        );
+        let held = memory.reserve(320).expect("exact retained limit");
+        assert_eq!(
+            memory.reserve(1).expect_err("one byte over").status(),
+            Status::LimitExceeded
+        );
+        drop(held);
+        let smaller = SessionMemory::testing_with_limits(
+            CaptureResourceLimits::new(64, 319).expect("one byte less"),
+            1024,
+        );
+        assert_eq!(
+            smaller.retained_storage_capacity(layout),
+            Err(CaptureFault::ResourceLimitExceeded)
+        );
+        assert_eq!(
+            super::effective_limits(Some(
+                CaptureResourceLimits::new(u64::MAX, u64::MAX).expect("limits")
+            )),
+            (MAX_SURFACE_BYTES, SESSION_RETAINED_BYTES),
+        );
+        assert_eq!(
+            super::effective_limits(None),
+            (MAX_SURFACE_BYTES, SESSION_RETAINED_BYTES)
+        );
+    }
+
+    #[test]
+    fn converted_and_cropped_mappings_keep_required_copy_charges_until_final_release() {
+        let operation = OperationContext::new();
+        let right_column =
+            Rect::new(CoordinateSpace::CapturePixels, 1.0, 0.0, 2.0, 2.0).expect("crop");
+        // Independently exercise the session ceiling and the shared ceiling.
+        for (session_limit, global_limit) in [(40, 64), (64, 40)] {
+            let memory = SessionMemory::testing_with_limits(
+                CaptureResourceLimits::new(16, session_limit).expect("limits"),
+                global_limit,
+            );
+            assert_eq!(
+                memory
+                    .reserve_cpu_copy(17)
+                    .err()
+                    .expect("copy exceeds the frame ceiling")
+                    .status(),
+                Status::LimitExceeded,
+            );
+            assert_eq!(memory.usage(), (0, 0));
+
+            let (state, frame) = accounted_frame(&memory);
+            let converted = frame
+                .map(PixelFormat::Rgba8, &operation)
+                .expect("exact frame ceiling");
+            let cropped = frame
+                .view(right_column, ClipPolicy::Reject)
+                .expect("view")
+                .map(PixelFormat::Bgra8, &operation)
+                .expect("exact retained ceiling");
+            assert_eq!(memory.usage(), (40, 40));
+            assert_eq!(
+                frame
+                    .view(right_column, ClipPolicy::Reject)
+                    .expect("view")
+                    .map(PixelFormat::Bgra8, &operation)
+                    .expect_err("another copy exceeds the retained ceiling")
+                    .status(),
+                Status::LimitExceeded,
+            );
+            assert_eq!(memory.usage(), (40, 40), "refusal releases partial charges");
+            drop(cropped);
+            let cropped = frame
+                .view(right_column, ClipPolicy::Reject)
+                .expect("view")
+                .map(PixelFormat::Bgra8, &operation)
+                .expect("released copy capacity is reusable");
+
+            let retained_conversion = converted.clone();
+            state.drain(&operation).expect("close stream");
+            drop(state);
+            drop(frame);
+            drop(converted);
+            assert_eq!(memory.usage(), (24, 24));
+            let session_budget = Arc::clone(&memory.session);
+            let global_budget = Arc::clone(&memory.global);
+            drop(memory);
+            assert_eq!(
+                retained_conversion.bytes(),
+                &[3, 2, 1, 4, 7, 6, 5, 8, 11, 10, 9, 12, 15, 14, 13, 16],
+            );
+            assert_eq!(cropped.bytes(), &[5, 6, 7, 8, 13, 14, 15, 16]);
+            drop(cropped);
+            assert_eq!((session_budget.used(), global_budget.used()), (16, 16));
+            drop(retained_conversion);
+            assert_eq!((session_budget.used(), global_budget.used()), (0, 0));
+        }
+    }
+
+    #[test]
+    fn omitted_limits_leave_common_mapping_copies_outside_native_budgets() {
+        assert!(
+            SessionMemory::production(None)
+                .reserve_cpu_copy(usize::MAX)
+                .expect("omitted limits impose no new copy ceiling")
+                .is_none()
+        );
+        assert_eq!(
+            SessionMemory::production(Some(
+                CaptureResourceLimits::new(16, 40).expect("caller limits")
+            ))
+            .reserve_cpu_copy(17)
+            .err()
+            .expect("production caller limit is enforced")
+            .status(),
+            Status::LimitExceeded,
+        );
+        let memory = SessionMemory::testing_isolated(16, 16);
+        let (state, frame) = accounted_frame(&memory);
+        let operation = OperationContext::new();
+        let converted = frame
+            .map(PixelFormat::Rgba8, &operation)
+            .expect("conversion remains allowed with full native budgets");
+        let cropped = frame
+            .view(
+                Rect::new(CoordinateSpace::CapturePixels, 1.0, 1.0, 2.0, 2.0).expect("crop"),
+                ClipPolicy::Reject,
+            )
+            .expect("view")
+            .map(PixelFormat::Bgra8, &operation)
+            .expect("crop remains allowed with full native budgets");
+        assert_eq!(memory.usage(), (16, 16));
+        state.drain(&operation).expect("close stream");
+        drop(state);
+        drop(frame);
+        assert_eq!(memory.usage(), (0, 0));
+        assert_eq!(
+            converted.bytes(),
+            &[3, 2, 1, 4, 7, 6, 5, 8, 11, 10, 9, 12, 15, 14, 13, 16],
+        );
+        assert_eq!(cropped.bytes(), &[13, 14, 15, 16]);
+    }
+
+    #[test]
+    fn required_budget_counts_mapped_pitch_overlap_and_pixels_retained_after_close() {
+        use mado_pilot_capture::CaptureResourceLimits;
+
+        let memory = SessionMemory::testing_with_limits(
+            CaptureResourceLimits::new(128, 384).expect("limits"),
+            384,
+        );
+        let layout = memory.validate_surface(4, 4).expect("surface");
+        let producer = memory.reserve(128).expect("two producer images");
+        let detached = memory.reserve(64).expect("detached frame");
+        let mapping = memory.reserve(128).expect("staging plus CPU output");
+        let padding = memory
+            .mapped_padding(layout, 32, 4)
+            .expect("padded row")
+            .expect("padding");
+        assert_eq!(memory.usage(), (384, 384));
+        assert_eq!(
+            memory
+                .reserve(1)
+                .expect_err("all simultaneous payloads count")
+                .status(),
+            Status::LimitExceeded
+        );
+
+        drop(padding);
+        let pixels = Arc::new(CpuPixels::with_retainer(
+            vec![0; 64].into_boxed_slice(),
+            Arc::new(mapping),
+        ));
+        let retained_pixels = Arc::clone(&pixels);
+        drop(producer);
+        drop(detached);
+        let global = Arc::clone(&memory.global);
+        drop(memory);
+        drop(pixels);
+        assert_eq!(
+            global.used(),
+            128,
+            "the conservative mapping lease survives session close"
+        );
+        drop(retained_pixels);
+        assert_eq!(global.used(), 0, "last owner releases exactly once");
+    }
+
+    #[test]
+    fn observed_padding_refuses_frame_session_and_global_excess_before_cpu_copy() {
+        use mado_pilot_capture::CaptureResourceLimits;
+
+        let layout = validate_surface(4, 4).expect("surface");
+        let frame_limited = SessionMemory::testing_with_limits(
+            CaptureResourceLimits::new(127, 512).expect("frame limit"),
+            512,
+        );
+        assert_eq!(
+            frame_limited
+                .mapped_padding(layout, 32, 4)
+                .expect_err("128-byte mapped frame")
+                .status(),
+            Status::LimitExceeded,
+        );
+        for (retained, global) in [(191, 512), (512, 191)] {
+            let memory = SessionMemory::testing_with_limits(
+                CaptureResourceLimits::new(128, retained).expect("limits"),
+                global,
+            );
+            let declared = memory.reserve(128).expect("staging and CPU reservations");
+            assert_eq!(
+                memory
+                    .mapped_padding(layout, 32, 4)
+                    .expect_err("observed padding exceeds budget")
+                    .status(),
+                Status::LimitExceeded,
+            );
+            assert_eq!(
+                memory.usage(),
+                (128, 128),
+                "failed adjustment rolls back both budgets"
+            );
+            drop(declared);
+            let recovered = memory
+                .mapped_padding(layout, 32, 4)
+                .expect("release permits adjustment");
+            assert_eq!(memory.usage(), (64, 64));
+            drop(recovered);
+            assert_eq!(memory.usage(), (0, 0));
+        }
+        assert_eq!(
+            frame_limited
+                .mapped_padding(layout, 15, 4)
+                .expect_err("short native pitch")
+                .status(),
+            mado_pilot_core::Error::from(CaptureFault::InconsistentDescriptor).status(),
+        );
+    }
+
+    #[test]
+    fn required_texture_limit_refuses_resize_and_reuses_storage_until_final_release() {
+        use mado_pilot_capture::CaptureResourceLimits;
+
+        let domain = DeviceDomain::create().expect("D3D11 device");
+        let memory = SessionMemory::testing_with_limits(
+            CaptureResourceLimits::new(64, 320).expect("limits"),
+            320,
+        );
+        let layout = memory.validate_surface(4, 4).expect("surface");
+        let capacity = memory.retained_storage_capacity(layout).expect("capacity");
+        let producer = memory.reserve(128).expect("producer pool");
+        let pool = TexturePool::new(domain, Arc::clone(&memory), capacity);
+        let lease = pool
+            .try_acquire(descriptor(4, 4))
+            .expect("admitted")
+            .expect("texture");
+        assert_eq!(memory.usage(), (192, 192));
+        assert_eq!(
+            pool.try_acquire(descriptor(5, 4))
+                .expect_err("resize exceeds required frame bytes")
+                .status(),
+            Status::LimitExceeded,
+        );
+        assert_eq!(
+            memory.usage(),
+            (192, 192),
+            "refusal allocates no replacement"
+        );
+        drop(lease);
+        let reused = pool
+            .try_acquire(descriptor(4, 4))
+            .expect("reused")
+            .expect("texture");
+        assert_eq!(
+            memory.usage(),
+            (192, 192),
+            "free storage is reused without a second charge"
+        );
+        drop(pool);
+        drop(producer);
+        assert_eq!(
+            memory.usage(),
+            (64, 64),
+            "detached texture survives producer close"
+        );
+        drop(reused);
+        assert_eq!(memory.usage(), (0, 0));
+        let replacement = memory
+            .reserve(320)
+            .expect("all released bytes are reusable");
+        drop(replacement);
+    }
+
+    #[test]
+    fn undeclared_texture_subresources_cannot_bypass_single_image_accounting() {
+        let memory = SessionMemory::testing_with_limits(
+            CaptureResourceLimits::new(64, 320).expect("limits"),
+            320,
+        );
+        let base = descriptor(4, 4);
+        let mut mipmapped = base;
+        mipmapped.MipLevels = 2;
+        let mut array = base;
+        array.ArraySize = 2;
+        let mut multisampled = base;
+        multisampled.SampleDesc.Count = 2;
+        for descriptor in [mipmapped, array, multisampled] {
+            assert_eq!(
+                memory.validate_texture(&descriptor),
+                Err(CaptureFault::InconsistentDescriptor)
+            );
+        }
+        assert_eq!(memory.usage(), (0, 0));
     }
 }

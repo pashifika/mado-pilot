@@ -30,7 +30,7 @@ extern "C" {
 #endif
 
 /* The version of this internal surface. Rust asserts it at load. */
-#define MP_SHIM_ABI_VERSION 24u
+#define MP_SHIM_ABI_VERSION 25u
 
 /* The largest extent, budget, and default wait the shim will accept or apply. */
 #define MP_SHIM_MAX_PIXEL_EXTENT 32768u
@@ -284,17 +284,19 @@ typedef struct mp_shim_open_request {
     /* Passed unchanged to both callbacks. Never dereferenced by the shim. */
     void *callback_context;
     /*
-     * Invoked on the session's sample queue with a borrowed frame. The frame is
-     * valid only for the duration of the call; retaining it is
-     * mp_shim_frame_detach and nothing else. The callback must not let a Rust
-     * panic escape.
+     * Invoked on the session's sample queue inside callback admission, without
+     * holding native_mutex. A borrowed frame is valid only during the call;
+     * retaining it requires mp_shim_frame_detach.
+     * Both frame pointers NULL instead report one complete candidate dropped by
+     * producer pressure; no commit follows. Incomplete framework samples do not
+     * invoke this notification. The callback must contain Rust panics.
      */
     mp_shim_status (*frame_callback)(void *context, mp_shim_frame *borrowed,
                                     const mp_shim_frame_info *info);
     /*
-     * Invoked only after frame_callback returned success and every remaining
-     * throwing native frame step completed. It commits or safely ignores the
-     * frame staged by frame_callback and must contain Rust panics.
+     * Invoked only after frame_callback received non-NULL frame pointers and
+     * returned success, and every remaining throwing native frame step completed.
+     * It commits or safely ignores the staged frame and must contain Rust panics.
      */
     mp_shim_status (*frame_commit_callback)(void *context);
     /* Invoked once if the producer stops for a reason of its own. */
@@ -302,6 +304,12 @@ typedef struct mp_shim_open_request {
     /* Appended in ABI 22. Explicit intervals are positive signed nanoseconds. */
     uint32_t pacing_mode;
     int64_t pacing_interval_nanos;
+    /* ABI 25: zero limits preserve the original production allocation policy. */
+    uint64_t max_frame_bytes;
+    uint64_t max_retained_bytes;
+    uint64_t validation_timeout_nanos;
+    uint32_t require_window;
+    mp_shim_target_info required_window;
 } mp_shim_open_request;
 
 /* Valid only after successful configuration and session creation, before start. */
@@ -310,6 +318,36 @@ typedef struct mp_shim_open_report {
     uint32_t pacing_outcome;
     int64_t configured_interval_nanos;
 } mp_shim_open_report;
+
+/* Reads only the original retained selection; never opens or replaces a filter.
+ * Revalidation compares one bounded current SCWindow observation with that
+ * retained object. false is reserved for the originating inventory snapshot. */
+mp_shim_status mp_shim_target_window_info(const mp_shim_target *target,
+                                         uint64_t timeout_nanos, bool revalidate,
+                                         mp_shim_target_info *out_info);
+
+/* Allocation-only retainers. A successful NULL lease denotes unchanged defaults.
+ * The lease owns its byte charge independently of the frame and closed session. */
+mp_shim_status mp_shim_frame_reserve_cpu(const mp_shim_frame *frame, uint64_t bytes,
+                                        void **out_lease);
+void mp_shim_image_lease_release(void *lease);
+/* Requires room for the declared producer pool and one padded detached image. */
+mp_shim_status mp_shim_storage_preflight(
+    uint32_t width, uint32_t height, uint32_t depth,
+    uint64_t max_frame, uint64_t max_retained);
+
+/* Synthetic owned pixels only: no discovery, stream, input or permission probe. */
+mp_shim_status mp_shim_testing_limited_frame(
+    uint64_t max_frame, uint64_t max_retained, mp_shim_frame **out_frame, void **out_budget);
+uint64_t mp_shim_testing_image_bytes(const void *budget);
+mp_shim_status mp_shim_testing_producer_budget(uint64_t *out_values, size_t count);
+mp_shim_status mp_shim_testing_producer_observation(
+    uint32_t scenario, uint64_t *out_values, size_t count);
+mp_shim_status mp_shim_testing_storage_pressure(
+    uint32_t scenario, void *context,
+    mp_shim_status (*frame_callback)(void *, mp_shim_frame *, const mp_shim_frame_info *),
+    mp_shim_status (*release_callback)(void *), mp_shim_status *out_statuses);
+mp_shim_status mp_shim_testing_window_geometry(uint32_t scenario, mp_shim_target_info *out_info);
 
 /* Returns MP_SHIM_ABI_VERSION as the linked shim was compiled with it. */
 uint32_t mp_shim_abi_version(void);
@@ -337,8 +375,8 @@ mp_shim_status mp_shim_process_struct_offsets(
     uint32_t *out_request_event_source, uint32_t *out_request_timeout_nanos,
     uint32_t *out_report_target_match_count, uint32_t *out_report_invoked_native_units);
 
-/* Nine offsets: retained target, callback context, three callbacks, pacing mode,
- * interval, and the open report's outcome and configured interval. */
+/* Fourteen offsets: retained target, callback context, three callbacks, pacing
+ * mode/interval, report outcome/interval, and the five ABI 25 option fields. */
 mp_shim_status mp_shim_open_struct_offsets(uint32_t *out_offsets, size_t count);
 
 /* Production configuration/lifecycle with local objects, never native capture. */
@@ -490,6 +528,20 @@ mp_shim_status mp_shim_testing_frame_callback_boundary(
     mp_shim_status (*frame_commit_callback)(void *),
     void (*stopped_callback)(void *, mp_shim_status),
     mp_shim_status *out_fence_status);
+
+/* Synthetic complete samples through the production delegate, with observations
+ * before pressure, during pressure, twice after recovery, and after fencing.
+ * Scenarios: retained producer bytes, first-frame pressure, per-frame ceiling,
+ * incomplete framework sample, native/pool mutex contention, detached bytes,
+ * and a drain fence attempted during the pressure callback.
+ * No discovery, capture, input, or permission probe is performed.
+ * Callbacks are synchronous; detached owners may outlive the helper. */
+mp_shim_status mp_shim_testing_delivery_pressure(
+    uint32_t scenario, void *context,
+    mp_shim_status (*frame_callback)(void *, mp_shim_frame *, const mp_shim_frame_info *),
+    mp_shim_status (*commit_callback)(void *),
+    void (*stopped_callback)(void *, mp_shim_status),
+    mp_shim_status (*observe_callback)(void *), mp_shim_status *out_fence);
 
 /*
  * Deterministic test seam for the resumable asynchronous start/stop gates.
