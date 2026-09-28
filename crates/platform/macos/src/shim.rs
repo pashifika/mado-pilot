@@ -269,6 +269,29 @@ impl TargetInfo {
         (self.pixel_width > 0 && self.pixel_height > 0)
             .then(|| PixelExtent::new(self.pixel_width, self.pixel_height))
     }
+
+    fn window_description(&self) -> Result<NativeWindowDescription, ShimStatus> {
+        let id = u32::try_from(self.native_id)
+            .ok()
+            .and_then(NonZeroU32::new)
+            .ok_or(ShimStatus::InvalidArgument)?;
+        if self.kind != KIND_WINDOW {
+            return Err(ShimStatus::Unsupported);
+        }
+        let extent = self.extent().ok_or(ShimStatus::InvalidArgument)?;
+        let placement = crate::discovery::window_placement_from_points(
+            (self.logical_x, self.logical_y),
+            (self.logical_width, self.logical_height),
+            self.backing_scale,
+            extent,
+        )
+        .map_err(|_| ShimStatus::GeometryChanged)?;
+        Ok(NativeWindowDescription::new(
+            NativeWindowId::Macos(id),
+            WindowGeometry::new(WindowCaptureArea::MacosWindow, placement, extent),
+        ))
+    }
+
     /// Reports snapshot-time process-directed admission.
     pub(crate) const fn process_directed(&self) -> bool {
         self.kind == KIND_WINDOW && self.flags & TARGET_INFO_PROCESS_DIRECTED != 0
@@ -574,6 +597,24 @@ impl Drop for TestingImageBudget {
     }
 }
 
+pub(crate) fn storage_preflight(
+    extent: PixelExtent,
+    depth: u32,
+    limits: CaptureResourceLimits,
+) -> Result<(), ShimStatus> {
+    // SAFETY: the pure native check consumes only bounded scalar values.
+    let status = unsafe {
+        mp_shim_storage_preflight(
+            extent.width(),
+            extent.height(),
+            depth,
+            limits.max_frame_bytes(),
+            limits.max_retained_bytes(),
+        )
+    };
+    ShimStatus::from_raw(status).into_result()
+}
+
 #[cfg(test)]
 pub(crate) fn testing_limited_frame(
     max_frame: u64,
@@ -784,7 +825,7 @@ impl TargetToken {
             if !self.inner.synthetic_live.load(Ordering::Acquire) {
                 return Err(ShimStatus::TargetLost);
             }
-            let placement = crate::discovery::placement_from_points(
+            let placement = crate::discovery::window_placement_from_points(
                 (-64.0, -48.0),
                 (64.0, 48.0),
                 2.0,
@@ -807,25 +848,7 @@ impl TargetToken {
             mp_shim_target_window_info(self.as_ptr(), nanos(wait), revalidate, &raw mut info)
         };
         ShimStatus::from_raw(status).into_result()?;
-        let id = u32::try_from(info.native_id)
-            .ok()
-            .and_then(NonZeroU32::new)
-            .ok_or(ShimStatus::InvalidArgument)?;
-        if info.kind != KIND_WINDOW {
-            return Err(ShimStatus::Unsupported);
-        }
-        let extent = info.extent().ok_or(ShimStatus::InvalidArgument)?;
-        let placement = crate::discovery::placement_from_points(
-            (info.logical_x, info.logical_y),
-            (info.logical_width, info.logical_height),
-            info.backing_scale,
-            extent,
-        )
-        .map_err(|_| ShimStatus::InvalidArgument)?;
-        Ok(NativeWindowDescription::new(
-            NativeWindowId::Macos(id),
-            WindowGeometry::new(WindowCaptureArea::MacosWindow, placement, extent),
-        ))
+        info.window_description()
     }
 
     fn from_inventory(inventory: &Inventory, index: usize) -> Result<Self, ShimStatus> {
@@ -1176,6 +1199,13 @@ fn required_window_info(required: Option<WindowGeometry>) -> Result<TargetInfo, 
         {
             return Err(ShimStatus::GeometryChanged);
         }
+        crate::discovery::window_placement_from_points(
+            placement.desktop_origin(),
+            placement.logical_size(),
+            placement.scale().x(),
+            required.extent(),
+        )
+        .map_err(|_| ShimStatus::GeometryChanged)?;
         info.kind = KIND_WINDOW;
         info.pixel_width = required.extent().width();
         info.pixel_height = required.extent().height();
@@ -2456,9 +2486,9 @@ pub(crate) enum ShimStatus {
     Closed,
     /// A bounded native wait reached the budget it was given.
     TimedOut,
-    /// Every unit of the session's detached-storage budget is leased.
+    /// A byte ceiling was exceeded or detached storage is temporarily unavailable.
     BudgetExhausted,
-    /// The producer surface could not be read as a complete frame.
+    /// The producer sample is incomplete or cannot yet be accounted for.
     FrameIncomplete,
     /// The user stopped the stream through a system control.
     StoppedByUser,
@@ -2572,6 +2602,9 @@ fn nanos(wait: Duration) -> u64 {
 }
 
 /// The frame callback signature the shim invokes.
+///
+/// Both frame pointers null notify one producer-pressure drop without a commit.
+/// Ordinary incomplete framework samples do not invoke this callback.
 ///
 /// The implementation must contain its own panics: a panic escaping an
 /// `extern "C"` callback aborts the process, which ADR 0012 measured.
@@ -3786,6 +3819,13 @@ unsafe extern "C" {
         out_lease: *mut *mut c_void,
     ) -> u32;
     fn mp_shim_image_lease_release(lease: *mut c_void);
+    fn mp_shim_storage_preflight(
+        width: u32,
+        height: u32,
+        depth: u32,
+        max_frame: u64,
+        max_retained: u64,
+    ) -> u32;
     #[cfg(test)]
     fn mp_shim_testing_limited_frame(
         max_frame: u64,
@@ -3797,6 +3837,20 @@ unsafe extern "C" {
     fn mp_shim_testing_image_bytes(budget: *const c_void) -> u64;
     #[cfg(test)]
     fn mp_shim_testing_producer_budget(out_values: *mut u64, count: usize) -> u32;
+    #[cfg(test)]
+    fn mp_shim_testing_producer_observation(
+        scenario: u32,
+        out_values: *mut u64,
+        count: usize,
+    ) -> u32;
+    #[cfg(test)]
+    pub(crate) fn mp_shim_testing_storage_pressure(
+        scenario: u32,
+        context: *mut c_void,
+        frame_callback: Option<FrameCallback>,
+        release_callback: Option<FrameCommitCallback>,
+        out_statuses: *mut u32,
+    ) -> u32;
     #[cfg(test)]
     fn mp_shim_testing_window_geometry(scenario: u32, out_info: *mut TargetInfo) -> u32;
     fn mp_shim_abi_version() -> u32;
@@ -3890,6 +3944,16 @@ unsafe extern "C" {
         frame_commit_callback: Option<FrameCommitCallback>,
         stopped_callback: Option<StoppedCallback>,
         out_fence_status: *mut u32,
+    ) -> u32;
+    #[cfg(test)]
+    pub(crate) fn mp_shim_testing_delivery_pressure(
+        scenario: u32,
+        context: *mut c_void,
+        frame_callback: Option<FrameCallback>,
+        commit_callback: Option<FrameCommitCallback>,
+        stopped_callback: Option<StoppedCallback>,
+        observe_callback: Option<FrameCommitCallback>,
+        out_fence: *mut u32,
     ) -> u32;
     #[cfg(test)]
     fn mp_shim_testing_gate_retries(
@@ -5852,16 +5916,34 @@ mod tests {
     }
 
     #[test]
-    fn retained_filter_geometry_requires_current_bounds_and_preserves_signed_scaled_extent() {
-        let mut info = super::TargetInfo::requested();
-        // SAFETY: the native-free seam validates and writes this sized scalar report.
-        let status = unsafe { super::mp_shim_testing_window_geometry(0, &raw mut info) };
-        assert_eq!(ShimStatus::from_raw(status), ShimStatus::Ok);
-        assert_eq!((info.logical_x, info.logical_y), (-64.0, -48.0));
-        assert_eq!(info.backing_scale, 2.0);
-        assert_eq!(info.extent(), Some(PixelExtent::new(129, 96)));
-        assert_eq!((info.logical_width, info.logical_height), (64.5, 48.0));
-        for scenario in 1..=3 {
+    fn retained_window_description_preserves_subpixel_requirements_with_the_same_extent() {
+        let descriptions = [0, 5].map(|scenario| {
+            let mut info = super::TargetInfo::requested();
+            // SAFETY: the native-free seam writes this sized scalar report.
+            let status = unsafe { super::mp_shim_testing_window_geometry(scenario, &raw mut info) };
+            assert_eq!(ShimStatus::from_raw(status), ShimStatus::Ok);
+            info.window_description().expect("current retained window")
+        });
+        for (description, width) in descriptions.iter().zip([64.25, 64.5]) {
+            let geometry = description.geometry();
+            assert_eq!(geometry.extent(), PixelExtent::new(129, 96));
+            assert_eq!(geometry.placement().desktop_origin(), (-64.0, -48.0));
+            assert_eq!(geometry.placement().logical_size(), (width, 48.0));
+            let required = super::required_window_info(Some(geometry)).expect("exact requirement");
+            assert_eq!((required.logical_x, required.logical_y), (-64.0, -48.0));
+            assert_eq!(
+                (required.logical_width, required.logical_height),
+                (width, 48.0)
+            );
+            assert_eq!(required.backing_scale, 2.0);
+            assert_eq!(required.extent(), Some(PixelExtent::new(129, 96)));
+        }
+        assert_ne!(descriptions[0].geometry(), descriptions[1].geometry());
+    }
+
+    #[test]
+    fn retained_filter_geometry_refuses_stale_or_invalid_observations() {
+        for scenario in 1..=4 {
             let mut refused = super::TargetInfo::requested();
             // SAFETY: each malformed synthetic observation writes only this report.
             let status =
@@ -5869,6 +5951,34 @@ mod tests {
             assert_eq!(ShimStatus::from_raw(status), ShimStatus::GeometryChanged);
             assert_eq!(refused.extent(), None);
         }
+    }
+
+    #[test]
+    fn window_description_and_requirements_refuse_inconsistent_pixel_extent() {
+        let mut info = super::TargetInfo::requested();
+        // SAFETY: the native-free seam writes this sized scalar report.
+        let status = unsafe { super::mp_shim_testing_window_geometry(0, &raw mut info) };
+        assert_eq!(ShimStatus::from_raw(status), ShimStatus::Ok);
+        let geometry = info
+            .window_description()
+            .expect("current retained window")
+            .geometry();
+        info.pixel_width = 128;
+        assert_eq!(
+            info.window_description()
+                .expect_err("raw points round to 129 pixels"),
+            ShimStatus::GeometryChanged,
+        );
+        let inconsistent = mado_pilot_capture::WindowGeometry::new(
+            geometry.area(),
+            geometry.placement(),
+            PixelExtent::new(128, 96),
+        );
+        assert_eq!(
+            super::required_window_info(Some(inconsistent))
+                .expect_err("inconsistent requirement must be refused"),
+            ShimStatus::GeometryChanged,
+        );
     }
 
     #[test]
@@ -5880,6 +5990,63 @@ mod tests {
         };
         assert_eq!(ShimStatus::from_raw(status), ShimStatus::Ok);
         assert_eq!(observed, [0, 192, 376, 9, 184, 224, 40, 9, 0]);
+    }
+
+    fn producer_observations(scenario: u32) -> [(ShimStatus, u64); 3] {
+        let mut values = [u64::MAX; 6];
+        // SAFETY: the synthetic observer seam writes six scalars and retains
+        // all producer leases until the three actual observations complete.
+        let status = unsafe {
+            super::mp_shim_testing_producer_observation(scenario, values.as_mut_ptr(), values.len())
+        };
+        assert_eq!(ShimStatus::from_raw(status), ShimStatus::Ok);
+        std::array::from_fn(|index| {
+            (
+                ShimStatus::from_raw(u32::try_from(values[index * 2]).expect("native status")),
+                values[index * 2 + 1],
+            )
+        })
+    }
+
+    #[test]
+    fn producer_observer_charges_interleaved_old_and_shrunk_surfaces_to_their_own_leases() {
+        assert_eq!(
+            producer_observations(0),
+            [
+                (ShimStatus::Ok, 150_000),
+                (ShimStatus::Ok, 151_200),
+                (ShimStatus::Ok, 151_200),
+            ]
+        );
+    }
+
+    #[test]
+    fn producer_observer_charges_every_same_size_generation_and_refuses_excess_padding() {
+        assert_eq!(
+            producer_observations(1),
+            [
+                (ShimStatus::Ok, 249_600),
+                (ShimStatus::Ok, 249_600),
+                (ShimStatus::BudgetExhausted, 249_600),
+            ]
+        );
+    }
+
+    #[test]
+    fn producer_observer_charges_unknown_extents_to_every_possible_generation() {
+        assert_eq!(producer_observations(2), [(ShimStatus::Ok, 196_800); 3]);
+    }
+
+    #[test]
+    fn producer_observer_recovers_retained_budget_after_owner_release() {
+        assert_eq!(
+            producer_observations(3),
+            [
+                (ShimStatus::FrameIncomplete, 160_000),
+                (ShimStatus::Ok, 154_800),
+                (ShimStatus::Ok, 154_800),
+            ]
+        );
     }
 
     /// A surface the shim would refuse to allocate is refused before it tries.

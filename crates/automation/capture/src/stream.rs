@@ -664,12 +664,13 @@ impl StreamState {
     /// because the first thing that went wrong is the explanation and whatever it
     /// caused afterwards is not.
     ///
-    /// Idempotent, and never moves a closed stream backwards.
+    /// Idempotent. Completed cleanup freezes the terminal cause, including an
+    /// ordinary close with no fault. In-progress cleanup can still record a fault.
     pub fn terminate(&self, fault: CaptureFault) {
         self.accepting_drops.store(false, Ordering::Release);
         {
             let mut inner = self.lock();
-            if inner.terminal.is_none() {
+            if inner.lifecycle != Lifecycle::Closed && inner.terminal.is_none() {
                 inner.terminal = Some(fault);
             }
             if inner.lifecycle == Lifecycle::Open {
@@ -1766,30 +1767,131 @@ mod tests {
     #[test]
     fn a_terminated_stream_still_closes_cleanly() {
         let state = state();
-        state
+        let retained = state
             .publish(publication(4, 4, 1, Continuity::Continuous))
             .expect("published");
+        let operation = OperationContext::new();
         state.terminate(CaptureFault::TargetLost);
-
         state
-            .drain(&OperationContext::new())
+            .drain(&operation)
             .expect("close finishes after a terminal fault");
+        state.terminate(CaptureFault::SourceInvalid);
 
         assert_eq!(state.lifecycle(), Lifecycle::Closed);
+        assert_eq!(state.terminal(), Some(CaptureFault::TargetLost));
         assert_eq!(
-            state.terminal(),
-            Some(CaptureFault::TargetLost),
-            "closing does not erase why capture ended"
+            state
+                .frame(&FrameRequest::latest(), &operation)
+                .expect_err("capture ended"),
+            CaptureFault::TargetLost.into()
+        );
+        assert_eq!(
+            state
+                .commit_frame(&retained, &operation)
+                .expect_err("capture ended"),
+            CaptureFault::TargetLost.into()
+        );
+        assert_eq!(
+            state
+                .publish(publication(4, 4, 2, Continuity::Continuous))
+                .expect_err("capture ended"),
+            CaptureFault::TargetLost.into()
         );
     }
 
     #[test]
-    fn an_ordinary_close_records_no_fault() {
+    fn an_ordinary_close_cannot_acquire_a_late_terminal_fault() {
         let state = state();
+        let retained = state
+            .publish(publication(4, 4, 1, Continuity::Continuous))
+            .expect("published");
+        let operation = OperationContext::new();
+        state.drain(&operation).expect("drained");
+        state.terminate(CaptureFault::TargetLost);
+        state.terminate(CaptureFault::SourceInvalid);
 
-        state.drain(&OperationContext::new()).expect("drained");
-
+        assert_eq!(state.lifecycle(), Lifecycle::Closed);
         assert_eq!(state.terminal(), None);
+        assert_eq!(
+            state
+                .frame(&FrameRequest::latest(), &operation)
+                .expect_err("closed"),
+            CaptureFault::SessionClosed.into()
+        );
+        assert_eq!(
+            state
+                .commit_frame(&retained, &operation)
+                .expect_err("closed"),
+            CaptureFault::SessionClosed.into()
+        );
+        assert_eq!(
+            state
+                .publish(publication(4, 4, 2, Continuity::Continuous))
+                .expect_err("closed"),
+            CaptureFault::SessionClosed.into()
+        );
+    }
+
+    #[test]
+    fn a_fault_during_final_drain_arbitration_survives_completed_cleanup() {
+        let state = Arc::new(state());
+        let clock = Arc::new(StopAtCommitClock {
+            state: Arc::clone(&state),
+            reads: AtomicUsize::new(0),
+            fault: Some(CaptureFault::TargetLost),
+        });
+        let operation = OperationContext::new().with_clock(clock).with_deadline(
+            MonotonicInstant::ORIGIN
+                .checked_add(Duration::from_secs(1))
+                .expect("deadline"),
+        );
+
+        state
+            .drain(&operation)
+            .expect("fault does not prevent cleanup");
+        state.terminate(CaptureFault::SourceInvalid);
+
+        assert_eq!(state.lifecycle(), Lifecycle::Closed);
+        assert_eq!(
+            state
+                .frame(&FrameRequest::latest(), &OperationContext::new())
+                .expect_err("fault won before Closed"),
+            CaptureFault::TargetLost.into()
+        );
+    }
+
+    #[test]
+    fn interrupted_cleanup_can_still_record_its_first_terminal_fault() {
+        let state = state();
+        let operation = OperationContext::new()
+            .with_clock(Arc::new(ExpireAtCommitClock::default()))
+            .with_deadline(
+                MonotonicInstant::ORIGIN
+                    .checked_add(Duration::from_millis(1))
+                    .expect("deadline"),
+            );
+        assert_eq!(
+            state
+                .drain(&operation)
+                .expect_err("final drain arbitration expires")
+                .status(),
+            Status::DeadlineExceeded
+        );
+        assert_eq!(state.lifecycle(), Lifecycle::Closing);
+        assert_eq!(state.terminal(), None);
+        state.terminate(CaptureFault::TargetLost);
+        state
+            .drain(&OperationContext::new())
+            .expect("retry completes cleanup");
+        state.terminate(CaptureFault::SourceInvalid);
+
+        assert_eq!(state.lifecycle(), Lifecycle::Closed);
+        assert_eq!(
+            state
+                .frame(&FrameRequest::latest(), &OperationContext::new())
+                .expect_err("failed cleanup did not freeze the cause"),
+            CaptureFault::TargetLost.into()
+        );
     }
 
     #[test]

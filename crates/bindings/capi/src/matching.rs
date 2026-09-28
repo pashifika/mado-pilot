@@ -31,8 +31,8 @@ use crate::error::{Fault, madopilot_error_t};
 use crate::handle::opaque;
 use crate::operation;
 use crate::status::{
-    MADOPILOT_ERROR_CATEGORY_VISION, MADOPILOT_STATUS_INVALID_ARGUMENT, MADOPILOT_STATUS_OK,
-    madopilot_status_t,
+    MADOPILOT_ERROR_CATEGORY_CAPTURE, MADOPILOT_ERROR_CATEGORY_VISION,
+    MADOPILOT_STATUS_INVALID_ARGUMENT, MADOPILOT_STATUS_OK, madopilot_status_t,
 };
 use crate::types::{
     MADOPILOT_FIND_HAS_REGION, MADOPILOT_MATCH_HAS_MAX_RESULTS, MADOPILOT_MATCH_HAS_MIN_SCORE,
@@ -298,17 +298,15 @@ const SESSION_CLOSED: &str = "the session has closed and starts no further work"
 
 /// Reports why a search produced no outcome.
 ///
-/// One case needs naming. A session that has begun closing but not finished
-/// draining refuses work and is not what `session_is_closed` calls closed, so
-/// the fast path above lets it through and the search refuses it instead. The
-/// outcome is the same `MADOPILOT_STATUS_CLOSED` either way, and the report says
-/// so: a lifecycle refusal keeps the capture category and the boundary's own
-/// message rather than arriving as a vision failure because of which side
-/// happened to observe it. Every other failure is the search's own, and carries
-/// the backend that ran it.
+/// Capture lifecycle refusals retain their category without naming a vision
+/// backend. Closed keeps the boundary's own message regardless of which side
+/// observes closure; other capture faults retain their original detail.
 fn search_failure(error: &Error, backend: &str) -> Fault {
     if error.status() == Status::Closed {
         return Fault::closed(SESSION_CLOSED);
+    }
+    if matches!(error.status(), Status::TargetLost | Status::CaptureFailed) {
+        return Fault::from_error(error, MADOPILOT_ERROR_CATEGORY_CAPTURE);
     }
 
     Fault::from_error(error, MADOPILOT_ERROR_CATEGORY_VISION).with_backend(backend)
@@ -536,10 +534,10 @@ pub(crate) fn result_match(
 mod tests {
     use crate::error::{self, madopilot_error_t};
     use crate::status::{
-        MADOPILOT_ERROR_CATEGORY_CAPTURE, MADOPILOT_STATUS_CLOSED, MADOPILOT_STATUS_VISION_FAILED,
-        madopilot_error_category_t,
+        MADOPILOT_ERROR_CATEGORY_CAPTURE, MADOPILOT_STATUS_CAPTURE_FAILED, MADOPILOT_STATUS_CLOSED,
+        MADOPILOT_STATUS_TARGET_LOST, MADOPILOT_STATUS_VISION_FAILED, madopilot_error_category_t,
     };
-    use crate::types::madopilot_error_detail_t;
+    use crate::types::{MADOPILOT_ERROR_HAS_BACKEND, madopilot_error_detail_t};
     use crate::{handle, view};
 
     use super::{
@@ -549,11 +547,18 @@ mod tests {
 
     const BACKEND: &str = "test-backend";
 
-    /// The status, category, and message a C caller reads back out of `fault`.
+    /// The status, category, message, and optional backend a C caller reads.
     ///
     /// Read through the boundary's own accessor rather than out of the fault's
     /// fields, because what this pins is what a caller can observe.
-    fn reported(fault: Fault) -> (madopilot_status_t, madopilot_error_category_t, String) {
+    fn reported(
+        fault: Fault,
+    ) -> (
+        madopilot_status_t,
+        madopilot_error_category_t,
+        String,
+        Option<String>,
+    ) {
         let size = u32::try_from(size_of::<madopilot_error_detail_t>())
             .expect("a structure of a few dozen bytes");
         let mut detail = <madopilot_error_detail_t as Versioned>::failure(size);
@@ -568,11 +573,23 @@ mod tests {
         let message = unsafe { view::string(detail.message, "message") }
             .expect("the message the fault was built from")
             .to_owned();
+        let backend = if detail.flags & MADOPILOT_ERROR_HAS_BACKEND != 0 {
+            // SAFETY: the backend view also borrows from the still-retained error.
+            Some(
+                unsafe { view::string(detail.backend, "backend") }
+                    .expect("the attributed backend")
+                    .to_owned(),
+            )
+        } else {
+            assert!(detail.backend.data.is_null());
+            assert_eq!(detail.backend.len, 0);
+            None
+        };
         // The handle is the one produced above and this is its final release,
-        // which is why the message is copied first.
+        // which is why borrowed strings are copied first.
         error::release(handle);
 
-        (detail.status, detail.category, message)
+        (detail.status, detail.category, message, backend)
     }
 
     /// A session that refuses work because it is closing reports what a closed
@@ -600,16 +617,33 @@ mod tests {
             reported(search_failure(&closing, BACKEND)).1,
             MADOPILOT_ERROR_CATEGORY_CAPTURE
         );
+        assert_eq!(reported(search_failure(&closing, BACKEND)).3, None);
     }
 
-    /// Every other search failure is still the search's own.
+    /// A backend failure still names the backend that could not run.
     #[test]
     fn a_search_that_could_not_run_reports_a_vision_failure() {
         let unavailable = Error::new(Status::VisionFailed, "the backend is unavailable");
-        let (status, category, message) = reported(search_failure(&unavailable, BACKEND));
+        let (status, category, message, backend) = reported(search_failure(&unavailable, BACKEND));
 
         assert_eq!(status, MADOPILOT_STATUS_VISION_FAILED);
         assert_eq!(category, MADOPILOT_ERROR_CATEGORY_VISION);
         assert_eq!(message, "the backend is unavailable");
+        assert_eq!(backend.as_deref(), Some(BACKEND));
+    }
+
+    #[test]
+    fn capture_terminal_search_errors_do_not_blame_the_vision_backend() {
+        for (status, expected) in [
+            (Status::TargetLost, MADOPILOT_STATUS_TARGET_LOST),
+            (Status::CaptureFailed, MADOPILOT_STATUS_CAPTURE_FAILED),
+        ] {
+            let terminal = Error::new(status, "capture terminated");
+            let (actual, category, message, backend) = reported(search_failure(&terminal, BACKEND));
+            assert_eq!(actual, expected);
+            assert_eq!(category, MADOPILOT_ERROR_CATEGORY_CAPTURE);
+            assert_eq!(message, terminal.detail());
+            assert_eq!(backend, None);
+        }
     }
 }

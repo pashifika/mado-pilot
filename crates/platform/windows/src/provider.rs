@@ -348,7 +348,6 @@ impl CaptureProvider for WindowsCaptureProvider {
             attempt.checkpoint()?;
             let geometry = observed?;
             metadata.extent = geometry.extent();
-            metadata.placement = geometry.placement();
         }
         let item = match &record.item {
             CaptureItem::Native(item) => item.clone(),

@@ -604,6 +604,7 @@ fn the_first_terminal_cause_outlives_a_later_successful_close() {
     let frame = session
         .acquire_frame(&FrameRequest::latest(), &operation)
         .expect("a published frame");
+    let template = prepared(&harness, &operation);
 
     harness.capture.lose(harness.capture.target());
     assert_eq!(
@@ -626,6 +627,49 @@ fn the_first_terminal_cause_outlives_a_later_successful_close() {
         Status::TargetLost,
         "cleanup does not rewrite why capture ended"
     );
+    assert_eq!(
+        session
+            .acquire_frame(&FrameRequest::latest(), &operation)
+            .expect_err("cleanup preserves the acquisition fault")
+            .status(),
+        Status::TargetLost
+    );
+    assert_eq!(
+        session
+            .find_template(
+                &FindRequest::latest(&template, options(&template)),
+                &operation,
+            )
+            .expect_err("latest search preserves the capture fault")
+            .status(),
+        Status::TargetLost
+    );
+    let cancellation = CancellationToken::new();
+    cancellation.cancel();
+    assert_eq!(
+        session
+            .acquire_frame(
+                &FrameRequest::latest(),
+                &OperationContext::new().with_cancellation(cancellation),
+            )
+            .expect_err("interruption precedes the retained terminal cause")
+            .status(),
+        Status::Cancelled
+    );
+    let expired = OperationContext::new()
+        .with_clock(Arc::new(ManualClock::new()))
+        .with_deadline(MonotonicInstant::ORIGIN);
+    assert_eq!(
+        session
+            .find_template(
+                &FindRequest::latest(&template, options(&template)),
+                &expired,
+            )
+            .expect_err("an expired search is refused before acquisition")
+            .status(),
+        Status::DeadlineExceeded
+    );
+    assert_eq!(harness.matcher.find_count(), 0);
     assert!(
         session
             .map_frame(&frame, PixelFormat::Rgba8, &operation)
@@ -651,6 +695,13 @@ fn commit_frame_after_an_ordinary_close_reports_closure() {
             .status(),
         Status::Closed,
         "a clean close is not a fault"
+    );
+    assert_eq!(
+        session
+            .acquire_frame(&FrameRequest::latest(), &operation)
+            .expect_err("ordinary close starts no further acquisition")
+            .status(),
+        Status::Closed
     );
 }
 

@@ -179,6 +179,7 @@ pub(crate) struct SessionMemory {
     session: Arc<ByteBudget>,
     global: Arc<ByteBudget>,
     max_frame_bytes: u64,
+    caller_limited: bool,
 }
 
 impl SessionMemory {
@@ -190,6 +191,7 @@ impl SessionMemory {
             session: Arc::new(ByteBudget::new(session_limit)),
             global: Arc::clone(&GLOBAL),
             max_frame_bytes: frame_limit,
+            caller_limited: limits.is_some(),
         })
     }
 
@@ -267,12 +269,22 @@ impl SessionMemory {
             .ok_or_else(|| CaptureFault::ResourceLimitExceeded.into())
     }
 
+    fn reserve_cpu_copy(self: &Arc<Self>, bytes: usize) -> Result<Option<Arc<dyn Send + Sync>>> {
+        if !self.caller_limited {
+            return Ok(None);
+        }
+        let bytes = u64::try_from(bytes).map_err(|_| CaptureFault::ResourceLimitExceeded)?;
+        self.validate_frame_bytes(bytes)?;
+        Ok(Some(Arc::new(self.reserve(bytes)?)))
+    }
+
     #[cfg(test)]
     fn testing(session_limit: u64, global: Arc<ByteBudget>) -> Arc<Self> {
         Arc::new(Self {
             session: Arc::new(ByteBudget::new(session_limit)),
             global,
             max_frame_bytes: MAX_SURFACE_BYTES,
+            caller_limited: false,
         })
     }
 
@@ -286,6 +298,7 @@ impl SessionMemory {
             session: Arc::new(ByteBudget::new(retained_bytes)),
             global: Arc::new(ByteBudget::new(global_limit)),
             max_frame_bytes,
+            caller_limited: true,
         })
     }
 
@@ -889,9 +902,7 @@ impl FrameStorage for WindowsFrameStorage {
     }
 
     fn reserve_cpu_copy(&self, bytes: usize) -> Result<Option<Arc<dyn Send + Sync>>> {
-        let bytes = u64::try_from(bytes).map_err(|_| CaptureFault::ResourceLimitExceeded)?;
-        self.memory.validate_frame_bytes(bytes)?;
-        Ok(Some(Arc::new(self.memory.reserve(bytes)?)))
+        self.memory.reserve_cpu_copy(bytes)
     }
 
     fn cpu_pixels(&self) -> Option<Arc<CpuPixels>> {
@@ -1054,8 +1065,14 @@ mod tests {
         TexturePool, checked_bgra_bytes, descriptor_from_native, finish_mapping_cache,
         mapping_retained_bytes, native_fault, retained_storage_capacity, validate_surface,
     };
-    use mado_pilot_capture::{CaptureFault, CpuPixels};
-    use mado_pilot_core::{PixelExtent, Status};
+    use mado_pilot_capture::{
+        CaptureFault, CaptureResourceLimits, Continuity, CpuPixels, Frame, FrameDescriptor,
+        FrameStorage, PixelFormat, StoragePublication, StreamState,
+    };
+    use mado_pilot_core::{
+        ClipPolicy, CoordinateSpace, IdentityIssuer, MonotonicInstant, OperationContext,
+        PixelExtent, Rect, Result, Status,
+    };
 
     fn descriptor(width: u32, height: u32) -> D3D11_TEXTURE2D_DESC {
         D3D11_TEXTURE2D_DESC {
@@ -1073,6 +1090,58 @@ mod tests {
             CPUAccessFlags: 0,
             MiscFlags: 0,
         }
+    }
+
+    // A completed readback with the real Windows memory accounting, without a
+    // D3D device. Common mapping still owns conversion, cropping and pixel leases.
+    #[derive(Debug)]
+    struct AccountedCpuStorage {
+        descriptor: FrameDescriptor,
+        pixels: Arc<CpuPixels>,
+        memory: Arc<SessionMemory>,
+    }
+
+    impl FrameStorage for AccountedCpuStorage {
+        fn descriptor(&self) -> FrameDescriptor {
+            self.descriptor
+        }
+
+        fn cpu_pixels(&self) -> Option<Arc<CpuPixels>> {
+            Some(Arc::clone(&self.pixels))
+        }
+
+        fn read_cpu(&self, _operation: &OperationContext) -> Result<Arc<CpuPixels>> {
+            Ok(Arc::clone(&self.pixels))
+        }
+
+        fn reserve_cpu_copy(&self, bytes: usize) -> Result<Option<Arc<dyn Send + Sync>>> {
+            self.memory.reserve_cpu_copy(bytes)
+        }
+    }
+
+    fn accounted_frame(memory: &Arc<SessionMemory>) -> (StreamState, Frame) {
+        let descriptor =
+            FrameDescriptor::packed(PixelExtent::new(2, 2), PixelFormat::Bgra8).expect("layout");
+        let reservation = memory.reserve(16).expect("source pixels");
+        let storage = Arc::new(AccountedCpuStorage {
+            descriptor,
+            pixels: Arc::new(CpuPixels::with_retainer(
+                (1u8..=16).collect::<Vec<_>>().into_boxed_slice(),
+                Arc::new(reservation),
+            )),
+            memory: Arc::clone(memory),
+        });
+        let stream = IdentityIssuer::new().issue_stream().expect("stream");
+        let state = StreamState::with_target_extent(stream);
+        let frame = state
+            .publish_storage(StoragePublication {
+                captured_at: MonotonicInstant::ORIGIN,
+                placement: None,
+                storage,
+                continuity: Continuity::Continuous,
+            })
+            .expect("frame");
+        (state, frame)
     }
 
     #[test]
@@ -1474,6 +1543,119 @@ mod tests {
     }
 
     #[test]
+    fn converted_and_cropped_mappings_keep_required_copy_charges_until_final_release() {
+        let operation = OperationContext::new();
+        let right_column =
+            Rect::new(CoordinateSpace::CapturePixels, 1.0, 0.0, 2.0, 2.0).expect("crop");
+        // Independently exercise the session ceiling and the shared ceiling.
+        for (session_limit, global_limit) in [(40, 64), (64, 40)] {
+            let memory = SessionMemory::testing_with_limits(
+                CaptureResourceLimits::new(16, session_limit).expect("limits"),
+                global_limit,
+            );
+            assert_eq!(
+                memory
+                    .reserve_cpu_copy(17)
+                    .err()
+                    .expect("copy exceeds the frame ceiling")
+                    .status(),
+                Status::LimitExceeded,
+            );
+            assert_eq!(memory.usage(), (0, 0));
+
+            let (state, frame) = accounted_frame(&memory);
+            let converted = frame
+                .map(PixelFormat::Rgba8, &operation)
+                .expect("exact frame ceiling");
+            let cropped = frame
+                .view(right_column, ClipPolicy::Reject)
+                .expect("view")
+                .map(PixelFormat::Bgra8, &operation)
+                .expect("exact retained ceiling");
+            assert_eq!(memory.usage(), (40, 40));
+            assert_eq!(
+                frame
+                    .view(right_column, ClipPolicy::Reject)
+                    .expect("view")
+                    .map(PixelFormat::Bgra8, &operation)
+                    .expect_err("another copy exceeds the retained ceiling")
+                    .status(),
+                Status::LimitExceeded,
+            );
+            assert_eq!(memory.usage(), (40, 40), "refusal releases partial charges");
+            drop(cropped);
+            let cropped = frame
+                .view(right_column, ClipPolicy::Reject)
+                .expect("view")
+                .map(PixelFormat::Bgra8, &operation)
+                .expect("released copy capacity is reusable");
+
+            let retained_conversion = converted.clone();
+            state.drain(&operation).expect("close stream");
+            drop(state);
+            drop(frame);
+            drop(converted);
+            assert_eq!(memory.usage(), (24, 24));
+            let session_budget = Arc::clone(&memory.session);
+            let global_budget = Arc::clone(&memory.global);
+            drop(memory);
+            assert_eq!(
+                retained_conversion.bytes(),
+                &[3, 2, 1, 4, 7, 6, 5, 8, 11, 10, 9, 12, 15, 14, 13, 16],
+            );
+            assert_eq!(cropped.bytes(), &[5, 6, 7, 8, 13, 14, 15, 16]);
+            drop(cropped);
+            assert_eq!((session_budget.used(), global_budget.used()), (16, 16));
+            drop(retained_conversion);
+            assert_eq!((session_budget.used(), global_budget.used()), (0, 0));
+        }
+    }
+
+    #[test]
+    fn omitted_limits_leave_common_mapping_copies_outside_native_budgets() {
+        assert!(
+            SessionMemory::production(None)
+                .reserve_cpu_copy(usize::MAX)
+                .expect("omitted limits impose no new copy ceiling")
+                .is_none()
+        );
+        assert_eq!(
+            SessionMemory::production(Some(
+                CaptureResourceLimits::new(16, 40).expect("caller limits")
+            ))
+            .reserve_cpu_copy(17)
+            .err()
+            .expect("production caller limit is enforced")
+            .status(),
+            Status::LimitExceeded,
+        );
+        let memory = SessionMemory::testing_isolated(16, 16);
+        let (state, frame) = accounted_frame(&memory);
+        let operation = OperationContext::new();
+        let converted = frame
+            .map(PixelFormat::Rgba8, &operation)
+            .expect("conversion remains allowed with full native budgets");
+        let cropped = frame
+            .view(
+                Rect::new(CoordinateSpace::CapturePixels, 1.0, 1.0, 2.0, 2.0).expect("crop"),
+                ClipPolicy::Reject,
+            )
+            .expect("view")
+            .map(PixelFormat::Bgra8, &operation)
+            .expect("crop remains allowed with full native budgets");
+        assert_eq!(memory.usage(), (16, 16));
+        state.drain(&operation).expect("close stream");
+        drop(state);
+        drop(frame);
+        assert_eq!(memory.usage(), (0, 0));
+        assert_eq!(
+            converted.bytes(),
+            &[3, 2, 1, 4, 7, 6, 5, 8, 11, 10, 9, 12, 15, 14, 13, 16],
+        );
+        assert_eq!(cropped.bytes(), &[13, 14, 15, 16]);
+    }
+
+    #[test]
     fn required_budget_counts_mapped_pitch_overlap_and_pixels_retained_after_close() {
         use mado_pilot_capture::CaptureResourceLimits;
 
@@ -1626,7 +1808,7 @@ mod tests {
     #[test]
     fn undeclared_texture_subresources_cannot_bypass_single_image_accounting() {
         let memory = SessionMemory::testing_with_limits(
-            mado_pilot_capture::CaptureResourceLimits::new(64, 320).expect("limits"),
+            CaptureResourceLimits::new(64, 320).expect("limits"),
             320,
         );
         let base = descriptor(4, 4);

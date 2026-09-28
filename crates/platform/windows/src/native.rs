@@ -31,7 +31,7 @@ use windows::Win32::System::WinRT::Direct3D11::IDirect3DDxgiInterfaceAccess;
 use windows::core::{IInspectable, Interface};
 
 use crate::availability::{create_free_threaded_frame_pool, ensure_winrt_apartment};
-use crate::discovery::{NativeKey, TargetMetadata, current_placement};
+use crate::discovery::{NativeKey, TargetMetadata, current_placement, publication_placement};
 use crate::input::GeometryLedger;
 use crate::pacing::configure_capture_pacing;
 use crate::provider::TargetRecord;
@@ -343,8 +343,9 @@ impl NativeSession {
 
         let size = native_size(metadata.extent)?;
         let winrt_device = core.domain.winrt_device()?;
-        core.required_placement(metadata.extent)?;
+        let observed = core.check_required_geometry(metadata.extent);
         operation.checkpoint()?;
+        observed?;
         let frame_pool = create_free_threaded_frame_pool(
             &winrt_device,
             DirectXPixelFormat::B8G8R8A8UIntNormalized,
@@ -1033,11 +1034,15 @@ impl fmt::Debug for NativeSession {
 fn frame_with_target_liveness(
     operation: &OperationContext,
     poll_interval: Duration,
+    mut is_open: impl FnMut() -> bool,
     mut key_is_present: impl FnMut() -> bool,
     mut record_key_loss: impl FnMut(),
     mut acquire_frame: impl FnMut(&OperationContext) -> Result<Frame>,
 ) -> Result<Frame> {
     loop {
+        if !is_open() {
+            return acquire_frame(operation);
+        }
         if !key_is_present() {
             record_key_loss();
             return acquire_frame(operation);
@@ -1074,6 +1079,7 @@ impl CaptureSession for NativeSession {
         frame_with_target_liveness(
             operation,
             TARGET_LIVENESS_POLL_INTERVAL,
+            || self.core.state.lifecycle() == Lifecycle::Open,
             || self.core.key.is_present(),
             || self.core.fail_native(target_fault(self.core.target_kind)),
             |bounded| self.core.state.frame(request, bounded),
@@ -1117,17 +1123,13 @@ impl Drop for NativeSession {
 }
 
 impl SessionCore {
-    fn required_placement(
+    fn check_required_geometry(
         &self,
         extent: PixelExtent,
-    ) -> std::result::Result<Option<TargetPlacement>, CaptureFault> {
+    ) -> std::result::Result<Option<WindowGeometry>, CaptureFault> {
         self.window
             .as_ref()
-            .map(|(record, required)| {
-                record
-                    .required_geometry(*required, Some(extent))
-                    .map(WindowGeometry::placement)
-            })
+            .map(|(record, required)| record.required_geometry(*required, Some(extent)))
             .transpose()
     }
 
@@ -1168,9 +1170,10 @@ impl SessionCore {
         let extent = positive_extent(content_size)?;
         // A required selection cannot enter resize/recreate or detached-image
         // allocation with a new extent, area, scale, origin, or incarnation.
-        let required_placement = self.required_placement(extent)?;
+        let required_geometry = self.check_required_geometry(extent);
 
         if extent != transition.extent {
+            required_geometry?;
             let layout = self
                 .memory
                 .validate_surface(extent.width(), extent.height())?;
@@ -1219,12 +1222,9 @@ impl SessionCore {
             return Ok(());
         }
 
-        let placement = match required_placement {
-            Some(placement) => placement,
-            None => {
-                current_placement(self.key, extent).ok_or_else(|| target_fault(self.target_kind))?
-            }
-        };
+        let placement = publication_placement(required_geometry, || {
+            current_placement(self.key, extent).ok_or_else(|| target_fault(self.target_kind))
+        })?;
         if transition.published && placement != transition.placement {
             transition.placement = placement;
             transition.pending_geometry_change = true;
@@ -1309,7 +1309,7 @@ impl SessionCore {
         );
         // The detach copy may overlap a window transition. Revalidate the same
         // retained record immediately before stream publication, not by HWND.
-        self.required_placement(extent)?;
+        self.check_required_geometry(extent)?;
         self.state
             .publish_storage_with(
                 StoragePublication {
@@ -1817,6 +1817,7 @@ mod tests {
         let error = frame_with_target_liveness(
             &operation,
             Duration::from_millis(1),
+            || state.lifecycle() == Lifecycle::Open,
             || {
                 let check = checks.fetch_add(1, Ordering::AcqRel);
                 assert_eq!(state.lifecycle(), Lifecycle::Open);
@@ -1847,6 +1848,7 @@ mod tests {
         let error = frame_with_target_liveness(
             &operation,
             Duration::from_millis(1),
+            || state.lifecycle() == Lifecycle::Open,
             || {
                 checks.fetch_add(1, Ordering::AcqRel);
                 true
@@ -1877,6 +1879,7 @@ mod tests {
             &operation,
             Duration::from_millis(100),
             || true,
+            || true,
             || panic!("a present key cannot record target loss"),
             |bounded| {
                 *observed_deadline.lock().expect("deadline lock") = bounded.deadline();
@@ -1903,6 +1906,7 @@ mod tests {
             &operation,
             Duration::from_secs(1),
             || true,
+            || true,
             || panic!("a present key cannot record target loss"),
             |bounded| {
                 let mut wait = Operation::admit(bounded)?;
@@ -1917,22 +1921,119 @@ mod tests {
     }
 
     #[test]
-    fn r2_2_liveness_bound_preserves_first_terminal_fault() {
-        let stream = IdentityIssuer::new().issue_stream().expect("issued stream");
+    fn liveness_admission_returns_stopped_state_without_probing() {
+        for fault in [None, Some(CaptureFault::TargetLost)] {
+            for completed in [false, true] {
+                let stream = IdentityIssuer::new().issue_stream().expect("stream");
+                let state = StreamState::with_target_extent(stream);
+                if let Some(fault) = fault {
+                    state.terminate(fault);
+                } else {
+                    state.begin_close();
+                }
+                if completed {
+                    state
+                        .drain(&OperationContext::new())
+                        .expect("cleanup completes");
+                }
+                let token = CancellationToken::new();
+                token.cancel();
+                for (operation, expected) in [
+                    (
+                        OperationContext::new(),
+                        fault.unwrap_or(CaptureFault::SessionClosed).status(),
+                    ),
+                    (
+                        OperationContext::new().with_cancellation(token),
+                        Status::Cancelled,
+                    ),
+                    (
+                        OperationContext::new()
+                            .with_clock(Arc::new(ScriptedClock::new(&[0])))
+                            .with_deadline(MonotonicInstant::ORIGIN),
+                        Status::DeadlineExceeded,
+                    ),
+                ] {
+                    let error = frame_with_target_liveness(
+                        &operation,
+                        Duration::from_millis(1),
+                        || state.lifecycle() == Lifecycle::Open,
+                        || panic!("stopped capture must not probe the native key"),
+                        || panic!("stopped capture must not introduce a terminal fault"),
+                        |operation| state.frame(&FrameRequest::latest(), operation),
+                    )
+                    .expect_err("stopped frame admission");
+
+                    assert_eq!(error.status(), expected);
+                    assert_eq!(state.terminal(), fault);
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn liveness_probe_racing_completed_close_cannot_introduce_a_fault() {
+        let stream = IdentityIssuer::new().issue_stream().expect("stream");
         let state = StreamState::with_target_extent(stream);
-        state.terminate(CaptureFault::SourceInvalid);
+        let operation = OperationContext::new();
 
         let error = frame_with_target_liveness(
-            &OperationContext::new(),
+            &operation,
             Duration::from_millis(1),
-            || false,
-            || state.terminate(CaptureFault::CaptureItemClosed),
-            |bounded| state.frame(&FrameRequest::latest(), bounded),
+            || state.lifecycle() == Lifecycle::Open,
+            || {
+                state
+                    .drain(&operation)
+                    .expect("close wins during the admitted probe");
+                false
+            },
+            || state.terminate(CaptureFault::TargetLost),
+            |operation| state.frame(&FrameRequest::latest(), operation),
         )
-        .expect_err("the first terminal fault outranks later key loss");
+        .expect_err("the admitted probe cannot replace completed close");
 
-        assert_eq!(error.status(), Status::CaptureFailed);
-        assert_eq!(state.terminal(), Some(CaptureFault::SourceInvalid));
+        assert_eq!(error, CaptureFault::SessionClosed.into());
+        assert_eq!(state.terminal(), None);
+        assert_eq!(state.lifecycle(), Lifecycle::Closed);
+    }
+
+    #[test]
+    fn liveness_retry_observes_close_before_probing_again() {
+        let stream = IdentityIssuer::new().issue_stream().expect("stream");
+        let state = StreamState::with_target_extent(stream);
+        let operation = OperationContext::new().with_clock(Arc::new(ScriptedClock::new(&[0])));
+        let attempts = Cell::new(0);
+
+        let error = frame_with_target_liveness(
+            &operation,
+            Duration::from_millis(1),
+            || state.lifecycle() == Lifecycle::Open,
+            || {
+                assert_eq!(attempts.get(), 0, "close must prevent a second probe");
+                true
+            },
+            || panic!("a present key cannot record target loss"),
+            |bounded| {
+                let attempt = attempts.get();
+                attempts.set(attempt + 1);
+                if attempt == 0 {
+                    state
+                        .drain(&operation)
+                        .expect("close completes during the wait");
+                    state.frame(
+                        &FrameRequest::latest(),
+                        &bounded.clone().with_deadline(MonotonicInstant::ORIGIN),
+                    )
+                } else {
+                    state.frame(&FrameRequest::latest(), bounded)
+                }
+            },
+        )
+        .expect_err("retry observes the completed close");
+
+        assert_eq!(error, CaptureFault::SessionClosed.into());
+        assert_eq!(attempts.get(), 2);
+        assert_eq!(state.terminal(), None);
     }
 
     #[test]
@@ -1953,6 +2054,7 @@ mod tests {
         let frame = frame_with_target_liveness(
             &operation,
             Duration::from_millis(1),
+            || state.lifecycle() == Lifecycle::Open,
             || {
                 let check = checks.fetch_add(1, Ordering::AcqRel);
                 if check == 1 {

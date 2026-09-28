@@ -180,6 +180,15 @@ pub(crate) fn current_placement(key: NativeKey, extent: PixelExtent) -> Option<T
     }
 }
 
+/// Required geometry gates publication but never supplies its input transform.
+pub(crate) fn publication_placement(
+    required_geometry: std::result::Result<Option<WindowGeometry>, CaptureFault>,
+    input_placement: impl FnOnce() -> std::result::Result<TargetPlacement, CaptureFault>,
+) -> std::result::Result<TargetPlacement, CaptureFault> {
+    required_geometry?;
+    input_placement()
+}
+
 /// Reads geometry only for an already retained capture item. The caller fences
 /// this observation with that item's Closed registration and process authority.
 pub(crate) fn current_window_geometry(
@@ -735,6 +744,76 @@ mod tests {
             Err(CaptureFault::UnsupportedOption),
             "same size at different origins does not identify the captured rectangle",
         );
+    }
+
+    #[test]
+    fn required_geometry_is_only_a_gate_for_publication_placement() {
+        use mado_pilot_capture::{CaptureFault, WindowGeometry};
+        use windows::Win32::Foundation::RECT;
+
+        use crate::provider::require_geometry;
+
+        let extended = RECT {
+            left: -1400,
+            top: -200,
+            right: -1120,
+            bottom: 0,
+        };
+        let client = RECT {
+            left: -1390,
+            top: -170,
+            right: -1130,
+            bottom: -10,
+        };
+        // Integer client conversion need not equal GetDpiForWindow / 96.
+        let input_scale = Scale::new(260.0 / 207.0, 160.0 / 127.0).expect("client ratios");
+        let described_scale = Scale::new(1.25, 1.25).expect("window DPI");
+        for extent in [PixelExtent::new(280, 200), PixelExtent::new(260, 160)] {
+            let required =
+                super::geometry_from_rectangles(extended, client, extent, described_scale)
+                    .expect("retained area");
+            let input_placement =
+                placement_with_scale(extended.left, extended.top, extent, input_scale)
+                    .expect("input-authoritative placement");
+            assert_ne!(required.placement(), input_placement);
+            let checked =
+                require_geometry(required, required, Some(extent)).map(|()| Some(required));
+            let selected = super::publication_placement(checked, || Ok(input_placement))
+                .expect("unchanged required geometry admits the input placement");
+            assert_eq!(selected, input_placement);
+
+            let published =
+                TransformSnapshot::with_target(GeometryRevision::FIRST, extent, selected)
+                    .expect("selected publication transform");
+            let pixel = Point::new(CoordinateSpace::CapturePixels, 130.0, 80.0).expect("pixel");
+            let logical = published
+                .convert_point(pixel, CoordinateSpace::TargetLogical)
+                .expect("frame-to-target conversion");
+            assert!((logical.x() - 103.5).abs() < 1e-12);
+            assert!((logical.y() - 63.5).abs() < 1e-12);
+            let live =
+                TransformSnapshot::with_target(GeometryRevision::FIRST, extent, input_placement)
+                    .expect("current input transform");
+            let desktop = live
+                .convert_point(logical, CoordinateSpace::DesktopLogical)
+                .expect("reproject target-logical point through live input");
+            assert!((desktop.x() + 1270.0).abs() < 1e-12);
+            assert!((desktop.y() + 120.0).abs() < 1e-12);
+
+            let changed = WindowGeometry::new(required.area(), input_placement, extent);
+            let refused = require_geometry(required, changed, Some(extent)).map(|()| Some(changed));
+            assert_eq!(
+                super::publication_placement(refused, || {
+                    panic!("changed required geometry must refuse before live placement")
+                }),
+                Err(CaptureFault::WindowGeometryChanged),
+            );
+            assert_eq!(
+                super::publication_placement(checked, || Err(CaptureFault::TargetLost)),
+                Err(CaptureFault::TargetLost),
+                "required geometry cannot replace an unavailable input placement",
+            );
+        }
     }
 
     #[test]
