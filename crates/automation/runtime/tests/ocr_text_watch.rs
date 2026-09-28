@@ -1003,10 +1003,13 @@ impl CaptureProvider for ExactSource {
     fn open(
         &self,
         target: TargetId,
-        _: &OpenRequest,
+        request: &OpenRequest,
         _: &OperationContext,
     ) -> Result<Arc<dyn CaptureSession>> {
         assert_eq!(target, self.description.target());
+        if request.window_geometry().is_some() || request.resource_limits().is_some() {
+            return Err(CaptureFault::UnsupportedOption.into());
+        }
         Ok(Arc::new(Self {
             description: self.description.clone(),
             state: self.state.clone(),

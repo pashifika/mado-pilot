@@ -1224,6 +1224,47 @@ native cleanup. C/C++ synchronous calls inherit the runtime ordering without
 changing an ABI prefix or layout. See
 [ADR 0078](adr/0078-capture-terminal-publication.md).
 
+### Retained native window requirements
+
+The Rust capture API describes a native window through
+`TargetDescription::window`. `NativeWindowId` is a descriptive OS key, not
+transferable authority. `WindowGeometry` records the actual capture area,
+signed desktop origin, pixel extent and independent scales; units are Quartz
+screen points on macOS and physical virtual-desktop pixels on Windows.
+
+`Engine::describe_window` revalidates the original retained `TargetId`, process
+lifetime and window without capture or input. macOS observes the retained
+ScreenCaptureKit window/filter; Windows retains the original
+`GraphicsCaptureItem`, Closed registration and process authority. Neither
+reconstructs authority from a PID, title or numeric window key.
+
+`OpenRequest::require_window_geometry` refuses changed geometry before opening
+and publishing; it never silently resizes the selected capture.
+`OpenRequest::with_resource_limits` accepts nonzero `CaptureResourceLimits`
+for one frame and simultaneous session-retained image payload. Native adapters
+enforce required options or refuse; replay, controlled and custom providers
+without support must return `UnsupportedOption`. Omitted options retain their
+previous behavior. The public C ABI and C++ wrapper are unchanged.
+
+Byte accounting covers declared producer/texture payload, detached storage,
+staging/CPU copies and observable linear padding, not opaque GPU/driver allocation
+or process RSS. Controlled allocations reserve first; OS padding discovered at
+delivery/Map is admitted before accepted publication or CPU copying.
+`FrameStorage::reserve_cpu_copy` charges common format-conversion and region
+copies to that same budget before allocation. Reservations survive close until
+the final pixel owner releases storage. Existing platform/global
+limits still apply. macOS conservatively retains old producer charges through
+teardown because configuration completion does not prove old-pool retirement;
+repeated resize may therefore exhaust a requested ceiling.
+
+Unverifiable capture scope or eligibility refuses. In particular,
+`GetWindowDisplayAffinity` does not guarantee a result for every ordinary Windows
+window: unknown eligibility returns `UnsupportedOption`, while known protection
+returns `AccessDenied`. This does not disable ordinary omitted-option capture or
+prove Windows authoring applicability. Retained observations do not guarantee
+continued target readiness or replace separate native qualification.
+See [ADR 0079](adr/0079-retained-native-window-requirements.md).
+
 ### Native capture pacing configuration
 
 `CapturePacingRequest` selects inheritance, source default, or one validated
@@ -1244,7 +1285,7 @@ Windows negotiates `IGraphicsCaptureSession5` and the writable runtime property,
 configures positive signed 64-bit 100ns ticks rounded upward, and reads back before
 callbacks/start. macOS negotiates the dynamic getter/setter, configures exact
 positive signed 64-bit nanoseconds with `CMTimeMake` at timescale1000000000, and
-reads back before stream creation/start. Its private scalar handshake is ABI24
+reads back before stream creation/start. Its private scalar handshake is ABI25
 with matching Rust/C size and offset checks; the public C ABI is unchanged.
 Both adapters retain configuration across pool/dimension changes without adding
 callback sleeps, software throttle gates or producer storage retention.

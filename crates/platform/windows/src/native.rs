@@ -11,9 +11,9 @@ use std::thread;
 use std::time::{Duration, Instant};
 
 use mado_pilot_capture::{
-    CaptureFault, CapturePacingReport, CaptureSession, Continuity, Frame, FrameRequest, Lifecycle,
-    OverflowPolicy, QueuePolicy, ResolvedCapturePacing, SessionDescription, StoragePublication,
-    StreamState,
+    CaptureFault, CapturePacingReport, CaptureResourceLimits, CaptureSession, Continuity, Frame,
+    FrameRequest, Lifecycle, OpenRequest, OverflowPolicy, QueuePolicy, ResolvedCapturePacing,
+    SessionDescription, StoragePublication, StreamState, WindowGeometry,
 };
 use mado_pilot_core::{
     Clock, MonotonicInstant, Operation, OperationContext, PixelExtent, Result, StreamId,
@@ -34,10 +34,10 @@ use crate::availability::{create_free_threaded_frame_pool, ensure_winrt_apartmen
 use crate::discovery::{NativeKey, TargetMetadata, current_placement};
 use crate::input::GeometryLedger;
 use crate::pacing::configure_capture_pacing;
+use crate::provider::TargetRecord;
 use crate::storage::{
     DeviceDomain, DeviceTerminal, RetainedBytes, SessionMemory, StorageFailureSink, TexturePool,
-    WindowsFrameStorage, descriptor_from_native, native_fault, retained_storage_capacity,
-    validate_surface,
+    WindowsFrameStorage, descriptor_from_native, native_fault, validate_surface,
 };
 
 const WGC_PRODUCER_POOL_SIZE: i32 = 2;
@@ -55,6 +55,8 @@ pub(crate) struct NativeSessionSource {
     metadata: TargetMetadata,
     item: GraphicsCaptureItem,
     geometry: Arc<GeometryLedger>,
+    window: Option<(Arc<TargetRecord>, WindowGeometry)>,
+    resource_limits: Option<CaptureResourceLimits>,
 }
 
 impl NativeSessionSource {
@@ -75,7 +77,21 @@ impl NativeSessionSource {
             metadata,
             item,
             geometry,
+            window: None,
+            resource_limits: None,
         }
+    }
+
+    pub(crate) fn with_requirements(
+        mut self,
+        record: &Arc<TargetRecord>,
+        request: &OpenRequest,
+    ) -> Self {
+        self.window = request
+            .window_geometry()
+            .map(|geometry| (Arc::clone(record), geometry));
+        self.resource_limits = request.resource_limits();
+        self
     }
 }
 
@@ -141,6 +157,7 @@ struct SessionCore {
     target_kind: TargetKind,
     stream: StreamId,
     key: NativeKey,
+    window: Option<(Arc<TargetRecord>, WindowGeometry)>,
     state: StreamState,
     geometry: GeometryRegistration,
     domain: Arc<DeviceDomain>,
@@ -265,19 +282,27 @@ impl NativeSession {
             metadata,
             item,
             geometry,
+            window,
+            resource_limits,
         } = source;
         let teardown = teardown_executor(operation)?;
         let teardown_permit = teardown.reserve(operation)?;
         let clock_anchor = clock_calibration().ok_or(CaptureFault::SourceInvalid)?;
-        let domain = DeviceDomain::create()?;
-        let layout = validate_surface(metadata.extent.width(), metadata.extent.height())?;
-        let retained_storage_capacity = retained_storage_capacity(layout)?;
-        let memory = SessionMemory::production();
+        if let Some((record, required)) = &window {
+            let observed = record.required_geometry(*required, Some(metadata.extent));
+            operation.checkpoint()?;
+            observed?;
+        }
+        let memory = SessionMemory::production(resource_limits);
+        let layout = memory.validate_surface(metadata.extent.width(), metadata.extent.height())?;
+        let retained_storage_capacity = memory.retained_storage_capacity(layout)?;
         let producer_bytes = layout
             .bytes()
             .checked_mul(u64::try_from(WGC_PRODUCER_POOL_SIZE).expect("positive pool size"))
             .ok_or(CaptureFault::ResourceLimitExceeded)?;
         let producer_bytes = memory.reserve(producer_bytes)?;
+        operation.checkpoint()?;
+        let domain = DeviceDomain::create()?;
         let device_terminal = Arc::new(DeviceTerminal::default());
         let textures = TexturePool::new(
             Arc::clone(&domain),
@@ -289,6 +314,7 @@ impl NativeSession {
             target_kind: kind,
             stream,
             key,
+            window,
             state: StreamState::with_target_extent(stream),
             geometry: GeometryRegistration::new(geometry, stream),
             domain,
@@ -317,6 +343,8 @@ impl NativeSession {
 
         let size = native_size(metadata.extent)?;
         let winrt_device = core.domain.winrt_device()?;
+        core.required_placement(metadata.extent)?;
+        operation.checkpoint()?;
         let frame_pool = create_free_threaded_frame_pool(
             &winrt_device,
             DirectXPixelFormat::B8G8R8A8UIntNormalized,
@@ -1089,6 +1117,20 @@ impl Drop for NativeSession {
 }
 
 impl SessionCore {
+    fn required_placement(
+        &self,
+        extent: PixelExtent,
+    ) -> std::result::Result<Option<TargetPlacement>, CaptureFault> {
+        self.window
+            .as_ref()
+            .map(|(record, required)| {
+                record
+                    .required_geometry(*required, Some(extent))
+                    .map(WindowGeometry::placement)
+            })
+            .transpose()
+    }
+
     fn on_frame(&self, sender: &Direct3D11CaptureFramePool) {
         let result = self.process_frame(sender);
         if let Err(fault) = result {
@@ -1124,10 +1166,15 @@ impl SessionCore {
             .map_err(native_fault)?
             .Duration;
         let extent = positive_extent(content_size)?;
+        // A required selection cannot enter resize/recreate or detached-image
+        // allocation with a new extent, area, scale, origin, or incarnation.
+        let required_placement = self.required_placement(extent)?;
 
         if extent != transition.extent {
-            let layout = validate_surface(extent.width(), extent.height())?;
-            if retained_storage_capacity(layout)? < self.retained_storage_capacity {
+            let layout = self
+                .memory
+                .validate_surface(extent.width(), extent.height())?;
+            if self.memory.retained_storage_capacity(layout)? < self.retained_storage_capacity {
                 return Err(CaptureFault::ResourceLimitExceeded);
             }
             let producer_bytes = layout
@@ -1172,8 +1219,12 @@ impl SessionCore {
             return Ok(());
         }
 
-        let placement =
-            current_placement(self.key, extent).ok_or_else(|| target_fault(self.target_kind))?;
+        let placement = match required_placement {
+            Some(placement) => placement,
+            None => {
+                current_placement(self.key, extent).ok_or_else(|| target_fault(self.target_kind))?
+            }
+        };
         if transition.published && placement != transition.placement {
             transition.placement = placement;
             transition.pending_geometry_change = true;
@@ -1204,11 +1255,18 @@ impl SessionCore {
         };
         let captured_at = frame_time(&transition, native_time);
 
-        let lease = self.textures.try_acquire(native_descriptor).map_err(|_| {
-            self.domain
-                .device_fault()
-                .unwrap_or(CaptureFault::SourceInvalid)
-        })?;
+        let lease = self
+            .textures
+            .try_acquire(native_descriptor)
+            .map_err(|error| {
+                if error.status() == mado_pilot_core::Status::LimitExceeded {
+                    CaptureFault::ResourceLimitExceeded
+                } else {
+                    self.domain
+                        .device_fault()
+                        .unwrap_or(CaptureFault::SourceInvalid)
+                }
+            })?;
         let Some(lease) = lease else {
             let _drop = self.state.try_record_drop();
             return Ok(());
@@ -1249,6 +1307,9 @@ impl SessionCore {
             Arc::clone(&self.device_terminal),
             Arc::clone(&self.memory),
         );
+        // The detach copy may overlap a window transition. Revalidate the same
+        // retained record immediately before stream publication, not by HWND.
+        self.required_placement(extent)?;
         self.state
             .publish_storage_with(
                 StoragePublication {
@@ -2000,10 +2061,25 @@ mod tests {
 
     #[test]
     fn r1_2_resize_replaces_producer_reservation_only_after_native_success() {
-        let memory = SessionMemory::testing_isolated(512, 512);
+        let memory = SessionMemory::testing_with_limits(
+            mado_pilot_capture::CaptureResourceLimits::new(48, 160).expect("tight limits"),
+            160,
+        );
         let owner = NativeOwnership::new(
             (),
             memory.reserve(64).expect("initial producer reservation"),
+        );
+        assert_eq!(
+            memory
+                .reserve(97)
+                .expect_err("replacement overlap is one byte over")
+                .status(),
+            Status::LimitExceeded,
+        );
+        assert_eq!(
+            memory.validate_surface(4, 4),
+            Err(CaptureFault::ResourceLimitExceeded),
+            "resize checks its single-frame limit before reserving the new producer",
         );
 
         let held = owner
@@ -2098,7 +2174,8 @@ mod tests {
     fn r1_2_production_multi_session_description_matches_shared_pressure_and_resume() {
         let layout = validate_surface(3840, 2160).expect("4K layout");
         let surface_bytes = layout.bytes();
-        let capacity = retained_storage_capacity(layout).expect("4K retained capacity");
+        let capacity = retained_storage_capacity(layout, SESSION_RETAINED_BYTES)
+            .expect("4K retained capacity");
         assert_eq!(capacity.get(), 40);
         let producer_bytes = surface_bytes
             .checked_mul(u64::try_from(WGC_PRODUCER_POOL_SIZE).expect("positive producer count"))

@@ -584,6 +584,7 @@ mp_shim_status mp_shim_executable_identity_for_process(
 - (void)getShareableContentExcludingDesktopWindows:(BOOL)excludeDesktopWindows
                                onScreenWindowsOnly:(BOOL)onScreenWindowsOnly
                                  completionHandler:(void (^)(id content, NSError *error))handler;
+- (id)infoForFilter:(id)filter;
 @end
 
 @protocol MPShimShareableContent <NSObject>
@@ -617,6 +618,11 @@ mp_shim_status mp_shim_executable_identity_for_process(
 - (instancetype)initWithDisplay:(id)display excludingWindows:(NSArray *)excluded;
 @end
 
+@protocol MPShimShareableContentInfo <NSObject>
+@property(nonatomic, readonly) float pointPixelScale;
+@property(nonatomic, readonly) CGRect contentRect;
+@end
+
 @protocol MPShimStreamConfiguration <NSObject>
 @property(nonatomic, assign) size_t width;
 @property(nonatomic, assign) size_t height;
@@ -625,6 +631,7 @@ mp_shim_status mp_shim_executable_identity_for_process(
 @property(nonatomic, assign) NSInteger queueDepth;
 @property(nonatomic, assign) BOOL scalesToFit;
 @property(nonatomic, assign) CMTime minimumFrameInterval;
+@property(nonatomic, assign) BOOL ignoreShadowsSingleWindow;
 @end
 
 @protocol MPShimStream <NSObject>
@@ -1590,6 +1597,104 @@ struct mp_shim_fixture_application {
 #define MP_SHIM_CLOSE_COMPLETE 5u
 
 /*
+ * Allocation accounting is independent of a session's close state. A producer
+ * reservation, a wrapped detached buffer and a Rust CPU mapping each retain a
+ * lease until the corresponding storage is released. No caller callback is
+ * invoked by these atomics or destructors.
+ */
+@interface MPShimImageBudget : NSObject {
+@public
+    uint64_t max_frame;
+    uint64_t max_retained;
+    atomic_uint_fast64_t used;
+}
+@end
+@implementation MPShimImageBudget
+@end
+
+static bool mp_shim_image_reserve(MPShimImageBudget *budget, uint64_t bytes) {
+    uint_fast64_t used = atomic_load_explicit(&budget->used, memory_order_relaxed);
+    do {
+        if (bytes > budget->max_retained || used > budget->max_retained - bytes) {
+            return false;
+        }
+    } while (!atomic_compare_exchange_weak_explicit(
+        &budget->used, &used, used + bytes, memory_order_acq_rel, memory_order_relaxed));
+    return true;
+}
+
+@interface MPShimImageLease : NSObject {
+@public
+    MPShimImageBudget *budget;
+    uint64_t count;
+    atomic_uint_fast64_t bytes;
+}
+- (bool)growToFrameBytes:(uint64_t)frame_bytes;
+@end
+
+@implementation MPShimImageLease
+- (bool)growToFrameBytes:(uint64_t)frame_bytes {
+    if (frame_bytes == 0 || frame_bytes > budget->max_frame ||
+        count == 0 || frame_bytes > UINT64_MAX / count) {
+        return false;
+    }
+    uint64_t wanted = frame_bytes * count;
+    uint_fast64_t previous = atomic_load_explicit(&bytes, memory_order_acquire);
+    while (wanted > previous) {
+        uint64_t extra = wanted - previous;
+        if (!mp_shim_image_reserve(budget, extra)) {
+            return false;
+        }
+        if (atomic_compare_exchange_weak_explicit(
+                &bytes, &previous, wanted, memory_order_acq_rel, memory_order_acquire)) {
+            return true;
+        }
+        atomic_fetch_sub_explicit(&budget->used, extra, memory_order_acq_rel);
+    }
+    return true;
+}
+- (void)dealloc {
+    atomic_fetch_sub_explicit(&budget->used,
+                              atomic_load_explicit(&bytes, memory_order_relaxed),
+                              memory_order_acq_rel);
+}
+@end
+
+static MPShimImageBudget *mp_shim_image_budget(uint64_t frame, uint64_t retained)
+    __attribute__((ns_returns_retained)) {
+    MPShimImageBudget *budget = [MPShimImageBudget new];
+    if (budget != nil) {
+        budget->max_frame = MIN(frame, (uint64_t)MP_SHIM_MAX_SURFACE_BYTES);
+        budget->max_retained = retained;
+        atomic_init(&budget->used, 0);
+    }
+    return budget;
+}
+
+static MPShimImageLease *mp_shim_image_lease(
+    MPShimImageBudget *budget, uint64_t frame_bytes, uint64_t count)
+    __attribute__((ns_returns_retained)) {
+    if (budget == nil) {
+        return nil;
+    }
+    MPShimImageLease *lease = [MPShimImageLease new];
+    if (lease == nil) {
+        return nil;
+    }
+    lease->budget = budget;
+    lease->count = count;
+    atomic_init(&lease->bytes, 0);
+    return [lease growToFrameBytes:frame_bytes] ? lease : nil;
+}
+
+void mp_shim_image_lease_release(void *lease) {
+    if (lease != NULL) {
+        @try { CFRelease(lease); }
+        @catch (...) { /* No native exception may cross a Rust destructor. */ }
+    }
+}
+
+/*
  * One capture session.
  *
  * # Lifetime
@@ -1655,6 +1760,13 @@ struct mp_shim_session {
     uint32_t pool_height;
     uint32_t detached_budget;
     uint32_t leased;
+    /* Zero/NULL preserves the original production policy. Producer leases are
+     * retained through stream release because SCK exposes no pool-retirement
+     * fence on updateConfiguration. The current lease also charges observed
+     * linear row padding before a sample is accepted. */
+    CFTypeRef image_budget;
+    CFTypeRef producer_leases; /* NSMutableArray<MPShimImageLease *> */
+    uint32_t producer_depth;
 
     void *callback_context;
     mp_shim_status (*frame_callback)(void *, mp_shim_frame *, const mp_shim_frame_info *);
@@ -1858,6 +1970,16 @@ static void mp_shim_session_abandon(struct mp_shim_session *session) {
         session->sck_live_counted = false;
     }
 #endif
+    if (session->image_budget != NULL) {
+        CFRelease(session->image_budget);
+        session->image_budget = NULL;
+        mp_shim_note_released();
+    }
+    if (session->producer_leases != NULL) {
+        CFRelease(session->producer_leases);
+        session->producer_leases = NULL;
+        mp_shim_note_released();
+    }
     mp_shim_session_sync_destroy(session, NULL);
     session->magic = 0;
     free(session);
@@ -2091,10 +2213,10 @@ mp_shim_status mp_shim_process_struct_offsets(
 }
 
 mp_shim_status mp_shim_open_struct_offsets(uint32_t *out_offsets, size_t count) {
-    if (out_offsets == NULL || count != 9) {
+    if (out_offsets == NULL || count != 14) {
         return MP_SHIM_INVALID_ARGUMENT;
     }
-    const uint32_t offsets[9] = {
+    const uint32_t offsets[14] = {
         (uint32_t)offsetof(mp_shim_open_request, target),
         (uint32_t)offsetof(mp_shim_open_request, callback_context),
         (uint32_t)offsetof(mp_shim_open_request, frame_callback),
@@ -2104,6 +2226,11 @@ mp_shim_status mp_shim_open_struct_offsets(uint32_t *out_offsets, size_t count) 
         (uint32_t)offsetof(mp_shim_open_request, pacing_interval_nanos),
         (uint32_t)offsetof(mp_shim_open_report, pacing_outcome),
         (uint32_t)offsetof(mp_shim_open_report, configured_interval_nanos),
+        (uint32_t)offsetof(mp_shim_open_request, max_frame_bytes),
+        (uint32_t)offsetof(mp_shim_open_request, max_retained_bytes),
+        (uint32_t)offsetof(mp_shim_open_request, validation_timeout_nanos),
+        (uint32_t)offsetof(mp_shim_open_request, require_window),
+        (uint32_t)offsetof(mp_shim_open_request, required_window),
     };
     memcpy(out_offsets, offsets, sizeof(offsets));
     return MP_SHIM_OK;
@@ -2721,6 +2848,88 @@ mp_shim_status mp_shim_testing_target_without_process_lifetime(
 
 #pragma mark - Detached buffer pool
 
+static mp_shim_status mp_shim_producer_observe(
+    struct mp_shim_session *session, CVPixelBufferRef image) {
+    if (session->image_budget == NULL) {
+        return MP_SHIM_OK;
+    }
+    /* SCK does not expose stride before its OS-owned allocation. Account the
+     * observed linear storage before accepting this sample, not after detach.
+     * This is not a promise to cap opaque driver allocations. */
+    size_t stride = CVPixelBufferGetBytesPerRow(image);
+    size_t height = CVPixelBufferGetHeight(image);
+    if (height == 0 || stride > UINT64_MAX / height) {
+        return MP_SHIM_BUDGET_EXHAUSTED;
+    }
+    uint64_t bytes = MAX((uint64_t)CVPixelBufferGetDataSize(image), (uint64_t)stride * height);
+    if (pthread_mutex_trylock(&session->native_mutex) != 0) {
+        return MP_SHIM_FRAME_INCOMPLETE;
+    }
+    MPShimImageLease *lease = nil;
+    @try {
+        lease = [(__bridge NSArray *)session->producer_leases lastObject];
+    } @finally {
+        pthread_mutex_unlock(&session->native_mutex);
+    }
+    return lease != nil && [lease growToFrameBytes:bytes]
+        ? MP_SHIM_OK : MP_SHIM_BUDGET_EXHAUSTED;
+}
+
+/* The only detached path with a caller byte ceiling owns its padded allocation
+ * explicitly. CVPixelBufferCreateWithBytes cannot secretly grow these bytes;
+ * its final release callback, not frame release or close, retires the charge. */
+static void mp_shim_detached_bytes_release(void *context, const void *base) {
+    free((void *)base);
+    mp_shim_image_lease_release(context);
+}
+
+static mp_shim_status mp_shim_limited_buffer_create(
+    struct mp_shim_session *session, uint32_t width, uint32_t height,
+    CVPixelBufferRef *out_buffer) {
+    size_t stride = ((size_t)width * 4u + 15u) & ~(size_t)15u;
+    uint64_t bytes = (uint64_t)stride * height;
+    MPShimImageLease *lease = mp_shim_image_lease(
+        (__bridge MPShimImageBudget *)session->image_budget, bytes, 1);
+    if (lease == nil) {
+        return MP_SHIM_BUDGET_EXHAUSTED;
+    }
+    void *base = calloc(1, (size_t)bytes);
+    if (base == NULL) {
+        return MP_SHIM_PLATFORM_FAILURE;
+    }
+    void *retained = (void *)CFBridgingRetain(lease);
+    CVReturn result = CVPixelBufferCreateWithBytes(
+        kCFAllocatorDefault, width, height, kCVPixelFormatType_32BGRA, base, stride,
+        mp_shim_detached_bytes_release, retained, NULL, out_buffer);
+    if (result != kCVReturnSuccess || *out_buffer == NULL) {
+        free(base);
+        mp_shim_image_lease_release(retained);
+        return MP_SHIM_PLATFORM_FAILURE;
+    }
+    return MP_SHIM_OK;
+}
+
+mp_shim_status mp_shim_frame_reserve_cpu(const mp_shim_frame *frame, uint64_t bytes,
+                                        void **out_lease) {
+    if (frame == NULL || frame->magic != MP_SHIM_FRAME_MAGIC || !frame->owns_buffer ||
+        out_lease == NULL || bytes == 0) {
+        return MP_SHIM_INVALID_ARGUMENT;
+    }
+    *out_lease = NULL;
+    MP_SHIM_BEGIN
+    MPShimImageBudget *budget = (__bridge MPShimImageBudget *)frame->session->image_budget;
+    if (budget == nil) {
+        return MP_SHIM_OK;
+    }
+    MPShimImageLease *lease = mp_shim_image_lease(budget, bytes, 1);
+    if (lease == nil) {
+        return MP_SHIM_BUDGET_EXHAUSTED;
+    }
+    *out_lease = (void *)CFBridgingRetain(lease);
+    return MP_SHIM_OK;
+    MP_SHIM_END
+}
+
 static void mp_shim_pool_release_locked(struct mp_shim_session *session) {
     if (session->pool != NULL) {
         CVPixelBufferPoolRelease(session->pool);
@@ -2787,18 +2996,27 @@ static mp_shim_status mp_shim_pool_acquire(struct mp_shim_session *session, uint
     @try {
         if (session->leased >= session->detached_budget) {
             status = MP_SHIM_BUDGET_EXHAUSTED;
-        } else if (session->pool == NULL || session->pool_width != width ||
-                   session->pool_height != height) {
+        } else if (session->image_budget == NULL &&
+                   (session->pool == NULL || session->pool_width != width ||
+                    session->pool_height != height)) {
             status = mp_shim_pool_create_locked(session, width, height);
         }
         if (status == MP_SHIM_OK) {
-            NSDictionary *auxiliary = @{
-                (__bridge NSString *)
-                kCVPixelBufferPoolAllocationThresholdKey : @(session->detached_budget)
-            };
             CVPixelBufferRef buffer = NULL;
-            CVReturn created = CVPixelBufferPoolCreatePixelBufferWithAuxAttributes(
-                kCFAllocatorDefault, session->pool, (__bridge CFDictionaryRef)auxiliary, &buffer);
+            CVReturn created = kCVReturnSuccess;
+            if (session->image_budget != NULL) {
+                status = mp_shim_limited_buffer_create(session, width, height, &buffer);
+                if (status != MP_SHIM_OK) {
+                    return status; /* @finally still releases the pool mutex. */
+                }
+            } else {
+                NSDictionary *auxiliary = @{
+                    (__bridge NSString *)kCVPixelBufferPoolAllocationThresholdKey :
+                        @(session->detached_budget)
+                };
+                created = CVPixelBufferPoolCreatePixelBufferWithAuxAttributes(
+                    kCFAllocatorDefault, session->pool, (__bridge CFDictionaryRef)auxiliary, &buffer);
+            }
             if (created == kCVReturnWouldExceedAllocationThreshold) {
                 status = MP_SHIM_BUDGET_EXHAUSTED;
             } else if (created != kCVReturnSuccess || buffer == NULL) {
@@ -2863,6 +3081,125 @@ static void mp_shim_copy_rows(const uint8_t *source, size_t source_stride, uint8
     for (size_t row = 0; row < rows; row += 1) {
         memcpy(destination + row * destination_stride, source + row * source_stride, row_bytes);
     }
+}
+
+uint64_t mp_shim_testing_image_bytes(const void *value) {
+    MPShimImageBudget *budget = (__bridge MPShimImageBudget *)value;
+    return budget == nil ? 0 : atomic_load_explicit(&budget->used, memory_order_acquire);
+}
+
+mp_shim_status mp_shim_testing_producer_budget(uint64_t *out_values, size_t count) {
+    if (out_values == NULL || count != 9) {
+        return MP_SHIM_INVALID_ARGUMENT;
+    }
+    MP_SHIM_BEGIN
+    @autoreleasepool {
+        MPShimImageBudget *budget = mp_shim_image_budget(64, 384);
+        __attribute__((objc_precise_lifetime)) MPShimImageLease *producer = mp_shim_image_lease(budget, 40, 3);
+        if (producer == nil) {
+            return MP_SHIM_PLATFORM_FAILURE;
+        }
+        out_values[0] = [producer growToFrameBytes:64] ? MP_SHIM_OK : MP_SHIM_BUDGET_EXHAUSTED;
+        out_values[1] = atomic_load(&budget->used);
+        __attribute__((objc_precise_lifetime)) MPShimImageLease *detached = mp_shim_image_lease(budget, 64, 1);
+        __attribute__((objc_precise_lifetime)) MPShimImageLease *replacement = mp_shim_image_lease(budget, 40, 3);
+        if (detached == nil || replacement == nil) {
+            return MP_SHIM_PLATFORM_FAILURE;
+        }
+        out_values[2] = atomic_load(&budget->used);
+        MPShimImageLease *refused = mp_shim_image_lease(budget, 40, 1);
+        out_values[3] = refused == nil ? MP_SHIM_BUDGET_EXHAUSTED : MP_SHIM_OK;
+        refused = nil;
+        producer = nil;
+        out_values[4] = atomic_load(&budget->used);
+        __attribute__((objc_precise_lifetime)) MPShimImageLease *cpu = mp_shim_image_lease(budget, 40, 1);
+        if (cpu == nil) {
+            return MP_SHIM_PLATFORM_FAILURE;
+        }
+        out_values[5] = atomic_load(&budget->used);
+        detached = nil;
+        replacement = nil;
+        out_values[6] = atomic_load(&budget->used);
+        out_values[7] = [cpu growToFrameBytes:65] ? MP_SHIM_OK : MP_SHIM_BUDGET_EXHAUSTED;
+        cpu = nil;
+        out_values[8] = atomic_load(&budget->used);
+        return MP_SHIM_OK;
+    }
+    MP_SHIM_END
+}
+
+mp_shim_status mp_shim_testing_limited_frame(
+    uint64_t max_frame, uint64_t max_retained, mp_shim_frame **out_frame, void **out_budget) {
+    if (out_frame == NULL || out_budget == NULL || max_frame == 0 || max_retained == 0) {
+        return MP_SHIM_INVALID_ARGUMENT;
+    }
+    *out_frame = NULL;
+    *out_budget = NULL;
+    MP_SHIM_BEGIN
+    @autoreleasepool {
+        MPShimImageBudget *budget = mp_shim_image_budget(max_frame, max_retained);
+        if (budget == nil) {
+            return MP_SHIM_PLATFORM_FAILURE;
+        }
+        struct mp_shim_session *session = calloc(1, sizeof(*session));
+        if (session == NULL) {
+            return MP_SHIM_PLATFORM_FAILURE;
+        }
+        MPShimPthreadInitializer initializer = {0};
+        if (!mp_shim_session_sync_init(session, &initializer)) {
+            free(session);
+            return MP_SHIM_PLATFORM_FAILURE;
+        }
+        atomic_init(&session->refs, 1u);
+        atomic_init(&session->output_added, false);
+        atomic_init(&session->started, false);
+        atomic_init(&session->closing, false);
+        atomic_init(&session->closed, false);
+        atomic_init(&session->stop_reported, false);
+        session->magic = MP_SHIM_SESSION_MAGIC;
+        session->kind = MP_SHIM_TARGET_WINDOW;
+        session->detached_budget = 2;
+        session->image_budget = CFBridgingRetain(budget);
+        mp_shim_note_owned();
+        session->close_phase = MP_SHIM_CLOSE_RELEASE;
+        CVPixelBufferRef source = NULL;
+        uint8_t pixels[40];
+        for (size_t index = 0; index < sizeof(pixels); index += 1) {
+            pixels[index] = (uint8_t)index;
+        }
+        mp_shim_status result = MP_SHIM_PLATFORM_FAILURE;
+        @try {
+            if (CVPixelBufferCreateWithBytes(kCFAllocatorDefault, 5, 2,
+                    kCVPixelFormatType_32BGRA, pixels, 20, NULL, NULL, NULL, &source)
+                    == kCVReturnSuccess && source != NULL) {
+                mp_shim_frame borrowed = {
+                    .magic = MP_SHIM_FRAME_MAGIC, .buffer = source, .session = session,
+                    .info = {
+                        .struct_size = sizeof(mp_shim_frame_info), .pixel_format = MP_SHIM_PIXEL_BGRA8,
+                        .content_width = 5, .content_height = 2, .surface_width = 5, .surface_height = 2,
+                    },
+                };
+                result = mp_shim_frame_detach(&borrowed, out_frame);
+            }
+        } @finally {
+            if (source != NULL) {
+                CVPixelBufferRelease(source);
+            }
+            mp_shim_status closed = mp_shim_session_close(session, 0);
+            if (result == MP_SHIM_OK && closed != MP_SHIM_OK) {
+                result = closed;
+            }
+            mp_shim_session_unref(session);
+        }
+        if (result == MP_SHIM_OK) {
+            *out_budget = (void *)CFBridgingRetain(budget);
+        } else if (*out_frame != NULL) {
+            mp_shim_frame_release(*out_frame);
+            *out_frame = NULL;
+        }
+        return result;
+    }
+    MP_SHIM_END
 }
 
 mp_shim_status mp_shim_frame_detach(mp_shim_frame *borrowed, mp_shim_frame **out) {
@@ -3665,6 +4002,13 @@ static uint64_t mp_shim_seconds_to_nanos(double seconds) {
     if (image == NULL || CVPixelBufferGetPixelFormatType(image) != kCVPixelFormatType_32BGRA) {
         return MP_SHIM_OK;
     }
+    mp_shim_status storage = mp_shim_producer_observe(session, image);
+    if (storage == MP_SHIM_FRAME_INCOMPLETE) {
+        return MP_SHIM_OK;
+    }
+    if (storage != MP_SHIM_OK) {
+        return storage;
+    }
 
     CGRect content = CGRectNull;
     NSDictionary *rect = attachment[(__bridge NSString *)framework->key_content_rect];
@@ -4207,12 +4551,30 @@ static mp_shim_status mp_shim_session_open_configured(
     } else if (depth > MP_SHIM_MAX_QUEUE_DEPTH) {
         depth = MP_SHIM_MAX_QUEUE_DEPTH;
     }
+    MPShimImageBudget *budget = nil;
+    MPShimImageLease *producer = nil;
+    NSMutableArray *producer_leases = nil;
+    if (request->max_frame_bytes != 0) {
+        budget = mp_shim_image_budget(request->max_frame_bytes, request->max_retained_bytes);
+        producer = mp_shim_image_lease(
+            budget, (uint64_t)request->pixel_width * request->pixel_height * 4u, depth);
+        if (producer == nil) {
+            return MP_SHIM_BUDGET_EXHAUSTED;
+        }
+        producer_leases = [[NSMutableArray alloc] initWithObjects:producer, nil];
+        if (producer_leases == nil) {
+            return MP_SHIM_PLATFORM_FAILURE;
+        }
+    }
     configuration.width = request->pixel_width;
     configuration.height = request->pixel_height;
     configuration.pixelFormat = kCVPixelFormatType_32BGRA;
     configuration.showsCursor = request->shows_cursor;
     configuration.queueDepth = (NSInteger)depth;
     configuration.scalesToFit = NO;
+    if (request->require_window) {
+        configuration.ignoreShadowsSingleWindow = YES;
+    }
     mp_shim_status pacing = mp_shim_configure_capture_pacing(
         configuration, request->pacing_mode, request->pacing_interval_nanos, &report);
     if (pacing != MP_SHIM_OK) {
@@ -4360,6 +4722,15 @@ static mp_shim_status mp_shim_session_open_configured(
     mp_shim_note_owned();
     session->queue = CFBridgingRetain(queue);
     mp_shim_note_owned();
+    session->image_budget = CFBridgingRetain(budget);
+    session->producer_leases = CFBridgingRetain(producer_leases);
+    session->producer_depth = depth;
+    if (session->image_budget != NULL) {
+        mp_shim_note_owned();
+    }
+    if (session->producer_leases != NULL) {
+        mp_shim_note_owned();
+    }
 #if defined(MP_SHIM_PRIVATE_FIXTURE)
     if (session->sck_diagnostic_tier != 0) {
         session->sck_live_counted = true;
@@ -4407,6 +4778,10 @@ mp_shim_status mp_shim_session_open(const mp_shim_open_request *request, mp_shim
         (request->kind == MP_SHIM_TARGET_WINDOW && request->owner_process <= 0)) {
         return MP_SHIM_INVALID_ARGUMENT;
     }
+    if (request->require_window > 1 ||
+        ((request->max_frame_bytes == 0) != (request->max_retained_bytes == 0))) {
+        return MP_SHIM_INVALID_ARGUMENT;
+    }
 
     MP_SHIM_BEGIN
     const MPShimFramework *framework = mp_shim_capture_framework();
@@ -4423,9 +4798,26 @@ mp_shim_status mp_shim_session_open(const mp_shim_open_request *request, mp_shim
      * them. Ownership moves into the session struct only after the last failure
      * point, which is what makes the failure path leak nothing.
      */
-    /* The originating inventory already constructed this exact filter. No fresh
-     * wrapper, numeric identifier, or process lookup is consulted here. */
+    /* Always consume the originating filter. Required-window opens additionally
+     * validate that same retained incarnation; no fresh filter is constructed. */
     id<MPShimContentFilterInit> filter = (__bridge id)request->target->filter;
+    if (request->require_window) {
+        mp_shim_target_info current = {.struct_size = sizeof(current)};
+        mp_shim_status validated = mp_shim_target_window_info(
+            request->target, request->validation_timeout_nanos, true, &current);
+        if (validated != MP_SHIM_OK) {
+            return validated;
+        }
+        const mp_shim_target_info *required = &request->required_window;
+        if (current.pixel_width != required->pixel_width ||
+            current.pixel_height != required->pixel_height ||
+            current.logical_x != required->logical_x || current.logical_y != required->logical_y ||
+            current.logical_width != required->logical_width ||
+            current.logical_height != required->logical_height ||
+            current.backing_scale != required->backing_scale) {
+            return MP_SHIM_GEOMETRY_CHANGED;
+        }
+    }
 
     id<MPShimStreamConfiguration> configuration = [[framework->stream_configuration alloc] init];
     if (configuration == nil) {
@@ -4575,8 +4967,34 @@ mp_shim_status mp_shim_session_reconfigure(mp_shim_session *session, uint32_t pi
     if (ready_status != MP_SHIM_OK) {
         return ready_status;
     }
+    MPShimImageLease *producer = nil;
+    NSArray *producer_hold = nil;
+    if (session->image_budget != NULL) {
+        producer = mp_shim_image_lease(
+            (__bridge MPShimImageBudget *)session->image_budget,
+            (uint64_t)pixel_width * pixel_height * 4u, session->producer_depth);
+        if (producer == nil) {
+            return MP_SHIM_BUDGET_EXHAUSTED;
+        }
+        pthread_mutex_lock(&session->native_mutex);
+        @try {
+            if (atomic_load(&session->closing) || session->producer_leases == NULL) {
+                return MP_SHIM_CLOSED;
+            }
+            NSMutableArray *leases = (__bridge NSMutableArray *)session->producer_leases;
+            [leases addObject:producer];
+            producer_hold = [leases copy];
+        } @finally {
+            pthread_mutex_unlock(&session->native_mutex);
+        }
+    }
     [stream updateConfiguration:configuration
              completionHandler:^(NSError *error) {
+               /* A submitted update can outlive its bounded waiter and close.
+                * Keep every possibly overlapping producer allocation charged
+                * until the stream and this completion release ownership. */
+               (void)producer_hold;
+               (void)stream;
                failure = error;
                dispatch_semaphore_signal(ready);
              }];
@@ -4811,7 +5229,7 @@ mp_shim_status mp_shim_session_close(mp_shim_session *session, uint64_t timeout_
                 mp_shim_sck_native_mask(session), memory_order_relaxed);
         }
 #endif
-        CFTypeRef released[5];
+        CFTypeRef released[6];
         pthread_mutex_lock(&session->native_mutex);
         released[0] = session->stream;
         released[1] = session->output;
@@ -4819,12 +5237,14 @@ mp_shim_status mp_shim_session_close(mp_shim_session *session, uint64_t timeout_
         released[3] = session->filter;
         released[4] = session->queue;
         session->stream = NULL;
+        released[5] = session->producer_leases;
         session->output = NULL;
         session->configuration = NULL;
         session->filter = NULL;
         session->queue = NULL;
+        session->producer_leases = NULL;
         pthread_mutex_unlock(&session->native_mutex);
-        for (size_t slot = 0; slot < 5; slot += 1) {
+        for (size_t slot = 0; slot < 6; slot += 1) {
             if (released[slot] == NULL) {
                 continue;
             }
@@ -4972,6 +5392,7 @@ mp_shim_status mp_shim_session_live_objects(const mp_shim_session *session, uint
 @property(nonatomic, assign) NSInteger queueDepth;
 @property(nonatomic, assign) BOOL scalesToFit;
 @property(nonatomic, assign) CMTime minimumFrameInterval;
+@property(nonatomic, assign) BOOL ignoreShadowsSingleWindow;
 @end
 
 @implementation MPShimPacingTestConfiguration
@@ -7240,6 +7661,117 @@ static mp_shim_status mp_shim_window_authority_from_windows(
     }
     *out_bounds = current.frame;
     return MP_SHIM_OK;
+}
+
+static mp_shim_status mp_shim_window_geometry_info(
+    const mp_shim_target *target, CGRect current, CGRect rect, double scale,
+    mp_shim_target_info *out_info) {
+    /* A stale filter description cannot substitute for current window bounds. */
+    if (!CGRectEqualToRect(rect, current) || !isfinite(scale) || scale <= 0.0 ||
+        !isfinite(rect.origin.x) || !isfinite(rect.origin.y) ||
+        fabs(rect.origin.x) > MP_SHIM_MAX_DESKTOP_COORDINATE ||
+        fabs(rect.origin.y) > MP_SHIM_MAX_DESKTOP_COORDINATE) {
+        return MP_SHIM_GEOMETRY_CHANGED;
+    }
+    uint32_t width = mp_shim_pixels_from_points(rect.size.width, scale);
+    uint32_t height = mp_shim_pixels_from_points(rect.size.height, scale);
+    if (width == 0 || height == 0 || !mp_shim_surface_within_limit(width, height)) {
+        return MP_SHIM_GEOMETRY_CHANGED;
+    }
+    *out_info = (mp_shim_target_info){
+        .struct_size = sizeof(*out_info), .kind = MP_SHIM_TARGET_WINDOW,
+        .native_id = target->native_id, .owner_process = target->owner_process,
+        .pixel_width = width, .pixel_height = height,
+        .logical_x = rect.origin.x, .logical_y = rect.origin.y,
+        .logical_width = (double)width / scale, .logical_height = (double)height / scale,
+        .backing_scale = scale,
+    };
+    return MP_SHIM_OK;
+}
+
+mp_shim_status mp_shim_testing_window_geometry(uint32_t scenario, mp_shim_target_info *out_info) {
+    if (scenario > 3 || out_info == NULL || out_info->struct_size < sizeof(*out_info)) {
+        return MP_SHIM_INVALID_ARGUMENT;
+    }
+    mp_shim_target target = {.native_id = 7, .owner_process = 501};
+    CGRect rect = CGRectMake(-64.0, -48.0, 64.25, 48.0);
+    CGRect current = rect;
+    double scale = 2.0;
+    if (scenario == 1) {
+        current.origin.x += 1.0;
+    } else if (scenario == 2) {
+        scale = NAN;
+    } else if (scenario == 3) {
+        rect.size.width = MP_SHIM_MAX_PIXEL_EXTENT;
+        current = rect;
+    }
+    return mp_shim_window_geometry_info(&target, current, rect, scale, out_info);
+}
+
+/* Retained filter geometry is read from SCK itself, not inferred from display
+ * overlap. A current SCWindow comparison validates incarnation and eligibility;
+ * the metadata never creates another filter or capture authority. */
+mp_shim_status mp_shim_target_window_info(const mp_shim_target *target,
+                                         uint64_t timeout_nanos, bool revalidate,
+                                         mp_shim_target_info *out_info) {
+    if (target == NULL || target->magic != MP_SHIM_TARGET_MAGIC ||
+        out_info == NULL || out_info->struct_size < sizeof(*out_info)) {
+        return MP_SHIM_INVALID_ARGUMENT;
+    }
+    if (target->kind != MP_SHIM_TARGET_WINDOW) {
+        return MP_SHIM_UNSUPPORTED;
+    }
+    if (revalidate && timeout_nanos == 0) {
+        return MP_SHIM_TIMED_OUT;
+    }
+    MP_SHIM_BEGIN
+    if (!mp_shim_screen_capture_preflight()) {
+        return MP_SHIM_PERMISSION_DENIED;
+    }
+    const MPShimFramework *framework = mp_shim_capture_framework();
+    if (framework == NULL ||
+        ![framework->shareable_content respondsToSelector:@selector(infoForFilter:)]) {
+        return MP_SHIM_UNSUPPORTED;
+    }
+    mp_shim_status status = mp_shim_process_lifetime_status(target);
+    if (status != MP_SHIM_OK) {
+        return status;
+    }
+    id<MPShimContentFilterInit> filter = (__bridge id)target->filter;
+    NSArray *windows = filter.includedWindows;
+    id<MPShimShareableContent> content = nil;
+    if (revalidate) {
+        content = mp_shim_shareable_content(framework, timeout_nanos, &status);
+        if (content == nil) {
+            return status;
+        }
+        windows = content.windows;
+    }
+    CGRect current = CGRectNull;
+    status = mp_shim_window_authority_from_windows(
+        target, filter.includedWindows, windows, MP_SHIM_TARGET_LOST, &current, NULL);
+    if (status != MP_SHIM_OK) {
+        return status;
+    }
+    id<MPShimShareableContentInfo> geometry =
+        [(id<MPShimShareableContentClass>)framework->shareable_content infoForFilter:filter];
+    if (geometry == nil) {
+        return MP_SHIM_PLATFORM_FAILURE;
+    }
+    CGRect rect = geometry.contentRect;
+    double scale = geometry.pointPixelScale;
+    mp_shim_target_info reported;
+    status = mp_shim_window_geometry_info(target, current, rect, scale, &reported);
+    if (status != MP_SHIM_OK) {
+        return status;
+    }
+    status = mp_shim_process_lifetime_status(target);
+    if (status != MP_SHIM_OK) {
+        return status;
+    }
+    *out_info = reported;
+    return MP_SHIM_OK;
+    MP_SHIM_END
 }
 
 static mp_shim_status mp_shim_input_window_authority(

@@ -195,14 +195,24 @@ fn map_region(
             },
         }
     } else {
-        let (descriptor, bytes) = copy_region(source, pixels.bytes(), region, format)?;
+        if source.format().bytes_per_pixel() != format.bytes_per_pixel() {
+            return Err(CaptureFault::UnsupportedFormat.into());
+        }
+        let descriptor =
+            FrameDescriptor::packed(PixelExtent::new(region.width(), region.height()), format)?;
+        let reservation = frame.storage().reserve_cpu_copy(descriptor.byte_len())?;
+        let bytes = copy_region(source, pixels.bytes(), region, descriptor)?;
         attempt.checkpoint()?;
+        let pixels = match reservation {
+            Some(reservation) => CpuPixels::with_retainer(bytes, reservation),
+            None => CpuPixels::new(bytes),
+        };
         CpuMapping {
             stamp: frame.stamp(),
             transform: *frame.transform(),
             region,
             descriptor,
-            storage: MappingStorage::Owned(Arc::new(CpuPixels::new(bytes))),
+            storage: MappingStorage::Owned(Arc::new(pixels)),
         }
     };
 
@@ -217,16 +227,12 @@ fn copy_region(
     source: FrameDescriptor,
     pixels: &[u8],
     region: PixelRect,
-    format: PixelFormat,
-) -> Result<(FrameDescriptor, Box<[u8]>), CaptureFault> {
+    descriptor: FrameDescriptor,
+) -> Result<Box<[u8]>, CaptureFault> {
+    let format = descriptor.format();
     let bytes_per_pixel = usize::try_from(format.bytes_per_pixel())
         .map_err(|_| CaptureFault::InconsistentDescriptor)?;
-    if source.format().bytes_per_pixel() != format.bytes_per_pixel() {
-        return Err(CaptureFault::UnsupportedFormat);
-    }
-
-    let extent = PixelExtent::new(region.width(), region.height());
-    let descriptor = FrameDescriptor::packed(extent, format)?;
+    let extent = descriptor.extent();
     let left = usize::try_from(region.left()).map_err(|_| CaptureFault::RegionOutsideFrame)?;
     let top = usize::try_from(region.top()).map_err(|_| CaptureFault::RegionOutsideFrame)?;
     let row_bytes = descriptor.row_bytes();
@@ -269,7 +275,7 @@ fn copy_region(
         swap_red_and_blue(&mut output);
     }
 
-    Ok((descriptor, output.into_boxed_slice()))
+    Ok(output.into_boxed_slice())
 }
 
 /// Exchanges the first and third byte of every four-byte pixel.

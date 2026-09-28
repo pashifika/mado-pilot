@@ -90,12 +90,15 @@ impl CaptureProvider for Double {
     fn open(
         &self,
         target: TargetId,
-        _request: &OpenRequest,
+        request: &OpenRequest,
         _operation: &OperationContext,
     ) -> Result<Arc<dyn CaptureSession>> {
         target.check_engine(self.issuer.engine())?;
         if target != self.target {
             return Err(CaptureFault::UnknownTarget.into());
+        }
+        if request.window_geometry().is_some() || request.resource_limits().is_some() {
+            return Err(CaptureFault::UnsupportedOption.into());
         }
 
         let stream = self.issuer.issue_stream()?;

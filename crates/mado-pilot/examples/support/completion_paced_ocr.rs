@@ -103,6 +103,9 @@ impl CaptureProvider for Source {
         {
             return Err(mado_pilot::CaptureFault::UnsupportedOption.into());
         }
+        if request.window_geometry().is_some() || request.resource_limits().is_some() {
+            return Err(mado_pilot::CaptureFault::UnsupportedOption.into());
+        }
         let pacing = CapturePacingReport::unsupported(
             request
                 .capture_pacing()

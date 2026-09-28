@@ -45,6 +45,40 @@ fn options(template: &PreparedTemplate) -> MatchOptions {
 }
 
 #[test]
+fn native_description_preserves_authority_and_interruption_precedence() {
+    let harness = Harness::silent();
+    let foreign = Harness::silent();
+    let operation = OperationContext::new();
+    assert_eq!(
+        harness
+            .engine
+            .describe_window(foreign.capture.target(), &operation)
+            .expect_err("another engine's target is refused")
+            .status(),
+        Status::InvalidArgument,
+    );
+    assert_eq!(
+        harness
+            .engine
+            .describe_window(harness.capture.target(), &operation)
+            .expect_err("controlled capture cannot describe a native window")
+            .status(),
+        Status::Unsupported,
+    );
+    let cancellation = CancellationToken::new();
+    cancellation.cancel();
+    let cancelled = OperationContext::new().with_cancellation(cancellation);
+    assert_eq!(
+        harness
+            .engine
+            .describe_window(foreign.capture.target(), &cancelled)
+            .expect_err("interruption precedes target inspection")
+            .status(),
+        Status::Cancelled,
+    );
+}
+
+#[test]
 fn an_engine_reports_the_backend_that_will_produce_every_score() {
     let harness = Harness::silent();
 

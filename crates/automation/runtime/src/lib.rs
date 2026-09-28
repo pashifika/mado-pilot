@@ -180,10 +180,11 @@ pub use mado_pilot_assets::{
 };
 pub use mado_pilot_capture::{
     CaptureFault, CapturePacingOutcome, CapturePacingReport, CapturePacingRequest, CaptureProvider,
-    Continuity, CoordinateSupport, CpuMapping, Frame, FrameDescriptor, FrameRequest,
-    FrameSelection, FrameView, OpenRequest, OverflowPolicy, PacingUnsupportedReason, PixelFormat,
-    QueuePolicy, ResolvedCapturePacing, RetainedStoragePolicy, SessionDescription,
-    TargetDescription, TargetProcessIdentity,
+    CaptureResourceLimits, Continuity, CoordinateSupport, CpuMapping, Frame, FrameDescriptor,
+    FrameRequest, FrameSelection, FrameView, NativeDesktopUnit, NativeWindowDescription,
+    NativeWindowId, OpenRequest, OverflowPolicy, PacingUnsupportedReason, PixelFormat, QueuePolicy,
+    ResolvedCapturePacing, RetainedStoragePolicy, SessionDescription, TargetDescription,
+    TargetProcessIdentity, WindowCaptureArea, WindowGeometry,
 };
 pub use mado_pilot_core::{
     ActivityTag, CancellationToken, CapabilitySupport, ClipPolicy, Clock, CoordinateSpace,

@@ -26,9 +26,9 @@ use std::thread::{self, JoinHandle};
 use std::time::{Duration, Instant};
 
 use mado_pilot_capture::{
-    CaptureFault, CaptureSession, Continuity, CoordinateSupport, Frame, FrameRequest, Lifecycle,
-    OverflowPolicy, PixelFormat, QueuePolicy, ResolvedCapturePacing, SessionDescription,
-    StoragePublication, StreamState,
+    CaptureFault, CaptureResourceLimits, CaptureSession, Continuity, CoordinateSupport, Frame,
+    FrameRequest, Lifecycle, OverflowPolicy, PixelFormat, QueuePolicy, ResolvedCapturePacing,
+    SessionDescription, StoragePublication, StreamState, WindowCaptureArea, WindowGeometry,
 };
 use mado_pilot_core::{
     Clock, MonotonicInstant, Operation, OperationContext, PixelExtent, Result, StreamId,
@@ -195,6 +195,8 @@ pub(crate) struct SessionTarget {
     /// later input request can resolve a coordinate against the frame it came
     /// from rather than against whatever the target looks like now.
     geometry: Arc<GeometryLedger>,
+    required_window: Option<WindowGeometry>,
+    resource_limits: Option<CaptureResourceLimits>,
 }
 
 impl SessionTarget {
@@ -215,7 +217,19 @@ impl SessionTarget {
             selection,
             metadata,
             geometry,
+            required_window: None,
+            resource_limits: None,
         }
+    }
+
+    pub(crate) fn with_requirements(
+        mut self,
+        geometry: Option<WindowGeometry>,
+        limits: Option<CaptureResourceLimits>,
+    ) -> Self {
+        self.required_window = geometry;
+        self.resource_limits = limits;
+        self
     }
 }
 
@@ -255,6 +269,8 @@ impl Drop for GeometryRegistration {
 
 struct SessionCore {
     target_kind: TargetKind,
+    required_window: Option<WindowGeometry>,
+    resource_limited: bool,
     geometry: GeometryRegistration,
     state: StreamState,
     session: OnceLock<shim::Session>,
@@ -628,13 +644,26 @@ impl NativeSession {
             key,
             fingerprint,
             selection,
-            metadata,
+            mut metadata,
             geometry,
+            required_window,
+            resource_limits,
         } = selected;
+        if let Some(required) = required_window {
+            if key.kind() != TargetKind::Window {
+                return Err(CaptureFault::UnsupportedOption.into());
+            }
+            // Native open revalidates the retained selection before allocating
+            // image storage. Do not perform a second inventory query here.
+            metadata.extent = required.extent();
+            metadata.placement = required.placement();
+        }
         let anchor = clock_calibration().ok_or(CaptureFault::SourceInvalid)?;
         let (reconfigure, reconfigure_receiver) = Reconfigure::new();
         let core = Arc::new(SessionCore {
             target_kind: key.kind(),
+            required_window,
+            resource_limited: resource_limits.is_some(),
             geometry: GeometryRegistration::new(geometry, stream),
             state: StreamState::with_target_extent(stream),
             session: OnceLock::new(),
@@ -665,6 +694,9 @@ impl NativeSession {
             testing_stop_delay,
             testing_raise_sites,
             capture_pacing: pacing,
+            required_window,
+            resource_limits,
+            validation_wait: native_wait(operation),
         };
         // Every exit from here to the `NativeSession` below drops `pending`, which
         // closes whatever was opened and reclaims the registration.
@@ -903,6 +935,13 @@ impl SessionCore {
             thread::sleep(DEFAULT_NATIVE_WAIT.saturating_add(Duration::from_millis(250)));
             TESTING_DELAYED_CALLBACK_ACTIVE.store(false, Ordering::Release);
         }
+        if let Err(fault) = validate_required_window(self.required_window, info) {
+            return if fault == CaptureFault::WindowGeometryChanged {
+                ShimStatus::GeometryChanged
+            } else {
+                ShimStatus::FrameIncomplete
+            };
+        }
         if info.screen_rect().is_none() {
             // A complete image without the required same-frame placement
             // is a rejected publication, not a silent capability downgrade.
@@ -913,6 +952,9 @@ impl SessionCore {
             Ok(detached) => detached,
             // Finite pressure: every unit of the budget is retained by a caller.
             // The candidate is dropped rather than blocking the producer.
+            Err(ShimStatus::BudgetExhausted) if self.resource_limited => {
+                return ShimStatus::BudgetExhausted;
+            }
             Err(ShimStatus::BudgetExhausted | ShimStatus::FrameIncomplete) => {
                 let _drop = self.state.try_record_drop();
                 return ShimStatus::Ok;
@@ -956,6 +998,7 @@ impl SessionCore {
         detached: DetachedFrame,
         info: &FrameInfo,
     ) -> std::result::Result<(), CaptureFault> {
+        validate_required_window(self.required_window, info)?;
         let mut transition = self
             .transition
             .lock()
@@ -984,8 +1027,11 @@ impl SessionCore {
         // The hint is prospective producer capacity derived and bounded beside this
         // sample's metadata. It never changes the placement or extent published for
         // the current pixels, and a later inventory never participates.
-        if let Some(wanted) = surface_request(self.target_kind, info) {
-            // The worker performs the native call off this queue.
+        if self.required_window.is_none()
+            && let Some(wanted) = surface_request(self.target_kind, info)
+        {
+            // A required geometry fixes source resolution; it never opts into
+            // an automatic producer resize. Other sessions reconfigure off queue.
             self.request_reconfigure(wanted);
         }
         if !extent_ready_for_publication(&mut transition, extent) {
@@ -1076,6 +1122,21 @@ impl SessionCore {
     }
 }
 
+fn validate_required_window(
+    required: Option<WindowGeometry>,
+    info: &FrameInfo,
+) -> std::result::Result<(), CaptureFault> {
+    let Some(required) = required else {
+        return Ok(());
+    };
+    let placement = frame_placement(info).map_err(|_| CaptureFault::WindowGeometryChanged)?;
+    let extent = info.extent().ok_or(CaptureFault::WindowGeometryChanged)?;
+    if WindowGeometry::new(WindowCaptureArea::MacosWindow, placement, extent) != required {
+        return Err(CaptureFault::WindowGeometryChanged);
+    }
+    Ok(())
+}
+
 fn spawn_reconfigure_worker(
     core: &Arc<SessionCore>,
     reconfigure: Arc<Reconfigure>,
@@ -1131,10 +1192,14 @@ fn run_reconfigure_worker(
         let Some(core) = core.upgrade() else {
             return;
         };
-        // The native call happens here rather than in the producer callback, and
-        // its own failure is not terminal: the session keeps publishing the
-        // content that fits the surface it already has.
-        let _reconfigured = core.session().reconfigure(extent, MAX_NATIVE_WAIT);
+        // Byte ceilings remain mandatory on resize. A refused replacement
+        // terminalizes instead of silently ignoring the caller's resource option.
+        if let Err(ShimStatus::BudgetExhausted) =
+            core.session().reconfigure(extent, MAX_NATIVE_WAIT)
+        {
+            core.fail_native(CaptureFault::StorageBudgetExhausted);
+            return;
+        }
         // Collapse any redundant queued wake token. A request that arrived while
         // the native call ran remains in the atomic slot and one token is enough.
         match receiver.try_recv() {
@@ -1375,6 +1440,38 @@ mod tests {
     }
 
     #[test]
+    fn required_window_rejects_movement_resize_scale_and_missing_publication_geometry() {
+        use mado_pilot_capture::{WindowCaptureArea, WindowGeometry};
+        let extent = PixelExtent::new(128, 96);
+        let selected = FrameInfo::testing_screen_rect(extent, 2.0, (-64.0, -48.0), (64.0, 48.0));
+        let required = WindowGeometry::new(
+            WindowCaptureArea::MacosWindow,
+            crate::discovery::frame_placement(&selected).expect("signed geometry"),
+            extent,
+        );
+        assert_eq!(
+            super::validate_required_window(Some(required), &selected),
+            Ok(())
+        );
+        for changed in [
+            FrameInfo::testing_screen_rect(extent, 2.0, (-63.0, -48.0), (64.0, 48.0)),
+            FrameInfo::testing_screen_rect(
+                PixelExtent::new(130, 96),
+                2.0,
+                (-64.0, -48.0),
+                (65.0, 48.0),
+            ),
+            FrameInfo::testing_screen_rect(extent, 1.0, (-64.0, -48.0), (128.0, 96.0)),
+            FrameInfo::empty(),
+        ] {
+            assert_eq!(
+                super::validate_required_window(Some(required), &changed),
+                Err(CaptureFault::WindowGeometryChanged),
+            );
+        }
+    }
+
+    #[test]
     fn terminal_discard_outranks_a_staged_commit_and_releases_the_value() {
         struct DropProbe(Arc<AtomicU64>);
 
@@ -1471,6 +1568,8 @@ mod tests {
         let stream = issuer.issue_stream().expect("stream identity");
         Arc::new(SessionCore {
             target_kind: TargetKind::Display,
+            required_window: None,
+            resource_limited: false,
             geometry: GeometryRegistration::new(Arc::new(GeometryLedger::default()), stream),
             state: StreamState::with_target_extent(stream),
             session: OnceLock::new(),

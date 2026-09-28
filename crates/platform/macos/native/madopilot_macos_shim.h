@@ -30,7 +30,7 @@ extern "C" {
 #endif
 
 /* The version of this internal surface. Rust asserts it at load. */
-#define MP_SHIM_ABI_VERSION 24u
+#define MP_SHIM_ABI_VERSION 25u
 
 /* The largest extent, budget, and default wait the shim will accept or apply. */
 #define MP_SHIM_MAX_PIXEL_EXTENT 32768u
@@ -302,6 +302,12 @@ typedef struct mp_shim_open_request {
     /* Appended in ABI 22. Explicit intervals are positive signed nanoseconds. */
     uint32_t pacing_mode;
     int64_t pacing_interval_nanos;
+    /* ABI 25: zero limits preserve the original production allocation policy. */
+    uint64_t max_frame_bytes;
+    uint64_t max_retained_bytes;
+    uint64_t validation_timeout_nanos;
+    uint32_t require_window;
+    mp_shim_target_info required_window;
 } mp_shim_open_request;
 
 /* Valid only after successful configuration and session creation, before start. */
@@ -310,6 +316,26 @@ typedef struct mp_shim_open_report {
     uint32_t pacing_outcome;
     int64_t configured_interval_nanos;
 } mp_shim_open_report;
+
+/* Reads only the original retained selection; never opens or replaces a filter.
+ * Revalidation compares one bounded current SCWindow observation with that
+ * retained object. false is reserved for the originating inventory snapshot. */
+mp_shim_status mp_shim_target_window_info(const mp_shim_target *target,
+                                         uint64_t timeout_nanos, bool revalidate,
+                                         mp_shim_target_info *out_info);
+
+/* Allocation-only retainers. A successful NULL lease denotes unchanged defaults.
+ * The lease owns its byte charge independently of the frame and closed session. */
+mp_shim_status mp_shim_frame_reserve_cpu(const mp_shim_frame *frame, uint64_t bytes,
+                                        void **out_lease);
+void mp_shim_image_lease_release(void *lease);
+
+/* Synthetic owned pixels only: no discovery, stream, input or permission probe. */
+mp_shim_status mp_shim_testing_limited_frame(
+    uint64_t max_frame, uint64_t max_retained, mp_shim_frame **out_frame, void **out_budget);
+uint64_t mp_shim_testing_image_bytes(const void *budget);
+mp_shim_status mp_shim_testing_producer_budget(uint64_t *out_values, size_t count);
+mp_shim_status mp_shim_testing_window_geometry(uint32_t scenario, mp_shim_target_info *out_info);
 
 /* Returns MP_SHIM_ABI_VERSION as the linked shim was compiled with it. */
 uint32_t mp_shim_abi_version(void);
@@ -337,8 +363,8 @@ mp_shim_status mp_shim_process_struct_offsets(
     uint32_t *out_request_event_source, uint32_t *out_request_timeout_nanos,
     uint32_t *out_report_target_match_count, uint32_t *out_report_invoked_native_units);
 
-/* Nine offsets: retained target, callback context, three callbacks, pacing mode,
- * interval, and the open report's outcome and configured interval. */
+/* Fourteen offsets: retained target, callback context, three callbacks, pacing
+ * mode/interval, report outcome/interval, and the five ABI 25 option fields. */
 mp_shim_status mp_shim_open_struct_offsets(uint32_t *out_offsets, size_t count);
 
 /* Production configuration/lifecycle with local objects, never native capture. */

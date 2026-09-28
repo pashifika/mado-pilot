@@ -23,7 +23,8 @@
 //! reconciles them, which is why there is no flip to find in this module.
 
 use mado_pilot_capture::{
-    CaptureFault, CoordinateSupport, PixelFormat, TargetDescription, TargetProcessIdentity,
+    CaptureFault, CoordinateSupport, NativeWindowDescription, PixelFormat, TargetDescription,
+    TargetProcessIdentity,
 };
 use mado_pilot_core::{
     CapabilitySupport, GeometryFault, PermissionKind, PermissionState, PixelExtent, Result, Scale,
@@ -34,11 +35,20 @@ use crate::input::input_capability;
 use crate::shim::{self, FrameInfo, Inventory, KIND_DISPLAY, KIND_WINDOW, ShimStatus, TargetToken};
 
 /// The native descriptive key used for ordering and request validation.
-/// It is never exposed through a public contract or used to re-resolve a filter.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, PartialOrd, Ord)]
+/// It never re-resolves a filter or grants authority.
+#[derive(Clone, Copy, PartialEq, Eq, Hash, PartialOrd, Ord)]
 pub(crate) enum NativeKey {
     Window(u32),
     Display(u32),
+}
+
+impl std::fmt::Debug for NativeKey {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        formatter.write_str(match self {
+            Self::Window(_) => "Window",
+            Self::Display(_) => "Display",
+        })
+    }
 }
 
 impl NativeKey {
@@ -108,7 +118,7 @@ impl Fingerprint {
 }
 
 /// The mutable metadata one discovery pass observed for a target.
-#[derive(Debug, Clone)]
+#[derive(Clone)]
 pub(crate) struct TargetMetadata {
     pub(crate) name: String,
     pub(crate) extent: PixelExtent,
@@ -117,6 +127,17 @@ pub(crate) struct TargetMetadata {
     pub(crate) process_directed: bool,
     /// Verified once against `Candidate::target`; clones share immutable path storage.
     pub(crate) process_identity: Option<TargetProcessIdentity>,
+    pub(crate) window: Option<NativeWindowDescription>,
+}
+
+impl std::fmt::Debug for TargetMetadata {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        formatter
+            .debug_struct("TargetMetadata")
+            .field("extent", &self.extent)
+            .field("window", &self.window)
+            .finish_non_exhaustive()
+    }
 }
 
 impl TargetMetadata {
@@ -146,8 +167,12 @@ impl TargetMetadata {
             )
             .with_capture_permission(PermissionKind::ScreenCapture),
         );
-        match &self.process_identity {
+        let description = match &self.process_identity {
             Some(identity) => description.with_process_identity(identity.clone()),
+            None => description,
+        };
+        match self.window {
+            Some(window) => description.with_window(window),
             None => description,
         }
     }
@@ -203,6 +228,13 @@ pub(crate) fn inventory(wait: std::time::Duration) -> Result<Vec<Candidate>> {
             NativeKey::Window(_) => target.process_identity().ok(),
             NativeKey::Display(_) => None,
         };
+        let window = match key {
+            NativeKey::Window(_) => target.snapshot_window_description().ok(),
+            NativeKey::Display(_) => None,
+        };
+        let (extent, placement) = window.map_or((extent, placement), |window| {
+            (window.geometry().extent(), window.geometry().placement())
+        });
         candidates.push(Candidate {
             key,
             fingerprint: fingerprint(key, &info, extent),
@@ -213,6 +245,7 @@ pub(crate) fn inventory(wait: std::time::Duration) -> Result<Vec<Candidate>> {
                 placement,
                 process_directed: info.process_directed() && process_post_available,
                 process_identity,
+                window,
             },
         });
     }
@@ -317,6 +350,7 @@ mod tests {
                 .expect("a doubled backing scale covers the frame"),
             process_directed: true,
             process_identity: None,
+            window: None,
         }
     }
 

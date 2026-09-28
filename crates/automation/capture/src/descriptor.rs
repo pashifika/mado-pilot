@@ -12,6 +12,7 @@ use mado_pilot_core::{
 
 use crate::fault::CaptureFault;
 use crate::pacing::CapturePacingReport;
+use crate::window::NativeWindowDescription;
 
 /// A CPU pixel layout MadoPilot can read and produce.
 ///
@@ -361,6 +362,7 @@ pub struct TargetDescription {
     coordinates: CoordinateSupport,
     capability: TargetCapability,
     process_identity: Option<TargetProcessIdentity>,
+    window: Option<NativeWindowDescription>,
 }
 
 impl TargetDescription {
@@ -381,6 +383,7 @@ impl TargetDescription {
             coordinates,
             capability: TargetCapability::unclassified(),
             process_identity: None,
+            window: None,
         }
     }
 
@@ -405,6 +408,19 @@ impl TargetDescription {
     #[must_use]
     pub fn process_identity(&self) -> Option<&TargetProcessIdentity> {
         self.process_identity.as_ref()
+    }
+
+    /// Attaches native window metadata without granting or replacing target authority.
+    #[must_use]
+    pub const fn with_window(mut self, window: NativeWindowDescription) -> Self {
+        self.window = Some(window);
+        self
+    }
+
+    /// Returns correspondence for this provider's retained native window, when available.
+    #[must_use]
+    pub const fn window(&self) -> Option<NativeWindowDescription> {
+        self.window
     }
 
     /// Returns the target identity.

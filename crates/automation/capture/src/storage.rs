@@ -3,8 +3,7 @@
 //! A Phase 1 frame was always CPU bytes. A Windows frame is a GPU texture and a
 //! macOS frame is a native buffer, and neither may appear in a platform-neutral
 //! package, so a frame retains [`FrameStorage`] instead: an Adapter-facing
-//! interface with exactly two questions on it, whether the pixels are already
-//! CPU-readable and how to obtain them if they are not.
+//! interface for CPU sharing, conversion and copy reservations.
 //!
 //! # What this seam is not
 //!
@@ -99,11 +98,8 @@ impl fmt::Debug for CpuPixels {
 
 /// The immutable storage behind one published frame.
 ///
-/// Implemented by capture Adapters. The two operations are the whole seam: one
-/// asks whether the pixels can be shared without conversion, the other performs
-/// the conversion under the caller's operation context. Everything else about the
-/// storage — a texture, a surface, a mapped buffer, a device, a lease — stays in
-/// the Adapter that owns it.
+/// Implemented by capture Adapters. Native layout, devices and allocation
+/// accounting stay in the Adapter; common mapping reserves each additional copy.
 ///
 /// # Contract
 ///
@@ -139,6 +135,18 @@ pub trait FrameStorage: fmt::Debug + Send + Sync {
     /// conversion fails. A conversion that finishes after it is no longer allowed
     /// to commit releases its resources and reports the interruption.
     fn read_cpu(&self, operation: &OperationContext) -> Result<Arc<CpuPixels>>;
+
+    /// Reserves an additional CPU mapping before allocation.
+    ///
+    /// Adapters with byte ceilings must charge this to the same retained budget.
+    /// The returned owner is held until the copied pixels are finally released.
+    /// Unbounded CPU sources need no reservation.
+    ///
+    /// # Errors
+    /// Returns a capture resource fault when the copy would exceed a ceiling.
+    fn reserve_cpu_copy(&self, _bytes: usize) -> Result<Option<Arc<dyn Send + Sync>>> {
+        Ok(None)
+    }
 }
 
 /// CPU bytes as storage, for sources whose frames are already pixels.

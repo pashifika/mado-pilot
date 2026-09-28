@@ -36,6 +36,8 @@ pub enum CaptureFault {
     /// or reused native handle: matching mutable metadata would silently retarget
     /// the caller onto whatever took the original's place.
     TargetLost,
+    /// The retained window no longer has the geometry required by its caller.
+    WindowGeometryChanged,
     /// The session is closed or closing, so it accepts no new frame work.
     SessionClosed,
     /// A required capture option cannot be honored by this provider.
@@ -100,6 +102,7 @@ impl CaptureFault {
                 Status::LimitExceeded
             }
             CaptureFault::SourceInvalid
+            | CaptureFault::WindowGeometryChanged
             | CaptureFault::AccessDenied
             | CaptureFault::DeviceRemoved
             | CaptureFault::DeviceReset => Status::CaptureFailed,
@@ -118,6 +121,7 @@ impl CaptureFault {
             CaptureFault::ForeignTarget => "target identity was not issued by this provider",
             CaptureFault::UnknownTarget => "no such target",
             CaptureFault::TargetLost => "target no longer exists",
+            CaptureFault::WindowGeometryChanged => "retained window capture geometry changed",
             CaptureFault::SessionClosed => "session is closed",
             CaptureFault::UnsupportedOption => "required capture option is not supported",
             CaptureFault::SourceInvalid => "configured capture source is invalid",
