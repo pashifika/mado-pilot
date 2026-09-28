@@ -1052,6 +1052,10 @@ impl CaptureSession for NativeSession {
         )
     }
 
+    fn commit_frame(&self, frame: &Frame, operation: &OperationContext) -> Result<()> {
+        self.core.state.commit_frame(frame, operation)
+    }
+
     fn close(&self, operation: &OperationContext) -> Result<()> {
         ensure_winrt_apartment()?;
         self.core.state.begin_close();

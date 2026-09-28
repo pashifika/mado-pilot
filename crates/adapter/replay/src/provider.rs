@@ -11,8 +11,10 @@
 //! Publication order between concurrent advances is bought by a reservation
 //! rather than by nesting those locks. Exactly one advance at a time owns the
 //! removed head of the sequence. It restores that exact frame on interruption
-//! or stream refusal, so frames reach the stream in source order even though the
-//! sequence mutex is released before every publication.
+//! or refusal before publication, so frames reach the stream in source order
+//! even though the sequence mutex is released before every publication. Final
+//! retained-frame commitment follows publication and reservation release; refusal
+//! there cannot roll back a frame that other consumers may already hold.
 
 use std::collections::VecDeque;
 use std::fmt;
@@ -380,9 +382,11 @@ impl CaptureSession for ReplaySession {
             return self.state.frame(request, operation);
         };
         if self.state.lifecycle() != Lifecycle::Open {
-            return Err(CaptureFault::SessionClosed.into());
+            return self.state.frame(request, operation);
         }
-        let current = self.state.current().ok_or(CaptureFault::SessionClosed)?;
+        let Some(current) = self.state.current() else {
+            return self.state.frame(request, operation);
+        };
         // A stamp from another stream is refused without touching the sequence:
         // advancing it would consume a frame to answer a request that was never
         // valid. Validate this before operation admission to preserve that typed
@@ -396,8 +400,16 @@ impl CaptureSession for ReplaySession {
             // maintained frame. Going through it prevents this replay fast path
             // from returning cached data after closing begins.
             FrameOrder::After => self.state.frame(request, operation),
-            FrameOrder::Before | FrameOrder::Same => self.advance(operation),
+            FrameOrder::Before | FrameOrder::Same => {
+                let frame = self.advance(operation)?;
+                self.commit_frame(&frame, operation)?;
+                Ok(frame)
+            }
         }
+    }
+
+    fn commit_frame(&self, frame: &Frame, operation: &OperationContext) -> Result<()> {
+        self.state.commit_frame(frame, operation)
     }
 
     fn close(&self, operation: &OperationContext) -> Result<()> {
@@ -701,6 +713,34 @@ mod tests {
                 .is_some_and(|session| session.remaining.try_lock().is_err())
             {
                 self.observed_locked.store(true, Ordering::Relaxed);
+            }
+            MonotonicInstant::ORIGIN
+        }
+    }
+
+    #[derive(Debug)]
+    struct StopAfterPublicationClock {
+        session: Weak<ReplaySession>,
+        fault: Option<CaptureFault>,
+    }
+
+    impl Clock for StopAfterPublicationClock {
+        fn now(&self) -> MonotonicInstant {
+            let session = self.session.upgrade().expect("session remains owned");
+            assert!(
+                session.remaining.try_lock().is_ok(),
+                "final arbitration must release the replay queue"
+            );
+            if session
+                .state
+                .current()
+                .is_some_and(|frame| frame.stamp().sequence().value() > 0)
+            {
+                if let Some(fault) = self.fault {
+                    session.state.terminate(fault);
+                } else {
+                    session.state.begin_close();
+                }
             }
             MonotonicInstant::ORIGIN
         }
@@ -1228,6 +1268,70 @@ mod tests {
                     .iter()
                     .all(|byte| *byte == fill),
                 "published identity must preserve replay source order"
+            );
+        }
+    }
+
+    #[test]
+    fn a_newer_than_request_preserves_the_terminal_fault_after_cleanup() {
+        let session = session();
+        let first = session.state.current().expect("first frame");
+        let operation = OperationContext::new();
+        session.state.terminate(CaptureFault::CaptureItemClosed);
+        session.close(&operation).expect("cleanup completes");
+
+        assert_eq!(
+            session
+                .frame(&FrameRequest::newer_than(first.stamp()), &operation)
+                .expect_err("cleanup cannot mask target loss"),
+            CaptureFault::CaptureItemClosed.into()
+        );
+    }
+
+    #[test]
+    fn a_stop_after_replay_publication_refuses_the_returned_candidate() {
+        for fault in [Some(CaptureFault::TargetLost), None] {
+            let session = session();
+            let first = session.state.current().expect("first frame");
+            let operation = OperationContext::new()
+                .with_clock(Arc::new(StopAfterPublicationClock {
+                    session: Arc::downgrade(&session),
+                    fault,
+                }))
+                .with_deadline(
+                    MonotonicInstant::ORIGIN
+                        .checked_add(Duration::from_secs(1))
+                        .expect("deadline"),
+                );
+
+            let error = session
+                .frame(&FrameRequest::newer_than(first.stamp()), &operation)
+                .expect_err("final commitment observes the stop");
+
+            assert_eq!(error, fault.unwrap_or(CaptureFault::SessionClosed).into());
+            assert_eq!(
+                session
+                    .state
+                    .current()
+                    .expect("published frame")
+                    .stamp()
+                    .sequence()
+                    .value(),
+                1,
+                "publication already advanced the maintained stream"
+            );
+            let remainder = session.lock_remainder();
+            assert!(!remainder.reserved);
+            assert_eq!(remainder.frames.len(), 1);
+            assert!(
+                remainder
+                    .frames
+                    .front()
+                    .expect("last frame")
+                    .pixels()
+                    .iter()
+                    .all(|byte| *byte == 2),
+                "a publicly observable publication cannot be rolled back"
             );
         }
     }

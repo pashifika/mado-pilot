@@ -3674,7 +3674,10 @@ mod tests {
         );
 
         assert!(!output.within_bounds);
-        assert!(output.status.is_some_and(|status| status.success()));
+        assert!(
+            output.status.is_some_and(|status| status.success()),
+            "{output:?}"
+        );
         assert_eq!(output.stdout.len(), 1_024);
     }
 

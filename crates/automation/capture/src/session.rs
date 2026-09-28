@@ -161,13 +161,36 @@ pub trait CaptureSession: Debug + Send + Sync {
 
     /// Returns the frame `request` asks for, waiting when necessary.
     ///
+    /// Success commits the selected immutable frame against termination after
+    /// the final operation check, as specified by [`CaptureSession::commit_frame`].
+    ///
     /// # Errors
     ///
-    /// Returns a closed outcome once the session is closing, a target-lost
-    /// outcome when the Adapter observes that capture ended while waiting, an
-    /// invalid-argument outcome for a stamp from another stream, and the
-    /// operation's terminal outcome when cancellation or the deadline wins.
+    /// Returns the original terminal fault when capture ends, a closed outcome
+    /// after ordinary close admission, an invalid-argument outcome for a stamp
+    /// from another stream, or the operation's cancellation/deadline outcome.
     fn frame(&self, request: &FrameRequest, operation: &OperationContext) -> Result<Frame>;
+
+    /// Commits a prepared candidate associated with this exact retained frame.
+    ///
+    /// Prepare all candidate work before calling this method. The final
+    /// operation check runs outside internal locks, then commitment is ordered
+    /// against the stream's first terminal fault and close admission. A terminal
+    /// transition ordered first refuses commitment with its original fault,
+    /// even after cleanup. Commitment ordered first leaves the immutable
+    /// candidate and frame valid historical values after later termination.
+    ///
+    /// The frame must belong to this stream, but need not be the latest frame or
+    /// geometry revision. This neither captures nor maps pixels and executes no
+    /// caller work under a lock. Success grants no ongoing readiness, input
+    /// authority, or guarantee that native cleanup has completed.
+    ///
+    /// # Errors
+    ///
+    /// Returns an invalid-argument outcome for a foreign frame, the stream's
+    /// original terminal fault, a closed outcome after ordinary close admission,
+    /// or cancellation/deadline observed before commitment.
+    fn commit_frame(&self, frame: &Frame, operation: &OperationContext) -> Result<()>;
 
     /// Closes the session and drains in-flight frame waits.
     ///

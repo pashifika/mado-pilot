@@ -144,6 +144,10 @@ impl CaptureSession for Source {
         }
     }
 
+    fn commit_frame(&self, frame: &Frame, operation: &OperationContext) -> Result<()> {
+        self.state.commit_frame(frame, operation)
+    }
+
     fn close(&self, operation: &OperationContext) -> Result<()> {
         #[cfg(test)]
         {

@@ -3,19 +3,23 @@
 mod support;
 
 use std::sync::Arc;
+use std::thread;
 use std::time::Duration;
 
 use mado_pilot_runtime::{
-    CancellationToken, Continuity, FindRequest, FrameRequest, MatchOptions, OpenRequest,
-    OperationContext, PackageSource, PixelFormat, PreparedTemplate, Status,
+    CancellationToken, Continuity, FindOutcome, FindRequest, FrameRequest, MatchOptions,
+    MonotonicInstant, OpenRequest, OperationContext, PackageSource, PixelFormat, PreparedTemplate,
+    Result, Session, Status,
 };
-use mado_pilot_testkit::{Behavior, ControlledMatcher, ManualClock, match_fixtures};
+use mado_pilot_testkit::{
+    Behavior, CompletionGate, ControlledMatcher, ManualClock, match_fixtures,
+};
 use mado_pilot_vision::Candidate;
 
 use support::Harness;
 
 /// Opens one session on a harness that has published one frame.
-fn opened(harness: &Harness, operation: &OperationContext) -> mado_pilot_runtime::Session {
+fn opened(harness: &Harness, operation: &OperationContext) -> Session {
     let targets = harness.engine.discover(operation).expect("discovered");
     let session = harness
         .engine
@@ -369,6 +373,251 @@ fn a_closed_session_refuses_an_exact_frame_search_it_needs_nothing_from_capture_
     // The frame itself is the caller's and outlives the session, which is a
     // different rule and is not weakened by the one above.
     assert!(frame.map(PixelFormat::Rgba8, &operation).is_ok());
+}
+
+/// Runs one search on a worker while the matcher holds the frame at a gate,
+/// lets `interfere` act once the backend has entered, then releases the gate.
+///
+/// The gate models an uninterruptible backend: whatever `interfere` does, the
+/// matcher still produces a match afterwards, and the question is whether that
+/// match becomes an outcome.
+fn search_while_the_matcher_holds_the_frame(
+    exact: bool,
+    interfere: impl FnOnce(&Harness, &Session),
+) -> (Harness, Result<FindOutcome>) {
+    let gate = Arc::new(CompletionGate::new());
+    let harness = Harness::new(
+        ControlledMatcher::new(PixelFormat::Rgba8)
+            .with_candidates(vec![Candidate::new(1, 1, 0.99)])
+            .with_completion_gate(Arc::clone(&gate)),
+    );
+    let _gate_release = gate.release_guard();
+    let operation = OperationContext::new();
+    let session = Arc::new(opened(&harness, &operation));
+    let template = prepared(&harness, &operation);
+    let frame = session
+        .acquire_frame(&FrameRequest::latest(), &operation)
+        .expect("a published frame");
+
+    let worker = {
+        let session = Arc::clone(&session);
+        thread::spawn(move || {
+            let operation = OperationContext::new();
+            let request = if exact {
+                FindRequest::exact(&frame, &template, options(&template))
+            } else {
+                FindRequest::latest(&template, options(&template))
+            };
+            session.find_template(&request, &operation)
+        })
+    };
+    assert!(
+        gate.wait_until_entered(Duration::from_secs(2)),
+        "the matcher reached its gate"
+    );
+    interfere(&harness, &session);
+    gate.release();
+    let result = worker.join().expect("the search thread did not panic");
+    (harness, result)
+}
+
+#[test]
+fn a_target_lost_while_the_matcher_holds_an_exact_frame_yields_the_loss_not_a_match() {
+    let (harness, result) = search_while_the_matcher_holds_the_frame(true, |harness, _| {
+        harness.capture.lose(harness.capture.target());
+    });
+
+    let error = result.expect_err("the match was produced after capture ended");
+    assert_eq!(error.status(), Status::TargetLost);
+    assert_eq!(harness.matcher.find_count(), 1);
+}
+
+#[test]
+fn a_target_lost_while_the_matcher_holds_the_latest_frame_yields_the_loss_not_a_match() {
+    let (harness, result) = search_while_the_matcher_holds_the_frame(false, |harness, _| {
+        harness.capture.lose(harness.capture.target());
+    });
+
+    let error = result.expect_err("the match was produced after capture ended");
+    assert_eq!(error.status(), Status::TargetLost);
+    assert_eq!(harness.matcher.find_count(), 1);
+}
+
+#[test]
+fn a_close_begun_while_the_matcher_holds_the_frame_yields_closure_not_a_match() {
+    let (harness, result) = search_while_the_matcher_holds_the_frame(true, |_, session| {
+        session
+            .close(&OperationContext::new())
+            .expect("close does not wait for the matcher");
+    });
+
+    let error = result.expect_err("close is authoritative before the outcome commits");
+    assert_eq!(error.status(), Status::Closed);
+    assert_eq!(harness.matcher.find_count(), 1);
+}
+
+#[test]
+fn an_outcome_committed_before_target_loss_is_a_historical_value_the_loss_does_not_revoke() {
+    let harness = Harness::new(
+        ControlledMatcher::new(PixelFormat::Rgba8)
+            .with_candidates(vec![Candidate::new(4, 5, 0.98)]),
+    );
+    let operation = OperationContext::new();
+    let session = opened(&harness, &operation);
+    let template = prepared(&harness, &operation);
+    let outcome = session
+        .find_template(
+            &FindRequest::latest(&template, options(&template)),
+            &operation,
+        )
+        .expect("committed while capture was open");
+
+    harness.capture.lose(harness.capture.target());
+
+    assert_eq!(outcome.result().matches().len(), 1);
+    assert!(
+        session
+            .map_frame(outcome.frame(), PixelFormat::Rgba8, &operation)
+            .expect("a retained frame maps after termination")
+            .bytes()
+            .iter()
+            .all(|byte| *byte == 0x11)
+    );
+    let again = session
+        .find_template(
+            &FindRequest::exact(outcome.frame(), &template, options(&template)),
+            &operation,
+        )
+        .expect_err("the same frame commits nothing new once capture ended");
+    assert_eq!(again.status(), Status::TargetLost);
+    assert_eq!(harness.matcher.find_count(), 1);
+}
+
+#[test]
+fn an_older_retained_frame_commits_while_the_stream_is_open_and_newer_frames_exist() {
+    let harness = Harness::silent();
+    let operation = OperationContext::new();
+    let session = opened(&harness, &operation);
+    let older = session
+        .acquire_frame(&FrameRequest::latest(), &operation)
+        .expect("the first frame");
+    harness
+        .capture
+        .publish(0x22, Continuity::Continuous)
+        .expect("published a newer frame");
+
+    session
+        .commit_frame(&older, &operation)
+        .expect("an older frame of an open stream is still this session's to commit");
+}
+
+#[test]
+fn commit_frame_refuses_another_streams_frame_and_an_interrupted_operation() {
+    let harness = Harness::silent();
+    let operation = OperationContext::new();
+    let session = opened(&harness, &operation);
+    let frame = session
+        .acquire_frame(&FrameRequest::latest(), &operation)
+        .expect("a published frame");
+    let other = harness
+        .engine
+        .open(session.target(), &OpenRequest::new(), &operation)
+        .expect("a second session on the same target");
+    harness
+        .capture
+        .publish(0x33, Continuity::Continuous)
+        .expect("published to both streams");
+    let foreign = other
+        .acquire_frame(&FrameRequest::latest(), &operation)
+        .expect("the other session's frame");
+
+    assert_eq!(
+        session
+            .commit_frame(&foreign, &operation)
+            .expect_err("a frame from another stream is not this session's to commit")
+            .status(),
+        Status::InvalidArgument
+    );
+    let token = CancellationToken::new();
+    token.cancel();
+    assert_eq!(
+        session
+            .commit_frame(&frame, &OperationContext::new().with_cancellation(token))
+            .expect_err("a cancelled operation commits nothing")
+            .status(),
+        Status::Cancelled
+    );
+    let expired = OperationContext::new()
+        .with_clock(Arc::new(ManualClock::new()))
+        .with_deadline(MonotonicInstant::ORIGIN);
+    assert_eq!(
+        session
+            .commit_frame(&frame, &expired)
+            .expect_err("an expired operation commits nothing")
+            .status(),
+        Status::DeadlineExceeded
+    );
+    session
+        .commit_frame(&frame, &operation)
+        .expect("the refusals above changed nothing about an open stream");
+}
+
+#[test]
+fn the_first_terminal_cause_outlives_a_later_successful_close() {
+    let harness = Harness::silent();
+    let operation = OperationContext::new();
+    let session = opened(&harness, &operation);
+    let frame = session
+        .acquire_frame(&FrameRequest::latest(), &operation)
+        .expect("a published frame");
+
+    harness.capture.lose(harness.capture.target());
+    assert_eq!(
+        session
+            .commit_frame(&frame, &operation)
+            .expect_err("capture ended first")
+            .status(),
+        Status::TargetLost
+    );
+
+    session
+        .close(&operation)
+        .expect("cleanup of a lost target completes");
+    assert!(session.is_closed());
+    assert_eq!(
+        session
+            .commit_frame(&frame, &operation)
+            .expect_err("still refused")
+            .status(),
+        Status::TargetLost,
+        "cleanup does not rewrite why capture ended"
+    );
+    assert!(
+        session
+            .map_frame(&frame, PixelFormat::Rgba8, &operation)
+            .is_ok(),
+        "the retained frame is the caller's whatever happened to capture"
+    );
+}
+
+#[test]
+fn commit_frame_after_an_ordinary_close_reports_closure() {
+    let harness = Harness::silent();
+    let operation = OperationContext::new();
+    let session = opened(&harness, &operation);
+    let frame = session
+        .acquire_frame(&FrameRequest::latest(), &operation)
+        .expect("a published frame");
+    session.close(&operation).expect("closed");
+
+    assert_eq!(
+        session
+            .commit_frame(&frame, &operation)
+            .expect_err("a closed session commits nothing")
+            .status(),
+        Status::Closed,
+        "a clean close is not a fault"
+    );
 }
 
 #[test]

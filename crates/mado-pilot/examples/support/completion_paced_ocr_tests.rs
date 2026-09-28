@@ -393,9 +393,9 @@ fn session_close_during_cooldown_is_observed_at_the_next_acquisition() {
 }
 
 #[test]
-fn capture_loss_during_admitted_ocr_allows_exact_commit_then_next_acquire_fails() {
+fn capture_loss_during_admitted_ocr_prevents_interpretation_and_cooldown() {
     let fixture = Fixture::new(Duration::from_millis(30)).expect("controlled engine");
-    let first = fixture
+    fixture
         .source
         .publish(EXTENT, 7, Continuity::Continuous)
         .expect("initial frame");
@@ -406,23 +406,17 @@ fn capture_loss_during_admitted_ocr_allows_exact_commit_then_next_acquire_fails(
     let operation = fixture
         .operation(Duration::from_secs(1))
         .expect("bounded operation");
-    let mut interpreted = Vec::new();
     let error = consume(
         &fixture.session,
         &fixture.backend.descriptor(),
         policy(10),
         &operation,
-        |result, _| {
-            interpreted.push(result.stamp());
-            Ok(Decision::Continue)
-        },
-        |slice| fixture.clock.advance(slice),
+        |_, _| panic!("target-lost OCR cannot reach interpretation"),
+        |_| panic!("failed OCR cannot reach cooldown"),
     )
-    .expect_err("next acquisition must report capture loss");
-    assert_eq!(interpreted, [first]);
+    .expect_err("capture commitment rejects the late result");
     assert_eq!(error.status(), Status::TargetLost);
     assert_eq!(fixture.backend.ocr.recognition_count(), 1);
-    assert_eq!(fixture.clock.elapsed(), Duration::from_millis(40));
     close_session(&fixture.session, &operation).expect("cleanup");
 }
 
