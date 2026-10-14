@@ -24,12 +24,12 @@ use super::{
     CommitGeometry, DriverState, FUNCTION_KEYS, GeometryFingerprint, NativeCommitBudget,
     NativePost, PointerState, ProcessCommitSource, ProcessGeometrySource, SystemButtonState,
     SystemCommitSource, SystemKeyState, commit_cleanup, commit_geometry, commit_prepared,
-    commit_process, contains_desktop_point, extent_from_points, focus_wait, key_flag,
-    modifier_flag, native_button, placement_for, process_permission_denied_fault,
-    process_pointer_for_non_move_with, process_policy_geometry_for, process_status_fault,
-    release_pending_process, release_process, release_system, require_post_event_access,
-    resolve_key_code, retain_process_pointer, retain_process_press, text_chunks,
-    text_release_may_be_pending, wait_for_activation,
+    commit_process, commit_system_pointer_move, contains_desktop_point, extent_from_points,
+    focus_wait, key_flag, modifier_flag, native_button, placement_for,
+    process_permission_denied_fault, process_pointer_for_non_move_with,
+    process_policy_geometry_for, process_status_fault, release_pending_process, release_process,
+    release_system, require_post_event_access, resolve_key_code, retain_pointer,
+    retain_process_press, text_chunks, text_release_may_be_pending, wait_for_activation,
 };
 use crate::input::{
     InputDriver, MacosInputController, PendingTextRelease, SubmissionFailure, input_capability,
@@ -864,7 +864,7 @@ fn an_ambiguous_drag_move_releases_at_its_possible_destination() {
         native: shim::INPUT_BUTTON_PRIMARY,
     });
 
-    let failure = retain_process_pointer(
+    let failure = retain_pointer(
         &mut state.pointer,
         destination,
         Err(SubmissionFailure::after_native_attempt(
@@ -895,6 +895,77 @@ fn an_ambiguous_drag_move_releases_at_its_possible_destination() {
             location: destination.desktop,
         }]
     );
+}
+
+#[test]
+fn system_drag_move_cleanup_retains_only_a_submitted_or_possible_destination() {
+    let geometry = fingerprint((0.0, 0.0), (640.0, 420.0), 2.0);
+    let origin = PointerState {
+        desktop: (20.0, 30.0),
+        geometry,
+    };
+    let destination = PointerState {
+        desktop: (320.0, 210.0),
+        geometry,
+    };
+    for (post_failure, expected) in [
+        (None, destination),
+        (Some(1), destination),
+        (Some(0), origin),
+    ] {
+        let source = post_failure.map_or_else(FakeSource::new, |invoked| {
+            FakeSource::failing_post(ShimStatus::NativeException, invoked)
+        });
+        let mut state = DriverState {
+            pointer: Some(origin),
+            ..DriverState::default()
+        };
+        state.buttons.push(SystemButtonState {
+            logical: PointerButton::Primary,
+            native: shim::INPUT_BUTTON_PRIMARY,
+        });
+        let outcome = commit_system_pointer_move(
+            &source,
+            FocusPolicy::RequireFocused,
+            CommitGeometry::RequireCurrent(geometry),
+            &OperationContext::new(),
+            &mut state,
+            destination,
+            0,
+        );
+        if let Some(invoked) = post_failure {
+            let failure = outcome.expect_err("posting failure stays visible");
+            assert_eq!(failure.fault, InputFault::SubmissionFailed);
+            assert_eq!(failure.current_event_may_have_effect, invoked != 0);
+        } else {
+            outcome.expect("move submitted");
+        }
+        *source.post_failure.lock().expect("uncontended") = None;
+        release_system(
+            PressedState::Button(PointerButton::Primary),
+            &mut state,
+            &source,
+            &OperationContext::new(),
+        )
+        .expect("owned release");
+        assert_eq!(
+            source.posts().last(),
+            Some(&Posted {
+                post: format!(
+                    "{:?}",
+                    NativePost::Pointer {
+                        action: shim::INPUT_POINTER_RELEASE,
+                        button: shim::INPUT_BUTTON_PRIMARY,
+                        click_state: shim::INPUT_SINGLE_CLICK,
+                        location: expected.desktop,
+                    }
+                ),
+                flags: 0,
+            }),
+            "{post_failure:?}"
+        );
+        assert!(state.buttons.is_empty());
+    }
 }
 
 /// A caller that selected `RequireFocused` gets that predicate confirmed by the
