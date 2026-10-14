@@ -675,24 +675,15 @@ impl NativeInputDriver {
         match event {
             InputEvent::PointerMove(point) => {
                 let resolved = self.resolve_pointer(*point, geometry, operation)?;
-                let button = state
-                    .dragging()
-                    .map_or(Ok(shim::INPUT_BUTTON_NONE), native_button)?;
-                commit_prepared(
+                commit_system_pointer_move(
                     self,
                     focus,
                     commit_geometry(geometry.policy(), resolved.geometry)?,
                     operation,
-                    NativePost::Pointer {
-                        action: shim::INPUT_POINTER_MOVE,
-                        button,
-                        click_state: 0,
-                        location: resolved.desktop,
-                    },
+                    state,
+                    resolved,
                     flags,
-                )?;
-                state.pointer = Some(resolved);
-                Ok(())
+                )
             }
             InputEvent::PointerPress(button) => {
                 let pointer = self.pointer_for_non_move(geometry, state, operation)?;
@@ -894,7 +885,7 @@ impl NativeInputDriver {
                     },
                     flags,
                 );
-                retain_process_pointer(&mut state.pointer, resolved, result)
+                retain_pointer(&mut state.pointer, resolved, result)
             }
             InputEvent::PointerPress(button) => {
                 let (pointer, commit_geometry) =
@@ -1505,7 +1496,7 @@ fn retain_process_press<T>(
     result
 }
 
-fn retain_process_pointer(
+fn retain_pointer(
     pointer: &mut Option<PointerState>,
     resolved: PointerState,
     result: SubmissionResult,
@@ -1893,6 +1884,34 @@ fn commit_process_for<S: ProcessCommitSource + ?Sized>(
             ))
         }
     }
+}
+
+fn commit_system_pointer_move<S: SystemCommitSource + ?Sized>(
+    source: &S,
+    focus: FocusPolicy,
+    geometry: CommitGeometry,
+    operation: &OperationContext,
+    state: &mut DriverState,
+    resolved: PointerState,
+    flags: u32,
+) -> SubmissionResult {
+    let button = state
+        .dragging()
+        .map_or(Ok(shim::INPUT_BUTTON_NONE), native_button)?;
+    let result = commit_prepared(
+        source,
+        focus,
+        geometry,
+        operation,
+        NativePost::Pointer {
+            action: shim::INPUT_POINTER_MOVE,
+            button,
+            click_state: 0,
+            location: resolved.desktop,
+        },
+        flags,
+    );
+    retain_pointer(&mut state.pointer, resolved, result)
 }
 
 /// Arbitrates, revalidates, and then posts without running caller code between

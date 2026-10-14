@@ -350,9 +350,9 @@ are reconciled in exactly one place inside the shim.
 
 ## Sequence-owned state and cleanup
 
-Pressed buttons and keys belong only to the sequence that successfully pressed
-them. On a partial stop they are released newest first under the independent shared
-cleanup bound: at most 256 releases and no new release after 250 milliseconds.
+Pressed buttons and keys belong only to the sequence that successfully or
+possibly pressed them. On a partial stop they are released newest first under the
+independent cleanup bound: at most 256 releases and no new release after 250 milliseconds.
 Cleanup runs under a fresh context derived from the request's clock with no
 cancellation, because the request's own interruption is usually why cleanup is
 running.
@@ -368,6 +368,12 @@ replacement process. Cleanup never claims that external keyboard or pointer
 state was restored: a receipt reports `Incomplete` for a release the platform
 refused and `Exhausted` for one that was never attempted, and the two leave a
 caller with different options.
+
+Both routes retain a move's destination after successful posting or a failure
+that may have taken effect. A definite pre-effect failure keeps the previous
+position. Owned-button cleanup uses that retained position rather than rolling
+an ambiguous drag back to its last confirmed point; it still does not prove
+where the application observed the pointer or that a release undid the gesture.
 
 ## Dedicated fixture
 
