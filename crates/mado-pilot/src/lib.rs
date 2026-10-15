@@ -120,8 +120,8 @@
 //! Replay and native engine requests accept an injected `Arc<dyn OcrBackend>`;
 //! ordinary constructors without one expose no OCR. Separate
 //! `*_engine_with_default_ocr` constructors preserve native G-004;
-//! `*_engine_with_ocr_profile` accepts the closed
-//! [`OcrProfile::BoundedDetector`] selection through [`OcrProfileConfig`].
+//! `*_engine_with_ocr_profile` selects accepted catalog IDs through
+//! [`OcrProfileConfig::from_id`] or the legacy [`OcrProfile::BoundedDetector`] variant.
 //! [`Session::recognize`] preserves singular optional-region results, while
 //! [`Session::scan_ocr_zones`] borrows one through eight capture-pixel zones and
 //! returns one independent caller-grouped result.
@@ -278,7 +278,7 @@ impl DefaultOcrConfig {
     }
 }
 
-/// Closed explicit selection for a non-default product OCR profile.
+/// Explicit product OCR profile selection.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 #[non_exhaustive]
 pub enum OcrProfile {
@@ -298,13 +298,17 @@ pub struct OcrProfileConfig {
 
 impl OcrProfileConfig {
     /// Selects `profile` and names its controlled model root and runtime file.
+    /// The bounded catalog ID preserves [`OcrProfile::BoundedDetector`].
     pub fn new(
         profile: OcrProfile,
         model_root: impl Into<PathBuf>,
         runtime_path: impl Into<PathBuf>,
     ) -> Self {
         Self {
-            profile,
+            profile: match profile {
+                OcrProfile::Catalog(ACCEPTED_BOUNDED_PROFILE_ID) => OcrProfile::BoundedDetector,
+                profile => profile,
+            },
             model_root: model_root.into(),
             runtime_path: runtime_path.into(),
         }

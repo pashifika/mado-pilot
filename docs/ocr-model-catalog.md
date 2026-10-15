@@ -45,6 +45,10 @@ a target/provider and accompanied by criteria/report references when rated.
 Existing accepted profiles are `unrated` under this new comparison policy; their
 older support and revision-bound evidence remain valid.
 
+`OcrProfileConfig::new` and `from_id` preserve `OcrProfile::BoundedDetector` for
+the bounded catalog ID, keeping legacy pattern matching and configuration
+equality consistent.
+
 Direct users of `mado-pilot-backend-onnx` must handle the new
 `OnnxOcrProfile::Catalog` variant in exhaustive matches and use
 `OnnxBackendFacts::profile_id()` for exact identity. The facade's existing

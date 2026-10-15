@@ -361,6 +361,24 @@ fn explicit_profile_is_closed_atomic_and_has_no_ambient_fallback() {
 }
 
 #[test]
+fn catalog_selection_preserves_legacy_bounded_configuration() {
+    let legacy = OcrProfileConfig::new(
+        OcrProfile::BoundedDetector,
+        "unread-model-root",
+        "unread-runtime",
+    );
+    let selected = OcrProfileConfig::from_id(
+        mado_pilot::ACCEPTED_BOUNDED_PROFILE_ID,
+        legacy.model_root(),
+        legacy.runtime_path(),
+    )
+    .expect("accepted bounded profile");
+
+    assert!(matches!(selected.profile(), OcrProfile::BoundedDetector));
+    assert_eq!(selected, legacy);
+}
+
+#[test]
 fn unqualified_catalog_ids_cannot_reach_runtime_loading() {
     for id in ["unknown-profile", "ppocrv6-tiny-det-small-rec-max736-v1"] {
         let root = std::env::temp_dir().join("mado-pilot-unselected-models");
