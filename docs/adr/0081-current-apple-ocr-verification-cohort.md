@@ -1,6 +1,6 @@
 # ADR 0081: Current Apple OCR verification cohort
 
-- **Status:** Accepted host and measurement procedure; budgets and model admission pending
+- **Status:** Accepted Apple host, budgets and reference-only procedure; model admission pending
 - **Date:** 2026-10-15
 - **Resolves gate:** none; new-model admission under G-013 remains open
 - **Supersedes:** ADR 0080's blanket macOS 27 exclusion, for prospective CPU OCR verification only
@@ -96,6 +96,37 @@ that final source. The retained adverse quality evidence requires an explicit
 reviewed candidate-attempt disposition; this ADR authorizes the reference-only
 precursor, not a candidate retry. No execution identity, oracle, quality gate,
 support status, default, provider or watcher scope changes.
+
+### Apple precursor outcome and numeric freeze
+
+Source `f774ddeb0a35229de00722597e760e6c03baabb5`, tree
+`586590d2756409f83b0d474bc225887e05503206`, produced optimized executable SHA-256
+`2b6272c78393ef3369891bed80d074d8d2c449f44b88e887b0d44bb9fb89171d`.
+All three reference processes exited successfully with owned cleanup. The
+1,452 observations include 1,320 measured samples; original receipt/JSONL
+reconciliation, collector, lifecycle and source/shape checks passed.
+
+The exact-text gate still failed 132 times on `compact-ui-v1/dense-tooltip`:
+`次の攻撃が25%上昇` was recognized as `次の攻撃が25％上昇`. All failures remain.
+No candidate ran, and the reference is not qualified under the new corpus.
+
+The unchanged predeclared derivation yields
+[`apple-m1-pro-macos27-budgets-v1.json`](../../tools/ocr-models/apple-m1-pro-macos27-budgets-v1.json),
+SHA-256 `74e4763da635d9289cf910549cbda1b7ee579d59c1fed7b56876eb1bdca9129c`.
+It covers all 22 workloads and the required collectors and process limits.
+
+| Process metric | Largest observation | Apple ceiling |
+|---|---:|---:|
+| Cold open, ms | 98.1445 | 197 |
+| Close, ms | 0.986291 | 2 |
+| Peak resident bytes | 559038464 | 1118830592 |
+
+Applying these limits to all original reference observations adds no resource
+or latency failures and preserves all 132 quality failures. The measurement and
+budget freeze are separate revisions; neither can retroactively qualify this
+precursor. The Change retains its complete plan, collector invocation, raw rows,
+independent receipts, per-process statistics and derivation. Windows budgets,
+the common final source and final model qualification remain open.
 
 ## Alternatives
 

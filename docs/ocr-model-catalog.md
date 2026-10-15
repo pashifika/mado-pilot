@@ -206,11 +206,12 @@ Absolute budgets have no implicit defaults. They name the exact cohort and
 approval, per-process cold-open/close/RSS ceilings, every workload's p50/p95/max,
 Rust peak/steady/growth, mapped bytes and detector tensor bytes. Required collectors
 are `rust-accounting`, `native-peak-rss` and `onnx-stage-clocks`. The host policy
-must independently allow the exact cohort. The Apple reference-only precursor
-and budget derivation are fixed in ADR 0081. Final qualification remains blocked
-until the derived numeric budgets and both target policies are reviewed and
-precommitted for one final implementation revision. Old ceilings for other
-workloads are not silently reused for compact-UI inputs.
+must independently allow the exact cohort. ADR 0081 fixes the reference-only
+precursor and derives the complete Apple policy in
+[`apple-m1-pro-macos27-budgets-v1.json`](../tools/ocr-models/apple-m1-pro-macos27-budgets-v1.json).
+The precursor retains 132 exact-text failures and does not qualify the reference
+or candidate. Windows policy/budgets and a common final source remain required.
+Old ceilings for other workloads are not silently reused for compact-UI inputs.
 
 The same precommitted policy binds `process_limits`: external process timeout,
 output byte limit, cleanup deadline and admitted cancellation/deadline return

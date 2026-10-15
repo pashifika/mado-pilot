@@ -1,0 +1,252 @@
+{
+  "approval": "ADR-0081",
+  "cohort": {
+    "cohort_id": "apple-m1-pro-32g-macos27.0.1-ocr-cpu-v1",
+    "target": "aarch64-apple-darwin",
+    "os": "macOS 27.0.1",
+    "cpu": "Apple M1 Pro",
+    "host_id": "Pashifika-MBP.lan",
+    "runtime": "1.29.0-api17",
+    "provider": "cpu",
+    "intra_op": 1,
+    "inter_op": 1
+  },
+  "process": {
+    "cold_open_ms": 197,
+    "close_ms": 2,
+    "peak_resident_bytes": 1118830592
+  },
+  "workloads": {
+    "g-004-japanese-ui-v3/hud/singular": {
+      "p50_ms": 716,
+      "p95_ms": 718,
+      "max_ms": 719,
+      "rust_peak_allocated_bytes": 25399296,
+      "rust_steady_bytes": 4096,
+      "rust_growth_bytes": 4096,
+      "mapped_bytes": 2073600,
+      "detector_tensor_bytes": 11587584
+    },
+    "g-004-japanese-ui-v3/hud/grouped": {
+      "p50_ms": 717,
+      "p95_ms": 722,
+      "max_ms": 724,
+      "rust_peak_allocated_bytes": 25399296,
+      "rust_steady_bytes": 4096,
+      "rust_growth_bytes": 4096,
+      "mapped_bytes": 2073600,
+      "detector_tensor_bytes": 11587584
+    },
+    "g-004-japanese-ui-v3/menu/singular": {
+      "p50_ms": 653,
+      "p95_ms": 658,
+      "max_ms": 660,
+      "rust_peak_allocated_bytes": 21442560,
+      "rust_steady_bytes": 4096,
+      "rust_growth_bytes": 4096,
+      "mapped_bytes": 1382400,
+      "detector_tensor_bytes": 9609216
+    },
+    "g-004-japanese-ui-v3/menu/grouped": {
+      "p50_ms": 652,
+      "p95_ms": 656,
+      "max_ms": 663,
+      "rust_peak_allocated_bytes": 21442560,
+      "rust_steady_bytes": 4096,
+      "rust_growth_bytes": 4096,
+      "mapped_bytes": 1382400,
+      "detector_tensor_bytes": 9609216
+    },
+    "g-004-japanese-ui-v3/status/singular": {
+      "p50_ms": 626,
+      "p95_ms": 633,
+      "max_ms": 634,
+      "rust_peak_allocated_bytes": 25399296,
+      "rust_steady_bytes": 4096,
+      "rust_growth_bytes": 4096,
+      "mapped_bytes": 921600,
+      "detector_tensor_bytes": 11587584
+    },
+    "g-004-japanese-ui-v3/status/grouped": {
+      "p50_ms": 651,
+      "p95_ms": 656,
+      "max_ms": 667,
+      "rust_peak_allocated_bytes": 25399296,
+      "rust_steady_bytes": 4096,
+      "rust_growth_bytes": 4096,
+      "mapped_bytes": 921600,
+      "detector_tensor_bytes": 11587584
+    },
+    "g-004-japanese-ui-v3/tooltip-v3/singular": {
+      "p50_ms": 1023,
+      "p95_ms": 1030,
+      "max_ms": 1032,
+      "rust_peak_allocated_bytes": 28782592,
+      "rust_steady_bytes": 4096,
+      "rust_growth_bytes": 4096,
+      "mapped_bytes": 4147200,
+      "detector_tensor_bytes": 13000704
+    },
+    "g-004-japanese-ui-v3/tooltip-v3/grouped": {
+      "p50_ms": 1017,
+      "p95_ms": 1025,
+      "max_ms": 1028,
+      "rust_peak_allocated_bytes": 28782592,
+      "rust_steady_bytes": 4096,
+      "rust_growth_bytes": 4096,
+      "mapped_bytes": 4147200,
+      "detector_tensor_bytes": 13000704
+    },
+    "g-004-japanese-ui-v3/mission/singular": {
+      "p50_ms": 902,
+      "p95_ms": 909,
+      "max_ms": 918,
+      "rust_peak_allocated_bytes": 28225536,
+      "rust_steady_bytes": 4096,
+      "rust_growth_bytes": 4096,
+      "mapped_bytes": 4147200,
+      "detector_tensor_bytes": 13000704
+    },
+    "g-004-japanese-ui-v3/mission/grouped": {
+      "p50_ms": 900,
+      "p95_ms": 916,
+      "max_ms": 919,
+      "rust_peak_allocated_bytes": 28225536,
+      "rust_steady_bytes": 4096,
+      "rust_growth_bytes": 4096,
+      "mapped_bytes": 4147200,
+      "detector_tensor_bytes": 13000704
+    },
+    "compact-ui-v1/dense-tooltip/singular": {
+      "p50_ms": 871,
+      "p95_ms": 874,
+      "max_ms": 876,
+      "rust_peak_allocated_bytes": 26025984,
+      "rust_steady_bytes": 4096,
+      "rust_growth_bytes": 4096,
+      "mapped_bytes": 921600,
+      "detector_tensor_bytes": 11587584
+    },
+    "compact-ui-v1/dense-tooltip/grouped": {
+      "p50_ms": 865,
+      "p95_ms": 871,
+      "max_ms": 878,
+      "rust_peak_allocated_bytes": 26025984,
+      "rust_steady_bytes": 4096,
+      "rust_growth_bytes": 4096,
+      "mapped_bytes": 921600,
+      "detector_tensor_bytes": 11587584
+    },
+    "compact-ui-v1/boundary/singular": {
+      "p50_ms": 536,
+      "p95_ms": 539,
+      "max_ms": 543,
+      "rust_peak_allocated_bytes": 28176384,
+      "rust_steady_bytes": 4096,
+      "rust_growth_bytes": 4096,
+      "mapped_bytes": 294912,
+      "detector_tensor_bytes": 13000704
+    },
+    "compact-ui-v1/boundary/grouped": {
+      "p50_ms": 537,
+      "p95_ms": 598,
+      "max_ms": 603,
+      "rust_peak_allocated_bytes": 28176384,
+      "rust_steady_bytes": 4096,
+      "rust_growth_bytes": 4096,
+      "mapped_bytes": 294912,
+      "detector_tensor_bytes": 13000704
+    },
+    "compact-ui-v1/decoration/singular": {
+      "p50_ms": 536,
+      "p95_ms": 539,
+      "max_ms": 545,
+      "rust_peak_allocated_bytes": 28176384,
+      "rust_steady_bytes": 4096,
+      "rust_growth_bytes": 4096,
+      "mapped_bytes": 524288,
+      "detector_tensor_bytes": 13000704
+    },
+    "compact-ui-v1/decoration/grouped": {
+      "p50_ms": 537,
+      "p95_ms": 543,
+      "max_ms": 603,
+      "rust_peak_allocated_bytes": 28176384,
+      "rust_steady_bytes": 4096,
+      "rust_growth_bytes": 4096,
+      "mapped_bytes": 524288,
+      "detector_tensor_bytes": 13000704
+    },
+    "compact-ui-v1/varied-sizes/singular": {
+      "p50_ms": 633,
+      "p95_ms": 683,
+      "max_ms": 685,
+      "rust_peak_allocated_bytes": 28790784,
+      "rust_steady_bytes": 4096,
+      "rust_growth_bytes": 4096,
+      "mapped_bytes": 1059840,
+      "detector_tensor_bytes": 13283328
+    },
+    "compact-ui-v1/varied-sizes/grouped": {
+      "p50_ms": 633,
+      "p95_ms": 778,
+      "max_ms": 804,
+      "rust_peak_allocated_bytes": 28790784,
+      "rust_steady_bytes": 4096,
+      "rust_growth_bytes": 4096,
+      "mapped_bytes": 1059840,
+      "detector_tensor_bytes": 13283328
+    },
+    "compact-ui-v1/blank/singular": {
+      "p50_ms": 403,
+      "p95_ms": 411,
+      "max_ms": 415,
+      "rust_peak_allocated_bytes": 28176384,
+      "rust_steady_bytes": 4096,
+      "rust_growth_bytes": 4096,
+      "mapped_bytes": 204800,
+      "detector_tensor_bytes": 13000704
+    },
+    "compact-ui-v1/blank/grouped": {
+      "p50_ms": 403,
+      "p95_ms": 406,
+      "max_ms": 423,
+      "rust_peak_allocated_bytes": 28176384,
+      "rust_steady_bytes": 4096,
+      "rust_growth_bytes": 4096,
+      "mapped_bytes": 204800,
+      "detector_tensor_bytes": 13000704
+    },
+    "compact-ui-v1/nonuniform-negative/singular": {
+      "p50_ms": 402,
+      "p95_ms": 405,
+      "max_ms": 407,
+      "rust_peak_allocated_bytes": 28176384,
+      "rust_steady_bytes": 4096,
+      "rust_growth_bytes": 4096,
+      "mapped_bytes": 401408,
+      "detector_tensor_bytes": 13000704
+    },
+    "compact-ui-v1/nonuniform-negative/grouped": {
+      "p50_ms": 402,
+      "p95_ms": 406,
+      "max_ms": 410,
+      "rust_peak_allocated_bytes": 28176384,
+      "rust_steady_bytes": 4096,
+      "rust_growth_bytes": 4096,
+      "mapped_bytes": 401408,
+      "detector_tensor_bytes": 13000704
+    }
+  },
+  "required_collectors": [
+    "rust-accounting",
+    "native-peak-rss",
+    "onnx-stage-clocks"
+  ],
+  "process_limits": {
+    "timeout_seconds": 300,
+    "output_limit_bytes": 33554432,
+    "cleanup_seconds": 15,
+    "lifecycle_bound_ms": 2000
+  }
+}
