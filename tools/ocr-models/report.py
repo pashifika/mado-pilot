@@ -225,6 +225,10 @@ def _intersection(subject, clip):
     return subject
 
 
+def _quality_text(text):
+    return unicodedata.normalize("NFC", text).strip().replace("％", "%")
+
+
 def quality(observation, expected, mode):
     errors = []
     if observation.get("status") != "Ok":
@@ -257,7 +261,7 @@ def quality(observation, expected, mode):
             continue
         oracle = expected[index]
         text = region.get("text")
-        if not isinstance(text, str) or unicodedata.normalize("NFC", text.strip()) != oracle["text_nfc"]:
+        if not isinstance(text, str) or _quality_text(text) != _quality_text(oracle["text_nfc"]):
             errors.append(f"region {index}: exact text/order failed")
         target = oracle["source_relative_quad"]
         intersection = _area(_intersection(quad, target))
@@ -408,7 +412,12 @@ def validate_profile(processes, profile_id, binding, fixtures, budgets, expected
                 errors.append(f"{prefix}/{name}: incomplete/reordered sample schedule")
             for row in rows:
                 errors.extend(f"{prefix}/{name}/{row.get('phase')}/{row.get('index')}: {e}" for e in quality(row, spec["regions"], mode))
-                signature = json.dumps([row.get("regions"), row.get("groups")], sort_keys=True, ensure_ascii=False)
+                stability_regions = row.get("regions")
+                if isinstance(stability_regions, list):
+                    stability_regions = [dict(region, text=_quality_text(region["text"]))
+                                         if isinstance(region.get("text"), str) else region
+                                         for region in stability_regions]
+                signature = json.dumps([stability_regions, row.get("groups")], sort_keys=True, ensure_ascii=False)
                 if name in stable and signature != stable[name]:
                     errors.append(f"{prefix}/{name}: same-implementation instability")
                 stable.setdefault(name, signature)

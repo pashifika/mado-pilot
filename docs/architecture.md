@@ -2680,6 +2680,24 @@ freezes the official PP-OCRv6 tiny/small candidate, including its mandatory pinn
 YAML vocabulary. It remains unqualified and absent from ordinary enumeration,
 construction and package manifest v1/v2 admission. No ABI or watch gate changes.
 
+[ADR 0083](adr/0083-platform-aware-ocr-calibration-and-percent-equivalence.md)
+limits benchmark text equivalence to U+0025 `%` and U+FF05 `％` after NFC and
+trim on observed and expected text. Repeated-text stability uses the same rule;
+geometry, confidence, order and grouped membership remain exact. No broad NFKC
+or other character folding is permitted. Raw output, fixture authoring, SDK
+normalization and catalog/profile identities remain unchanged. Revised criteria
+are bound by their exact SHA-256 and ADR 0083; old failures are not rerated.
+
+The same ADR replaces only the Windows reference precursor's operational
+allowance with one newly frozen three-process campaign: 900 seconds per process,
+3,300 seconds whole, with unchanged output, cleanup and lifecycle bounds.
+This platform-specific headroom is not a measured security-software cost or
+a numerical model-performance budget. No incremental deadline retries or
+security-software changes are permitted. Apple bounds and data remain unchanged;
+Windows numerical budgets require complete observations before review and
+commitment. Reference calibration cannot qualify a model or authorize candidate
+execution, resource acquisition or support promotion.
+
 One `OcrRequest` borrows one immutable `Frame`, one exact
 `OcrBackendIdentity` (stable ID plus implementation version), one complete
 `OcrModelIdentity`, and one `OperationContext`, then explicitly names the

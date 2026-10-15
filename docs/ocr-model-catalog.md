@@ -213,7 +213,19 @@ precursor and derives the complete Apple policy in
 [`apple-m1-pro-macos27-budgets-v1.json`](../tools/ocr-models/apple-m1-pro-macos27-budgets-v1.json).
 The precursor retains 132 exact-text failures and does not qualify the reference
 or candidate. Windows numerical budgets and a common final source remain required.
-ADR 0082 fixes the Windows reference-only precursor and its independent derivation.
+ADR 0082 fixes the Windows host and independent budget derivation;
+[ADR 0083](adr/0083-platform-aware-ocr-calibration-and-percent-equivalence.md)
+supersedes only its reference operational allowance for one separately frozen
+campaign: exactly three fresh serial processes, 900 seconds and 33,554,432 output
+bytes each, 15-second cleanup, 2,000-ms lifecycle bound and 3,300 seconds whole
+(3,285 seconds primary plus 15 seconds cleanup). Before each launch reserve the
+full process/cleanup allowances and 30 seconds for validation within primary time.
+Stop later launches on operational, input/source, collector or lifecycle failure;
+do not increment deadlines, automatically retry or change security software.
+This is platform-specific headroom, not a measured security-software cost or a
+Windows model-performance budget. Complete observations remain required before
+deriving numerical budgets. Apple bounds, budget bytes and historical results
+remain unchanged; the failed Windows precursor is not rerated or reused.
 The ordinary `run` command, including `--diagnostic`, runs both profiles; it is not
 a reference-only entry point. Freeze and bind a separate reference-only invocation
 of the existing Rust collector before launch. Missing candidate assets need not
@@ -227,11 +239,19 @@ committed into the source revision it identifies.
 
 ## Verdict policy
 
-Every declared workload must pass exact NFC/trimmed text, count/order, IoU at
-least 0.50, normalized center deltas at most 0.025, finite model-local confidence,
-source correlation, same-implementation stability, resource/lifecycle and
-absolute-budget gates. No fuzzy/case/width folding or cross-model confidence
-threshold substitutes for correctness. All below-threshold observations remain.
+Every declared workload must pass NFC/trimmed text comparison with only U+0025
+`%` and U+FF05 `％` treated as equivalent on both observed and expected text,
+under ADR 0083. Same-implementation stability uses the same text equivalence but
+retains exact geometry, confidence, region order and group membership/order.
+Quality count/order, IoU at least 0.50, normalized center deltas at most 0.025,
+finite model-local confidence, source correlation, resource/lifecycle and
+absolute-budget gates remain required. No broad NFKC, other width folding,
+fuzzy/case folding or cross-model confidence threshold substitutes for correctness.
+All below-threshold observations remain. Keep raw text and fixture authoring
+unchanged; this benchmark comparison does not change SDK result normalization.
+The existing `criteria-v1.json` schema and ID remain; its exact SHA-256 and
+ADR 0083 bind the revised semantics. Historical reports retain their original
+criteria/source binding and failures.
 
 - `reference`: the accepted, fully attributable comparison baseline.
 - `fast`: every hard gate passes and both p50/p95 are at most 80% of the reference

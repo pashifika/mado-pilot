@@ -603,6 +603,113 @@ class ClassifierTests(unittest.TestCase):
         self.assertEqual(report.quality(observation, expected, "singular"), [])
 
 
+class QualityTests(unittest.TestCase):
+    def setUp(self):
+        source = {key: "synthetic" for key in
+                  ("stamp", "transform", "effective_region", "backend", "output_space", "effective_zones")}
+        quad = [[.25, .25], [.5, .25], [.5, .5], [.25, .5]]
+        self.expected = [{"text_nfc": text, "source_relative_quad": copy.deepcopy(quad)}
+                         for text in ("次の攻撃が25%", "残り50%")]
+        self.observation = {"status": "Ok", "source_correlation": True, "source": source,
+                            "result_source": dict(source), "groups": [[0, 1], [0, 1]],
+                            "regions": [{"text": region["text_nfc"], "confidence": .1,
+                                         "quad": copy.deepcopy(quad)} for region in self.expected]}
+
+    def test_percent_width_equivalence_in_both_directions_preserves_raw_text(self):
+        for actual, expected in (("次の攻撃が25％", "次の攻撃が25%"),
+                                 ("次の攻撃が25%", "次の攻撃が25％")):
+            with self.subTest(actual=actual, expected=expected):
+                self.observation["regions"][0]["text"] = actual
+                self.expected[0]["text_nfc"] = expected
+                before = copy.deepcopy((self.observation, self.expected))
+                self.assertEqual(report.quality(self.observation, self.expected, "grouped"), [])
+                self.assertEqual((self.observation, self.expected), before)
+
+    def test_nfc_and_trim_apply_to_both_texts(self):
+        for actual, expected in ((" \tか\u309925％\n", "が25%"),
+                                 ("が25%", " \tか\u309925％\n")):
+            with self.subTest(actual=actual, expected=expected):
+                self.observation["regions"][0]["text"] = actual
+                self.expected[0]["text_nfc"] = expected
+                self.assertEqual(report.quality(self.observation, self.expected, "grouped"), [])
+
+    def test_other_character_differences_remain_failures(self):
+        for actual, expected in (("２５％", "25%"), ("Ａ25％", "A25%"),
+                                 ("ｶ25％", "カ25%"), ("25‰", "25%"),
+                                 ("26％", "25%"), ("25 ％", "25%")):
+            with self.subTest(actual=actual, expected=expected):
+                self.observation["regions"][0]["text"] = actual
+                self.expected[0]["text_nfc"] = expected
+                self.assertTrue(report.quality(self.observation, self.expected, "grouped"))
+
+    def test_percent_equivalence_preserves_nontext_and_order_gates(self):
+        baseline = copy.deepcopy(self.observation)
+        for change in ("order", "geometry", "confidence", "groups", "count", "source"):
+            with self.subTest(change=change):
+                observation = copy.deepcopy(baseline)
+                observation["regions"][0]["text"] = "次の攻撃が25％"
+                if change == "order":
+                    observation["regions"].reverse()
+                elif change == "geometry":
+                    observation["regions"][0]["quad"] = [[.6, .6], [.8, .6], [.8, .8], [.6, .8]]
+                elif change == "confidence":
+                    observation["regions"][0]["confidence"] = 1.01
+                elif change == "groups":
+                    observation["groups"][0].reverse()
+                elif change == "count":
+                    observation["regions"].pop()
+                else:
+                    observation["result_source"]["stamp"] = "another-frame"
+                self.assertTrue(report.quality(observation, self.expected, "grouped"))
+
+
+class StabilityTests(unittest.TestCase):
+    @classmethod
+    def setUpClass(cls):
+        cls.original = synthetic_report()
+
+    def setUp(self):
+        self.value = copy.deepcopy(self.original)
+        self.profile = "synthetic-reference"
+        self.processes = self.value["profiles"][self.profile]
+
+    def errors(self):
+        return report.validate_profile(self.processes, self.profile, self.value["binding"],
+                                       self.value["fixtures"], self.value["budgets"],
+                                       self.value["identities"][self.profile])[0]
+
+    def test_repeated_equivalent_widths_are_stable_without_rewriting_observations(self):
+        changed = 0
+        for process in self.processes:
+            for index, row in enumerate(process["samples"]):
+                if index % 2:
+                    for region in row["regions"]:
+                        if "%" in region["text"]:
+                            region["text"] = region["text"].replace("%", "％")
+                            changed += 1
+        self.assertGreater(changed, 0)
+        before = copy.deepcopy(self.processes)
+        self.assertEqual(self.errors(), [])
+        self.assertEqual(self.processes, before)
+
+    def test_valid_geometry_and_confidence_changes_still_break_stability(self):
+        self.assertEqual(self.errors(), [])
+        baseline = copy.deepcopy(self.processes)
+        for change in ("geometry", "confidence"):
+            with self.subTest(change=change):
+                self.processes = copy.deepcopy(baseline)
+                row = self.processes[0]["samples"][2]
+                fixture = next(fixture for fixture in self.value["fixtures"]
+                               if row["workload"] == f"{fixture['id']}/singular")
+                region = row["regions"][0]
+                if change == "geometry":
+                    region["quad"][0][0] += -.000001 if region["quad"][0][0] > .5 else .000001
+                else:
+                    region["confidence"] = .2
+                self.assertEqual(report.quality(row, fixture["regions"], "singular"), [])
+                self.assertTrue(self.errors())
+
+
 class Utf8ReadsTests(unittest.TestCase):
     def test_corpus_uses_utf8_under_cp1252_default_decoding(self):
         expected, identities = report.frozen_corpus(), report.corpus_identities()

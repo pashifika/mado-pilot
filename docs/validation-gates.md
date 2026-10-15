@@ -850,6 +850,18 @@ both final target reports remain required. The candidate assets are absent from
 the inspected Windows model root. No old failure, oracle, qualification or
 provider/watch scope is rewritten.
 
+[ADR 0083](adr/0083-platform-aware-ocr-calibration-and-percent-equivalence.md)
+supersedes only current percent-sign exactness and Windows reference operational
+allowances. Prospective text comparison and repeated-text stability equate
+U+0025 `%` with U+FF05 `％` after NFC and trim on both sides; geometry,
+confidence, order and groups retain their existing gates. Raw output, authored
+fixtures, SDK normalization and historical verdicts remain unchanged.
+One separately frozen Windows campaign receives 900 seconds per process and
+3,300 seconds whole, without incremental retries or security-software changes.
+That headroom is neither a measured security-software cost nor a performance
+budget. Complete Windows observations, reviewed numerical budgets and both
+final target reports remain required; no new qualification is established.
+
 ## G-014
 
 **Decision.** The archive entry-count, uncompressed-byte, and compression-ratio

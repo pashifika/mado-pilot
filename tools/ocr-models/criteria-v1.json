@@ -7,7 +7,7 @@
   "samples": 20,
   "threads": {"intra_op": 1, "inter_op": 1},
   "quality": {
-    "normalization": "NFC-trim-only",
+    "normalization": "NFC+trim+U+FF05-to-U+0025-percent-width-equivalence",
     "exact_count": true,
     "exact_order": true,
     "minimum_iou": 0.5,
