@@ -17,6 +17,10 @@ miss on both targets. That adverse oracle remains required. A private Python run
 or a macOS 27 run cannot qualify the Rust implementation on the approved release
 hosts.
 
+[ADR 0081](0081-current-apple-ocr-verification-cohort.md) supersedes that host
+exclusion for prospective, explicitly approved Apple CPU OCR verification.
+Earlier runs and their qualification status remain unchanged.
+
 ## Decision
 
 `mado-pilot-ocr` owns a strict versioned source JSON catalog, compiled into borrowed

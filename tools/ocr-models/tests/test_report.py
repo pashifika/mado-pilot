@@ -253,9 +253,21 @@ class ClassifierTests(unittest.TestCase):
         self.value["binding"]["target"] = "x86_64-unknown-linux-gnu"
         self.assert_refused("wrong release target")
 
-    def test_macos27_never_becomes_qualified_by_boolean(self):
-        self.value["binding"]["os"] = "macOS 27.0.0"
-        self.assert_refused("macOS 27")
+    def test_precommitted_host_policy_can_approve_macos27(self):
+        os_name = "macOS 27.0.1"
+        self.value["binding"]["os"] = os_name
+        self.value["budgets"]["cohort"]["os"] = os_name
+        self.value["host_policy"]["approved_cohorts"][0]["cohort"]["os"] = os_name
+        freeze_policies(self.repository, (self.value, self.windows))
+        verdict = self.verdict()
+        self.assertEqual(verdict["failures"], [])
+        self.assertTrue(verdict["target_qualified"])
+        self.assertEqual(verdict["candidate"], "fast")
+        self.assertFalse(verdict["admitted"])
+
+    def test_host_version_change_without_preapproval_is_refused(self):
+        self.value["binding"]["os"] = "macOS 27.0.1"
+        self.assert_refused("host cohort absent from frozen release allowlist")
 
     def test_quality_failure_is_not_hidden_by_speed(self):
         self.candidate_row()["regions"][0]["text"] = "wrong"

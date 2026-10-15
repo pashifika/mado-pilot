@@ -1,0 +1,18 @@
+{
+  "approved_cohorts": [
+    {
+      "cohort": {
+        "cohort_id": "apple-m1-pro-32g-macos27.0.1-ocr-cpu-v1",
+        "target": "aarch64-apple-darwin",
+        "os": "macOS 27.0.1",
+        "cpu": "Apple M1 Pro",
+        "host_id": "Pashifika-MBP.lan",
+        "runtime": "1.29.0-api17",
+        "provider": "cpu",
+        "intra_op": 1,
+        "inter_op": 1
+      },
+      "approval": "ADR-0081"
+    }
+  ]
+}

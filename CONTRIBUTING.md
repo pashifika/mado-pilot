@@ -89,13 +89,14 @@ See [the dependency policy](docs/third-party-dependencies.md#opencv) and
 This is not an installable profile or a clean/minimum-host/signing qualification;
 `G-007` and `G-012` remain open.
 
-The supported macOS native host is Apple Silicon macOS 26.6.2 (25G83), SDK
-26.5; the deployment floor remains macOS 26.5.2, and earlier versions are
-unsupported investigation targets rather than compatibility claims.
-Individual revision-bound feature gates can still be unexecuted on that host.
-The current macOS 26 host is supported. macOS 27.0 upgrade verification and its
-support decision belong to a separate Change; do not inherit qualification merely
-because the verification host is upgraded.
+Historical Apple platform qualification uses macOS 26.6.2 (25G83), SDK 26.5.
+The operator-selected current CPU OCR verification host is Apple M1 Pro, 32 GiB,
+macOS 27.0.1 (26A434), under
+[ADR 0081](docs/adr/0081-current-apple-ocr-verification-cohort.md). Its exact frozen
+cohort policy, prospective budgets and source-bound reports are required; an OS
+upgrade or an earlier debug run does not confer qualification. Capture/input
+verification on the upgraded host remains separate. The deployment floor is
+macOS 26.5.2; earlier versions remain unsupported investigation targets.
 `.cargo/config.toml` sets the final artifact deployment metadata to 26.5.2 and
 the native build repeats that floor. The macOS native shim
 `mado-pilot-platform-macos` compiles, links, and passes its tests with the **Xcode

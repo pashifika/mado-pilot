@@ -302,9 +302,6 @@ def validate_binding(binding):
         errors.append("CPU thread-one policy missing")
     if binding.get("qualified_host") is not True or not isinstance(binding.get("host_approval"), str) or not binding["host_approval"].strip():
         errors.append("host is not qualified/approved")
-    # The current experimental macOS 27 host is never release evidence.
-    if binding.get("target") == "aarch64-apple-darwin" and str(binding.get("os", "")).startswith(("macOS 27", "27.")):
-        errors.append("macOS 27 is not an approved release host")
     if binding.get("serial_execution") is not True:
         errors.append("serial process execution policy missing")
     return errors

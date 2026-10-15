@@ -155,7 +155,7 @@ Version one targets two platforms, and each is verified natively:
 | Release target | Native verification host |
 |---|---|
 | `x86_64-pc-windows-msvc` | Windows 11 Pro 25H2 build family 26200 (Qualification V2 host 26200.9278; earlier accepted evidence remains revision-bound), SDK 10.0.26100.0; `windows-2025` CI remains supporting server evidence |
-| `aarch64-apple-darwin` | Supported current host: Apple Silicon macOS 26.6.2 (25G83), SDK 26.5; the deployment floor remains 26.5.2 |
+| `aarch64-apple-darwin` | Current CPU OCR verification: Apple M1 Pro macOS 27.0.1 (26A434), 32 GiB, under ADR 0081. Historical platform qualification: macOS 26.6.2 (25G83), SDK 26.5. Deployment floor: 26.5.2 |
 
 A cross-compiled result never stands in for native verification of the other
 target. [ADR 0019](adr/0019-windows-qualified-system-and-controlled-availability.md)
@@ -169,10 +169,12 @@ Windows 11 Pro 25H2 build family 26200, is a supported OS, not an experimental o
 unsupported host. This policy does not certify earlier Windows 11 builds below
 that floor or claim that every future build has already been tested.
 
-Apple Silicon macOS 26 is supported, with macOS 26.6.2 (25G83) as the current
-verification host. macOS 27.0 upgrade verification and its support decision belong
-to a separate Change. Upgrading the host does not automatically qualify 27.0 or
-move the accepted baseline. Existing deployment metadata is unchanged.
+Apple Silicon macOS 26 qualifications remain bound to their macOS 26.6.2 (25G83)
+host. The operator-selected current CPU OCR verification baseline is macOS 27.0.1
+(26A434), under [ADR 0081](adr/0081-current-apple-ocr-verification-cohort.md) and
+its exact frozen cohort allowlist. This does not inherit prior qualification,
+relabel earlier macOS 27 diagnostics, or qualify capture/input on the upgraded
+host. The deployment floor remains 26.5.2.
 
 OS support and feature/workload qualification are separate. An unexecuted native
 OCR scenario, a numerical gate, or a failed measurement run does not by itself
@@ -199,7 +201,7 @@ owns and where they genuinely differ.
 | Input ownership | System pointer/keyboard/text plus explicit exact-window `WindowMessage`: ordinary retained top-level windows are unknown-but-attemptable with target-queue evidence, while the dedicated fixture is supported with protocol acknowledgement (implemented in the platform package) | `CGEvent` system pointer/keyboard/text plus an explicitly selected owning-process `ProcessDirected` route. Final protocol-v11 candidate `dec43d7` passed the controlled profiles, and independent `single`, exact two-display non-mirrored `same-scale`, and `mixed-scale` matrices passed for all fourteen controlled pairs. Their release decision is 14 qualified, 0 rejected, and 0 unexecuted. No `WindowMessage` route exists |
 | Permission handling | Capture presents no permission UI; no permission probe exists; input compares target integrity and reports proven UIPI at route preflight | Screen Recording and event-post access reported separately without permission UI; `PermissionKind::InputControl` maps to the public `CGPreflightPostEventAccess` decision re-read before every irreversible event, regardless of the Privacy & Security pane label, while legacy Accessibility trust is only a separate focus input and paired qualification fact (implemented) |
 | Native Rust template watcher | Implemented through maintained WGC window/display sessions; historical source `f16591f` passed 5/5 with the corrected different-monitor 144-to-120-DPI scale oracle. Integrated candidate `9cf746f` includes ADR 0061's private report-admission repair, but its authorized builder terminated at a pre-namespace environment control before Cargo. ADR 0063 retains the attempt. Qualification V2 Windows execution source `3e3079f` passed all eight compact semantic and cleanup scenarios, including acknowledged target loss and mixed-DPI token geometry; test-only successor `53608af` pins the earlier deadline clamp, and the boundary is supported on the qualified Windows floor | Implemented through maintained ScreenCaptureKit window/display sessions; historical source `f16591f` passed processes 1–4, then process 5 terminated red at `retained_result_mapping` after ScreenCaptureKit suspended the new stream. Integrated candidate `9cf746f` includes ADR 0062's exact retained-lifetime and typed-finalization repair, but its authorized builder terminated at a post-Cargo apparatus control before a complete artifact pair or process 1. ADR 0063 retains the attempt. Qualification V2 source `318ad1c` passed all eight compact semantic and cleanup scenarios with exact fixture finalization; reviewed target-isolated applicability carries that result through `53608af`, and the boundary is supported on the qualified macOS floor |
-| Native verification host | Core i7-12700KF / RTX 4080 Windows 11 Pro 25H2 build family 26200, Qualification V2 UBR 9278, SDK 10.0.26100.0; `windows-2025` CI remains supporting server evidence. ADR 0061 treats UBR and bounded hardware text as diagnostic provenance while the exact approved host class remains compatibility authority | Apple M1 Pro macOS 26.6.2 (25G83), SDK 26.5; `macos-26` CI remains compile and deterministic-contract evidence without Screen Recording authority |
+| Native verification host | Core i7-12700KF / RTX 4080 Windows 11 Pro 25H2 build family 26200, Qualification V2 UBR 9278, SDK 10.0.26100.0; `windows-2025` CI remains supporting server evidence. ADR 0061 treats UBR and bounded hardware text as diagnostic provenance while the exact approved host class remains compatibility authority | Current CPU OCR cohort: Apple M1 Pro, 32 GiB, macOS 27.0.1 (26A434), ADR 0081. Historical platform evidence: macOS 26.6.2 (25G83), SDK 26.5. `macos-26` CI remains compile and deterministic-contract evidence without Screen Recording authority |
 | Deployment floor | Windows 11 25H2 build family 26200 on a currently serviced x64 desktop installation; earlier versions unsupported | macOS 26.5.2; older versions unsupported |
 | Candidate verification | Windows Phase 1 reruns plus repository and release-target checks pass on the exact exit candidate; ADRs 0026, 0028, 0031, and 0032 retain their separate Windows workload sources | Apple Silicon Phase 1 runs remain attributed to `d8336be` and apply by reviewed complete diff; repository and release-target checks pass on the exact exit candidate; ADRs 0024, 0025, 0029, and 0030 retain their separate macOS workload sources |
 

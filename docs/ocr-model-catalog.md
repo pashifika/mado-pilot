@@ -137,9 +137,14 @@ not subsequently rebuild a hash-bound executable in that directory:
 ```bash
 CARGO_TARGET_DIR=target/ocr-model-admission \
   python3 tools/setup-native.py -- cargo bench --locked \
+  --config 'profile.bench.build-override.strip="none"' \
   -p mado-pilot-backend-onnx --features benchmark-instrumentation \
   --bench onnx-cpu --no-run
 ```
+
+The build-only strip override avoids rustc 1.97.1's macOS dylib alignment bug;
+it does not change benchmark optimization. Windows may omit it. See
+[ADR 0081](adr/0081-current-apple-ocr-verification-cohort.md).
 
 Use the emitted executable path as `OCR_BENCH`. Record its exact digest, source
 revision/tree and controlled runtime identity. The command surface is:
@@ -190,18 +195,22 @@ implementation. Dirty or unavailable build provenance cannot qualify.
 Use `--preflight-only` to inspect admission without inference. Explicit
 `--diagnostic` permits implementation observations with missing release
 prerequisites, preserves those failures, and can never rate or admit a model.
-Neither hosted CI nor the current macOS 27 workstation is an approved final
-performance cohort. A diagnostic exit status of `2` means no admission; inspect
-the retained failures rather than treating it as a successful qualification.
+Hosted CI is not a final performance cohort.
+[ADR 0081](adr/0081-current-apple-ocr-verification-cohort.md) approves the current
+macOS 27.0.1 Apple M1 Pro cohort through
+[`host-policy-v1.json`](../tools/ocr-models/host-policy-v1.json), without relabeling
+earlier failed diagnostics. A diagnostic exit status of `2` means no admission;
+inspect the retained failures rather than treating it as successful qualification.
 
 Absolute budgets have no implicit defaults. They name the exact cohort and
 approval, per-process cold-open/close/RSS ceilings, every workload's p50/p95/max,
 Rust peak/steady/growth, mapped bytes and detector tensor bytes. Required collectors
 are `rust-accounting`, `native-peak-rss` and `onnx-stage-clocks`. The host policy
-must independently allow the exact cohort. Current new-model host policies and
-absolute budgets are not accepted; final qualification remains blocked until
-reviewed, precommitted values exist. Old ceilings for other workloads are not
-silently reused for compact-UI inputs.
+must independently allow the exact cohort. The Apple reference-only precursor
+and budget derivation are fixed in ADR 0081. Final qualification remains blocked
+until the derived numeric budgets and both target policies are reviewed and
+precommitted for one final implementation revision. Old ceilings for other
+workloads are not silently reused for compact-UI inputs.
 
 The same precommitted policy binds `process_limits`: external process timeout,
 output byte limit, cleanup deadline and admitted cancellation/deadline return

@@ -839,9 +839,12 @@ changed, and no opaque allocation or unmeasured numeric work counter is invented
 defines the catalog, official PP-OCRv6 tiny/small execution and independently
 authored compact-UI suite. Existing accepted profiles remain unchanged. Candidate
 implementation or hosted smoke cannot replace approved Apple/Windows cohorts,
-precommitted absolute budgets and complete report validation. The current
-macOS 27 workstation cannot close the Apple gate. No old failure, oracle,
-qualification or provider/watch scope is rewritten.
+precommitted absolute budgets and complete report validation.
+[ADR 0081](adr/0081-current-apple-ocr-verification-cohort.md) approves the current
+macOS 27.0.1 workstation for prospective CPU OCR verification, not historical
+diagnostics or new-model admission. Its reference-only budget precursor cannot
+close the Apple gate; Windows connection and a common final source remain
+required. No old failure, oracle, qualification or provider/watch scope is rewritten.
 
 ## G-014
 
