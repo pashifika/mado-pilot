@@ -2665,6 +2665,17 @@ platform-neutral core and capture contracts only. ONNX Runtime, platform
 adapters, executors, queues, facade types, and ABI types remain outside this
 package.
 
+The same contract crate owns the versioned model catalog and its shared
+build/maintainer validator. Generated static descriptors are the single authority
+for closed identities, resources, execution parameters and accepted host metadata;
+recognition performs no JSON parsing. `accepted_ocr_profiles` and
+`accepted_ocr_profile` expose borrowed accepted choices through runtime and the
+Rust facade without loading a model. Presentation and evidence labels are
+separate from the resource-bound execution digest. [ADR 0080](adr/0080-ocr-model-catalog-and-admission.md)
+freezes the official PP-OCRv6 tiny/small candidate, including its mandatory pinned
+YAML vocabulary. It remains unqualified and absent from ordinary enumeration,
+construction and package manifest v1/v2 admission. No ABI or watch gate changes.
+
 One `OcrRequest` borrows one immutable `Frame`, one exact
 `OcrBackendIdentity` (stable ID plus implementation version), one complete
 `OcrModelIdentity`, and one `OperationContext`, then explicitly names the
@@ -2787,9 +2798,10 @@ honored interests, hard derived bounds, malformed output, final-commit races,
 redacted observations, overlap safety, and independence from backend buffers,
 frame storage, mappings, and model allocations.
 
-`mado-pilot-backend-onnx` is the concrete CPU implementation for the two exact
-closed profiles from ADRs 0033 and 0040. It requires a caller-supplied canonical
-absolute path to ONNX Runtime 1.29.0
+`mado-pilot-backend-onnx` is the concrete CPU implementation for the catalog's two
+accepted closed profiles from ADRs 0033 and 0040. A non-default maintainer feature
+also exposes the unqualified ADR 0080 candidate; it does not widen ordinary
+constructors. The backend requires a caller-supplied canonical absolute path to ONNX Runtime 1.29.0
 (`libonnxruntime.1.29.0.dylib` on Apple Silicon or `onnxruntime.dll` on Windows),
 verifies exact runtime/API and graph/vocabulary metadata before admission, and
 never searches ambient locations, downloads, bundles, or falls back to another
@@ -2800,9 +2812,10 @@ best-effort native termination, and rejects concurrent calls instead of queueing
 or invoking `Session::run` concurrently.
 
 `OnnxOcrBackend::open_accepted` retains released native G-004 preprocessing.
-`OnnxOcrBackend::open_bounded_detector` is the only fixed-path bounded
-constructor. It computes source/final dimensions, forward/inverse scale, tensor
-elements, and bytes before allocation. Candidate v2 first fits oversized desired
+`OnnxOcrBackend::open_bounded_detector` retains the explicit bounded constructor;
+`open_profile` resolves an accepted catalog ID before resource I/O. It computes
+source/final dimensions, forward/inverse scale, tensor elements, and bytes before
+allocation. Candidate v2 first fits oversized desired
 work within `1312x736`; only after that fit, tensors above 6,291,456 bytes receive
 one second aspect-preserving floor-to-32 fit. Desired work that already fits the
 rectangle, including 960×540 and odd HUD inputs, retains the 11,587,584-byte
@@ -2826,11 +2839,14 @@ construction. `replay_engine_with_default_ocr`,
 `windows_engine_with_default_ocr`, and `macos_engine_with_default_ocr` retain
 released native G-004 meaning through `DefaultOcrConfig`.
 `replay_engine_with_ocr_profile`, `windows_engine_with_ocr_profile`, and
-`macos_engine_with_ocr_profile` accept `OcrProfileConfig` with the closed
-`OcrProfile::BoundedDetector` selection. Both carry caller-selected controlled
-model-root/runtime paths; ordinary constructors continue to omit OCR unless a
-caller supplies a backend. No constructor performs ambient search, download,
-retry, fallback, or support-table inference.
+`macos_engine_with_ocr_profile` accept `OcrProfileConfig`. The existing
+`OcrProfile::BoundedDetector` selection is unchanged; `OcrProfileConfig::from_id`
+selects an accepted static catalog ID. Construction revalidates selection, so
+manually constructing `OcrProfile::Catalog` cannot admit an unknown or unqualified
+profile. Both paths carry caller-selected controlled model-root/runtime paths;
+ordinary constructors continue to omit OCR unless a caller supplies a backend.
+No constructor performs ambient search, download, retry, fallback, or
+support-table inference.
 
 For troubleshooting, `ProfileMismatch` means the source is not one complete
 accepted tuple; changing only a profile or preprocessing string is never

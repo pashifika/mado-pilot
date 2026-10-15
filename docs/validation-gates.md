@@ -835,6 +835,14 @@ Final fixed-cohort execution and target-owned WGC/ScreenCaptureKit evidence rema
 separate required gates. No historical failed/partial record or old ceiling is
 changed, and no opaque allocation or unmeasured numeric work counter is invented.
 
+**New OCR model admission remains open.** [ADR 0080](adr/0080-ocr-model-catalog-and-admission.md)
+defines the catalog, official PP-OCRv6 tiny/small execution and independently
+authored compact-UI suite. Existing accepted profiles remain unchanged. Candidate
+implementation or hosted smoke cannot replace approved Apple/Windows cohorts,
+precommitted absolute budgets and complete report validation. The current
+macOS 27 workstation cannot close the Apple gate. No old failure, oracle,
+qualification or provider/watch scope is rewritten.
+
 ## G-014
 
 **Decision.** The archive entry-count, uncompressed-byte, and compression-ratio

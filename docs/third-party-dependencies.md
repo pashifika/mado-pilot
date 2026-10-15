@@ -106,7 +106,7 @@ dependency surface over a framework that pulls in unrelated features.
 
 | Crate | Used by | Why | License |
 |---|---|---|---|
-| `serde`, `serde_json` | `mado-pilot-adapter-replay`, `mado-pilot-assets` | Reads the replay sequence manifest and the asset package manifest. JSON is the manifest serialization [ADR 0001](adr/0001-asset-archive-container-and-safety-ceilings.md) chose, so a reader meets one format rather than two, and both crates were already resolved in the committed lockfile for the maintenance tool | MIT OR Apache-2.0 |
+| `serde`, `serde_json` | `mado-pilot-adapter-replay`, `mado-pilot-assets`; `mado-pilot-ocr` build/maintainer tools | Read strict replay/package manifests and validate the repository model catalog at build or maintainer-command time. OCR recognition uses generated static descriptors, not JSON | MIT OR Apache-2.0 |
 | `zip` 8.6 | `mado-pilot-assets` | Reads the ZIP central directory and decompresses entries. Default features **off**, `deflate-flate2` only | MIT |
 | `flate2` 1.1 | `mado-pilot-assets` | Selects the DEFLATE backend `zip` decompresses with. Not called directly | MIT OR Apache-2.0 |
 | `sha2` 0.11 | `mado-pilot-assets`, `mado-pilot-ocr`, `mado-pilot-backend-onnx` | Verifies package entry digests, immutable OCR model component identities, and the recognizer graph's embedded vocabulary before session admission | MIT OR Apache-2.0 |
@@ -114,6 +114,7 @@ dependency surface over a framework that pulls in unrelated features.
 | `opencv` 0.99 | `mado-pilot-backend-opencv`, `mado-pilot-backend-onnx` | Binds the OpenCV C++ image-processing API used by the CPU matching profile and the accepted OCR profiles' direct resize, contour, dilation, and original-source perspective-crop rules. Default features **off**; `imgcodecs`, `imgproc`, and `clang-runtime` only | MIT |
 | `ort` 2.0.0-rc.13 | `mado-pilot-backend-onnx` | Exact-pinned safe session/tensor/metadata/run-options wrapper. Default features remain **off** with `std`, `alternative-backend`, and `api-17`; target-gated `coreml-provider` and `cuda-provider` features additionally enable only the corresponding registration module. No downloader, dynamic-search helper, telemetry feature, or model fetcher is enabled | MIT OR Apache-2.0 |
 | `libloading` 0.8.9 | `mado-pilot-backend-onnx` | Opens the caller-supplied canonical ONNX Runtime and the fixed Windows CUDA/cuBLAS/cuDNN/NVRTC dependency set with target-specific restricted flags. The runtime and a successful provider set remain live for their process-global API/provider lifetime; failed candidates release their explicit dependency references before fresh CPU construction. It never searches `PATH` | ISC |
+| `yaml-rust2` 0.13.0 | `mado-pilot-backend-onnx` | Exact-pinned bounded event parsing of the verified Paddle inference-YAML vocabulary during construction. Default features **off**; no encoding detection, general YAML tree, alias expansion, native dependency or downloader | MIT OR Apache-2.0 |
 | `libc` 0.2.189 | `mado-pilot-backend-onnx` (macOS benchmark dev-only) | Supplies the target `rusage` layout and `getrusage` declaration used to enforce the Apple OCR process peak-RSS ceiling. The target-gated direct edge adds no crate to the lockfile and is absent from product dependencies | MIT OR Apache-2.0 |
 | `windows` 0.62.2 | `mado-pilot-platform-windows` | Supplies Microsoft-maintained Rust bindings for the picker-free Win32 target inventory, WGC/WinRT interop, D3D11/DXGI ownership, DPI, system input, window messaging, and token-integrity APIs. Default features **off**; only the reviewed namespaces listed in the workspace manifest are enabled, and the dependency is `cfg(windows)`-gated | MIT OR Apache-2.0 |
 | `cc` 1.4 | `mado-pilot-platform-macos` (build) | Compiles the Objective-C shim that owns the macOS native boundary. The package declares the build dependency unconditionally, so Cargo resolves the edge on every host; `build.rs` gates Objective-C compilation and Apple framework link directives on a macOS target. It was already an indirect build dependency through the OpenCV binding generator, so the graph gains an edge rather than a crate | MIT OR Apache-2.0 |
@@ -198,6 +199,13 @@ backend, but lockfile-wide advisory and license policy still reviews them. Every
 recorded package is MIT, Apache-2.0, or a permitted dual-license expression, so
 no policy exception is required.
 
+ADR 0080 reviews the YAML parser's pure-Rust, Rust 1.85 minimum, no-build-script
+boundary. Its newly resolved closure is `arraydeque` 0.5.1 and `hashlink` 0.12.2
+(MIT OR Apache-2.0), plus `foldhash` 0.2.0 (Zlib) through the already resolved
+`hashbrown`. These licenses need no exception. Catalog build/maintainer validation
+reuses the existing `serde`, `serde_json` and `sha2` resolutions; none becomes a
+per-frame parsing path.
+
 ## Reviewed decisions not yet in the lockfile
 
 A gate resolution can settle which dependency a later change will need before
@@ -211,6 +219,18 @@ can see the license position was checked when the choice was made.
 
 The exact versions are pinned by the change that adds them, against the
 lockfile and the advisory database as they stand at that time.
+
+### Official PP-OCRv6 candidate resources
+
+The new tiny-detector/small-recognizer candidate uses two original ONNX files and
+the recognizer's original `inference.yml`, all pinned to official PaddlePaddle
+Hugging Face revisions under Apache-2.0. [ADR 0080](adr/0080-ocr-model-catalog-and-admission.md)
+records exact lengths/hashes and the dictionary's canonical identity.
+The [catalog command](ocr-model-catalog.md#source-schema) emits validated source
+URLs and relative paths; the SDK neither acquires nor redistributes the files.
+This export has no embedded `character` metadata. Substituting the older graph,
+deriving an untracked dictionary or omitting the YAML is not a supported fallback.
+Its implementation does not promote it to an accepted model.
 
 ### G-004 accepted OCR profile
 

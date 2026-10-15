@@ -1258,3 +1258,24 @@ recognizer nodes. One pre-runtime canonical-path apparatus stop is retained; its
 authorized canonical-spelling replacement changed no source, executable,
 directory contents, workload arguments, or product environment and reproduced
 the exact counts.
+
+## OCR model admission comparison
+
+[ADR 0080](adr/0080-ocr-model-catalog-and-admission.md) and the
+[model maintainer procedure](ocr-model-catalog.md) define a distinct comparison
+suite: unchanged G-004 v3 plus the frozen `compact-ui-v1` inputs, actual Rust
+singular/grouped recognition, three fresh processes per profile, two warmups and
+twenty retained samples per workload. Reference and candidate run serially with
+one intra/inter-op CPU thread.
+
+Quality, source identity, lifecycle and resource correctness are hard gates.
+`fast` additionally requires both p50/p95 at most 80% of the reference for every
+workload in the same target/provider/cohort; otherwise complete passing evidence
+is `balanced`. `unrated` preserves an already accepted profile without a new
+comparative claim and never admits a candidate.
+
+No new target-specific absolute budgets or final native results are accepted.
+Missing approved hosts, frozen budgets or required collectors refuses
+qualification. Current macOS 27 observations and hosted CI are implementation
+evidence only. Historical benchmark artifacts and their revision-bound hashes,
+ceilings and adverse rows remain unchanged.

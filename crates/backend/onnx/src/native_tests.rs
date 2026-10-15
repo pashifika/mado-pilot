@@ -851,6 +851,9 @@ fn open_profile(
         OnnxOcrProfile::BoundedDetector => {
             OnnxOcrBackend::open_bounded_detector(model_root, runtime, operation)
         }
+        OnnxOcrProfile::Catalog => {
+            panic!("the released-profile oracle opens only the two legacy constructors")
+        }
     }
 }
 
@@ -871,4 +874,427 @@ fn required_path(variable: &str) -> PathBuf {
     let path = PathBuf::from(std::env::var_os(variable).expect("native test path is configured"));
     path.canonicalize()
         .expect("native test path is canonicalizable")
+}
+
+/// Maintainer-route conformance for the declared, still-unqualified candidate.
+///
+/// These tests prove construction, exact resource refusal, source correlation,
+/// and lifecycle settlement. They are not admission evidence and assert no
+/// recognition-quality oracle.
+#[cfg(feature = "benchmark-instrumentation")]
+mod candidate {
+    use std::fs;
+
+    use mado_pilot_ocr::{
+        ACCEPTED_G004_PROFILE_ID, OcrResult, RecognizedRegion, accepted_ocr_profile,
+        declared_ocr_profile,
+    };
+
+    use super::*;
+    use crate::OnnxExecutionProvider;
+    use crate::benchmark_instrumentation::{OpenStage, install_open_stage_observer};
+    use crate::profile::ExecutionProfile;
+
+    const CANDIDATE_PROFILE_ID: &str = "ppocrv6-tiny-det-small-rec-max736-v1";
+
+    fn open_candidate(
+        model_root: &Path,
+        runtime: &Path,
+        operation: &OperationContext,
+    ) -> Result<OnnxOcrBackend, OnnxBackendFault> {
+        OnnxOcrBackend::open_candidate(CANDIDATE_PROFILE_ID, model_root, runtime, operation)
+    }
+
+    fn candidate_plan(width: u32, height: u32) -> (u32, u32) {
+        let plan = ExecutionProfile::declared(CANDIDATE_PROFILE_ID)
+            .expect("declared candidate")
+            .0
+            .preprocessing()
+            .plan(width, height)
+            .expect("bounded candidate plan");
+        (plan.final_width(), plan.final_height())
+    }
+
+    #[test]
+    #[ignore = "requires explicit reviewed ONNX Runtime and declared candidate model paths"]
+    fn declared_candidate_runtime_recognizes_with_source_correlation_and_lifecycle() {
+        let _serial = serialize_native_runtime_test();
+        let runtime = required_path(RUNTIME_ENV);
+        let model_root = required_path(MODEL_ROOT_ENV);
+        let operation = OperationContext::new();
+        let identity = declared_ocr_profile(CANDIDATE_PROFILE_ID)
+            .expect("declared candidate")
+            .candidate_identity()
+            .expect("candidate identity");
+        assert_eq!(
+            OnnxOcrBackend::open_profile(CANDIDATE_PROFILE_ID, &model_root, &runtime, &operation)
+                .map(|_| ()),
+            Err(OnnxBackendFault::ProfileMismatch),
+            "product selection never admits the unqualified candidate"
+        );
+
+        let contract: Arc<dyn OcrBackend> = Arc::new(
+            open_candidate(&model_root, &runtime, &operation).expect("declared candidate opens"),
+        );
+        ocr_contract::run(&contract);
+        drop(contract);
+
+        let backend = Arc::new(
+            open_candidate(&model_root, &runtime, &operation)
+                .expect("declared candidate reopens after close"),
+        );
+        assert_eq!(backend.descriptor().model_identity(), &identity);
+        let facts = backend.facts();
+        assert_eq!(facts.profile(), OnnxOcrProfile::Catalog);
+        assert_eq!(facts.profile_id(), CANDIDATE_PROFILE_ID);
+        assert_eq!(facts.provider(), OnnxExecutionProvider::Cpu);
+        assert_eq!(
+            (facts.max_detector_width(), facts.max_detector_height()),
+            (Some(736), Some(736))
+        );
+        assert_eq!(facts.max_detector_tensor_bytes(), 6_500_352);
+        assert_eq!(backend.supports_text("Lv.42 HP1234/5678 READY!"), Ok(true));
+        assert_eq!(backend.supports_text("\u{0}"), Ok(false));
+
+        let port: Arc<dyn OcrBackend> = backend.clone();
+        let before = backend.observations().expect("observations");
+        let first = recognize_hud(Arc::clone(&port), &operation);
+        let after = backend.observations().expect("observations");
+        assert_candidate_delta(before, after, 960, 540);
+        assert_regions_within(&first, 960.0, 540.0);
+        for _ in 0..2 {
+            assert_same_regions(&first, &recognize_hud(Arc::clone(&port), &operation));
+        }
+
+        let full = [ocr_zone((0.0, 0.0, 960.0, 540.0))];
+        let grouped = scan_hud_zones(&backend, &full, &operation).expect("full-frame scan");
+        assert_eq!(grouped.unique_candidates(), first.regions());
+        let three = HUD_THREE_ZONES.map(ocr_zone);
+        let before = backend.observations().expect("observations");
+        let grouped = scan_hud_zones(&backend, &three, &operation).expect("three-zone scan");
+        let after = backend.observations().expect("observations");
+        assert_candidate_delta(before, after, 860, 430);
+        for group in 0..three.len() {
+            for region in grouped.group(group).expect("caller-order group").iter() {
+                assert_region_within(region, 960.0, 540.0);
+            }
+        }
+
+        for (width, height) in [(1, 1), (31, 7), (4_000, 16), (16, 4_000)] {
+            let frame = vision_contract::frame_with_pixels(
+                PixelExtent::new(width, height),
+                PixelFormat::Bgra8,
+                vec![255; usize::try_from(width * height * 4).expect("frame bytes")],
+            );
+            let before = backend.observations().expect("observations");
+            let result = recognize_frame_result(Arc::clone(&port), &frame, &operation)
+                .expect("small and extreme sources stay bounded");
+            let after = backend.observations().expect("observations");
+            assert_candidate_delta(before, after, width, height);
+            assert_regions_within(&result, f64::from(width), f64::from(height));
+        }
+
+        let cancellation_gate = crate::inference::test_hook::install();
+        let token = CancellationToken::new();
+        let worker_token = token.clone();
+        let worker_port = Arc::clone(&port);
+        let (cancelled_sender, cancelled_receiver) = mpsc::sync_channel(1);
+        let cancelled = thread::spawn(move || {
+            let context = OperationContext::new().with_cancellation(worker_token);
+            cancelled_sender
+                .send(
+                    recognize_hud_result(worker_port, &context)
+                        .expect_err("cancelled candidate inference cannot publish")
+                        .status(),
+                )
+                .expect("cancellation receiver remains live");
+        });
+        assert!(cancellation_gate.wait_until_admitted(NATIVE_GATE_BOUND));
+        cancellation_gate.release();
+        assert!(cancellation_gate.wait_until_run_started(NATIVE_GATE_BOUND));
+        let while_running = backend.observations();
+        token.cancel();
+        assert!(cancellation_gate.wait_until_termination_issued(NATIVE_TERMINATION_BOUND));
+        assert_eq!(
+            cancelled_receiver
+                .recv_timeout(NATIVE_GATE_BOUND)
+                .expect("cancelled candidate run returns"),
+            Status::Cancelled
+        );
+        cancelled.join().expect("cancellation worker joins");
+        drop(cancellation_gate);
+        assert_eq!(while_running, Err(OnnxBackendFault::Busy));
+        assert_same_regions(&first, &recognize_hud(Arc::clone(&port), &operation));
+
+        let deadline_gate = crate::inference::test_hook::install();
+        let deadline_clock = Arc::new(ManualClock::new());
+        let worker_clock = deadline_clock.clone();
+        let worker_port = Arc::clone(&port);
+        let (deadline_sender, deadline_receiver) = mpsc::sync_channel(1);
+        let deadline = thread::spawn(move || {
+            let context = OperationContext::new()
+                .with_clock(worker_clock)
+                .with_timeout(Duration::from_millis(10))
+                .unwrap();
+            deadline_sender
+                .send(
+                    recognize_hud_result(worker_port, &context)
+                        .expect_err("expired candidate inference cannot publish")
+                        .status(),
+                )
+                .expect("deadline receiver remains live");
+        });
+        assert!(deadline_gate.wait_until_admitted(NATIVE_GATE_BOUND));
+        deadline_clock.advance(Duration::from_millis(10));
+        assert!(deadline_gate.wait_until_termination_issued(NATIVE_GATE_BOUND));
+        deadline_gate.release();
+        assert_eq!(
+            deadline_receiver
+                .recv_timeout(NATIVE_GATE_BOUND)
+                .expect("expired candidate run returns"),
+            Status::DeadlineExceeded
+        );
+        deadline.join().expect("deadline worker joins");
+        drop(deadline_gate);
+
+        let close_gate = crate::inference::test_hook::install();
+        let worker_port = Arc::clone(&port);
+        let (raced_sender, raced_receiver) = mpsc::sync_channel(1);
+        let raced = thread::spawn(move || {
+            raced_sender
+                .send(recognize_hud(worker_port, &OperationContext::new()))
+                .expect("close-race receiver remains live");
+        });
+        assert!(close_gate.wait_until_admitted(NATIVE_GATE_BOUND));
+        assert_eq!(
+            port.close(&operation)
+                .expect_err("close does not tear down admitted work")
+                .status(),
+            Status::LimitExceeded
+        );
+        close_gate.release();
+        let raced_result = raced_receiver
+            .recv_timeout(NATIVE_GATE_BOUND)
+            .expect("admitted candidate run returns");
+        raced.join().expect("close-race worker joins");
+        drop(close_gate);
+        assert_same_regions(&first, &raced_result);
+        port.close(&operation).expect("candidate backend closes");
+        port.close(&operation)
+            .expect("repeated close is idempotent");
+        assert_eq!(
+            backend.observations(),
+            Err(OnnxBackendFault::Closed),
+            "closed sessions are not reused"
+        );
+    }
+
+    #[test]
+    #[ignore = "requires explicit reviewed ONNX Runtime and declared candidate model paths"]
+    fn declared_candidate_refuses_missing_or_tampered_resources() {
+        let _serial = serialize_native_runtime_test();
+        let runtime = required_path(RUNTIME_ENV);
+        let model_root = required_path(MODEL_ROOT_ENV);
+        let operation = OperationContext::new();
+        let declared = declared_ocr_profile(CANDIDATE_PROFILE_ID).expect("declared candidate");
+        let auxiliary = declared.auxiliary.expect("declared vocabulary resource");
+        let staged = StagedRoot::new("candidate-resources");
+        let open = |root: &Path| {
+            open_candidate(root, &runtime, &operation).map(|backend| {
+                backend.close(&operation).expect("staged candidate closes");
+            })
+        };
+
+        assert_eq!(
+            open(&staged.0),
+            Err(OnnxBackendFault::ProfileDetectorUnavailable)
+        );
+        staged.copy(&model_root, declared.detector.relative_path);
+        assert_eq!(
+            open(&staged.0),
+            Err(OnnxBackendFault::ProfileRecognizerUnavailable)
+        );
+        staged.copy(&model_root, declared.recognizer.relative_path);
+        assert_eq!(open(&staged.0), Err(OnnxBackendFault::AuxiliaryUnavailable));
+
+        let vocabulary = fs::read(model_root.join(auxiliary.relative_path)).expect("vocabulary");
+        let mut tampered = vocabulary.clone();
+        let middle = tampered.len() / 2;
+        tampered[middle] ^= 1;
+        staged.write(auxiliary.relative_path, &tampered);
+        assert_eq!(open(&staged.0), Err(OnnxBackendFault::AuxiliaryMismatch));
+        staged.write(auxiliary.relative_path, &vocabulary[..vocabulary.len() - 1]);
+        assert_eq!(open(&staged.0), Err(OnnxBackendFault::AuxiliaryMismatch));
+        staged.write(auxiliary.relative_path, &vocabulary);
+        assert_eq!(open(&staged.0), Ok(()));
+
+        let released = accepted_ocr_profile(ACCEPTED_G004_PROFILE_ID).expect("released profile");
+        let legacy_recognizer = fs::read(model_root.join(released.recognizer.relative_path))
+            .expect("legacy recognizer");
+        staged.write(declared.recognizer.relative_path, &legacy_recognizer);
+        assert_eq!(
+            open(&staged.0),
+            Err(OnnxBackendFault::ProfileRecognizerMismatch),
+            "an older export with the same dictionary is not interchangeable"
+        );
+    }
+
+    #[test]
+    #[ignore = "requires explicit reviewed ONNX Runtime and declared candidate model paths"]
+    fn declared_candidate_initialization_settles_interruptions_without_publication() {
+        let _serial = serialize_native_runtime_test();
+        let runtime = required_path(RUNTIME_ENV);
+        let model_root = required_path(MODEL_ROOT_ENV);
+
+        let cancelled = CancellationToken::new();
+        cancelled.cancel();
+        assert_eq!(
+            open_candidate(
+                &model_root,
+                &runtime,
+                &OperationContext::new().with_cancellation(cancelled),
+            )
+            .map(|_| ()),
+            Err(OnnxBackendFault::Cancelled)
+        );
+
+        let token = CancellationToken::new();
+        let observer_token = token.clone();
+        let observer = install_open_stage_observer(move |stage| {
+            if stage == OpenStage::DetectorSessionReady {
+                observer_token.cancel();
+            }
+        });
+        assert_eq!(
+            open_candidate(
+                &model_root,
+                &runtime,
+                &OperationContext::new().with_cancellation(token),
+            )
+            .map(|_| ()),
+            Err(OnnxBackendFault::Cancelled)
+        );
+        drop(observer);
+
+        let clock = Arc::new(ManualClock::new());
+        let observer_clock = clock.clone();
+        let observer = install_open_stage_observer(move |stage| {
+            if stage == OpenStage::RecognizerSessionReady {
+                observer_clock.advance(Duration::from_millis(10));
+            }
+        });
+        let expiring = OperationContext::new()
+            .with_clock(clock)
+            .with_timeout(Duration::from_millis(10))
+            .unwrap();
+        assert_eq!(
+            open_candidate(&model_root, &runtime, &expiring).map(|_| ()),
+            Err(OnnxBackendFault::DeadlineExceeded)
+        );
+        drop(observer);
+
+        let operation = OperationContext::new();
+        let reopened = open_candidate(&model_root, &runtime, &operation)
+            .expect("interrupted initialization released its session-pair reservation");
+        reopened.close(&operation).expect("candidate closes");
+    }
+
+    fn recognize_frame_result(
+        backend: Arc<dyn OcrBackend>,
+        frame: &mado_pilot_capture::Frame,
+        operation: &OperationContext,
+    ) -> mado_pilot_core::Result<OcrResult> {
+        let recognizer = OcrRecognizer::new(backend);
+        let descriptor = recognizer.descriptor();
+        recognizer.recognize(OcrRequest::new(
+            frame,
+            descriptor.backend_identity(),
+            descriptor.model_identity(),
+            OcrRegion::FullFrame,
+            CoordinateSpace::CapturePixels,
+            operation,
+        ))
+    }
+
+    fn assert_candidate_delta(
+        before: OnnxBackendObservations,
+        after: OnnxBackendObservations,
+        width: u32,
+        height: u32,
+    ) {
+        let (detector_width, detector_height) = candidate_plan(width, height);
+        assert!(detector_width <= 736 && detector_height <= 736);
+        assert_eq!(after.latest_mapping_width(), Some(width));
+        assert_eq!(after.latest_mapping_height(), Some(height));
+        assert_eq!(after.latest_detector_width(), Some(detector_width));
+        assert_eq!(after.latest_detector_height(), Some(detector_height));
+        assert_eq!(
+            after.detector_tensor_bytes() - before.detector_tensor_bytes(),
+            u64::from(detector_width) * u64::from(detector_height) * 12
+        );
+        assert_eq!(after.detector_runs() - before.detector_runs(), 1);
+        assert_eq!(
+            after.cleanup_completions() - before.cleanup_completions(),
+            1
+        );
+        assert!(after.detector_inference_nanos() > before.detector_inference_nanos());
+        assert_eq!(after.session_pairs(), 1);
+        assert_eq!(after.sessions(), 2);
+    }
+
+    fn assert_regions_within(result: &OcrResult, width: f64, height: f64) {
+        for region in result.regions() {
+            assert_region_within(region, width, height);
+        }
+    }
+
+    fn assert_region_within(region: &RecognizedRegion, width: f64, height: f64) {
+        for point in region.geometry().points() {
+            assert!(
+                (0.0..=width).contains(&point.x()) && (0.0..=height).contains(&point.y()),
+                "candidate geometry left its source"
+            );
+        }
+        let confidence = region.confidence().get();
+        assert!(confidence.is_finite() && (0.0..=1.0).contains(&confidence));
+    }
+
+    fn assert_same_regions(first: &OcrResult, repeated: &OcrResult) {
+        assert_eq!(
+            first.regions(),
+            repeated.regions(),
+            "same-implementation candidate output drifted"
+        );
+    }
+
+    struct StagedRoot(PathBuf);
+
+    impl StagedRoot {
+        fn new(name: &str) -> Self {
+            let path =
+                std::env::temp_dir().join(format!("mado-pilot-{name}-{}", std::process::id()));
+            let _ = fs::remove_dir_all(&path);
+            fs::create_dir_all(&path).expect("create staged model root");
+            Self(path.canonicalize().expect("canonical staged model root"))
+        }
+
+        fn write(&self, relative: &str, bytes: &[u8]) {
+            let path = self.0.join(relative);
+            fs::create_dir_all(path.parent().expect("resource parent")).expect("resource parent");
+            fs::write(path, bytes).expect("write staged resource");
+        }
+
+        fn copy(&self, source_root: &Path, relative: &str) {
+            self.write(
+                relative,
+                &fs::read(source_root.join(relative)).expect("read declared resource"),
+            );
+        }
+    }
+
+    impl Drop for StagedRoot {
+        fn drop(&mut self) {
+            let _ = fs::remove_dir_all(&self.0);
+        }
+    }
 }

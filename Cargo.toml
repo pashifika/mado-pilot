@@ -47,6 +47,8 @@ sha2 = "0.11.0"
 # NFC normalization is part of the accepted G-004 OCR profile and runs at the
 # platform-neutral OCR commit boundary, before any result becomes observable.
 unicode-normalization = "0.1.25"
+# Bounded event parsing of a verified Paddle inference-YAML vocabulary, at open only.
+yaml-rust2 = { version = "=0.13.0", default-features = false }
 # The ONNX OCR backend owns dynamic loading explicitly. `alternative-backend`
 # prevents `ort-sys` from linking or downloading a native runtime, while API 17
 # is the reviewed compatibility floor. See

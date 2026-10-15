@@ -58,6 +58,11 @@ python3 tools/setup-native.py -- cargo run --locked --package mado-pilot --examp
 
 For real text recognition, use [the default OCR walkthrough](crates/mado-pilot/examples/ocr-default.rs) with the documented [ONNX Runtime and model prerequisites](docs/third-party-dependencies.md#implemented-onnx-runtime-prerequisite). To watch real windows or displays, follow [native template watching](docs/native-template-watch.md), including its permission requirements and supported behavior.
 
+For accepted model IDs, exact resources and read-only selection metadata, see
+[the OCR model catalog](docs/ocr-model-catalog.md). New model candidates remain
+separate from supported choices until both release targets pass their frozen
+qualification criteria.
+
 The new [OCR text watcher example](crates/mado-pilot/examples/ocr-text-watch.rs) uses the explicit CPU bounded-v2 profile. Its [fixed replay and native procedures](docs/ocr-text-watch.md) keep controlled API checks separate from real-model and permissioned capture evidence; no new support claim follows from compilation.
 
 To configure native capture intervals and wait a full cooldown after OCR and caller
@@ -97,6 +102,7 @@ Open `target/doc/mado_pilot/index.html`. Rust API stability begins at 1.0; the C
 | [Platform support](docs/architecture.md#release-targets) | Supported systems and the distinction between deployment floors and verified hosts |
 | [Windows input](docs/windows-input-verification.md) / [macOS input](docs/macos-input-verification.md) | Delivery modes, permissions, focus behavior, and native verification |
 | [Native dependencies](docs/third-party-dependencies.md) | OpenCV, ONNX Runtime, models, licenses, and deployment requirements |
+| [OCR model catalog](docs/ocr-model-catalog.md) | Accepted choices, exact resources, schema, and model admission procedure |
 | [Performance](docs/performance.md) | Workload-specific budgets and measurements |
 | [Validation gates](docs/validation-gates.md) | Remaining version-one decisions and acceptance criteria |
 | [Decisions](docs/adr/) / [Evidence](docs/evidence/) | Design rationale and revision-bound verification records |

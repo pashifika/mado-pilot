@@ -8,11 +8,25 @@ license.workspace = true
 repository.workspace = true
 publish = false
 
+[features]
+default = []
+# Explicit maintainer identities; never widens production enumeration/admission.
+model-candidates = []
+
 [dependencies]
 mado-pilot-core = { path = "../core" }
 mado-pilot-capture = { path = "../capture" }
 sha2.workspace = true
 unicode-normalization.workspace = true
+
+[build-dependencies]
+serde.workspace = true
+serde_json.workspace = true
+sha2.workspace = true
+
+[dev-dependencies]
+serde.workspace = true
+serde_json.workspace = true
 
 [lints]
 workspace = true

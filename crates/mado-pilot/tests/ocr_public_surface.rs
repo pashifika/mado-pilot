@@ -361,6 +361,25 @@ fn explicit_profile_is_closed_atomic_and_has_no_ambient_fallback() {
 }
 
 #[test]
+fn unqualified_catalog_ids_cannot_reach_runtime_loading() {
+    for id in ["unknown-profile", "ppocrv6-tiny-det-small-rec-max736-v1"] {
+        let root = std::env::temp_dir().join("mado-pilot-unselected-models");
+        let runtime = root.join("not-an-onnx-runtime");
+        let error = OcrProfileConfig::from_id(id, &root, &runtime).unwrap_err();
+        assert_eq!(error.status(), Status::Unsupported);
+
+        let forged = OcrProfileConfig::new(OcrProfile::Catalog(id), &root, &runtime);
+        let error = mado_pilot::replay_engine_with_ocr_profile(
+            ReplayEngineRequest::new(blank_source(PixelExtent::new(8, 8), PixelFormat::Bgra8)),
+            &forged,
+            &OperationContext::new(),
+        )
+        .expect_err("constructing an enum cannot bypass catalog admission");
+        assert_eq!(error.status(), Status::InvalidArgument);
+    }
+}
+
+#[test]
 #[ignore = "requires explicit reviewed ONNX Runtime and G-004 model root"]
 fn default_ocr_profile_runs_full_and_bounded_replay_regions() {
     let model_root = std::path::PathBuf::from(
