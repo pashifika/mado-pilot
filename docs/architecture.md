@@ -2693,10 +2693,15 @@ allowance with one newly frozen three-process campaign: 900 seconds per process,
 3,300 seconds whole, with unchanged output, cleanup and lifecycle bounds.
 This platform-specific headroom is not a measured security-software cost or
 a numerical model-performance budget. No incremental deadline retries or
-security-software changes are permitted. Apple bounds and data remain unchanged;
-Windows numerical budgets require complete observations before review and
-commitment. Reference calibration cannot qualify a model or authorize candidate
-execution, resource acquisition or support promotion.
+security-software changes are permitted. Apple bounds and data remain unchanged.
+The Windows calibration at source `0cb9fc0` completed three processes and 1,452
+observations with zero shared validation failures. Its independently calibrated
+numerical policy is
+[`windows-i7-12700kf-26300-budgets-v1.json`](../tools/ocr-models/windows-i7-12700kf-26300-budgets-v1.json),
+derived under ADR 0082. Calibration never qualifies either model or authorizes
+candidate execution, resource acquisition or support promotion. Both final
+target procedures and reports on a common final source/build, plus a reviewed
+candidate-attempt disposition, remain required.
 
 One `OcrRequest` borrows one immutable `Frame`, one exact
 `OcrBackendIdentity` (stable ID plus implementation version), one complete

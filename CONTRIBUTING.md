@@ -278,13 +278,19 @@ platform qualifications remain revision-bound; no feature result is transferred
 to the upgraded host. A failed or unexecuted feature/workload row is not an OS
 non-support decision. See the [OS support policy](docs/architecture.md#os-support-policy).
 
-For the prospective Windows OCR reference calibration, follow
-[ADR 0083](docs/adr/0083-platform-aware-ocr-calibration-and-percent-equivalence.md):
-freeze one new source/binary-bound campaign of exactly three fresh serial G-004
-processes, with 900 seconds per process and 3,300 seconds whole (3,285 seconds
-primary plus 15 seconds cleanup). Retain the 33,554,432-byte per-process output
-limit and 2,000-ms lifecycle bound; reserve the full process/cleanup allowances
-plus 30 seconds for validation before each launch. Stop later launches on
+The Windows OCR reference calibration at source `0cb9fc0` completed three
+processes and 1,452 observations with zero shared validation failures. Use its
+independently calibrated numerical policy,
+[`tools/ocr-models/windows-i7-12700kf-26300-budgets-v1.json`](tools/ocr-models/windows-i7-12700kf-26300-budgets-v1.json),
+derived under ADR 0082. Calibration never qualifies either model.
+
+[ADR 0083](docs/adr/0083-platform-aware-ocr-calibration-and-percent-equivalence.md)
+binds that separately frozen source/binary-bound campaign to exactly three fresh
+serial G-004 processes, with 900 seconds per process and 3,300 seconds whole
+(3,285 seconds primary plus 15 seconds cleanup). Retain the 33,554,432-byte
+per-process output limit and 2,000-ms lifecycle bound; reserve the full
+process/cleanup allowances plus 30 seconds for validation before each launch.
+Stop later launches on
 operational, input/source, collector or lifecycle failure. Do not increment
 deadlines, automatically retry or change security software. Apple limits and
 evidence stay unchanged. This is reference calibration, not candidate execution,
@@ -294,8 +300,9 @@ Prospective benchmark quality and repeated-text stability equate only `%` and
 `％` after NFC and trim on both observed and expected text. Bind the exact
 criteria SHA-256 and ADR 0083; preserve fixture authoring, raw observations,
 original failures and all geometry/confidence/order/group gates. Do not apply
-broad NFKC or change SDK normalization. Windows numerical budgets still require
-complete observations and a separate review before final measurement.
+broad NFKC or change SDK normalization. Both final target procedures and reports
+on a common final source/build, plus a reviewed candidate-attempt disposition,
+remain required before qualification.
 
 The Windows capture adapter adds no prerequisite beyond that environment. The
 production adapter uses the target-gated `windows` crate for Windows Graphics

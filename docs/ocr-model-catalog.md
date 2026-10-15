@@ -212,10 +212,15 @@ must independently allow the exact cohort. ADR 0081 fixes the reference-only
 precursor and derives the complete Apple policy in
 [`apple-m1-pro-macos27-budgets-v1.json`](../tools/ocr-models/apple-m1-pro-macos27-budgets-v1.json).
 The precursor retains 132 exact-text failures and does not qualify the reference
-or candidate. Windows numerical budgets and a common final source remain required.
-ADR 0082 fixes the Windows host and independent budget derivation;
+or candidate. The Windows calibration at source `0cb9fc0` completed three
+processes and 1,452 observations with zero shared validation failures. Its
+independently calibrated numerical policy is
+[`windows-i7-12700kf-26300-budgets-v1.json`](../tools/ocr-models/windows-i7-12700kf-26300-budgets-v1.json),
+derived under ADR 0082. Calibration never qualifies either model. Both final
+target procedures and reports on a common final source/build, plus a reviewed
+candidate-attempt disposition, remain required.
 [ADR 0083](adr/0083-platform-aware-ocr-calibration-and-percent-equivalence.md)
-supersedes only its reference operational allowance for one separately frozen
+supersedes only ADR 0082's reference operational allowance for the separately frozen
 campaign: exactly three fresh serial processes, 900 seconds and 33,554,432 output
 bytes each, 15-second cleanup, 2,000-ms lifecycle bound and 3,300 seconds whole
 (3,285 seconds primary plus 15 seconds cleanup). Before each launch reserve the
@@ -223,9 +228,8 @@ full process/cleanup allowances and 30 seconds for validation within primary tim
 Stop later launches on operational, input/source, collector or lifecycle failure;
 do not increment deadlines, automatically retry or change security software.
 This is platform-specific headroom, not a measured security-software cost or a
-Windows model-performance budget. Complete observations remain required before
-deriving numerical budgets. Apple bounds, budget bytes and historical results
-remain unchanged; the failed Windows precursor is not rerated or reused.
+Windows model-performance budget. Apple bounds, budget bytes and historical
+results remain unchanged; the failed Windows precursor is not rerated or reused.
 The ordinary `run` command, including `--diagnostic`, runs both profiles; it is not
 a reference-only entry point. Freeze and bind a separate reference-only invocation
 of the existing Rust collector before launch. Missing candidate assets need not

@@ -845,8 +845,11 @@ macOS 27.0.1 workstation for prospective CPU OCR verification, not historical
 diagnostics or new-model admission. Its reference-only budget precursor cannot
 close the Apple gate. [ADR 0082](adr/0082-current-windows-ocr-reference-precursor.md)
 records the connected Windows 11 Pro 26H2 host and freezes its prospective
-reference-only procedure. Windows numerical budgets, a common final source and
-both final target reports remain required. The candidate assets are absent from
+reference-only procedure. The Windows calibration at source `0cb9fc0` completed
+three processes and 1,452 observations with zero shared validation failures. Its
+independently calibrated numerical policy is
+[`windows-i7-12700kf-26300-budgets-v1.json`](../tools/ocr-models/windows-i7-12700kf-26300-budgets-v1.json).
+Calibration never qualifies either model. The candidate assets are absent from
 the inspected Windows model root. No old failure, oracle, qualification or
 provider/watch scope is rewritten.
 
@@ -859,8 +862,9 @@ fixtures, SDK normalization and historical verdicts remain unchanged.
 One separately frozen Windows campaign receives 900 seconds per process and
 3,300 seconds whole, without incremental retries or security-software changes.
 That headroom is neither a measured security-software cost nor a performance
-budget. Complete Windows observations, reviewed numerical budgets and both
-final target reports remain required; no new qualification is established.
+budget. Both final target procedures and reports on a common final source/build,
+plus a reviewed candidate-attempt disposition, remain required; no new
+qualification is established.
 
 ## G-014
 
