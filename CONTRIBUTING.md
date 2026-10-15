@@ -20,6 +20,9 @@ application is not a workspace member. It owns its lockfile, pinned toolchain
 and deployment configuration. The [external build procedure](docs/rust-input-workflow.md)
 copies it outside the checkout and verifies it from that directory; workspace
 checks alone do not cover this consumer.
+When product dependencies change, update this application's `Cargo.lock` as well
+as the workspace lockfile. The external verifier keeps `--locked` and never
+rewrites the consumer's dependency resolution.
 
 ## Native development prerequisites
 
