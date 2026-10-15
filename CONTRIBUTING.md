@@ -271,11 +271,12 @@ Windows SDK 10.0.26100.0 is the supported build input, not the runtime floor.
 Earlier Windows versions are unsupported and unqualified.
 
 Windows 11 and later serviced desktop releases are the supported OS family,
-subject to that exact floor. The current `win-worker` Windows 11 25H2 host is
-supported; a failed or unexecuted feature/workload row is not an OS non-support
-decision. "Earlier Windows execution" denotes an earlier run on that same
-supported OS, not an older Windows release. See the
-[OS support policy](docs/architecture.md#os-support-policy).
+subject to that exact floor. Current CPU OCR verification uses `win-worker` on
+Windows 11 Pro 26H2 build 26300.9550, under
+[ADR 0082](docs/adr/0082-current-windows-ocr-reference-precursor.md). Earlier 25H2
+platform qualifications remain revision-bound; no feature result is transferred
+to the upgraded host. A failed or unexecuted feature/workload row is not an OS
+non-support decision. See the [OS support policy](docs/architecture.md#os-support-policy).
 
 The Windows capture adapter adds no prerequisite beyond that environment. The
 production adapter uses the target-gated `windows` crate for Windows Graphics

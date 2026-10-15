@@ -13,6 +13,20 @@
         "inter_op": 1
       },
       "approval": "ADR-0081"
+    },
+    {
+      "cohort": {
+        "cohort_id": "windows-i7-12700kf-32g-26300-ocr-cpu-v1",
+        "target": "x86_64-pc-windows-msvc",
+        "os": "Windows-11-10.0.26300-SP0",
+        "cpu": "Intel64 Family 6 Model 151 Stepping 2, GenuineIntel",
+        "host_id": "PASHIFIKA-PC",
+        "runtime": "1.29.0-api17",
+        "provider": "cpu",
+        "intra_op": 1,
+        "inter_op": 1
+      },
+      "approval": "ADR-0082"
     }
   ]
 }

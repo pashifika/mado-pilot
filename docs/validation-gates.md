@@ -843,8 +843,12 @@ precommitted absolute budgets and complete report validation.
 [ADR 0081](adr/0081-current-apple-ocr-verification-cohort.md) approves the current
 macOS 27.0.1 workstation for prospective CPU OCR verification, not historical
 diagnostics or new-model admission. Its reference-only budget precursor cannot
-close the Apple gate; Windows connection and a common final source remain
-required. No old failure, oracle, qualification or provider/watch scope is rewritten.
+close the Apple gate. [ADR 0082](adr/0082-current-windows-ocr-reference-precursor.md)
+records the connected Windows 11 Pro 26H2 host and freezes its prospective
+reference-only procedure. Windows numerical budgets, a common final source and
+both final target reports remain required. The candidate assets are absent from
+the inspected Windows model root. No old failure, oracle, qualification or
+provider/watch scope is rewritten.
 
 ## G-014
 

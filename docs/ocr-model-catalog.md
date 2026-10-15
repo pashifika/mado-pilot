@@ -199,8 +199,10 @@ Hosted CI is not a final performance cohort.
 [ADR 0081](adr/0081-current-apple-ocr-verification-cohort.md) approves the current
 macOS 27.0.1 Apple M1 Pro cohort through
 [`host-policy-v1.json`](../tools/ocr-models/host-policy-v1.json), without relabeling
-earlier failed diagnostics. A diagnostic exit status of `2` means no admission;
-inspect the retained failures rather than treating it as successful qualification.
+earlier failed diagnostics. [ADR 0082](adr/0082-current-windows-ocr-reference-precursor.md)
+adds the independently identified Windows 11 Pro 26H2 CPU cohort; runtime and
+model qualification remain separate. A diagnostic exit status of `2` means no
+admission; inspect retained failures rather than treating it as qualification.
 
 Absolute budgets have no implicit defaults. They name the exact cohort and
 approval, per-process cold-open/close/RSS ceilings, every workload's p50/p95/max,
@@ -210,8 +212,13 @@ must independently allow the exact cohort. ADR 0081 fixes the reference-only
 precursor and derives the complete Apple policy in
 [`apple-m1-pro-macos27-budgets-v1.json`](../tools/ocr-models/apple-m1-pro-macos27-budgets-v1.json).
 The precursor retains 132 exact-text failures and does not qualify the reference
-or candidate. Windows policy/budgets and a common final source remain required.
-Old ceilings for other workloads are not silently reused for compact-UI inputs.
+or candidate. Windows numerical budgets and a common final source remain required.
+ADR 0082 fixes the Windows reference-only precursor and its independent derivation.
+The ordinary `run` command, including `--diagnostic`, runs both profiles; it is not
+a reference-only entry point. Freeze and bind a separate reference-only invocation
+of the existing Rust collector before launch. Missing candidate assets need not
+block that precursor, but remain required for any later candidate campaign.
+Old ceilings for other workloads or another host are not silently reused.
 
 The same precommitted policy binds `process_limits`: external process timeout,
 output byte limit, cleanup deadline and admitted cancellation/deadline return
