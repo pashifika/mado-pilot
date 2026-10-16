@@ -361,6 +361,119 @@ fn explicit_profile_is_closed_atomic_and_has_no_ambient_fallback() {
 }
 
 #[test]
+fn catalog_selection_preserves_legacy_bounded_configuration() {
+    let legacy = OcrProfileConfig::new(
+        OcrProfile::BoundedDetector,
+        "unread-model-root",
+        "unread-runtime",
+    );
+    let selected = OcrProfileConfig::from_id(
+        mado_pilot::ACCEPTED_BOUNDED_PROFILE_ID,
+        legacy.model_root(),
+        legacy.runtime_path(),
+    )
+    .expect("accepted bounded profile");
+
+    assert!(matches!(selected.profile(), OcrProfile::BoundedDetector));
+    assert_eq!(selected, legacy);
+}
+
+#[test]
+fn unknown_catalog_ids_cannot_reach_runtime_loading() {
+    for id in ["unknown-profile", ""] {
+        let root = std::env::temp_dir().join("mado-pilot-unselected-models");
+        let runtime = root.join("not-an-onnx-runtime");
+        let error = OcrProfileConfig::from_id(id, &root, &runtime).unwrap_err();
+        assert_eq!(error.status(), Status::Unsupported);
+
+        let forged = OcrProfileConfig::new(OcrProfile::Catalog(id), &root, &runtime);
+        let error = mado_pilot::replay_engine_with_ocr_profile(
+            ReplayEngineRequest::new(blank_source(PixelExtent::new(8, 8), PixelFormat::Bgra8)),
+            &forged,
+            &OperationContext::new(),
+        )
+        .expect_err("constructing an enum cannot bypass closed catalog validation");
+        assert_eq!(error.status(), Status::InvalidArgument);
+    }
+}
+
+#[test]
+fn every_catalog_choice_is_selectable_without_models_or_report_io() {
+    use mado_pilot::{OcrEvaluationOutcome, ocr_profile, ocr_profiles};
+
+    let profiles = ocr_profiles();
+    assert_eq!(profiles.len(), 3);
+    assert!(std::ptr::eq(profiles, ocr_profiles()));
+    assert_eq!(
+        mado_pilot::DEFAULT_OCR_PROFILE_ID,
+        mado_pilot::ACCEPTED_G004_PROFILE_ID
+    );
+    for profile in profiles {
+        assert!(std::ptr::eq(
+            ocr_profile(profile.profile_id).unwrap(),
+            profile
+        ));
+        let config =
+            OcrProfileConfig::from_id(profile.profile_id, "unread-model-root", "unread-runtime")
+                .expect("test outcomes cannot hide a declared choice");
+        assert_eq!(config.profile_id(), profile.profile_id);
+        assert_eq!(
+            profile.identity().unwrap().profile().as_str(),
+            config.profile_id()
+        );
+        for summary in profile.evaluations {
+            for rule in summary.rules {
+                if matches!(
+                    rule.outcome,
+                    OcrEvaluationOutcome::Passed | OcrEvaluationOutcome::Failed
+                ) {
+                    assert!(summary.evidence.is_some(), "observations require evidence");
+                }
+            }
+            if let Some(evidence) = summary.evidence {
+                assert_eq!(evidence.execution_sha256, profile.execution_sha256);
+                assert_eq!(evidence.measured_source_revision.len(), 40);
+                assert!(evidence.evaluator_revision.starts_with("sha256:"));
+            }
+        }
+    }
+    let bounded = ocr_profile(mado_pilot::ACCEPTED_BOUNDED_PROFILE_ID).unwrap();
+    assert!(
+        bounded.evaluations.iter().any(|summary| {
+            summary.evidence.is_none()
+                && summary
+                    .rules
+                    .iter()
+                    .all(|rule| rule.outcome == OcrEvaluationOutcome::NotRun)
+        }),
+        "missing comparative coverage is explicit, not inherited"
+    );
+}
+
+#[test]
+fn max_side_selection_still_refuses_invalid_runtime_and_cancellation() {
+    let config = OcrProfileConfig::from_id(
+        "ppocrv6-tiny-det-small-rec-max736-v1",
+        "unread-model-root",
+        "relative-runtime",
+    )
+    .expect("ordinary profile selection");
+    let request =
+        || ReplayEngineRequest::new(blank_source(PixelExtent::new(8, 8), PixelFormat::Bgra8));
+    let error =
+        mado_pilot::replay_engine_with_ocr_profile(request(), &config, &OperationContext::new())
+            .expect_err("selection does not bypass controlled runtime requirements");
+    assert_eq!(error.status(), Status::InvalidArgument);
+
+    let cancellation = CancellationToken::new();
+    cancellation.cancel();
+    let operation = OperationContext::new().with_cancellation(cancellation);
+    let error = mado_pilot::replay_engine_with_ocr_profile(request(), &config, &operation)
+        .expect_err("cancelled construction publishes no engine");
+    assert_eq!(error.status(), Status::Cancelled);
+}
+
+#[test]
 #[ignore = "requires explicit reviewed ONNX Runtime and G-004 model root"]
 fn default_ocr_profile_runs_full_and_bounded_replay_regions() {
     let model_root = std::path::PathBuf::from(

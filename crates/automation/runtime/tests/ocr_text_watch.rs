@@ -275,6 +275,15 @@ fn complete_initialized_identity_and_known_coordinates_are_required() {
         PixelFormat::Bgra8,
     );
     selections.push(Some(Arc::new(backend().with_descriptor(native))));
+    let max_side = OcrBackendDescriptor::new(
+        cpu_descriptor().backend_identity().clone(),
+        ocr_profile("ppocrv6-tiny-det-small-rec-max736-v1")
+            .unwrap()
+            .identity()
+            .unwrap(),
+        PixelFormat::Bgra8,
+    );
+    selections.push(Some(Arc::new(backend().with_descriptor(max_side))));
     selections.push(Some(Arc::new(backend().with_provider_descriptor(
         OcrProviderDescriptor::new(
             OcrExecutionProviderPolicy::RequireCuda,

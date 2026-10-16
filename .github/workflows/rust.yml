@@ -98,6 +98,10 @@ jobs:
         shell: bash
         run: python3 -m unittest discover -s tools/ocr-text-watch/tests -v
 
+      - name: Test independent OCR model rule evaluation
+        shell: bash
+        run: python3 -m unittest discover -s tools/ocr-models/tests -v
+
       - name: Test capture pacing evidence without native execution
         shell: bash
         run: |
@@ -291,7 +295,7 @@ jobs:
           if-no-files-found: warn
           retention-days: 14
 
-      - name: Provision the reviewed ONNX runtime and G-004 models
+      - name: Provision the reviewed ONNX runtime and catalog models
         shell: bash
         run: |
           set -euo pipefail
@@ -340,6 +344,17 @@ jobs:
             "https://huggingface.co/DjB314/RapidOCR/resolve/04e88d0483f0bfcdd0f29429594244c10bfc2867/v3.9.2/onnx/PP-OCRv6/rec/PP-OCRv6_rec_small.onnx" \
             "https://hf-mirror.com/DjB314/RapidOCR/resolve/04e88d0483f0bfcdd0f29429594244c10bfc2867/v3.9.2/onnx/PP-OCRv6/rec/PP-OCRv6_rec_small.onnx" \
             "https://www.modelscope.cn/models/RapidAI/RapidOCR/resolve/v3.9.2/onnx/PP-OCRv6/rec/PP-OCRv6_rec_small.onnx"
+
+          # Maintainer validation supplies paths and identities from the catalog.
+          resources="${RUNNER_TEMP}/ocr-candidate-resources.tsv"
+          cargo run --locked --package mado-pilot-ocr --example ocr-catalog-validate -- \
+            --resources ppocrv6-tiny-det-small-rec-max736-v1 > "${resources}"
+          while IFS=$'\t' read -r relative_path byte_len sha256 source_url; do
+            destination="${model_root}/${relative_path}"
+            mkdir -p "$(dirname "${destination}")"
+            download_verified_model "${destination}" "${sha256}" "${source_url}"
+            [[ "$(wc -c < "${destination}")" -eq "${byte_len}" ]]
+          done < "${resources}"
 
           runtime="${root}/onnxruntime-win-x64-${ONNXRUNTIME_VERSION}/lib/onnxruntime.dll"
           [[ -f "${runtime}" ]]
@@ -412,9 +427,19 @@ jobs:
           cargo run --locked --package mado-pilot-testkit --example change-detection-evaluator > "${report}"
           diff -u docs/evidence/g-005/accepted-report.json "${report}"
 
-      - name: Test the accepted ONNX CPU OCR backend
+      - name: Test ordinary model choices and compile their evaluation benchmark
         shell: bash
-        run: cargo test --locked --package mado-pilot-backend-onnx --lib -- --ignored --nocapture
+        run: |
+          cargo test --locked --package mado-pilot-ocr --all-targets
+          cargo clippy --locked --package mado-pilot-backend-onnx --features benchmark-instrumentation --all-targets -- -D warnings
+
+      - name: Test catalog ONNX CPU paths
+        shell: bash
+        run: cargo test --locked --package mado-pilot-backend-onnx --features benchmark-instrumentation --lib -- --include-ignored --nocapture --test-threads=1
+
+      - name: Read model choices and rule results without initialization
+        shell: bash
+        run: cargo run --locked --package mado-pilot --example ocr-profiles
 
       - name: Test the integrated default and bounded OCR facade
         shell: bash
@@ -608,7 +633,7 @@ jobs:
           if-no-files-found: warn
           retention-days: 14
 
-      - name: Provision the reviewed ONNX runtime and G-004 models
+      - name: Provision the reviewed ONNX runtime and catalog models
         shell: bash
         run: |
           set -euo pipefail
@@ -656,6 +681,16 @@ jobs:
             "https://huggingface.co/DjB314/RapidOCR/resolve/04e88d0483f0bfcdd0f29429594244c10bfc2867/v3.9.2/onnx/PP-OCRv6/rec/PP-OCRv6_rec_small.onnx" \
             "https://hf-mirror.com/DjB314/RapidOCR/resolve/04e88d0483f0bfcdd0f29429594244c10bfc2867/v3.9.2/onnx/PP-OCRv6/rec/PP-OCRv6_rec_small.onnx" \
             "https://www.modelscope.cn/models/RapidAI/RapidOCR/resolve/v3.9.2/onnx/PP-OCRv6/rec/PP-OCRv6_rec_small.onnx"
+
+          resources="${RUNNER_TEMP}/ocr-candidate-resources.tsv"
+          cargo run --locked --package mado-pilot-ocr --example ocr-catalog-validate -- \
+            --resources ppocrv6-tiny-det-small-rec-max736-v1 > "${resources}"
+          while IFS=$'\t' read -r relative_path byte_len sha256 source_url; do
+            destination="${model_root}/${relative_path}"
+            mkdir -p "$(dirname "${destination}")"
+            download_verified_model "${destination}" "${sha256}" "${source_url}"
+            [[ "$(wc -c < "${destination}")" -eq "${byte_len}" ]]
+          done < "${resources}"
 
           runtime="${root}/onnxruntime-osx-arm64-${ONNXRUNTIME_VERSION}/lib/libonnxruntime.1.29.0.dylib"
           [[ -f "${runtime}" ]]
@@ -733,9 +768,19 @@ jobs:
           cargo run --locked --package mado-pilot-testkit --example change-detection-evaluator > "${report}"
           diff -u docs/evidence/g-005/accepted-report.json "${report}"
 
-      - name: Test the accepted ONNX CPU OCR backend
+      - name: Test ordinary model choices and compile their evaluation benchmark
         shell: bash
-        run: cargo test --locked --package mado-pilot-backend-onnx --lib -- --ignored --nocapture
+        run: |
+          cargo test --locked --package mado-pilot-ocr --all-targets
+          cargo clippy --locked --package mado-pilot-backend-onnx --features benchmark-instrumentation --all-targets -- -D warnings
+
+      - name: Test catalog ONNX CPU paths
+        shell: bash
+        run: cargo test --locked --package mado-pilot-backend-onnx --features benchmark-instrumentation --lib -- --include-ignored --nocapture --test-threads=1
+
+      - name: Read model choices and rule results without initialization
+        shell: bash
+        run: cargo run --locked --package mado-pilot --example ocr-profiles
 
       - name: Test the integrated default and bounded OCR facade
         shell: bash

@@ -8,7 +8,7 @@ use libloading::{Library, Symbol};
 
 use crate::fault::OnnxBackendFault;
 
-const RUNTIME_VERSION: &str = "1.29.0";
+pub(crate) const RUNTIME_VERSION: &str = "1.29.0";
 const ENVIRONMENT_NAME: &str = "mado-pilot-onnx-cpu";
 
 #[cfg(target_os = "macos")]

@@ -1,4 +1,4 @@
-//! Accepted RapidOCR DB detector postprocessing with bounded OpenCV work.
+//! Catalog-declared RapidOCR DB detector postprocessing with bounded OpenCV work.
 
 use std::mem::size_of;
 
@@ -17,18 +17,37 @@ use opencv::imgproc::{
     morphology_default_border_value,
 };
 
+use mado_pilot_ocr::DetectorDescriptor;
+
 use crate::fault::OnnxBackendFault;
 use crate::profile::DetectorPlan;
 
 pub(crate) const MAX_DETECTOR_CANDIDATES: usize = 1_000;
-const THRESHOLD: f32 = 0.3;
-const BOX_THRESHOLD: f64 = 0.5;
-const UNCLIP_RATIO: f64 = 1.6;
-const MIN_SIDE: f32 = 3.0;
-const SORT_LINE_THRESHOLD: f32 = 10.0;
-const MAX_COMPONENT_STACK_BYTES: usize = 16 * 1024 * 1024;
-const MAX_CONTOUR_STORAGE_BYTES: usize = 2 * 1024 * 1024;
+pub(crate) const MAX_COMPONENT_STACK_BYTES: usize = 16 * 1024 * 1024;
+pub(crate) const MAX_CONTOUR_STORAGE_BYTES: usize = 2 * 1024 * 1024;
 const CONTOUR_VECTOR_OVERHEAD_BYTES: usize = 64;
+
+/// DB thresholds and geometry settings declared by the selected profile.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub(crate) struct DbParameters {
+    threshold: f32,
+    box_threshold: f64,
+    unclip_ratio: f64,
+    min_side: f32,
+    sort_line_threshold: f32,
+}
+
+impl DbParameters {
+    pub(crate) const fn from_catalog(detection: &DetectorDescriptor) -> Self {
+        Self {
+            threshold: detection.threshold,
+            box_threshold: detection.box_threshold,
+            unclip_ratio: detection.unclip_ratio,
+            min_side: detection.min_side,
+            sort_line_threshold: detection.sort_line_threshold,
+        }
+    }
+}
 
 pub(crate) type Quad = [Point2f; 4];
 
@@ -43,6 +62,7 @@ pub(crate) fn postprocess(
     probability: &[f32],
     plan: DetectorPlan,
     request_ceiling: usize,
+    db: DbParameters,
 ) -> Result<Vec<Detection>, OnnxBackendFault> {
     if shape.len() != 4 || shape[0] != 1 || shape[1] != 1 || shape[2] <= 0 || shape[3] <= 0 {
         return Err(OnnxBackendFault::MalformedOutput);
@@ -75,7 +95,7 @@ pub(crate) fn postprocess(
         if !value.is_finite() || !(0.0..=1.0).contains(&value) {
             return Err(OnnxBackendFault::MalformedOutput);
         }
-        binary.push(u8::from(value > THRESHOLD).saturating_mul(255));
+        binary.push(u8::from(value > db.threshold).saturating_mul(255));
     }
 
     let rows = i32::try_from(height).map_err(|_| OnnxBackendFault::ResourceLimit)?;
@@ -117,17 +137,17 @@ pub(crate) fn postprocess(
             .get(index)
             .map_err(|_| OnnxBackendFault::NativeFailure)?;
         let (quad, short_side) = mini_box(&contour)?;
-        if short_side < MIN_SIDE {
+        if short_side < db.min_side {
             continue;
         }
         let score = box_score_fast(&probability_mat, width, height, &quad)?;
-        if score < BOX_THRESHOLD {
+        if score < db.box_threshold {
             continue;
         }
-        let expanded = expand_rectangle(&quad)?;
+        let expanded = expand_rectangle(&quad, db.unclip_ratio)?;
         let expanded_short =
             distance(expanded[0], expanded[3]).min(distance(expanded[0], expanded[1]));
-        if expanded_short < f64::from(MIN_SIDE + 2.0) {
+        if expanded_short < f64::from(db.min_side + 2.0) {
             continue;
         }
         let mut scaled = scale_quad(&expanded, plan)?;
@@ -141,7 +161,7 @@ pub(crate) fn postprocess(
         quads.push(scaled);
     }
 
-    sort_reading_order(&mut quads);
+    sort_reading_order(&mut quads, db.sort_line_threshold);
     quads
         .into_iter()
         .enumerate()
@@ -375,7 +395,7 @@ fn box_score_fast(
     }
 }
 
-fn expand_rectangle(quad: &Quad) -> Result<Quad, OnnxBackendFault> {
+fn expand_rectangle(quad: &Quad, unclip_ratio: f64) -> Result<Quad, OnnxBackendFault> {
     const ARC_TOLERANCE: f64 = 0.25;
     const MAX_UNCLIP_POINTS: usize = 65_536;
 
@@ -386,7 +406,7 @@ fn expand_rectangle(quad: &Quad) -> Result<Quad, OnnxBackendFault> {
     if !area.is_finite() || area <= 0.0 || !perimeter.is_finite() || perimeter <= 0.0 {
         return Err(OnnxBackendFault::MalformedOutput);
     }
-    let delta = area * UNCLIP_RATIO / perimeter;
+    let delta = area * unclip_ratio / perimeter;
     let mut source = quad
         .iter()
         .map(|point| Ok((f32_to_i64(point.x)?, f32_to_i64(point.y)?)))
@@ -537,12 +557,12 @@ fn clip_quad(quad: &mut Quad, width: u32, height: u32) {
     }
 }
 
-fn sort_reading_order(quads: &mut [Quad]) {
+fn sort_reading_order(quads: &mut [Quad], line_threshold: f32) {
     quads.sort_by(|left, right| left[0].y.total_cmp(&right[0].y));
     let mut start = 0usize;
     while start < quads.len() {
         let mut end = start + 1;
-        while end < quads.len() && quads[end][0].y - quads[end - 1][0].y < SORT_LINE_THRESHOLD {
+        while end < quads.len() && quads[end][0].y - quads[end - 1][0].y < line_threshold {
             end += 1;
         }
         quads[start..end].sort_by(|left, right| left[0].x.total_cmp(&right[0].x));
@@ -594,12 +614,57 @@ fn f64_to_i64(value: f64) -> Result<i64, OnnxBackendFault> {
 mod tests {
     use opencv::core::Point2f;
 
-    use super::{clip_quad, postprocess, scale_quad};
+    use mado_pilot_ocr::{ACCEPTED_G004_PROFILE_ID, ocr_profile};
+
+    use super::{DbParameters, clip_quad, postprocess, scale_quad};
     use crate::fault::OnnxBackendFault;
     use crate::profile::DetectorPlan;
 
     fn plan(width: u32, height: u32) -> DetectorPlan {
         DetectorPlan::for_test(width, height, width, height).unwrap()
+    }
+
+    fn db() -> DbParameters {
+        DbParameters::from_catalog(
+            &ocr_profile(ACCEPTED_G004_PROFILE_ID)
+                .expect("accepted G-004 profile")
+                .detection,
+        )
+    }
+
+    #[test]
+    fn declared_threshold_drives_binarization_and_box_score() {
+        let mut probability = vec![0.0_f32; 32 * 32];
+        for row in 8..24 {
+            for column in 6..26 {
+                probability[row * 32 + column] = 0.8;
+            }
+        }
+        let shape = [1, 1, 32, 32];
+        assert_eq!(
+            postprocess(&shape, &probability, plan(32, 32), 1000, db())
+                .unwrap()
+                .len(),
+            1
+        );
+        let stricter_box = DbParameters {
+            box_threshold: 0.9,
+            ..db()
+        };
+        assert!(
+            postprocess(&shape, &probability, plan(32, 32), 1000, stricter_box)
+                .unwrap()
+                .is_empty()
+        );
+        let stricter_binary = DbParameters {
+            threshold: 0.8,
+            ..db()
+        };
+        assert!(
+            postprocess(&shape, &probability, plan(32, 32), 1000, stricter_binary)
+                .unwrap()
+                .is_empty()
+        );
     }
 
     #[test]
@@ -610,7 +675,7 @@ mod tests {
                 probability[row * 32 + column] = 0.9;
             }
         }
-        let detections = postprocess(&[1, 1, 32, 32], &probability, plan(32, 32), 1000)
+        let detections = postprocess(&[1, 1, 32, 32], &probability, plan(32, 32), 1000, db())
             .expect("valid probability map");
 
         assert_eq!(detections.len(), 1);
@@ -622,7 +687,7 @@ mod tests {
     #[test]
     fn output_dimensions_must_match_the_checked_plan() {
         assert!(matches!(
-            postprocess(&[1, 1, 32, 31], &[0.0; 32 * 31], plan(32, 32), 1),
+            postprocess(&[1, 1, 32, 31], &[0.0; 32 * 31], plan(32, 32), 1, db()),
             Err(OnnxBackendFault::MalformedOutput)
         ));
     }
@@ -664,7 +729,7 @@ mod tests {
     #[test]
     fn probability_outside_sigmoid_range_is_rejected() {
         assert!(matches!(
-            postprocess(&[1, 1, 1, 1], &[1.1], plan(1, 1), 1),
+            postprocess(&[1, 1, 1, 1], &[1.1], plan(1, 1), 1, db()),
             Err(OnnxBackendFault::MalformedOutput)
         ));
     }
@@ -678,7 +743,7 @@ mod tests {
             }
         }
         assert!(matches!(
-            postprocess(&[1, 1, 256, 256], &probability, plan(256, 256), 1000),
+            postprocess(&[1, 1, 256, 256], &probability, plan(256, 256), 1000, db()),
             Err(OnnxBackendFault::ResourceLimit)
         ));
     }
@@ -693,7 +758,13 @@ mod tests {
             probability[row * 1024] = 0.9;
         }
         assert!(matches!(
-            postprocess(&[1, 1, 1024, 1024], &probability, plan(1024, 1024), 1000),
+            postprocess(
+                &[1, 1, 1024, 1024],
+                &probability,
+                plan(1024, 1024),
+                1000,
+                db()
+            ),
             Err(OnnxBackendFault::ResourceLimit)
         ));
     }

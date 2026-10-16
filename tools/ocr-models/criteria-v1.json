@@ -1,0 +1,34 @@
+{
+  "schema_version": 1,
+  "criteria_id": "ocr-model-admission-v1",
+  "corpora": ["g-004-japanese-ui-v3", "compact-ui-v1"],
+  "minimum_processes": 3,
+  "warmups": 2,
+  "samples": 20,
+  "threads": {"intra_op": 1, "inter_op": 1},
+  "quality": {
+    "normalization": "NFC+trim+U+FF05-to-U+0025-percent-width-equivalence",
+    "exact_count": true,
+    "exact_order": true,
+    "minimum_iou": 0.5,
+    "maximum_center_delta_x": 0.025,
+    "maximum_center_delta_y": 0.025,
+    "unexpected_region_threshold": 0.5,
+    "confidence_range": [0.0, 1.0],
+    "universal_matching_confidence_floor": null,
+    "same_implementation_stability": true,
+    "source_correlation": true
+  },
+  "fast_maximum_reference_ratio": 0.8,
+  "release_targets": ["aarch64-apple-darwin", "x86_64-pc-windows-msvc"],
+  "required_sample_metrics": [
+    "elapsed_ms", "mapped_bytes", "detector_width", "detector_height", "detector_tensor_bytes",
+    "detector_runs", "recognizer_runs", "detector_preprocess_ms", "detector_inference_ms",
+    "detector_postprocess_ms", "recognizer_preprocess_ms", "recognizer_inference_ms", "recognizer_decode_ms"
+  ],
+  "required_workload_metrics": ["rust_peak_allocated_bytes", "rust_growth_bytes", "rust_steady_bytes"],
+  "required_process_metrics": ["cold_open_ms", "close_ms", "peak_resident_bytes", "model_bytes", "auxiliary_bytes"],
+  "required_lifecycle": {"cancelled": "Cancelled", "deadline": "DeadlineExceeded", "closed": "Closed", "close_idempotent": "Ok"},
+  "absolute_budgets": "Required target/cohort-specific precommitted input; this criteria document supplies no numeric host budget",
+  "legacy_unrated_admits_candidate": false
+}

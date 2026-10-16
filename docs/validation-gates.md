@@ -835,6 +835,38 @@ Final fixed-cohort execution and target-owned WGC/ScreenCaptureKit evidence rema
 separate required gates. No historical failed/partial record or old ceiling is
 changed, and no opaque allocation or unmeasured numeric work counter is invented.
 
+**OCR model choice is independent of empirical test outcomes.**
+[ADR 0084](adr/0084-ocr-model-choices-and-test-results.md) supersedes the universal
+model-admission condition, not its failed observations.
+[ADR 0080](adr/0080-ocr-model-catalog-and-admission.md) still defines the catalog,
+official PP-OCRv6 tiny/small execution tuple and compact-UI suite. All implemented
+profiles are ordinary Rust choices; their named test rules remain independently
+visible. Closed resource/graph/vocabulary validation, finite execution bounds,
+source correlation, provider/watch scope and lifecycle correctness still apply.
+
+[ADR 0081](adr/0081-current-apple-ocr-verification-cohort.md) and
+[ADR 0082](adr/0082-current-windows-ocr-reference-precursor.md) identify the
+independent CPU cohorts and precursor procedures. Windows calibration at
+`0cb9fc0` completed three processes and 1,452 observations with zero shared
+validation failures; its independently derived
+[`numerical policy`](../tools/ocr-models/windows-i7-12700kf-26300-budgets-v1.json)
+does not authorize another run. Both final comparisons at `cf2763a` completed
+with candidate quality failures and no numerical or operational failure.
+Their original verdicts and all failed/partial attempts remain unchanged.
+
+[ADR 0083](adr/0083-platform-aware-ocr-calibration-and-percent-equivalence.md)
+supersedes only current percent-sign exactness and Windows reference operational
+allowances. Prospective text comparison and repeated-text stability equate
+U+0025 `%` with U+FF05 `％` after NFC and trim on both sides; geometry,
+confidence, order and groups retain their existing gates. Raw output, authored
+fixtures, SDK normalization and historical verdicts remain unchanged.
+One separately frozen Windows campaign receives 900 seconds per process and
+3,300 seconds whole, without incremental retries or security-software changes.
+That headroom is neither a measured security-software cost nor a performance
+budget. The common-source final reports and original nonadmission disposition
+are retained. Derived rule summaries identify both the measured source and
+evaluator revision; they are not a new native qualification or execution grant.
+
 ## G-014
 
 **Decision.** The archive entry-count, uncompressed-byte, and compression-ratio

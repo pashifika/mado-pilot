@@ -20,6 +20,9 @@ application is not a workspace member. It owns its lockfile, pinned toolchain
 and deployment configuration. The [external build procedure](docs/rust-input-workflow.md)
 copies it outside the checkout and verifies it from that directory; workspace
 checks alone do not cover this consumer.
+When product dependencies change, update this application's `Cargo.lock` as well
+as the workspace lockfile. The external verifier keeps `--locked` and never
+rewrites the consumer's dependency resolution.
 
 ## Native development prerequisites
 
@@ -86,13 +89,14 @@ See [the dependency policy](docs/third-party-dependencies.md#opencv) and
 This is not an installable profile or a clean/minimum-host/signing qualification;
 `G-007` and `G-012` remain open.
 
-The supported macOS native host is Apple Silicon macOS 26.6.2 (25G83), SDK
-26.5; the deployment floor remains macOS 26.5.2, and earlier versions are
-unsupported investigation targets rather than compatibility claims.
-Individual revision-bound feature gates can still be unexecuted on that host.
-The current macOS 26 host is supported. macOS 27.0 upgrade verification and its
-support decision belong to a separate Change; do not inherit qualification merely
-because the verification host is upgraded.
+Historical Apple platform qualification uses macOS 26.6.2 (25G83), SDK 26.5.
+The operator-selected current CPU OCR verification host is Apple M1 Pro, 32 GiB,
+macOS 27.0.1 (26A434), under
+[ADR 0081](docs/adr/0081-current-apple-ocr-verification-cohort.md). Its exact frozen
+cohort policy, prospective budgets and source-bound reports are required; an OS
+upgrade or an earlier debug run does not confer qualification. Capture/input
+verification on the upgraded host remains separate. The deployment floor is
+macOS 26.5.2; earlier versions remain unsupported investigation targets.
 `.cargo/config.toml` sets the final artifact deployment metadata to 26.5.2 and
 the native build repeats that floor. The macOS native shim
 `mado-pilot-platform-macos` compiles, links, and passes its tests with the **Xcode
@@ -267,11 +271,38 @@ Windows SDK 10.0.26100.0 is the supported build input, not the runtime floor.
 Earlier Windows versions are unsupported and unqualified.
 
 Windows 11 and later serviced desktop releases are the supported OS family,
-subject to that exact floor. The current `win-worker` Windows 11 25H2 host is
-supported; a failed or unexecuted feature/workload row is not an OS non-support
-decision. "Earlier Windows execution" denotes an earlier run on that same
-supported OS, not an older Windows release. See the
-[OS support policy](docs/architecture.md#os-support-policy).
+subject to that exact floor. Current CPU OCR verification uses `win-worker` on
+Windows 11 Pro 26H2 build 26300.9550, under
+[ADR 0082](docs/adr/0082-current-windows-ocr-reference-precursor.md). Earlier 25H2
+platform qualifications remain revision-bound; no feature result is transferred
+to the upgraded host. A failed or unexecuted feature/workload row is not an OS
+non-support decision. See the [OS support policy](docs/architecture.md#os-support-policy).
+
+The Windows OCR reference calibration at source `0cb9fc0` completed three
+processes and 1,452 observations with zero shared validation failures. Use its
+independently calibrated numerical policy,
+[`tools/ocr-models/windows-i7-12700kf-26300-budgets-v1.json`](tools/ocr-models/windows-i7-12700kf-26300-budgets-v1.json),
+derived under ADR 0082. Calibration never qualifies either model.
+
+[ADR 0083](docs/adr/0083-platform-aware-ocr-calibration-and-percent-equivalence.md)
+binds that separately frozen source/binary-bound campaign to exactly three fresh
+serial G-004 processes, with 900 seconds per process and 3,300 seconds whole
+(3,285 seconds primary plus 15 seconds cleanup). Retain the 33,554,432-byte
+per-process output limit and 2,000-ms lifecycle bound; reserve the full
+process/cleanup allowances plus 30 seconds for validation before each launch.
+Stop later launches on
+operational, input/source, collector or lifecycle failure. Do not increment
+deadlines, automatically retry or change security software. Apple limits and
+evidence stay unchanged. This is reference calibration, not candidate execution,
+acquisition or qualification.
+
+Prospective benchmark quality and repeated-text stability equate only `%` and
+`％` after NFC and trim on both observed and expected text. Bind the exact
+criteria SHA-256 and ADR 0083; preserve fixture authoring, raw observations,
+original failures and all geometry/confidence/order/group gates. Do not apply
+broad NFKC or change SDK normalization. Both final target procedures and reports
+on a common final source/build, plus a reviewed candidate-attempt disposition,
+remain required before qualification.
 
 The Windows capture adapter adds no prerequisite beyond that environment. The
 production adapter uses the target-gated `windows` crate for Windows Graphics

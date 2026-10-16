@@ -154,8 +154,8 @@ Version one targets two platforms, and each is verified natively:
 
 | Release target | Native verification host |
 |---|---|
-| `x86_64-pc-windows-msvc` | Windows 11 Pro 25H2 build family 26200 (Qualification V2 host 26200.9278; earlier accepted evidence remains revision-bound), SDK 10.0.26100.0; `windows-2025` CI remains supporting server evidence |
-| `aarch64-apple-darwin` | Supported current host: Apple Silicon macOS 26.6.2 (25G83), SDK 26.5; the deployment floor remains 26.5.2 |
+| `x86_64-pc-windows-msvc` | Current CPU OCR verification: Core i7-12700KF, 32 GiB, Windows 11 Pro 26H2 build 26300.9550, under ADR 0082. Historical platform qualification: Windows 11 Pro 25H2 build family 26200 (Qualification V2 host 26200.9278), SDK 10.0.26100.0; `windows-2025` CI remains supporting server evidence |
+| `aarch64-apple-darwin` | Current CPU OCR verification: Apple M1 Pro macOS 27.0.1 (26A434), 32 GiB, under ADR 0081. Historical platform qualification: macOS 26.6.2 (25G83), SDK 26.5. Deployment floor: 26.5.2 |
 
 A cross-compiled result never stands in for native verification of the other
 target. [ADR 0019](adr/0019-windows-qualified-system-and-controlled-availability.md)
@@ -164,15 +164,19 @@ fixes the Windows floor; ADR 0014 fixes the macOS floor. See gate [`G-001`](vali
 ### OS support policy
 
 Windows 11 and later serviced desktop releases are the supported Windows family,
-subject to the exact deployment floor below. The current `win-worker` baseline,
-Windows 11 Pro 25H2 build family 26200, is a supported OS, not an experimental or
-unsupported host. This policy does not certify earlier Windows 11 builds below
-that floor or claim that every future build has already been tested.
+subject to the exact deployment floor below. The current `win-worker` CPU OCR
+verification host is Windows 11 Pro 26H2 build family 26300 under
+[ADR 0082](adr/0082-current-windows-ocr-reference-precursor.md). The earlier
+Windows 11 Pro 25H2 platform qualifications retain their original host and source.
+Neither this host update nor a failed feature row changes the deployment floor
+or certifies an unexecuted workload or every future Windows build.
 
-Apple Silicon macOS 26 is supported, with macOS 26.6.2 (25G83) as the current
-verification host. macOS 27.0 upgrade verification and its support decision belong
-to a separate Change. Upgrading the host does not automatically qualify 27.0 or
-move the accepted baseline. Existing deployment metadata is unchanged.
+Apple Silicon macOS 26 qualifications remain bound to their macOS 26.6.2 (25G83)
+host. The operator-selected current CPU OCR verification baseline is macOS 27.0.1
+(26A434), under [ADR 0081](adr/0081-current-apple-ocr-verification-cohort.md) and
+its exact frozen cohort allowlist. This does not inherit prior qualification,
+relabel earlier macOS 27 diagnostics, or qualify capture/input on the upgraded
+host. The deployment floor remains 26.5.2.
 
 OS support and feature/workload qualification are separate. An unexecuted native
 OCR scenario, a numerical gate, or a failed measurement run does not by itself
@@ -199,7 +203,7 @@ owns and where they genuinely differ.
 | Input ownership | System pointer/keyboard/text plus explicit exact-window `WindowMessage`: ordinary retained top-level windows are unknown-but-attemptable with target-queue evidence, while the dedicated fixture is supported with protocol acknowledgement (implemented in the platform package) | `CGEvent` system pointer/keyboard/text plus an explicitly selected owning-process `ProcessDirected` route. Final protocol-v11 candidate `dec43d7` passed the controlled profiles, and independent `single`, exact two-display non-mirrored `same-scale`, and `mixed-scale` matrices passed for all fourteen controlled pairs. Their release decision is 14 qualified, 0 rejected, and 0 unexecuted. No `WindowMessage` route exists |
 | Permission handling | Capture presents no permission UI; no permission probe exists; input compares target integrity and reports proven UIPI at route preflight | Screen Recording and event-post access reported separately without permission UI; `PermissionKind::InputControl` maps to the public `CGPreflightPostEventAccess` decision re-read before every irreversible event, regardless of the Privacy & Security pane label, while legacy Accessibility trust is only a separate focus input and paired qualification fact (implemented) |
 | Native Rust template watcher | Implemented through maintained WGC window/display sessions; historical source `f16591f` passed 5/5 with the corrected different-monitor 144-to-120-DPI scale oracle. Integrated candidate `9cf746f` includes ADR 0061's private report-admission repair, but its authorized builder terminated at a pre-namespace environment control before Cargo. ADR 0063 retains the attempt. Qualification V2 Windows execution source `3e3079f` passed all eight compact semantic and cleanup scenarios, including acknowledged target loss and mixed-DPI token geometry; test-only successor `53608af` pins the earlier deadline clamp, and the boundary is supported on the qualified Windows floor | Implemented through maintained ScreenCaptureKit window/display sessions; historical source `f16591f` passed processes 1–4, then process 5 terminated red at `retained_result_mapping` after ScreenCaptureKit suspended the new stream. Integrated candidate `9cf746f` includes ADR 0062's exact retained-lifetime and typed-finalization repair, but its authorized builder terminated at a post-Cargo apparatus control before a complete artifact pair or process 1. ADR 0063 retains the attempt. Qualification V2 source `318ad1c` passed all eight compact semantic and cleanup scenarios with exact fixture finalization; reviewed target-isolated applicability carries that result through `53608af`, and the boundary is supported on the qualified macOS floor |
-| Native verification host | Core i7-12700KF / RTX 4080 Windows 11 Pro 25H2 build family 26200, Qualification V2 UBR 9278, SDK 10.0.26100.0; `windows-2025` CI remains supporting server evidence. ADR 0061 treats UBR and bounded hardware text as diagnostic provenance while the exact approved host class remains compatibility authority | Apple M1 Pro macOS 26.6.2 (25G83), SDK 26.5; `macos-26` CI remains compile and deterministic-contract evidence without Screen Recording authority |
+| Native verification host | Current CPU OCR cohort: Core i7-12700KF, 32 GiB, Windows 11 Pro 26H2 build 26300.9550, ADR 0082. Historical platform evidence: Core i7-12700KF / RTX 4080, Windows 11 Pro 25H2 build family 26200, Qualification V2 UBR 9278, SDK 10.0.26100.0. ADR 0061 keeps UBR/hardware text as diagnostic provenance; `windows-2025` CI remains supporting server evidence | Current CPU OCR cohort: Apple M1 Pro, 32 GiB, macOS 27.0.1 (26A434), ADR 0081. Historical platform evidence: macOS 26.6.2 (25G83), SDK 26.5. `macos-26` CI remains compile and deterministic-contract evidence without Screen Recording authority |
 | Deployment floor | Windows 11 25H2 build family 26200 on a currently serviced x64 desktop installation; earlier versions unsupported | macOS 26.5.2; older versions unsupported |
 | Candidate verification | Windows Phase 1 reruns plus repository and release-target checks pass on the exact exit candidate; ADRs 0026, 0028, 0031, and 0032 retain their separate Windows workload sources | Apple Silicon Phase 1 runs remain attributed to `d8336be` and apply by reviewed complete diff; repository and release-target checks pass on the exact exit candidate; ADRs 0024, 0025, 0029, and 0030 retain their separate macOS workload sources |
 
@@ -1060,7 +1064,8 @@ responsibilities a later phase takes on.
 | Template scaling, rotation, masked matching, GPU execution | Not implemented |
 | OCR model/profile decision and platform-neutral contracts | Implemented in `mado-pilot-ocr`: ADR 0033 fixes released native G-004; ADR 0038 records the rejected rectangular bounded candidate; ADR 0040 adds the accepted candidate-v2 closed identity over the same component bytes; ADR 0041 accepts singular target budgets; ADR 0044 accepts fixed non-overlapping grouped quality and budgets. Immutable model sources, exact-frame requests, normalized source-correlated results, typed failures, and deadline/cancellation-aware commit are implemented |
 | Exact accepted OCR preprocessing, ONNX inference, decoding, and provider policy | Implemented in `mado-pilot-backend-onnx`. ADR 0034 fixes controlled host-provided ONNX Runtime 1.29.0 loading through API 17 with one session pair and process-lifetime runtime ownership. Native G-004 keeps released DB736 behavior; explicit ADR 0040 selection keeps its bounded tensor/profile rules and ADR 0041/0044 budgets. ADR 0046 adds target-gated CUDA/CoreML initialization with one same-provider detector/recognizer pair, explicit dependency roots, atomic pre-publication preferred fallback, required-provider failure, immutable provider facts, and no inference retry/provider switching. ADR 0047 rejects CoreML release qualification. ADR 0048 remains historical explicit Windows CUDA evidence; ADR 0049 adds deterministic provider-specific output-bounded batches and requalifies the unchanged CUDA provider/loader policy. Automatic selection remains CPU on both release targets |
-| Accepted OCR composition | Existing constructors still omit OCR or select the released CPU native/bounded profiles with no fallback. New replay/Windows/macOS provider constructors own caller configuration, select model profile independently from provider policy, and publish provider descriptors only with a complete engine. Preferred initialization may build a fresh CPU pair; required policy publishes no engine on failure |
+| OCR composition | Existing defaults still omit OCR or select the released CPU native/bounded profiles with no fallback. Replay/Windows/macOS profile constructors select any implemented catalog tuple independently of test outcomes and provider policy, and publish provider descriptors only with a complete engine. Preferred initialization may build a fresh CPU pair; required policy publishes no engine on failure |
+| OCR catalog choices and test results | Static catalog v2 and borrowed `ocr_profiles()` / `ocr_profile(id)` metadata expose all three implemented profiles through ordinary Rust selection under [ADR 0084](adr/0084-ocr-model-choices-and-test-results.md). Per-rule passed/failed/not-run/incomplete results retain target/provider, criteria, report and measured-source scope; they do not filter choices or change defaults. The PP-OCRv6 tiny/small profile retains its recorded quality failures and strict resource/execution contract |
 | Bounded engine-scoped diagnostic and provider observation | The released allocation-free `Off` and finite `Normal`/`Debug` diagnostic stream retains strict order, exact losses, independent readers/batches, and content redaction. Rust watcher records add bounded query/source/region/state/stability/disposition/queue/elapsed/typed-outcome facts without template names, pixels, hashes, or backend payloads. The released C ABI has no watcher start surface and its diagnostic structures/function table remain unchanged |
 | Input request, route capability, submission receipt, cleanup bounds, provider, and controller contracts | Implemented in `mado-pilot-input` |
 | Input injection | Implemented in `mado-pilot-platform-windows` for system pointer/keyboard/text, ordinary exact-window `WindowMessage` submission with unknown compatibility and target-queue evidence, and fixture-class acknowledged `WindowMessage` submission. Implemented in `mado-pilot-platform-macos` for `CGEvent` system pointer/keyboard/text and process-directed pointer/keyboard/text with owning-process scope, unknown compatibility, and invocation-only evidence; final candidate `dec43d7` passed the controlled profiles, and independent `single`, exact two-display non-mirrored `same-scale`, and `mixed-scale` matrices passed for all fourteen controlled pairs. No macOS window-message route exists. Both implementations are reached through `mado-pilot-runtime`, the Rust facade, C ABI 1.2/1.3, and C++ |
@@ -2665,6 +2670,50 @@ platform-neutral core and capture contracts only. ONNX Runtime, platform
 adapters, executors, queues, facade types, and ABI types remain outside this
 package.
 
+The same contract crate owns the versioned model catalog and its shared
+build/maintainer validator. Generated static descriptors are the single authority
+for closed identities, resources, execution parameters and host metadata;
+recognition performs no JSON parsing. `ocr_profiles` and `ocr_profile` expose
+borrowed choices through runtime and the Rust facade without loading a model.
+Catalog schema v2 keeps presentation and rule outcomes outside the unchanged
+version-one execution fingerprint. [ADR 0084](adr/0084-ocr-model-choices-and-test-results.md)
+removes the quality-admission filter and aggregate ratings, not technical
+validation. Failed or missing evidence never triggers fallback or changes a
+selection. Per-rule evidence identifies its measured source, execution digest,
+target/provider, criteria and evaluator revision.
+
+[ADR 0080](adr/0080-ocr-model-catalog-and-admission.md) fixes the official PP-OCRv6
+tiny/small execution tuple and mandatory pinned YAML vocabulary. It is an ordinary
+CPU profile with known quality failures. Package manifest v1/v2 still cannot
+express its required auxiliary source and therefore refuse that declaration.
+The C/C++ ABI, provider capabilities and bounded-v2 watch scope are unchanged.
+
+[ADR 0083](adr/0083-platform-aware-ocr-calibration-and-percent-equivalence.md)
+limits benchmark text equivalence to U+0025 `%` and U+FF05 `％` after NFC and
+trim on observed and expected text. Repeated-text stability uses the same rule;
+geometry, confidence, order and grouped membership remain exact. No broad NFKC
+or other character folding is permitted. Raw output, fixture authoring, SDK
+normalization and catalog/profile identities remain unchanged. Revised criteria
+are bound by their exact SHA-256 and ADR 0083; old failures are not rerated.
+
+The same ADR replaces only the Windows reference precursor's operational
+allowance with one newly frozen three-process campaign: 900 seconds per process,
+3,300 seconds whole, with unchanged output, cleanup and lifecycle bounds.
+This platform-specific headroom is not a measured security-software cost or
+a numerical model-performance budget. No incremental deadline retries or
+security-software changes are permitted. Apple bounds and data remain unchanged.
+The Windows calibration at source `0cb9fc0` completed three processes and 1,452
+observations with zero shared validation failures. Its independently calibrated
+numerical policy is
+[`windows-i7-12700kf-26300-budgets-v1.json`](../tools/ocr-models/windows-i7-12700kf-26300-budgets-v1.json),
+derived under ADR 0082. Calibration authorizes neither acquisition nor another
+model run. Both final comparisons at `cf2763a` completed with candidate quality
+failures; the [original outcomes](ocr-model-catalog.md#final-comparison-at-cf2763a)
+remain bound to that source and policy. A derived per-rule view is not a fresh
+measurement or a retroactive pass. The evaluator distinguishes complete,
+verified evaluation from passing every empirical rule and has no cross-target
+model-admission decision.
+
 One `OcrRequest` borrows one immutable `Frame`, one exact
 `OcrBackendIdentity` (stable ID plus implementation version), one complete
 `OcrModelIdentity`, and one `OperationContext`, then explicitly names the
@@ -2787,9 +2836,10 @@ honored interests, hard derived bounds, malformed output, final-commit races,
 redacted observations, overlap safety, and independence from backend buffers,
 frame storage, mappings, and model allocations.
 
-`mado-pilot-backend-onnx` is the concrete CPU implementation for the two exact
-closed profiles from ADRs 0033 and 0040. It requires a caller-supplied canonical
-absolute path to ONNX Runtime 1.29.0
+`mado-pilot-backend-onnx` is the concrete CPU implementation for the catalog's two
+accepted closed profiles from ADRs 0033 and 0040. A non-default maintainer feature
+also exposes the unqualified ADR 0080 candidate; it does not widen ordinary
+constructors. The backend requires a caller-supplied canonical absolute path to ONNX Runtime 1.29.0
 (`libonnxruntime.1.29.0.dylib` on Apple Silicon or `onnxruntime.dll` on Windows),
 verifies exact runtime/API and graph/vocabulary metadata before admission, and
 never searches ambient locations, downloads, bundles, or falls back to another
@@ -2800,9 +2850,10 @@ best-effort native termination, and rejects concurrent calls instead of queueing
 or invoking `Session::run` concurrently.
 
 `OnnxOcrBackend::open_accepted` retains released native G-004 preprocessing.
-`OnnxOcrBackend::open_bounded_detector` is the only fixed-path bounded
-constructor. It computes source/final dimensions, forward/inverse scale, tensor
-elements, and bytes before allocation. Candidate v2 first fits oversized desired
+`OnnxOcrBackend::open_bounded_detector` retains the explicit bounded constructor;
+`open_profile` resolves an accepted catalog ID before resource I/O. It computes
+source/final dimensions, forward/inverse scale, tensor elements, and bytes before
+allocation. Candidate v2 first fits oversized desired
 work within `1312x736`; only after that fit, tensors above 6,291,456 bytes receive
 one second aspect-preserving floor-to-32 fit. Desired work that already fits the
 rectangle, including 960×540 and odd HUD inputs, retains the 11,587,584-byte
@@ -2826,11 +2877,14 @@ construction. `replay_engine_with_default_ocr`,
 `windows_engine_with_default_ocr`, and `macos_engine_with_default_ocr` retain
 released native G-004 meaning through `DefaultOcrConfig`.
 `replay_engine_with_ocr_profile`, `windows_engine_with_ocr_profile`, and
-`macos_engine_with_ocr_profile` accept `OcrProfileConfig` with the closed
-`OcrProfile::BoundedDetector` selection. Both carry caller-selected controlled
-model-root/runtime paths; ordinary constructors continue to omit OCR unless a
-caller supplies a backend. No constructor performs ambient search, download,
-retry, fallback, or support-table inference.
+`macos_engine_with_ocr_profile` accept `OcrProfileConfig`. The existing
+`OcrProfile::BoundedDetector` selection is unchanged; `OcrProfileConfig::from_id`
+selects an accepted static catalog ID. Construction revalidates selection, so
+manually constructing `OcrProfile::Catalog` cannot admit an unknown or unqualified
+profile. Both paths carry caller-selected controlled model-root/runtime paths;
+ordinary constructors continue to omit OCR unless a caller supplies a backend.
+No constructor performs ambient search, download, retry, fallback, or
+support-table inference.
 
 For troubleshooting, `ProfileMismatch` means the source is not one complete
 accepted tuple; changing only a profile or preprocessing string is never

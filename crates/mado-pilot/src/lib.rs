@@ -120,8 +120,8 @@
 //! Replay and native engine requests accept an injected `Arc<dyn OcrBackend>`;
 //! ordinary constructors without one expose no OCR. Separate
 //! `*_engine_with_default_ocr` constructors preserve native G-004;
-//! `*_engine_with_ocr_profile` accepts the closed
-//! [`OcrProfile::BoundedDetector`] selection through [`OcrProfileConfig`].
+//! `*_engine_with_ocr_profile` selects implemented catalog IDs through
+//! [`OcrProfileConfig::from_id`] or the legacy [`OcrProfile::BoundedDetector`] variant.
 //! [`Session::recognize`] preserves singular optional-region results, while
 //! [`Session::scan_ocr_zones`] borrows one through eight capture-pixel zones and
 //! returns one independent caller-grouped result.
@@ -278,12 +278,14 @@ impl DefaultOcrConfig {
     }
 }
 
-/// Closed explicit selection for a non-default product OCR profile.
+/// Explicit product OCR profile selection.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 #[non_exhaustive]
 pub enum OcrProfile {
     /// ADR 0040/0041 bounded-detector preprocessing over the accepted model pair.
     BoundedDetector,
+    /// A repository catalog ID, revalidated during construction.
+    Catalog(&'static str),
 }
 
 /// Controlled prerequisites for one explicitly selected product OCR profile.
@@ -296,22 +298,53 @@ pub struct OcrProfileConfig {
 
 impl OcrProfileConfig {
     /// Selects `profile` and names its controlled model root and runtime file.
+    /// The bounded catalog ID preserves [`OcrProfile::BoundedDetector`].
     pub fn new(
         profile: OcrProfile,
         model_root: impl Into<PathBuf>,
         runtime_path: impl Into<PathBuf>,
     ) -> Self {
         Self {
-            profile,
+            profile: match profile {
+                OcrProfile::Catalog(ACCEPTED_BOUNDED_PROFILE_ID) => OcrProfile::BoundedDetector,
+                profile => profile,
+            },
             model_root: model_root.into(),
             runtime_path: runtime_path.into(),
         }
+    }
+
+    /// Selects a catalog ID without reading models, reports or loading a runtime.
+    ///
+    /// # Errors
+    /// Returns [`Status::Unsupported`] for unknown IDs.
+    pub fn from_id(
+        profile_id: &str,
+        model_root: impl Into<PathBuf>,
+        runtime_path: impl Into<PathBuf>,
+    ) -> Result<Self> {
+        let descriptor = ocr_profile(profile_id)
+            .ok_or_else(|| Error::new(Status::Unsupported, "OCR profile is not declared"))?;
+        Ok(Self::new(
+            OcrProfile::Catalog(descriptor.profile_id),
+            model_root,
+            runtime_path,
+        ))
     }
 
     /// Returns the selected closed product profile.
     #[must_use]
     pub const fn profile(&self) -> OcrProfile {
         self.profile
+    }
+
+    /// Returns the exact catalog selection.
+    #[must_use]
+    pub const fn profile_id(&self) -> &'static str {
+        match self.profile {
+            OcrProfile::BoundedDetector => ACCEPTED_BOUNDED_PROFILE_ID,
+            OcrProfile::Catalog(id) => id,
+        }
     }
 
     /// Returns the caller-selected model root.
@@ -454,13 +487,12 @@ fn configured_ocr(
             Ok(Some(OcrRecognizer::new(Arc::new(backend))))
         }
         (None, Some(IntegratedOcr::Profile(config, operation))) => {
-            let backend = match config.profile() {
-                OcrProfile::BoundedDetector => OnnxOcrBackend::open_bounded_detector(
-                    config.model_root(),
-                    config.runtime_path(),
-                    operation,
-                ),
-            }
+            let backend = OnnxOcrBackend::open_profile(
+                config.profile_id(),
+                config.model_root(),
+                config.runtime_path(),
+                operation,
+            )
             .map_err(Error::from)?;
             Ok(Some(OcrRecognizer::new(Arc::new(backend))))
         }
@@ -1070,41 +1102,47 @@ pub use mado_pilot_runtime::{
     CapabilitySupport, CaptureFault, CapturePacingOutcome, CapturePacingReport,
     CapturePacingRequest, CaptureResourceLimits, ChangeDetectionDescriptor, ChangeDetectionPolicy,
     CleanupBudget, CleanupState, ClipPolicy, Clock, Confidence, ContentDigest, Continuity,
-    CoordinateSpace, CoordinateSupport, CpuMapping, DEFAULT_CHANGE_DETECTION_DESCRIPTOR, DecoderId,
-    DeliveryPlan, DiagnosticBatch, DiagnosticCategory, DiagnosticDrain, DiagnosticKind,
-    DiagnosticLevel, DiagnosticLosses, DiagnosticOcrModelInstanceId, DiagnosticOperationId,
-    DiagnosticOperationKind, DiagnosticOptions, DiagnosticPayload, DiagnosticReader,
-    DiagnosticRecord, DiagnosticRecordSequence, DiagnosticTemplateId, EXACT_RGBA_POLICY_CODE,
-    Engine, EngineId, EngineOptions, Error, FindOutcome, FindRequest, FocusPolicy, Frame,
-    FrameDescriptor, FrameDiagnostic, FrameOrder, FrameRequest, FrameSelection, FrameSequence,
-    FrameStamp, FrameView, GeometryFault, GeometryPolicy, GeometryRevision, IdentityFault,
-    InputAddressScope, InputAttempt, InputCapability, InputDelivery, InputDescriptor,
-    InputDiagnostic, InputEvent, InputFault, InputOpenRequest, InputOperationKind,
-    InputOperationSet, InputReceipt, InputRequest, InputRequirement, InputRouteCapability,
-    InputSequence, Interruption, Key, LanguageProfileId, Lifecycle, LifecycleDiagnostic, LoadStage,
-    MAX_BACKEND_TEXT_BYTES, MAX_DIAGNOSTIC_CAPACITY, MAX_MODEL_COMPONENT_BYTES, MAX_OCR_CANDIDATES,
-    MAX_OCR_ZONES, MAX_TEXT_BYTES, Manifest, MappingDiagnostic, MappingObserver, Match,
-    MatchDefaults, MatchOptions, MatchResult, MemoryEntry, MemoryPackage, ModelComponentIdentity,
-    ModelId, ModelVersion, Modifier, MonotonicInstant, NativeDesktopUnit, NativeWindowDescription,
+    CoordinateSpace, CoordinateSupport, CpuMapping, DEFAULT_CHANGE_DETECTION_DESCRIPTOR,
+    DEFAULT_OCR_PROFILE_ID, DecoderId, DeliveryPlan, DiagnosticBatch, DiagnosticCategory,
+    DiagnosticDrain, DiagnosticKind, DiagnosticLevel, DiagnosticLosses,
+    DiagnosticOcrModelInstanceId, DiagnosticOperationId, DiagnosticOperationKind,
+    DiagnosticOptions, DiagnosticPayload, DiagnosticReader, DiagnosticRecord,
+    DiagnosticRecordSequence, DiagnosticTemplateId, EXACT_RGBA_POLICY_CODE, Engine, EngineId,
+    EngineOptions, Error, FindOutcome, FindRequest, FocusPolicy, Frame, FrameDescriptor,
+    FrameDiagnostic, FrameOrder, FrameRequest, FrameSelection, FrameSequence, FrameStamp,
+    FrameView, GeometryFault, GeometryPolicy, GeometryRevision, IdentityFault, InputAddressScope,
+    InputAttempt, InputCapability, InputDelivery, InputDescriptor, InputDiagnostic, InputEvent,
+    InputFault, InputOpenRequest, InputOperationKind, InputOperationSet, InputReceipt,
+    InputRequest, InputRequirement, InputRouteCapability, InputSequence, Interruption, Key,
+    LanguageProfileId, Lifecycle, LifecycleDiagnostic, LoadStage, MAX_BACKEND_TEXT_BYTES,
+    MAX_DIAGNOSTIC_CAPACITY, MAX_MODEL_COMPONENT_BYTES, MAX_OCR_CANDIDATES, MAX_OCR_ZONES,
+    MAX_TEXT_BYTES, Manifest, MappingDiagnostic, MappingObserver, Match, MatchDefaults,
+    MatchOptions, MatchResult, MemoryEntry, MemoryPackage, ModelComponentIdentity, ModelId,
+    ModelVersion, Modifier, MonotonicInstant, NativeDesktopUnit, NativeWindowDescription,
     NativeWindowId, NormalizationId, OcrBackend, OcrBackendDescriptor, OcrBackendId,
-    OcrBackendIdentity, OcrBackendRequest, OcrBackendVersion, OcrCandidateSink, OcrDiagnostic,
-    OcrDiagnosticOutcome, OcrDiagnosticProfile, OcrExecutionProvider, OcrExecutionProviderPolicy,
-    OcrFault, OcrModelComponent, OcrModelIdentity, OcrModelSource, OcrModelSourceRequest,
-    OcrProfileMetadata, OcrProviderDescriptor, OcrProviderFallbackReason, OcrQuadrilateral,
-    OcrRegion, OcrRequest, OcrRequestedRegionDiagnostic, OcrResult, OcrTextAnalysisRate,
-    OcrTextOverload, OcrTextQuery, OcrTextQueryId, OcrTextQueryOutcome, OcrTextQueryProgress,
-    OcrTextQueryState, OcrTextRetainedExtent, OcrTextSchedulerDescriptor,
-    OcrTextSchedulerObservation, OcrTextStability, OcrTextStabilityKind, OcrTextTerminalOutcome,
-    OcrTextWatchDiagnostic, OcrTextWatchDiagnosticOutcome, OcrTextWatchRequest, OcrTextWatchResult,
-    OcrTextWorkCounts, OcrTextWorkDisposition, OcrZone, OcrZoneGroup, OcrZoneScanRequest,
-    OcrZoneScanResult, OpenRequest, OperationContext, OperationStartedDiagnostic, OverflowPolicy,
-    PacingUnsupportedReason, PackagePath, PackageSource, PermissionDiagnostic, PermissionKind,
-    PermissionOutcome, PermissionReport, PermissionState, PixelExtent, PixelFormat, PixelRect,
-    PlatformCode, Point, PointerButton, PointerGeometry, PreparedTemplate, PreprocessingId,
-    PressedState, ProfileId, Provenance, ProviderId, ProviderProfileId, Rect, RegionSelection,
-    ResolvedCapturePacing, Result, RetainedStoragePolicy, RouteAttemptDiagnostic, Scale,
-    SearchDiagnostic, SearchDiagnosticOutcome, SearchFrame, SequenceLimits, SequenceOutcome,
-    Session, SessionDescription, SessionRequest, Status, StreamEpoch, StreamId, SubmissionEvidence,
+    OcrBackendIdentity, OcrBackendRequest, OcrBackendVersion, OcrCandidateSink,
+    OcrDetectorDescriptor, OcrDetectorResize, OcrDiagnostic, OcrDiagnosticOutcome,
+    OcrDiagnosticProfile, OcrEvaluationEvidence, OcrEvaluationOutcome, OcrEvaluationSummary,
+    OcrExecutionProvider, OcrExecutionProviderPolicy, OcrFault, OcrGraphDescriptor,
+    OcrModelComponent, OcrModelIdentity, OcrModelSource, OcrModelSourceRequest,
+    OcrPixelNormalization, OcrProfileApplicability, OcrProfileDescriptor, OcrProfileMetadata,
+    OcrProviderDescriptor, OcrProviderFallbackReason, OcrQuadrilateral, OcrRecognitionDescriptor,
+    OcrRegion, OcrRequest, OcrRequestedRegionDiagnostic, OcrResourceDescriptor, OcrResourceLimits,
+    OcrResult, OcrRuleEvaluation, OcrTensorDescriptor, OcrTextAnalysisRate, OcrTextOverload,
+    OcrTextQuery, OcrTextQueryId, OcrTextQueryOutcome, OcrTextQueryProgress, OcrTextQueryState,
+    OcrTextRetainedExtent, OcrTextSchedulerDescriptor, OcrTextSchedulerObservation,
+    OcrTextStability, OcrTextStabilityKind, OcrTextTerminalOutcome, OcrTextWatchDiagnostic,
+    OcrTextWatchDiagnosticOutcome, OcrTextWatchRequest, OcrTextWatchResult, OcrTextWorkCounts,
+    OcrTextWorkDisposition, OcrVocabularyDescriptor, OcrVocabularySource, OcrZone, OcrZoneGroup,
+    OcrZoneScanRequest, OcrZoneScanResult, OpenRequest, OperationContext,
+    OperationStartedDiagnostic, OverflowPolicy, PacingUnsupportedReason, PackagePath,
+    PackageSource, PermissionDiagnostic, PermissionKind, PermissionOutcome, PermissionReport,
+    PermissionState, PixelExtent, PixelFormat, PixelRect, PlatformCode, Point, PointerButton,
+    PointerGeometry, PreparedTemplate, PreprocessingId, PressedState, ProfileId, Provenance,
+    ProviderId, ProviderProfileId, Rect, RegionSelection, ResolvedCapturePacing, Result,
+    RetainedStoragePolicy, RouteAttemptDiagnostic, Scale, SearchDiagnostic,
+    SearchDiagnosticOutcome, SearchFrame, SequenceLimits, SequenceOutcome, Session,
+    SessionDescription, SessionRequest, Status, StreamEpoch, StreamId, SubmissionEvidence,
     Suppression, SystemClock, TargetCapability, TargetDescription, TargetId, TargetKind,
     TargetPlacement, TargetProcessIdentity, TemplateAnalysisRate, TemplateDeclaration,
     TemplateEncoding, TemplateId, TemplateOverload, TemplateQuery, TemplateQueryId,
@@ -1113,7 +1151,7 @@ pub use mado_pilot_runtime::{
     TemplateTerminalOutcome, TemplateWatchDiagnostic, TemplateWatchDiagnosticOutcome,
     TemplateWatchRequest, TemplateWatchResult, TemplateWorkCounts, TemplateWorkDisposition,
     TransformSnapshot, UnsupportedChangeDetectionPolicy, VisionFault, WindowCaptureArea,
-    WindowGeometry,
+    WindowGeometry, ocr_profile, ocr_profiles,
 };
 
 /// The asset vocabulary's three module-level constants, qualified.

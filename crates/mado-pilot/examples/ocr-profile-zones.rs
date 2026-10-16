@@ -6,16 +6,16 @@ use std::path::PathBuf;
 use mado_pilot::replay::{ReplayFrame, ReplaySource, ReplayTarget};
 use mado_pilot::{
     ClipPolicy, Continuity, CoordinateSpace, FrameDescriptor, FrameRequest, MonotonicInstant,
-    OcrProfile, OcrProfileConfig, OcrZone, OcrZoneScanRequest, OpenRequest, OperationContext,
-    PixelExtent, PixelFormat, Rect, ReplayEngineRequest,
+    OcrProfileConfig, OcrZone, OcrZoneScanRequest, OpenRequest, OperationContext, PixelExtent,
+    PixelFormat, Rect, ReplayEngineRequest,
 };
 
 fn main() -> Result<(), Box<dyn std::error::Error>> {
-    let config = OcrProfileConfig::new(
-        OcrProfile::BoundedDetector,
+    let config = OcrProfileConfig::from_id(
+        mado_pilot::ACCEPTED_BOUNDED_PROFILE_ID,
         controlled_path("MADO_PILOT_G004_MODEL_ROOT")?,
         controlled_path("MADO_PILOT_ONNX_RUNTIME")?,
-    );
+    )?;
     let extent = PixelExtent::new(64, 64);
     let descriptor = FrameDescriptor::packed(extent, PixelFormat::Bgra8)?;
     let replay = ReplayFrame::new(

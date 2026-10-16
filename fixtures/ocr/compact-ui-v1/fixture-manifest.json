@@ -1,0 +1,511 @@
+{
+  "schema_version": 1,
+  "fixture_profile_id": "compact-ui-v1",
+  "license": "Apache-2.0",
+  "authorship": "Independently authored for MadoPilot; no private pixels, labels, or digests",
+  "font": {
+    "name": "Noto Sans JP",
+    "source_revision": "ec626514f79f831f1ab848a82114a0ce7e2d6372",
+    "source_url": "https://github.com/google/fonts/blob/ec626514f79f831f1ab848a82114a0ce7e2d6372/ofl/notosansjp/NotoSansJP%5Bwght%5D.ttf",
+    "sha256": "c2f3b4d463500a2ddcd3849cded1fceeb9fd6d1c32e6cbecd568453ba50fc68f",
+    "license": "OFL-1.1",
+    "bytes_bundled": false
+  },
+  "oracle": {
+    "text": "exact NFC with outer whitespace trimmed; no case/width/fuzzy folding",
+    "region_count": "exact",
+    "ordering": "authored manifest order",
+    "geometry_space": "source-relative quadrilateral",
+    "minimum_iou": 0.5,
+    "maximum_center_delta_x": 0.025,
+    "maximum_center_delta_y": 0.025,
+    "unexpected_region_threshold": 0.5,
+    "confidence": "finite model-local [0,1]; no universal matching floor",
+    "stability": "identical text, order, geometry and confidence within an implementation"
+  },
+  "images": [
+    {
+      "file": "dense-tooltip.png",
+      "sha256": "19749e3e2f6828a7e88b15112d5d73c31005bfb7e501553abc7c842783ed262a",
+      "width": 640,
+      "height": 360,
+      "regions": [
+        {
+          "id": "tooltip-title",
+          "order": 0,
+          "text_nfc": "装備の詳細",
+          "source_relative_quad": [
+            [
+              0.0328125,
+              0.04722222222222222
+            ],
+            [
+              0.2453125,
+              0.04722222222222222
+            ],
+            [
+              0.2453125,
+              0.1361111111111111
+            ],
+            [
+              0.0328125,
+              0.1361111111111111
+            ]
+          ]
+        },
+        {
+          "id": "tooltip-level",
+          "order": 1,
+          "text_nfc": "強化段階:7",
+          "source_relative_quad": [
+            [
+              0.0328125,
+              0.175
+            ],
+            [
+              0.1921875,
+              0.175
+            ],
+            [
+              0.1921875,
+              0.25
+            ],
+            [
+              0.0328125,
+              0.25
+            ]
+          ]
+        },
+        {
+          "id": "tooltip-attack",
+          "order": 2,
+          "text_nfc": "攻撃力+120",
+          "source_relative_quad": [
+            [
+              0.0328125,
+              0.2833333333333333
+            ],
+            [
+              0.190625,
+              0.2833333333333333
+            ],
+            [
+              0.190625,
+              0.35
+            ],
+            [
+              0.0328125,
+              0.35
+            ]
+          ]
+        },
+        {
+          "id": "tooltip-rule-1",
+          "order": 3,
+          "text_nfc": "行動終了時にHPを回復",
+          "source_relative_quad": [
+            [
+              0.0328125,
+              0.39444444444444443
+            ],
+            [
+              0.334375,
+              0.39444444444444443
+            ],
+            [
+              0.334375,
+              0.46111111111111114
+            ],
+            [
+              0.0328125,
+              0.46111111111111114
+            ]
+          ]
+        },
+        {
+          "id": "tooltip-rule-2",
+          "order": 4,
+          "text_nfc": "次の攻撃が25%上昇",
+          "source_relative_quad": [
+            [
+              0.0328125,
+              0.5055555555555555
+            ],
+            [
+              0.296875,
+              0.5055555555555555
+            ],
+            [
+              0.296875,
+              0.5722222222222222
+            ],
+            [
+              0.0328125,
+              0.5722222222222222
+            ]
+          ]
+        },
+        {
+          "id": "tooltip-rule-3",
+          "order": 5,
+          "text_nfc": "効果は3ターン継続",
+          "source_relative_quad": [
+            [
+              0.0328125,
+              0.6166666666666667
+            ],
+            [
+              0.2828125,
+              0.6166666666666667
+            ],
+            [
+              0.2828125,
+              0.6833333333333333
+            ],
+            [
+              0.0328125,
+              0.6833333333333333
+            ]
+          ]
+        },
+        {
+          "id": "tooltip-note",
+          "order": 6,
+          "text_nfc": "同じ効果は重複しない",
+          "source_relative_quad": [
+            [
+              0.0328125,
+              0.7277777777777777
+            ],
+            [
+              0.2921875,
+              0.7277777777777777
+            ],
+            [
+              0.2921875,
+              0.7888888888888889
+            ],
+            [
+              0.0328125,
+              0.7888888888888889
+            ]
+          ]
+        },
+        {
+          "id": "tooltip-key",
+          "order": 7,
+          "text_nfc": "[ENTER]確認",
+          "source_relative_quad": [
+            [
+              0.0328125,
+              0.85
+            ],
+            [
+              0.2125,
+              0.85
+            ],
+            [
+              0.2125,
+              0.925
+            ],
+            [
+              0.0328125,
+              0.925
+            ]
+          ]
+        }
+      ]
+    },
+    {
+      "file": "boundary.png",
+      "sha256": "94cb78640c5a2db4dec926167f0e6a790e868e9e217b559af8f25186e80765fa",
+      "width": 384,
+      "height": 192,
+      "regions": [
+        {
+          "id": "edge-top",
+          "order": 0,
+          "text_nfc": "境界確認",
+          "source_relative_quad": [
+            [
+              0.0,
+              0.020833333333333332
+            ],
+            [
+              0.265625,
+              0.020833333333333332
+            ],
+            [
+              0.265625,
+              0.17708333333333334
+            ],
+            [
+              0.0,
+              0.17708333333333334
+            ]
+          ]
+        },
+        {
+          "id": "edge-middle",
+          "order": 1,
+          "text_nfc": "残り12秒",
+          "source_relative_quad": [
+            [
+              0.5911458333333334,
+              0.375
+            ],
+            [
+              0.8411458333333334,
+              0.375
+            ],
+            [
+              0.8411458333333334,
+              0.5208333333333334
+            ],
+            [
+              0.5911458333333334,
+              0.5208333333333334
+            ]
+          ]
+        },
+        {
+          "id": "edge-bottom",
+          "order": 2,
+          "text_nfc": "戻る",
+          "source_relative_quad": [
+            [
+              0.0,
+              0.7916666666666666
+            ],
+            [
+              0.140625,
+              0.7916666666666666
+            ],
+            [
+              0.140625,
+              0.9322916666666666
+            ],
+            [
+              0.0,
+              0.9322916666666666
+            ]
+          ]
+        }
+      ]
+    },
+    {
+      "file": "decoration.png",
+      "sha256": "e7d66e9f8a8bd094771fa1aee67e9a9457ccd63e16240435cca51a9b960329e5",
+      "width": 512,
+      "height": 256,
+      "regions": [
+        {
+          "id": "decor-title",
+          "order": 0,
+          "text_nfc": "素材一覧",
+          "source_relative_quad": [
+            [
+              0.095703125,
+              0.09375
+            ],
+            [
+              0.326171875,
+              0.09375
+            ],
+            [
+              0.326171875,
+              0.22265625
+            ],
+            [
+              0.095703125,
+              0.22265625
+            ]
+          ]
+        },
+        {
+          "id": "decor-count",
+          "order": 1,
+          "text_nfc": "所持数:45",
+          "source_relative_quad": [
+            [
+              0.095703125,
+              0.3515625
+            ],
+            [
+              0.296875,
+              0.3515625
+            ],
+            [
+              0.296875,
+              0.4609375
+            ],
+            [
+              0.095703125,
+              0.4609375
+            ]
+          ]
+        },
+        {
+          "id": "decor-action",
+          "order": 2,
+          "text_nfc": "選択して確認",
+          "source_relative_quad": [
+            [
+              0.095703125,
+              0.6328125
+            ],
+            [
+              0.388671875,
+              0.6328125
+            ],
+            [
+              0.388671875,
+              0.75
+            ],
+            [
+              0.095703125,
+              0.75
+            ]
+          ]
+        }
+      ]
+    },
+    {
+      "file": "varied-sizes.png",
+      "sha256": "df94880b81084fe02ea299c5f484e646c60459104faaf60d1ee1c13fb47af4ee",
+      "width": 736,
+      "height": 360,
+      "regions": [
+        {
+          "id": "large",
+          "order": 0,
+          "text_nfc": "新しい任務",
+          "source_relative_quad": [
+            [
+              0.033967391304347824,
+              0.05555555555555555
+            ],
+            [
+              0.3138586956521739,
+              0.05555555555555555
+            ],
+            [
+              0.3138586956521739,
+              0.17777777777777778
+            ],
+            [
+              0.033967391304347824,
+              0.17777777777777778
+            ]
+          ]
+        },
+        {
+          "id": "medium",
+          "order": 1,
+          "text_nfc": "推奨レベル20",
+          "source_relative_quad": [
+            [
+              0.033967391304347824,
+              0.29444444444444445
+            ],
+            [
+              0.2758152173913043,
+              0.29444444444444445
+            ],
+            [
+              0.2758152173913043,
+              0.3861111111111111
+            ],
+            [
+              0.033967391304347824,
+              0.3861111111111111
+            ]
+          ]
+        },
+        {
+          "id": "small",
+          "order": 2,
+          "text_nfc": "報酬:300G",
+          "source_relative_quad": [
+            [
+              0.033967391304347824,
+              0.48055555555555557
+            ],
+            [
+              0.16576086956521738,
+              0.48055555555555557
+            ],
+            [
+              0.16576086956521738,
+              0.5555555555555556
+            ],
+            [
+              0.033967391304347824,
+              0.5555555555555556
+            ]
+          ]
+        },
+        {
+          "id": "compact",
+          "order": 3,
+          "text_nfc": "進行状況2/5",
+          "source_relative_quad": [
+            [
+              0.033967391304347824,
+              0.6444444444444445
+            ],
+            [
+              0.16168478260869565,
+              0.6444444444444445
+            ],
+            [
+              0.16168478260869565,
+              0.7083333333333334
+            ],
+            [
+              0.033967391304347824,
+              0.7083333333333334
+            ]
+          ]
+        },
+        {
+          "id": "latin",
+          "order": 4,
+          "text_nfc": "READY",
+          "source_relative_quad": [
+            [
+              0.033967391304347824,
+              0.825
+            ],
+            [
+              0.13994565217391305,
+              0.825
+            ],
+            [
+              0.13994565217391305,
+              0.8916666666666667
+            ],
+            [
+              0.033967391304347824,
+              0.8916666666666667
+            ]
+          ]
+        }
+      ]
+    },
+    {
+      "file": "blank.png",
+      "sha256": "ace2c7ef86d1654f15aa9a8fc358fc96e0923b7ad271170b484bcc32e108b59f",
+      "width": 320,
+      "height": 160,
+      "regions": []
+    },
+    {
+      "file": "nonuniform-negative.png",
+      "sha256": "f65d68924adbc67e0642e1c63731f42a93fa0b7cfd550d84dd24b8467a84fd7c",
+      "width": 448,
+      "height": 224,
+      "regions": []
+    }
+  ]
+}

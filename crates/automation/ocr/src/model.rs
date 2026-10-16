@@ -87,50 +87,13 @@ identifier!(
     "A bounded OCR result-normalization identifier."
 );
 
-/// Accepted G-004 model identity.
-pub const ACCEPTED_G004_MODEL_ID: &str = "g-004-rapidocr-ppocrv4-det-v6-rec-small-v1";
-/// Accepted G-004 model revision, including RapidOCR source revision.
-pub const ACCEPTED_G004_MODEL_VERSION: &str =
-    "rapidocr-3.9.2+095232a4c94f7f0e6600ba5bba1177010ad696d4";
-/// Accepted G-004 profile identity.
-pub const ACCEPTED_G004_PROFILE_ID: &str = "g-004-rapidocr-ppocrv4-det-v6-rec-small-v1";
-/// Accepted G-004 language-profile identity.
-pub const ACCEPTED_G004_LANGUAGE_PROFILE_ID: &str =
-    "horizontal-ja-basic-latin-ascii-digits-ui-symbols-v1";
-/// Accepted G-004 preprocessing identity.
-pub const ACCEPTED_G004_PREPROCESSING_ID: &str = "rapidocr-ppocrv4-det-bgr-db736-v1";
-/// Accepted G-004 decoder identity.
-pub const ACCEPTED_G004_DECODER_ID: &str = "rapidocr-ppocrv6-rec-small-greedy-ctc-v1";
-/// Accepted G-004 result-normalization identity.
-pub const ACCEPTED_G004_NORMALIZATION_ID: &str = "nfc-trim-stable-detector-order-five-decimal-v1";
-/// Accepted G-004 embedded vocabulary entry count.
-pub const ACCEPTED_G004_VOCABULARY_ENTRIES: u32 = 18_708;
-/// Accepted bounded-detector model identity from ADR 0040.
-pub const ACCEPTED_BOUNDED_MODEL_ID: &str =
-    "phase-3-1-rapidocr-ppocrv4-det-v6-rec-small-bounded-v2";
-/// Accepted bounded-detector model revision, sharing the immutable RapidOCR source.
-pub const ACCEPTED_BOUNDED_MODEL_VERSION: &str = ACCEPTED_G004_MODEL_VERSION;
-/// Accepted bounded-detector profile identity from ADR 0040.
-pub const ACCEPTED_BOUNDED_PROFILE_ID: &str = ACCEPTED_BOUNDED_MODEL_ID;
-/// Accepted bounded-detector preprocessing identity from ADR 0040.
-pub const ACCEPTED_BOUNDED_PREPROCESSING_ID: &str = "rapidocr-ppocrv4-det-bgr-db736-fit-1312x736-then-tensor6291456b-linear-half-pixel-source-rec-v2";
-/// Maximum bytes accepted for either OCR model component (64 MiB).
-pub const MAX_MODEL_COMPONENT_BYTES: u64 = 64 * 1024 * 1024;
-
-const ACCEPTED_G004_DETECTOR_BYTES: u64 = 4_745_517;
-const ACCEPTED_G004_RECOGNIZER_BYTES: u64 = 21_234_383;
-const ACCEPTED_G004_DETECTOR_SHA256: [u8; 32] = [
-    0xd2, 0xa7, 0x72, 0x0d, 0x45, 0xa5, 0x42, 0x57, 0x20, 0x8b, 0x1e, 0x13, 0xe3, 0x6a, 0x84, 0x79,
-    0x89, 0x4c, 0xb7, 0x41, 0x55, 0xa5, 0xef, 0xe2, 0x94, 0x62, 0x51, 0x2d, 0x42, 0xf4, 0x9d, 0xa9,
-];
-const ACCEPTED_G004_RECOGNIZER_SHA256: [u8; 32] = [
-    0x6f, 0x32, 0x72, 0x46, 0xb5, 0x03, 0x88, 0xf3, 0xc1, 0x76, 0xae, 0x30, 0x4b, 0xd9, 0x57, 0x67,
-    0xea, 0x6d, 0xc0, 0xc9, 0xae, 0x92, 0x15, 0x3e, 0xf8, 0xcb, 0xe2, 0x10, 0xb3, 0xc1, 0x48, 0x84,
-];
-const ACCEPTED_G004_VOCABULARY_SHA256: [u8; 32] = [
-    0xf7, 0xaa, 0x89, 0x7c, 0xa8, 0x28, 0xa4, 0xc7, 0xc9, 0xe2, 0x73, 0x9c, 0x30, 0xf9, 0x16, 0x1a,
-    0x33, 0x30, 0x6d, 0x53, 0x2f, 0x02, 0x0b, 0xcd, 0xb9, 0x1d, 0xcf, 0xb6, 0x64, 0xa5, 0x50, 0x7e,
-];
+pub use crate::catalog::{
+    ACCEPTED_BOUNDED_MODEL_ID, ACCEPTED_BOUNDED_MODEL_VERSION, ACCEPTED_BOUNDED_PREPROCESSING_ID,
+    ACCEPTED_BOUNDED_PROFILE_ID, ACCEPTED_G004_DECODER_ID, ACCEPTED_G004_LANGUAGE_PROFILE_ID,
+    ACCEPTED_G004_MODEL_ID, ACCEPTED_G004_MODEL_VERSION, ACCEPTED_G004_NORMALIZATION_ID,
+    ACCEPTED_G004_PREPROCESSING_ID, ACCEPTED_G004_PROFILE_ID, ACCEPTED_G004_VOCABULARY_ENTRIES,
+    MAX_MODEL_COMPONENT_BYTES,
+};
 
 /// The exact immutable identity of one model component.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
@@ -290,13 +253,13 @@ impl OcrProfileMetadata {
         &self.normalization
     }
 
-    /// Returns the embedded vocabulary entry count.
+    /// Returns the declared vocabulary entry count, excluding blank and space.
     #[must_use]
     pub const fn vocabulary_entries(&self) -> u32 {
         self.vocabulary_entries
     }
 
-    /// Returns the embedded vocabulary SHA-256.
+    /// Returns the canonical ordered vocabulary SHA-256.
     #[must_use]
     pub const fn vocabulary_sha256(&self) -> [u8; 32] {
         self.vocabulary_sha256
@@ -311,16 +274,19 @@ pub struct OcrModelIdentity {
     profile: ProfileId,
     detector: ModelComponentIdentity,
     recognizer: ModelComponentIdentity,
+    auxiliary: Option<ModelComponentIdentity>,
+    execution_sha256: Option<[u8; 32]>,
     profile_metadata: OcrProfileMetadata,
 }
 
 impl OcrModelIdentity {
-    /// Builds a complete model identity and enforces accepted-profile authority.
+    /// Builds a complete model identity and enforces closed catalog authority.
     ///
     /// # Errors
     ///
-    /// Returns [`OcrFault::AcceptedProfileMismatch`] when a value claims either
-    /// closed accepted model or profile ID but any field differs from ADR 0033 or 0040.
+    /// Returns [`OcrFault::AcceptedProfileMismatch`] for an incomplete or
+    /// mismatched catalog tuple, including profiles requiring auxiliary resources.
+    /// Generic backend IDs remain legal.
     pub fn new(
         model: ModelId,
         version: ModelVersion,
@@ -329,112 +295,83 @@ impl OcrModelIdentity {
         recognizer: ModelComponentIdentity,
         profile_metadata: OcrProfileMetadata,
     ) -> Result<Self, OcrFault> {
-        let identity = Self {
+        let mut identity = Self {
             model,
             version,
             profile,
             detector,
             recognizer,
             profile_metadata,
+            auxiliary: None,
+            execution_sha256: None,
         };
         identity.validate_profile_authority()?;
         Ok(identity)
     }
 
-    /// Builds the exact accepted G-004 identity from ADR 0033 constants.
+    /// Builds the unchanged accepted native G-004 identity.
     #[must_use]
     pub fn accepted_g004() -> Self {
-        Self::new(
-            ModelId::new(ACCEPTED_G004_MODEL_ID).expect("accepted model identity"),
-            ModelVersion::new(ACCEPTED_G004_MODEL_VERSION).expect("accepted model version"),
-            ProfileId::new(ACCEPTED_G004_PROFILE_ID).expect("accepted profile identity"),
-            ModelComponentIdentity::new(
-                ACCEPTED_G004_DETECTOR_BYTES,
-                ACCEPTED_G004_DETECTOR_SHA256,
-            )
-            .expect("accepted detector identity"),
-            ModelComponentIdentity::new(
-                ACCEPTED_G004_RECOGNIZER_BYTES,
-                ACCEPTED_G004_RECOGNIZER_SHA256,
-            )
-            .expect("accepted recognizer identity"),
-            OcrProfileMetadata::new(
-                LanguageProfileId::new(ACCEPTED_G004_LANGUAGE_PROFILE_ID)
-                    .expect("accepted language profile"),
-                PreprocessingId::new(ACCEPTED_G004_PREPROCESSING_ID)
-                    .expect("accepted preprocessing"),
-                DecoderId::new(ACCEPTED_G004_DECODER_ID).expect("accepted decoder"),
-                NormalizationId::new(ACCEPTED_G004_NORMALIZATION_ID)
-                    .expect("accepted normalization"),
-                ACCEPTED_G004_VOCABULARY_ENTRIES,
-                ACCEPTED_G004_VOCABULARY_SHA256,
-            )
-            .expect("accepted profile metadata"),
-        )
-        .expect("accepted G-004 constants are self-consistent")
+        crate::catalog::ocr_profile(ACCEPTED_G004_PROFILE_ID)
+            .expect("catalog retains native G-004")
+            .identity()
+            .expect("validated accepted G-004 identity")
     }
 
-    /// Builds the exact accepted bounded-detector identity from ADR 0040 constants.
+    /// Builds the unchanged accepted bounded-detector identity.
     #[must_use]
     pub fn accepted_bounded_detector() -> Self {
-        Self::new(
-            ModelId::new(ACCEPTED_BOUNDED_MODEL_ID).expect("bounded model identity"),
-            ModelVersion::new(ACCEPTED_BOUNDED_MODEL_VERSION).expect("bounded model version"),
-            ProfileId::new(ACCEPTED_BOUNDED_PROFILE_ID).expect("bounded profile identity"),
-            ModelComponentIdentity::new(
-                ACCEPTED_G004_DETECTOR_BYTES,
-                ACCEPTED_G004_DETECTOR_SHA256,
-            )
-            .expect("bounded detector component identity"),
-            ModelComponentIdentity::new(
-                ACCEPTED_G004_RECOGNIZER_BYTES,
-                ACCEPTED_G004_RECOGNIZER_SHA256,
-            )
-            .expect("bounded recognizer component identity"),
-            OcrProfileMetadata::new(
-                LanguageProfileId::new(ACCEPTED_G004_LANGUAGE_PROFILE_ID)
-                    .expect("bounded language profile"),
-                PreprocessingId::new(ACCEPTED_BOUNDED_PREPROCESSING_ID)
-                    .expect("bounded preprocessing"),
-                DecoderId::new(ACCEPTED_G004_DECODER_ID).expect("bounded decoder"),
-                NormalizationId::new(ACCEPTED_G004_NORMALIZATION_ID)
-                    .expect("bounded normalization"),
-                ACCEPTED_G004_VOCABULARY_ENTRIES,
-                ACCEPTED_G004_VOCABULARY_SHA256,
-            )
-            .expect("bounded profile metadata"),
-        )
-        .expect("bounded profile constants are self-consistent")
+        crate::catalog::ocr_profile(ACCEPTED_BOUNDED_PROFILE_ID)
+            .expect("catalog retains bounded detector")
+            .identity()
+            .expect("validated accepted bounded identity")
     }
 
-    fn validate_profile_authority(&self) -> Result<(), OcrFault> {
-        let claims_closed_authority = self.profile.as_str() == ACCEPTED_G004_PROFILE_ID
-            || self.model.as_str() == ACCEPTED_G004_MODEL_ID
-            || self.profile.as_str() == ACCEPTED_BOUNDED_PROFILE_ID
-            || self.model.as_str() == ACCEPTED_BOUNDED_MODEL_ID;
-        if !claims_closed_authority {
+    pub(crate) fn from_catalog(
+        descriptor: &crate::catalog::OcrProfileDescriptor,
+    ) -> Result<Self, OcrFault> {
+        Ok(Self {
+            model: ModelId::new(descriptor.model_id)?,
+            version: ModelVersion::new(descriptor.model_version)?,
+            profile: ProfileId::new(descriptor.profile_id)?,
+            detector: descriptor.detector.identity(),
+            recognizer: descriptor.recognizer.identity(),
+            auxiliary: descriptor.auxiliary.map(|resource| resource.identity()),
+            execution_sha256: Some(descriptor.execution_sha256),
+            profile_metadata: OcrProfileMetadata::new(
+                LanguageProfileId::new(descriptor.language_profile_id)?,
+                PreprocessingId::new(descriptor.preprocessing_id)?,
+                DecoderId::new(descriptor.decoder_id)?,
+                NormalizationId::new(descriptor.normalization_id)?,
+                descriptor.vocabulary.entries,
+                descriptor.vocabulary.sha256,
+            )?,
+        })
+    }
+
+    fn validate_profile_authority(&mut self) -> Result<(), OcrFault> {
+        if !crate::catalog::is_catalog_profile(self.model.as_str(), self.profile.as_str()) {
             return Ok(());
         }
-
-        let native_profile = self.model.as_str() == ACCEPTED_G004_MODEL_ID
-            && self.profile.as_str() == ACCEPTED_G004_PROFILE_ID
-            && self.profile_metadata.preprocessing.as_str() == ACCEPTED_G004_PREPROCESSING_ID;
-        let bounded_profile = self.model.as_str() == ACCEPTED_BOUNDED_MODEL_ID
-            && self.profile.as_str() == ACCEPTED_BOUNDED_PROFILE_ID
-            && self.profile_metadata.preprocessing.as_str() == ACCEPTED_BOUNDED_PREPROCESSING_ID;
-        let shared_fields_match = self.version.as_str() == ACCEPTED_G004_MODEL_VERSION
-            && self.detector.byte_len() == ACCEPTED_G004_DETECTOR_BYTES
-            && self.detector.sha256() == ACCEPTED_G004_DETECTOR_SHA256
-            && self.recognizer.byte_len() == ACCEPTED_G004_RECOGNIZER_BYTES
-            && self.recognizer.sha256() == ACCEPTED_G004_RECOGNIZER_SHA256
-            && self.profile_metadata.language_profile.as_str() == ACCEPTED_G004_LANGUAGE_PROFILE_ID
-            && self.profile_metadata.decoder.as_str() == ACCEPTED_G004_DECODER_ID
-            && self.profile_metadata.normalization.as_str() == ACCEPTED_G004_NORMALIZATION_ID
-            && self.profile_metadata.vocabulary_entries == ACCEPTED_G004_VOCABULARY_ENTRIES
-            && self.profile_metadata.vocabulary_sha256 == ACCEPTED_G004_VOCABULARY_SHA256;
-        if !shared_fields_match || !(native_profile || bounded_profile) {
+        // This constructor cannot express an auxiliary resource.
+        let descriptor = crate::catalog::ocr_profile(self.profile.as_str())
+            .ok_or(OcrFault::AcceptedProfileMismatch)?;
+        let metadata = &self.profile_metadata;
+        if self.model.as_str() != descriptor.model_id
+            || self.version.as_str() != descriptor.model_version
+            || self.detector != descriptor.detector.identity()
+            || self.recognizer != descriptor.recognizer.identity()
+            || descriptor.auxiliary.is_some()
+            || metadata.language_profile.as_str() != descriptor.language_profile_id
+            || metadata.preprocessing.as_str() != descriptor.preprocessing_id
+            || metadata.decoder.as_str() != descriptor.decoder_id
+            || metadata.normalization.as_str() != descriptor.normalization_id
+            || metadata.vocabulary_entries != descriptor.vocabulary.entries
+            || metadata.vocabulary_sha256 != descriptor.vocabulary.sha256
+        {
             return Err(OcrFault::AcceptedProfileMismatch);
         }
+        self.execution_sha256 = Some(descriptor.execution_sha256);
         Ok(())
     }
 
@@ -468,6 +405,18 @@ impl OcrModelIdentity {
         self.recognizer
     }
 
+    /// Returns the required auxiliary identity, if the catalog declares one.
+    #[must_use]
+    pub const fn auxiliary(&self) -> Option<ModelComponentIdentity> {
+        self.auxiliary
+    }
+
+    /// Returns the bound catalog execution digest, absent for generic backends.
+    #[must_use]
+    pub const fn execution_sha256(&self) -> Option<[u8; 32]> {
+        self.execution_sha256
+    }
+
     /// Returns exact profile metadata.
     #[must_use]
     pub const fn profile_metadata(&self) -> &OcrProfileMetadata {
@@ -486,7 +435,7 @@ pub struct OcrModelSourceRequest {
     pub recognizer: OcrModelComponent,
 }
 
-/// An immutable, digest-validated OCR detector/recognizer pair.
+/// Immutable, digest-validated OCR models and any required auxiliary resource.
 ///
 /// Cloning shares identity and component allocations. A backend can therefore
 /// retain a source without copying model bytes per request or session.
@@ -495,6 +444,7 @@ pub struct OcrModelSource {
     identity: OcrModelIdentity,
     detector: OcrModelComponent,
     recognizer: OcrModelComponent,
+    auxiliary: Option<OcrModelComponent>,
 }
 
 impl OcrModelSource {
@@ -505,11 +455,32 @@ impl OcrModelSource {
     ///
     /// # Errors
     ///
-    /// Returns [`OcrFault::ModelMismatch`] when either component identity differs
-    /// from the complete model identity. No source is published on failure.
+    /// Returns [`OcrFault::ModelMismatch`] for mismatched components or a profile
+    /// requiring an auxiliary source. No source is published on failure.
     pub fn new(request: OcrModelSourceRequest) -> Result<Self, OcrFault> {
+        Self::commit(request, None)
+    }
+
+    /// Commits the complete resource set for an explicitly auxiliary-backed profile.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`OcrFault::ModelMismatch`] unless all three validated components
+    /// agree exactly with the model identity, including the required auxiliary.
+    pub fn new_with_auxiliary(
+        request: OcrModelSourceRequest,
+        auxiliary: OcrModelComponent,
+    ) -> Result<Self, OcrFault> {
+        Self::commit(request, Some(auxiliary))
+    }
+
+    fn commit(
+        request: OcrModelSourceRequest,
+        auxiliary: Option<OcrModelComponent>,
+    ) -> Result<Self, OcrFault> {
         if request.detector.identity() != request.identity.detector()
             || request.recognizer.identity() != request.identity.recognizer()
+            || auxiliary.as_ref().map(OcrModelComponent::identity) != request.identity.auxiliary()
         {
             return Err(OcrFault::ModelMismatch);
         }
@@ -517,7 +488,14 @@ impl OcrModelSource {
             identity: request.identity,
             detector: request.detector,
             recognizer: request.recognizer,
+            auxiliary,
         })
+    }
+
+    /// Returns the same captured immutable auxiliary bytes validated at construction.
+    #[must_use]
+    pub const fn auxiliary(&self) -> Option<&OcrModelComponent> {
+        self.auxiliary.as_ref()
     }
 
     /// Returns complete model and profile identity.
@@ -704,5 +682,72 @@ mod tests {
         .unwrap_err();
 
         assert_eq!(mismatch, OcrFault::AcceptedProfileMismatch);
+    }
+
+    #[test]
+    fn candidate_model_or_profile_claims_are_reserved_in_every_build() {
+        let candidate = "ppocrv6-tiny-det-small-rec-max736-v1";
+        let generic = identity(component(b"detector"), component(b"recognizer"));
+        for (model, profile) in [
+            (candidate, "generic-profile"),
+            ("generic-model", candidate),
+            (candidate, candidate),
+        ] {
+            assert_eq!(
+                OcrModelIdentity::new(
+                    ModelId::new(model).unwrap(),
+                    generic.version().clone(),
+                    ProfileId::new(profile).unwrap(),
+                    generic.detector(),
+                    generic.recognizer(),
+                    generic.profile_metadata().clone(),
+                ),
+                Err(OcrFault::AcceptedProfileMismatch),
+            );
+        }
+        assert!(generic.execution_sha256().is_none());
+        assert!(generic.auxiliary().is_none());
+    }
+
+    #[test]
+    fn auxiliary_commit_requires_exact_presence_and_identity_and_shares_bytes() {
+        let detector =
+            OcrModelComponent::new(Arc::from(&b"detector"[..]), component(b"detector")).unwrap();
+        let recognizer =
+            OcrModelComponent::new(Arc::from(&b"recognizer"[..]), component(b"recognizer"))
+                .unwrap();
+        let bytes: Arc<[u8]> = Arc::from(&b"vocabulary"[..]);
+        let auxiliary = OcrModelComponent::new(Arc::clone(&bytes), component(&bytes)).unwrap();
+        let mut model = identity(detector.identity(), recognizer.identity());
+        // The internal identity fixture represents an auxiliary-backed descriptor;
+        // every component still passes real length and SHA-256 validation.
+        model.auxiliary = Some(auxiliary.identity());
+        let request = || OcrModelSourceRequest {
+            identity: model.clone(),
+            detector: detector.clone(),
+            recognizer: recognizer.clone(),
+        };
+        assert_eq!(OcrModelSource::new(request()), Err(OcrFault::ModelMismatch));
+        let wrong =
+            OcrModelComponent::new(Arc::from(&b"changed"[..]), component(b"changed")).unwrap();
+        assert_eq!(
+            OcrModelSource::new_with_auxiliary(request(), wrong),
+            Err(OcrFault::ModelMismatch)
+        );
+        let source = OcrModelSource::new_with_auxiliary(request(), auxiliary.clone()).unwrap();
+        assert!(Arc::ptr_eq(
+            &bytes,
+            &source.auxiliary().unwrap().shared_bytes()
+        ));
+        assert_eq!(source.auxiliary().unwrap().identity(), auxiliary.identity());
+        let ordinary = OcrModelSourceRequest {
+            identity: identity(detector.identity(), recognizer.identity()),
+            detector,
+            recognizer,
+        };
+        assert_eq!(
+            OcrModelSource::new_with_auxiliary(ordinary, auxiliary),
+            Err(OcrFault::ModelMismatch)
+        );
     }
 }

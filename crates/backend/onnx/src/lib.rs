@@ -1,16 +1,18 @@
-//! Bounded ONNX Runtime OCR backend for accepted G-004 provider profiles.
+//! Bounded ONNX Runtime OCR backend for implemented catalog profiles.
 //!
 //! The adapter loads one exact host-provided runtime from a caller-supplied
-//! canonical path, validates the accepted detector/recognizer graphs and
-//! vocabulary, reuses one session pair, and admits one synchronous inference at
-//! a time. Grouped requests keep one detector run, filter exact relative
-//! interests before perspective crops, and recognize each relevant detection
-//! once in existing bounded batches. Path-free observations expose only
-//! dimensions, counts, bytes, runs, memberships, and cleanup.
+//! canonical path, resolves one reviewed catalog profile, validates its exact
+//! detector/recognizer graphs and declared vocabulary source, reuses one
+//! session pair, and admits one synchronous inference at a time. Grouped
+//! requests keep one detector run, filter exact relative interests before
+//! perspective crops, and recognize each relevant detection once in existing
+//! bounded batches. Path-free observations expose only dimensions, counts,
+//! bytes, runs, memberships, and cleanup.
 //!
-//! It performs no download, ambient library search, post-publication provider
-//! fallback, default wiring, public-contract modification, per-zone detector
-//! loop, or captured content logging.
+//! It performs no download, ambient library or resource search, vocabulary
+//! fallback, post-publication provider fallback, default wiring,
+//! public-contract modification, per-zone detector loop, or captured content
+//! logging. Catalog choices are independent of test outcomes.
 
 mod decode;
 mod detect;
@@ -24,7 +26,9 @@ mod native_tests;
 mod profile;
 mod provider;
 mod session;
+mod stage;
 mod vocabulary;
+mod vocabulary_yaml;
 
 #[cfg(test)]
 #[global_allocator]
@@ -38,9 +42,10 @@ use std::sync::{Arc, Mutex, TryLockError};
 use mado_pilot_capture::PixelFormat;
 use mado_pilot_core::{OperationContext, Result as CoreResult};
 use mado_pilot_ocr::{
-    BackendCandidate, BackendId, BackendRequest, BackendVersion, OcrBackend, OcrBackendDescriptor,
-    OcrBackendIdentity, OcrCandidateSink, OcrExecutionProvider as PublicExecutionProvider,
-    OcrExecutionProviderPolicy as PublicExecutionProviderPolicy, OcrModelSource,
+    ACCEPTED_BOUNDED_PROFILE_ID, ACCEPTED_G004_PROFILE_ID, BackendCandidate, BackendId,
+    BackendRequest, BackendVersion, OcrBackend, OcrBackendDescriptor, OcrBackendIdentity,
+    OcrCandidateSink, OcrExecutionProvider as PublicExecutionProvider,
+    OcrExecutionProviderPolicy as PublicExecutionProviderPolicy, OcrModelIdentity, OcrModelSource,
     OcrProviderDescriptor, OcrProviderFallbackReason as PublicProviderFallbackReason,
     ProviderProfileId, candidate_interest_membership,
 };
@@ -386,10 +391,11 @@ pub mod benchmark_instrumentation {
                     shape: [batch, CHANNELS, HEIGHT, WIDTH],
                 };
                 let (recognizer, vocabulary) = pair.recognizer_and_vocabulary_mut();
-                let decoded = crate::inference::recognizer(
+                let (decoded, _) = crate::inference::recognizer(
                     recognizer,
                     vocabulary,
                     &input,
+                    backend.profile.recognizer_graph(),
                     64 * 1024,
                     budget,
                     operation,
@@ -524,8 +530,9 @@ pub mod benchmark_instrumentation {
 
 use crate::decode::DecodedText;
 use crate::detect::{Detection, Quad};
-use crate::profile::{PreprocessingDescriptor, SelectedProfile};
+use crate::profile::ExecutionProfile;
 use crate::session::SessionPair;
+use crate::stage::StageTimer;
 
 pub(crate) const MAX_OUTPUT_BYTES: usize = 256 * 1024 * 1024;
 pub(crate) const RECOGNITION_BATCH: usize = 6;
@@ -601,7 +608,7 @@ pub struct OnnxOcrBackend {
     descriptor: OcrBackendDescriptor,
     provider_descriptor: OcrProviderDescriptor,
     facts: OnnxBackendFacts,
-    profile: SelectedProfile,
+    profile: ExecutionProfile,
     state: SessionSlot<SessionPair>,
 }
 
@@ -767,15 +774,12 @@ impl OnnxOcrBackend {
         provider_root: Option<&Path>,
         operation: &OperationContext,
     ) -> Result<Self, OnnxBackendOpenFault> {
-        checkpoint(operation)?;
-        initialize_runtime(runtime_path)?;
-        checkpoint(operation)?;
-        let source = model::accepted_source(model_root, operation)?;
-        Self::open_initialized_with_provider_policy(
-            source,
+        Self::open_profile_with_provider_config(
+            ACCEPTED_G004_PROFILE_ID,
+            model_root,
+            runtime_path,
             provider_policy,
             provider_root,
-            runtime_path,
             operation,
         )
     }
@@ -819,12 +823,77 @@ impl OnnxOcrBackend {
         provider_root: Option<&Path>,
         operation: &OperationContext,
     ) -> Result<Self, OnnxBackendOpenFault> {
+        Self::open_profile_with_provider_config(
+            ACCEPTED_BOUNDED_PROFILE_ID,
+            model_root,
+            runtime_path,
+            provider_policy,
+            provider_root,
+            operation,
+        )
+    }
+
+    /// Opens one implemented catalog profile with the released CPU-only policy.
+    ///
+    /// Unknown IDs return
+    /// [`OnnxBackendFault::ProfileMismatch`] before runtime or model access.
+    pub fn open_profile(
+        profile_id: &str,
+        model_root: &Path,
+        runtime_path: &Path,
+        operation: &OperationContext,
+    ) -> Result<Self, OnnxBackendFault> {
+        Self::open_profile_with_provider_config(
+            profile_id,
+            model_root,
+            runtime_path,
+            OnnxExecutionProviderPolicy::Cpu,
+            None,
+            operation,
+        )
+        .map_err(OnnxBackendOpenFault::fault)
+    }
+
+    /// Opens one catalog profile with provider policy and dependency root.
+    ///
+    /// The provider must also be declared applicable by that profile; an
+    /// undeclared preferred accelerator falls back before publication.
+    pub fn open_profile_with_provider_config(
+        profile_id: &str,
+        model_root: &Path,
+        runtime_path: &Path,
+        provider_policy: OnnxExecutionProviderPolicy,
+        provider_root: Option<&Path>,
+        operation: &OperationContext,
+    ) -> Result<Self, OnnxBackendOpenFault> {
         checkpoint(operation)?;
+        let (profile, identity) = ExecutionProfile::from_id(profile_id)?;
+        Self::open_resolved(
+            profile,
+            identity,
+            model_root,
+            runtime_path,
+            provider_policy,
+            provider_root,
+            operation,
+        )
+    }
+
+    fn open_resolved(
+        profile: ExecutionProfile,
+        identity: OcrModelIdentity,
+        model_root: &Path,
+        runtime_path: &Path,
+        provider_policy: OnnxExecutionProviderPolicy,
+        provider_root: Option<&Path>,
+        operation: &OperationContext,
+    ) -> Result<Self, OnnxBackendOpenFault> {
         initialize_runtime(runtime_path)?;
         checkpoint(operation)?;
-        let source = model::bounded_source(model_root, operation)?;
+        let source = model::profile_source(model_root, profile, identity, operation)?;
         Self::open_initialized_with_provider_policy(
             source,
+            profile,
             provider_policy,
             provider_root,
             runtime_path,
@@ -858,6 +927,8 @@ impl OnnxOcrBackend {
     }
 
     /// Opens one validated source with provider policy and an explicit dependency root.
+    ///
+    /// The source identity must equal one complete catalog identity exactly.
     pub fn open_with_provider_config(
         source: OcrModelSource,
         runtime_path: &Path,
@@ -866,10 +937,12 @@ impl OnnxOcrBackend {
         operation: &OperationContext,
     ) -> Result<Self, OnnxBackendOpenFault> {
         checkpoint(operation)?;
+        let profile = ExecutionProfile::for_identity(source.identity())?;
         initialize_runtime(runtime_path)?;
         checkpoint(operation)?;
         Self::open_initialized_with_provider_policy(
             source,
+            profile,
             provider_policy,
             provider_root,
             runtime_path,
@@ -879,16 +952,26 @@ impl OnnxOcrBackend {
 
     fn open_initialized_with_provider_policy(
         source: OcrModelSource,
+        profile: ExecutionProfile,
         provider_policy: OnnxExecutionProviderPolicy,
         provider_root: Option<&Path>,
         runtime_path: &Path,
         operation: &OperationContext,
     ) -> Result<Self, OnnxBackendOpenFault> {
-        let profile = SelectedProfile::from_identity(source.identity())?;
         let model_identity = source.identity().clone();
         let reservation = SessionPair::reserve()?;
         let preparation =
-            provider::prepare(provider_policy, provider_root, runtime_path, operation);
+            provider::prepare(provider_policy, provider_root, runtime_path, operation).and_then(
+                |prepared| {
+                    if profile.permits_provider(prepared.candidate()) {
+                        Ok(prepared)
+                    } else {
+                        Err(provider::ProviderPreparationFault::Provider(
+                            OnnxProviderFallbackReason::QualificationRejected,
+                        ))
+                    }
+                },
+            );
         #[cfg(feature = "benchmark-instrumentation")]
         if preparation.is_ok() {
             benchmark_instrumentation::record_open_stage(
@@ -905,12 +988,15 @@ impl OnnxOcrBackend {
             move |candidate| {
                 SessionPair::open_with_provider(
                     candidate_source,
+                    profile,
                     operation,
                     candidate,
                     candidate_reservation,
                 )
             },
-            move |cpu| SessionPair::open_with_provider(source, operation, cpu, cpu_reservation),
+            move |cpu| {
+                SessionPair::open_with_provider(source, profile, operation, cpu, cpu_reservation)
+            },
         )?;
         let backend_identity = OcrBackendIdentity::new(
             BackendId::new(match provider {
@@ -923,9 +1009,8 @@ impl OnnxOcrBackend {
         );
         let descriptor =
             OcrBackendDescriptor::new(backend_identity, model_identity, PixelFormat::Bgra8);
-        let preprocessing = profile.preprocessing();
         let facts = OnnxBackendFacts::accepted_with_provider(
-            preprocessing,
+            profile,
             u64::try_from(image::MAX_TENSOR_BYTES).map_err(|_| OnnxBackendFault::ResourceLimit)?,
             u64::try_from(MAX_OUTPUT_BYTES).map_err(|_| OnnxBackendFault::ResourceLimit)?,
             u32::try_from(detect::MAX_DETECTOR_CANDIDATES)
@@ -969,9 +1054,24 @@ impl OnnxOcrBackend {
         self.state.try_with(|pair| pair.observations())
     }
 
+    /// Returns whether the opened vocabulary covers every character of `text`.
+    ///
+    /// Maintainer qualification uses this before fixture inference; a character
+    /// is covered by the appended space token or one exact vocabulary entry.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`OnnxBackendFault::Busy`] while inference owns the session pair,
+    /// or [`OnnxBackendFault::Closed`] after close.
+    #[cfg(feature = "benchmark-instrumentation")]
+    pub fn supports_text(&self, text: &str) -> Result<bool, OnnxBackendFault> {
+        self.state
+            .try_with(|pair| pair.vocabulary().supports_text(text))
+    }
+
     fn recognize_with_pair(
         pair: &mut SessionPair,
-        preprocessing: PreprocessingDescriptor,
+        profile: ExecutionProfile,
         request: &BackendRequest<'_>,
         operation: &OperationContext,
     ) -> Result<Vec<OwnedCandidate>, OnnxBackendFault> {
@@ -983,15 +1083,20 @@ impl OnnxOcrBackend {
         );
         let outcome = image::with_bgra_view(request.pixels(), |source| {
             checkpoint(operation)?;
-            let detector_input = image::detector_input(source, preprocessing)?;
+            let preprocess_timer = StageTimer::start();
+            let detector_input = image::detector_input(source, profile.preprocessing())?;
+            let detector_preprocess = preprocess_timer.elapsed_nanos();
             pair.record_detector_input(detector_input.plan);
             checkpoint(operation)?;
-            let detections = inference::detector(
+            let (detections, detector_run) = inference::detector(
                 pair.detector_mut(),
                 &detector_input,
+                profile.detector_graph(),
+                profile.db(),
                 request.max_candidates(),
                 operation,
             )?;
+            pair.record_detector_stages(detector_preprocess, detector_run);
             checkpoint(operation)?;
             let raw_candidates = detections.len();
             let detections = if let Some(interests) = request.interests() {
@@ -1056,16 +1161,20 @@ impl OnnxOcrBackend {
                     .iter()
                     .map(|(index, _)| detections[*index].quad)
                     .collect::<Vec<Quad>>();
+                let preprocess_timer = StageTimer::start();
                 let input = image::recognition_input(source, &quads)?;
+                let recognizer_preprocess = preprocess_timer.elapsed_nanos();
                 let (recognizer, vocabulary) = pair.recognizer_and_vocabulary_mut();
-                let batch_output = inference::recognizer(
+                let (batch_output, recognizer_run) = inference::recognizer(
                     recognizer,
                     vocabulary,
                     &input,
+                    profile.recognizer_graph(),
                     request.max_text_bytes(),
                     recognizer_output_budget,
                     operation,
                 )?;
+                pair.record_recognizer_stages(recognizer_preprocess, recognizer_run);
                 if batch_output.len() != batch.len() {
                     return Err(OnnxBackendFault::MalformedOutput);
                 }
@@ -1145,10 +1254,10 @@ impl OcrBackend for OnnxOcrBackend {
         operation: &OperationContext,
     ) -> CoreResult<()> {
         checkpoint(operation).map_err(mado_pilot_core::Error::from)?;
-        let preprocessing = self.profile.preprocessing();
+        let profile = self.profile;
         let candidates = self
             .state
-            .try_with(|pair| Self::recognize_with_pair(pair, preprocessing, request, operation))
+            .try_with(|pair| Self::recognize_with_pair(pair, profile, request, operation))
             .map_err(mado_pilot_core::Error::from)?
             .map_err(mado_pilot_core::Error::from)?;
 
@@ -1265,13 +1374,15 @@ mod tests {
 
     use mado_pilot_core::{CancellationToken, Clock, MonotonicInstant, OperationContext};
 
+    use mado_pilot_ocr::{ACCEPTED_BOUNDED_PROFILE_ID, ACCEPTED_G004_PROFILE_ID};
+
     use super::{
         MAX_OUTPUT_BYTES, OnnxBackendFacts, OnnxBackendFault, OnnxBackendObservations,
-        OnnxBackendOpenFault, OnnxExecutionProvider, OnnxExecutionProviderPolicy, OnnxOcrProfile,
-        OnnxProviderFallbackReason, OnnxRuntimeCompatibility, RECOGNITION_BATCH,
+        OnnxBackendOpenFault, OnnxExecutionProvider, OnnxExecutionProviderPolicy, OnnxOcrBackend,
+        OnnxOcrProfile, OnnxProviderFallbackReason, OnnxRuntimeCompatibility, RECOGNITION_BATCH,
         RUNTIME_PROFILE_ID, SessionSlot, checkpoint, initialize_provider, recognition_batch_range,
     };
-    use crate::profile::SelectedProfile;
+    use crate::profile::ExecutionProfile;
     use crate::provider::{
         CUDA_RECOGNIZER_OUTPUT_BYTES, PreparedProvider, ProviderPreparationFault,
     };
@@ -1577,7 +1688,9 @@ mod tests {
     #[test]
     fn facts_are_closed_and_do_not_carry_runtime_paths() {
         let facts = OnnxBackendFacts::accepted(
-            SelectedProfile::BoundedDetector.preprocessing(),
+            ExecutionProfile::from_id(ACCEPTED_BOUNDED_PROFILE_ID)
+                .expect("accepted bounded profile")
+                .0,
             u64::try_from(crate::image::MAX_TENSOR_BYTES).expect("tensor ceiling fits"),
             u64::try_from(MAX_OUTPUT_BYTES).expect("output ceiling fits"),
             1000,
@@ -1597,24 +1710,71 @@ mod tests {
         );
         assert_eq!(facts.runtime(), OnnxRuntimeCompatibility::Version1_29Api17);
         assert_eq!(facts.profile(), OnnxOcrProfile::BoundedDetector);
+        assert_eq!(facts.profile_id(), ACCEPTED_BOUNDED_PROFILE_ID);
         assert_eq!(facts.max_detector_width(), Some(1_312));
         assert_eq!(facts.max_detector_height(), Some(736));
         assert_eq!(facts.max_detector_tensor_bytes(), 11_587_584);
         assert!(!format!("{facts:?}").contains('/'));
 
         let native = OnnxBackendFacts::accepted(
-            SelectedProfile::NativeG004.preprocessing(),
+            ExecutionProfile::from_id(ACCEPTED_G004_PROFILE_ID)
+                .expect("accepted G-004 profile")
+                .0,
             u64::try_from(crate::image::MAX_TENSOR_BYTES).expect("tensor ceiling fits"),
             u64::try_from(MAX_OUTPUT_BYTES).expect("output ceiling fits"),
             1000,
             u32::try_from(RECOGNITION_BATCH).expect("batch ceiling fits"),
         );
         assert_eq!(native.profile(), OnnxOcrProfile::NativeG004);
+        assert_eq!(native.profile_id(), ACCEPTED_G004_PROFILE_ID);
         assert_eq!(native.max_detector_width(), None);
         assert_eq!(native.max_detector_height(), None);
         assert_eq!(
             native.max_detector_tensor_bytes(),
             u64::try_from(crate::image::MAX_TENSOR_BYTES).unwrap()
+        );
+    }
+
+    #[test]
+    fn profile_selection_preserves_unknown_id_runtime_and_cancellation_refusals() {
+        // Relative paths would fail as InvalidRuntimePath/InvalidModelRoot if
+        // selection reached runtime or model IO.
+        let relative = std::path::Path::new("relative");
+        let operation = OperationContext::new();
+        for id in ["unknown-profile", ""] {
+            assert_eq!(
+                OnnxOcrBackend::open_profile(id, relative, relative, &operation).map(|_| ()),
+                Err(OnnxBackendFault::ProfileMismatch)
+            );
+            assert_eq!(
+                OnnxOcrBackend::open_profile_with_provider_config(
+                    id,
+                    relative,
+                    relative,
+                    OnnxExecutionProviderPolicy::PreferCuda,
+                    Some(relative),
+                    &operation,
+                )
+                .map(|_| ())
+                .map_err(OnnxBackendOpenFault::fault),
+                Err(OnnxBackendFault::ProfileMismatch)
+            );
+        }
+        for profile in mado_pilot_ocr::ocr_profiles() {
+            assert_eq!(
+                OnnxOcrBackend::open_profile(profile.profile_id, relative, relative, &operation)
+                    .map(|_| ()),
+                Err(OnnxBackendFault::InvalidRuntimePath)
+            );
+        }
+
+        let cancellation = CancellationToken::new();
+        cancellation.cancel();
+        let cancelled = OperationContext::new().with_cancellation(cancellation);
+        assert_eq!(
+            OnnxOcrBackend::open_profile("unknown-profile", relative, relative, &cancelled)
+                .map(|_| ()),
+            Err(OnnxBackendFault::Cancelled)
         );
     }
 
