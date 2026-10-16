@@ -1,5 +1,12 @@
 # OCR model catalog and admission
 
+**Policy transition:** [ADR 0084](adr/0084-ocr-model-choices-and-test-results.md)
+adopts selectable implemented profiles with per-rule test results, not a
+quality/performance admission gate. That code/interface cutover is pending.
+The implementation instructions and source-bound verdicts below describe the
+existing accepted-only implementation and original evaluation policy. No result,
+threshold, default or model-selection behavior is changed by this documentation.
+
 The SDK exposes accepted model choices and exact provisioning metadata without
 opening models or loading ONNX Runtime. The default and the two accepted legacy
 profiles are unchanged. `ppocrv6-tiny-det-small-rec-max736-v1` is an implemented,
