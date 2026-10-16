@@ -216,9 +216,9 @@ or candidate. The Windows calibration at source `0cb9fc0` completed three
 processes and 1,452 observations with zero shared validation failures. Its
 independently calibrated numerical policy is
 [`windows-i7-12700kf-26300-budgets-v1.json`](../tools/ocr-models/windows-i7-12700kf-26300-budgets-v1.json),
-derived under ADR 0082. Calibration never qualifies either model. Both final
-target procedures and reports on a common final source/build, plus a reviewed
-candidate-attempt disposition, remain required.
+derived under ADR 0082. Calibration never qualifies either model. The final
+common-source comparisons completed with candidate quality failures on both
+targets; the source-bound refusal is recorded below.
 [ADR 0083](adr/0083-platform-aware-ocr-calibration-and-percent-equivalence.md)
 supersedes only ADR 0082's reference operational allowance for the separately frozen
 campaign: exactly three fresh serial processes, 900 seconds and 33,554,432 output
@@ -270,3 +270,41 @@ A failed attempt stays immutable. A changed execution needs a new candidate
 revision and frozen evaluation, not retries until a favorable run or rewritten
 oracles. [The unchanged G-004 evidence](evidence/g-004/) retains its historical
 sources, hashes and adverse observations.
+
+## Final comparison at cf2763a
+
+Source `cf2763a41929ad89366dd77ee1b6a57503a8f6bc`, tree
+`518ca130aa8379ba000da1cd7fc6df160cc5830c`: the one-shot final comparison
+completed on both approved cohorts. Each target retained three reference and
+three candidate processes, all eleven images/22 workloads, 264 warmups and
+2,640 measured observations. No process was replaced or retried.
+
+| Target | Observations | Candidate quality-failure entries | Distinct failed observations | Negative-image confidence |
+|---|---:|---:|---:|---:|
+| `aarch64-apple-darwin` | 2,904 | 660 | 396 | 0.49752 |
+| `x86_64-pc-windows-msvc` | 2,904 | 792 | 396 | 0.51158 |
+
+These are repeated observation-level failures, not counts of independent defects.
+Both candidates misread `[OK]` as `[0K]`, `一点照準` as `点照準`,
+`追加攻撃35%` as `追加攻擊35%`, and `唯一` as `唯`. The nonuniform negative
+produced an extra `●`: exact region count fails on both targets; Windows also
+fails the unmatched-detection threshold of 0.5. Each target retains 264 raw
+percent-width-only comparisons that pass the frozen equivalence rule.
+
+Reference quality and both profiles' numerical, identity, source-correlation,
+collector, lifecycle and owned-cleanup gates passed. The actual shared
+`admission` CLI recomputed both original reports and reproduced every failure,
+with no additional cross-target identity or completeness failure. It exited 2
+with `admitted: false`; faster observations cannot override failed quality.
+
+Original campaign packet SHA-256 values:
+
+- Apple: `1977d71183b502716d680258e8d9a0007934101b9ed4da2ee02fc2c558757515`.
+- Windows: `62e9f64973fe3bd0068892dc776518ef7f90d365ddd862b93ddfbacff995a5fc`.
+
+`ppocrv6-tiny-det-small-rec-max736-v1` remains unsupported and absent from
+ordinary construction/enumeration. This failed comparison assigns no new
+Reference/Fast/Balanced/Unrated rating; accepted legacy metadata and the default
+are unchanged. The new-model addition remains incomplete. Another candidate
+attempt requires an explicit design decision, not weakened criteria, a silent
+model replacement or an automatic retry.
