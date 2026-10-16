@@ -255,3 +255,37 @@ above are added; the disposable probe that produced them is removed.
   pipeline precisely enough to reimplement without the deleted probe. A change
   that alters an implementation ceiling is the review step that must produce new
   measurements.
+
+## zip 9.0.3 compatibility review
+
+The registry yanked 8.6.0 and provides no non-yanked release satisfying `^8.6.0`.
+The replacement is 9.0.3, with the same disabled defaults and `deflate-flate2`
+feature. Its Rust 1.88 minimum remains below the workspace toolchain. The
+original 8.6.0 probe, hashes and measurements above remain historical evidence;
+this update does not change a ceiling or claim new performance qualification.
+
+The four upstream checks were reverified against published 9.0.3. These source
+locations replace the original 8.6.0 locations as the next upgrade's baseline:
+
+- [`format/find_central_directory.rs:37`](https://github.com/zip-rs/zip2/blob/v9.0.3/src/format/find_central_directory.rs#L37)
+  searches backwards from the candidate end to offset zero.
+- [`format/find_central_directory.rs:55-60`](https://github.com/zip-rs/zip2/blob/v9.0.3/src/format/find_central_directory.rs#L55-L60)
+  accepts a comment ending before EOF.
+- [`format/find_central_directory.rs:177-197`](https://github.com/zip-rs/zip2/blob/v9.0.3/src/format/find_central_directory.rs#L177-L197)
+  searches forward from the advertised ZIP64 offset to its locator.
+- [`read/zip_archive.rs:159-200`](https://github.com/zip-rs/zip2/blob/v9.0.3/src/read/zip_archive.rs#L159-L200)
+  falls back to an earlier EOCD after metadata rejection;
+  [lines 209-241](https://github.com/zip-rs/zip2/blob/v9.0.3/src/read/zip_archive.rs#L209-L241)
+  reserve from the declared count before walking those headers.
+
+The exact-suffix, zero-offset ZIP64, pre-parse count/header and post-open
+directory/count guards remain required.
+
+The new decoder reports an expansion overrun as an untyped `InvalidData` I/O
+error before returning its byte count. Using that decoder would change
+`DeclaredSizeMismatch` into `SourceUnreadable`. The adapter therefore reads
+bounded raw entry views, uses the existing `flate2` backend for DEFLATE, and
+checks CRC-32 incrementally through the already-resolved `crc32fast` crate.
+The common `read_capped` path retains chunk checkpoints, declared-size checks
+and failure stages. CRC failures remain read failures; no error text matching,
+second decompression pass or checksum bypass is introduced.

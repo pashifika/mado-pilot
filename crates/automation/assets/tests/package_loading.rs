@@ -6,6 +6,7 @@
 //! as an archive without becoming a different package, and it is the one thing
 //! a tracked valid fixture is for.
 
+use std::io::{Cursor, Write};
 use std::sync::Arc;
 #[cfg(unix)]
 use std::time::Duration;
@@ -19,6 +20,7 @@ use mado_pilot_core::MonotonicInstant;
 use mado_pilot_core::{CoordinateSpace, OperationContext, PixelExtent};
 use mado_pilot_vision::TemplateEncoding;
 
+use zip::{CompressionMethod, ZipWriter, write::SimpleFileOptions};
 mod support;
 
 use support::{
@@ -58,6 +60,36 @@ fn an_archive_read_from_bytes_matches_the_same_archive_read_from_a_file() {
     let from_bytes = load(&PackageSource::archive_bytes(bytes)).expect("valid");
 
     assert_eq!(from_file, from_bytes);
+}
+
+#[test]
+fn corrupted_archive_checksums_remain_read_failures_not_size_mismatches() {
+    for method in [CompressionMethod::Stored, CompressionMethod::Deflated] {
+        let mut writer = ZipWriter::new(Cursor::new(Vec::new()));
+        writer
+            .start_file(
+                MANIFEST_PATH,
+                SimpleFileOptions::default().compression_method(method),
+            )
+            .expect("manifest entry");
+        writer.write_all(&empty_manifest()).expect("manifest bytes");
+        let mut bytes = writer.finish().expect("complete archive").into_inner();
+        load(&PackageSource::archive_bytes(bytes.clone())).expect("valid checksum");
+
+        let trailer = bytes.len() - 22;
+        let directory = u32::from_le_bytes(
+            bytes[trailer + 16..trailer + 20]
+                .try_into()
+                .expect("directory offset"),
+        );
+        bytes[usize::try_from(directory).expect("offset fits") + 16] ^= 1;
+        let fault = load(&PackageSource::archive_bytes(bytes)).expect_err("invalid checksum");
+        assert_eq!(
+            (fault.kind(), fault.stage()),
+            (AssetFaultKind::SourceUnreadable, LoadStage::Manifest),
+            "{method:?}"
+        );
+    }
 }
 
 #[cfg(unix)]

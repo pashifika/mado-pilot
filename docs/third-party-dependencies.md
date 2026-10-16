@@ -107,8 +107,9 @@ dependency surface over a framework that pulls in unrelated features.
 | Crate | Used by | Why | License |
 |---|---|---|---|
 | `serde`, `serde_json` | `mado-pilot-adapter-replay`, `mado-pilot-assets`; `mado-pilot-ocr` build/maintainer tools | Read strict replay/package manifests and validate the repository model catalog at build or maintainer-command time. OCR recognition uses generated static descriptors, not JSON | MIT OR Apache-2.0 |
-| `zip` 8.6 | `mado-pilot-assets` | Reads the ZIP central directory and decompresses entries. Default features **off**, `deflate-flate2` only | MIT |
-| `flate2` 1.1 | `mado-pilot-assets` | Selects the DEFLATE backend `zip` decompresses with. Not called directly | MIT OR Apache-2.0 |
+| `zip` 9.0.3 | `mado-pilot-assets` | Reads the ZIP central directory and bounded compressed entry views. Default features **off**, `deflate-flate2` only | MIT |
+| `flate2` 1.1 | `mado-pilot-assets` | Decodes DEFLATE entries under the asset loader's expansion and operation-context limits | MIT OR Apache-2.0 |
+| `crc32fast` 1.5 | `mado-pilot-assets` | Checks ZIP entry CRC-32 incrementally without hiding the expanded-byte count | MIT OR Apache-2.0 |
 | `sha2` 0.11 | `mado-pilot-assets`, `mado-pilot-ocr`, `mado-pilot-backend-onnx` | Verifies package entry digests, immutable OCR model component identities, and the recognizer graph's embedded vocabulary before session admission | MIT OR Apache-2.0 |
 | `unicode-normalization` 0.1.25 | `mado-pilot-ocr` | Applies the accepted G-004 NFC rule to backend output and bounded caller literals. The Unicode 17.0.0 scalar/decomposition proof bounds working storage before NFC. The `tinyvec`/`tinyvec_macros` dependencies remain pinned in `Cargo.lock` | MIT OR Apache-2.0 |
 | `opencv` 0.99 | `mado-pilot-backend-opencv`, `mado-pilot-backend-onnx` | Binds the OpenCV C++ image-processing API used by the CPU matching profile and the accepted OCR profiles' direct resize, contour, dilation, and original-source perspective-crop rules. Default features **off**; `imgcodecs`, `imgproc`, and `clang-runtime` only | MIT |
@@ -141,6 +142,18 @@ instead.
 selecting a zlib backend, so the workspace selects one. `flate2`'s default
 `rust_backend` is `miniz_oxide`, which keeps the archive reader free of a native
 C library on both release targets and adds no build-time toolchain requirement.
+
+`zip` 9.0.3 replaces the yanked 8.6.0 release. The archive contract, ceilings and
+compression feature set are unchanged; the
+[ADR 0001 compatibility review](adr/0001-asset-archive-container-and-safety-ceilings.md#zip-903-compatibility-review)
+records the upstream parser checks and the bounded reader adaptation.
+`crc32fast` was already in the resolved closure; using it directly preserves CRC
+validation while `read_capped` keeps size mismatches distinct from read failures.
+On macOS/BSD, upstream additionally requires `nix` 0.31.3 (`fs` only),
+`bitflags` 2.13.2 and build-only `cfg_aliases` 0.2.2 for symlink-safe filesystem
+permissions. They use approved MIT/Apache-2.0 terms, are absent from the Windows
+resolution, and add no compression format or native library. MadoPilot does not
+call upstream filesystem extraction.
 
 The resolved closure adds `adler2`, `block-buffer`, `cfg-if`, `const-oid`,
 `cpufeatures`, `crc32fast`, `crypto-common`, `digest`, `equivalent`,
