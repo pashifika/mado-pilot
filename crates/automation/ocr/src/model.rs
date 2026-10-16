@@ -280,12 +280,13 @@ pub struct OcrModelIdentity {
 }
 
 impl OcrModelIdentity {
-    /// Builds a complete model identity and enforces accepted-profile authority.
+    /// Builds a complete model identity and enforces closed catalog authority.
     ///
     /// # Errors
     ///
-    /// Returns [`OcrFault::AcceptedProfileMismatch`] for a reserved candidate ID
-    /// or an incomplete/mismatched closed catalog tuple. Generic backend IDs remain legal.
+    /// Returns [`OcrFault::AcceptedProfileMismatch`] for an incomplete or
+    /// mismatched catalog tuple, including profiles requiring auxiliary resources.
+    /// Generic backend IDs remain legal.
     pub fn new(
         model: ModelId,
         version: ModelVersion,
@@ -311,7 +312,7 @@ impl OcrModelIdentity {
     /// Builds the unchanged accepted native G-004 identity.
     #[must_use]
     pub fn accepted_g004() -> Self {
-        crate::catalog::accepted_ocr_profile(ACCEPTED_G004_PROFILE_ID)
+        crate::catalog::ocr_profile(ACCEPTED_G004_PROFILE_ID)
             .expect("catalog retains native G-004")
             .identity()
             .expect("validated accepted G-004 identity")
@@ -320,7 +321,7 @@ impl OcrModelIdentity {
     /// Builds the unchanged accepted bounded-detector identity.
     #[must_use]
     pub fn accepted_bounded_detector() -> Self {
-        crate::catalog::accepted_ocr_profile(ACCEPTED_BOUNDED_PROFILE_ID)
+        crate::catalog::ocr_profile(ACCEPTED_BOUNDED_PROFILE_ID)
             .expect("catalog retains bounded detector")
             .identity()
             .expect("validated accepted bounded identity")
@@ -352,9 +353,8 @@ impl OcrModelIdentity {
         if !crate::catalog::is_catalog_profile(self.model.as_str(), self.profile.as_str()) {
             return Ok(());
         }
-        // A candidate's model OR profile ID reserves the tuple in every build.
-        // Enabling maintainer tooling never makes this ordinary route permissive.
-        let descriptor = crate::catalog::accepted_ocr_profile(self.profile.as_str())
+        // This constructor cannot express an auxiliary resource.
+        let descriptor = crate::catalog::ocr_profile(self.profile.as_str())
             .ok_or(OcrFault::AcceptedProfileMismatch)?;
         let metadata = &self.profile_metadata;
         if self.model.as_str() != descriptor.model_id

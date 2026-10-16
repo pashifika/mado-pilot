@@ -12,7 +12,7 @@ use std::sync::Arc;
 use mado_pilot_core::OperationContext;
 use mado_pilot_ocr::{
     ACCEPTED_G004_PROFILE_ID, OcrModelComponent, OcrModelIdentity, OcrModelSource,
-    OcrModelSourceRequest, ResourceDescriptor, accepted_ocr_profile,
+    OcrModelSourceRequest, ResourceDescriptor, ocr_profile,
 };
 
 use crate::profile::ExecutionProfile;
@@ -28,7 +28,7 @@ pub(crate) fn profile_source(
     checkpoint(operation)?;
     let descriptor = profile.descriptor();
     let root = canonical_root(model_root)?;
-    let released = accepted_ocr_profile(ACCEPTED_G004_PROFILE_ID);
+    let released = ocr_profile(ACCEPTED_G004_PROFILE_ID);
     // Released G-004 faults name that exact resource; other resources get
     // profile-relative faults whose path/digest the caller reads from the catalog.
     let detector_faults = if released.is_some_and(|g004| *g004.detector == *descriptor.detector) {
@@ -156,7 +156,7 @@ mod tests {
     use std::path::{Path, PathBuf};
 
     use mado_pilot_core::{CancellationToken, OperationContext};
-    use mado_pilot_ocr::{ACCEPTED_G004_PROFILE_ID, accepted_ocr_profile};
+    use mado_pilot_ocr::{ACCEPTED_G004_PROFILE_ID, ocr_profile};
 
     use super::profile_source;
     use crate::OnnxBackendFault;
@@ -189,7 +189,7 @@ mod tests {
 
     fn g004_source(root: &Path, operation: &OperationContext) -> Result<(), OnnxBackendFault> {
         let (profile, identity) =
-            ExecutionProfile::accepted(ACCEPTED_G004_PROFILE_ID).expect("accepted G-004");
+            ExecutionProfile::from_id(ACCEPTED_G004_PROFILE_ID).expect("accepted G-004");
         profile_source(root, profile, identity, operation).map(|_| ())
     }
 
@@ -230,7 +230,7 @@ mod tests {
 
     #[test]
     fn released_component_faults_keep_their_documented_resource() {
-        let g004 = accepted_ocr_profile(ACCEPTED_G004_PROFILE_ID).expect("accepted G-004");
+        let g004 = ocr_profile(ACCEPTED_G004_PROFILE_ID).expect("accepted G-004");
         for (resource, unavailable, mismatch) in [
             (
                 g004.detector,
@@ -268,7 +268,7 @@ mod tests {
     #[cfg(unix)]
     #[test]
     fn a_resource_symlink_leaving_the_model_root_is_refused() {
-        let g004 = accepted_ocr_profile(ACCEPTED_G004_PROFILE_ID).expect("accepted G-004");
+        let g004 = ocr_profile(ACCEPTED_G004_PROFILE_ID).expect("accepted G-004");
         let root = TempRoot::new("g004-symlink-root");
         let outside = TempRoot::new("g004-symlink-outside");
         let target = outside.write("detector.onnx", b"outside");
@@ -281,13 +281,12 @@ mod tests {
         );
     }
 
-    #[cfg(feature = "benchmark-instrumentation")]
     #[test]
     fn declared_auxiliary_resource_is_captured_once_with_exact_length_and_digest() {
         use super::read_component;
 
         const CANDIDATE: &str = "ppocrv6-tiny-det-small-rec-max736-v1";
-        let candidate = mado_pilot_ocr::declared_ocr_profile(CANDIDATE).expect("candidate");
+        let candidate = ocr_profile(CANDIDATE).expect("declared profile");
         let auxiliary = candidate.auxiliary.expect("declared vocabulary resource");
         let length = usize::try_from(auxiliary.byte_len).expect("auxiliary length fits");
         let faults = (
@@ -312,7 +311,7 @@ mod tests {
         fs::create_dir_all(&path).expect("directory in place of resource");
         assert_eq!(read(), Err(OnnxBackendFault::AuxiliaryMismatch));
 
-        let (profile, identity) = ExecutionProfile::declared(CANDIDATE).expect("candidate");
+        let (profile, identity) = ExecutionProfile::from_id(CANDIDATE).expect("declared profile");
         assert_eq!(
             profile_source(&root.0, profile, identity, &operation).map(|_| ()),
             Err(OnnxBackendFault::ProfileDetectorUnavailable)

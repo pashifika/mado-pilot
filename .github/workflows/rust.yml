@@ -98,7 +98,7 @@ jobs:
         shell: bash
         run: python3 -m unittest discover -s tools/ocr-text-watch/tests -v
 
-      - name: Test OCR model report admission
+      - name: Test independent OCR model rule evaluation
         shell: bash
         run: python3 -m unittest discover -s tools/ocr-models/tests -v
 
@@ -427,15 +427,19 @@ jobs:
           cargo run --locked --package mado-pilot-testkit --example change-detection-evaluator > "${report}"
           diff -u docs/evidence/g-005/accepted-report.json "${report}"
 
-      - name: Test feature-unified model admission and compile its benchmark
+      - name: Test ordinary model choices and compile their evaluation benchmark
         shell: bash
         run: |
-          cargo test --locked --package mado-pilot-ocr --features model-candidates --all-targets
+          cargo test --locked --package mado-pilot-ocr --all-targets
           cargo clippy --locked --package mado-pilot-backend-onnx --features benchmark-instrumentation --all-targets -- -D warnings
 
-      - name: Test accepted and unqualified-candidate ONNX CPU paths
+      - name: Test catalog ONNX CPU paths
         shell: bash
         run: cargo test --locked --package mado-pilot-backend-onnx --features benchmark-instrumentation --lib -- --include-ignored --nocapture --test-threads=1
+
+      - name: Read model choices and rule results without initialization
+        shell: bash
+        run: cargo run --locked --package mado-pilot --example ocr-profiles
 
       - name: Test the integrated default and bounded OCR facade
         shell: bash
@@ -764,15 +768,19 @@ jobs:
           cargo run --locked --package mado-pilot-testkit --example change-detection-evaluator > "${report}"
           diff -u docs/evidence/g-005/accepted-report.json "${report}"
 
-      - name: Test feature-unified model admission and compile its benchmark
+      - name: Test ordinary model choices and compile their evaluation benchmark
         shell: bash
         run: |
-          cargo test --locked --package mado-pilot-ocr --features model-candidates --all-targets
+          cargo test --locked --package mado-pilot-ocr --all-targets
           cargo clippy --locked --package mado-pilot-backend-onnx --features benchmark-instrumentation --all-targets -- -D warnings
 
-      - name: Test accepted and unqualified-candidate ONNX CPU paths
+      - name: Test catalog ONNX CPU paths
         shell: bash
         run: cargo test --locked --package mado-pilot-backend-onnx --features benchmark-instrumentation --lib -- --include-ignored --nocapture --test-threads=1
+
+      - name: Read model choices and rule results without initialization
+        shell: bash
+        run: cargo run --locked --package mado-pilot --example ocr-profiles
 
       - name: Test the integrated default and bounded OCR facade
         shell: bash

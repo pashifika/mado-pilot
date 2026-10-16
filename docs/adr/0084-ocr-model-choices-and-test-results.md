@@ -1,6 +1,6 @@
 # ADR 0084: OCR model choices and test results
 
-- **Status:** Accepted; implementation cutover pending
+- **Status:** Accepted; implemented
 - **Date:** 2026-10-16
 - **Resolves gate:** none; replaces this Change's model-quality admission policy
 - **Supersedes:** ADR 0080's quality/performance-based model admission and aggregate rating policy; its execution and resource contracts remain in force
@@ -16,16 +16,16 @@ retain the exact observations and original nonadmission verdicts.
 The operator wants model choices with statements such as "passed this test
 rule", not an SDK-imposed all-rules-pass condition for choosing a model.
 A model's suitability for a caller's images cannot be decided by this corpus
-alone. The current accepted-only enumeration and construction still implement
-the old policy; this decision does not claim they have already changed.
+alone. At the time of this decision, accepted-only enumeration and construction
+still implemented the old policy.
 
 ## Decision
 
-`mado-pilot-ocr`, the ONNX adapter and the Rust facade will expose reviewed,
-implemented catalog configurations as ordinary model choices independently of
-quality or numerical benchmark results. Versioned, target-scoped test results
-will describe what passed, failed, was not run or remained incomplete; they will
-not authorize model selection or supply a universal recommendation.
+`mado-pilot-ocr`, the ONNX adapter and the Rust facade expose reviewed, implemented
+catalog configurations as ordinary model choices independently of quality or
+numerical benchmark results. Versioned, target-scoped test results describe what
+passed, failed, was not run or remained incomplete; they do not authorize model
+selection or supply a universal recommendation.
 
 - Keep tests, exact resources, frozen rules, all samples and attributable reports.
   Failed text, region, geometry, negative-image or benchmark-ceiling checks remain
@@ -59,15 +59,16 @@ not authorize model selection or supply a universal recommendation.
 
 ## Consequences
 
-Hosts will list implemented choices and present applicable per-rule results,
+Hosts list implemented choices and present applicable per-rule results,
 including failures and missing coverage. A passing row says only that the named
 rule passed in its recorded scope. The SDK does not choose the user's tolerance
 for recognition errors or speed/memory trade-offs.
 
-The cutover must remove quality-dependent catalog status, selection filters and
-aggregate admission decisions from active callers, docs and tests rather than
-add compatibility aliases. Resource validation stays closed and bounded. This
-requires a new SDK interface handoff before a host adopts the new metadata.
+The cutover removes quality-dependent catalog status, selection filters and
+aggregate admission decisions rather than adding compatibility aliases.
+`ocr_profiles()` / `ocr_profile(id)` replace accepted-only lookup; generated
+`evaluations` replace benchmark ratings. Resource validation stays closed and
+bounded. Hosts migrate the metadata interface without a new quality filter.
 
 Old reports, criteria, raw text, receipts, executable hashes and verdicts remain
 unchanged. Any new view derived from retained observations names the original
@@ -77,10 +78,14 @@ security change or reuse of a spent execution grant.
 
 ## Verification
 
-The design revision changes documentation and planning only. Implementation
-acceptance must exercise ordinary selection of the exact new profile despite its
-recorded quality failures, per-rule mixed outcomes, missing/incomplete/invalid
-evidence, independent target scopes, unchanged defaults and rejection of invalid
-resources. The report CLI must distinguish successful evaluation from passing
-all tests; quality/numerical failures alone must not make evaluation fail.
-Existing source-bound measurements are retained, not repeated to change policy.
+Verification covers ordinary selection despite failed or missing test evidence,
+mixed rule outcomes, incomplete/invalid evidence, independent target scopes,
+unchanged defaults and typed technical refusals. The `ocr-profiles` example
+exercises the public metadata/configuration path without models or inference.
+`tools/ocr-models/run.py evaluate` distinguishes successful evaluation from
+passing all tests; quality/numerical failures alone do not make it fail.
+
+The [derived result view](../benchmarks/ocr-models/cf2763a-evaluation-v1.json)
+retains all original quality findings and separately reports numerical outcomes.
+It identifies measured source `cf2763a` and the content-addressed evaluator
+revision. Original measurements and verdicts were not repeated or rewritten.

@@ -120,7 +120,7 @@
 //! Replay and native engine requests accept an injected `Arc<dyn OcrBackend>`;
 //! ordinary constructors without one expose no OCR. Separate
 //! `*_engine_with_default_ocr` constructors preserve native G-004;
-//! `*_engine_with_ocr_profile` selects accepted catalog IDs through
+//! `*_engine_with_ocr_profile` selects implemented catalog IDs through
 //! [`OcrProfileConfig::from_id`] or the legacy [`OcrProfile::BoundedDetector`] variant.
 //! [`Session::recognize`] preserves singular optional-region results, while
 //! [`Session::scan_ocr_zones`] borrows one through eight capture-pixel zones and
@@ -284,7 +284,7 @@ impl DefaultOcrConfig {
 pub enum OcrProfile {
     /// ADR 0040/0041 bounded-detector preprocessing over the accepted model pair.
     BoundedDetector,
-    /// A repository catalog ID, revalidated as accepted during construction.
+    /// A repository catalog ID, revalidated during construction.
     Catalog(&'static str),
 }
 
@@ -314,17 +314,17 @@ impl OcrProfileConfig {
         }
     }
 
-    /// Selects an accepted catalog ID without reading models or loading a runtime.
+    /// Selects a catalog ID without reading models, reports or loading a runtime.
     ///
     /// # Errors
-    /// Returns [`Status::Unsupported`] for unknown or unqualified IDs.
+    /// Returns [`Status::Unsupported`] for unknown IDs.
     pub fn from_id(
         profile_id: &str,
         model_root: impl Into<PathBuf>,
         runtime_path: impl Into<PathBuf>,
     ) -> Result<Self> {
-        let descriptor = accepted_ocr_profile(profile_id)
-            .ok_or_else(|| Error::new(Status::Unsupported, "OCR profile is not accepted"))?;
+        let descriptor = ocr_profile(profile_id)
+            .ok_or_else(|| Error::new(Status::Unsupported, "OCR profile is not declared"))?;
         Ok(Self::new(
             OcrProfile::Catalog(descriptor.profile_id),
             model_root,
@@ -1120,20 +1120,21 @@ pub use mado_pilot_runtime::{
     MatchOptions, MatchResult, MemoryEntry, MemoryPackage, ModelComponentIdentity, ModelId,
     ModelVersion, Modifier, MonotonicInstant, NativeDesktopUnit, NativeWindowDescription,
     NativeWindowId, NormalizationId, OcrBackend, OcrBackendDescriptor, OcrBackendId,
-    OcrBackendIdentity, OcrBackendRequest, OcrBackendVersion, OcrBenchmarkCode,
-    OcrBenchmarkSummary, OcrCandidateSink, OcrDetectorDescriptor, OcrDetectorResize, OcrDiagnostic,
-    OcrDiagnosticOutcome, OcrDiagnosticProfile, OcrExecutionProvider, OcrExecutionProviderPolicy,
-    OcrFault, OcrGraphDescriptor, OcrModelComponent, OcrModelIdentity, OcrModelSource,
-    OcrModelSourceRequest, OcrPixelNormalization, OcrProfileApplicability, OcrProfileDescriptor,
-    OcrProfileMetadata, OcrProviderDescriptor, OcrProviderFallbackReason, OcrQuadrilateral,
-    OcrRecognitionDescriptor, OcrRegion, OcrRequest, OcrRequestedRegionDiagnostic,
-    OcrResourceDescriptor, OcrResourceLimits, OcrResult, OcrTensorDescriptor, OcrTextAnalysisRate,
-    OcrTextOverload, OcrTextQuery, OcrTextQueryId, OcrTextQueryOutcome, OcrTextQueryProgress,
-    OcrTextQueryState, OcrTextRetainedExtent, OcrTextSchedulerDescriptor,
-    OcrTextSchedulerObservation, OcrTextStability, OcrTextStabilityKind, OcrTextTerminalOutcome,
-    OcrTextWatchDiagnostic, OcrTextWatchDiagnosticOutcome, OcrTextWatchRequest, OcrTextWatchResult,
-    OcrTextWorkCounts, OcrTextWorkDisposition, OcrVocabularyDescriptor, OcrVocabularySource,
-    OcrZone, OcrZoneGroup, OcrZoneScanRequest, OcrZoneScanResult, OpenRequest, OperationContext,
+    OcrBackendIdentity, OcrBackendRequest, OcrBackendVersion, OcrCandidateSink,
+    OcrDetectorDescriptor, OcrDetectorResize, OcrDiagnostic, OcrDiagnosticOutcome,
+    OcrDiagnosticProfile, OcrEvaluationEvidence, OcrEvaluationOutcome, OcrEvaluationSummary,
+    OcrExecutionProvider, OcrExecutionProviderPolicy, OcrFault, OcrGraphDescriptor,
+    OcrModelComponent, OcrModelIdentity, OcrModelSource, OcrModelSourceRequest,
+    OcrPixelNormalization, OcrProfileApplicability, OcrProfileDescriptor, OcrProfileMetadata,
+    OcrProviderDescriptor, OcrProviderFallbackReason, OcrQuadrilateral, OcrRecognitionDescriptor,
+    OcrRegion, OcrRequest, OcrRequestedRegionDiagnostic, OcrResourceDescriptor, OcrResourceLimits,
+    OcrResult, OcrRuleEvaluation, OcrTensorDescriptor, OcrTextAnalysisRate, OcrTextOverload,
+    OcrTextQuery, OcrTextQueryId, OcrTextQueryOutcome, OcrTextQueryProgress, OcrTextQueryState,
+    OcrTextRetainedExtent, OcrTextSchedulerDescriptor, OcrTextSchedulerObservation,
+    OcrTextStability, OcrTextStabilityKind, OcrTextTerminalOutcome, OcrTextWatchDiagnostic,
+    OcrTextWatchDiagnosticOutcome, OcrTextWatchRequest, OcrTextWatchResult, OcrTextWorkCounts,
+    OcrTextWorkDisposition, OcrVocabularyDescriptor, OcrVocabularySource, OcrZone, OcrZoneGroup,
+    OcrZoneScanRequest, OcrZoneScanResult, OpenRequest, OperationContext,
     OperationStartedDiagnostic, OverflowPolicy, PacingUnsupportedReason, PackagePath,
     PackageSource, PermissionDiagnostic, PermissionKind, PermissionOutcome, PermissionReport,
     PermissionState, PixelExtent, PixelFormat, PixelRect, PlatformCode, Point, PointerButton,
@@ -1150,7 +1151,7 @@ pub use mado_pilot_runtime::{
     TemplateTerminalOutcome, TemplateWatchDiagnostic, TemplateWatchDiagnosticOutcome,
     TemplateWatchRequest, TemplateWatchResult, TemplateWorkCounts, TemplateWorkDisposition,
     TransformSnapshot, UnsupportedChangeDetectionPolicy, VisionFault, WindowCaptureArea,
-    WindowGeometry, accepted_ocr_profile, accepted_ocr_profiles,
+    WindowGeometry, ocr_profile, ocr_profiles,
 };
 
 /// The asset vocabulary's three module-level constants, qualified.

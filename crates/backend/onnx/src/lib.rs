@@ -1,4 +1,4 @@
-//! Bounded ONNX Runtime OCR backend for catalog-accepted OCR profiles.
+//! Bounded ONNX Runtime OCR backend for implemented catalog profiles.
 //!
 //! The adapter loads one exact host-provided runtime from a caller-supplied
 //! canonical path, resolves one reviewed catalog profile, validates its exact
@@ -12,8 +12,7 @@
 //! It performs no download, ambient library or resource search, vocabulary
 //! fallback, post-publication provider fallback, default wiring,
 //! public-contract modification, per-zone detector loop, or captured content
-//! logging. Unqualified catalog candidates open only through the non-default
-//! `benchmark-instrumentation` maintainer route.
+//! logging. Catalog choices are independent of test outcomes.
 
 mod decode;
 mod detect;
@@ -834,9 +833,9 @@ impl OnnxOcrBackend {
         )
     }
 
-    /// Opens one accepted catalog profile with the released CPU-only policy.
+    /// Opens one implemented catalog profile with the released CPU-only policy.
     ///
-    /// Unknown and unqualified candidate IDs return
+    /// Unknown IDs return
     /// [`OnnxBackendFault::ProfileMismatch`] before runtime or model access.
     pub fn open_profile(
         profile_id: &str,
@@ -855,7 +854,7 @@ impl OnnxOcrBackend {
         .map_err(OnnxBackendOpenFault::fault)
     }
 
-    /// Opens one accepted catalog profile with provider policy and dependency root.
+    /// Opens one catalog profile with provider policy and dependency root.
     ///
     /// The provider must also be declared applicable by that profile; an
     /// undeclared preferred accelerator falls back before publication.
@@ -868,7 +867,7 @@ impl OnnxOcrBackend {
         operation: &OperationContext,
     ) -> Result<Self, OnnxBackendOpenFault> {
         checkpoint(operation)?;
-        let (profile, identity) = ExecutionProfile::accepted(profile_id)?;
+        let (profile, identity) = ExecutionProfile::from_id(profile_id)?;
         Self::open_resolved(
             profile,
             identity,
@@ -878,34 +877,6 @@ impl OnnxOcrBackend {
             provider_root,
             operation,
         )
-    }
-
-    /// Maintainer-only CPU construction of one declared profile, including an
-    /// unqualified candidate. Product composition never enables this route.
-    ///
-    /// # Errors
-    ///
-    /// Returns [`OnnxBackendFault::ProfileMismatch`] for an undeclared ID before
-    /// runtime or model access, then the same typed faults as [`Self::open_profile`].
-    #[cfg(feature = "benchmark-instrumentation")]
-    pub fn open_candidate(
-        profile_id: &str,
-        model_root: &Path,
-        runtime_path: &Path,
-        operation: &OperationContext,
-    ) -> Result<Self, OnnxBackendFault> {
-        checkpoint(operation)?;
-        let (profile, identity) = ExecutionProfile::declared(profile_id)?;
-        Self::open_resolved(
-            profile,
-            identity,
-            model_root,
-            runtime_path,
-            OnnxExecutionProviderPolicy::Cpu,
-            None,
-            operation,
-        )
-        .map_err(OnnxBackendOpenFault::fault)
     }
 
     fn open_resolved(
@@ -957,7 +928,7 @@ impl OnnxOcrBackend {
 
     /// Opens one validated source with provider policy and an explicit dependency root.
     ///
-    /// The source identity must equal one accepted catalog identity exactly.
+    /// The source identity must equal one complete catalog identity exactly.
     pub fn open_with_provider_config(
         source: OcrModelSource,
         runtime_path: &Path,
@@ -966,7 +937,7 @@ impl OnnxOcrBackend {
         operation: &OperationContext,
     ) -> Result<Self, OnnxBackendOpenFault> {
         checkpoint(operation)?;
-        let profile = ExecutionProfile::for_accepted_identity(source.identity())?;
+        let profile = ExecutionProfile::for_identity(source.identity())?;
         initialize_runtime(runtime_path)?;
         checkpoint(operation)?;
         Self::open_initialized_with_provider_policy(
@@ -1717,7 +1688,7 @@ mod tests {
     #[test]
     fn facts_are_closed_and_do_not_carry_runtime_paths() {
         let facts = OnnxBackendFacts::accepted(
-            ExecutionProfile::accepted(ACCEPTED_BOUNDED_PROFILE_ID)
+            ExecutionProfile::from_id(ACCEPTED_BOUNDED_PROFILE_ID)
                 .expect("accepted bounded profile")
                 .0,
             u64::try_from(crate::image::MAX_TENSOR_BYTES).expect("tensor ceiling fits"),
@@ -1746,7 +1717,7 @@ mod tests {
         assert!(!format!("{facts:?}").contains('/'));
 
         let native = OnnxBackendFacts::accepted(
-            ExecutionProfile::accepted(ACCEPTED_G004_PROFILE_ID)
+            ExecutionProfile::from_id(ACCEPTED_G004_PROFILE_ID)
                 .expect("accepted G-004 profile")
                 .0,
             u64::try_from(crate::image::MAX_TENSOR_BYTES).expect("tensor ceiling fits"),
@@ -1765,16 +1736,12 @@ mod tests {
     }
 
     #[test]
-    fn product_profile_selection_refuses_unaccepted_ids_before_runtime_or_model_access() {
+    fn profile_selection_preserves_unknown_id_runtime_and_cancellation_refusals() {
         // Relative paths would fail as InvalidRuntimePath/InvalidModelRoot if
         // selection reached runtime or model IO.
         let relative = std::path::Path::new("relative");
         let operation = OperationContext::new();
-        for id in [
-            "ppocrv6-tiny-det-small-rec-max736-v1",
-            "unknown-profile",
-            "",
-        ] {
+        for id in ["unknown-profile", ""] {
             assert_eq!(
                 OnnxOcrBackend::open_profile(id, relative, relative, &operation).map(|_| ()),
                 Err(OnnxBackendFault::ProfileMismatch)
@@ -1793,11 +1760,13 @@ mod tests {
                 Err(OnnxBackendFault::ProfileMismatch)
             );
         }
-        assert_eq!(
-            OnnxOcrBackend::open_profile(ACCEPTED_G004_PROFILE_ID, relative, relative, &operation)
-                .map(|_| ()),
-            Err(OnnxBackendFault::InvalidRuntimePath)
-        );
+        for profile in mado_pilot_ocr::ocr_profiles() {
+            assert_eq!(
+                OnnxOcrBackend::open_profile(profile.profile_id, relative, relative, &operation)
+                    .map(|_| ()),
+                Err(OnnxBackendFault::InvalidRuntimePath)
+            );
+        }
 
         let cancellation = CancellationToken::new();
         cancellation.cancel();
@@ -1806,28 +1775,6 @@ mod tests {
             OnnxOcrBackend::open_profile("unknown-profile", relative, relative, &cancelled)
                 .map(|_| ()),
             Err(OnnxBackendFault::Cancelled)
-        );
-    }
-
-    #[cfg(feature = "benchmark-instrumentation")]
-    #[test]
-    fn maintainer_candidate_route_refuses_undeclared_ids_before_runtime_access() {
-        let relative = std::path::Path::new("relative");
-        let operation = OperationContext::new();
-        assert_eq!(
-            OnnxOcrBackend::open_candidate("unknown-profile", relative, relative, &operation)
-                .map(|_| ()),
-            Err(OnnxBackendFault::ProfileMismatch)
-        );
-        assert_eq!(
-            OnnxOcrBackend::open_candidate(
-                "ppocrv6-tiny-det-small-rec-max736-v1",
-                relative,
-                relative,
-                &operation,
-            )
-            .map(|_| ()),
-            Err(OnnxBackendFault::InvalidRuntimePath)
         );
     }
 

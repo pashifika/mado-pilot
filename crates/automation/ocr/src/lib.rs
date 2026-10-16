@@ -47,15 +47,12 @@ pub use backend::{
     BackendCandidate, BackendInterests, BackendRequest, OcrBackend, OcrBackendDescriptor,
     OcrBackendIdentity, OcrCandidateSink, candidate_interest_membership,
 };
-#[cfg(feature = "model-candidates")]
-#[doc(hidden)]
-pub use catalog::declared_ocr_profile;
 pub use catalog::{
-    BenchmarkCode, BenchmarkSummary, DEFAULT_OCR_PROFILE_ID, DetectorDescriptor, DetectorResize,
-    GraphDescriptor, OcrProfileDescriptor, PixelNormalization, ProfileApplicability,
-    RecognitionDescriptor, ResourceDescriptor, ResourceLimits, TensorDescriptor,
-    VocabularyDescriptor, VocabularySource, accepted_ocr_profile, accepted_ocr_profiles,
-    catalog_profile_requires_auxiliary, is_catalog_profile,
+    DEFAULT_OCR_PROFILE_ID, DetectorDescriptor, DetectorResize, EvaluationEvidence,
+    EvaluationOutcome, EvaluationSummary, GraphDescriptor, OcrProfileDescriptor,
+    PixelNormalization, ProfileApplicability, RecognitionDescriptor, ResourceDescriptor,
+    ResourceLimits, RuleEvaluation, TensorDescriptor, VocabularyDescriptor, VocabularySource,
+    catalog_profile_requires_auxiliary, is_catalog_profile, ocr_profile, ocr_profiles,
 };
 pub use fault::OcrFault;
 pub use model::{

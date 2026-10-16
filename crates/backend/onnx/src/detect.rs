@@ -614,7 +614,7 @@ fn f64_to_i64(value: f64) -> Result<i64, OnnxBackendFault> {
 mod tests {
     use opencv::core::Point2f;
 
-    use mado_pilot_ocr::{ACCEPTED_G004_PROFILE_ID, accepted_ocr_profile};
+    use mado_pilot_ocr::{ACCEPTED_G004_PROFILE_ID, ocr_profile};
 
     use super::{DbParameters, clip_quad, postprocess, scale_quad};
     use crate::fault::OnnxBackendFault;
@@ -626,7 +626,7 @@ mod tests {
 
     fn db() -> DbParameters {
         DbParameters::from_catalog(
-            &accepted_ocr_profile(ACCEPTED_G004_PROFILE_ID)
+            &ocr_profile(ACCEPTED_G004_PROFILE_ID)
                 .expect("accepted G-004 profile")
                 .detection,
         )

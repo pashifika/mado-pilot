@@ -8,6 +8,9 @@ use serde::{Deserialize, Deserializer, Serialize};
 use serde_json::Value;
 use sha2::{Digest, Sha256};
 
+// Catalog presentation revisions do not change canonical execution serialization.
+const EXECUTION_FINGERPRINT_SCHEMA_VERSION: u32 = 1;
+
 fn required_option<'de, D, T>(deserializer: D) -> Result<Option<T>, D::Error>
 where
     D: Deserializer<'de>,
@@ -44,7 +47,6 @@ pub(crate) struct Resource {
     notice: String,
 }
 record!(Profile {
-    status: String,
     #[serde(deserialize_with = "required_option")]
     legacy_constants: Option<String>,
     execution: Execution,
@@ -119,14 +121,23 @@ record!(Presentation {
     display_name: String,
     #[serde(deserialize_with = "required_option")]
     variant: Option<String>,
-    benchmarks: Vec<Benchmark>,
+    evaluations: Vec<Evaluation>,
 });
-record!(Benchmark {
-    target: String, provider: String, code: String,
+record!(Evaluation {
+    target: String, provider: String, criteria: String,
     #[serde(deserialize_with = "required_option")]
-    criteria: Option<String>,
-    #[serde(deserialize_with = "required_option")]
-    report: Option<String>,
+    evidence: Option<Evidence>,
+    rules: Vec<Rule>,
+});
+record!(Evidence {
+    report: String,
+    measured_source_revision: String,
+    execution_sha256: String,
+    evaluator_revision: String,
+});
+record!(Rule {
+    rule_id: String,
+    outcome: String,
 });
 
 // serde_json's ordinary Value visitor overwrites duplicate object keys. Reject
@@ -197,7 +208,7 @@ pub(crate) fn validate(source: &str) -> Result<ValidatedCatalog, String> {
     let UniqueValue(value) = serde_json::from_str(source).map_err(|error| error.to_string())?;
     let catalog: Catalog = serde_json::from_value(value).map_err(|error| error.to_string())?;
     require(
-        catalog.schema_version == 1,
+        catalog.schema_version == 2,
         "unsupported catalog schema version",
     )?;
     require(
@@ -272,10 +283,6 @@ pub(crate) fn validate(source: &str) -> Result<ValidatedCatalog, String> {
             "duplicate profile ID",
         )?;
         require(model_ids.insert(e.model_id.as_str()), "duplicate model ID")?;
-        require(
-            matches!(profile.status.as_str(), "accepted" | "candidate"),
-            "unknown admission status",
-        )?;
         if let Some(prefix) = &profile.legacy_constants {
             require(
                 prefixes.insert(prefix.as_str()),
@@ -287,21 +294,17 @@ pub(crate) fn validate(source: &str) -> Result<ValidatedCatalog, String> {
                 _ => return Err("invalid legacy constant namespace".into()),
             };
             require(
-                profile.status == "accepted"
-                    && e.model_id == released_id
-                    && e.profile_id == released_id,
+                e.model_id == released_id && e.profile_id == released_id,
                 "invalid legacy constant binding",
             )?;
         }
         validate_execution(e, &resources, &mut used_resources)
             .map_err(|error| format!("{}: {error}", e.profile_id))?;
-        validate_presentation(profile)?;
-        if profile.status == "candidate" {
-            require(
-                e.applicability.iter().all(|a| a.provider == "cpu"),
-                "candidate provider is not qualified",
-            )?;
-        }
+        require(
+            profile.legacy_constants.is_some()
+                || e.applicability.iter().all(|a| a.provider == "cpu"),
+            "nonlegacy profiles implement only CPU execution",
+        )?;
     }
     require(
         prefixes == BTreeSet::from(["ACCEPTED_G004", "ACCEPTED_BOUNDED"]),
@@ -327,10 +330,11 @@ pub(crate) fn validate(source: &str) -> Result<ValidatedCatalog, String> {
         used_resources.len() == resources.len(),
         "unreferenced resource",
     )?;
-    Ok(ValidatedCatalog(
-        catalog,
-        Sha256::digest(source.as_bytes()).into(),
-    ))
+    let validated = ValidatedCatalog(catalog, Sha256::digest(source.as_bytes()).into());
+    for profile in &validated.0.profiles {
+        validate_presentation(profile, validated.execution_digest(profile)?)?;
+    }
+    Ok(validated)
 }
 
 fn require(condition: bool, message: &str) -> Result<(), String> {
@@ -656,51 +660,84 @@ fn validate_tensor(t: &Tensor, shape: &[i64]) -> Result<(), String> {
     Ok(())
 }
 
-fn validate_presentation(profile: &Profile) -> Result<(), String> {
+fn validate_presentation(profile: &Profile, execution_sha256: [u8; 32]) -> Result<(), String> {
     let p = &profile.presentation;
     text(&p.display_name, 256)?;
     if let Some(variant) = &p.variant {
         text(variant, 256)?;
     }
     let mut scopes = BTreeSet::new();
-    for b in &p.benchmarks {
-        require(
-            profile.status == "accepted",
-            "candidate cannot publish a comparative support verdict",
-        )?;
+    for evaluation in &p.evaluations {
         require(
             profile
                 .execution
                 .applicability
                 .iter()
-                .any(|a| a.target == b.target && a.provider == b.provider),
-            "evidence scope is inapplicable",
+                .any(|a| a.target == evaluation.target && a.provider == evaluation.provider),
+            "evaluation scope is inapplicable",
         )?;
+        safe_path(&evaluation.criteria)?;
         require(
-            scopes.insert((&b.target, &b.provider)),
-            "duplicate evidence scope",
+            scopes.insert((
+                &evaluation.target,
+                &evaluation.provider,
+                &evaluation.criteria,
+            )),
+            "duplicate evaluation scope",
         )?;
-        match b.code.as_str() {
-            "unrated" => require(
-                profile.legacy_constants.is_some() && b.criteria.is_none() && b.report.is_none(),
-                "only legacy support may remain unrated",
-            )?,
-            "reference" | "fast" | "balanced" => {
-                let (Some(criteria), Some(report)) = (&b.criteria, &b.report) else {
-                    return Err(
-                        "comparative verdict requires criteria and report references".into(),
-                    );
-                };
-                safe_path(criteria)?;
-                safe_path(report)?;
+        if let Some(evidence) = &evaluation.evidence {
+            safe_path(&evidence.report)?;
+            require(
+                evidence.measured_source_revision.len() == 40
+                    && hex(&evidence.measured_source_revision)
+                    && evidence.measured_source_revision.bytes().any(|b| b != b'0'),
+                "measured source must be a full Git revision",
+            )?;
+            require(
+                digest(&evidence.execution_sha256)? == execution_sha256,
+                "evidence execution digest does not match profile",
+            )?;
+            digest(
+                evidence
+                    .evaluator_revision
+                    .strip_prefix("sha256:")
+                    .ok_or("evaluator revision must be content addressed")?,
+            )?;
+        }
+        require(!evaluation.rules.is_empty(), "evaluation rules are empty")?;
+        let mut rules = BTreeSet::new();
+        for rule in &evaluation.rules {
+            require(
+                matches!(
+                    rule.rule_id.as_str(),
+                    "text_order"
+                        | "region_count"
+                        | "geometry"
+                        | "unexpected_detection"
+                        | "confidence"
+                        | "stability"
+                        | "vocabulary_coverage"
+                        | "source_correlation"
+                        | "lifecycle"
+                        | "execution_bounds"
+                        | "process_budgets"
+                        | "workload_budgets"
+                        | "relative_latency"
+                ),
+                "unknown evaluation rule",
+            )?;
+            require(rules.insert(&rule.rule_id), "duplicate evaluation rule")?;
+            match rule.outcome.as_str() {
+                "passed" | "failed" => require(
+                    evaluation.evidence.is_some(),
+                    "observed outcome requires report evidence",
+                )?,
+                "not_run" | "incomplete" => {}
+                _ => return Err("unknown evaluation outcome".into()),
             }
-            _ => return Err("unknown benchmark code".into()),
         }
     }
-    require(
-        profile.status != "accepted" || scopes.len() == profile.execution.applicability.len(),
-        "accepted evidence scopes are incomplete",
-    )
+    Ok(())
 }
 
 impl ValidatedCatalog {
@@ -751,7 +788,7 @@ impl ValidatedCatalog {
         for resource in self.resources(&execution.profile_id)? {
             resources.insert(&resource.id, resource);
         }
-        let canonical = serde_json::json!({ "schema_version": self.0.schema_version, "execution": execution, "resources": resources });
+        let canonical = serde_json::json!({ "schema_version": EXECUTION_FINGERPRINT_SCHEMA_VERSION, "execution": execution, "resources": resources });
         let bytes = serde_json::to_vec(&canonical).map_err(|error| error.to_string())?;
         Ok(Sha256::digest(bytes).into())
     }
@@ -761,8 +798,18 @@ impl ValidatedCatalog {
         let catalog = &self.0;
         let digests = self.execution_digests()?;
         let mut out = String::new();
-        writeln!(out, "#[cfg(feature = \"model-candidates\")]\n#[doc(hidden)]\npub const CATALOG_SOURCE_SHA256: [u8; 32] = {:?};", self.1).unwrap();
-        writeln!(out, "/// Unchanged default accepted OCR profile.\npub const DEFAULT_OCR_PROFILE_ID: &str = {:?};", catalog.default_profile).unwrap();
+        writeln!(
+            out,
+            "#[doc(hidden)]\npub const CATALOG_SOURCE_SHA256: [u8; 32] = {:?};",
+            self.1
+        )
+        .unwrap();
+        writeln!(
+            out,
+            "/// Unchanged default OCR profile.\npub const DEFAULT_OCR_PROFILE_ID: &str = {:?};",
+            catalog.default_profile
+        )
+        .unwrap();
         let limit = catalog.profiles[0].execution.limits.model_bytes;
         writeln!(out, "/// Maximum bytes accepted for one OCR model component.\npub const MAX_MODEL_COMPONENT_BYTES: u64 = {limit};").unwrap();
         for profile in &catalog.profiles {
@@ -790,45 +837,16 @@ impl ValidatedCatalog {
             }
         }
         for (index, resource) in catalog.resources.iter().enumerate() {
-            let accepted_use = catalog
-                .profiles
-                .iter()
-                .any(|p| p.status == "accepted" && uses_resource(&p.execution, &resource.id));
-            if !accepted_use {
-                out.push_str("#[cfg(feature = \"model-candidates\")]\n");
-            }
             writeln!(out, "static RESOURCE_{index}: ResourceDescriptor = ResourceDescriptor {{ id: {:?}, relative_path: {:?}, byte_len: {}, sha256: {:?}, source_url: {:?}, source_revision: {:?}, license: {:?}, notice: {:?} }};",
                 resource.id, resource.relative_path, resource.byte_len, digest(&resource.sha256)?, resource.source_url, resource.source_revision, resource.license, resource.notice).unwrap();
         }
-        for (status, table) in [
-            ("accepted", "ACCEPTED_PROFILES"),
-            ("candidate", "CANDIDATE_PROFILES"),
-        ] {
-            if status == "candidate" {
-                out.push_str("#[cfg(feature = \"model-candidates\")]\n");
-            }
-            writeln!(out, "static {table}: &[OcrProfileDescriptor] = &[").unwrap();
-            for profile in &catalog.profiles {
-                if profile.status == status {
-                    self.emit_profile(
-                        &mut out,
-                        profile,
-                        digest(&digests[&profile.execution.profile_id])?,
-                    )?;
-                }
-            }
-            out.push_str("];\n");
-        }
-        out.push_str("static CLOSED_PROFILES: &[(&str, &str, bool)] = &[\n");
+        out.push_str("static PROFILES: &[OcrProfileDescriptor] = &[\n");
         for profile in &catalog.profiles {
-            writeln!(
-                out,
-                "({:?}, {:?}, {}),",
-                profile.execution.model_id,
-                profile.execution.profile_id,
-                profile.execution.auxiliary.is_some()
-            )
-            .unwrap();
+            self.emit_profile(
+                &mut out,
+                profile,
+                digest(&digests[&profile.execution.profile_id])?,
+            )?;
         }
         out.push_str("];\n");
         Ok(out)
@@ -918,26 +936,44 @@ impl ValidatedCatalog {
         }
         writeln!(
             out,
-            "], execution_sha256: {:?}, display_name: {:?}, variant: {:?}, benchmarks: &[",
+            "], execution_sha256: {:?}, display_name: {:?}, variant: {:?}, evaluations: &[",
             execution_sha256, profile.presentation.display_name, profile.presentation.variant
         )
         .unwrap();
-        for b in &profile.presentation.benchmarks {
-            let code = match b.code.as_str() {
-                "reference" => "Reference",
-                "fast" => "Fast",
-                "balanced" => "Balanced",
-                _ => "Unrated",
-            };
-            writeln!(out, "BenchmarkSummary {{ target: {:?}, provider: {:?}, code: BenchmarkCode::{code}, criteria: {:?}, report: {:?} }},", b.target, b.provider, b.criteria, b.report).unwrap();
+        for evaluation in &profile.presentation.evaluations {
+            writeln!(
+                out,
+                "EvaluationSummary {{ target: {:?}, provider: {:?}, criteria: {:?}, evidence:",
+                evaluation.target, evaluation.provider, evaluation.criteria
+            )
+            .unwrap();
+            if let Some(evidence) = &evaluation.evidence {
+                writeln!(out, "Some(EvaluationEvidence {{ report: {:?}, measured_source_revision: {:?}, execution_sha256: {:?}, evaluator_revision: {:?} }}),",
+                    evidence.report, evidence.measured_source_revision, digest(&evidence.execution_sha256)?, evidence.evaluator_revision).unwrap();
+            } else {
+                out.push_str("None,\n");
+            }
+            out.push_str("rules: &[\n");
+            for rule in &evaluation.rules {
+                let outcome = match rule.outcome.as_str() {
+                    "passed" => "Passed",
+                    "failed" => "Failed",
+                    "not_run" => "NotRun",
+                    "incomplete" => "Incomplete",
+                    _ => return Err("unknown evaluation outcome".into()),
+                };
+                writeln!(
+                    out,
+                    "RuleEvaluation {{ rule_id: {:?}, outcome: EvaluationOutcome::{outcome} }},",
+                    rule.rule_id
+                )
+                .unwrap();
+            }
+            out.push_str("] },\n");
         }
         out.push_str("] },\n");
         Ok(())
     }
-}
-
-fn uses_resource(e: &Execution, id: &str) -> bool {
-    e.detector == id || e.recognizer == id || e.auxiliary.as_deref() == Some(id)
 }
 
 fn to_hex(bytes: &[u8]) -> String {

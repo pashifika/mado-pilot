@@ -31,19 +31,17 @@ mod provenance {
         let compiler = compiler(&manifest).unwrap_or_else(|| UNAVAILABLE.to_owned());
         let source = source(&manifest);
         let (revision, tree, dirty) = source.unwrap_or_else(|| {
-            println!(
-                "cargo::warning=benchmark source provenance unavailable; qualification refused"
-            );
+            println!("cargo::warning=benchmark source provenance unavailable; evaluation refused");
             (UNAVAILABLE.to_owned(), UNAVAILABLE.to_owned(), true)
         });
         if compiler == UNAVAILABLE {
             println!(
-                "cargo::warning=benchmark compiler provenance unavailable; qualification refused"
+                "cargo::warning=benchmark compiler provenance unavailable; evaluation refused"
             );
         }
         let out = PathBuf::from(env::var_os("OUT_DIR").expect("Cargo OUT_DIR"));
         fs::write(
-            out.join("model_admission_build.rs"),
+            out.join("model_evaluation_build.rs"),
             format!(
                 "pub(super) const BUILD_SOURCE_REVISION: &str = {revision:?};\n\
                  pub(super) const BUILD_SOURCE_TREE: &str = {tree:?};\n\

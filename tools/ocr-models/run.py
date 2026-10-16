@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Run real Rust OCR in fresh bounded serial processes, or recompute a saved report."""
+"""Run real Rust OCR in fresh bounded serial processes, or evaluate retained reports per rule."""
 from __future__ import annotations
 
 import argparse
@@ -14,8 +14,9 @@ import sys
 import tempfile
 from pathlib import Path
 
-from report import (BUILD_FIELDS, BUILD_SOURCE_FIELDS, COHORT_FIELDS, CRITERIA, admission, classify,
-                    document_bytes, parse_process, sha256, strict_json, validate_binding, validate_budgets)
+from report import (BUILD_FIELDS, BUILD_SOURCE_FIELDS, COHORT_FIELDS, CRITERIA, document_bytes, evaluate,
+                    evaluate_reports, evaluation_bundle, parse_process, sha256, strict_json, validate_binding,
+                    validate_budgets)
 
 ROOT = Path(__file__).resolve().parents[2]
 RUNNER_DIR = ROOT / "tools/native-release-profile"
@@ -154,14 +155,14 @@ def verify_resources(identity, root):
 @contextlib.contextmanager
 def serial_lock():
     name = hashlib.sha256(str(ROOT).encode()).hexdigest()[:24]
-    with (Path(tempfile.gettempdir()) / f"mado-ocr-admission-{name}.lock").open("a+b") as stream:
+    with (Path(tempfile.gettempdir()) / f"mado-ocr-evaluation-{name}.lock").open("a+b") as stream:
         if sys.platform == "win32":
             import msvcrt
             stream.seek(0); stream.write(b"0"); stream.flush(); stream.seek(0)
             try:
                 msvcrt.locking(stream.fileno(), msvcrt.LK_NBLCK, 1)
             except OSError as error:
-                raise ValueError("another OCR admission campaign owns the serial lock") from error
+                raise ValueError("another OCR evaluation campaign owns the serial lock") from error
             try:
                 yield
             finally:
@@ -171,7 +172,7 @@ def serial_lock():
             try:
                 fcntl.flock(stream.fileno(), fcntl.LOCK_EX | fcntl.LOCK_NB)
             except OSError as error:
-                raise ValueError("another OCR admission campaign owns the serial lock") from error
+                raise ValueError("another OCR evaluation campaign owns the serial lock") from error
             try:
                 yield
             finally:
@@ -180,7 +181,7 @@ def serial_lock():
 
 def campaign(args):
     args.report.mkdir(parents=True, exist_ok=False)
-    report = {"schema_version": 1, "criteria_id": CRITERIA["criteria_id"], "diagnostic": args.diagnostic,
+    report = {"schema_version": 2, "criteria_id": CRITERIA["criteria_id"], "diagnostic": args.diagnostic,
               "reference_profile": args.reference_profile, "candidate_profile": args.profile,
               "profiles": {}, "identities": {}, "preflight_failures": [], "commands": []}
     report["reproduction_command"] = [sys.executable, *sys.argv]
@@ -196,7 +197,7 @@ def campaign(args):
         save(fixture_path, {"fixtures": rows})
         described_build = None
         for profile in (args.reference_profile, args.profile):
-            command = [str(args.executable), "--model-admission", "--describe-profile", "--profile", profile]
+            command = [str(args.executable), "--model-evaluation", "--describe-profile", "--profile", profile]
             raw = bounded(command)
             report["commands"].append({"command": command, "process": raw})
             if not successful(raw):
@@ -212,7 +213,7 @@ def campaign(args):
         observed = actual_binding(args, fixture_path, revision, described_build)
         binding = load(args.binding) if args.binding else observed
         if not args.binding and not args.diagnostic:
-            fatal.append("qualification requires an exact pre-execution --binding")
+            fatal.append("a complete evaluation requires an exact pre-execution --binding")
         for key, value in observed.items():
             if key not in ("qualified_host", "host_approval", "cohort_id") and binding.get(key) != value:
                 fatal.append(f"actual host/artifact binding mismatch: {key}")
@@ -252,23 +253,19 @@ def campaign(args):
         for profile, identity in report["identities"].items():
             root = args.reference_root if profile == args.reference_profile else args.model_root
             verify_resources(identity, root)
-        if report["identities"].get(args.reference_profile, {}).get("accepted") is not True:
-            fatal.append("reference is not accepted")
-        if report["identities"].get(args.profile, {}).get("accepted") is not False:
-            fatal.append("selected candidate is not declared/unaccepted")
         report["preflight_failures"].extend(fatal)
         if args.preflight_only or fatal or (report["preflight_failures"] and not args.diagnostic):
             report["execution"] = "refused" if report["preflight_failures"] else "preflight-only"
         else:
             binding_path = args.report / "binding.json"
             save(binding_path, binding)
-            # A diagnostic run keeps every unmet release prerequisite and can never rate/admit.
+            # A diagnostic run keeps every unmet release prerequisite and is never a complete evaluation.
             for profile in (args.reference_profile, args.profile):
                 report["profiles"][profile] = []
                 root = args.reference_root if profile == args.reference_profile else args.model_root
                 for index in range(3):
                     raw_path = args.report / f"{profile}-{index}.jsonl"
-                    command = [str(args.executable), "--model-admission", "--profile", profile,
+                    command = [str(args.executable), "--model-evaluation", "--profile", profile,
                                "--model-root", str(root), "--runtime", str(args.runtime),
                                "--fixtures", str(fixture_path), "--binding", str(binding_path),
                                "--report", str(raw_path), "--process-index", str(index),
@@ -286,7 +283,7 @@ def campaign(args):
                         break
                 if report["profiles"][profile] and report["profiles"][profile][-1]["process"]["cleanup_ok"] is not True:
                     break
-            report["execution"] = "diagnostic" if args.diagnostic else "qualification"
+            report["execution"] = "diagnostic" if args.diagnostic else "evaluation"
             for name, path in (("executable_sha256", args.executable), ("runtime_sha256", args.runtime),
                                ("criteria_sha256", CRITERIA_PATH), ("catalog_sha256", CATALOG_PATH),
                                ("fixtures_sha256", fixture_path)):
@@ -308,11 +305,16 @@ def campaign(args):
         report["preflight_failures"].append(f"preflight/apparatus failure: {error}")
         report["execution"] = "refused"
     if args.diagnostic:
-        report["preflight_failures"].append("explicit diagnostic execution is never model admission")
-    report["verdict"] = classify(report, evidence_root=args.report, repository_root=ROOT)
+        report["preflight_failures"].append("explicit diagnostic execution is never a complete evaluation")
+    report["evaluation"] = evaluation_bundle([evaluate(report, evidence_root=args.report, repository_root=ROOT)])
     save(destination, report)
-    print(json.dumps({"report": str(destination), "execution": report["execution"], "verdict": report["verdict"]}, ensure_ascii=False))
-    return 0 if report["verdict"]["target_qualified"] else 2
+    outcomes = {profile: {rule["rule_id"]: rule["outcome"] for rule in entry["rules"]}
+                for scope in report["evaluation"]["evaluations"] for profile, entry in scope["profiles"].items()}
+    print(json.dumps({"report": str(destination), "execution": report["execution"],
+                      "complete": report["evaluation"]["complete"],
+                      "validation_errors": sum(len(scope["validation_errors"]) for scope in report["evaluation"]["evaluations"]),
+                      "outcomes": outcomes}, ensure_ascii=False))
+    return 0 if report["evaluation"]["complete"] else 2
 
 
 def main():
@@ -323,40 +325,36 @@ def main():
     run.add_argument("--model-root", type=Path, required=True)
     run.add_argument("--reference-root", type=Path, help="defaults to --model-root")
     run.add_argument("--runtime", type=Path, required=True)
-    run.add_argument("--reference-profile", required=True)
-    run.add_argument("--profile", required=True)
+    run.add_argument("--reference-profile", required=True, help="declared profile in the comparison reference role")
+    run.add_argument("--profile", required=True, help="declared profile compared against the reference")
     run.add_argument("--frozen-revision", required=True, help="commit containing frozen corpus, criteria, budgets and host policy")
-    run.add_argument("--binding", type=Path, help="exact source/artifact/cohort identities recorded before execution; required for qualification")
+    run.add_argument("--binding", type=Path, help="exact source/artifact/cohort identities recorded before execution; required for a complete evaluation")
     run.add_argument("--budgets", type=Path, help="approved precommitted cohort-specific absolute ceilings; no defaults")
     run.add_argument("--host-policy", type=Path, help="precommitted approved_cohorts allowlist; no inferred host approval")
     run.add_argument("--cohort-id", help="must match a supplied binding; diagnostic default is explicitly unqualified")
     run.add_argument("--report", type=Path, required=True, help="new evidence directory; never overwritten")
-    run.add_argument("--diagnostic", action="store_true", help="permit known missing host/budget qualification, retain failures, never rate/admit")
+    run.add_argument("--diagnostic", action="store_true", help="permit known missing host/budget prerequisites, retain failures, never a complete evaluation")
     run.add_argument("--preflight-only", action="store_true", help="do not initialize models or run inference")
     run.add_argument("--timeout-seconds", type=float, required=True, help="predeclared per-process external hard deadline")
     run.add_argument("--output-limit-bytes", type=int, required=True, help="predeclared combined stdout/stderr byte bound")
     run.add_argument("--cleanup-seconds", type=float, required=True, help="predeclared owned-child cleanup deadline")
     run.add_argument("--lifecycle-bound-ms", type=int, required=True, help="predeclared admitted cancellation/deadline return bound")
-    validate = subcommands.add_parser("validate", help="recompute every gate from an existing complete report")
-    validate.add_argument("report", type=Path)
-    validate.add_argument("--evidence-root", type=Path, help="original JSONL directory; defaults to the report's parent")
-    validate.add_argument("--repository", type=Path, default=ROOT, help="repository retaining original source/policy Git objects")
-    admit = subcommands.add_parser("admission", help="recompute eligibility from independent Apple and Windows reports; never changes catalog")
-    admit.add_argument("reports", nargs=2, type=Path)
-    admit.add_argument("--evidence-roots", nargs=2, type=Path, help="original JSONL directories in report order; defaults to report parents")
-    admit.add_argument("--repository", type=Path, default=ROOT, help="repository retaining original source/policy Git objects")
+    evaluation = subcommands.add_parser("evaluate", help="recompute per-rule outcomes from retained reports; never changes catalog or model availability")
+    evaluation.add_argument("reports", nargs="+", type=Path)
+    evaluation.add_argument("--evidence-roots", nargs="+", type=Path, help="original JSONL directories in report order; defaults to report parents")
+    evaluation.add_argument("--repository", type=Path, default=ROOT, help="repository retaining original source/policy Git objects")
     args = parser.parse_args()
-    if args.command == "admission":
-        verdict = admission([load(path) for path in args.reports],
-                            evidence_roots=args.evidence_roots or [path.parent for path in args.reports],
-                            repository_root=args.repository)
-        print(json.dumps(verdict, ensure_ascii=False, indent=2))
-        return 0 if verdict["admitted"] else 2
-    if args.command == "validate":
-        verdict = classify(load(args.report), evidence_root=args.evidence_root or args.report.parent,
-                           repository_root=args.repository)
-        print(json.dumps(verdict, ensure_ascii=False, indent=2))
-        return 0 if verdict["target_qualified"] else 2
+    if args.command == "evaluate":
+        roots = args.evidence_roots or [path.parent for path in args.reports]
+        if len(roots) != len(args.reports):
+            parser.error("--evidence-roots needs exactly one directory per report")
+        bundle = evaluate_reports(args.reports, evidence_roots=roots, repository_root=args.repository)
+        sys.stdout.buffer.write(document_bytes(bundle))
+        sys.stdout.flush()
+        # Failed quality/numerical rules are results; only incomplete, invalid or technical failures fail.
+        return 0 if bundle["complete"] else 2
+    if args.reference_profile == args.profile:
+        parser.error("--reference-profile and --profile must differ")
     for key in ("executable", "model_root", "runtime"):
         setattr(args, key, getattr(args, key).resolve())
     args.reference_root = (args.reference_root or args.model_root).resolve()

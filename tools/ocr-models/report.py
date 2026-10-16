@@ -1,10 +1,17 @@
-"""Recompute admission from raw Rust observations; supplied verdicts are never authority."""
+"""Evaluate retained Rust OCR observations as independent per-rule outcomes.
+
+Original JSONL, process receipts and Git objects are the authority; supplied
+verdicts and summaries are not. Outcomes describe test evidence only and never
+decide model availability. Report schema 1 is the historical admission-era
+runner output: its identity ``accepted`` field is a historical fact, not policy.
+"""
 from __future__ import annotations
 
 import base64
 import hashlib
 import json
 import math
+import os
 import subprocess
 import unicodedata
 from pathlib import Path, PurePosixPath
@@ -20,6 +27,26 @@ COHORT_FIELDS = ("cohort_id", "target", "os", "cpu", "host_id", "runtime", "prov
 PROCESS_METRICS = ("cold_open_ms", "close_ms", "peak_resident_bytes", "model_bytes", "auxiliary_bytes")
 BUDGET_PROCESS_METRICS = ("cold_open_ms", "close_ms", "peak_resident_bytes")
 BUDGET_WORKLOAD_METRICS = ("p50_ms", "p95_ms", "max_ms", "rust_peak_allocated_bytes", "rust_growth_bytes", "rust_steady_bytes", "mapped_bytes", "detector_tensor_bytes")
+POSITIVE_SAMPLE_METRICS = ("detector_width", "detector_height", "detector_tensor_bytes", "detector_runs", "mapped_bytes")
+EVALUATION_SCHEMA_VERSION = 1
+# Report schema version -> execution value of a complete, non-diagnostic campaign.
+COMPLETE_EXECUTION = {1: "qualification", 2: "evaluation"}
+DESCRIPTOR_FIELDS = frozenset(("profile_id", "model_id", "model_version", "preprocessing_id", "decoder_id",
+                               "normalization_id", "execution_sha256", "resources", "limits"))
+COLLECTOR_SCOPE = {"rust_accounting": "SDK plus raw observation construction/serialization",
+                   "native_peak_rss": "entire fresh process including cold initialization, workloads and lifecycle"}
+# Quality and numerical failures are findings of a successful evaluation;
+# a failed technical contract is also an evaluation error.
+RULES = (("text_order", "quality"), ("region_count", "quality"), ("geometry", "quality"),
+         ("unexpected_detection", "quality"), ("confidence", "quality"), ("stability", "quality"),
+         ("vocabulary_coverage", "quality"), ("source_correlation", "technical"), ("lifecycle", "technical"),
+         ("execution_bounds", "technical"), ("process_budgets", "numerical"), ("workload_budgets", "numerical"),
+         ("relative_latency", "numerical"))
+RULE_IDS = tuple(rule for rule, _ in RULES)
+OBSERVATION_RULES = ("text_order", "region_count", "geometry", "unexpected_detection", "confidence",
+                     "stability", "source_correlation")
+SAMPLE_METRIC_RULES = ("execution_bounds", "workload_budgets", "relative_latency")
+SAMPLE_RULES = OBSERVATION_RULES + SAMPLE_METRIC_RULES
 
 
 def sha256(path: Path) -> str:
@@ -28,6 +55,11 @@ def sha256(path: Path) -> str:
         for chunk in iter(lambda: stream.read(1024 * 1024), b""):
             digest.update(chunk)
     return digest.hexdigest()
+
+
+def evaluator_revision():
+    """Content address of the evaluation semantics, independent of Git state."""
+    return "sha256:" + sha256(Path(__file__))
 
 
 def document_bytes(value):
@@ -64,8 +96,33 @@ def strict_json(text):
                 raise ValueError(f"duplicate JSON key {key}")
             result[key] = value
         return result
-    return json.loads(text, object_pairs_hook=unique,
-                      parse_constant=lambda value: (_ for _ in ()).throw(ValueError(f"nonfinite JSON {value}")))
+
+    def finite_float(value):
+        parsed = float(value)
+        if not math.isfinite(parsed):
+            raise ValueError(f"nonfinite JSON {value}")
+        return parsed
+
+    try:
+        return json.loads(text, object_pairs_hook=unique, parse_float=finite_float,
+                          parse_constant=lambda value: (_ for _ in ()).throw(ValueError(f"nonfinite JSON {value}")))
+    except (ArithmeticError, RecursionError) as error:
+        raise ValueError(f"invalid JSON: {type(error).__name__}") from error
+
+
+def _describe(error):
+    """Error text without host-local paths."""
+    if isinstance(error, OSError):
+        return error.strerror or type(error).__name__
+    return str(error)
+
+
+def _mapping(value):
+    return value if isinstance(value, dict) else {}
+
+
+def _json_safe(value):
+    return repr(value) if isinstance(value, float) and not math.isfinite(value) else value
 
 
 def parse_process(raw_path, operational, command, index, *, evidence_root):
@@ -109,70 +166,110 @@ def parse_process(raw_path, operational, command, index, *, evidence_root):
             else:
                 raise ValueError(f"unknown Rust record {kind}")
     except (ValueError, TypeError, KeyError, AttributeError, OSError, UnicodeError) as error:
-        result["parse_failure"] = str(error)
+        result["parse_failure"] = _describe(error)
     return result
 
 
-def evidence_path(root, relative):
-    if not isinstance(relative, str):
-        raise ValueError("missing relative evidence path")
-    path = PurePosixPath(relative)
-    if not path.parts or path.is_absolute() or any(part in (".", "..") for part in relative.split("/")) or "\\" in relative or ":" in relative:
-        raise ValueError("unsafe relative evidence path")
-    resolved = (root / path).resolve(strict=True)
-    resolved.relative_to(root)
+def _safe_relative(relative):
+    return (isinstance(relative, str) and bool(PurePosixPath(relative).parts)
+            and not PurePosixPath(relative).is_absolute()
+            and not any(part in ("", ".", "..") for part in relative.split("/"))
+            and "\\" not in relative and ":" not in relative)
+
+
+def evidence_path(root, relative, *, missing_ok=False):
+    """Contained regular evidence file; ``missing_ok`` returns the lexical path of an absent file."""
+    if not _safe_relative(relative):
+        raise ValueError("missing/unsafe relative evidence path")
+    path = root / relative
+    if missing_ok and not os.path.lexists(path):
+        return path
+    try:
+        resolved = path.resolve(strict=True)
+        resolved.relative_to(root)
+    except OSError:
+        raise ValueError(f"evidence file unavailable: {relative}") from None
+    except ValueError:
+        raise ValueError(f"evidence path escapes the evidence root: {relative}") from None
     if not resolved.is_file():
         raise ValueError("evidence path is not a regular file")
     return resolved
 
 
 def reconcile_raw(report, evidence_root):
-    errors, profiles, retained, retained_receipts = [], {}, set(), set()
+    """Verified original processes per profile plus (profile, process, message) integrity errors.
+
+    A process whose original receipt or JSONL cannot be verified is excluded; the
+    report's own projection is never evaluated.
+    """
     if evidence_root is None:
-        return report.get("profiles", {}), ["original raw JSONL evidence root is required"]
-    root = Path(evidence_root).resolve(strict=True)
+        return {}, [(None, None, "original raw JSONL evidence root is required")]
+    try:
+        root = Path(evidence_root).resolve(strict=True)
+    except OSError:
+        return {}, [(None, None, "original evidence root unavailable")]
+    errors, profiles, retained, receipts = [], {}, set(), set()
     for profile, processes in report.get("profiles", {}).items():
-        profiles[profile] = []
+        verified = profiles.setdefault(profile, [])
         for process in processes:
-            prefix = f"{profile}/process {process.get('index', '?')}"
-            evidence_kind = "raw JSONL"
+            index = process.get("index") if isinstance(process, dict) else None
+            stage = "raw JSONL"
             try:
-                path = evidence_path(root, process.get("raw_path"))
+                absent = "raw_sha256" not in process
+                path = evidence_path(root, process.get("raw_path"), missing_ok=True)
                 if path.suffix != ".jsonl" or path in retained:
                     raise ValueError("duplicate/non-JSONL raw evidence path")
-                retained.add(path)
-                evidence_kind = "process receipt"
-                receipt_path = evidence_path(root, process.get("receipt_path"))
-                if not receipt_path.name.endswith(".process.json") or receipt_path in retained_receipts:
+                if path.is_file():
+                    retained.add(path)
+                stage = "process receipt"
+                receipt_path = evidence_path(root, process.get("receipt_path"), missing_ok=True)
+                if not receipt_path.name.endswith(".process.json") or receipt_path in receipts:
                     raise ValueError("duplicate/invalid process receipt path")
-                retained_receipts.add(receipt_path)
+                if receipt_path.is_file():
+                    receipts.add(receipt_path)
+                stage = "raw JSONL"
+                if absent and os.path.lexists(path):
+                    raise ValueError("retained raw JSONL has no reported digest")
+                if not absent:
+                    path = evidence_path(root, process.get("raw_path"))
+                stage = "process receipt"
                 receipt_bytes = receipt_path.read_bytes()
                 receipt_sha256 = hashlib.sha256(receipt_bytes).hexdigest()
                 if receipt_sha256 != process.get("receipt_sha256"):
-                    errors.append(f"{prefix}: original process receipt digest mismatch")
+                    errors.append((profile, index, "original process receipt digest mismatch"))
                 receipt = strict_json(receipt_bytes.decode("utf-8"))
-                if set(receipt) != {"index", "process", "command"}:
+                if not isinstance(receipt, dict) or set(receipt) != {"index", "process", "command"}:
                     raise ValueError("invalid process receipt fields")
+                command = receipt["command"]
+                invoked_profiles = [command[position + 1] if position + 1 < len(command) else None
+                                    for position, argument in enumerate(command) if argument == "--profile"
+                                    ] if isinstance(command, list) else []
+                if invoked_profiles != [profile]:
+                    errors.append((None, None, "original process invocation/profile attribution mismatch"))
+                stage = "raw JSONL"
                 original = parse_process(path, receipt["process"], receipt["command"],
                                          receipt["index"], evidence_root=root)
+                if "profile" in original and original["profile"] != profile:
+                    errors.append((None, None, "original Rust meta/profile attribution mismatch"))
                 if original["index"] != receipt["index"]:
-                    errors.append(f"{prefix}: raw observation/process receipt index mismatch")
+                    errors.append((profile, index, "raw observation/process receipt index mismatch"))
                 original.update(receipt_path=receipt_path.relative_to(root).as_posix(),
                                 receipt_sha256=receipt_sha256)
                 if original.get("raw_sha256") != process.get("raw_sha256"):
-                    errors.append(f"{prefix}: original raw JSONL digest mismatch")
-                differing = sorted(key for key in set(original) | set(process)
+                    errors.append((profile, index, "original raw JSONL digest mismatch"))
+                # Absent-file failure text was host-specific when recorded.
+                ignored = {"parse_failure"} if absent else set()
+                differing = sorted(key for key in (set(original) | set(process)) - ignored
                                    if key not in original or key not in process or original[key] != process[key])
                 if differing:
-                    errors.append(f"{prefix}: original raw JSONL projection mismatch: {', '.join(differing)}")
-                profiles[profile].append(original)
-            except (ValueError, TypeError, OSError) as error:
-                errors.append(f"{prefix}: original {evidence_kind} unavailable/invalid: {error}")
-                profiles[profile].append(process)
+                    errors.append((profile, index, f"original raw JSONL projection mismatch: {', '.join(differing)}"))
+                verified.append(original)
+            except (ValueError, TypeError, KeyError, AttributeError, OSError, UnicodeError) as error:
+                errors.append((profile, index, f"original {stage} unavailable/invalid: {_describe(error)}"))
     if {path.resolve() for path in root.rglob("*.jsonl")} != retained:
-        errors.append("original raw JSONL attempt set differs from retained report")
-    if {path.resolve() for path in root.rglob("*.process.json")} != retained_receipts:
-        errors.append("original process receipt attempt set differs from retained report")
+        errors.append((None, None, "original raw JSONL attempt set differs from retained report"))
+    if {path.resolve() for path in root.rglob("*.process.json")} != receipts:
+        errors.append((None, None, "original process receipt attempt set differs from retained report"))
     return profiles, errors
 
 
@@ -180,10 +277,13 @@ def git_bytes(repository_root, *arguments):
     try:
         result = subprocess.run(["git", "--no-replace-objects", "-C", str(repository_root), *arguments],
                                 stdout=subprocess.PIPE, stderr=subprocess.PIPE, timeout=30, check=False)
-    except (OSError, subprocess.TimeoutExpired) as error:
-        raise ValueError(f"Git authority unavailable: {error}") from error
+    except OSError as error:
+        raise ValueError(f"Git authority unavailable: {_describe(error)}") from error
+    except subprocess.TimeoutExpired as error:
+        raise ValueError("Git authority timed out") from error
     if result.returncode != 0:
-        raise ValueError(f"Git authority failed ({' '.join(arguments)}): {result.stderr.decode('utf-8', errors='replace').strip()}")
+        detail = result.stderr.decode("utf-8", errors="replace").strip().replace(str(repository_root), "<repository>")
+        raise ValueError(f"Git authority failed ({' '.join(arguments)}): {detail}")
     return result.stdout
 
 
@@ -191,9 +291,16 @@ def git_hex(value):
     return isinstance(value, str) and len(value) == 40 and all(c in "0123456789abcdef" for c in value)
 
 
+def _sha256_hex(value):
+    return isinstance(value, str) and len(value) == 64 and all(c in "0123456789abcdef" for c in value)
+
+
 def number(value, *, positive=False) -> bool:
-    return (isinstance(value, (int, float)) and not isinstance(value, bool)
-            and math.isfinite(value) and (value > 0 if positive else value >= 0))
+    try:
+        return (isinstance(value, (int, float)) and not isinstance(value, bool)
+                and math.isfinite(value) and (value > 0 if positive else value >= 0))
+    except OverflowError:
+        return False
 
 
 def percentile(values, fraction):
@@ -229,53 +336,67 @@ def _quality_text(text):
     return unicodedata.normalize("NFC", text).strip().replace("％", "%")
 
 
-def quality(observation, expected, mode):
-    errors = []
+def _observation_gap(observation):
+    """Why a sample holds no recognition result to compare, else None."""
     if observation.get("status") != "Ok":
-        errors.append("recognition status is not Ok")
+        return f"typed recognition failure {observation.get('status')!r}"
+    regions = observation.get("regions")
+    if not isinstance(regions, list) or not all(isinstance(region, dict) for region in regions):
+        return "missing/malformed raw regions"
+    return None
+
+
+def quality(observation, expected, mode):
+    """Typed rule findings for one successful observation (see ``_observation_gap``)."""
+    findings = []
+
+    def fail(rule, kind, **facts):
+        findings.append({"rule_id": rule, "kind": kind, **facts})
+
     if observation.get("source_correlation") is not True:
-        errors.append("source correlation failed")
+        fail("source_correlation", "result_correlation", observed=observation.get("source_correlation"))
     source = observation.get("source")
     source_fields = ("stamp", "transform", "effective_region", "backend", "output_space", "effective_zones")
     if (not isinstance(source, dict) or any(not source.get(key) for key in source_fields)
             or observation.get("result_source") != source):
-        errors.append("raw source/result correlation identity mismatch")
-    actual = observation.get("regions")
-    if not isinstance(actual, list):
-        return errors + ["missing raw regions"]
+        fail("source_correlation", "source_identity")
+    actual = observation["regions"]
     if len(actual) != len(expected):
-        errors.append(f"region count {len(actual)} != {len(expected)}")
+        fail("region_count", "count", expected=len(expected), observed=len(actual))
     for index, region in enumerate(actual):
         confidence = region.get("confidence")
         if not number(confidence) or confidence > 1:
-            errors.append(f"region {index}: nonfinite/out-of-range confidence")
+            fail("confidence", "range", region=index, observed=_json_safe(confidence))
         quad = region.get("quad")
-        if (not isinstance(quad, list) or len(quad) != 4 or any(
-                not isinstance(point, list) or len(point) != 2
-                or not all(number(v) and v <= 1 for v in point) for point in quad)):
-            errors.append(f"region {index}: invalid source-relative quad")
-            continue
+        valid_quad = (isinstance(quad, list) and len(quad) == 4 and all(
+            isinstance(point, list) and len(point) == 2
+            and all(number(v) and v <= 1 for v in point) for point in quad))
+        if not valid_quad:
+            fail("geometry", "invalid_quad", region=index)
         if index >= len(expected):
             if number(confidence) and confidence >= 0.5:
-                errors.append(f"region {index}: unmatched detection >=0.5")
+                fail("unexpected_detection", "unmatched", region=index, observed=confidence, limit=0.5)
             continue
         oracle = expected[index]
         text = region.get("text")
         if not isinstance(text, str) or _quality_text(text) != _quality_text(oracle["text_nfc"]):
-            errors.append(f"region {index}: exact text/order failed")
+            fail("text_order", "text", region=index, expected=oracle["text_nfc"], observed=text)
+        if not valid_quad:
+            continue
         target = oracle["source_relative_quad"]
         intersection = _area(_intersection(quad, target))
         union = _area(quad) + _area(target) - intersection
         if union <= 0 or intersection / union < 0.5:
-            errors.append(f"region {index}: IoU below 0.50")
+            fail("geometry", "iou", region=index, observed=intersection / union if union > 0 else None, limit=0.5)
         for axis in (0, 1):
             center = (min(p[axis] for p in quad) + max(p[axis] for p in quad)) / 2
             target_center = (min(p[axis] for p in target) + max(p[axis] for p in target)) / 2
             if abs(center - target_center) > 0.025:
-                errors.append(f"region {index}: center delta axis {axis} exceeds 0.025")
+                fail("geometry", "center_delta", region=index, axis="xy"[axis],
+                     observed=abs(center - target_center), limit=0.025)
     if mode == "grouped" and observation.get("groups") != [list(range(len(actual))), list(range(len(actual)))]:
-        errors.append("grouped candidate memberships/order failed")
-    return errors
+        fail("text_order", "groups", expected=[list(range(len(actual)))] * 2, observed=observation.get("groups"))
+    return findings
 
 
 def validate_binding(binding):
@@ -297,8 +418,7 @@ def validate_binding(binding):
     if binding.get("build_compiler") == "unavailable":
         errors.append("compiled build compiler is unavailable")
     for key in ("executable_sha256", "runtime_sha256", "catalog_sha256", "criteria_sha256", "fixtures_sha256"):
-        value = binding.get(key, "")
-        if not isinstance(value, str) or len(value) != 64 or any(c not in "0123456789abcdef" for c in value):
+        if not _sha256_hex(binding.get(key, "")):
             errors.append(f"invalid binding {key}")
     if binding.get("target") not in CRITERIA["release_targets"]:
         errors.append("wrong release target")
@@ -334,146 +454,266 @@ def validate_budgets(budgets, binding, workload_ids):
     return errors
 
 
-def validate_profile(processes, profile_id, binding, fixtures, budgets, expected_identity):
-    errors, summaries = [], {}
+class ProfileEvidence:
+    """One profile's typed rule findings, evidence gaps and attribution errors."""
+
+    def __init__(self):
+        self.findings = {rule: [] for rule in RULE_IDS}
+        self.gaps = []
+        self.invalid = []
+        self.processes = []
+        self.metrics = {"processes": [], "workloads": {}}
+
+    def fail(self, rule, kind, **facts):
+        self.findings[rule].append({"kind": kind, **{key: _json_safe(value) for key, value in facts.items()}})
+
+    def gap(self, rules, message, **location):
+        """Missing evidence: ``rules`` cannot pass but keep their reliable findings."""
+        self.gaps.append((tuple(rules), {**location, "message": message}))
+
+    def unverified(self, message, **location):
+        """Unattributable evidence: no rule of this profile can pass or fail."""
+        self.invalid.append({**location, "message": message})
+
+    def gap_rules(self):
+        return {rule for rules, _ in self.gaps for rule in rules}
+
+
+def _check_terminal(evidence, process, index, budgets, resources, lifecycle_bound):
+    metrics = _mapping(process.get("metrics"))
+    for key in PROCESS_METRICS:
+        value = metrics.get(key)
+        if not number(value, positive=key != "auxiliary_bytes"):
+            if key in BUDGET_PROCESS_METRICS:
+                evidence.gap(("process_budgets",), f"missing process metric {key}", process=index)
+            continue
+        limit = _mapping(budgets.get("process")).get(key)
+        if key in BUDGET_PROCESS_METRICS and number(limit) and value > limit:
+            evidence.fail("process_budgets", "ceiling", process=index, metric=key, observed=value, limit=limit)
+    evidence.metrics["processes"].append({"index": index, **{key: metrics[key] for key in PROCESS_METRICS
+                                                              if number(metrics.get(key))}})
+    model_bytes = sum(resource.get("bytes", 0) for resource in resources if resource.get("kind") in ("detector", "recognizer"))
+    auxiliary_bytes = sum(resource.get("bytes", 0) for resource in resources if resource.get("kind") == "auxiliary")
+    if metrics.get("model_bytes") != model_bytes or metrics.get("auxiliary_bytes") != auxiliary_bytes:
+        evidence.unverified("resource byte metrics differ from execution identity", process=index)
+    lifecycle = process.get("lifecycle")
+    if not isinstance(lifecycle, dict):
+        evidence.gap(("lifecycle",), "malformed terminal lifecycle record", process=index)
+    else:
+        for operation, expected in dict(CRITERIA["required_lifecycle"], initialization_cancelled="Cancelled").items():
+            if lifecycle.get(operation) != expected:
+                evidence.fail("lifecycle", "status", process=index, operation=operation,
+                              expected=expected, observed=lifecycle.get(operation))
+    if process.get("close_fault") is not None:
+        evidence.fail("lifecycle", "close_fault", process=index, observed=process["close_fault"])
+    details = _mapping(process.get("lifecycle_detail"))
+    for operation in ("cancelled", "deadline"):
+        detail = details.get(operation)
+        if not isinstance(detail, dict):
+            evidence.gap(("lifecycle",), f"missing {operation} settlement collector", process=index)
+            continue
+        if detail.get("scope") != "admitted-before-native-entry" or detail.get("bound_ms") != lifecycle_bound:
+            evidence.unverified(f"{operation} settlement collector scope/bound differs from frozen policy", process=index)
+        for field in ("admitted", "termination_issued", "worker_joined"):
+            value = detail.get(field)
+            if value is False:
+                evidence.fail("lifecycle", "settlement", process=index, operation=operation, field=field,
+                              expected=True, observed=False)
+            elif value is not True:
+                evidence.gap(("lifecycle",), f"missing {operation} {field} observation", process=index)
+        completions = detail.get("cleanup_completions")
+        if type(completions) is not int:
+            evidence.gap(("lifecycle",), f"missing {operation} cleanup observation", process=index)
+        elif completions != 1:
+            evidence.fail("lifecycle", "settlement", process=index, operation=operation,
+                          field="cleanup_completions", expected=1, observed=completions)
+        returned = detail.get("return_ms")
+        if not number(returned):
+            evidence.gap(("lifecycle",), f"missing {operation} return time", process=index)
+        elif number(lifecycle_bound, positive=True) and returned > lifecycle_bound:
+            evidence.fail("lifecycle", "settlement", process=index, operation=operation, field="return_ms",
+                          observed=returned, limit=lifecycle_bound)
+
+
+def _check_sample(evidence, row, at, spec, mode, limits, workload_limits):
+    """Quality, execution-contract and per-sample ceiling findings for one retained row."""
+    missing = _observation_gap(row)
+    if missing:
+        evidence.gap(SAMPLE_RULES, missing, **at)
+    else:
+        for finding in quality(row, spec["regions"], mode):
+            rule = finding.pop("rule_id")
+            evidence.fail(rule, finding.pop("kind"), **at, **finding)
+    metrics = _mapping(row.get("metrics"))
+    runs = metrics.get("detector_runs")
+    if number(runs) and (runs > 1 or (not missing and runs != 1)):
+        evidence.fail("execution_bounds", "detector_runs", **at, expected=1, observed=runs)
+    mapped, expected_mapped = metrics.get("mapped_bytes"), spec["width"] * spec["height"] * 4
+    if number(mapped) and (mapped > expected_mapped or (not missing and mapped != expected_mapped)):
+        evidence.fail("execution_bounds", "mapped_bytes", **at, expected=expected_mapped, observed=mapped)
+    width, height, tensor = metrics.get("detector_width"), metrics.get("detector_height"), metrics.get("detector_tensor_bytes")
+    if number(width, positive=True) and number(height, positive=True):
+        expected_tensor = width * height * 3 * 4
+        if number(tensor) and (tensor > expected_tensor or (not missing and tensor != expected_tensor)):
+            evidence.fail("execution_bounds", "detector_tensor_bytes", **at, expected=expected_tensor, observed=tensor)
+    for axis, value in (("width", width), ("height", height)):
+        limit = limits.get(f"detector_{axis}")
+        if number(value) and number(limit, positive=True) and value > limit:
+            evidence.fail("execution_bounds", f"detector_{axis}", **at, observed=value, limit=limit)
+    tensor_limit = limits.get("tensor_bytes")
+    if number(tensor_limit, positive=True) and number(tensor) and tensor > tensor_limit:
+        evidence.fail("execution_bounds", "tensor_bytes", **at, observed=tensor, limit=tensor_limit)
+    if not missing:
+        recognizer_runs, expected_runs = metrics.get("recognizer_runs"), math.ceil(len(row["regions"]) / 6)
+        if number(recognizer_runs) and recognizer_runs != expected_runs:
+            evidence.fail("execution_bounds", "recognizer_runs", **at, expected=expected_runs, observed=recognizer_runs)
+    for key in ("mapped_bytes", "detector_tensor_bytes"):
+        value, limit = metrics.get(key), workload_limits.get(key)
+        if number(value) and number(limit) and value > limit:
+            evidence.fail("workload_budgets", "ceiling", **at, metric=key, observed=value, limit=limit)
+    return missing is None
+
+
+def evaluate_profile(processes, profile_id, binding, fixtures, budgets, identity, lifecycle_bound):
+    """Observe one profile's verified original processes; missing data never becomes a pass."""
+    evidence = ProfileEvidence()
     specs = {f"{row['id']}/{mode}": (row, mode) for row in fixtures for mode in ("singular", "grouped")}
-    if len(processes) < 3:
-        errors.append("fewer than three fresh processes")
-    indexes, pids = set(), set()
-    all_times = {name: [] for name in specs}
+    if len(processes) < CRITERIA["minimum_processes"]:
+        evidence.gap(RULE_IDS, f"{len(processes)} of {CRITERIA['minimum_processes']} fresh processes retained")
+    budgets = _mapping(budgets)
+    workload_budgets = _mapping(budgets.get("workloads"))
+    limits = _mapping(_mapping(identity).get("limits"))
+    resources = _mapping(identity).get("resources")
+    resources = [resource for resource in resources if isinstance(resource, dict)] if isinstance(resources, list) else []
+    schedule = [(phase, i) for phase, count in (("warmup", CRITERIA["warmups"]), ("sample", CRITERIA["samples"]))
+                for i in range(count)]
     stages = [key for key in CRITERIA["required_sample_metrics"] if key.endswith("_ms") and key != "elapsed_ms"]
-    stage_samples = {name: {key: [] for key in stages} for name in specs}
-    stable = {}
+    times = {name: [] for name in specs}
+    stage_samples = {name: {stage: [] for stage in stages} for name in specs}
+    observed_max = {name: {} for name in specs}
+    indexes, pids, stable = set(), set(), {}
+
+    def peak(name, key, value):
+        observed_max[name][key] = max(value, observed_max[name].get(key, value))
+
     for process in processes:
-        prefix = f"process {process.get('index', '?')}"
-        if process.get("parse_failure") or process.get("close_fault") is not None or any(row.get("type") == "failure" for row in process.get("raw_records", [])):
-            errors.append(f"{prefix}: preserved Rust/apparatus failure: {process.get('parse_failure') or process.get('raw_records') or process.get('close_fault')}")
-        if not isinstance(process.get("command"), list) or not process["command"]:
-            errors.append(f"{prefix}: missing exact reproduction command")
-        if process.get("index") in indexes or process.get("pid") in pids or not isinstance(process.get("pid"), int):
-            errors.append(f"{prefix}: duplicate/missing fresh process identity")
-        indexes.add(process.get("index")); pids.add(process.get("pid"))
-        operational = process.get("process", {})
+        index = process.get("index")
+        evidence.processes.append({"index": index, "raw_sha256": process.get("raw_sha256"),
+                                   "receipt_sha256": process.get("receipt_sha256")})
+        operational = _mapping(process.get("process"))
         if (operational.get("exit_code") != 0 or operational.get("timed_out") is not False
                 or operational.get("output_limited") is not False or operational.get("cleanup_ok") is not True
                 or operational.get("launch_error") is not None):
-            errors.append(f"{prefix}: bounded child failed")
+            evidence.gap(RULE_IDS, "bounded child failed (exit_code={!r}, timed_out={!r}, output_limited={!r}, "
+                         "cleanup_ok={!r}, launch_failed={!r})".format(
+                             operational.get("exit_code"), operational.get("timed_out"),
+                             operational.get("output_limited"), operational.get("cleanup_ok"),
+                             operational.get("launch_error") is not None), process=index)
+        if process.get("parse_failure"):
+            evidence.gap(RULE_IDS, f"original raw JSONL unavailable/unparsable: {process['parse_failure']}", process=index)
+        for record in process.get("raw_records", []):
+            evidence.gap(RULE_IDS, f"preserved Rust failure record (stage={record.get('stage')!r}, "
+                         f"status={record.get('status')!r})", process=index)
+        if not isinstance(process.get("command"), list) or not process["command"]:
+            evidence.unverified("missing exact reproduction command", process=index)
+        pid = process.get("pid")
+        if index in indexes or ("pid" in process and (not isinstance(pid, int) or pid in pids)):
+            evidence.unverified("duplicate/missing fresh process identity", process=index)
+        indexes.add(index)
+        pids.add(pid)
+        if "pid" not in process:
+            evidence.gap(RULE_IDS, "missing Rust meta record", process=index)
+            continue
         if process.get("binding") != binding or process.get("profile") != profile_id:
-            errors.append(f"{prefix}: identity/cohort mismatch")
-        if process.get("identity") != expected_identity:
-            errors.append(f"{prefix}: execution/resource identity mismatch")
-        if any(process.get("build", {}).get(key) != binding.get(key) for key in BUILD_FIELDS):
-            errors.append(f"{prefix}: actual compiled build facts mismatch")
-        if process.get("collector_scope") != {"rust_accounting": "SDK plus raw observation construction/serialization",
-                                             "native_peak_rss": "entire fresh process including cold initialization, workloads and lifecycle"}:
-            errors.append(f"{prefix}: required collector scope missing")
-        if process.get("vocabulary_supported") is not True:
-            errors.append(f"{prefix}: fixture vocabulary coverage missing")
+            evidence.unverified("identity/cohort mismatch", process=index)
+        if process.get("identity") != identity:
+            evidence.unverified("execution/resource identity mismatch", process=index)
+        if any(_mapping(process.get("build")).get(key) != binding.get(key) for key in BUILD_FIELDS):
+            evidence.unverified("actual compiled build facts mismatch", process=index)
         if process.get("target") != binding.get("target") or process.get("opencv") != binding.get("opencv"):
-            errors.append(f"{prefix}: actual target/OpenCV mismatch")
+            evidence.unverified("actual target/OpenCV mismatch", process=index)
         if process.get("runtime") != binding.get("runtime") or process.get("provider") != "cpu":
-            errors.append(f"{prefix}: actual runtime/provider mismatch")
-        for key in PROCESS_METRICS:
-            value = process.get("metrics", {}).get(key)
-            if not number(value, positive=key != "auxiliary_bytes"):
-                errors.append(f"{prefix}: missing process metric {key}")
-            elif key in BUDGET_PROCESS_METRICS and number((budgets or {}).get("process", {}).get(key)) and value > budgets["process"][key]:
-                errors.append(f"{prefix}: absolute process budget {key}")
-        if any(process.get("lifecycle", {}).get(key) != value for key, value in CRITERIA["required_lifecycle"].items()):
-            errors.append(f"{prefix}: typed lifecycle failed")
-        if process.get("lifecycle", {}).get("initialization_cancelled") != "Cancelled":
-            errors.append(f"{prefix}: cancelled initialization outcome missing/failed")
-        lifecycle_bound = (budgets or {}).get("process_limits", {}).get("lifecycle_bound_ms")
-        for kind in ("cancelled", "deadline"):
-            detail = process.get("lifecycle_detail", {}).get(kind, {})
-            if (detail.get("scope") != "admitted-before-native-entry"
-                    or any(detail.get(key) is not True for key in ("admitted", "termination_issued", "worker_joined"))
-                    or detail.get("cleanup_completions") != 1 or detail.get("bound_ms") != lifecycle_bound
-                    or not number(detail.get("return_ms")) or not number(lifecycle_bound, positive=True)
-                    or detail["return_ms"] > lifecycle_bound):
-                errors.append(f"{prefix}: admitted {kind} settlement/collector contract failed")
-        resources = (expected_identity or {}).get("resources", [])
-        expected_model_bytes = sum(resource.get("bytes", 0) for resource in resources if resource.get("kind") in ("detector", "recognizer"))
-        expected_auxiliary_bytes = sum(resource.get("bytes", 0) for resource in resources if resource.get("kind") == "auxiliary")
-        if process.get("metrics", {}).get("model_bytes") != expected_model_bytes or process.get("metrics", {}).get("auxiliary_bytes") != expected_auxiliary_bytes:
-            errors.append(f"{prefix}: resource byte metrics differ from execution identity")
+            evidence.unverified("actual runtime/provider mismatch", process=index)
+        if "collector_scope" not in process:
+            evidence.gap(RULE_IDS, "missing collector scope record", process=index)
+        elif process["collector_scope"] != COLLECTOR_SCOPE:
+            evidence.unverified("required collector scope differs", process=index)
+        supported = process.get("vocabulary_supported")
+        if supported is False:
+            evidence.fail("vocabulary_coverage", "unsupported_fixture_text", process=index)
+        elif supported is not True:
+            evidence.gap(("vocabulary_coverage",), "missing fixture vocabulary record", process=index)
+        if "lifecycle" in process:
+            _check_terminal(evidence, process, index, budgets, resources, lifecycle_bound)
+        else:
+            evidence.gap(("lifecycle", "process_budgets"), "missing terminal record", process=index)
         rows_by_workload = {name: [] for name in specs}
-        for observation in process.get("samples", []):
-            name = observation.get("workload")
+        for row in process.get("samples", []):
+            name = row.get("workload")
             if name not in specs:
-                errors.append(f"{prefix}: unknown workload {name}")
+                evidence.unverified(f"unknown workload {name!r}", process=index)
                 continue
-            rows_by_workload[name].append(observation)
-        workload_metrics = process.get("workloads", {})
+            rows_by_workload[name].append(row)
+        workload_metrics = _mapping(process.get("workloads"))
         for name, (spec, mode) in specs.items():
             rows = rows_by_workload[name]
-            expected_schedule = [(phase, i) for phase, count in (("warmup", 2), ("sample", 20)) for i in range(count)]
-            if [(r.get("phase"), r.get("index")) for r in rows] != expected_schedule:
-                errors.append(f"{prefix}/{name}: incomplete/reordered sample schedule")
+            workload_limits = _mapping(workload_budgets.get(name))
+            if [(row.get("phase"), row.get("index")) for row in rows] != schedule:
+                evidence.gap(SAMPLE_RULES, "incomplete/reordered sample schedule", process=index, workload=name)
             for row in rows:
-                errors.extend(f"{prefix}/{name}/{row.get('phase')}/{row.get('index')}: {e}" for e in quality(row, spec["regions"], mode))
-                stability_regions = row.get("regions")
-                if isinstance(stability_regions, list):
-                    stability_regions = [dict(region, text=_quality_text(region["text"]))
-                                         if isinstance(region.get("text"), str) else region
-                                         for region in stability_regions]
-                signature = json.dumps([stability_regions, row.get("groups")], sort_keys=True, ensure_ascii=False)
-                if name in stable and signature != stable[name]:
-                    errors.append(f"{prefix}/{name}: same-implementation instability")
-                stable.setdefault(name, signature)
-                metrics = row.get("metrics", {})
-                for key in CRITERIA["required_sample_metrics"]:
-                    if not number(metrics.get(key), positive=key in ("detector_width", "detector_height", "detector_tensor_bytes", "detector_runs", "mapped_bytes")):
-                        errors.append(f"{prefix}/{name}: missing sample metric {key}")
-                if metrics.get("detector_runs") != 1:
-                    errors.append(f"{prefix}/{name}: detector run contract")
-                if metrics.get("mapped_bytes") != spec["width"] * spec["height"] * 4:
-                    errors.append(f"{prefix}/{name}: source mapping byte contract")
-                width, height = metrics.get("detector_width"), metrics.get("detector_height")
-                if number(width, positive=True) and number(height, positive=True):
-                    if metrics.get("detector_tensor_bytes") != width * height * 3 * 4:
-                        errors.append(f"{prefix}/{name}: actual detector shape/bytes disagree")
-                    limits = (expected_identity or {}).get("limits", {})
-                    for axis, value in (("width", width), ("height", height)):
-                        limit = limits.get(f"detector_{axis}")
-                        if limit is not None and (not number(limit, positive=True) or value > limit):
-                            errors.append(f"{prefix}/{name}: detector {axis} exceeds profile")
-                    tensor_limit = limits.get("tensor_bytes")
-                    if not number(tensor_limit, positive=True) or metrics.get("detector_tensor_bytes", 0) > tensor_limit:
-                        errors.append(f"{prefix}/{name}: profile tensor byte ceiling missing/exceeded")
-                if metrics.get("recognizer_runs") != math.ceil(len(row.get("regions", [])) / 6):
-                    errors.append(f"{prefix}/{name}: recognition batching contract")
+                at = {"process": index, "workload": name, "phase": row.get("phase"), "sample": row.get("index")}
+                if _check_sample(evidence, row, at, spec, mode, limits, workload_limits):
+                    regions = [dict(region, text=_quality_text(region["text"]))
+                               if isinstance(region.get("text"), str) else region for region in row["regions"]]
+                    signature = json.dumps([regions, row.get("groups")], sort_keys=True, ensure_ascii=False)
+                    if name in stable and signature != stable[name]:
+                        evidence.fail("stability", "instability", **at)
+                    stable.setdefault(name, signature)
+                metrics = _mapping(row.get("metrics"))
+                missing = [key for key in CRITERIA["required_sample_metrics"]
+                           if not number(metrics.get(key), positive=key in POSITIVE_SAMPLE_METRICS)]
+                if missing:
+                    evidence.gap(SAMPLE_METRIC_RULES, f"missing sample metrics: {', '.join(missing)}", **at)
                 if row.get("phase") == "sample" and number(metrics.get("elapsed_ms")):
-                    all_times[name].append(metrics["elapsed_ms"])
+                    times[name].append(metrics["elapsed_ms"])
                     for stage in stages:
                         if number(metrics.get(stage)):
                             stage_samples[name][stage].append(metrics[stage])
-                for key in ("mapped_bytes", "detector_tensor_bytes"):
-                    limit = (budgets or {}).get("workloads", {}).get(name, {}).get(key)
-                    if number(metrics.get(key)) and number(limit) and metrics[key] > limit:
-                        errors.append(f"{prefix}/{name}: absolute budget {key}")
-            wm = workload_metrics.get(name, {})
+                    for key in ("detector_width", "detector_height", "detector_tensor_bytes", "mapped_bytes"):
+                        if number(metrics.get(key)):
+                            peak(name, key, metrics[key])
+            workload = _mapping(workload_metrics.get(name))
             for key in CRITERIA["required_workload_metrics"]:
-                value = wm.get(key)
-                valid = (isinstance(value, (int, float)) and not isinstance(value, bool) and math.isfinite(value)) if key == "rust_growth_bytes" else number(value)
+                value = workload.get(key)
+                valid = (number(abs(value)) if key == "rust_growth_bytes"
+                         and isinstance(value, (int, float)) and not isinstance(value, bool) else number(value))
                 if not valid:
-                    errors.append(f"{prefix}/{name}: missing workload metric {key}")
-                else:
-                    limit = (budgets or {}).get("workloads", {}).get(name, {}).get(key)
-                    if number(limit) and value > limit:
-                        errors.append(f"{prefix}/{name}: absolute budget {key}")
-            measured = [r["metrics"]["elapsed_ms"] for r in rows if r.get("phase") == "sample" and number(r.get("metrics", {}).get("elapsed_ms"))]
+                    evidence.gap(("workload_budgets",), f"missing workload metric {key}", process=index, workload=name)
+                    continue
+                peak(name, key, value)
+                limit = workload_limits.get(key)
+                if number(limit) and value > limit:
+                    evidence.fail("workload_budgets", "ceiling", process=index, workload=name, metric=key,
+                                  observed=value, limit=limit)
+            measured = [row["metrics"]["elapsed_ms"] for row in rows
+                        if row.get("phase") == "sample" and number(_mapping(row.get("metrics")).get("elapsed_ms"))]
             if measured:
                 for key, value in (("p50_ms", percentile(measured, .5)), ("p95_ms", percentile(measured, .95)), ("max_ms", max(measured))):
-                    limit = (budgets or {}).get("workloads", {}).get(name, {}).get(key)
+                    limit = workload_limits.get(key)
                     if number(limit) and value > limit:
-                        errors.append(f"{prefix}/{name}: absolute budget {key}")
-    for name, values in all_times.items():
+                        evidence.fail("workload_budgets", "ceiling", process=index, workload=name, metric=key,
+                                      observed=value, limit=limit)
+    for name, values in times.items():
+        summary = {}
         if values:
-            summaries[name] = {"p50_ms": percentile(values, .5), "p95_ms": percentile(values, .95), "max_ms": max(values), "samples": len(values)}
-            summaries[name]["stages"] = {stage: {"p50_ms": percentile(samples, .5), "p95_ms": percentile(samples, .95), "max_ms": max(samples)}
-                                        for stage, samples in stage_samples[name].items() if samples}
-    return errors, summaries
+            summary = {"p50_ms": percentile(values, .5), "p95_ms": percentile(values, .95), "max_ms": max(values)}
+        summary["samples"] = len(values)
+        if values:
+            summary["stages"] = {stage: {"p50_ms": percentile(samples, .5), "p95_ms": percentile(samples, .95), "max_ms": max(samples)}
+                                 for stage, samples in stage_samples[name].items() if samples}
+        summary["observed_max"] = observed_max[name]
+        evidence.metrics["workloads"][name] = summary
+    return evidence
 
 
 def policy_failures(report, repository_root):
@@ -500,7 +740,7 @@ def policy_failures(report, repository_root):
             revision, relative = evidence.get("revision"), evidence.get("path")
             if revision != binding.get("frozen_revision") or not git_hex(revision):
                 raise ValueError("frozen revision mismatch")
-            if not isinstance(relative, str) or not PurePosixPath(relative).parts or PurePosixPath(relative).is_absolute() or any(part in ("", ".", "..") for part in relative.split("/")) or "\\" in relative or ":" in relative:
+            if not _safe_relative(relative):
                 raise ValueError("missing/unsafe repository-relative policy path")
             if git_bytes(repository_root, "rev-parse", "--verify", f"{revision}^{{commit}}").decode("ascii").strip() != revision:
                 raise ValueError("frozen revision is not the exact commit")
@@ -554,109 +794,253 @@ def descriptor_failures(report):
     return errors
 
 
-def _classify(report, *, evidence_root, repository_root):
-    """Return only recomputed policy conclusions; a failed candidate has no rating."""
-    binding, fixtures = report.get("binding", {}), report.get("fixtures", [])
+def identity_failures(profile, identity, report_version):
+    """Execution descriptor shape; schema 1 adds the historical ``accepted`` fact."""
+    if not isinstance(identity, dict) or not identity.get("execution_sha256") or not identity.get("resources"):
+        return ["incomplete execution identity"]
+    errors = []
+    historical = report_version == 1
+    if (set(identity) != DESCRIPTOR_FIELDS | ({"accepted"} if historical else set())
+            or (historical and not isinstance(identity.get("accepted"), bool))):
+        errors.append("execution identity fields differ from the report schema")
+    resources, limits = identity["resources"], identity.get("limits")
+    if (identity.get("profile_id") != profile or not _sha256_hex(identity["execution_sha256"])
+            or not isinstance(resources, list) or not all(isinstance(resource, dict) for resource in resources)
+            or {resource.get("kind") for resource in resources} not in ({"detector", "recognizer"}, {"detector", "recognizer", "auxiliary"})
+            or any(not _safe_relative(resource.get("relative_path")) or not number(resource.get("bytes"), positive=True)
+                   or not _sha256_hex(resource.get("sha256")) for resource in resources)
+            or not isinstance(limits, dict) or not number(limits.get("tensor_bytes"), positive=True)
+            or any(limits.get(axis) is not None and not number(limits.get(axis), positive=True)
+                   for axis in ("detector_width", "detector_height"))):
+        errors.append("malformed execution/resource identity")
+    return errors
+
+
+def _provenance(report):
+    """Publishable scope/evidence facts; never host IDs, commands, paths or environment."""
+    def text(row, key):
+        value = row.get(key)
+        return value if isinstance(value, str) else None
+
+    def numeric(row, key):
+        value = row.get(key)
+        return value if number(value) else None
+
+    binding = _mapping(report.get("binding"))
+    scope = {key: numeric(binding, key) if key in ("intra_op", "inter_op") else text(binding, key)
+             for key in ("target", "provider", "runtime", "intra_op", "inter_op", "os", "cpu",
+                         "cohort_id", "host_approval")}
+    if scope["target"] not in CRITERIA["release_targets"]:
+        scope["target"] = None
+    scope["criteria_id"] = text(report, "criteria_id")
+    scope["measured_source"] = {"revision": text(binding, "source_revision"), "tree": text(binding, "source_tree")}
+    policies = {}
+    for key in ("budgets", "host_policy"):
+        policy = _mapping(_mapping(report.get("policy_inputs")).get(key))
+        if policy:
+            policies[key] = {"path": policy.get("path") if _safe_relative(policy.get("path")) else None,
+                             **{field: text(policy, field) for field in ("revision", "git_blob", "sha256")}}
+    version, dirty = report.get("schema_version"), binding.get("build_source_dirty")
+    corpora, limits = report.get("corpora"), report.get("process_limits")
+    evidence = {
+        "report_schema_version": version if type(version) is int and version in COMPLETE_EXECUTION else None,
+        "execution": text(report, "execution"),
+        "build": {"source_revision": text(binding, "build_source_revision"), "source_tree": text(binding, "build_source_tree"),
+                  "source_dirty": dirty if type(dirty) is bool else None, "compiler": text(binding, "build_compiler"),
+                  "opencv": text(binding, "opencv"), "executable_sha256": text(binding, "executable_sha256"),
+                  "catalog_sha256": text(binding, "catalog_sha256")},
+        **{key: text(binding, key) for key in ("runtime_sha256", "criteria_sha256", "fixtures_sha256", "frozen_revision")},
+        "budget_sha256": text(report, "budget_sha256"),
+        "host_policy_sha256": text(report, "host_policy_sha256"),
+        "policies": policies,
+        "corpora": [{key: text(_mapping(corpus), key) for key in ("profile", "sha256")} for corpus in corpora]
+                   if isinstance(corpora, list) else None,
+        "process_limits": {key: numeric(limits, key) for key in
+                           ("timeout_seconds", "output_limit_bytes", "cleanup_seconds", "lifecycle_bound_ms")}
+                          if isinstance(limits, dict) else None,
+    }
+    return scope, evidence
+
+
+def _rules(evidence, *, executed, unverified, incomplete, reference):
+    gaps, rules = evidence.gap_rules(), []
+    for rule, category in RULES:
+        findings, reason = evidence.findings[rule], None
+        if not executed:
+            outcome, reason = "not_run", "no_retained_execution"
+        elif reference and rule == "relative_latency":
+            outcome, reason = "not_run", "comparison_reference"
+        elif unverified:
+            outcome, reason = "incomplete", "unverified_evidence"
+        elif findings:
+            outcome = "failed"
+        elif incomplete or rule in gaps:
+            outcome, reason = "incomplete", "incomplete_evidence"
+        else:
+            outcome = "passed"
+        entry = {"rule_id": rule, "category": category, "outcome": outcome}
+        if reason:
+            entry["reason"] = reason
+        entry["findings"] = findings
+        rules.append(entry)
+    return rules
+
+
+def _evaluate(report, *, evidence_root, repository_root):
+    if not isinstance(report, dict) or not isinstance(report.get("binding"), dict):
+        raise TypeError("report/binding is not a JSON object")
+    binding, fixtures = report["binding"], report.get("fixtures", [])
+    version = report.get("schema_version")
+    integrity, scope_gaps = [], []
+    if type(version) is not int or version not in COMPLETE_EXECUTION:
+        integrity.append("unsupported report schema version")
+    elif report.get("execution") != COMPLETE_EXECUTION[version]:
+        scope_gaps.append(f"campaign execution {report.get('execution')!r} is not a complete run")
     profiles, raw_errors = reconcile_raw(report, evidence_root)
-    report = dict(report, profiles=profiles)
-    errors = validate_binding(binding) + raw_errors
-    errors.extend(policy_failures(report, repository_root))
-    errors.extend(descriptor_failures(report))
+    integrity.extend(validate_binding(binding))
+    integrity.extend(policy_failures(report, repository_root))
+    integrity.extend(descriptor_failures(report))
     if binding.get("fixtures_sha256") != hashlib.sha256(document_bytes({"fixtures": fixtures})).hexdigest():
-        errors.append("prepared fixture/oracle bytes differ from bound input")
-    limits = report.get("process_limits", {})
+        integrity.append("prepared fixture/oracle bytes differ from bound input")
+    limits = _mapping(report.get("process_limits"))
     if not all(number(limits.get(key), positive=True) for key in ("timeout_seconds", "output_limit_bytes", "cleanup_seconds", "lifecycle_bound_ms")):
-        errors.append("missing explicit process/lifecycle deadline/output/cleanup bounds")
-    if limits != (report.get("budgets") or {}).get("process_limits"):
-        errors.append("process bounds differ from frozen budget policy")
-    if report.get("diagnostic") is True:
-        errors.append("diagnostic execution never admits or rates a model")
+        integrity.append("missing explicit process/lifecycle deadline/output/cleanup bounds")
+    budgets = report.get("budgets")
+    if report.get("process_limits") != _mapping(budgets).get("process_limits"):
+        integrity.append("process bounds differ from frozen budget policy")
+    if report.get("diagnostic") is not False:
+        integrity.append("diagnostic execution is never a complete evaluation")
     if report.get("source_changes"):
-        errors.append("uncommitted implementation source")
-    expected_corpus = frozen_corpus()
+        integrity.append("uncommitted implementation source")
     projection = [{key: row.get(key) for key in ("id", "sha256", "byte_len", "width", "height", "regions")} for row in fixtures]
-    if projection != expected_corpus:
-        errors.append("corpus/oracles differ from the complete frozen G-004 v3 and compact UI suite")
+    if projection != frozen_corpus():
+        integrity.append("corpus/oracles differ from the complete frozen G-004 v3 and compact UI suite")
     if report.get("corpora") != corpus_identities():
-        errors.append("frozen corpus manifest identities mismatch")
+        integrity.append("frozen corpus manifest identities mismatch")
     if binding.get("criteria_sha256") != sha256(Path(__file__).with_name("criteria-v1.json")):
-        errors.append("criteria identity mismatch")
+        integrity.append("criteria identity mismatch")
     cohort = {key: binding.get(key) for key in COHORT_FIELDS}
     if not any(row.get("cohort") == cohort and row.get("approval") == binding.get("host_approval") and row.get("approval")
-               for row in report.get("host_policy", {}).get("approved_cohorts", [])):
-        errors.append("host cohort absent from frozen release allowlist")
+               for row in _mapping(report.get("host_policy")).get("approved_cohorts", [])):
+        integrity.append("host cohort absent from frozen release allowlist")
     for key in ("host_policy_sha256", "budget_sha256"):
-        if not isinstance(report.get(key), str) or len(report[key]) != 64:
-            errors.append(f"missing policy identity {key}")
+        if not _sha256_hex(report.get(key)):
+            integrity.append(f"missing policy identity {key}")
     workload_ids = [f"{row['id']}/{mode}" for row in fixtures for mode in ("singular", "grouped")]
     if not fixtures or len(workload_ids) != len(set(workload_ids)):
-        errors.append("missing/duplicate frozen corpus workloads")
-    errors.extend(report.get("preflight_failures", []))
-    errors.extend(validate_budgets(report.get("budgets"), binding, workload_ids))
+        integrity.append("missing/duplicate frozen corpus workloads")
+    if report.get("preflight_failures"):
+        integrity.append(f"campaign retained {len(report['preflight_failures'])} preflight/operational "
+                         "failure(s); details stay in the private report")
+    integrity.extend(validate_budgets(budgets, binding, workload_ids))
     reference_id, candidate_id = report.get("reference_profile"), report.get("candidate_profile")
-    identities = report.get("identities", {})
-    if not reference_id or not candidate_id or reference_id == candidate_id:
-        errors.append("distinct reference and candidate identities required")
-    if set(report.get("profiles", {})) != {reference_id, candidate_id}:
-        errors.append("retained process profiles differ from the exact reference/candidate attempt set")
-    if identities.get(reference_id, {}).get("accepted") is not True:
-        errors.append("reference is not an accepted profile")
-    if identities.get(candidate_id, {}).get("accepted") is not False:
-        errors.append("candidate declaration missing")
-    summaries = {}
-    for profile in (reference_id, candidate_id):
+    if not isinstance(reference_id, str) or not isinstance(candidate_id, str) or reference_id == candidate_id:
+        raise ValueError("distinct reference and candidate profile IDs required")
+    claimed = report.get("profiles", {})
+    if set(claimed) - {reference_id, candidate_id}:
+        integrity.append("retained process profiles include an undeclared attempt")
+    identities = _mapping(report.get("identities"))
+    lifecycle_bound = _mapping(_mapping(budgets).get("process_limits")).get("lifecycle_bound_ms")
+    roles = {reference_id: "reference", candidate_id: "candidate"}
+    observed = {}
+    for profile in roles:
         identity = identities.get(profile)
-        if not isinstance(identity, dict) or not identity.get("execution_sha256") or not identity.get("resources"):
-            errors.append(f"{profile}: incomplete execution identity")
-        elif (identity.get("profile_id") != profile or len(identity["execution_sha256"]) != 64
-              or set(resource.get("kind") for resource in identity["resources"]) not in ({"detector", "recognizer"}, {"detector", "recognizer", "auxiliary"})
-              or any(not resource.get("relative_path") or not number(resource.get("bytes"), positive=True)
-                     or not isinstance(resource.get("sha256"), str) or len(resource["sha256"]) != 64
-                     for resource in identity["resources"])
-              or not isinstance(identity.get("limits"), dict)):
-            errors.append(f"{profile}: malformed execution/resource identity")
-        pe, ps = validate_profile(report.get("profiles", {}).get(profile, []), profile, binding, fixtures, report.get("budgets"), identity)
-        errors.extend(f"{profile}: {e}" for e in pe)
-        summaries[profile] = ps
-    if errors:
-        return {"admitted": False, "target_qualified": False, "reference": None, "candidate": None, "failures": errors, "summaries": summaries}
-    fast = all(summaries[candidate_id][name][metric] <= .8 * summaries[reference_id][name][metric]
-               for name in workload_ids for metric in ("p50_ms", "p95_ms"))
-    return {"admitted": False, "target_qualified": True, "reference": "reference", "candidate": "fast" if fast else "balanced", "failures": [], "summaries": summaries}
+        evidence = evaluate_profile(profiles.get(profile, []), profile, binding, fixtures, budgets, identity, lifecycle_bound)
+        for message in identity_failures(profile, identity, version):
+            evidence.unverified(message)
+        observed[profile] = evidence
+    for profile, index, message in raw_errors:
+        if profile in observed:
+            observed[profile].unverified(message, process=index)
+        else:
+            integrity.append(message if profile is None else f"{profile}: {message}")
+    executed = {profile: bool(claimed.get(profile)) or bool(profiles.get(profile)) for profile in roles}
+    reference, candidate = observed[reference_id], observed[candidate_id]
+    if executed[candidate_id]:
+        if not executed[reference_id] or reference.invalid or "relative_latency" in reference.gap_rules():
+            candidate.gap(("relative_latency",), "comparison reference timing evidence is incomplete or unverified")
+        elif "relative_latency" not in candidate.gap_rules():
+            ratio = CRITERIA["fast_maximum_reference_ratio"]
+            for name in workload_ids:
+                for metric in ("p50_ms", "p95_ms"):
+                    value = candidate.metrics["workloads"].get(name, {}).get(metric)
+                    baseline = reference.metrics["workloads"].get(name, {}).get(metric)
+                    if not number(value) or not number(baseline):
+                        candidate.gap(("relative_latency",), f"missing comparison timing {metric}", workload=name)
+                    elif not value <= ratio * baseline:
+                        candidate.fail("relative_latency", "reference_ratio", workload=name, metric=metric,
+                                       observed=value, reference=baseline, limit=ratio * baseline,
+                                       maximum_ratio=ratio)
+    errors = [{"kind": "integrity", "profile": None, "message": message} for message in integrity]
+    errors += [{"kind": "incomplete", "profile": None, "message": message} for message in scope_gaps]
+    entries = {}
+    for profile, role in roles.items():
+        evidence, identity = observed[profile], identities.get(profile)
+        rules = _rules(evidence, executed=executed[profile], unverified=bool(integrity or evidence.invalid),
+                       incomplete=bool(scope_gaps), reference=role == "reference")
+        errors += [{"kind": "integrity", "profile": profile, **entry} for entry in evidence.invalid]
+        errors += [{"kind": "incomplete", "profile": profile, **entry} for _, entry in evidence.gaps]
+        errors += [{"kind": "technical", "profile": profile, "rule_id": rule["rule_id"],
+                    "message": "technical contract failed"}
+                   for rule in rules if rule["category"] == "technical" and rule["outcome"] == "failed"]
+        valid_identity = not identity_failures(profile, identity, version)
+        entries[profile] = {
+            "role": role,
+            "execution_sha256": identity["execution_sha256"] if valid_identity else None,
+            "resources": [{key: resource[key] for key in ("kind", "relative_path", "bytes", "sha256")}
+                          for resource in identity["resources"]] if valid_identity else [],
+            "processes": evidence.processes,
+            "rules": rules,
+            "metrics": evidence.metrics,
+        }
+    scope, provenance = _provenance(report)
+    return {"complete": not errors, "validation_errors": errors, "scope": scope, "evidence": provenance,
+            "profiles": entries}
 
 
-def classify(report, *, evidence_root=None, repository_root=ROOT):
-    """Original JSONL and Git objects are required; supplied labels never qualify."""
+def evaluate(report, *, evidence_root=None, repository_root=ROOT):
+    """One target scope's per-rule outcomes; ``complete`` means verified, complete evidence
+    whose technical contracts held, never that every empirical rule passed."""
     try:
-        return _classify(report, evidence_root=evidence_root, repository_root=repository_root)
-    except (ValueError, TypeError, KeyError, IndexError, AttributeError, OSError) as error:
-        return {"admitted": False, "target_qualified": False, "reference": None, "candidate": None,
-                "failures": [f"malformed/incomplete report: {error}"], "summaries": {}}
+        return _evaluate(report, evidence_root=evidence_root, repository_root=repository_root)
+    except (ValueError, TypeError, KeyError, IndexError, AttributeError, OSError, ArithmeticError, RecursionError) as error:
+        return _malformed(_mapping(report), f"malformed/incomplete report: {_describe(error)}")
 
 
-def admission(reports, *, evidence_roots=None, repository_root=ROOT):
-    """Two approved target reports establish eligibility; this never mutates support."""
-    roots = list(evidence_roots) if evidence_roots is not None else [None] * len(reports)
-    if len(roots) != len(reports):
-        return {"admitted": False, "failures": ["one original evidence root per report is required"], "targets": {}}
-    verdicts = [classify(report, evidence_root=root, repository_root=repository_root)
-                for report, root in zip(reports, roots)]
-    errors = [f"report {index}: {failure}" for index, verdict in enumerate(verdicts) for failure in verdict["failures"]]
-    targets = [report.get("binding", {}).get("target") for report in reports]
-    if len(reports) != 2 or set(targets) != set(CRITERIA["release_targets"]):
-        errors.append("independent approved Apple and Windows target reports required")
-    if len(reports) == 2:
-        first, second = reports
-        for key in ("candidate_profile", "reference_profile", "identities", "corpora", "criteria_id"):
-            if first.get(key) != second.get(key):
-                errors.append(f"cross-target frozen identity mismatch: {key}")
-        for key in ("source_revision", "source_tree", "catalog_sha256", "criteria_sha256"):
-            if first.get("binding", {}).get(key) != second.get("binding", {}).get(key):
-                errors.append(f"cross-target implementation/criteria mismatch: {key}")
-    return {"admitted": not errors and all(verdict["target_qualified"] for verdict in verdicts),
-            "failures": errors, "targets": dict(zip(targets, verdicts))}
+def _malformed(report, message):
+    scope, provenance = _provenance(report)
+    return {"complete": False, "validation_errors": [{"kind": "integrity", "profile": None, "message": message}],
+            "scope": scope, "evidence": provenance, "profiles": {}}
 
 
-def unrated(*, already_accepted: bool):
-    """Legacy presentation metadata is not a route to candidate admission."""
-    return {"admitted": False, "code": "unrated" if already_accepted else None}
+def evaluation_bundle(evaluations):
+    """Independent scopes; unknown report attribution does not assert missing-target execution."""
+    covered = {evaluation["scope"]["target"] for evaluation in evaluations}
+    missing = [target for target in CRITERIA["release_targets"] if target not in covered]
+    return {"schema_version": EVALUATION_SCHEMA_VERSION, "evaluator_revision": evaluator_revision(),
+            "complete": bool(evaluations) and all(evaluation["complete"] for evaluation in evaluations),
+            "not_run_targets": None if None in covered else missing,
+            "evaluations": evaluations}
+
+
+def evaluate_reports(reports, *, evidence_roots, repository_root=ROOT):
+    """Evaluate report files with their original evidence roots, in order."""
+    reports, evidence_roots = list(reports), list(evidence_roots)
+    if len(reports) != len(evidence_roots):
+        raise ValueError("one original evidence root per report is required")
+    evaluations = []
+    for path, root in zip(reports, evidence_roots):
+        try:
+            raw = Path(path).read_bytes()
+            report = strict_json(raw.decode("utf-8"))
+        except (OSError, ValueError, UnicodeError) as error:
+            evaluations.append(_malformed({}, f"report unreadable/malformed JSON: {_describe(error)}"))
+            continue
+        evaluation = evaluate(report, evidence_root=root, repository_root=repository_root)
+        try:
+            document_bytes({"evaluations": [evaluation]})
+        except (ValueError, TypeError, ArithmeticError, RecursionError) as error:
+            evaluation = _malformed({}, f"report result cannot be serialized: {_describe(error)}")
+        evaluation["evidence"]["report_sha256"] = hashlib.sha256(raw).hexdigest()
+        evaluations.append(evaluation)
+    return evaluation_bundle(evaluations)

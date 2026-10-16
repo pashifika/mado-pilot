@@ -1064,8 +1064,8 @@ responsibilities a later phase takes on.
 | Template scaling, rotation, masked matching, GPU execution | Not implemented |
 | OCR model/profile decision and platform-neutral contracts | Implemented in `mado-pilot-ocr`: ADR 0033 fixes released native G-004; ADR 0038 records the rejected rectangular bounded candidate; ADR 0040 adds the accepted candidate-v2 closed identity over the same component bytes; ADR 0041 accepts singular target budgets; ADR 0044 accepts fixed non-overlapping grouped quality and budgets. Immutable model sources, exact-frame requests, normalized source-correlated results, typed failures, and deadline/cancellation-aware commit are implemented |
 | Exact accepted OCR preprocessing, ONNX inference, decoding, and provider policy | Implemented in `mado-pilot-backend-onnx`. ADR 0034 fixes controlled host-provided ONNX Runtime 1.29.0 loading through API 17 with one session pair and process-lifetime runtime ownership. Native G-004 keeps released DB736 behavior; explicit ADR 0040 selection keeps its bounded tensor/profile rules and ADR 0041/0044 budgets. ADR 0046 adds target-gated CUDA/CoreML initialization with one same-provider detector/recognizer pair, explicit dependency roots, atomic pre-publication preferred fallback, required-provider failure, immutable provider facts, and no inference retry/provider switching. ADR 0047 rejects CoreML release qualification. ADR 0048 remains historical explicit Windows CUDA evidence; ADR 0049 adds deterministic provider-specific output-bounded batches and requalifies the unchanged CUDA provider/loader policy. Automatic selection remains CPU on both release targets |
-| Accepted OCR composition | Existing constructors still omit OCR or select the released CPU native/bounded profiles with no fallback. New replay/Windows/macOS provider constructors own caller configuration, select model profile independently from provider policy, and publish provider descriptors only with a complete engine. Preferred initialization may build a fresh CPU pair; required policy publishes no engine on failure |
-| OCR catalog choices and test-result policy | Static catalog, exact resources and accepted-only Rust metadata/selection are implemented under ADR 0080. [ADR 0084](adr/0084-ocr-model-choices-and-test-results.md) adopts ordinary model choices independent of quality/performance test outcomes, with scoped per-rule evidence. That interface cutover is pending; current constructors still omit/refuse the PP-OCRv6 tiny/small profile |
+| OCR composition | Existing defaults still omit OCR or select the released CPU native/bounded profiles with no fallback. Replay/Windows/macOS profile constructors select any implemented catalog tuple independently of test outcomes and provider policy, and publish provider descriptors only with a complete engine. Preferred initialization may build a fresh CPU pair; required policy publishes no engine on failure |
+| OCR catalog choices and test results | Static catalog v2 and borrowed `ocr_profiles()` / `ocr_profile(id)` metadata expose all three implemented profiles through ordinary Rust selection under [ADR 0084](adr/0084-ocr-model-choices-and-test-results.md). Per-rule passed/failed/not-run/incomplete results retain target/provider, criteria, report and measured-source scope; they do not filter choices or change defaults. The PP-OCRv6 tiny/small profile retains its recorded quality failures and strict resource/execution contract |
 | Bounded engine-scoped diagnostic and provider observation | The released allocation-free `Off` and finite `Normal`/`Debug` diagnostic stream retains strict order, exact losses, independent readers/batches, and content redaction. Rust watcher records add bounded query/source/region/state/stability/disposition/queue/elapsed/typed-outcome facts without template names, pixels, hashes, or backend payloads. The released C ABI has no watcher start surface and its diagnostic structures/function table remain unchanged |
 | Input request, route capability, submission receipt, cleanup bounds, provider, and controller contracts | Implemented in `mado-pilot-input` |
 | Input injection | Implemented in `mado-pilot-platform-windows` for system pointer/keyboard/text, ordinary exact-window `WindowMessage` submission with unknown compatibility and target-queue evidence, and fixture-class acknowledged `WindowMessage` submission. Implemented in `mado-pilot-platform-macos` for `CGEvent` system pointer/keyboard/text and process-directed pointer/keyboard/text with owning-process scope, unknown compatibility, and invocation-only evidence; final candidate `dec43d7` passed the controlled profiles, and independent `single`, exact two-display non-mirrored `same-scale`, and `mixed-scale` matrices passed for all fourteen controlled pairs. No macOS window-message route exists. Both implementations are reached through `mado-pilot-runtime`, the Rust facade, C ABI 1.2/1.3, and C++ |
@@ -2672,14 +2672,21 @@ package.
 
 The same contract crate owns the versioned model catalog and its shared
 build/maintainer validator. Generated static descriptors are the single authority
-for closed identities, resources, execution parameters and accepted host metadata;
-recognition performs no JSON parsing. `accepted_ocr_profiles` and
-`accepted_ocr_profile` expose borrowed accepted choices through runtime and the
-Rust facade without loading a model. Presentation and evidence labels are
-separate from the resource-bound execution digest. [ADR 0080](adr/0080-ocr-model-catalog-and-admission.md)
-freezes the official PP-OCRv6 tiny/small candidate, including its mandatory pinned
-YAML vocabulary. It remains unqualified and absent from ordinary enumeration,
-construction and package manifest v1/v2 admission. No ABI or watch gate changes.
+for closed identities, resources, execution parameters and host metadata;
+recognition performs no JSON parsing. `ocr_profiles` and `ocr_profile` expose
+borrowed choices through runtime and the Rust facade without loading a model.
+Catalog schema v2 keeps presentation and rule outcomes outside the unchanged
+version-one execution fingerprint. [ADR 0084](adr/0084-ocr-model-choices-and-test-results.md)
+removes the quality-admission filter and aggregate ratings, not technical
+validation. Failed or missing evidence never triggers fallback or changes a
+selection. Per-rule evidence identifies its measured source, execution digest,
+target/provider, criteria and evaluator revision.
+
+[ADR 0080](adr/0080-ocr-model-catalog-and-admission.md) fixes the official PP-OCRv6
+tiny/small execution tuple and mandatory pinned YAML vocabulary. It is an ordinary
+CPU profile with known quality failures. Package manifest v1/v2 still cannot
+express its required auxiliary source and therefore refuse that declaration.
+The C/C++ ABI, provider capabilities and bounded-v2 watch scope are unchanged.
 
 [ADR 0083](adr/0083-platform-aware-ocr-calibration-and-percent-equivalence.md)
 limits benchmark text equivalence to U+0025 `%` and U+FF05 `％` after NFC and
@@ -2699,10 +2706,13 @@ The Windows calibration at source `0cb9fc0` completed three processes and 1,452
 observations with zero shared validation failures. Its independently calibrated
 numerical policy is
 [`windows-i7-12700kf-26300-budgets-v1.json`](../tools/ocr-models/windows-i7-12700kf-26300-budgets-v1.json),
-derived under ADR 0082. Calibration never qualifies either model or authorizes
-candidate execution, resource acquisition or support promotion. Both final
-target procedures and reports on a common final source/build, plus a reviewed
-candidate-attempt disposition, remain required.
+derived under ADR 0082. Calibration authorizes neither acquisition nor another
+model run. Both final comparisons at `cf2763a` completed with candidate quality
+failures; the [original outcomes](ocr-model-catalog.md#final-comparison-at-cf2763a)
+remain bound to that source and policy. A derived per-rule view is not a fresh
+measurement or a retroactive pass. The evaluator distinguishes complete,
+verified evaluation from passing every empirical rule and has no cross-target
+model-admission decision.
 
 One `OcrRequest` borrows one immutable `Frame`, one exact
 `OcrBackendIdentity` (stable ID plus implementation version), one complete

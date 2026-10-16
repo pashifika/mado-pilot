@@ -1259,23 +1259,25 @@ authorized canonical-spelling replacement changed no source, executable,
 directory contents, workload arguments, or product environment and reproduced
 the exact counts.
 
-## OCR model admission comparison
+## OCR model rule comparison
 
-[ADR 0080](adr/0080-ocr-model-catalog-and-admission.md) and the
-[model maintainer procedure](ocr-model-catalog.md) define a distinct comparison
+[ADR 0084](adr/0084-ocr-model-choices-and-test-results.md) and the
+[model maintainer procedure](ocr-model-catalog.md) define independent results for a
 suite: unchanged G-004 v3 plus the frozen `compact-ui-v1` inputs, actual Rust
 singular/grouped recognition, three fresh processes per profile, two warmups and
 twenty retained samples per workload. Reference and candidate run serially with
 one intra/inter-op CPU thread.
 
-Quality, source identity, lifecycle and resource correctness are hard gates.
-`fast` additionally requires both p50/p95 at most 80% of the reference for every
-workload in the same target/provider/cohort; otherwise complete passing evidence
-is `balanced`. `unrated` preserves an already accepted profile without a new
-comparative claim and never admits a candidate.
+Each named rule reports passed, failed, not run or incomplete. The relative timing
+rule requires both p50/p95 at most 80% of the reference for every workload in the
+same target/provider/cohort, independently of quality. It supplies no aggregate
+rating or model-selection gate. Empirical timing/RSS ceilings are distinct from
+enforced execution bounds, source correlation and owned lifecycle contracts.
 
-No new target-specific absolute budgets or final native results are accepted.
-Missing approved hosts, frozen budgets or required collectors refuses
-qualification. Current macOS 27 observations and hosted CI are implementation
-evidence only. Historical benchmark artifacts and their revision-bound hashes,
-ceilings and adverse rows remain unchanged.
+Both final comparisons at `cf2763a` completed under the frozen Apple/Windows
+policies. The candidate retained text and negative-image failures despite passing
+the numerical checks. The original nonadmission verdicts remain unchanged; the
+later per-rule view names the original source and its evaluator revision rather
+than claiming a fresh run. Missing approved hosts, frozen bounds, originals or
+collectors cannot produce passing evidence. Hosted CI is not a performance
+cohort. Historical artifacts, hashes, ceilings and adverse rows remain intact.

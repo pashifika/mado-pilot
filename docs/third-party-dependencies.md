@@ -220,9 +220,9 @@ can see the license position was checked when the choice was made.
 The exact versions are pinned by the change that adds them, against the
 lockfile and the advisory database as they stand at that time.
 
-### Official PP-OCRv6 candidate resources
+### Official PP-OCRv6 profile resources
 
-The new tiny-detector/small-recognizer candidate uses two original ONNX files and
+The tiny-detector/small-recognizer profile uses two original ONNX files and
 the recognizer's original `inference.yml`, all pinned to official PaddlePaddle
 Hugging Face revisions under Apache-2.0. [ADR 0080](adr/0080-ocr-model-catalog-and-admission.md)
 records exact lengths/hashes and the dictionary's canonical identity.
@@ -230,7 +230,8 @@ The [catalog command](ocr-model-catalog.md#source-schema) emits validated source
 URLs and relative paths; the SDK neither acquires nor redistributes the files.
 This export has no embedded `character` metadata. Substituting the older graph,
 deriving an untracked dictionary or omitting the YAML is not a supported fallback.
-Its implementation does not promote it to an accepted model.
+It is an ordinary CPU catalog choice under [ADR 0084](adr/0084-ocr-model-choices-and-test-results.md);
+its recorded quality failures remain visible and do not waive resource validation.
 
 ### G-004 accepted OCR profile
 

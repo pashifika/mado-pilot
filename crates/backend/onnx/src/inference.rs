@@ -382,9 +382,7 @@ pub(crate) mod test_hook {
 
 #[cfg(test)]
 mod tests {
-    use mado_pilot_ocr::{
-        ACCEPTED_BOUNDED_PROFILE_ID, ACCEPTED_G004_PROFILE_ID, accepted_ocr_profile,
-    };
+    use mado_pilot_ocr::{ACCEPTED_BOUNDED_PROFILE_ID, ACCEPTED_G004_PROFILE_ID, ocr_profile};
 
     use super::{input_within_limits, output_within_limits, preflight_recognizer_output};
     use crate::fault::OnnxBackendFault;
@@ -393,7 +391,7 @@ mod tests {
 
     #[test]
     fn declared_axis_limits_bound_inputs_and_outputs_without_narrowing_released_shapes() {
-        let bounded = accepted_ocr_profile(ACCEPTED_BOUNDED_PROFILE_ID).unwrap();
+        let bounded = ocr_profile(ACCEPTED_BOUNDED_PROFILE_ID).unwrap();
         let detector = bounded.detector_graph;
         assert!(input_within_limits(&[1, 3, 736, 1_312], detector.input));
         assert!(!input_within_limits(&[1, 3, 768, 1_312], detector.input));
@@ -403,7 +401,7 @@ mod tests {
         assert!(!output_within_limits(&[1, 1, -1, 32], detector.output));
         assert!(!output_within_limits(&[1, 736, 1_312], detector.output));
 
-        let native = accepted_ocr_profile(ACCEPTED_G004_PROFILE_ID).unwrap();
+        let native = ocr_profile(ACCEPTED_G004_PROFILE_ID).unwrap();
         assert!(input_within_limits(
             &[1, 3, 2_176, 3_840],
             native.detector_graph.input

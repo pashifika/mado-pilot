@@ -2420,7 +2420,7 @@ fn open_profile(
 }
 
 /// This revision-bound bench qualifies only the two released profiles; newer
-/// catalog profiles use the `onnx-cpu` model-admission route.
+/// catalog profiles use the `onnx-cpu` model-evaluation route.
 const RELEASED_PROFILES_ONLY: &str = "bounded-detector bench selects only native or bounded";
 
 fn profile_name(profile: OnnxOcrProfile) -> &'static str {

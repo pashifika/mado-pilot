@@ -876,19 +876,15 @@ fn required_path(variable: &str) -> PathBuf {
         .expect("native test path is canonicalizable")
 }
 
-/// Maintainer-route conformance for the declared, still-unqualified candidate.
+/// Instrumented conformance for the ordinary max-side profile.
 ///
-/// These tests prove construction, exact resource refusal, source correlation,
-/// and lifecycle settlement. They are not admission evidence and assert no
-/// recognition-quality oracle.
+/// Covers exact resource refusal, source correlation and lifecycle settlement,
+/// not a recognition-quality oracle.
 #[cfg(feature = "benchmark-instrumentation")]
 mod candidate {
     use std::fs;
 
-    use mado_pilot_ocr::{
-        ACCEPTED_G004_PROFILE_ID, OcrResult, RecognizedRegion, accepted_ocr_profile,
-        declared_ocr_profile,
-    };
+    use mado_pilot_ocr::{ACCEPTED_G004_PROFILE_ID, OcrResult, RecognizedRegion, ocr_profile};
 
     use super::*;
     use crate::OnnxExecutionProvider;
@@ -902,11 +898,11 @@ mod candidate {
         runtime: &Path,
         operation: &OperationContext,
     ) -> Result<OnnxOcrBackend, OnnxBackendFault> {
-        OnnxOcrBackend::open_candidate(CANDIDATE_PROFILE_ID, model_root, runtime, operation)
+        OnnxOcrBackend::open_profile(CANDIDATE_PROFILE_ID, model_root, runtime, operation)
     }
 
     fn candidate_plan(width: u32, height: u32) -> (u32, u32) {
-        let plan = ExecutionProfile::declared(CANDIDATE_PROFILE_ID)
+        let plan = ExecutionProfile::from_id(CANDIDATE_PROFILE_ID)
             .expect("declared candidate")
             .0
             .preprocessing()
@@ -922,17 +918,10 @@ mod candidate {
         let runtime = required_path(RUNTIME_ENV);
         let model_root = required_path(MODEL_ROOT_ENV);
         let operation = OperationContext::new();
-        let identity = declared_ocr_profile(CANDIDATE_PROFILE_ID)
-            .expect("declared candidate")
-            .candidate_identity()
+        let identity = ocr_profile(CANDIDATE_PROFILE_ID)
+            .expect("declared profile")
+            .identity()
             .expect("candidate identity");
-        assert_eq!(
-            OnnxOcrBackend::open_profile(CANDIDATE_PROFILE_ID, &model_root, &runtime, &operation)
-                .map(|_| ()),
-            Err(OnnxBackendFault::ProfileMismatch),
-            "product selection never admits the unqualified candidate"
-        );
-
         let contract: Arc<dyn OcrBackend> = Arc::new(
             open_candidate(&model_root, &runtime, &operation).expect("declared candidate opens"),
         );
@@ -1096,7 +1085,7 @@ mod candidate {
         let runtime = required_path(RUNTIME_ENV);
         let model_root = required_path(MODEL_ROOT_ENV);
         let operation = OperationContext::new();
-        let declared = declared_ocr_profile(CANDIDATE_PROFILE_ID).expect("declared candidate");
+        let declared = ocr_profile(CANDIDATE_PROFILE_ID).expect("declared profile");
         let auxiliary = declared.auxiliary.expect("declared vocabulary resource");
         let staged = StagedRoot::new("candidate-resources");
         let open = |root: &Path| {
@@ -1128,7 +1117,7 @@ mod candidate {
         staged.write(auxiliary.relative_path, &vocabulary);
         assert_eq!(open(&staged.0), Ok(()));
 
-        let released = accepted_ocr_profile(ACCEPTED_G004_PROFILE_ID).expect("released profile");
+        let released = ocr_profile(ACCEPTED_G004_PROFILE_ID).expect("released profile");
         let legacy_recognizer = fs::read(model_root.join(released.recognizer.relative_path))
             .expect("legacy recognizer");
         staged.write(declared.recognizer.relative_path, &legacy_recognizer);

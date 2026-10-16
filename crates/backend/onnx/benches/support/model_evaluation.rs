@@ -1,4 +1,4 @@
-//! Maintainer-only licensed-corpus observations; admission is recomputed externally.
+//! Bounded licensed-corpus observations; rule results are evaluated externally.
 
 use std::collections::BTreeMap;
 use std::fs::{File, OpenOptions};
@@ -13,7 +13,7 @@ use mado_pilot_capture::{Frame, PixelFormat};
 use mado_pilot_core::{
     CancellationToken, ClipPolicy, CoordinateSpace, OperationContext, PixelExtent, PixelRect, Rect,
 };
-use mado_pilot_ocr::catalog::{OcrProfileDescriptor, ResourceDescriptor, declared_ocr_profile};
+use mado_pilot_ocr::catalog::{OcrProfileDescriptor, ResourceDescriptor, ocr_profile};
 use mado_pilot_ocr::{
     OcrBackend, OcrRecognizer, OcrRegion, OcrRequest, OcrZone, OcrZoneScanRequest, RecognizedRegion,
 };
@@ -28,7 +28,7 @@ use serde_json::{Value, json};
 use sha2::{Digest, Sha256};
 
 mod build_provenance {
-    include!(concat!(env!("OUT_DIR"), "/model_admission_build.rs"));
+    include!(concat!(env!("OUT_DIR"), "/model_evaluation_build.rs"));
 }
 
 type Fallible<T> = Result<T, Box<dyn std::error::Error>>;
@@ -43,7 +43,7 @@ impl Write for BoundedOutput {
     fn write(&mut self, bytes: &[u8]) -> std::io::Result<usize> {
         if self.remaining == 0 && !bytes.is_empty() {
             return Err(std::io::Error::other(
-                "admission report output limit exceeded",
+                "evaluation report output limit exceeded",
             ));
         }
         let length = self
@@ -58,13 +58,13 @@ impl Write for BoundedOutput {
     }
 }
 
-const HELP: &str = "onnx-cpu --model-admission --profile ID --model-root DIR --runtime FILE \
+const HELP: &str = "onnx-cpu --model-evaluation --profile ID --model-root DIR --runtime FILE \
   --fixtures PREPARED_JSON --binding JSON --report NEW_JSONL --process-index N --output-limit-bytes N --lifecycle-bound-ms N\n\n\
 Runs actual Rust singular and grouped OCR on every frozen licensed image.\n\
 Each workload always has two warmups and twenty measured samples, CPU threads one.\n\
 The report records all outcomes, including below-threshold regions and failures.\n\
-This command alone never rates or admits a model. Use tools/ocr-models/run.py.\n\
-Metadata only (no initialization/inference): --model-admission --describe-profile --profile ID\n";
+Evaluate the observations with tools/ocr-models/run.py.\n\
+Metadata only (no initialization/inference): --model-evaluation --describe-profile --profile ID\n";
 
 #[derive(Deserialize)]
 #[serde(deny_unknown_fields)]
@@ -133,8 +133,7 @@ fn identity(profile: &OcrProfileDescriptor) -> Value {
            "decoder_id": profile.decoder_id, "normalization_id": profile.normalization_id,
            "execution_sha256": hex(&profile.execution_sha256), "resources": resources,
            "limits": {"detector_width":profile.detection.max_width, "detector_height":profile.detection.max_height,
-                      "tensor_bytes":profile.limits.input_tensor_bytes},
-           "accepted": mado_pilot_ocr::catalog::accepted_ocr_profile(profile.profile_id).is_some()})
+                      "tensor_bytes":profile.limits.input_tensor_bytes}})
 }
 
 fn build_facts() -> Fallible<Value> {
@@ -173,7 +172,7 @@ fn read_json(path: &Path) -> Fallible<Value> {
         .take(4 * 1024 * 1024 + 1)
         .read_to_end(&mut bytes)?;
     if bytes.len() > 4 * 1024 * 1024 {
-        return Err("admission input exceeds 4 MiB".into());
+        return Err("evaluation input exceeds 4 MiB".into());
     }
     Ok(serde_json::from_slice(&bytes)?)
 }
@@ -181,7 +180,7 @@ fn read_json(path: &Path) -> Fallible<Value> {
 pub(super) fn run() -> Fallible<()> {
     let mut arguments = std::env::args()
         .skip(1)
-        .filter(|argument| argument != "--model-admission" && argument != "--bench");
+        .filter(|argument| argument != "--model-evaluation" && argument != "--bench");
     let mut options = BTreeMap::new();
     let mut describe = false;
     while let Some(argument) = arguments.next() {
@@ -205,11 +204,11 @@ pub(super) fn run() -> Fallible<()> {
                     return Err("duplicate option".into());
                 }
             }
-            _ => return Err(format!("unknown admission option {argument}").into()),
+            _ => return Err(format!("unknown evaluation option {argument}").into()),
         }
     }
     let profile_id = options.get("--profile").ok_or("missing --profile")?;
-    let profile = declared_ocr_profile(profile_id).ok_or("undeclared profile")?;
+    let profile = ocr_profile(profile_id).ok_or("undeclared profile")?;
     let build = build_facts()?;
     if describe {
         println!("{}", json!({"identity":identity(profile), "build":build}));
@@ -287,7 +286,7 @@ pub(super) fn run() -> Fallible<()> {
     )?;
     let operation = OperationContext::new();
     let started = Instant::now();
-    let opened = OnnxOcrBackend::open_candidate(profile_id, &model_root, &runtime, &operation);
+    let opened = OnnxOcrBackend::open_profile(profile_id, &model_root, &runtime, &operation);
     let cold_open_ms = started.elapsed().as_secs_f64() * 1_000.0;
     let backend = match opened {
         Ok(backend) => Arc::new(backend),
@@ -363,7 +362,7 @@ pub(super) fn run() -> Fallible<()> {
             );
             let before = bench_harness::live_allocated_bytes();
             let measured = bench_harness::measure(
-                "onnx-model-admission",
+                "onnx-model-evaluation",
                 "raw licensed fixture outputs; external exact quality oracle",
                 plan,
                 || Fixture {
@@ -415,7 +414,7 @@ pub(super) fn run() -> Fallible<()> {
         true,
     )?;
     let initialization_cancelled =
-        match OnnxOcrBackend::open_candidate(profile_id, &model_root, &runtime, &cancelled) {
+        match OnnxOcrBackend::open_profile(profile_id, &model_root, &runtime, &cancelled) {
             Ok(unexpected) => {
                 unexpected.close(&operation)?;
                 "Ok".to_owned()

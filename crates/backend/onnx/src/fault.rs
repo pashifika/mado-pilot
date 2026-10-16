@@ -53,7 +53,7 @@ pub enum OnnxBackendFault {
     ProviderDependencyUnavailable,
     /// Provider registration or accelerator session initialization failed.
     ProviderInitializationFailed,
-    /// The ID or source is not one exact accepted (or explicitly declared) catalog profile.
+    /// The ID or source is not one exact implemented catalog profile.
     ProfileMismatch,
     /// The model graph or embedded vocabulary did not match the selected profile.
     GraphMismatch,

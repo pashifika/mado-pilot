@@ -183,33 +183,57 @@ pub struct ProfileApplicability {
     pub runtime_api: u32,
 }
 
-/// Comparative presentation code, independent from model support.
+/// One rule's observed outcome, never a model-selection policy.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum BenchmarkCode {
-    /// Qualified comparison baseline.
-    Reference,
-    /// All gates and each workload's comparative speed threshold pass.
-    Fast,
-    /// All gates pass without meeting the Fast threshold.
-    Balanced,
-    /// Previously accepted, without applicable comparative evidence.
-    Unrated,
+pub enum EvaluationOutcome {
+    /// Complete verified evidence satisfies the rule.
+    Passed,
+    /// Verified observations violate the rule.
+    Failed,
+    /// No applicable run exists.
+    NotRun,
+    /// Available evidence cannot establish the rule.
+    Incomplete,
 }
 
-/// Target/provider-scoped comparative evidence reference.
+/// A named rule within the summary's versioned criteria.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 #[non_exhaustive]
-pub struct BenchmarkSummary {
+pub struct RuleEvaluation {
+    /// Stable rule identifier.
+    pub rule_id: &'static str,
+    /// Scoped observation, not a recommendation.
+    pub outcome: EvaluationOutcome,
+}
+
+/// Immutable report provenance, separate from current SDK source.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[non_exhaustive]
+pub struct EvaluationEvidence {
+    /// Safe repository-relative report reference.
+    pub report: &'static str,
+    /// Full Git revision of the measured implementation.
+    pub measured_source_revision: &'static str,
+    /// Exact execution descriptor evaluated by the report.
+    pub execution_sha256: [u8; 32],
+    /// Content-addressed evaluator implementation revision.
+    pub evaluator_revision: &'static str,
+}
+
+/// Target/provider-scoped rule results; details remain in the report.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[non_exhaustive]
+pub struct EvaluationSummary {
     /// Rust target triple.
     pub target: &'static str,
     /// Execution provider code.
     pub provider: &'static str,
-    /// Evidence-derived code.
-    pub code: BenchmarkCode,
-    /// Criteria reference, absent for unqualified comparative metadata.
-    pub criteria: Option<&'static str>,
-    /// Report reference, absent for unqualified comparative metadata.
-    pub report: Option<&'static str>,
+    /// Safe repository-relative versioned criteria reference.
+    pub criteria: &'static str,
+    /// Report provenance, absent when no verified evidence is available.
+    pub evidence: Option<EvaluationEvidence>,
+    /// Independent outcomes of the named rules.
+    pub rules: &'static [RuleEvaluation],
 }
 
 /// Complete build-validated execution descriptor plus separate presentation.
@@ -256,30 +280,17 @@ pub struct OcrProfileDescriptor {
     pub display_name: &'static str,
     /// Optional readable execution variant.
     pub variant: Option<&'static str>,
-    /// Applicable comparative metadata; candidate descriptors have none.
-    pub benchmarks: &'static [BenchmarkSummary],
+    /// Scoped test results, independent of selection and execution identity.
+    pub evaluations: &'static [EvaluationSummary],
 }
 
 impl OcrProfileDescriptor {
-    /// Builds only an accepted identity, even in maintainer-feature builds.
-    ///
-    /// # Errors
-    /// Returns a profile fault for an unaccepted or modified descriptor.
-    pub fn identity(&self) -> Result<OcrModelIdentity, OcrFault> {
-        let accepted = accepted_ocr_profile(self.profile_id)
-            .filter(|accepted| *accepted == self)
-            .ok_or(OcrFault::UnsupportedProfile)?;
-        OcrModelIdentity::from_catalog(accepted)
-    }
-
-    /// Explicit maintainer identity; never grants product support.
+    /// Builds the exact declared identity without consulting test outcomes.
     ///
     /// # Errors
     /// Returns a profile fault for an undeclared or modified descriptor.
-    #[cfg(feature = "model-candidates")]
-    #[doc(hidden)]
-    pub fn candidate_identity(&self) -> Result<OcrModelIdentity, OcrFault> {
-        let declared = declared_ocr_profile(self.profile_id)
+    pub fn identity(&self) -> Result<OcrModelIdentity, OcrFault> {
+        let declared = ocr_profile(self.profile_id)
             .filter(|declared| *declared == self)
             .ok_or(OcrFault::UnsupportedProfile)?;
         OcrModelIdentity::from_catalog(declared)
@@ -288,45 +299,32 @@ impl OcrProfileDescriptor {
 
 include!(concat!(env!("OUT_DIR"), "/model_catalog.rs"));
 
-/// Accepted production profiles. Feature unification never widens this list.
+/// All implemented catalog profiles, independent of test results.
 #[must_use]
-pub const fn accepted_ocr_profiles() -> &'static [OcrProfileDescriptor] {
-    ACCEPTED_PROFILES
+pub const fn ocr_profiles() -> &'static [OcrProfileDescriptor] {
+    PROFILES
 }
 
-/// Looks up an accepted production profile without allocating or loading models.
+/// Looks up a declared profile without allocating or loading models.
 #[must_use]
-pub fn accepted_ocr_profile(id: &str) -> Option<&'static OcrProfileDescriptor> {
-    ACCEPTED_PROFILES
-        .iter()
-        .find(|profile| profile.profile_id == id)
+pub fn ocr_profile(id: &str) -> Option<&'static OcrProfileDescriptor> {
+    PROFILES.iter().find(|profile| profile.profile_id == id)
 }
 
-/// Looks up an explicit maintainer profile, including unqualified candidates.
-#[cfg(feature = "model-candidates")]
-#[doc(hidden)]
-#[must_use]
-pub fn declared_ocr_profile(id: &str) -> Option<&'static OcrProfileDescriptor> {
-    accepted_ocr_profile(id).or_else(|| {
-        CANDIDATE_PROFILES
-            .iter()
-            .find(|profile| profile.profile_id == id)
-    })
-}
-
-/// Whether either ID claims catalog authority, including reserved candidates.
+/// Whether either ID claims closed catalog authority.
 #[must_use]
 pub fn is_catalog_profile(model_id: &str, profile_id: &str) -> bool {
-    CLOSED_PROFILES
+    PROFILES
         .iter()
-        .any(|&(model, profile, _)| model == model_id || profile == profile_id)
+        .any(|profile| profile.model_id == model_id || profile.profile_id == profile_id)
 }
 
 /// Whether either closed ID requires an explicit auxiliary source.
 #[must_use]
 pub fn catalog_profile_requires_auxiliary(model_id: &str, profile_id: &str) -> bool {
-    CLOSED_PROFILES.iter().any(|&(model, profile, auxiliary)| {
-        auxiliary && (model == model_id || profile == profile_id)
+    PROFILES.iter().any(|profile| {
+        profile.auxiliary.is_some()
+            && (profile.model_id == model_id || profile.profile_id == profile_id)
     })
 }
 
@@ -334,15 +332,14 @@ pub fn catalog_profile_requires_auxiliary(model_id: &str, profile_id: &str) -> b
 mod tests {
     use super::{
         ACCEPTED_BOUNDED_PROFILE_ID, ACCEPTED_G004_PROFILE_ID, DEFAULT_OCR_PROFILE_ID,
-        accepted_ocr_profile, accepted_ocr_profiles, catalog_profile_requires_auxiliary,
-        is_catalog_profile,
+        catalog_profile_requires_auxiliary, is_catalog_profile, ocr_profile, ocr_profiles,
     };
     use crate::{OcrFault, OcrModelIdentity};
 
     #[test]
-    fn accepted_enumeration_default_and_legacy_identity_roundtrips_are_unchanged() {
-        let profiles = accepted_ocr_profiles();
-        assert_eq!(profiles.len(), 2);
+    fn enumeration_preserves_default_and_legacy_identity_roundtrips() {
+        let profiles = ocr_profiles();
+        assert_eq!(profiles.len(), 3);
         assert_eq!(
             DEFAULT_OCR_PROFILE_ID,
             "g-004-rapidocr-ppocrv4-det-v6-rec-small-v1"
@@ -357,12 +354,12 @@ mod tests {
                 .iter()
                 .any(|p| p.profile_id == ACCEPTED_BOUNDED_PROFILE_ID)
         );
-        assert!(std::ptr::eq(profiles, accepted_ocr_profiles()));
+        assert!(std::ptr::eq(profiles, ocr_profiles()));
         for identity in [
             OcrModelIdentity::accepted_g004(),
             OcrModelIdentity::accepted_bounded_detector(),
         ] {
-            let profile = accepted_ocr_profile(identity.profile().as_str()).unwrap();
+            let profile = ocr_profile(identity.profile().as_str()).unwrap();
             assert_eq!(profile.identity().unwrap(), identity);
             assert_eq!(
                 identity.version().as_str(),
@@ -404,9 +401,9 @@ mod tests {
     }
 
     #[test]
-    fn reserved_candidates_never_enter_production_lookup() {
+    fn ordinary_choices_retain_auxiliary_resource_requirements() {
         let candidate = "ppocrv6-tiny-det-small-rec-max736-v1";
-        assert!(accepted_ocr_profile(candidate).is_none());
+        assert!(ocr_profile(candidate).is_some());
         assert!(is_catalog_profile(candidate, "other"));
         assert!(is_catalog_profile("other", candidate));
         assert!(catalog_profile_requires_auxiliary(candidate, "other"));
@@ -420,18 +417,15 @@ mod tests {
 
     #[test]
     fn copied_descriptors_cannot_change_execution_authority() {
-        let mut changed = *accepted_ocr_profile(DEFAULT_OCR_PROFILE_ID).unwrap();
+        let mut changed = *ocr_profile(DEFAULT_OCR_PROFILE_ID).unwrap();
         changed.detection.threshold = 0.31;
         assert_eq!(changed.identity(), Err(OcrFault::UnsupportedProfile));
     }
 
-    #[cfg(feature = "model-candidates")]
     #[test]
-    fn maintainer_identity_does_not_enable_ordinary_candidate_construction() {
-        let descriptor =
-            super::declared_ocr_profile("ppocrv6-tiny-det-small-rec-max736-v1").unwrap();
-        assert_eq!(descriptor.identity(), Err(OcrFault::UnsupportedProfile));
-        let identity = descriptor.candidate_identity().unwrap();
+    fn ordinary_identity_binds_auxiliary_and_refuses_incomplete_manual_tuple() {
+        let descriptor = ocr_profile("ppocrv6-tiny-det-small-rec-max736-v1").unwrap();
+        let identity = descriptor.identity().unwrap();
         assert_eq!(
             identity.auxiliary(),
             Some(descriptor.auxiliary.unwrap().identity())
@@ -451,6 +445,5 @@ mod tests {
             ),
             Err(OcrFault::AcceptedProfileMismatch)
         );
-        assert_eq!(accepted_ocr_profiles().len(), 2);
     }
 }

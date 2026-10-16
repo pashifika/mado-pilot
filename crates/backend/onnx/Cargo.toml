@@ -9,7 +9,7 @@ repository.workspace = true
 publish = false
 
 [features]
-benchmark-instrumentation = ["mado-pilot-ocr/model-candidates"]
+benchmark-instrumentation = []
 coreml-provider = ["ort/coreml"]
 cuda-provider = ["ort/cuda"]
 

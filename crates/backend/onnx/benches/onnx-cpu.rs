@@ -51,8 +51,8 @@ use windows::Win32::System::Threading::GetCurrentProcess;
 static ACCOUNTING: Accounting = Accounting;
 
 #[cfg(feature = "benchmark-instrumentation")]
-#[path = "support/model_admission.rs"]
-mod model_admission;
+#[path = "support/model_evaluation.rs"]
+mod model_evaluation;
 
 const RUNTIME_ENV: &str = "MADO_PILOT_ONNX_RUNTIME";
 const MODEL_ROOT_ENV: &str = "MADO_PILOT_G004_MODEL_ROOT";
@@ -116,20 +116,27 @@ static HUD_EXPECTED: [ExpectedRegion; 8] = [
 ];
 
 fn main() {
-    if std::env::args().any(|argument| argument == "--model-admission") {
+    if std::env::args().any(|argument| argument == "--model-evaluation") {
         #[cfg(feature = "benchmark-instrumentation")]
         {
-            if let Err(error) = model_admission::run() {
-                eprintln!("model admission refused: {error}");
+            if let Err(error) = model_evaluation::run() {
+                eprintln!("model evaluation refused: {error}");
                 std::process::exit(2);
             }
             return;
         }
         #[cfg(not(feature = "benchmark-instrumentation"))]
         {
-            eprintln!("--model-admission requires --features benchmark-instrumentation");
+            eprintln!("--model-evaluation requires --features benchmark-instrumentation");
             std::process::exit(2);
         }
+    }
+    if let Some(argument) = std::env::args()
+        .skip(1)
+        .find(|argument| !matches!(argument.as_str(), "--bench" | "--smoke"))
+    {
+        eprintln!("unknown onnx-cpu option {argument}");
+        std::process::exit(2);
     }
     if [RUNTIME_ENV, MODEL_ROOT_ENV]
         .into_iter()

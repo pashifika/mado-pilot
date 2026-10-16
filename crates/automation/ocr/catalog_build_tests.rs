@@ -15,8 +15,7 @@ fn validated(value: &Value) -> Result<ValidatedCatalog, String> {
 #[test]
 fn unknown_missing_duplicate_and_ambiguous_contracts_are_refused() {
     let cases = [
-        ("/schema_version", json!(2)),
-        ("/profiles/2/status", json!("supported")),
+        ("/schema_version", json!(1)),
         ("/profiles/2/execution/detector", json!("missing-resource")),
         ("/profiles/2/execution/auxiliary", Value::Null),
         (
@@ -98,6 +97,12 @@ fn unknown_missing_duplicate_and_ambiguous_contracts_are_refused() {
     catalog["profiles"][2]["execution"]["unexpected"] = json!(true);
     assert!(validated(&catalog).is_err());
     catalog = source();
+    catalog["profiles"][2]["status"] = json!("accepted");
+    assert!(
+        validated(&catalog).is_err(),
+        "obsolete status is not a schema-v2 field"
+    );
+    catalog = source();
     catalog["profiles"][0]["execution"]
         .as_object_mut()
         .unwrap()
@@ -117,8 +122,8 @@ fn unknown_missing_duplicate_and_ambiguous_contracts_are_refused() {
         assert!(validated(&catalog).is_err(), "duplicate {pointer}");
     }
     let duplicated = SOURCE.replacen(
-        "\"schema_version\": 1",
-        "\"schema_version\":1,\"schema_version\":1",
+        "\"schema_version\": 2",
+        "\"schema_version\":2,\"schema_version\":2",
         1,
     );
     assert!(validate(&duplicated).is_err());
@@ -158,57 +163,149 @@ fn resource_paths_are_portable_and_collision_free() {
     assert!(validated(&catalog).is_err());
 }
 
-fn attach_evidence(catalog: &mut Value, index: usize, code: &str) {
+fn attach_evidence(catalog: &mut Value, index: usize, outcome: &str) {
+    let digests = validated(catalog).unwrap().execution_digests().unwrap();
     let profile = &mut catalog["profiles"][index];
-    profile["status"] = json!("accepted");
-    profile["presentation"]["benchmarks"] = Value::Array(profile["execution"]["applicability"].as_array().unwrap().iter().map(|a| {
-        json!({"target": a["target"], "provider": a["provider"], "code": code,
-            "criteria": "fixtures/ocr/criteria.json", "report": format!("docs/evidence/{}.json", a["target"].as_str().unwrap())})
-    }).collect());
+    let execution_sha256 = &digests[profile["execution"]["profile_id"].as_str().unwrap()];
+    profile["presentation"]["evaluations"] = json!([{
+        "target": "aarch64-apple-darwin",
+        "provider": "cpu",
+        "criteria": "tools/ocr-models/criteria-v1.json",
+        "evidence": {
+            "report": "docs/benchmarks/ocr-models/test-evaluation.json",
+            "measured_source_revision": "12".repeat(20),
+            "execution_sha256": execution_sha256,
+            "evaluator_revision": format!("sha256:{}", "34".repeat(32)),
+        },
+        "rules": [
+            {"rule_id": "text_order", "outcome": outcome},
+            {"rule_id": "lifecycle", "outcome": "passed"},
+            {"rule_id": "relative_latency", "outcome": "not_run"},
+            {"rule_id": "geometry", "outcome": "incomplete"},
+        ],
+    }]);
 }
 
 #[test]
-fn new_admission_requires_complete_scoped_evidence_not_unrated() {
+fn independent_mixed_and_unavailable_evaluations_do_not_change_choices() {
     let mut catalog = source();
-    catalog["profiles"][2]["status"] = json!("accepted");
-    assert!(validated(&catalog).is_err());
-    for code in ["reference", "fast", "balanced"] {
-        attach_evidence(&mut catalog, 2, code);
-        assert!(
-            validated(&catalog).is_ok(),
-            "complete schema binding for {code}"
+    let original = validated(&catalog).unwrap().execution_digests().unwrap();
+    for outcome in ["passed", "failed", "not_run", "incomplete"] {
+        attach_evidence(&mut catalog, 2, outcome);
+        assert_eq!(
+            validated(&catalog).unwrap().execution_digests().unwrap(),
+            original,
+            "a single target's outcomes cannot change model choices"
         );
     }
+    let evaluations = &mut catalog["profiles"][2]["presentation"]["evaluations"];
+    let mut missing = evaluations[0].clone();
+    missing["target"] = json!("x86_64-pc-windows-msvc");
+    missing["evidence"] = Value::Null;
+    missing["rules"] = json!([
+        {"rule_id": "text_order", "outcome": "not_run"},
+        {"rule_id": "lifecycle", "outcome": "incomplete"},
+    ]);
+    evaluations.as_array_mut().unwrap().push(missing);
+    assert_eq!(
+        validated(&catalog).unwrap().execution_digests().unwrap(),
+        original
+    );
+    catalog["profiles"][2]["presentation"]["evaluations"] = json!([]);
+    assert_eq!(
+        validated(&catalog).unwrap().execution_digests().unwrap(),
+        original
+    );
+}
+
+#[test]
+fn observed_outcomes_require_exact_source_bound_scoped_evidence() {
+    let mut catalog = source();
+    attach_evidence(&mut catalog, 2, "failed");
     for (pointer, value) in [
+        ("/target", json!("unknown-target")),
+        ("/provider", json!("cuda")),
+        ("/criteria", Value::Null),
+        ("/criteria", json!("../criteria.json")),
+        ("/evidence", Value::Null),
+        ("/evidence/report", json!("/absolute/report.json")),
+        ("/evidence/report", json!("docs/../report.json")),
+        ("/evidence/report", json!("C:\\report.json")),
+        ("/evidence/measured_source_revision", json!("main")),
+        ("/evidence/measured_source_revision", json!("00".repeat(20))),
+        ("/evidence/measured_source_revision", json!("AB".repeat(20))),
+        ("/evidence/execution_sha256", json!("01".repeat(32))),
+        ("/evidence/execution_sha256", json!("00".repeat(32))),
+        ("/evidence/evaluator_revision", json!("HEAD")),
+        ("/evidence/evaluator_revision", json!("sha256:123")),
         (
-            "/profiles/2/presentation/benchmarks/0/code",
-            json!("unrated"),
+            "/evidence/evaluator_revision",
+            json!(format!("sha256:{}", "00".repeat(32))),
         ),
-        ("/profiles/2/presentation/benchmarks/0/report", Value::Null),
-        ("/profiles/2/presentation/benchmarks/0/criteria", json!("")),
-        (
-            "/profiles/2/presentation/benchmarks/0/target",
-            json!("unqualified-target"),
-        ),
+        ("/rules", json!([])),
+        ("/rules/0/rule_id", json!("unknown_rule")),
+        ("/rules/0/outcome", json!("fast")),
     ] {
-        let mut incomplete = catalog.clone();
-        *incomplete.pointer_mut(pointer).unwrap() = value;
-        assert!(
-            validated(&incomplete).is_err(),
-            "accepted incomplete {pointer}"
-        );
+        let mut invalid = catalog.clone();
+        *invalid["profiles"][2]["presentation"]["evaluations"][0]
+            .pointer_mut(pointer)
+            .unwrap() = value;
+        assert!(validated(&invalid).is_err(), "invalid evaluation {pointer}");
     }
-    catalog["profiles"][2]["presentation"]["benchmarks"]
-        .as_array_mut()
-        .unwrap()
-        .pop();
-    assert!(validated(&catalog).is_err(), "one target is not admission");
-    catalog = source();
-    attach_evidence(&mut catalog, 2, "balanced");
-    catalog["profiles"][2]["status"] = json!("candidate");
-    assert!(
-        validated(&catalog).is_err(),
-        "candidate must not publish a comparative verdict"
+    for outcome in ["passed", "failed"] {
+        let mut invalid = catalog.clone();
+        let evaluation = &mut invalid["profiles"][2]["presentation"]["evaluations"][0];
+        evaluation["evidence"] = Value::Null;
+        evaluation["rules"] = json!([{"rule_id": "text_order", "outcome": outcome}]);
+        assert!(validated(&invalid).is_err(), "unbound {outcome}");
+    }
+    for field in ["criteria", "evidence", "rules"] {
+        let mut invalid = catalog.clone();
+        invalid["profiles"][2]["presentation"]["evaluations"][0]
+            .as_object_mut()
+            .unwrap()
+            .remove(field);
+        assert!(validated(&invalid).is_err(), "missing {field}");
+    }
+    for pointer in [
+        "/profiles/2/presentation/evaluations",
+        "/profiles/2/presentation/evaluations/0/rules",
+    ] {
+        let mut invalid = catalog.clone();
+        let entries = invalid
+            .pointer_mut(pointer)
+            .unwrap()
+            .as_array_mut()
+            .unwrap();
+        entries.push(entries[0].clone());
+        assert!(validated(&invalid).is_err(), "duplicate {pointer}");
+    }
+    for pointer in [
+        "/profiles/2/presentation",
+        "/profiles/2/presentation/evaluations/0",
+        "/profiles/2/presentation/evaluations/0/evidence",
+        "/profiles/2/presentation/evaluations/0/rules/0",
+    ] {
+        let mut invalid = catalog.clone();
+        invalid.pointer_mut(pointer).unwrap()["unknown"] = json!(true);
+        assert!(validated(&invalid).is_err(), "unknown field in {pointer}");
+    }
+}
+
+#[test]
+fn catalog_v2_retains_the_released_execution_fingerprints() {
+    let digests = validate(SOURCE).unwrap().execution_digests().unwrap();
+    assert_eq!(
+        digests[mado_pilot_ocr::ACCEPTED_G004_PROFILE_ID],
+        "0bcd2b77c5902cfa98c1892d291ce8d802343f16eb95f99f48b76b11879461a9"
+    );
+    assert_eq!(
+        digests[mado_pilot_ocr::ACCEPTED_BOUNDED_PROFILE_ID],
+        "469bb6af5f94b92d5d095db33be0876f7ecb8a3d31665f396e7fa0ae5350446f"
+    );
+    assert_eq!(
+        digests[CANDIDATE],
+        "27f274d6ccf856771946dcc546bcf1dd267c6f193a1874fe5c386029ce122548"
     );
 }
 
@@ -218,7 +315,7 @@ fn canonical_execution_digest_excludes_presentation_and_evidence_only() {
     let mut catalog = source();
     catalog["profiles"][0]["presentation"]["display_name"] = json!("Localized name");
     catalog["profiles"][0]["presentation"]["variant"] = json!("Localized variant");
-    attach_evidence(&mut catalog, 0, "reference");
+    attach_evidence(&mut catalog, 0, "failed");
     catalog["resources"].as_array_mut().unwrap().reverse();
     catalog["profiles"][0]["execution"]["applicability"]
         .as_array_mut()
@@ -229,12 +326,14 @@ fn canonical_execution_digest_excludes_presentation_and_evidence_only() {
         original
     );
     catalog = source();
+    catalog["profiles"][2]["presentation"]["evaluations"] = json!([]);
     catalog["profiles"][2]["execution"]["detection"]["threshold"] = json!(0.31);
     let changed = validated(&catalog).unwrap().execution_digests().unwrap();
     assert_ne!(changed[CANDIDATE], original[CANDIDATE]);
     let default = mado_pilot_ocr::DEFAULT_OCR_PROFILE_ID;
     assert_eq!(changed[default], original[default]);
     catalog = source();
+    catalog["profiles"][2]["presentation"]["evaluations"] = json!([]);
     catalog["resources"][4]["sha256"] = json!("01".repeat(32));
     let changed = validated(&catalog).unwrap().execution_digests().unwrap();
     assert_ne!(changed[CANDIDATE], original[CANDIDATE]);

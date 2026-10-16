@@ -9,8 +9,7 @@ use std::mem::size_of;
 use mado_pilot_ocr::{
     ACCEPTED_BOUNDED_PROFILE_ID, ACCEPTED_G004_PROFILE_ID, DetectorDescriptor, DetectorResize,
     GraphDescriptor, MAX_MODEL_COMPONENT_BYTES, OcrModelIdentity, OcrProfileDescriptor,
-    PixelNormalization, TensorDescriptor, VocabularyDescriptor, VocabularySource,
-    accepted_ocr_profile,
+    PixelNormalization, TensorDescriptor, VocabularyDescriptor, VocabularySource, ocr_profile,
 };
 
 use crate::detect::DbParameters;
@@ -31,32 +30,18 @@ pub(crate) struct ExecutionProfile {
 }
 
 impl ExecutionProfile {
-    /// Resolves one accepted product profile and its exact identity.
-    pub(crate) fn accepted(profile_id: &str) -> Result<(Self, OcrModelIdentity), OnnxBackendFault> {
-        let descriptor =
-            accepted_ocr_profile(profile_id).ok_or(OnnxBackendFault::ProfileMismatch)?;
+    /// Resolves one implemented catalog profile and its exact identity.
+    pub(crate) fn from_id(profile_id: &str) -> Result<(Self, OcrModelIdentity), OnnxBackendFault> {
+        let descriptor = ocr_profile(profile_id).ok_or(OnnxBackendFault::ProfileMismatch)?;
         let identity = descriptor
             .identity()
             .map_err(|_| OnnxBackendFault::ProfileMismatch)?;
         Ok((Self::implemented(descriptor)?, identity))
     }
 
-    /// Resolves one explicitly declared maintainer profile, including candidates.
-    #[cfg(feature = "benchmark-instrumentation")]
-    pub(crate) fn declared(profile_id: &str) -> Result<(Self, OcrModelIdentity), OnnxBackendFault> {
-        let descriptor = mado_pilot_ocr::declared_ocr_profile(profile_id)
-            .ok_or(OnnxBackendFault::ProfileMismatch)?;
-        let identity = descriptor
-            .candidate_identity()
-            .map_err(|_| OnnxBackendFault::ProfileMismatch)?;
-        Ok((Self::implemented(descriptor)?, identity))
-    }
-
-    /// Admits a caller-built source only when it is exactly one accepted identity.
-    pub(crate) fn for_accepted_identity(
-        identity: &OcrModelIdentity,
-    ) -> Result<Self, OnnxBackendFault> {
-        let (profile, accepted) = Self::accepted(identity.profile().as_str())?;
+    /// Requires a caller-built source to match one complete catalog identity.
+    pub(crate) fn for_identity(identity: &OcrModelIdentity) -> Result<Self, OnnxBackendFault> {
+        let (profile, accepted) = Self::from_id(identity.profile().as_str())?;
         if accepted != *identity {
             return Err(OnnxBackendFault::ProfileMismatch);
         }
@@ -670,14 +655,14 @@ mod tests {
     const CANDIDATE_MAX_TENSOR_BYTES: usize = 736 * 736 * 3 * 4;
 
     fn bounded() -> PreprocessingDescriptor {
-        ExecutionProfile::accepted(ACCEPTED_BOUNDED_PROFILE_ID)
+        ExecutionProfile::from_id(ACCEPTED_BOUNDED_PROFILE_ID)
             .expect("accepted bounded profile")
             .0
             .preprocessing()
     }
 
     fn native() -> PreprocessingDescriptor {
-        ExecutionProfile::accepted(ACCEPTED_G004_PROFILE_ID)
+        ExecutionProfile::from_id(ACCEPTED_G004_PROFILE_ID)
             .expect("accepted G-004 profile")
             .0
             .preprocessing()
@@ -848,8 +833,8 @@ mod tests {
     }
 
     #[test]
-    fn accepted_profiles_resolve_without_widening_the_product_route() {
-        let (native, identity) = ExecutionProfile::accepted(ACCEPTED_G004_PROFILE_ID).unwrap();
+    fn legacy_profiles_keep_exact_identities_and_provider_scope() {
+        let (native, identity) = ExecutionProfile::from_id(ACCEPTED_G004_PROFILE_ID).unwrap();
         assert_eq!(identity, OcrModelIdentity::accepted_g004());
         assert_eq!(native.public(), OnnxOcrProfile::NativeG004);
         assert!(native.admits(&identity));
@@ -858,30 +843,29 @@ mod tests {
         assert!(!native.permits_provider(OnnxExecutionProvider::CoreMl));
         assert_eq!(native.detector_graph().output.name, "sigmoid_0.tmp_0");
 
-        let (bounded, identity) = ExecutionProfile::accepted(ACCEPTED_BOUNDED_PROFILE_ID).unwrap();
+        let (bounded, identity) = ExecutionProfile::from_id(ACCEPTED_BOUNDED_PROFILE_ID).unwrap();
         assert_eq!(identity, OcrModelIdentity::accepted_bounded_detector());
         assert_eq!(bounded.public(), OnnxOcrProfile::BoundedDetector);
         assert!(!bounded.admits(&OcrModelIdentity::accepted_g004()));
         assert_eq!(
-            ExecutionProfile::for_accepted_identity(&OcrModelIdentity::accepted_g004())
+            ExecutionProfile::for_identity(&OcrModelIdentity::accepted_g004())
                 .unwrap()
                 .id(),
             ACCEPTED_G004_PROFILE_ID
         );
 
-        for id in [CANDIDATE_PROFILE_ID, "unknown-profile", ""] {
+        for id in ["unknown-profile", ""] {
             assert_eq!(
-                ExecutionProfile::accepted(id).map(|(profile, _)| profile.id()),
+                ExecutionProfile::from_id(id).map(|(profile, _)| profile.id()),
                 Err(OnnxBackendFault::ProfileMismatch)
             );
         }
     }
 
-    #[cfg(feature = "benchmark-instrumentation")]
     #[test]
-    fn declared_candidate_binds_its_exact_execution_tuple_but_stays_unaccepted() {
+    fn ordinary_max_side_profile_binds_exact_execution_and_cpu_scope() {
         let (candidate, identity) =
-            ExecutionProfile::declared(CANDIDATE_PROFILE_ID).expect("declared candidate");
+            ExecutionProfile::from_id(CANDIDATE_PROFILE_ID).expect("declared profile");
         assert_eq!(candidate.public(), OnnxOcrProfile::Catalog);
         assert_eq!(candidate.id(), CANDIDATE_PROFILE_ID);
         assert!(candidate.admits(&identity));
@@ -901,17 +885,17 @@ mod tests {
         );
         assert!(candidate.descriptor().auxiliary.is_some());
         assert_eq!(
-            ExecutionProfile::for_accepted_identity(&identity).map(ExecutionProfile::id),
-            Err(OnnxBackendFault::ProfileMismatch)
+            ExecutionProfile::for_identity(&identity).map(ExecutionProfile::id),
+            Ok(CANDIDATE_PROFILE_ID)
         );
         assert!(
-            !ExecutionProfile::accepted(ACCEPTED_G004_PROFILE_ID)
+            !ExecutionProfile::from_id(ACCEPTED_G004_PROFILE_ID)
                 .unwrap()
                 .0
                 .admits(&identity)
         );
 
-        let (declared_native, _) = ExecutionProfile::declared(ACCEPTED_G004_PROFILE_ID).unwrap();
+        let (declared_native, _) = ExecutionProfile::from_id(ACCEPTED_G004_PROFILE_ID).unwrap();
         assert_eq!(declared_native.public(), OnnxOcrProfile::NativeG004);
         assert_eq!(
             candidate.db(),

@@ -1,6 +1,6 @@
 # ADR 0080: OCR model catalog and admission
 
-- **Status:** Accepted execution contract; model-admission/rating policy superseded by [ADR 0084](0084-ocr-model-choices-and-test-results.md), implementation cutover pending
+- **Status:** Accepted execution contract; model-admission/rating policy superseded by [ADR 0084](0084-ocr-model-choices-and-test-results.md)
 - **Date:** 2026-10-15
 - **Resolves gate:** none; the original model-quality admission requirement below is historical
 - **Supersedes:** none; ADRs 0033 and 0040 retain their exact accepted tuples

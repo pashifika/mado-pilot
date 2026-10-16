@@ -8,11 +8,6 @@ license.workspace = true
 repository.workspace = true
 publish = false
 
-[features]
-default = []
-# Explicit maintainer identities; never widens production enumeration/admission.
-model-candidates = []
-
 [dependencies]
 mado-pilot-core = { path = "../core" }
 mado-pilot-capture = { path = "../capture" }

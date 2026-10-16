@@ -1,5 +1,5 @@
 {
-  "schema_version": 1,
+  "schema_version": 2,
   "default_profile": "g-004-rapidocr-ppocrv4-det-v6-rec-small-v1",
   "resources": [
     {
@@ -60,7 +60,6 @@
   ],
   "profiles": [
     {
-      "status": "accepted",
       "legacy_constants": "ACCEPTED_G004",
       "execution": {
         "model_id": "g-004-rapidocr-ppocrv4-det-v6-rec-small-v1",
@@ -230,33 +229,201 @@
       "presentation": {
         "display_name": "PP-OCRv4 mobile detector + PP-OCRv6 small recognizer",
         "variant": "Native G-004",
-        "benchmarks": [
+        "evaluations": [
           {
             "target": "aarch64-apple-darwin",
             "provider": "cpu",
-            "code": "unrated",
-            "criteria": null,
-            "report": null
+            "criteria": "tools/ocr-models/criteria-v1.json",
+            "evidence": {
+              "report": "docs/benchmarks/ocr-models/cf2763a-evaluation-v1.json",
+              "measured_source_revision": "cf2763a41929ad89366dd77ee1b6a57503a8f6bc",
+              "execution_sha256": "0bcd2b77c5902cfa98c1892d291ce8d802343f16eb95f99f48b76b11879461a9",
+              "evaluator_revision": "sha256:3ace1cb4e1cfd917ba4a1494836160c33d48a0d082961bfcb6b2b7a5cadd2066"
+            },
+            "rules": [
+              {
+                "rule_id": "text_order",
+                "outcome": "passed"
+              },
+              {
+                "rule_id": "region_count",
+                "outcome": "passed"
+              },
+              {
+                "rule_id": "geometry",
+                "outcome": "passed"
+              },
+              {
+                "rule_id": "unexpected_detection",
+                "outcome": "passed"
+              },
+              {
+                "rule_id": "confidence",
+                "outcome": "passed"
+              },
+              {
+                "rule_id": "stability",
+                "outcome": "passed"
+              },
+              {
+                "rule_id": "vocabulary_coverage",
+                "outcome": "passed"
+              },
+              {
+                "rule_id": "source_correlation",
+                "outcome": "passed"
+              },
+              {
+                "rule_id": "lifecycle",
+                "outcome": "passed"
+              },
+              {
+                "rule_id": "execution_bounds",
+                "outcome": "passed"
+              },
+              {
+                "rule_id": "process_budgets",
+                "outcome": "passed"
+              },
+              {
+                "rule_id": "workload_budgets",
+                "outcome": "passed"
+              },
+              {
+                "rule_id": "relative_latency",
+                "outcome": "not_run"
+              }
+            ]
           },
           {
             "target": "x86_64-pc-windows-msvc",
             "provider": "cpu",
-            "code": "unrated",
-            "criteria": null,
-            "report": null
+            "criteria": "tools/ocr-models/criteria-v1.json",
+            "evidence": {
+              "report": "docs/benchmarks/ocr-models/cf2763a-evaluation-v1.json",
+              "measured_source_revision": "cf2763a41929ad89366dd77ee1b6a57503a8f6bc",
+              "execution_sha256": "0bcd2b77c5902cfa98c1892d291ce8d802343f16eb95f99f48b76b11879461a9",
+              "evaluator_revision": "sha256:3ace1cb4e1cfd917ba4a1494836160c33d48a0d082961bfcb6b2b7a5cadd2066"
+            },
+            "rules": [
+              {
+                "rule_id": "text_order",
+                "outcome": "passed"
+              },
+              {
+                "rule_id": "region_count",
+                "outcome": "passed"
+              },
+              {
+                "rule_id": "geometry",
+                "outcome": "passed"
+              },
+              {
+                "rule_id": "unexpected_detection",
+                "outcome": "passed"
+              },
+              {
+                "rule_id": "confidence",
+                "outcome": "passed"
+              },
+              {
+                "rule_id": "stability",
+                "outcome": "passed"
+              },
+              {
+                "rule_id": "vocabulary_coverage",
+                "outcome": "passed"
+              },
+              {
+                "rule_id": "source_correlation",
+                "outcome": "passed"
+              },
+              {
+                "rule_id": "lifecycle",
+                "outcome": "passed"
+              },
+              {
+                "rule_id": "execution_bounds",
+                "outcome": "passed"
+              },
+              {
+                "rule_id": "process_budgets",
+                "outcome": "passed"
+              },
+              {
+                "rule_id": "workload_budgets",
+                "outcome": "passed"
+              },
+              {
+                "rule_id": "relative_latency",
+                "outcome": "not_run"
+              }
+            ]
           },
           {
             "target": "x86_64-pc-windows-msvc",
             "provider": "cuda",
-            "code": "unrated",
-            "criteria": null,
-            "report": null
+            "criteria": "tools/ocr-models/criteria-v1.json",
+            "evidence": null,
+            "rules": [
+              {
+                "rule_id": "text_order",
+                "outcome": "not_run"
+              },
+              {
+                "rule_id": "region_count",
+                "outcome": "not_run"
+              },
+              {
+                "rule_id": "geometry",
+                "outcome": "not_run"
+              },
+              {
+                "rule_id": "unexpected_detection",
+                "outcome": "not_run"
+              },
+              {
+                "rule_id": "confidence",
+                "outcome": "not_run"
+              },
+              {
+                "rule_id": "stability",
+                "outcome": "not_run"
+              },
+              {
+                "rule_id": "vocabulary_coverage",
+                "outcome": "not_run"
+              },
+              {
+                "rule_id": "source_correlation",
+                "outcome": "not_run"
+              },
+              {
+                "rule_id": "lifecycle",
+                "outcome": "not_run"
+              },
+              {
+                "rule_id": "execution_bounds",
+                "outcome": "not_run"
+              },
+              {
+                "rule_id": "process_budgets",
+                "outcome": "not_run"
+              },
+              {
+                "rule_id": "workload_budgets",
+                "outcome": "not_run"
+              },
+              {
+                "rule_id": "relative_latency",
+                "outcome": "not_run"
+              }
+            ]
           }
         ]
       }
     },
     {
-      "status": "accepted",
       "legacy_constants": "ACCEPTED_BOUNDED",
       "execution": {
         "model_id": "phase-3-1-rapidocr-ppocrv4-det-v6-rec-small-bounded-v2",
@@ -426,33 +593,191 @@
       "presentation": {
         "display_name": "PP-OCRv4 mobile detector + PP-OCRv6 small recognizer",
         "variant": "Bounded detector",
-        "benchmarks": [
+        "evaluations": [
           {
             "target": "aarch64-apple-darwin",
             "provider": "cpu",
-            "code": "unrated",
-            "criteria": null,
-            "report": null
+            "criteria": "tools/ocr-models/criteria-v1.json",
+            "evidence": null,
+            "rules": [
+              {
+                "rule_id": "text_order",
+                "outcome": "not_run"
+              },
+              {
+                "rule_id": "region_count",
+                "outcome": "not_run"
+              },
+              {
+                "rule_id": "geometry",
+                "outcome": "not_run"
+              },
+              {
+                "rule_id": "unexpected_detection",
+                "outcome": "not_run"
+              },
+              {
+                "rule_id": "confidence",
+                "outcome": "not_run"
+              },
+              {
+                "rule_id": "stability",
+                "outcome": "not_run"
+              },
+              {
+                "rule_id": "vocabulary_coverage",
+                "outcome": "not_run"
+              },
+              {
+                "rule_id": "source_correlation",
+                "outcome": "not_run"
+              },
+              {
+                "rule_id": "lifecycle",
+                "outcome": "not_run"
+              },
+              {
+                "rule_id": "execution_bounds",
+                "outcome": "not_run"
+              },
+              {
+                "rule_id": "process_budgets",
+                "outcome": "not_run"
+              },
+              {
+                "rule_id": "workload_budgets",
+                "outcome": "not_run"
+              },
+              {
+                "rule_id": "relative_latency",
+                "outcome": "not_run"
+              }
+            ]
           },
           {
             "target": "x86_64-pc-windows-msvc",
             "provider": "cpu",
-            "code": "unrated",
-            "criteria": null,
-            "report": null
+            "criteria": "tools/ocr-models/criteria-v1.json",
+            "evidence": null,
+            "rules": [
+              {
+                "rule_id": "text_order",
+                "outcome": "not_run"
+              },
+              {
+                "rule_id": "region_count",
+                "outcome": "not_run"
+              },
+              {
+                "rule_id": "geometry",
+                "outcome": "not_run"
+              },
+              {
+                "rule_id": "unexpected_detection",
+                "outcome": "not_run"
+              },
+              {
+                "rule_id": "confidence",
+                "outcome": "not_run"
+              },
+              {
+                "rule_id": "stability",
+                "outcome": "not_run"
+              },
+              {
+                "rule_id": "vocabulary_coverage",
+                "outcome": "not_run"
+              },
+              {
+                "rule_id": "source_correlation",
+                "outcome": "not_run"
+              },
+              {
+                "rule_id": "lifecycle",
+                "outcome": "not_run"
+              },
+              {
+                "rule_id": "execution_bounds",
+                "outcome": "not_run"
+              },
+              {
+                "rule_id": "process_budgets",
+                "outcome": "not_run"
+              },
+              {
+                "rule_id": "workload_budgets",
+                "outcome": "not_run"
+              },
+              {
+                "rule_id": "relative_latency",
+                "outcome": "not_run"
+              }
+            ]
           },
           {
             "target": "x86_64-pc-windows-msvc",
             "provider": "cuda",
-            "code": "unrated",
-            "criteria": null,
-            "report": null
+            "criteria": "tools/ocr-models/criteria-v1.json",
+            "evidence": null,
+            "rules": [
+              {
+                "rule_id": "text_order",
+                "outcome": "not_run"
+              },
+              {
+                "rule_id": "region_count",
+                "outcome": "not_run"
+              },
+              {
+                "rule_id": "geometry",
+                "outcome": "not_run"
+              },
+              {
+                "rule_id": "unexpected_detection",
+                "outcome": "not_run"
+              },
+              {
+                "rule_id": "confidence",
+                "outcome": "not_run"
+              },
+              {
+                "rule_id": "stability",
+                "outcome": "not_run"
+              },
+              {
+                "rule_id": "vocabulary_coverage",
+                "outcome": "not_run"
+              },
+              {
+                "rule_id": "source_correlation",
+                "outcome": "not_run"
+              },
+              {
+                "rule_id": "lifecycle",
+                "outcome": "not_run"
+              },
+              {
+                "rule_id": "execution_bounds",
+                "outcome": "not_run"
+              },
+              {
+                "rule_id": "process_budgets",
+                "outcome": "not_run"
+              },
+              {
+                "rule_id": "workload_budgets",
+                "outcome": "not_run"
+              },
+              {
+                "rule_id": "relative_latency",
+                "outcome": "not_run"
+              }
+            ]
           }
         ]
       }
     },
     {
-      "status": "candidate",
       "legacy_constants": null,
       "execution": {
         "model_id": "ppocrv6-tiny-det-small-rec-max736-v1",
@@ -616,7 +941,138 @@
       "presentation": {
         "display_name": "PP-OCRv6 tiny detector + PP-OCRv6 small recognizer",
         "variant": "Maximum detector side 736",
-        "benchmarks": []
+        "evaluations": [
+          {
+            "target": "aarch64-apple-darwin",
+            "provider": "cpu",
+            "criteria": "tools/ocr-models/criteria-v1.json",
+            "evidence": {
+              "report": "docs/benchmarks/ocr-models/cf2763a-evaluation-v1.json",
+              "measured_source_revision": "cf2763a41929ad89366dd77ee1b6a57503a8f6bc",
+              "execution_sha256": "27f274d6ccf856771946dcc546bcf1dd267c6f193a1874fe5c386029ce122548",
+              "evaluator_revision": "sha256:3ace1cb4e1cfd917ba4a1494836160c33d48a0d082961bfcb6b2b7a5cadd2066"
+            },
+            "rules": [
+              {
+                "rule_id": "text_order",
+                "outcome": "failed"
+              },
+              {
+                "rule_id": "region_count",
+                "outcome": "failed"
+              },
+              {
+                "rule_id": "geometry",
+                "outcome": "passed"
+              },
+              {
+                "rule_id": "unexpected_detection",
+                "outcome": "passed"
+              },
+              {
+                "rule_id": "confidence",
+                "outcome": "passed"
+              },
+              {
+                "rule_id": "stability",
+                "outcome": "passed"
+              },
+              {
+                "rule_id": "vocabulary_coverage",
+                "outcome": "passed"
+              },
+              {
+                "rule_id": "source_correlation",
+                "outcome": "passed"
+              },
+              {
+                "rule_id": "lifecycle",
+                "outcome": "passed"
+              },
+              {
+                "rule_id": "execution_bounds",
+                "outcome": "passed"
+              },
+              {
+                "rule_id": "process_budgets",
+                "outcome": "passed"
+              },
+              {
+                "rule_id": "workload_budgets",
+                "outcome": "passed"
+              },
+              {
+                "rule_id": "relative_latency",
+                "outcome": "passed"
+              }
+            ]
+          },
+          {
+            "target": "x86_64-pc-windows-msvc",
+            "provider": "cpu",
+            "criteria": "tools/ocr-models/criteria-v1.json",
+            "evidence": {
+              "report": "docs/benchmarks/ocr-models/cf2763a-evaluation-v1.json",
+              "measured_source_revision": "cf2763a41929ad89366dd77ee1b6a57503a8f6bc",
+              "execution_sha256": "27f274d6ccf856771946dcc546bcf1dd267c6f193a1874fe5c386029ce122548",
+              "evaluator_revision": "sha256:3ace1cb4e1cfd917ba4a1494836160c33d48a0d082961bfcb6b2b7a5cadd2066"
+            },
+            "rules": [
+              {
+                "rule_id": "text_order",
+                "outcome": "failed"
+              },
+              {
+                "rule_id": "region_count",
+                "outcome": "failed"
+              },
+              {
+                "rule_id": "geometry",
+                "outcome": "passed"
+              },
+              {
+                "rule_id": "unexpected_detection",
+                "outcome": "failed"
+              },
+              {
+                "rule_id": "confidence",
+                "outcome": "passed"
+              },
+              {
+                "rule_id": "stability",
+                "outcome": "passed"
+              },
+              {
+                "rule_id": "vocabulary_coverage",
+                "outcome": "passed"
+              },
+              {
+                "rule_id": "source_correlation",
+                "outcome": "passed"
+              },
+              {
+                "rule_id": "lifecycle",
+                "outcome": "passed"
+              },
+              {
+                "rule_id": "execution_bounds",
+                "outcome": "passed"
+              },
+              {
+                "rule_id": "process_budgets",
+                "outcome": "passed"
+              },
+              {
+                "rule_id": "workload_budgets",
+                "outcome": "passed"
+              },
+              {
+                "rule_id": "relative_latency",
+                "outcome": "passed"
+              }
+            ]
+          }
+        ]
       }
     }
   ]
