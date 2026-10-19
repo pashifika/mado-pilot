@@ -2777,6 +2777,9 @@ recognition crops per batch. Boundary-edge and foreground/background component
 preflights reject a probability map before OpenCV can materialize contour
 storage beyond those ceilings. Public results copy bounded text and geometry
 and retain no native tensor, model, or session buffer.
+The detector input tensor is released after detection, before recognition crops
+are prepared. This shortens its lifetime without changing inference results or
+bounding ONNX Runtime's internal allocations.
 
 Detector sigmoid maps admit finite values from zero through the next `f32`
 above one, preserving measured CPU roundoff without rewriting the tensor.
