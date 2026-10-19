@@ -26,6 +26,8 @@ pub(crate) const MAX_DETECTOR_CANDIDATES: usize = 1_000;
 pub(crate) const MAX_COMPONENT_STACK_BYTES: usize = 16 * 1024 * 1024;
 pub(crate) const MAX_CONTOUR_STORAGE_BYTES: usize = 2 * 1024 * 1024;
 const CONTOUR_VECTOR_OVERHEAD_BYTES: usize = 64;
+// CPU sigmoid evaluation can round one ULP above its mathematical upper bound.
+const MAX_SIGMOID_PROBABILITY: f32 = 1.0_f32.next_up();
 
 /// DB thresholds and geometry settings declared by the selected profile.
 #[derive(Debug, Clone, Copy, PartialEq)]
@@ -92,7 +94,7 @@ pub(crate) fn postprocess(
 
     let mut binary = Vec::with_capacity(elements);
     for value in probability.iter().copied() {
-        if !value.is_finite() || !(0.0..=1.0).contains(&value) {
+        if !value.is_finite() || !(0.0..=MAX_SIGMOID_PROBABILITY).contains(&value) {
             return Err(OnnxBackendFault::MalformedOutput);
         }
         binary.push(u8::from(value > db.threshold).saturating_mul(255));
@@ -685,6 +687,25 @@ mod tests {
     }
 
     #[test]
+    fn detector_sigmoid_roundoff_preserves_the_detected_box() {
+        let mut probability = [0.0_f32; 32 * 32];
+        for row in 8..24 {
+            probability[row * 32 + 6..row * 32 + 26].fill(1.0);
+        }
+        let shape = [1, 1, 32, 32];
+        let expected = postprocess(&shape, &probability, plan(32, 32), 1000, db())
+            .expect("unit probability map");
+        probability[16 * 32 + 16] = f32::from_bits(0x3f80_0001);
+        let actual = postprocess(&shape, &probability, plan(32, 32), 1000, db())
+            .expect("one-ULP CPU sigmoid roundoff");
+
+        assert_eq!(expected.len(), 1);
+        assert_eq!(actual.len(), 1);
+        assert_eq!(actual[0].quad, expected[0].quad);
+        assert_eq!(actual[0].order, expected[0].order);
+    }
+
+    #[test]
     fn output_dimensions_must_match_the_checked_plan() {
         assert!(matches!(
             postprocess(&[1, 1, 32, 31], &[0.0; 32 * 31], plan(32, 32), 1, db()),
@@ -727,11 +748,20 @@ mod tests {
     }
 
     #[test]
-    fn probability_outside_sigmoid_range_is_rejected() {
-        assert!(matches!(
-            postprocess(&[1, 1, 1, 1], &[1.1], plan(1, 1), 1, db()),
-            Err(OnnxBackendFault::MalformedOutput)
-        ));
+    fn probability_outside_sigmoid_roundoff_is_rejected() {
+        for value in [
+            f32::from_bits(0x3f80_0002),
+            1.1,
+            -f32::from_bits(1),
+            f32::NAN,
+            f32::INFINITY,
+            f32::NEG_INFINITY,
+        ] {
+            assert!(matches!(
+                postprocess(&[1, 1, 1, 1], &[value], plan(1, 1), 1, db()),
+                Err(OnnxBackendFault::MalformedOutput)
+            ));
+        }
     }
 
     #[test]

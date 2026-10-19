@@ -1067,6 +1067,20 @@ fn frame_with_target_liveness(
     }
 }
 
+fn commit_frame_with_target_liveness(
+    state: &StreamState,
+    frame: &Frame,
+    operation: &OperationContext,
+    key_is_present: impl FnOnce() -> bool,
+    record_key_loss: impl FnOnce(),
+) -> Result<()> {
+    // A retained-frame query may finish before the native Closed callback arrives.
+    if state.lifecycle() == Lifecycle::Open && !key_is_present() {
+        record_key_loss();
+    }
+    state.commit_frame(frame, operation)
+}
+
 impl CaptureSession for NativeSession {
     fn description(&self) -> SessionDescription {
         self.description.clone()
@@ -1087,7 +1101,13 @@ impl CaptureSession for NativeSession {
     }
 
     fn commit_frame(&self, frame: &Frame, operation: &OperationContext) -> Result<()> {
-        self.core.state.commit_frame(frame, operation)
+        commit_frame_with_target_liveness(
+            &self.core.state,
+            frame,
+            operation,
+            || self.core.key.is_present(),
+            || self.core.fail_native(target_fault(self.core.target_kind)),
+        )
     }
 
     fn close(&self, operation: &OperationContext) -> Result<()> {
@@ -1597,8 +1617,8 @@ mod tests {
     use std::time::{Duration, Instant};
 
     use mado_pilot_capture::{
-        CaptureFault, Continuity, CoordinateSupport, CpuPixels, FrameDescriptor, FrameRequest,
-        Lifecycle, OverflowPolicy, PixelFormat, Publication, RetainedStoragePolicy,
+        CaptureFault, Continuity, CoordinateSupport, CpuPixels, Frame, FrameDescriptor,
+        FrameRequest, Lifecycle, OverflowPolicy, PixelFormat, Publication, RetainedStoragePolicy,
         SessionDescription, StreamState,
     };
     use mado_pilot_core::{
@@ -1618,8 +1638,9 @@ mod tests {
     use super::{
         CallbackControl, GeometryRegistration, NativeOwnership, TEARDOWN_QUEUE_CAPACITY,
         TEARDOWN_WORKER_COUNT, TeardownExecutorSlot, TeardownPermits, TransitionState,
-        WGC_PRODUCER_POOL_SIZE, capture_already_ended_after_drain, configure_pending_capture,
-        frame_time, frame_with_target_liveness, map_worker_start, native_close_result, native_size,
+        WGC_PRODUCER_POOL_SIZE, capture_already_ended_after_drain,
+        commit_frame_with_target_liveness, configure_pending_capture, frame_time,
+        frame_with_target_liveness, map_worker_start, native_close_result, native_size,
         normalize_native_fault, positive_extent, record_authoritative_native_end,
         session_queue_policy, start_capture, start_teardown_executor_with, target_fault,
         teardown_channel, teardown_executor_from_slot,
@@ -1800,6 +1821,77 @@ mod tests {
         assert_eq!(error.status(), Status::DeadlineExceeded);
         assert!(dropped.load(Ordering::Acquire));
         assert_eq!(memory.usage(), (0, 0));
+    }
+
+    fn retained_frame(state: &StreamState) -> Frame {
+        let descriptor = FrameDescriptor::packed(PixelExtent::new(2, 2), PixelFormat::Bgra8)
+            .expect("descriptor");
+        state
+            .publish(Publication {
+                captured_at: MonotonicInstant::ORIGIN,
+                descriptor,
+                placement: None,
+                pixels: vec![0x55; descriptor.byte_len()].into_boxed_slice(),
+                continuity: Continuity::Continuous,
+            })
+            .expect("retained frame")
+    }
+
+    #[test]
+    fn retained_commit_rechecks_native_key_without_closed_callback() {
+        let stream = IdentityIssuer::new().issue_stream().expect("stream");
+        let state = StreamState::with_target_extent(stream);
+        let frame = retained_frame(&state);
+        let operation = OperationContext::new();
+        let present = Cell::new(true);
+        let commit = || {
+            commit_frame_with_target_liveness(
+                &state,
+                &frame,
+                &operation,
+                || present.get(),
+                || state.terminate(CaptureFault::CaptureItemClosed),
+            )
+        };
+        commit().expect("live target accepts retained-frame work");
+        present.set(false);
+        assert_eq!(state.lifecycle(), Lifecycle::Open);
+        assert_eq!(state.terminal(), None);
+
+        let error = commit().expect_err("target loss must reject work without another capture");
+        assert_eq!(error, CaptureFault::CaptureItemClosed.into());
+    }
+
+    #[test]
+    fn retained_commit_liveness_preserves_completed_close() {
+        let stream = IdentityIssuer::new().issue_stream().expect("stream");
+        let state = StreamState::with_target_extent(stream);
+        let frame = retained_frame(&state);
+        let operation = OperationContext::new();
+
+        let error = commit_frame_with_target_liveness(
+            &state,
+            &frame,
+            &operation,
+            || {
+                state.drain(&operation).expect("close wins during probe");
+                false
+            },
+            || state.terminate(CaptureFault::CaptureItemClosed),
+        )
+        .expect_err("target loss cannot replace completed close");
+        assert_eq!(error, CaptureFault::SessionClosed.into());
+        assert_eq!(state.terminal(), None);
+
+        let error = commit_frame_with_target_liveness(
+            &state,
+            &frame,
+            &operation,
+            || panic!("closed capture must not probe native identity"),
+            || panic!("closed capture must not introduce a terminal fault"),
+        )
+        .expect_err("completed close remains closed");
+        assert_eq!(error, CaptureFault::SessionClosed.into());
     }
 
     #[test]

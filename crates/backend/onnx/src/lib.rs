@@ -1097,6 +1097,7 @@ impl OnnxOcrBackend {
                 operation,
             )?;
             pair.record_detector_stages(detector_preprocess, detector_run);
+            drop(detector_input);
             checkpoint(operation)?;
             let raw_candidates = detections.len();
             let detections = if let Some(interests) = request.interests() {
