@@ -334,13 +334,25 @@ mod tests {
             .expect("exact ceiling");
         assert_eq!(cropped.bytes(), &[0, 1, 2, 3, 20, 21, 22, 23]);
         assert_eq!(budget.used(), 152);
+        let reused = view
+            .map(PixelFormat::Bgra8, &operation)
+            .expect("live copy fits without another reservation");
+        assert_eq!(reused.bytes(), cropped.bytes());
+        assert_eq!(budget.used(), 152);
         assert_eq!(
-            view.map(PixelFormat::Bgra8, &operation)
-                .expect_err("copy exceeds ceiling")
-                .status(),
+            FrameView::new(
+                frame.clone(),
+                PixelRect::new(1, 0, 2, 2).expect("different region"),
+            )
+            .expect("different view")
+            .map(PixelFormat::Bgra8, &operation)
+            .expect_err("different copy exceeds ceiling")
+            .status(),
             mado_pilot_core::Status::LimitExceeded,
         );
         drop(cropped);
+        assert_eq!(budget.used(), 152);
+        drop(reused);
         let cropped = view
             .map(PixelFormat::Bgra8, &operation)
             .expect("released bytes reusable");

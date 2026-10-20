@@ -1061,6 +1061,7 @@ responsibilities a later phase takes on.
 | Template preprocessing descriptors | Not implemented |
 | Template matching against a real image | Implemented in `mado-pilot-backend-opencv` for the Phase 1 profile |
 | OpenCV matching profile, public score mapping, candidate extraction | Implemented; decided in [ADR 0003](adr/0003-opencv-matching-profile-and-public-score.md) |
+| Matching preparation reuse and score work | Implemented under [ADR 0086](adr/0086-template-matching-preparation-reuse-and-selection-work.md): weak live-mapping reuse, bounded clone-shared BGR preparation, and request-owned row-winner selection. Target-specific numerical acceptance remains separate from implementation and semantic smoke |
 | Template scaling, rotation, masked matching, GPU execution | Not implemented |
 | OCR model/profile decision and platform-neutral contracts | Implemented in `mado-pilot-ocr`: ADR 0033 fixes released native G-004; ADR 0038 records the rejected rectangular bounded candidate; ADR 0040 adds the accepted candidate-v2 closed identity over the same component bytes; ADR 0041 accepts singular target budgets; ADR 0044 accepts fixed non-overlapping grouped quality and budgets. Immutable model sources, exact-frame requests, normalized source-correlated results, typed failures, and deadline/cancellation-aware commit are implemented |
 | Exact accepted OCR preprocessing, ONNX inference, decoding, and provider policy | Implemented in `mado-pilot-backend-onnx`. ADR 0034 fixes controlled host-provided ONNX Runtime 1.29.0 loading through API 17 with one session pair and process-lifetime runtime ownership. Native G-004 keeps released DB736 behavior; explicit ADR 0040 selection keeps its bounded tensor/profile rules and ADR 0041/0044 budgets. ADR 0046 adds target-gated CUDA/CoreML initialization with one same-provider detector/recognizer pair, explicit dependency roots, atomic pre-publication preferred fallback, required-provider failure, immutable provider facts, and no inference retry/provider switching. ADR 0047 rejects CoreML release qualification. ADR 0048 remains historical explicit Windows CUDA evidence; ADR 0049 adds deterministic provider-specific output-bounded batches and requalifies the unchanged CUDA provider/loader policy. Automatic selection remains CPU on both release targets |
@@ -1358,9 +1359,22 @@ whole lifetime, and must be independent of whatever produced it. Retaining a
 published frame may not retain a producer-pool slot whose reuse capture needs,
 which is the platform-neutral form of the rule
 [ADR 0013](adr/0013-windows-capture-frame-detachment.md) settled for Windows. A
-`CpuMapping` retains the CPU pixels it read rather than the frame, so mapped bytes
-outlive the frame, the session, and any Adapter lease behind it; a mapping of
-native storage is never shared, because obtaining CPU bytes from it is a copy.
+`CpuMapping` retains its CPU pixels and their associated copy reservation rather
+than the source frame's native storage. Those pixels outlive the frame and
+session; their final actual owner releases the reservation. Native readback is
+never source-shared.
+
+Each frame contains four inline weak slots for cropped/channel-converted CPU
+pixels. A compatible live mapping can be reused before another readback or copy
+reservation; absent, expired or contended entries use the ordinary mapping path.
+Full-frame same-format CPU mapping remains direct sharing. Reused converted
+pixels remain `Owned`: `is_shared()` describes source zero-copy, not how many
+mapping handles share an independent allocation.
+
+The hidden capture-owned `FrameInstance` token identifies one immutable frame
+allocation through a weak reference. Every mapping carries it, so separate
+frames with equal numeric stamps cannot share preparation accidentally. It
+retains no frame payload and exposes no address or facade export.
 
 `publish_storage` is the storage-shaped publication, with the same identity,
 continuity, geometry, validation, and atomic-commit rules as `publish`. Its
@@ -2644,6 +2658,33 @@ score means to a caller. The OpenCV CPU adapter's profile is recorded in
 BGR, `TM_CCOEFF_NORMED`, the negative half of the correlation range clamped to no
 match, and suppression-aware bounded candidate extraction in canonical public
 score order.
+
+The adapter accepts the profile's mapped BGRA pixels and may retain two immutable
+BGR images, capped at 33,554,432 payload bytes per clone-shared backend cache.
+Keys use the mapping's weak frame instance, complete stamp, effective region and
+descriptor; diagnostic request regions and template identity are not authorities.
+Each template still runs its own matching and owns its score matrix.
+
+Optional cache access is nonblocking. Conversion, reservation, clocks, formatting
+and owner destruction run outside guards. Expired sources are pruned on access;
+oversized images execute uncached. Session close does not flush a still-owned
+backend, but the cache retains neither frames nor CPU-copy leases. Final backend
+ownership releases cache-held images; active evicted images last only as long as
+their readers. Diagnostics omit matrices and pixel content.
+
+Selection consumes the mutable score matrix without a dense copy. One result
+uses one scan; larger budgets use at most one winner/upper bound per row with
+lazy repair. Suppression runs only when another selection is needed. Bounded
+checkpoints and each caller's final commit preserve cancellation/deadline
+authority independently of reusable preparation. See
+[ADR 0086](adr/0086-template-matching-preparation-reuse-and-selection-work.md).
+
+Development integration retains semantic, ownership, bounded-resource and
+compatibility verification. [ADR 0087](adr/0087-v0-5-0-release-performance-qualification.md)
+assigns the optimization's remaining statistical performance qualification to the
+selected v0.5.0 release candidate, without changing failed or missing historical
+results. Both-target performance claims require their own applicable evidence;
+planning or integration completion does not provide it.
 
 Public scores are compared against a tolerance rather than exactly, on one host as
 well as across the two. OpenCV normalizes through integral images and correlates a

@@ -1573,17 +1573,30 @@ mod tests {
                 .map(PixelFormat::Bgra8, &operation)
                 .expect("exact retained ceiling");
             assert_eq!(memory.usage(), (40, 40));
+            let reused = frame
+                .view(right_column, ClipPolicy::Reject)
+                .expect("view")
+                .map(PixelFormat::Bgra8, &operation)
+                .expect("live copy fits without another reservation");
+            assert_eq!(reused.bytes(), cropped.bytes());
+            assert_eq!(memory.usage(), (40, 40));
             assert_eq!(
                 frame
-                    .view(right_column, ClipPolicy::Reject)
+                    .view(
+                        Rect::new(CoordinateSpace::CapturePixels, 0.0, 0.0, 1.0, 2.0)
+                            .expect("different crop"),
+                        ClipPolicy::Reject,
+                    )
                     .expect("view")
                     .map(PixelFormat::Bgra8, &operation)
-                    .expect_err("another copy exceeds the retained ceiling")
+                    .expect_err("different copy exceeds the retained ceiling")
                     .status(),
                 Status::LimitExceeded,
             );
             assert_eq!(memory.usage(), (40, 40), "refusal releases partial charges");
             drop(cropped);
+            assert_eq!(memory.usage(), (40, 40));
+            drop(reused);
             let cropped = frame
                 .view(right_column, ClipPolicy::Reject)
                 .expect("view")

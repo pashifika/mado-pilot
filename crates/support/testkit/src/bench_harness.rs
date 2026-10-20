@@ -1038,6 +1038,20 @@ pub fn live_allocated_bytes() -> usize {
     live()
 }
 
+/// Returns the conservative allocation high-water counted by [`Accounting`].
+#[must_use]
+pub fn peak_allocated_bytes() -> usize {
+    PEAK.load(Ordering::Relaxed)
+}
+
+/// Starts a new allocation-peak interval at the current live heap size.
+///
+/// Call only while the measured workers are idle. This does not reset live
+/// ownership or cumulative work, and includes subsequent setup and warmup.
+pub fn reset_allocation_peak() {
+    PEAK.store(live(), Ordering::Relaxed);
+}
+
 // --- Running -----------------------------------------------------------------
 
 /// How many iterations a run discards and how many it keeps.

@@ -9,7 +9,7 @@ repository.workspace = true
 publish = false
 
 [features]
-benchmark-instrumentation = []
+benchmark-instrumentation = ["mado-pilot-capture/benchmark-instrumentation"]
 
 [dependencies]
 mado-pilot-core = { path = "../../automation/core" }

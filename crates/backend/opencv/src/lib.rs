@@ -85,5 +85,6 @@ mod backend;
 pub mod benchmark_instrumentation;
 mod candidates;
 mod image;
+mod prepared_images;
 
 pub use backend::{BACKEND_ID, OpenCvBackend};

@@ -9,11 +9,12 @@ use mado_pilot_vision::{
     BackendDescriptor, BackendId, BackendRequest, Candidate, MatchBackend, PreparedTemplate,
     TemplateEncoding, TemplateSource, VisionFault,
 };
-use opencv::core::{Mat, MatTraitConst, MatTraitConstManual};
+use opencv::core::{Mat, MatTraitConst, MatTraitManual};
 use opencv::imgproc::{TM_CCOEFF_NORMED, match_template_def};
 
 use crate::candidates::{PeakSearch, peaks};
 use crate::image::{self, ImageFault, REQUIRED_FORMAT};
+use crate::prepared_images::{Lookup, PreparedImages, PreparedRegion};
 
 /// The backend's stable public identifier.
 ///
@@ -77,6 +78,7 @@ impl fmt::Debug for TemplateMatrix {
 #[derive(Debug, Clone)]
 pub struct OpenCvBackend {
     descriptor: BackendDescriptor,
+    prepared: Arc<PreparedImages>,
 }
 
 impl OpenCvBackend {
@@ -97,6 +99,7 @@ impl OpenCvBackend {
 
         Ok(Self {
             descriptor: BackendDescriptor::new(BACKEND_ID, version, REQUIRED_FORMAT),
+            prepared: Arc::new(PreparedImages::new()),
         })
     }
 }
@@ -174,18 +177,36 @@ impl MatchBackend for OpenCvBackend {
             return Err(VisionFault::BackendFailed.into());
         }
 
-        let region = image::region_to_bgr(request.pixels).map_err(backend_failure)?;
+        let lookup = self.prepared.lookup(request.pixels);
+        let cacheable = matches!(lookup, Lookup::Vacant);
+        let region = match lookup {
+            Lookup::Hit(image) => PreparedRegion::Shared(image),
+            Lookup::Vacant | Lookup::Bypass => PreparedRegion::new(
+                image::region_to_bgr(request.pixels).map_err(backend_failure)?,
+                cacheable && request.pixels.source_instance().is_alive(),
+            ),
+        };
         checkpoint(operation)?;
+        let region = if cacheable {
+            self.prepared.publish(request.pixels, region)
+        } else {
+            region
+        };
 
         let mut scores = Mat::default();
-        match_template_def(&region, &template.image, &mut scores, TM_CCOEFF_NORMED)
-            .map_err(|_| Error::from(VisionFault::BackendFailed))?;
+        match_template_def(
+            region.matrix(),
+            &template.image,
+            &mut scores,
+            TM_CCOEFF_NORMED,
+        )
+        .map_err(|_| Error::from(VisionFault::BackendFailed))?;
         checkpoint(operation)?;
 
         let width = usize::try_from(scores.cols()).map_err(|_| unrepresentable())?;
         let height = usize::try_from(scores.rows()).map_err(|_| unrepresentable())?;
         let values = scores
-            .data_typed::<f32>()
+            .data_typed_mut::<f32>()
             .map_err(|_| Error::from(VisionFault::BackendFailed))?;
 
         let search = PeakSearch {
@@ -200,10 +221,7 @@ impl MatchBackend for OpenCvBackend {
             suppression: request.options.suppression(),
         };
 
-        // Extraction scans the score map once per candidate and the budget above
-        // is the caller's own `u32` result limit, so this is the one stage of a
-        // search whose length the caller sets. It reads the context as it goes
-        // rather than at its end.
+        // Selection checks this caller's authority while scanning and suppressing.
         let result: Result<Vec<Candidate>> = peaks(values, search, operation)?
             .into_iter()
             .map(|peak| {
@@ -260,6 +278,9 @@ fn backend_failure(_fault: ImageFault) -> Error {
 fn unrepresentable() -> Error {
     VisionFault::BackendFailed.into()
 }
+
+#[cfg(test)]
+mod preparation_tests;
 
 #[cfg(test)]
 mod tests {

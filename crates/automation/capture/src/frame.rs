@@ -1,7 +1,7 @@
 //! Immutable published frames and the views taken over them.
 
 use std::fmt;
-use std::sync::Arc;
+use std::sync::{Arc, Weak};
 
 use mado_pilot_core::{
     ClipPolicy, FrameStamp, GeometryFault, MonotonicInstant, PixelRect, Rect, TransformSnapshot,
@@ -9,6 +9,7 @@ use mado_pilot_core::{
 
 use crate::descriptor::FrameDescriptor;
 use crate::fault::CaptureFault;
+use crate::mapping_cache::MappingCache;
 use crate::storage::{CpuFrameStorage, FrameStorage};
 
 /// One published frame, immutable and independently retainable.
@@ -33,6 +34,36 @@ struct FrameData {
     descriptor: FrameDescriptor,
     transform: TransformSnapshot,
     storage: Arc<dyn FrameStorage>,
+    mappings: MappingCache,
+}
+
+/// Weak provenance for mappings of one immutable frame allocation.
+#[doc(hidden)]
+#[derive(Clone)]
+pub struct FrameInstance(Weak<FrameData>);
+
+impl FrameInstance {
+    /// Reports whether any frame or view still owns the source.
+    #[must_use]
+    pub fn is_alive(&self) -> bool {
+        self.0.strong_count() != 0
+    }
+}
+
+impl PartialEq for FrameInstance {
+    fn eq(&self, other: &Self) -> bool {
+        Weak::ptr_eq(&self.0, &other.0)
+    }
+}
+
+impl Eq for FrameInstance {}
+
+impl fmt::Debug for FrameInstance {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        formatter
+            .debug_struct("FrameInstance")
+            .finish_non_exhaustive()
+    }
 }
 
 impl Frame {
@@ -127,6 +158,7 @@ impl Frame {
             descriptor,
             transform,
             storage,
+            mappings: MappingCache::default(),
         }))
     }
 
@@ -208,6 +240,14 @@ impl Frame {
     /// replay bytes or a GPU texture.
     pub(crate) fn storage(&self) -> &Arc<dyn FrameStorage> {
         &self.0.storage
+    }
+
+    pub(crate) fn instance(&self) -> FrameInstance {
+        FrameInstance(Arc::downgrade(&self.0))
+    }
+
+    pub(crate) fn mappings(&self) -> &MappingCache {
+        &self.0.mappings
     }
 }
 
