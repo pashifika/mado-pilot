@@ -261,6 +261,131 @@ fn lone_stamp() -> FrameStamp {
     cursor.publish(GeometryRevision::FIRST).expect("published")
 }
 
+#[derive(Debug)]
+struct PublicStorage {
+    descriptor: FrameDescriptor,
+    pixels: Arc<CpuPixels>,
+    cpu_readable: bool,
+}
+
+impl FrameStorage for PublicStorage {
+    fn descriptor(&self) -> FrameDescriptor {
+        self.descriptor
+    }
+
+    fn cpu_pixels(&self) -> Option<Arc<CpuPixels>> {
+        self.cpu_readable.then(|| Arc::clone(&self.pixels))
+    }
+
+    fn read_cpu(&self, operation: &OperationContext) -> Result<Arc<CpuPixels>> {
+        let attempt = Operation::admit(operation)?;
+        Ok(attempt.commit(Arc::clone(&self.pixels))?)
+    }
+}
+
+#[test]
+fn safe_descriptor_and_frame_construction_refuse_malformed_layouts() {
+    for format in [PixelFormat::Rgba8, PixelFormat::Bgra8] {
+        for (extent, stride) in [
+            (PixelExtent::new(0, 2), 8),
+            (PixelExtent::new(2, 0), 8),
+            (PixelExtent::new(2, 2), 7),
+            (PixelExtent::new(2, 2), usize::MAX),
+        ] {
+            assert_eq!(
+                FrameDescriptor::new(extent, format, stride),
+                Err(CaptureFault::InconsistentDescriptor)
+            );
+        }
+        let extent = PixelExtent::new(2, 2);
+        let descriptor = FrameDescriptor::new(extent, format, 12).expect("padded layout");
+        let stamp = lone_stamp();
+        for length in [0, descriptor.byte_len() - 1] {
+            assert_eq!(
+                Frame::new(
+                    stamp,
+                    MonotonicInstant::ORIGIN,
+                    descriptor,
+                    TransformSnapshot::frame_only(stamp.geometry(), extent),
+                    vec![0; length].into_boxed_slice(),
+                )
+                .expect_err("truncated public bytes cannot publish a frame"),
+                CaptureFault::ByteLengthMismatch
+            );
+        }
+    }
+}
+
+#[test]
+fn unrepresentable_storage_extent_cannot_publish_a_mapping() {
+    for format in [PixelFormat::Rgba8, PixelFormat::Bgra8] {
+        let extent = PixelExtent::new(i32::MAX as u32 + 1, 1);
+        let descriptor = FrameDescriptor::packed(extent, format).expect("64-bit byte extent");
+        let stamp = lone_stamp();
+        let frame = Frame::from_storage(
+            stamp,
+            MonotonicInstant::ORIGIN,
+            TransformSnapshot::frame_only(stamp.geometry(), extent),
+            Arc::new(PublicStorage {
+                descriptor,
+                pixels: Arc::new(CpuPixels::new(Box::new([]))),
+                cpu_readable: false,
+            }),
+        )
+        .expect("storage descriptor has representable byte arithmetic");
+        assert_eq!(
+            frame
+                .map(format, &OperationContext::new())
+                .expect_err("signed geometry is required"),
+            mado_pilot_core::Error::from(CaptureFault::InconsistentDescriptor)
+        );
+    }
+}
+
+#[test]
+fn truncated_public_storage_cannot_publish_cropped_or_converted_pixels() {
+    for (source, converted) in [
+        (PixelFormat::Rgba8, PixelFormat::Bgra8),
+        (PixelFormat::Bgra8, PixelFormat::Rgba8),
+    ] {
+        for cpu_readable in [false, true] {
+            let extent = PixelExtent::new(2, 2);
+            let descriptor = FrameDescriptor::new(extent, source, 12).expect("padded layout");
+            let stamp = lone_stamp();
+            let frame = Frame::from_storage(
+                stamp,
+                MonotonicInstant::ORIGIN,
+                TransformSnapshot::frame_only(stamp.geometry(), extent),
+                Arc::new(PublicStorage {
+                    descriptor,
+                    pixels: Arc::new(CpuPixels::new(vec![0; 19].into_boxed_slice())),
+                    cpu_readable,
+                }),
+            )
+            .expect("safe custom storage publication");
+            let operation = OperationContext::new();
+            let view = frame
+                .view(
+                    Rect::new(CoordinateSpace::CapturePixels, 0.0, 1.0, 2.0, 2.0)
+                        .expect("last row"),
+                    ClipPolicy::Reject,
+                )
+                .expect("valid region");
+            assert_eq!(
+                frame
+                    .map(converted, &operation)
+                    .expect_err("conversion needs the last pixel"),
+                mado_pilot_core::Error::from(CaptureFault::ByteLengthMismatch)
+            );
+            assert_eq!(
+                view.map(source, &operation)
+                    .expect_err("cropping needs the last pixel"),
+                mado_pilot_core::Error::from(CaptureFault::ByteLengthMismatch)
+            );
+        }
+    }
+}
+
 #[test]
 fn a_retained_frame_never_holds_a_producer_slot() {
     let producer = Producer::new(descriptor(8, 6), 2, 8);

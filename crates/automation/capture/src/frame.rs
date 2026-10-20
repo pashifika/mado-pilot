@@ -162,6 +162,13 @@ impl Frame {
         }))
     }
 
+    /// Reports whether both handles own the same immutable frame.
+    #[doc(hidden)]
+    #[must_use]
+    pub fn is_same_instance(&self, other: &Self) -> bool {
+        Arc::ptr_eq(&self.0, &other.0)
+    }
+
     /// Returns the frame's complete identity.
     #[must_use]
     pub fn stamp(&self) -> FrameStamp {

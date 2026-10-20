@@ -7,6 +7,7 @@
   measure and ship.
 - **Supersedes:** _none_
 - **Amended:** 2026-07-28, after the Phase 1 verification pass aligned backend extraction with the public suppression policy and canonical public-score ordering.
+- **Amended:** 2026-10-21, to accept RGBA8 and BGRA8 input directly without changing three-channel scoring; statistical qualification remains separate under [ADR 0087](0087-v0-5-0-release-performance-qualification.md).
 
 ## Context
 
@@ -39,10 +40,12 @@ performs, and what counts as one candidate in a dense correlation map.
 
 The Phase 1 OpenCV CPU profile is:
 
-1. **Three-channel BGR, alpha dropped.** The adapter declares
-   `PixelFormat::Bgra8` as the format the matcher maps a searched region into, and
-   converts it to BGR with `COLOR_BGRA2BGR`. Template content is decoded with
-   `IMREAD_COLOR`, which yields the same layout whatever the file declared.
+1. **Three-channel BGR, alpha dropped.** The adapter accepts `PixelFormat::Bgra8`
+   and `PixelFormat::Rgba8`, with BGRA8 as its default/fallback. The matcher
+   preserves either accepted source layout. The adapter converts the actual
+   mapping directly with `COLOR_BGRA2BGR` or `COLOR_RGBA2BGR` into owned BGR.
+   Template content is decoded with `IMREAD_COLOR`; alpha is not a mask or a
+   scoring channel. Required cropping and native CPU readback remain.
 2. **`TM_CCOEFF_NORMED`.**
 3. **The public score is the raw value clamped to `0.0..=1.0`.** The two ends are
    clamped for different reasons, and only the lower one is a decision: below

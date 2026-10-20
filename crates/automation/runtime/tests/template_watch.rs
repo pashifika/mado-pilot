@@ -14,9 +14,10 @@ use mado_pilot_runtime::{
     TemplateWatchDiagnosticOutcome, TemplateWatchRequest, TemplateWorkDisposition,
 };
 use mado_pilot_testkit::{
-    CompletionGate, ControlledMatcher, ManualClock, ScriptedMatchCall, match_fixtures,
+    CompletionGate, ControlledMatcher, ControlledProducer, ManualClock, ScriptedMatchCall,
+    match_fixtures,
 };
-use mado_pilot_vision::Candidate;
+use mado_pilot_vision::{Candidate, ChangeDetectionPolicy};
 
 use support::Harness;
 
@@ -452,10 +453,12 @@ fn exact_unchanged_skip_is_observable_and_does_not_enter_the_backend() {
     let first = Arc::new(CompletionGate::new());
     let changed = Arc::new(CompletionGate::new());
     let harness = Harness::new(
-        ControlledMatcher::new(mado_pilot_runtime::PixelFormat::Rgba8).with_calls([
-            ScriptedMatchCall::new(Vec::new()).with_completion_gate(Arc::clone(&first)),
-            ScriptedMatchCall::new(Vec::new()).with_completion_gate(Arc::clone(&changed)),
-        ]),
+        ControlledMatcher::new(mado_pilot_runtime::PixelFormat::Bgra8)
+            .with_alternate_format(mado_pilot_runtime::PixelFormat::Rgba8)
+            .with_calls([
+                ScriptedMatchCall::new(Vec::new()).with_completion_gate(Arc::clone(&first)),
+                ScriptedMatchCall::new(Vec::new()).with_completion_gate(Arc::clone(&changed)),
+            ]),
     );
     let _first_release = first.release_guard();
     let _changed_release = changed.release_guard();
@@ -489,24 +492,29 @@ fn exact_unchanged_skip_is_observable_and_does_not_enter_the_backend() {
             .value(),
         1
     );
-    assert_eq!(harness.matcher.find_count(), 1);
 
     harness
         .capture
         .publish(0x32, Continuity::Continuous)
         .expect("published changed frame");
     assert!(changed.wait_until_entered(Duration::from_secs(2)));
-    assert_eq!(harness.matcher.find_count(), 2);
     changed.release();
     let _ = query.cancel();
 }
 
 #[test]
 fn unchanged_pixels_still_require_backend_confirmation_after_stability_starts() {
+    let confirmation = Arc::new(CompletionGate::new());
+    let found = vec![Candidate::new(1, 1, 0.99)];
     let harness = Harness::new(
-        ControlledMatcher::new(mado_pilot_runtime::PixelFormat::Rgba8)
-            .with_candidates(vec![Candidate::new(1, 1, 0.99)]),
+        ControlledMatcher::new(mado_pilot_runtime::PixelFormat::Bgra8)
+            .with_alternate_format(mado_pilot_runtime::PixelFormat::Rgba8)
+            .with_calls([
+                ScriptedMatchCall::new(found.clone()),
+                ScriptedMatchCall::new(found).with_completion_gate(confirmation.clone()),
+            ]),
     );
+    let _release = confirmation.release_guard();
     let session = opened(&harness);
     let (template, options) = request(&harness);
     let query = session
@@ -521,13 +529,200 @@ fn unchanged_pixels_still_require_backend_confirmation_after_stability_starts() 
         .capture
         .publish(0x31, Continuity::Continuous)
         .expect("published identical newer frame");
+    assert!(confirmation.wait_until_entered(Duration::from_secs(2)));
+    let TemplateQueryOutcome::Pending(progress) = query.poll() else {
+        panic!("unchanged pixels cannot replace an unfinished confirmation")
+    };
+    assert_eq!(progress.confirmed_observations(), 1);
+    confirmation.release();
     let outcome = query.wait(&wait_context()).expect("stability completed");
 
     let TemplateTerminalOutcome::Matched(result) = outcome.as_ref() else {
         panic!("expected stable match, got {outcome:?}");
     };
     assert_eq!(result.confirmed_observations(), 2);
-    assert_eq!(harness.matcher.find_count(), 2);
+}
+
+#[test]
+fn analysis_always_analyzes_unchanged_direct_rgba() {
+    let harness = Harness::new(
+        ControlledMatcher::new(mado_pilot_runtime::PixelFormat::Bgra8)
+            .with_alternate_format(mado_pilot_runtime::PixelFormat::Rgba8)
+            .with_calls([
+                ScriptedMatchCall::new(Vec::new()),
+                ScriptedMatchCall::new(vec![Candidate::new(1, 1, 0.99)]),
+            ]),
+    );
+    let session = opened(&harness);
+    let (template, options) = request(&harness);
+    let query = session
+        .start_template_watch(
+            TemplateWatchRequest::new(template, options, OperationContext::new())
+                .with_change_policy(ChangeDetectionPolicy::AnalysisAlways),
+        )
+        .expect("started analysis-always query");
+    wait_progress(&query, |progress| {
+        progress.work().get(TemplateWorkDisposition::Completed) == 1
+    });
+    harness
+        .capture
+        .publish(0x31, Continuity::Continuous)
+        .expect("identical newer frame");
+    let outcome = query
+        .wait(&wait_context())
+        .expect("unchanged input analyzed");
+    let TemplateTerminalOutcome::Matched(result) = outcome.as_ref() else {
+        panic!("expected confirmed match, got {outcome:?}");
+    };
+    assert_eq!(result.frame().stamp().sequence().value(), 1);
+}
+
+#[test]
+fn bgra_and_format_transitions_require_analysis_without_relabeling_history() {
+    let harness = Harness::new(
+        ControlledMatcher::new(mado_pilot_runtime::PixelFormat::Bgra8)
+            .with_alternate_format(mado_pilot_runtime::PixelFormat::Rgba8),
+    );
+    let session = opened(&harness);
+    let (template, options) = request(&harness);
+    let query = session
+        .start_template_watch(TemplateWatchRequest::new(
+            template,
+            options,
+            OperationContext::new(),
+        ))
+        .expect("started query");
+    wait_progress(&query, |progress| {
+        progress.work().get(TemplateWorkDisposition::Completed) == 1
+    });
+    let bgra = ControlledProducer::new(
+        support::EXTENT,
+        mado_pilot_runtime::PixelFormat::Bgra8,
+        2,
+        4,
+    )
+    .expect("BGRA producer");
+    for completed in [2, 3] {
+        harness
+            .capture
+            .publish_from(&bgra, 0x31)
+            .expect("identical BGRA pixels");
+        let progress = wait_progress(&query, |progress| {
+            progress.work().get(TemplateWorkDisposition::Completed) == completed
+        });
+        assert_eq!(
+            progress.work().get(TemplateWorkDisposition::SkippedChange),
+            0
+        );
+    }
+    harness
+        .capture
+        .publish(0x31, Continuity::Continuous)
+        .expect("return to RGBA");
+    wait_progress(&query, |progress| {
+        progress.work().get(TemplateWorkDisposition::Completed) == 4
+    });
+    harness
+        .capture
+        .publish(0x31, Continuity::Continuous)
+        .expect("compatible RGBA successor");
+    let skipped = wait_progress(&query, |progress| {
+        progress.work().get(TemplateWorkDisposition::SkippedChange) == 1
+    });
+    assert_eq!(skipped.confirmed_observations(), 0);
+    let _ = query.cancel();
+}
+
+#[test]
+fn interrupted_direct_watch_keeps_independent_query_authority() {
+    for reusable in [false, true] {
+        for expires in [false, true] {
+            let gate = Arc::new(CompletionGate::new());
+            let found = vec![Candidate::new(1, 1, 0.99)];
+            let calls = reusable
+                .then(|| ScriptedMatchCall::new(found.clone()))
+                .into_iter()
+                .chain([ScriptedMatchCall::new(found.clone()).with_completion_gate(gate.clone())]);
+            let harness = Harness::new(
+                ControlledMatcher::new(mado_pilot_runtime::PixelFormat::Bgra8)
+                    .with_alternate_format(mado_pilot_runtime::PixelFormat::Rgba8)
+                    .with_calls(calls)
+                    .with_candidates(found),
+            );
+            let _release = gate.release_guard();
+            let session = opened(&harness);
+            let (template, options) = request(&harness);
+            if reusable {
+                let warm = session
+                    .start_template_watch(TemplateWatchRequest::new(
+                        template.clone(),
+                        options,
+                        OperationContext::new(),
+                    ))
+                    .expect("warm query");
+                assert!(matches!(
+                    warm.wait(&wait_context()).expect("warm result").as_ref(),
+                    TemplateTerminalOutcome::Matched(_)
+                ));
+            }
+            let token = CancellationToken::new();
+            let clock = Arc::new(ManualClock::new());
+            let interrupted = session
+                .start_template_watch(TemplateWatchRequest::new(
+                    template.clone(),
+                    options,
+                    OperationContext::new()
+                        .with_clock(clock.clone())
+                        .with_cancellation(token.clone())
+                        .with_deadline(MonotonicInstant::from_origin(Duration::from_secs(1))),
+                ))
+                .expect("cancellable query");
+            assert!(gate.wait_until_entered(Duration::from_secs(2)));
+            if expires {
+                clock.advance(Duration::from_secs(1));
+            } else {
+                token.cancel();
+            }
+            let independent = session
+                .start_template_watch(TemplateWatchRequest::new(
+                    template,
+                    options,
+                    OperationContext::new(),
+                ))
+                .expect("independent query");
+            let result = independent
+                .wait(&wait_context())
+                .expect("independent authority");
+            let TemplateTerminalOutcome::Matched(found) = result.as_ref() else {
+                panic!("independent query must match, got {result:?}");
+            };
+            assert_eq!(
+                found.frame().descriptor().format(),
+                mado_pilot_runtime::PixelFormat::Rgba8
+            );
+            assert_eq!(found.frame().stamp().sequence().value(), 0);
+            gate.release();
+            assert!(gate.wait_until_completed(Duration::from_secs(2)));
+            let terminal = interrupted
+                .wait(&wait_context())
+                .expect("interrupted authority");
+            if expires {
+                assert!(matches!(
+                    terminal.as_ref(),
+                    TemplateTerminalOutcome::DeadlineExceeded
+                ));
+            } else {
+                assert!(matches!(
+                    terminal.as_ref(),
+                    TemplateTerminalOutcome::Cancelled
+                ));
+            }
+            let TemplateQueryOutcome::Terminal(retained) = independent.poll() else {
+                panic!("independent result remains terminal")
+            };
+            assert!(Arc::ptr_eq(&result, &retained));
+        }
+    }
 }
 
 #[test]
@@ -1807,10 +2002,18 @@ fn deadline_during_gated_backend_discards_late_match() {
 #[test]
 fn duration_stability_advances_only_on_confirmed_matches() {
     let clock = Arc::new(ManualClock::new());
+    let confirmation = Arc::new(CompletionGate::new());
+    let found = vec![Candidate::new(1, 1, 0.99)];
     let harness = Harness::new(
-        ControlledMatcher::new(mado_pilot_runtime::PixelFormat::Rgba8)
-            .with_candidates(vec![Candidate::new(1, 1, 0.99)]),
+        ControlledMatcher::new(mado_pilot_runtime::PixelFormat::Bgra8)
+            .with_alternate_format(mado_pilot_runtime::PixelFormat::Rgba8)
+            .with_calls([
+                ScriptedMatchCall::new(found.clone()),
+                ScriptedMatchCall::new(found.clone()),
+                ScriptedMatchCall::new(found).with_completion_gate(confirmation.clone()),
+            ]),
     );
+    let _release = confirmation.release_guard();
     let session = opened(&harness);
     let (template, options) = request(&harness);
     let query = session
@@ -1841,6 +2044,13 @@ fn duration_stability_advances_only_on_confirmed_matches() {
         .capture
         .publish(0x31, Continuity::Continuous)
         .expect("published confirmation after duration");
+    assert!(confirmation.wait_until_entered(Duration::from_secs(2)));
+    let TemplateQueryOutcome::Pending(progress) = query.poll() else {
+        panic!("elapsed time and unchanged pixels cannot finish an unconfirmed duration")
+    };
+    assert_eq!(progress.confirmed_observations(), 2);
+    assert_eq!(progress.confirmed_duration(), Duration::ZERO);
+    confirmation.release();
 
     let outcome = query
         .wait(&wait_context())

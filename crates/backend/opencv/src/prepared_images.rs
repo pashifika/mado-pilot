@@ -74,6 +74,14 @@ impl PreparedRegion {
             Self::Owned(matrix) => matrix,
         }
     }
+
+    #[cfg(feature = "benchmark-instrumentation")]
+    pub(crate) fn observed_payload(&self) -> Option<usize> {
+        match self {
+            Self::Shared(image) => Some(image.payload.bytes),
+            Self::Owned(_) => None,
+        }
+    }
 }
 
 pub(crate) enum Lookup {

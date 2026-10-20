@@ -416,18 +416,54 @@ jobs:
         shell: bash
         run: cargo bench --locked --package mado-pilot --bench template-watch-query
 
-      - name: Check and run capture-free Rust matching efficiency smoke
+      - name: Check and run owned capture-free matching efficiency smoke
         shell: bash
+        env:
+          CARGO_TARGET_DIR: ${{ runner.temp }}/direct-format-matching-${{ github.run_id }}-${{ github.run_attempt }}
+          MATCHING_SMOKE_TARGET: x86_64-pc-windows-msvc
+          MATCHING_SMOKE_ROOT: ${{ runner.temp }}/matching-efficiency-smoke
         run: |
-          cargo clippy --locked --package mado-pilot --features template-matching-benchmark --bench template-matching-efficiency -- -D warnings
-          cargo bench --locked --package mado-pilot --features template-matching-benchmark --bench template-matching-efficiency -- --smoke > "${RUNNER_TEMP}/template-matching-efficiency-smoke.json"
+          python - <<'PY'
+          import json, os, shutil, subprocess, sys
+          from pathlib import Path
+          root = Path(os.environ["MATCHING_SMOKE_ROOT"])
+          root.mkdir(parents=True, exist_ok=False)
+          common = ["--locked", "--package", "mado-pilot", "--features", "template-matching-benchmark", "--bench", "template-matching-efficiency"]
+          lint = ["cargo", "clippy", *common, "--", "-D", "warnings"]
+          build = ["cargo", "bench", "--config", 'profile.bench.build-override.strip="none"', *common, "--no-run", "--message-format=json"]
+          commands = [lint, build]
+          (root / "commands.json").write_text(json.dumps(commands, indent=2) + "\n")
+          for label, argv in (("lint", lint), ("build", build)):
+              with (root / f"{label}.stdout").open("wb") as out, (root / f"{label}.stderr").open("wb") as err:
+                  subprocess.run(argv, stdout=out, stderr=err, check=True, timeout=1200)
+          artifacts = [json.loads(line) for line in (root / "build.stdout").read_text().splitlines()]
+          binaries = {item["executable"] for item in artifacts if item.get("reason") == "compiler-artifact" and item.get("target", {}).get("name") == "template-matching-efficiency" and item.get("executable")}
+          if len(binaries) != 1:
+              raise SystemExit("expected exactly one Cargo-reported benchmark executable")
+          source = Path(binaries.pop())
+          binary = root / ("template-matching-efficiency" + source.suffix)
+          shutil.copy2(source, binary)
+          metadata = root / "build-metadata.json"
+          target = os.environ["MATCHING_SMOKE_TARGET"]
+          for label, argv, timeout in (
+              ("attest", [sys.executable, "tools/template-matching-efficiency.py", "attest", "--target", target, "--binary", str(binary), "--build-argv-json", json.dumps(build), "--output", str(metadata)], 500),
+              ("smoke", [sys.executable, "tools/template-matching-efficiency.py", "smoke", "--target", target, "--baseline", str(binary), "--baseline-metadata", str(metadata), "--output", str(root / "campaign")], 930),
+          ):
+              commands.append(argv)
+              (root / "commands.json").write_text(json.dumps(commands, indent=2) + "\n")
+              with (root / f"{label}.stdout").open("wb") as out, (root / f"{label}.stderr").open("wb") as err:
+                  subprocess.run(argv, stdout=out, stderr=err, check=True, timeout=timeout)
+          PY
 
       - name: Preserve matching efficiency smoke observations
         if: always()
         uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
         with:
-          name: matching-efficiency-smoke-windows
-          path: ${{ runner.temp }}/template-matching-efficiency-smoke.json
+          name: matching-efficiency-smoke-windows-${{ github.run_id }}-${{ github.run_attempt }}
+          path: ${{ runner.temp }}/matching-efficiency-smoke
+          include-hidden-files: true
+          if-no-files-found: warn
+          retention-days: 14
 
       - name: Compile the native template-watch Lane B and Lane C runners
         shell: bash
@@ -770,18 +806,54 @@ jobs:
         shell: bash
         run: cargo bench --locked --package mado-pilot --bench template-watch-query
 
-      - name: Check and run capture-free Rust matching efficiency smoke
+      - name: Check and run owned capture-free matching efficiency smoke
         shell: bash
+        env:
+          CARGO_TARGET_DIR: ${{ runner.temp }}/direct-format-matching-${{ github.run_id }}-${{ github.run_attempt }}
+          MATCHING_SMOKE_TARGET: aarch64-apple-darwin
+          MATCHING_SMOKE_ROOT: ${{ runner.temp }}/matching-efficiency-smoke
         run: |
-          cargo clippy --locked --package mado-pilot --features template-matching-benchmark --bench template-matching-efficiency -- -D warnings
-          cargo bench --locked --config 'profile.bench.build-override.strip="none"' --package mado-pilot --features template-matching-benchmark --bench template-matching-efficiency -- --smoke > "${RUNNER_TEMP}/template-matching-efficiency-smoke.json"
+          python3 - <<'PY'
+          import json, os, shutil, subprocess, sys
+          from pathlib import Path
+          root = Path(os.environ["MATCHING_SMOKE_ROOT"])
+          root.mkdir(parents=True, exist_ok=False)
+          common = ["--locked", "--package", "mado-pilot", "--features", "template-matching-benchmark", "--bench", "template-matching-efficiency"]
+          lint = ["cargo", "clippy", *common, "--", "-D", "warnings"]
+          build = ["cargo", "bench", "--config", 'profile.bench.build-override.strip="none"', *common, "--no-run", "--message-format=json"]
+          commands = [lint, build]
+          (root / "commands.json").write_text(json.dumps(commands, indent=2) + "\n")
+          for label, argv in (("lint", lint), ("build", build)):
+              with (root / f"{label}.stdout").open("wb") as out, (root / f"{label}.stderr").open("wb") as err:
+                  subprocess.run(argv, stdout=out, stderr=err, check=True, timeout=1200)
+          artifacts = [json.loads(line) for line in (root / "build.stdout").read_text().splitlines()]
+          binaries = {item["executable"] for item in artifacts if item.get("reason") == "compiler-artifact" and item.get("target", {}).get("name") == "template-matching-efficiency" and item.get("executable")}
+          if len(binaries) != 1:
+              raise SystemExit("expected exactly one Cargo-reported benchmark executable")
+          source = Path(binaries.pop())
+          binary = root / ("template-matching-efficiency" + source.suffix)
+          shutil.copy2(source, binary)
+          metadata = root / "build-metadata.json"
+          target = os.environ["MATCHING_SMOKE_TARGET"]
+          for label, argv, timeout in (
+              ("attest", [sys.executable, "tools/template-matching-efficiency.py", "attest", "--target", target, "--binary", str(binary), "--build-argv-json", json.dumps(build), "--output", str(metadata)], 500),
+              ("smoke", [sys.executable, "tools/template-matching-efficiency.py", "smoke", "--target", target, "--baseline", str(binary), "--baseline-metadata", str(metadata), "--output", str(root / "campaign")], 930),
+          ):
+              commands.append(argv)
+              (root / "commands.json").write_text(json.dumps(commands, indent=2) + "\n")
+              with (root / f"{label}.stdout").open("wb") as out, (root / f"{label}.stderr").open("wb") as err:
+                  subprocess.run(argv, stdout=out, stderr=err, check=True, timeout=timeout)
+          PY
 
       - name: Preserve matching efficiency smoke observations
         if: always()
         uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
         with:
-          name: matching-efficiency-smoke-macos
-          path: ${{ runner.temp }}/template-matching-efficiency-smoke.json
+          name: matching-efficiency-smoke-macos-${{ github.run_id }}-${{ github.run_attempt }}
+          path: ${{ runner.temp }}/matching-efficiency-smoke
+          include-hidden-files: true
+          if-no-files-found: warn
+          retention-days: 14
 
       - name: Compile the native template-watch Lane B and Lane C runners
         shell: bash

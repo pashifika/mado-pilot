@@ -62,6 +62,24 @@ inputs, and both fixed watcher change policies. `--list` prints the first-party
 generated corpus manifest and hashes; `--smoke` runs one warmup and three samples.
 No row opens a capture device, injects input, or runs OCR.
 
+OpenCV accepts source RGBA8 and BGRA8 directly, with BGRA8 as its default.
+`BackendDescriptor::format()` names that default; use `accepts_format` for
+capabilities and the actual mapping descriptor for byte provenance. Full-frame
+CPU-owned RGBA avoids the channel-swap mapping allocation; full-frame BGRA keeps
+its existing path. Cropped regions still require packed mapping storage, and
+native CPU readback is not eliminated. Both formats convert to owned three-channel
+BGR with unchanged alpha exclusion, scoring, suppression and caller options.
+
+Exact-request reuse distinguishes independent equal-stamp frames. Compatible
+newer RGBA mappings can now reach existing `ExactRgba` unchanged admission;
+BGRA, format transitions and `AnalysisAlways` require analysis. Unchanged
+pixels do not confirm consecutive or duration stability.
+
+The `match-report` example emits `defaultPixelFormat` and `acceptedPixelFormats`
+instead of `pixelFormat`; retained reports are not rewritten. The deterministic
+slice's derived mapped-byte measure counts logical searched pixels, not row
+padding, copy traffic or native allocations.
+
 Live cropped/channel-converted mappings reuse only weakly indexed, still-owned
 pixels. Backend clones separately share at most two immutable BGR images and
 33,554,432 retained payload bytes; this does not retain mapping reservations.
@@ -139,6 +157,52 @@ acceptance data, distinguishes actual consumer timing from component replay,
 and requires reruns or reviewed applicability after relevant source changes.
 This scheduling decision changes no frozen ceiling, failed verdict or historical
 source identity; a completed development checklist is not performance acceptance.
+
+### Direct-format semantic and ownership smoke
+
+Corpus `template-efficiency-integer-v2-direct-formats` retains the 21 workload
+rows and extends non-statistical `contract-roi-format-transition` with full,
+padded and nonzero-ROI RGBA/BGRA inputs plus forced-BGRA public-mapping controls.
+Its manifest fixes case order, expected matches and physical-work counts before
+execution. Persistent hits and a real paused production reader exercise
+mapping/source/result release and active eviction. The active reader completes
+before final backend release; these are separate checkpoints, not RSS-return
+or all-native-allocation guarantees.
+
+Build in a fresh root, retaining the command and Cargo JSON output:
+
+```sh
+CARGO_TARGET_DIR=target/direct-format-smoke \
+  python3 tools/setup-native.py -- cargo bench --locked \
+  --config 'profile.bench.build-override.strip="none"' \
+  --package mado-pilot --features template-matching-benchmark \
+  --bench template-matching-efficiency --no-run --message-format=json
+```
+
+Select `BINARY` from Cargo's `compiler-artifact.executable`, not a newest-file
+guess. `BUILD_ARGV_JSON` is the executed build command as a JSON array; `TARGET`
+is the actual supported host target and `EVIDENCE` is a new output directory.
+Windows uses its configured MSVC/OpenCV environment and `python`.
+
+```sh
+python3 tools/template-matching-efficiency.py policy
+python3 tools/setup-native.py -- python3 tools/template-matching-efficiency.py attest \
+  --target "$TARGET" --binary "$BINARY" --build-argv-json "$BUILD_ARGV_JSON" \
+  --output "$EVIDENCE/build-metadata.json"
+python3 tools/setup-native.py -- python3 tools/template-matching-efficiency.py smoke \
+  --target "$TARGET" --baseline "$BINARY" \
+  --baseline-metadata "$EVIDENCE/build-metadata.json" \
+  --output "$EVIDENCE/campaign"
+```
+
+The collector uses one warmup and three retained iterations per row, a 90-second
+owned-child deadline, a 900-second campaign deadline, 8 MiB bounded child output
+and five-second cleanup. No failed sample is retried or replaced. It retains
+source/tree, dirty status, binary, command, corpus and raw process records.
+`attest` observes loaded OpenCV image paths and hashes; it does not attest the
+complete transitive native-library closure or prove reproducible builds.
+Both native CI jobs retain this packet independently. Work reduction establishes
+neither elapsed benefit nor release-host statistical qualification.
 
 ## Where benchmark files live
 

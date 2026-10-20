@@ -13,7 +13,7 @@ use opencv::core::{Mat, MatTraitConst, MatTraitManual};
 use opencv::imgproc::{TM_CCOEFF_NORMED, match_template_def};
 
 use crate::candidates::{PeakSearch, peaks};
-use crate::image::{self, ImageFault, REQUIRED_FORMAT};
+use crate::image::{self, ALTERNATE_FORMAT, DEFAULT_FORMAT, ImageFault};
 use crate::prepared_images::{Lookup, PreparedImages, PreparedRegion};
 
 /// The backend's stable public identifier.
@@ -98,7 +98,8 @@ impl OpenCvBackend {
         let version = accept_version(opencv::core::get_version_major(), &version)?;
 
         Ok(Self {
-            descriptor: BackendDescriptor::new(BACKEND_ID, version, REQUIRED_FORMAT),
+            descriptor: BackendDescriptor::new(BACKEND_ID, version, DEFAULT_FORMAT)
+                .with_alternate_format(ALTERNATE_FORMAT),
             prepared: Arc::new(PreparedImages::new()),
         })
     }
@@ -192,6 +193,8 @@ impl MatchBackend for OpenCvBackend {
         } else {
             region
         };
+        #[cfg(feature = "benchmark-instrumentation")]
+        crate::benchmark_instrumentation::observe_prepared_reader(&region, operation)?;
 
         let mut scores = Mat::default();
         match_template_def(
@@ -285,6 +288,7 @@ mod preparation_tests;
 #[cfg(test)]
 mod tests {
     use super::{BACKEND_ID, OpenCvBackend, SUPPORTED_MAJOR, accept_version};
+    use mado_pilot_capture::PixelFormat;
     use mado_pilot_core::Status;
     use mado_pilot_vision::MatchBackend;
 
@@ -319,5 +323,14 @@ mod tests {
             descriptor.version().starts_with("4."),
             "the descriptor records the runtime version"
         );
+    }
+
+    #[test]
+    fn bgra_is_the_default_and_rgba_the_alternate_input_layout() {
+        let descriptor = OpenCvBackend::new().expect("backend").descriptor();
+
+        assert_eq!(descriptor.format(), PixelFormat::Bgra8);
+        assert!(descriptor.accepts_format(PixelFormat::Bgra8));
+        assert!(descriptor.accepts_format(PixelFormat::Rgba8));
     }
 }

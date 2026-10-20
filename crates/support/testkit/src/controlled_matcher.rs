@@ -130,6 +130,7 @@ fn consistent_mapped_bytes(observed: &AtomicUsize) -> Option<usize> {
 /// A backend whose every answer a test chooses.
 pub struct ControlledMatcher {
     format: PixelFormat,
+    alternate_format: Option<PixelFormat>,
     clock: Option<Arc<ManualClock>>,
     cancel_during_find: Option<CancellationToken>,
     completion_gate: Option<Arc<CompletionGate>>,
@@ -146,6 +147,7 @@ impl ControlledMatcher {
     pub fn new(format: PixelFormat) -> Self {
         Self {
             format,
+            alternate_format: None,
             clock: None,
             cancel_during_find: None,
             completion_gate: None,
@@ -155,6 +157,13 @@ impl ControlledMatcher {
             completed: AtomicUsize::new(0),
             mapped_bytes: AtomicUsize::new(0),
         }
+    }
+
+    /// Explicitly opts this fixture into one alternate mapping format.
+    #[must_use]
+    pub fn with_alternate_format(mut self, format: PixelFormat) -> Self {
+        self.alternate_format = (format != self.format).then_some(format);
+        self
     }
 
     /// Scripts the candidates every search returns.
@@ -272,7 +281,11 @@ impl fmt::Debug for ControlledMatcher {
 
 impl MatchBackend for ControlledMatcher {
     fn descriptor(&self) -> BackendDescriptor {
-        BackendDescriptor::new(CONTROLLED_BACKEND, "1", self.format)
+        let descriptor = BackendDescriptor::new(CONTROLLED_BACKEND, "1", self.format);
+        match self.alternate_format {
+            Some(format) => descriptor.with_alternate_format(format),
+            None => descriptor,
+        }
     }
 
     fn prepare(

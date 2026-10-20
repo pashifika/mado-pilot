@@ -197,6 +197,54 @@ pub fn descriptor_is_stable(backend: Arc<dyn MatchBackend>) {
     );
 }
 
+/// Source layouts are preserved only when the snapshotted backend accepts them.
+///
+/// # Panics
+///
+/// Panics when mapping selects an undeclared layout or changes pixel colors.
+pub fn accepted_source_formats_are_selected(backend: Arc<dyn MatchBackend>) {
+    let matcher = Matcher::new(backend);
+    let descriptor = matcher.descriptor();
+    let operation = OperationContext::new();
+    let prepared = matcher
+        .prepare(&template("formats", PixelExtent::new(8, 8)), &operation)
+        .expect("prepares");
+    for source in [PixelFormat::Rgba8, PixelFormat::Bgra8] {
+        let color = if source == PixelFormat::Rgba8 {
+            [0x21, 0x43, 0x87, 0xff]
+        } else {
+            [0x87, 0x43, 0x21, 0xff]
+        };
+        let image = frame_with_pixels(PixelExtent::new(64, 64), source, color.repeat(64 * 64));
+        let request = MatchRequest::new(&image, RegionSelection::FullFrame, &prepared, options());
+        let mapped = matcher.map_match(&request, &operation).expect("mapped");
+        let pixels = mapped.pixels().expect("non-empty search");
+        let selected = if descriptor.accepts_format(source) {
+            source
+        } else {
+            descriptor.format()
+        };
+        assert_eq!(pixels.descriptor().format(), selected);
+        let expected = if selected == PixelFormat::Rgba8 {
+            [0x21, 0x43, 0x87, 0xff]
+        } else {
+            [0x87, 0x43, 0x21, 0xff]
+        };
+        assert!(
+            pixels
+                .bytes()
+                .chunks_exact(4)
+                .all(|pixel| pixel == expected)
+        );
+        assert!(mapped.is_equivalent_request(&request));
+        let result = matcher
+            .find_mapped(&mapped, &prepared, &operation)
+            .expect("accepted mapping is searchable");
+        assert_eq!(result.backend(), &descriptor);
+        assert_eq!(result.stamp(), image.stamp());
+    }
+}
+
 /// Preparation produces a template belonging to this backend.
 ///
 /// # Panics
@@ -405,6 +453,7 @@ pub fn a_result_reports_the_options_it_ran_under(backend: Arc<dyn MatchBackend>)
 /// Panics on the first check the backend does not satisfy.
 pub fn run(backend: &Arc<dyn MatchBackend>) {
     descriptor_is_stable(Arc::clone(backend));
+    accepted_source_formats_are_selected(Arc::clone(backend));
     preparation_belongs_to_its_backend(Arc::clone(backend));
     a_foreign_prepared_template_is_refused(Arc::clone(backend));
     an_already_cancelled_search_is_refused(Arc::clone(backend));

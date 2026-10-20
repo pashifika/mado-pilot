@@ -6,6 +6,7 @@ import importlib.util
 import json
 import os
 from pathlib import Path
+import shutil
 import sys
 import tempfile
 import unittest
@@ -18,6 +19,49 @@ SPEC = importlib.util.spec_from_file_location(
 collector = importlib.util.module_from_spec(SPEC)
 SPEC.loader.exec_module(collector)
 TARGET = "aarch64-apple-darwin"
+RUNTIME = {"method": "dyld-loaded-image-paths",
+           "images": [{"path": "/runtime/libopencv_core.dylib", "sha256": "e" * 64}]}
+
+
+def format_observation():
+    declaration = collector.direct_format_contract()
+    cases = [{key: case[key] for key in ("id", "source_format", "selected_format")}
+             | {"correct": True, "work": {key: case[f"expected_{key}"] for key in
+                ("mapping_copies", "mapping_copied_bytes", "bgr_conversions", "bgr_converted_bytes")}}
+             for case in declaration["cases"]]
+    for case, expected in zip(cases, declaration["cases"]):
+        source_stride = 1920 * 4 + expected["row_padding_bytes"]
+        case["source_stride"] = source_stride
+        case["mapped_stride"] = 320 * 4 if expected["nonzero_roi"] else 1920 * 4 if expected["forced_bgra_public_mapping"] else source_stride
+        case["mapping_shared"] = not expected["nonzero_roi"] and not expected["forced_bgra_public_mapping"]
+    lifetimes = []
+    for name, order, held, evicted, active in (
+        ("persistent-hit", collector.PERSISTENT_ORDER, (0, 172800, 172800, 172800, 172800, 172800, 0),
+         (0,) * 7, (0,) * 7),
+        ("active-evicted", collector.ACTIVE_ORDER, (6220800, 12441600, 12441600, 12441600, 12441600, 0),
+         (0, 6220800, 0, 0, 0, 0), (1, 1, 0, 0, 0, 0)),
+    ):
+        checkpoints = [{"checkpoint": point, "cache_held_bgr_bytes": cache_bytes,
+                        "active_evicted_bgr_bytes": evicted_bytes, "active_backend_finds": finds,
+                        "mapping_owner_live": False, "source_frame_alive": False,
+                        "result_owner_live": False}
+                       for point, cache_bytes, evicted_bytes, finds in zip(order, held, evicted, active)]
+        lifetimes.append({"id": name, "checkpoints": checkpoints})
+        owners = (
+            ((True, True, True, False, False, False, False), (True, True, True, True, False, False, False), (False, True, True, True, True, False, False))
+            if name == "persistent-hit" else
+            ((True, True, False, False, False, False), (True, True, True, False, False, False), (False, False, True, True, False, False))
+        )
+        for point, mapped, source, result in zip(checkpoints, *owners):
+            point.update(mapping_owner_live=mapped, source_frame_alive=source, result_owner_live=result)
+    transitions = [{key: expected[key] for key in ("id", "selected_format", "region")} |
+                   {"correct": True, "work": {key: expected[key] for key in
+                    ("mapping_copies", "mapping_copied_bytes", "bgr_conversions", "bgr_converted_bytes")}}
+                   for expected in declaration["transition_cases"]]
+    return {"correct": True, "cases": cases, "transitions": transitions, "lifetimes": lifetimes,
+            "work": {key: value for key, value in collector.DIRECT_FORMAT_WORK.items()
+                     if key != "backend_find_calls"},
+            "backend_find_calls": 18, "backend_find_completions": 18}
 
 
 def manifest():
@@ -28,7 +72,10 @@ def manifest():
                      "width": 1920, "height": 1080, "result_limit": 16,
                      "suppression": "KeepAll", "warmups": 20 if definition["statistical"] else 1,
                      "sample_count": 200 if definition["statistical"] else 3})
+        if definition["id"] == collector.DIRECT_FORMAT_WORKLOAD:
+            rows[-1]["format_contract"] = collector.direct_format_contract()
     return {"format_version": 1, "kind": "manifest", "target": TARGET,
+            "loaded_native_runtime": copy.deepcopy(RUNTIME),
             "opencv_version": "4.12.0", "fixture_sha256": "f" * 64, "workloads": rows}
 
 
@@ -64,7 +111,13 @@ def payload(workload, *, candidate=False, smoke=False):
         "mapping_copies": (1 if candidate else 9) * iterations,
         "mapping_copied_bytes": (1 if candidate else 9) * iterations * 1024,
     }
+    if workload == collector.DIRECT_FORMAT_WORKLOAD:
+        row["format_observations"] = [format_observation() for _ in range(iterations)]
+        row["metrics"].update({key: value * iterations for key, value in collector.DIRECT_FORMAT_WORK.items()})
+        row["metrics"].update(bgr_retained_bytes=0, bgr_retained_peak_bytes=12441600,
+                              bgr_evicted_peak_bytes=6220800, final_owner_correct=True)
     return {"format_version": 1, "kind": "observations", "target": TARGET,
+            "loaded_native_runtime": copy.deepcopy(RUNTIME),
             "opencv_version": "4.12.0", "fixture_sha256": "f" * 64,
             "warmups": 1 if smoke else 20, "sample_count": 3 if smoke else 200,
             "timer_resolution_ns": 10, "cpu_timer_resolution_ns": 1000,
@@ -79,17 +132,18 @@ def identity(root, role):
                       "source_tree": "c" * 40, "cargo_lock_sha256": "d" * 64,
                       "binary_sha256": ("a" if role == "baseline" else "b") * 64,
                       "rustc": "rustc 1.97.1", "build_argv": ["cargo", "bench", "--no-run", "--locked"],
-                      "opencv_version": "4.12.0", "dependencies": [{"path": str(root / "opencv"), "sha256": "e" * 64}]}}
+                      "opencv_version": "4.12.0", "dependencies": copy.deepcopy(RUNTIME["images"])}}
 
 
 def plan(root, mode):
     roles = ("baseline", "candidate") if mode == "comparison" else ("baseline",)
     rows = list(collector.DEFINITIONS)
+    execution = {"execution_limits": collector.SMOKE_LIMITS} if mode == "smoke" else {}
     return {"format_version": 1, "kind": "campaign", "mode": mode, "target": TARGET,
             "host": {"target": TARGET, "node": "controlled-host"}, "collector": collector.collector_identity(),
             "binaries": {role: identity(root, role) for role in roles}, "environment": {},
             "policy": copy.deepcopy(collector.POLICY), "workloads": rows,
-            "schedule": collector.schedule(mode, rows), "exclusive_host": True, "cwd": str(root)}
+            "schedule": collector.schedule(mode, rows), "exclusive_host": True, "cwd": str(root), **execution}
 
 
 def parsed_evidence(root, mode):
@@ -126,7 +180,7 @@ def persist_campaign(root, mode, profile=None, smoke=False):
         collector.save(root / "attempts" / f"{task['id']}.json", {
             "task": task, "argv": collector.command(binary, task, mode),
             "plan_sha256": collector.sha256(root / "plan.json"), "identity_before": binary,
-            "identity_after": binary, "identity_error": None, "record": record})
+            "identity_after": binary, "identity_error": None, "record": record, "timeout_seconds": 90 if smoke else 300})
     return specification
 
 
@@ -233,6 +287,62 @@ class ParserTests(unittest.TestCase):
         for value in ('{"correct":false,"correct":true}', '{"cpu_ns":NaN}', '{"cpu_ns":Infinity}'):
             with self.assertRaises(ValueError):
                 collector.strict_json(value)
+
+    def test_direct_format_case_order_work_and_genuine_active_eviction_are_required(self):
+        workload = collector.DIRECT_FORMAT_WORKLOAD
+        valid = payload(workload, candidate=True, smoke=True)
+        parsed = collector.observations(valid, self.manifest, workload, True)
+        self.assertEqual(parsed["metrics"]["backend_find_calls"], 72)
+        self.assertEqual(parsed["metrics"]["mapping_copies"], 40)
+        mutations = (
+            lambda row: row["format_observations"].pop(),
+            lambda row: row["format_observations"][0]["cases"].reverse(),
+            lambda row: row["format_observations"][0]["transitions"].pop(),
+            lambda row: row["format_observations"][0]["cases"][0].update(selected_format="bgra8"),
+            lambda row: row["format_observations"][0]["cases"][4]["work"].update(mapping_copies=0),
+            lambda row: row["format_observations"][0]["lifetimes"][1]["checkpoints"][1].update(active_evicted_bgr_bytes=0),
+            lambda row: row["format_observations"][0]["lifetimes"][1]["checkpoints"][1].update(active_backend_finds=0),
+            lambda row: row["format_observations"][0]["lifetimes"][1]["checkpoints"][2].update(active_evicted_bgr_bytes=1),
+            lambda row: row["format_observations"][0]["lifetimes"][0]["checkpoints"][-1].update(cache_held_bgr_bytes=1),
+            lambda row: row["metrics"].update(mapping_copied_bytes=1),
+        )
+        for mutate in mutations:
+            with self.subTest(mutation=mutate):
+                changed = copy.deepcopy(valid)
+                mutate(changed["workloads"][0])
+                with self.assertRaises(ValueError):
+                    collector.observations(changed, self.manifest, workload, True)
+
+    def test_direct_format_declaration_cannot_relabel_the_corpus(self):
+        value = manifest()
+        row = next(row for row in value["workloads"] if row["id"] == collector.DIRECT_FORMAT_WORKLOAD)
+        row["format_contract"]["cases"][0]["expected_mapping_copies"] = 1
+        with self.assertRaisesRegex(ValueError, "direct-format declaration"):
+            collector.manifest_identity(value, TARGET, "4.12.0")
+
+    def test_native_runtime_needs_actual_absolute_loaded_paths_not_only_matching_hashes(self):
+        binding = identity(Path("/binary-root"), "baseline")
+        collector.loaded_runtime(manifest(), binding)
+        for mutate in (
+            lambda value: value.pop("loaded_native_runtime"),
+            lambda value: value["loaded_native_runtime"].update(method="hash-only-lookup"),
+            lambda value: value["loaded_native_runtime"]["images"][0].update(path="libopencv_core.dylib"),
+            lambda value: value["loaded_native_runtime"]["images"][0].update(path="/unobserved/libopencv_core.dylib"),
+        ):
+            value = manifest()
+            mutate(value)
+            with self.assertRaises(ValueError):
+                collector.loaded_runtime(value, binding)
+
+    def test_windows_loaded_path_comparison_preserves_actual_path_authority(self):
+        value = {"target": collector.TARGETS[1], "loaded_native_runtime": {
+            "method": "K32EnumProcessModules-GetModuleFileNameW",
+            "images": [{"path": r"\\?\C:\opencv\bin\opencv_world4140.dll", "sha256": "e" * 64}]}}
+        binding = {"build": {"dependencies": [{"path": r"C:\OPENCV\bin\opencv_world4140.dll", "sha256": "e" * 64}]}}
+        collector.loaded_runtime(value, binding)
+        binding["build"]["dependencies"][0]["path"] = r"C:\another\opencv_world4140.dll"
+        with self.assertRaisesRegex(ValueError, "path/hash"):
+            collector.loaded_runtime(value, binding)
 
 
 class AcceptanceTests(unittest.TestCase):
@@ -771,6 +881,7 @@ class EvidenceTests(unittest.TestCase):
         dependency.write_bytes(b"native library bytes")
         build = identity(self.root, "baseline")["build"]
         build["binary_sha256"] = collector.sha256(binary)
+        build["dependencies"][0]["path"] = str(dependency)
         build["dependencies"][0]["sha256"] = collector.sha256(dependency)
         collector.save(metadata, build)
         binding = collector.binary_identity(binary, metadata, TARGET)
@@ -780,6 +891,89 @@ class EvidenceTests(unittest.TestCase):
         binary.write_bytes(b"rebuilt in place")
         with self.assertRaisesRegex(ValueError, "binary does not match"):
             collector.binary_identity(binary, metadata, TARGET)
+
+    @unittest.skipUnless(shutil.which("git") and shutil.which("rustc"), "git and rustc required")
+    def test_attestation_collects_source_identity_through_real_process_runner(self):
+        binary, dependency = self.root / "binary", self.root / "libopencv_core.dylib"
+        binary.write_bytes(b"explicit executable bytes")
+        dependency.write_bytes(b"actual loaded OpenCV bytes")
+        (self.root / "Cargo.lock").write_text("fixture lockfile", encoding="utf-8")
+        git = str(Path(shutil.which("git")).absolute())
+        real_run = collector.run_process
+
+        def git_command(*args):
+            record = real_run([git, *args], cwd=str(self.root), env=collector.environment(),
+                              timeout_seconds=10, output_limit_bytes=4096, cleanup_seconds=1)
+            self.assertTrue(collector.successful(record), record)
+            return record["stdout"].strip()
+
+        git_command("init", "--quiet")
+        git_command("add", "Cargo.lock")
+        expected_tree = git_command("write-tree")
+        git_command("-c", "user.name=Fixture", "-c", "user.email=fixture@example.invalid",
+                    "-c", "commit.gpgsign=false", "commit", "--quiet", "-m", "fixture")
+        expected_revision = git_command("rev-parse", "HEAD")
+        value = manifest()
+        value["loaded_native_runtime"]["images"] = [{"path": str(dependency), "sha256": collector.sha256(dependency)}]
+        probe = {"exit_code": 0, "timed_out": False, "output_limited": False, "cleanup_ok": True,
+                 "launch_error": None, "duration_seconds": 0.1, "stdout": json.dumps(value), "stderr": ""}
+
+        def launch_probe(argv, **kwargs):
+            if argv == [str(binary), "--list"]:
+                return probe
+            return real_run(argv, **kwargs)
+
+        metadata = self.root / "observed-build.json"
+        args = collector.parser().parse_args([
+            "attest", "--target", TARGET, "--binary", str(binary),
+            "--build-argv-json", '["cargo","bench","--no-run","--locked"]', "--output", str(metadata)])
+        with (mock.patch.object(collector, "ROOT", self.root),
+              mock.patch.object(collector, "host_identity", return_value={"target": TARGET}),
+              mock.patch.object(collector, "run_process", side_effect=launch_probe)):
+            collector.attest(args)
+        observed = collector.load(metadata)
+        self.assertEqual(observed["dependencies"], value["loaded_native_runtime"]["images"])
+        self.assertEqual(observed["source_revision"], expected_revision)
+        self.assertEqual(observed["source_tree"], expected_tree)
+        self.assertEqual(observed["binary_sha256"], collector.sha256(binary))
+        self.assertIn("rustc ", observed["rustc"])
+        self.assertEqual(collector.load(str(metadata) + ".probe.json")["commands"],
+                         observed["provenance_commands"])
+        with mock.patch.object(collector, "run_process") as launch:
+            with self.assertRaisesRegex(ValueError, "already exists"):
+                collector.attest(args)
+        launch.assert_not_called()
+
+    def test_failed_attestation_probe_is_preserved_without_retry_or_metadata(self):
+        binary, metadata = self.root / "binary", self.root / "failed-build.json"
+        binary.write_bytes(b"explicit executable bytes")
+        args = collector.parser().parse_args([
+            "attest", "--target", TARGET, "--binary", str(binary), "--build-argv-json", '["cargo","bench"]',
+            "--output", str(metadata)])
+        record = {"exit_code": 1, "timed_out": False, "output_limited": False, "cleanup_ok": True,
+                  "launch_error": None, "duration_seconds": 0.1, "stdout": "partial observation", "stderr": "failure"}
+        with (mock.patch.object(collector, "host_identity", return_value={"target": TARGET}),
+              mock.patch.object(collector, "run_process", return_value=record) as launch):
+            with self.assertRaisesRegex(ValueError, "attestation command failed"):
+                collector.attest(args)
+        self.assertEqual(launch.call_count, 1)
+        self.assertFalse(metadata.exists())
+        self.assertEqual(collector.load(str(metadata) + ".probe.json")["commands"][0]["record"], record)
+
+    def test_attestation_preserves_completed_probe_on_later_launch_exception(self):
+        binary, metadata = self.root / "binary", self.root / "interrupted-build.json"
+        binary.write_bytes(b"explicit executable bytes")
+        args = collector.parser().parse_args([
+            "attest", "--target", TARGET, "--binary", str(binary), "--build-argv-json", '["cargo","bench"]',
+            "--output", str(metadata)])
+        record = {"exit_code": 0, "timed_out": False, "output_limited": False, "cleanup_ok": True,
+                  "launch_error": None, "duration_seconds": 0.1, "stdout": "completed probe", "stderr": ""}
+        with (mock.patch.object(collector, "host_identity", return_value={"target": TARGET}),
+              mock.patch.object(collector, "run_process", side_effect=[record, ValueError("launch rejected")])):
+            with self.assertRaisesRegex(ValueError, "launch rejected"):
+                collector.attest(args)
+        self.assertFalse(metadata.exists())
+        self.assertEqual(collector.load(str(metadata) + ".probe.json")["commands"][0]["record"], record)
 
     def test_exclusive_output_write_preserves_existing_evidence(self):
         path = self.root / "profile.json"
@@ -867,6 +1061,39 @@ class BoundedExecutionTests(unittest.TestCase):
         self.assertTrue(result["output_limited"])
         self.assertLessEqual(len(result["stdout"].encode()) + len(result["stderr"].encode()), 1024)
         self.assertFalse(collector.successful(result))
+
+    def test_smoke_enforces_child_and_campaign_bounds_without_replacement(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            output = root / "smoke"
+            args = collector.parser().parse_args([
+                "smoke", "--target", TARGET, "--baseline", "binary", "--baseline-metadata", "build.json",
+                "--output", str(output), "--workload", "single-small96x64"])
+            binding = identity(root, "baseline")
+            record = {"exit_code": 0, "timed_out": False, "output_limited": False, "cleanup_ok": True,
+                      "launch_error": None, "duration_seconds": 1.0, "stdout": json.dumps(manifest()), "stderr": ""}
+            with (mock.patch.object(collector, "host_identity", return_value={"target": TARGET}),
+                  mock.patch.object(collector, "binary_identity", return_value=binding),
+                  mock.patch.object(collector, "check_files"),
+                  mock.patch.object(collector, "loaded_runtime"),
+                  mock.patch.object(collector, "exclusive_collector", return_value=contextlib.nullcontext()),
+                  mock.patch.object(collector.time, "monotonic", side_effect=[0, 0, 0, 901]),
+                  mock.patch.object(collector, "run_process", return_value=record) as launch):
+                result = collector.collect(args, "smoke")
+            self.assertEqual(launch.call_count, 1)
+            self.assertEqual(launch.call_args.kwargs["timeout_seconds"], 90)
+            self.assertEqual(launch.call_args.kwargs["output_limit_bytes"], 8 * collector.MIB)
+            self.assertEqual(result["status"], "incomplete")
+            self.assertTrue(any(issue["status"] == "not-run" for issue in result["issues"]))
+            self.assertEqual(collector.load(output / "plan.json")["execution_limits"], collector.SMOKE_LIMITS)
+            self.assertEqual([path.name for path in (output / "attempts").glob("*.json")], ["0000.json"])
+
+    def test_smoke_execution_bounds_cannot_be_relaxed_in_retained_plan(self):
+        with tempfile.TemporaryDirectory() as directory:
+            value = plan(Path(directory).resolve(), "smoke")
+            value["execution_limits"] = {**collector.SMOKE_LIMITS, "child_timeout_seconds": 300}
+            with self.assertRaisesRegex(ValueError, "bounded smoke"):
+                collector.validate_plan(value)
 
 
 if __name__ == "__main__":

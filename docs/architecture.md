@@ -2659,11 +2659,27 @@ BGR, `TM_CCOEFF_NORMED`, the negative half of the correlation range clamped to n
 match, and suppression-aware bounded candidate extraction in canonical public
 score order.
 
-The adapter accepts the profile's mapped BGRA pixels and may retain two immutable
-BGR images, capped at 33,554,432 payload bytes per clone-shared backend cache.
+The adapter accepts RGBA8 and BGRA8; BGRA8 remains its default/fallback.
+`BackendDescriptor::new` declares only its default. `with_alternate_format`
+opts into one additional layout, and `accepts_format` reports the immutable
+capability snapshotted by `Matcher`. An accepted source layout is preserved;
+otherwise the matcher requests the default. `format()` is not per-search
+provenance: the actual `CpuMapping` descriptor identifies its bytes.
+
+Either accepted layout converts directly to owned three-channel BGR, ignoring
+alpha. CPU-owned full-frame RGBA no longer needs a BGRA intermediary; cropped
+regions still need their ordinary mapping copy, and native CPU readback remains.
+The adapter may retain two immutable BGR images, capped at 33,554,432 payload
+bytes per clone-shared backend cache.
 Keys use the mapping's weak frame instance, complete stamp, effective region and
 descriptor; diagnostic request regions and template identity are not authorities.
 Each template still runs its own matching and owns its score matrix.
+
+Exact-request reuse requires the same immutable frame instance, not only equal
+numeric stamps. Runtime history keeps source-instance and actual-layout identity.
+Compatible newer RGBA mappings become eligible for existing `ExactRgba`
+unchanged admission; BGRA, layout transitions and `AnalysisAlways` require
+analysis. Unchanged bytes never confirm consecutive or duration stability.
 
 Optional cache access is nonblocking. Conversion, reservation, clocks, formatting
 and owner destruction run outside guards. Expired sources are pruned on access;
@@ -3075,9 +3091,9 @@ Admission proceeds in this order:
 4. Apply the query-clock rate interval. Deferred work remains one latest frame.
 5. Increment the query generation and admit backend work. At most one generation
    per query may be in backend analysis; another query may use the second
-   engine-wide slot. Equivalent requests coalesce only when backend/format,
-   prepared-template instance, complete frame stamp, clipped ROI, options,
-   preprocessing facts, and next generation match.
+   engine-wide slot. Equivalent requests coalesce only when backend capabilities,
+   selected format, prepared-template and immutable frame instances, clipped ROI,
+   options, preprocessing facts, and next generation match.
 6. Commit only the authoritative generation. A no-match resets stability; only
    confirmed matches increment consecutive observations or extend duration.
    Cancellation, deadline, target loss, close, overload, or a newer generation

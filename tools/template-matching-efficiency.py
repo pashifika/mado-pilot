@@ -16,11 +16,13 @@ import math
 import os
 import platform
 import re
+import shutil
 import statistics
 import sys
 import tempfile
 import time
 from pathlib import Path
+from pathlib import PureWindowsPath
 
 ROOT = Path(__file__).resolve().parents[1]
 RUNNER_DIR = ROOT / "tools/native-release-profile"
@@ -87,6 +89,93 @@ MEMORY = ("peak_rss_bytes", "rss_before_bytes", "rss_after_bytes", "rss_after_dr
           "rss_steady_before_bytes", "rss_steady_after_bytes", "heap_before_bytes",
           "heap_after_bytes", "heap_after_drop_bytes", "peak_heap_bytes",
           "heap_steady_before_bytes", "heap_steady_after_bytes")
+
+# Diagnostic execution bounds do not alter the frozen v1 numerical policy.
+SMOKE_LIMITS = {"child_timeout_seconds": 90, "campaign_timeout_seconds": 900,
+                "cleanup_seconds": 5, "output_limit_bytes": 8 * MIB}
+DIRECT_FORMAT_WORKLOAD = "contract-roi-format-transition"
+DIRECT_FORMAT_CASES = (
+    ("rgba-full", "rgba8", 0, False, False),
+    ("bgra-full", "bgra8", 0, False, False),
+    ("rgba-padded-full", "rgba8", 16, False, False),
+    ("bgra-padded-full", "bgra8", 16, False, False),
+    ("rgba-roi", "rgba8", 0, True, False),
+    ("bgra-roi", "bgra8", 0, True, False),
+    ("rgba-padded-roi", "rgba8", 16, True, False),
+    ("bgra-padded-roi", "bgra8", 16, True, False),
+    ("rgba-forced-bgra-full", "rgba8", 0, False, True),
+    ("rgba-forced-bgra-roi", "rgba8", 0, True, True),
+)
+DIRECT_FORMAT_WORK = {"backend_find_calls": 18, "bgr_conversions": 17,
+                      "bgr_converted_bytes": 57_346_368, "mapping_copies": 10,
+                      "mapping_copied_bytes": 10_337_024}
+PERSISTENT_ORDER = ("mapping-live", "cold-result", "persistent-hit", "mapping-released",
+                    "frame-released", "result-released", "final-backend-released")
+ACTIVE_ORDER = ("prepared-reader-paused", "active-image-evicted", "final-reader-completed",
+                "frames-released", "results-released", "final-backend-released")
+
+
+def direct_format_contract():
+    cases = []
+    for name, source, padding, roi, forced in DIRECT_FORMAT_CASES:
+        pixels = 320 * 180 if roi else 1920 * 1080
+        cases.append({"id": name, "source_format": source,
+                      "selected_format": "bgra8" if forced else source,
+                      "row_padding_bytes": padding, "nonzero_roi": roi,
+                      "forced_bgra_public_mapping": forced,
+                      "expected_matches": 1, "expected_bounds": [80, 64, 92, 74],
+                      "expected_mapping_copies": int(roi or forced),
+                      "expected_mapping_copied_bytes": pixels * 4 if roi or forced else 0,
+                      "expected_bgr_conversions": 1, "expected_bgr_converted_bytes": pixels * 3})
+    transitions = [
+        {"id": "same-source-roi", "selected_format": "rgba8", "region": [64, 48, 384, 228], "expected_bounds": [80, 64, 92, 74],
+         "mapping_copies": 1, "mapping_copied_bytes": 230400, "bgr_conversions": 1, "bgr_converted_bytes": 172800},
+        {"id": "same-source-alternate-roi", "selected_format": "rgba8", "region": [72, 56, 376, 220], "expected_bounds": [152, 64, 164, 74],
+         "mapping_copies": 1, "mapping_copied_bytes": 199424, "bgr_conversions": 1, "bgr_converted_bytes": 149568},
+        {"id": "distinct-bgra-full", "selected_format": "bgra8", "region": [0, 0, 1920, 1080], "expected_bounds": [80, 64, 92, 74],
+         "mapping_copies": 0, "mapping_copied_bytes": 0, "bgr_conversions": 1, "bgr_converted_bytes": 6220800},
+    ]
+    return {"cases": cases, "transition_cases": transitions, "lifetime_order": ["persistent-hit", "active-evicted"],
+            "persistent_checkpoint_order": list(PERSISTENT_ORDER),
+            "active_checkpoint_order": list(ACTIVE_ORDER),
+            "expected_per_iteration": dict(DIRECT_FORMAT_WORK),
+            "operation_timeout_seconds": 5, "prepared_reader_pause_timeout_seconds": 5,
+            "resource_scope": "logical mapping owners and owned BGR payload; not total native allocation or RSS release",
+            "active_owner_order": "final production reader completes before final backend release"}
+
+
+def native_path(path, target):
+    path = nonempty(path, "loaded runtime path")
+    require((PureWindowsPath(path) if target == TARGETS[1] else Path(path)).is_absolute(),
+            "loaded runtime path must be absolute")
+    return path.replace("\\", "/").removeprefix("//?/").casefold() if target == TARGETS[1] else path
+
+
+def loaded_runtime(value, identity=None, *, verify_files=False):
+    target = value.get("target")
+    runtime = value.get("loaded_native_runtime")
+    require(isinstance(runtime, dict), "actual loaded native runtime identity required")
+    require(runtime.get("method") == ("dyld-loaded-image-paths" if target == TARGETS[0]
+                                      else "K32EnumProcessModules-GetModuleFileNameW"),
+            "loaded runtime path evidence method mismatch")
+    images = runtime.get("images")
+    require(isinstance(images, list) and 0 < len(images) <= 4096, "bounded loaded runtime images required")
+    actual = {}
+    for image in images:
+        require(isinstance(image, dict), "invalid loaded image")
+        path = native_path(image.get("path"), target)
+        require(path not in actual, "duplicate loaded runtime image")
+        actual[path] = digest(image.get("sha256"), "loaded runtime sha256")
+        if verify_files:
+            require(sha256(image["path"]) == actual[path], "actual loaded runtime bytes changed")
+    require(any("opencv_core" in path.rsplit("/", 1)[-1].lower()
+                or "opencv_world" in path.rsplit("/", 1)[-1].lower() for path in actual),
+            "actual loaded OpenCV core/world path required")
+    if identity is not None:
+        expected = {native_path(item["path"], target): item["sha256"]
+                    for item in identity["build"]["dependencies"]}
+        require(actual == expected, "actual loaded runtime path/hash differs from build attestation")
+    return runtime
 
 
 def require(condition, message):
@@ -228,6 +317,7 @@ def manifest_identity(value, target, opencv_version):
     require(value.get("kind") == "manifest", "expected manifest")
     require(value.get("target") == target, "manifest target mismatch")
     require(value.get("opencv_version") == opencv_version, "manifest OpenCV identity mismatch")
+    loaded_runtime(value)
     fixture = digest(value.get("fixture_sha256"), "fixture_sha256")
     rows = value.get("workloads")
     require(isinstance(rows, list) and len(rows) == len(WORKLOADS), "incomplete workload manifest")
@@ -244,6 +334,9 @@ def manifest_identity(value, target, opencv_version):
         require(row.get("warmups") == (20 if expected["statistical"] else 1)
                 and row.get("sample_count") == (200 if expected["statistical"] else 3),
                 "manifest sampling plan mismatch")
+        if expected["id"] == DIRECT_FORMAT_WORKLOAD:
+            require(row.get("format_contract") == direct_format_contract(),
+                    "direct-format declaration/order/work mismatch")
         frozen.append(dict(row))
     return {"fixture_sha256": fixture, "target": target, "opencv_version": opencv_version,
             "workloads": frozen}
@@ -254,6 +347,7 @@ def observations(value, manifest, workload, smoke):
             and value.get("kind") == "observations", "invalid observation protocol")
     for key in ("target", "opencv_version", "fixture_sha256"):
         require(value.get(key) == manifest[key], f"observation {key} mismatch")
+    loaded_runtime(value)
     rows = value.get("workloads")
     require(isinstance(rows, list) and len(rows) == 1, "one fresh process must report exactly one workload")
     row = rows[0]
@@ -328,6 +422,8 @@ def observations(value, manifest, workload, smoke):
                      ("before", "after", "after_drop", "steady_before", "steady_after")]
         if peak is not None and all(item is not None for item in endpoints):
             require(peak >= max(endpoints), f"{prefix} peak below measured endpoint")
+    if workload == DIRECT_FORMAT_WORKLOAD:
+        validate_direct_formats(row, warmups + count)
     elapsed = sorted(sample["elapsed_ns"] for sample in retained)
     summary = {"p50_ns": elapsed[(count - 1) // 2], "p95_ns": elapsed[math.ceil(0.95 * count) - 1],
                "max_ns": elapsed[-1], "cpu_ns": cpu, "timer_resolution_ns": timer,
@@ -353,10 +449,75 @@ def schedule(mode, selected):
     return result
 
 
+def validate_direct_formats(row, iterations):
+    observations = row.get("format_observations")
+    require(isinstance(observations, list) and len(observations) == iterations,
+            "all warmup/retained format observations required")
+    declared = direct_format_contract()
+    for observed in observations:
+        require(observed.get("correct") is True, "incorrect direct-format observation")
+        cases = observed.get("cases")
+        require(isinstance(cases, list) and [item.get("id") for item in cases] ==
+                [item["id"] for item in declared["cases"]], "direct-format case order/count mismatch")
+        for case, expected in zip(cases, declared["cases"]):
+            require(case.get("correct") is True and case.get("source_format") == expected["source_format"]
+                    and case.get("selected_format") == expected["selected_format"], "actual selected format mismatch")
+            source_stride = 1920 * 4 + expected["row_padding_bytes"]
+            mapped_stride = 320 * 4 if expected["nonzero_roi"] else 1920 * 4 if expected["forced_bgra_public_mapping"] else source_stride
+            require(case.get("source_stride") == source_stride and case.get("mapped_stride") == mapped_stride
+                    and case.get("mapping_shared") is (not expected["nonzero_roi"] and not expected["forced_bgra_public_mapping"]),
+                    "actual padded/shared/packed mapping layout mismatch")
+            for key in ("mapping_copies", "mapping_copied_bytes", "bgr_conversions", "bgr_converted_bytes"):
+                require(integer(case.get("work", {}).get(key), key) == expected[f"expected_{key}"],
+                        f"direct-format case work mismatch: {case['id']}/{key}")
+        transitions = observed.get("transitions")
+        require(isinstance(transitions, list) and len(transitions) == 3, "existing ROI/format transitions missing")
+        for actual, expected in zip(transitions, declared["transition_cases"]):
+            require(actual.get("correct") is True and all(actual.get(key) == expected[key]
+                    for key in ("id", "selected_format", "region")), "ROI/format transition order/outcome mismatch")
+            require(actual.get("work") == {key: expected[key] for key in
+                    ("mapping_copies", "mapping_copied_bytes", "bgr_conversions", "bgr_converted_bytes")},
+                    "ROI/format transition work mismatch")
+        require(observed.get("work") == {key: value for key, value in DIRECT_FORMAT_WORK.items()
+                                        if key != "backend_find_calls"}
+                and observed.get("backend_find_calls") == 18
+                and observed.get("backend_find_completions") == 18, "direct-format iteration work mismatch")
+        lifetimes = observed.get("lifetimes")
+        require(isinstance(lifetimes, list) and [item.get("id") for item in lifetimes] ==
+                declared["lifetime_order"], "lifetime observation order/count mismatch")
+        for lifetime, order, held, evicted, active in (
+            (lifetimes[0], PERSISTENT_ORDER, (0, 172800, 172800, 172800, 172800, 172800, 0),
+             (0,) * 7, (0,) * 7),
+            (lifetimes[1], ACTIVE_ORDER, (6220800, 12441600, 12441600, 12441600, 12441600, 0),
+             (0, 6220800, 0, 0, 0, 0), (1, 1, 0, 0, 0, 0)),
+        ):
+            checkpoints = lifetime.get("checkpoints")
+            require(isinstance(checkpoints, list) and [point.get("checkpoint") for point in checkpoints] ==
+                    list(order), "lifetime checkpoint order/count mismatch")
+            for point, cache_bytes, evicted_bytes, finds in zip(checkpoints, held, evicted, active):
+                for name in ("cache_held_bgr_bytes", "active_evicted_bgr_bytes", "active_backend_finds"):
+                    integer(point.get(name), name)
+                require(point.get("cache_held_bgr_bytes") == cache_bytes
+                        and point.get("active_evicted_bgr_bytes") == evicted_bytes
+                        and point.get("active_backend_finds") == finds, "finite BGR/active-reader checkpoint mismatch")
+            mapping = (True, True, True, False, False, False, False) if lifetime["id"] == "persistent-hit" else (True, True, False, False, False, False)
+            sources = (True, True, True, True, False, False, False) if lifetime["id"] == "persistent-hit" else (True, True, True, False, False, False)
+            results = (False, True, True, True, True, False, False) if lifetime["id"] == "persistent-hit" else (False, False, True, True, False, False)
+            for point, mapped, source, result in zip(checkpoints, mapping, sources, results):
+                require(point.get("mapping_owner_live") is mapped and point.get("source_frame_alive") is source
+                        and point.get("result_owner_live") is result, "logical owner checkpoint mismatch")
+    for key, per_iteration in DIRECT_FORMAT_WORK.items():
+        require(integer(row["metrics"].get(key), key) == per_iteration * iterations,
+                f"direct-format aggregate work mismatch: {key}")
+    require(row["metrics"].get("final_owner_correct") is True, "direct-format final owner failure")
+
+
 def validate_plan(plan):
     require(plan.get("format_version") == 1 and plan.get("kind") == "campaign", "invalid campaign")
     require(plan.get("mode") in ("calibration", "comparison", "smoke"), "invalid cohort")
     require(plan.get("policy") == POLICY, "policy differs from predeclared collector policy")
+    if plan["mode"] == "smoke":
+        require(plan.get("execution_limits") == SMOKE_LIMITS, "bounded smoke execution policy mismatch")
     target = plan.get("target")
     require(target in TARGETS and plan.get("host", {}).get("target") == target, "host/target mismatch")
     require(plan.get("collector") == collector_identity(), "collector source differs; use the retained collector revision")
@@ -419,7 +580,13 @@ def evaluate(directory):
             require(attempt.get("identity_error") is None, "binary/dependency identity check failed")
             record = attempt.get("record")
             require(isinstance(record, dict) and successful(record), "process failed, timed out, truncated, or cleanup failed")
+            if plan["mode"] == "smoke":
+                timeout = attempt.get("timeout_seconds")
+                require(type(timeout) in (int, float) and math.isfinite(timeout)
+                        and 0 < timeout <= SMOKE_LIMITS["child_timeout_seconds"],
+                        "smoke child deadline missing or relaxed")
             value = strict_json(record["stdout"])
+            loaded_runtime(value, binary)
             if task["workload"] is None:
                 manifests[task["role"]] = manifest_identity(value, plan["target"], binary["build"]["opencv_version"])
             else:
@@ -637,9 +804,15 @@ def collect(args, mode):
                 "schedule": schedule(mode, selected), "exclusive_host": args.exclusive_host,
                 "cwd": str(ROOT), "created_unix_ns": time.time_ns(),
                 "profile_sha256": args.profile_sha256 if profile else None}
+        if mode == "smoke":
+            plan["execution_limits"] = SMOKE_LIMITS
         save(destination / "plan.json", plan)
         plan_hash = sha256(destination / "plan.json")
+        deadline = time.monotonic() + SMOKE_LIMITS["campaign_timeout_seconds"] if mode == "smoke" else None
         for task in plan["schedule"]:
+            remaining = None if deadline is None else deadline - time.monotonic() - SMOKE_LIMITS["cleanup_seconds"]
+            if remaining is not None and remaining <= 0:
+                break
             identity = binaries[task["role"]]
             argv = command(identity, task, mode)
             attempt = {"task": task, "argv": argv, "plan_sha256": plan_hash,
@@ -649,12 +822,19 @@ def collect(args, mode):
             try:
                 check_files(identity)
                 attempt["identity_before"] = identity
+                if deadline is not None:
+                    remaining = deadline - time.monotonic() - SMOKE_LIMITS["cleanup_seconds"]
+                    require(remaining > 0, "campaign deadline reached before child launch")
+                timeout = POLICY["timeout_seconds"] if remaining is None else min(SMOKE_LIMITS["child_timeout_seconds"], remaining)
+                attempt["timeout_seconds"] = timeout
                 attempt["record"] = run_process(argv, cwd=ROOT, env=plan["environment"],
-                                                 timeout_seconds=POLICY["timeout_seconds"],
+                                                 timeout_seconds=timeout,
                                                  output_limit_bytes=POLICY["output_limit_bytes"],
                                                  cleanup_seconds=POLICY["cleanup_seconds"])
                 check_files(identity)
                 attempt["identity_after"] = identity
+                if successful(attempt["record"]):
+                    loaded_runtime(strict_json(attempt["record"]["stdout"]), identity, verify_files=True)
             except (OSError, ValueError) as error:
                 attempt["identity_error"] = str(error)
             except BaseException as error:
@@ -686,11 +866,56 @@ def collect(args, mode):
         return result
 
 
+def attest(args):
+    """Bind an explicit prebuilt executable to its actual loaded OpenCV images."""
+    require(not Path(args.output).exists() and not Path(str(args.output) + ".probe.json").exists(),
+            "attestation destination already exists")
+    require(host_identity()["target"] == args.target, "attestation must run on the actual native target")
+    binary = Path(args.binary).resolve(strict=True)
+    binary_hash = sha256(binary)
+    git, rustc = shutil.which("git"), shutil.which("rustc")
+    require(git is not None and rustc is not None, "attestation requires git and rustc on PATH")
+    git, rustc = str(Path(git).absolute()), str(Path(rustc).absolute())
+    commands = []
+    try:
+        for argv in ([str(binary), "--list"], [git, "rev-parse", "HEAD"],
+                     [git, "rev-parse", "HEAD^{tree}"], [git, "status", "--porcelain"],
+                     [rustc, "-vV"]):
+            record = run_process(argv, cwd=ROOT, env=environment(),
+                                 timeout_seconds=SMOKE_LIMITS["child_timeout_seconds"],
+                                 output_limit_bytes=SMOKE_LIMITS["output_limit_bytes"],
+                                 cleanup_seconds=SMOKE_LIMITS["cleanup_seconds"])
+            commands.append({"argv": argv, "record": record})
+            require(successful(record), f"attestation command failed: {argv}")
+    finally:
+        save(str(args.output) + ".probe.json", {"commands": commands})
+    value = strict_json(commands[0]["record"]["stdout"])
+    runtime = loaded_runtime(value, verify_files=True)
+    manifest_identity(value, args.target, value["opencv_version"])
+    require(sha256(binary) == binary_hash, "binary changed during runtime probe")
+    build = {"target": args.target, "source_revision": commands[1]["record"]["stdout"].strip(),
+             "source_tree": commands[2]["record"]["stdout"].strip(),
+             "source_status_porcelain": commands[3]["record"]["stdout"],
+             "binary_sha256": binary_hash, "cargo_lock_sha256": sha256(ROOT / "Cargo.lock"),
+             "rustc": commands[4]["record"]["stdout"], "build_argv": strict_json(args.build_argv_json),
+             "opencv_version": value["opencv_version"], "dependencies": runtime["images"],
+             "loaded_native_runtime": runtime, "provenance_commands": commands,
+             "attestation_scope": "operator-supplied build command; source commit/tree and dirty status observed, not a reproducible build proof"}
+    validate_build(build, args.target)
+    save(args.output, build)
+    return {"metadata": str(Path(args.output).resolve()), "sha256": sha256(args.output)}
+
+
 def parser():
     result = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter,
                                      epilog="Build metadata JSON: target, binary_sha256, source_revision (40 hex), source_tree (40 hex), cargo_lock_sha256, rustc, build_argv (array), opencv_version, dependencies ([{path: absolute, sha256}]). Metadata attests the build; collector verifies the named executable/dependency bytes, never rebuilds or infers source from the current checkout.")
     commands = result.add_subparsers(dest="command", required=True)
     commands.add_parser("policy", help="print the predeclared workload/noise/envelope policy")
+    binding = commands.add_parser("attest", help="observe a prebuilt executable's actual loaded OpenCV paths; never build")
+    binding.add_argument("--target", choices=TARGETS, required=True)
+    binding.add_argument("--binary", required=True)
+    binding.add_argument("--build-argv-json", required=True, help="exact completed build command as a JSON array")
+    binding.add_argument("--output", required=True, help="new build metadata JSON")
     for name, description in (("calibrate", "five baseline-only processes per row"),
                               ("compare", "separate alternating baseline5/candidate5 per row"),
                               ("smoke", "one short process per row; never performance qualification")):
@@ -722,7 +947,10 @@ def main(argv=None):
     args = parser().parse_args(argv)
     try:
         if args.command == "policy":
-            result = {"policy": POLICY, "workloads": list(DEFINITIONS.values())}
+            result = {"policy": POLICY, "workloads": list(DEFINITIONS.values()),
+                      "smoke_execution_limits": SMOKE_LIMITS, "direct_format_contract": direct_format_contract()}
+        elif args.command == "attest":
+            result = attest(args)
         elif args.command == "freeze":
             evidence = evaluate(args.calibration)
             result = profile_from(evidence, args.calibration, args.reviewer, args.rationale)
