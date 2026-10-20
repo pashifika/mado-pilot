@@ -52,6 +52,9 @@ ownership contracts unchanged.
   rows lazily. The final selected peak needs no suppression or heap reinsertion.
   Finite public scores, inclusive thresholds, signed-zero ties, row-major
   ordering and both suppression modes remain canonical.
+  Each scan tracks a scalar best score and rejects dominated raw values before
+  normalization. The public-score comparison preserves clamped ties; the exact
+  `f64` threshold applies once to the completed maximum, not at every offset.
 
 ### Measurement policy
 
@@ -134,6 +137,21 @@ ROI owners avoid duplicate mapping copies, and dense score-copy bytes are zero.
 The existing `deterministic-slice` and `template-watch-query` smoke preserve their
 eight- and eleven-workload oracles. These are semantic/work observations, not a
 replacement for the frozen target-specific comparison.
+
+The complete Apple comparison at `560d868103f8a00004ae5a9056bf8d879a427f7a`
+retains 212 successful process executions, 26,240 measured samples and 2,680
+warmups, with no oracle, identity or cleanup failure. Numerical acceptance is
+**failed**: 99 conditions fail, including timing, RSS and required benefits.
+The frozen report SHA-256 is
+`e4da49ee3fdf05adb0b929193c2b29c71426bdb2d0d544c41466b798fbfa4226`.
+Windows native performance remains unmeasured. Neither target is qualified.
+
+The scalar scan implementation has a separate bounded diagnostic: one process
+per role with 200 samples for three selection rows, plus short public batch
+smoke. Selection improves against the preserved baseline; the batch smoke does
+not establish repeated-preparation latency or CPU benefit. All 21 public smoke
+rows and 76 OpenCV tests pass. These diagnostics neither replace the complete
+comparison nor change its frozen ceilings.
 
 The allocation API observation is reproducible with `rustc --edition=2024
 --crate-type=lib --emit=metadata -` and stdin

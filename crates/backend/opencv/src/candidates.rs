@@ -218,15 +218,20 @@ impl<'context> SelectionWork<'context> {
         min_score: f64,
     ) -> Result<Option<RowWinner>, Interruption> {
         let mut best: Option<RowWinner> = None;
+        let mut best_score = f64::NEG_INFINITY;
         let mut scanned = 0;
         while scanned < values.len() {
             let count = (CHECKPOINT_OFFSETS - self.since_checkpoint).min(values.len() - scanned);
             for (column, &value) in values[scanned..scanned + count].iter().enumerate() {
-                if !value.is_finite() {
+                // Clamping cannot lift a raw value above an existing public
+                // winner. Reject losers before normalization, but compare the
+                // public score again to preserve ties above one.
+                if !value.is_finite() || f64::from(value) <= best_score {
                     continue;
                 }
                 let score = public_score(value);
-                if score >= min_score && best.is_none_or(|current| score > current.score) {
+                if score > best_score {
+                    best_score = score;
                     best = Some(RowWinner {
                         index: first_index + scanned + column,
                         score,
@@ -238,7 +243,7 @@ impl<'context> SelectionWork<'context> {
             scanned += count;
             self.advance(count)?;
         }
-        Ok(best)
+        Ok(best.filter(|winner| winner.score >= min_score))
     }
 
     fn suppress(
@@ -920,6 +925,28 @@ mod tests {
             .is_empty()
         );
         assert!(extract(&[0.25; 4], search).is_empty());
+    }
+
+    #[test]
+    fn thresholds_between_f32_scores_preserve_the_f64_canonical_prefix() {
+        let scores = [-2.0, -0.0, 0.0, 0.5, 1.0, 1.25];
+        for boundary in [0.0_f64, 0.5, 1.0] {
+            for min_score in [boundary.next_down(), boundary, boundary.next_up()] {
+                for candidate_budget in [1, 16] {
+                    for suppression in [Suppression::KeepAll, Suppression::DropOverlapping] {
+                        assert_canonical(
+                            &scores,
+                            PeakSearch {
+                                min_score,
+                                candidate_budget,
+                                suppression,
+                                ..search(scores.len(), 1)
+                            },
+                        );
+                    }
+                }
+            }
+        }
     }
 
     #[test]

@@ -71,9 +71,10 @@ alone need not flush a surviving backend.
 
 Score selection owns no second dense map. The one-result path scans once;
 multi-result extraction keeps a row-bounded heap and repairs stale winners.
-Different templates still execute independently. These mechanisms remove named
-work, not establish a universal latency or memory improvement; target-specific
-comparison remains required. [ADR 0086](adr/0086-template-matching-preparation-reuse-and-selection-work.md)
+Dominated raw values bypass normalization; the exact threshold is applied to
+each completed scan maximum. Different templates still execute independently.
+These mechanisms remove named work, not establish a universal latency or memory
+improvement. [ADR 0086](adr/0086-template-matching-preparation-reuse-and-selection-work.md)
 records identity, lifetime and numerical acceptance rules.
 
 An Apple Silicon baseline build uses a fresh directory:
@@ -114,6 +115,12 @@ Hosted CI executes the short semantic plan on both targets and retains its JSON
 artifact. Smoke, missing resource observations, a missing target, or a failed
 envelope cannot establish performance acceptance. Existing historical profiles
 and their source/binary identities are unchanged.
+
+The complete Apple comparison of implementation `560d868` is **failed**, despite
+zero oracle failures. RSS/timing guards and repeated-preparation benefit remain
+acceptance blockers. The current scalar scan passes separate bounded selection
+diagnostics and public smoke, not a replacement qualification cohort. Windows
+native performance is **not run**. Both targets remain unqualified for this Change.
 
 ## Where benchmark files live
 
