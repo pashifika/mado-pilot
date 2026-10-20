@@ -118,9 +118,20 @@ and their source/binary identities are unchanged.
 
 The complete Apple comparison of implementation `560d868` is **failed**, despite
 zero oracle failures. RSS/timing guards and repeated-preparation benefit remain
-acceptance blockers. The current scalar scan passes separate bounded selection
-diagnostics and public smoke, not a replacement qualification cohort. Windows
-native performance is **not run**. Both targets remain unqualified for this Change.
+unresolved performance findings. The current scalar scan passes separate bounded
+selection diagnostics and public smoke, not a replacement qualification cohort.
+Windows native performance is **not run**. Neither target has performance
+qualification for this optimization.
+
+[ADR 0087](adr/0087-v0-5-0-release-performance-qualification.md) assigns remaining
+statistical calibration, comparison and adjustment to the selected v0.5.0 release
+candidate. Development integration still requires correctness, operation/source
+authority, finite resource ownership, affected compatibility checks and CI.
+Release preparation reviews any prospective method/profile before candidate
+acceptance data, distinguishes actual consumer timing from component replay,
+and requires reruns or reviewed applicability after relevant source changes.
+This scheduling decision changes no frozen ceiling, failed verdict or historical
+source identity; a completed development checklist is not performance acceptance.
 
 ## Where benchmark files live
 

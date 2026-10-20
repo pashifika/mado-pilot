@@ -1,6 +1,6 @@
 # ADR 0086: Template-matching preparation reuse and selection work
 
-- **Status:** Accepted
+- **Status:** Accepted; statistical qualification timing/ownership superseded by [ADR 0087](0087-v0-5-0-release-performance-qualification.md)
 - **Date:** 2026-10-20
 - **Resolves gate:** none
 - **Supersedes:** none
@@ -56,7 +56,7 @@ ownership contracts unchanged.
   normalization. The public-score comparison preserves clamped ties; the exact
   `f64` threshold applies once to the completed maximum, not at every offset.
 
-### Measurement policy
+### Frozen PR87 measurement policy
 
 The opt-in collector fixes 21 first-party rows before optimization: 13
 statistical rows with 20 warmups and 200 retained samples, plus eight short
@@ -83,9 +83,11 @@ payload must be zero. Each process must pass; improved medians cannot cancel a
 failed process.
 
 Numerical profiles require successful target-specific calibration and review
-before candidate timing. Missing or failed target evidence leaves this Change
-incomplete. Hosted semantic smoke is not performance qualification. Historical
-profiles keep their original source and binary identities.
+before candidate timing. Missing or failed target evidence leaves performance
+acceptance incomplete; ADR 0087 assigns remaining execution to v0.5.0 release
+preparation rather than the individual implementation Change. Hosted semantic
+smoke is not performance qualification. Historical profiles keep their original
+source and binary identities.
 
 ## Alternatives
 
@@ -152,6 +154,28 @@ smoke. Selection improves against the preserved baseline; the batch smoke does
 not establish repeated-preparation latency or CPU benefit. All 21 public smoke
 rows and 76 OpenCV tests pass. These diagnostics neither replace the complete
 comparison nor change its frozen ceilings.
+
+A separate admission-only diagnostic uses base `a9312d1d` plus a retained
+temporary harness: 72 valid Apple processes, 1,768 groups and 7,228 request
+oracles. Normal builds exclude work/heap instrumentation. With result limit
+eight, full BGRA median process p95 falls 0.201%, while mean process CPU rises
+0.698%; joint preparation benefit remains unestablished. Two additional sampled
+runs place about 98% of main-thread observations under OpenCV `matchTemplate`,
+not an equivalent share of CPU or a stage-duration measurement.
+The sampled image lists also include `libtbbmalloc.2.19.dylib` outside the
+26-file preflight set. Its matching image UUID and file hash are recorded only
+post-run; complete runtime-image provenance is not established for this diagnostic.
+
+In twelve-cycle lifetime observations, retained BGR survives frame/result release
+and clears at backend release; counted Rust heap returns to its initial level.
+The evicted gauge stays zero at observed checkpoints: concurrent active-evicted
+ownership and persistent cache-hit lifetimes are not exercised here.
+Malloc-reported live bytes are flat in 15 of 16 cycle-end trajectories over
+cycles 4–12; one has a 192-byte step. Final RSS equals observed peak RSS and
+remains higher with retention in eviction. These facts neither prove all-native
+leak freedom nor waive resource guards. The retained record is
+`preparation-isolation-aarch64-apple-darwin-01.json`; no implementation, scope or
+qualification policy changes follow from it.
 
 The allocation API observation is reproducible with `rustc --edition=2024
 --crate-type=lib --emit=metadata -` and stdin

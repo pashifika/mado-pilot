@@ -2679,6 +2679,13 @@ checkpoints and each caller's final commit preserve cancellation/deadline
 authority independently of reusable preparation. See
 [ADR 0086](adr/0086-template-matching-preparation-reuse-and-selection-work.md).
 
+Development integration retains semantic, ownership, bounded-resource and
+compatibility verification. [ADR 0087](adr/0087-v0-5-0-release-performance-qualification.md)
+assigns the optimization's remaining statistical performance qualification to the
+selected v0.5.0 release candidate, without changing failed or missing historical
+results. Both-target performance claims require their own applicable evidence;
+planning or integration completion does not provide it.
+
 Public scores are compared against a tolerance rather than exactly, on one host as
 well as across the two. OpenCV normalizes through integral images and correlates a
 whole region at once, so a score carries rounding from arithmetic involving pixels
