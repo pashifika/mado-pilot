@@ -13,6 +13,7 @@ qualification-unsupported-api = ["mado-pilot-platform-windows/qualification-unsu
 coreml-provider = ["mado-pilot-backend-onnx/coreml-provider"]
 cuda-provider = ["mado-pilot-backend-onnx/cuda-provider"]
 ocr-text-watch-qualification = ["mado-pilot-backend-onnx/benchmark-instrumentation"]
+template-matching-benchmark = ["mado-pilot-backend-opencv/benchmark-instrumentation"]
 native-template-watch-qualification = [
     "mado-pilot-runtime/benchmark-instrumentation",
     "mado-pilot-backend-opencv/benchmark-instrumentation",
@@ -70,6 +71,11 @@ required-features = ["native-template-watch-qualification"]
 [[bench]]
 name = "ocr-text-watch-query"
 harness = false
+
+[[bench]]
+name = "template-matching-efficiency"
+harness = false
+required-features = ["template-matching-benchmark"]
 
 [lints]
 workspace = true

@@ -136,6 +136,8 @@ pub(crate) fn peaks(
     // Suppression writes into a copy so the caller's map stays intact, and it
     // writes `NAN` because the scan already skips non-finite offsets.
     let mut remaining = scores[..offsets].to_vec();
+    #[cfg(feature = "benchmark-instrumentation")]
+    let mut observation = crate::benchmark_instrumentation::ScoreObservation::new(offsets);
     let mut found = Vec::new();
     // Offsets compared since the context was last read. The caller checks the
     // context immediately before calling, so the first scan starts owing
@@ -150,6 +152,8 @@ pub(crate) fn peaks(
             compared = 0;
         }
         compared = compared.saturating_add(offsets);
+        #[cfg(feature = "benchmark-instrumentation")]
+        observation.scan(offsets);
 
         let Some((left, top, score)) = greatest(&remaining, search.width) else {
             break;

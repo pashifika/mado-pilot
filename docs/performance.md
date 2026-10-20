@@ -52,6 +52,55 @@ source-bound runner validates each required metric and accepted profile/ADR,
 then combines numerical comparisons with independent semantic/identity/cleanup
 gates. Complete precursor observations alone do not qualify a numerical budget.
 
+## Rust template-matching work efficiency
+
+`template-matching-efficiency` is a capture-free Rust benchmark, enabled only by
+the facade's `template-matching-benchmark` feature. Its 21 fixed rows cover public
+replay/OpenCV matching, score selection, eight distinct templates, retained and
+released ROI owners, concurrent calls, source collisions, eviction, oversized
+inputs, and both fixed watcher change policies. `--list` prints the first-party
+generated corpus manifest and hashes; `--smoke` runs one warmup and three samples.
+No row opens a capture device, injects input, or runs OCR.
+
+An Apple Silicon baseline build uses a fresh directory:
+
+```sh
+CARGO_TARGET_DIR=target/template-efficiency-baseline \
+  python3 tools/setup-native.py -- cargo bench --locked \
+  --config 'profile.bench.build-override.strip="none"' \
+  --package mado-pilot --features template-matching-benchmark \
+  --bench template-matching-efficiency --no-run
+```
+
+Windows uses its native x64 MSVC/OpenCV environment and a separate build directory.
+Never reuse a hash-bound baseline or candidate directory for later Cargo checks;
+verification has its own `CARGO_TARGET_DIR`.
+
+`tools/template-matching-efficiency.py` consumes explicitly named prebuilt
+executables. Its JSON format version 1 is separate from the legacy TOML format
+below. `policy` prints the fixed sampling and envelope formulas. `calibrate`
+retains five fresh baseline processes per row; `freeze` records a reviewed,
+hash-bound numerical profile; `compare` runs a separate alternating five-baseline,
+five-candidate cohort per row. Performance rows use 20 warmups and 200 retained
+samples; lifecycle-only rows retain their explicit short plan. Every process
+retains its output, status, source/binary/dependency identities and raw samples.
+Build metadata is an operator attestation, not a reproducible-build proof.
+
+Each process must meet its own correctness, p95, aggregate-CPU and resource
+ceilings. Improvement rows additionally require median p95 and CPU reductions
+beyond their frozen variability/accounting allowance. CPU accounting units are
+not a claim of effective clock accuracy. Peak resources include setup and
+warmup; same-owner-state growth and final-owner residual have separate ceilings.
+The 32 MiB live prepared-image allowance applies once to native RSS peak, never
+to Rust heap, steady growth or final-owner residual. Evicted BGR payload awaiting
+its last owner is reported separately from cache-held bytes. The runner preserves
+supplied thread settings rather than tuning them.
+
+Hosted CI executes the short semantic plan on both targets and retains its JSON
+artifact. Smoke, missing resource observations, a missing target, or a failed
+envelope cannot establish performance acceptance. Existing historical profiles
+and their source/binary identities are unchanged.
+
 ## Where benchmark files live
 
 A phase commits one file per **run** under `docs/benchmarks/`, named
@@ -151,6 +200,13 @@ A budget names one measure. The version-one vocabulary is:
 | `steady_allocated_bytes` | bytes | Live heap bytes when the sampled run finished, above the same baseline, with the fixture still alive. |
 | `allocated_growth_bytes` | bytes | Signed change in live heap bytes across the sampled run alone. A hard gate, on the same terms as `memory_growth`. |
 | `copied_bytes_per_result` | bytes | Producer-surface bytes copied while producing one retained sample. The report keeps the largest sample, so unexpected duplicate copies remain visible. |
+| `cpu_ns` | nanoseconds | Sum of retained sample process-CPU deltas, with accounting resolution recorded separately. |
+| `score_copied_bytes` | bytes | Physically duplicated score-map storage observed by the opt-in selector instrumentation. |
+| `score_offsets_scanned` | count | Score offsets inspected by production selection, including row repairs. |
+| `mapping_copied_bytes` | bytes | Actual packed CPU mapping copies; distinct from logical mapped-view extents. |
+| `bgr_converted_bytes` | bytes | Packed BGR payload produced by completed region conversions. |
+| `bgr_retained_bytes` | bytes | Current cache-owned BGR payload across observed backend instances, excluding active evicted owners. |
+| `allocations` | count | Successful Rust allocation/reallocation calls within the named observation interval. |
 | `detached_textures_peak` | count | Maximum simultaneously live Adapter-owned detached textures during one workload. |
 | `staging_textures_peak` | count | Maximum simultaneously live CPU-readable staging textures during one workload. |
 | `gpu_resources_peak` | count | Maximum simultaneously live producer, detached, and staging textures during one workload. |

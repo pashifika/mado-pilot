@@ -121,6 +121,8 @@ pub(crate) fn region_to_bgr(pixels: &CpuMapping) -> Result<Mat, ImageFault> {
 
     cvt_color_def(&view, &mut bgr, COLOR_BGRA2BGR).map_err(|_| ImageFault::Rejected)?;
     drop(view);
+    #[cfg(feature = "benchmark-instrumentation")]
+    crate::benchmark_instrumentation::record_bgr_conversion(bgr.total().saturating_mul(3));
 
     Ok(bgr)
 }

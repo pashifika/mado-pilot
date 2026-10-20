@@ -65,5 +65,5 @@ pub use controlled_ocr::{
 };
 pub use controlled_storage::{ControlledProducer, Conversion};
 pub use mado_pilot_capture::{CaptureProvider, CaptureSession, Publication, StreamState};
-pub use mado_pilot_vision::{Candidate, MatchBackend};
+pub use mado_pilot_vision::{Candidate, MatchBackend, MatchRequest};
 pub use scripted_permission::{Answer, ScriptedPermissionProbe};

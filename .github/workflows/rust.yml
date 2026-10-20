@@ -416,6 +416,19 @@ jobs:
         shell: bash
         run: cargo bench --locked --package mado-pilot --bench template-watch-query
 
+      - name: Check and run capture-free Rust matching efficiency smoke
+        shell: bash
+        run: |
+          cargo clippy --locked --package mado-pilot --features template-matching-benchmark --bench template-matching-efficiency -- -D warnings
+          cargo bench --locked --package mado-pilot --features template-matching-benchmark --bench template-matching-efficiency -- --smoke > "${RUNNER_TEMP}/template-matching-efficiency-smoke.json"
+
+      - name: Preserve matching efficiency smoke observations
+        if: always()
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        with:
+          name: matching-efficiency-smoke-windows
+          path: ${{ runner.temp }}/template-matching-efficiency-smoke.json
+
       - name: Compile the native template-watch Lane B and Lane C runners
         shell: bash
         run: cargo check --locked --package mado-pilot --bench native-template-watch --features native-template-watch-qualification
@@ -756,6 +769,19 @@ jobs:
       - name: Run the required template-watch Lane A replay contract
         shell: bash
         run: cargo bench --locked --package mado-pilot --bench template-watch-query
+
+      - name: Check and run capture-free Rust matching efficiency smoke
+        shell: bash
+        run: |
+          cargo clippy --locked --package mado-pilot --features template-matching-benchmark --bench template-matching-efficiency -- -D warnings
+          cargo bench --locked --config 'profile.bench.build-override.strip="none"' --package mado-pilot --features template-matching-benchmark --bench template-matching-efficiency -- --smoke > "${RUNNER_TEMP}/template-matching-efficiency-smoke.json"
+
+      - name: Preserve matching efficiency smoke observations
+        if: always()
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        with:
+          name: matching-efficiency-smoke-macos
+          path: ${{ runner.temp }}/template-matching-efficiency-smoke.json
 
       - name: Compile the native template-watch Lane B and Lane C runners
         shell: bash

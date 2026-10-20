@@ -50,6 +50,11 @@
 //! removing one is a breaking change needing an ADR and a version bump, while
 //! adding is free. The stability promise itself begins at 1.0.
 
+/// Opt-in observations of physical CPU mapping copies.
+#[cfg(feature = "benchmark-instrumentation")]
+#[doc(hidden)]
+pub mod benchmark_instrumentation;
+
 pub mod descriptor;
 pub mod discovery;
 pub mod fault;

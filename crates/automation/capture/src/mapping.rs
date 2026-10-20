@@ -275,6 +275,9 @@ fn copy_region(
         swap_red_and_blue(&mut output);
     }
 
+    #[cfg(feature = "benchmark-instrumentation")]
+    crate::benchmark_instrumentation::record_copy(output.len());
+
     Ok(output.into_boxed_slice())
 }
 
