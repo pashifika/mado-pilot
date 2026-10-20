@@ -66,6 +66,8 @@ pub mod storage;
 pub mod stream;
 pub mod window;
 
+mod mapping_cache;
+
 pub use descriptor::{
     CoordinateSupport, FrameDescriptor, OverflowPolicy, PixelFormat, QueuePolicy,
     RetainedStoragePolicy, SessionDescription, TargetDescription, TargetProcessIdentity,

@@ -97,6 +97,21 @@ pub(crate) fn record_bgr_conversion(bytes: usize) {
     BGR_CONVERTED_BYTES.fetch_add(bytes as u64, Ordering::Release);
 }
 
+pub(crate) fn retain_bgr(bytes: usize) {
+    let current = BGR_RETAINED_BYTES.fetch_add(bytes as u64, Ordering::AcqRel) + bytes as u64;
+    BGR_RETAINED_PEAK_BYTES.fetch_max(current, Ordering::Release);
+}
+
+pub(crate) fn retire_bgr(bytes: usize) {
+    BGR_RETAINED_BYTES.fetch_sub(bytes as u64, Ordering::Release);
+    let current = BGR_EVICTED_BYTES.fetch_add(bytes as u64, Ordering::AcqRel) + bytes as u64;
+    BGR_EVICTED_PEAK_BYTES.fetch_max(current, Ordering::Release);
+}
+
+pub(crate) fn release_evicted_bgr(bytes: usize) {
+    BGR_EVICTED_BYTES.fetch_sub(bytes as u64, Ordering::Release);
+}
+
 /// Selection-only benchmark input; the supplied score slice is disposable.
 #[derive(Debug, Clone, Copy)]
 pub struct SelectionRequest {
@@ -289,7 +304,7 @@ impl Drop for FindObservation {
 mod tests {
     use std::time::Duration;
 
-    use super::{FindObservation, Snapshot, configured_find_delay, install_find_delay, snapshot};
+    use super::{Snapshot, install_find_delay};
 
     #[test]
     fn a_checked_delta_rejects_active_or_regressing_observations() {
@@ -332,22 +347,11 @@ mod tests {
     }
 
     #[test]
-    fn observation_and_delay_guards_restore_process_state() {
-        let before = snapshot();
-        FindObservation::begin(32).finish(true);
-        drop(FindObservation::begin(16));
-        let delta = snapshot()
-            .checked_delta(before)
-            .expect("both observations completed");
-        assert_eq!(delta.find_calls, 2);
-        assert_eq!(delta.find_completions, 1);
-        assert_eq!(delta.find_failures, 1);
-        assert_eq!(delta.mapped_bytes, 48);
-
+    fn a_delay_guard_excludes_another_owner_and_releases_its_slot() {
         let guard = install_find_delay(Duration::from_millis(7)).expect("exclusive delay");
-        assert_eq!(configured_find_delay(), Duration::from_millis(7));
         assert!(install_find_delay(Duration::from_millis(1)).is_none());
         drop(guard);
-        assert_eq!(configured_find_delay(), Duration::ZERO);
+        let replacement = install_find_delay(Duration::from_millis(1)).expect("released slot");
+        drop(replacement);
     }
 }

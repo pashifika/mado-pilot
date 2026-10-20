@@ -566,3 +566,124 @@ fn a_result_keeps_its_own_source_after_a_later_frame_exists() {
         vec![planted_bounds(0), planted_bounds(1)]
     );
 }
+
+#[test]
+fn one_retained_frame_keeps_different_template_results_independent() {
+    let matcher = matcher();
+    let frame = match_fixtures::scene_frame(PixelFormat::Rgba8);
+    let context = OperationContext::new();
+    let present = matcher
+        .prepare(&planted_template("present"), &context)
+        .expect("present template");
+    let absent = matcher
+        .prepare(&absent_template("absent"), &context)
+        .expect("absent template");
+    for (selection, expected) in [
+        (
+            RegionSelection::FullFrame,
+            vec![planted_bounds(0), planted_bounds(1)],
+        ),
+        (
+            RegionSelection::Region {
+                rect: rect(10.0, 5.0, 45.0, 30.0),
+                policy: ClipPolicy::Reject,
+            },
+            vec![planted_bounds(0)],
+        ),
+    ] {
+        for (template, expected_bounds) in [
+            (&present, expected.as_slice()),
+            (&absent, [].as_slice()),
+            (&present, expected.as_slice()),
+        ] {
+            let result = matcher
+                .find(
+                    MatchRequest::new(&frame, selection, template, options(0.9)),
+                    &context,
+                )
+                .expect("independent search");
+            assert_eq!(bounds_of(&result), expected_bounds);
+            assert_eq!(result.stamp(), frame.stamp());
+        }
+    }
+}
+
+#[test]
+fn equal_stamp_frames_never_share_different_pixels() {
+    let matcher = matcher();
+    let scene = match_fixtures::scene_frame(PixelFormat::Rgba8);
+    let background = mado_pilot_capture::Frame::new(
+        scene.stamp(),
+        scene.captured_at(),
+        scene.descriptor(),
+        *scene.transform(),
+        match_fixtures::background_pixels(PixelFormat::Rgba8).into_boxed_slice(),
+    )
+    .expect("same metadata with independent immutable pixels");
+    let context = OperationContext::new();
+    let prepared = matcher
+        .prepare(&planted_template("patch"), &context)
+        .expect("template");
+    for (frame, expected) in [
+        (&scene, vec![planted_bounds(0), planted_bounds(1)]),
+        (&background, vec![]),
+        (&scene, vec![planted_bounds(0), planted_bounds(1)]),
+    ] {
+        let result = matcher
+            .find(
+                MatchRequest::new(frame, RegionSelection::FullFrame, &prepared, options(0.9)),
+                &context,
+            )
+            .expect("search");
+        assert_eq!(bounds_of(&result), expected);
+        assert_eq!(result.stamp(), scene.stamp());
+    }
+}
+
+#[test]
+fn backend_preparation_uses_the_mapping_region_not_the_diagnostic_region() {
+    let backend = OpenCvBackend::new().expect("backend");
+    let frame = match_fixtures::scene_frame(PixelFormat::Rgba8);
+    let context = OperationContext::new();
+    let template = backend
+        .prepare(&planted_template("patch"), &context)
+        .expect("template");
+    let diagnostic = PixelRect::new(999, 999, 1011, 1009).expect("diagnostic rectangle");
+    for format in [PixelFormat::Bgra8, PixelFormat::Rgba8, PixelFormat::Bgra8] {
+        for (region, present) in [
+            (rect(20.0, 12.0, 32.0, 22.0), true),
+            (rect(0.0, 0.0, 12.0, 10.0), false),
+            (rect(20.0, 12.0, 32.0, 22.0), true),
+        ] {
+            let pixels = frame
+                .view(region, ClipPolicy::Reject)
+                .expect("view")
+                .map(format, &context)
+                .expect("pixels");
+            let outcome = backend.find(
+                &mado_pilot_vision::BackendRequest {
+                    template: &template,
+                    pixels: &pixels,
+                    region: diagnostic,
+                    options: options(0.9),
+                },
+                &context,
+            );
+            if format == PixelFormat::Rgba8 {
+                assert_eq!(
+                    outcome.expect_err("profile requires BGRA").status(),
+                    Status::VisionFailed
+                );
+                continue;
+            }
+            let found = outcome.expect("search");
+            if present {
+                assert_eq!(found.len(), 1);
+                assert_eq!(found[0].origin(), (0, 0));
+                assert!((found[0].score() - EXACT_MATCH_SCORE).abs() < SCORE_TOLERANCE);
+            } else {
+                assert!(found.is_empty());
+            }
+        }
+    }
+}

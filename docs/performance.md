@@ -62,6 +62,20 @@ inputs, and both fixed watcher change policies. `--list` prints the first-party
 generated corpus manifest and hashes; `--smoke` runs one warmup and three samples.
 No row opens a capture device, injects input, or runs OCR.
 
+Live cropped/channel-converted mappings reuse only weakly indexed, still-owned
+pixels. Backend clones separately share at most two immutable BGR images and
+33,554,432 retained payload bytes; this does not retain mapping reservations.
+Independent backends each have that allowance. Expired sources are pruned on
+access, and final backend ownership releases retained images; closing a session
+alone need not flush a surviving backend.
+
+Score selection owns no second dense map. The one-result path scans once;
+multi-result extraction keeps a row-bounded heap and repairs stale winners.
+Different templates still execute independently. These mechanisms remove named
+work, not establish a universal latency or memory improvement; target-specific
+comparison remains required. [ADR 0086](adr/0086-template-matching-preparation-reuse-and-selection-work.md)
+records identity, lifetime and numerical acceptance rules.
+
 An Apple Silicon baseline build uses a fresh directory:
 
 ```sh
