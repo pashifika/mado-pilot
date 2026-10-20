@@ -98,8 +98,8 @@ def parsed_evidence(root, mode):
     cohorts = {}
     for role in specification["binaries"]:
         cohorts[role] = {
-            workload: [collector.observations(payload(workload, candidate=role == "candidate"), frozen, workload, False)
-                       for _ in range(5)]
+            workload: [{**collector.observations(payload(workload, candidate=role == "candidate"), frozen, workload, False),
+                        "process": process} for process in range(5)]
             for workload in collector.DEFINITIONS
         }
     return {"plan": specification, "plan_sha256": "1" * 64, "attempts": [], "manifest": frozen,
@@ -160,21 +160,35 @@ class ParserTests(unittest.TestCase):
         with self.assertRaisesRegex(ValueError, "aggregate CPU"):
             self.parse(value)
 
-    def test_missing_native_memory_is_incomplete_not_a_passing_zero(self):
-        value = payload(self.workload)
-        value["workloads"][0]["metrics"].update(peak_rss_bytes=None, native_resource_reason="API unavailable")
-        with self.assertRaises(collector.Incomplete):
-            self.parse(value)
-        value = payload(self.workload, smoke=True)
-        value["workloads"][0]["metrics"].update(peak_rss_bytes=None, native_resource_reason="API unavailable")
-        self.assertIn("peak_rss_bytes", self.parse(value, smoke=True)["unavailable"])
+    def test_missing_native_memory_retains_partial_summary_without_a_passing_zero(self):
+        for smoke in (False, True):
+            with self.subTest(smoke=smoke):
+                value = payload(self.workload, smoke=smoke)
+                value["workloads"][0]["metrics"].update(peak_rss_bytes=None, native_resource_reason="API unavailable")
+                result = self.parse(value, smoke=smoke)
+                self.assertIsNone(result["peak_rss_bytes"])
+                self.assertIn("peak_rss_bytes", result["unavailable"])
+                self.assertEqual(result["peak_heap_bytes"], 8 * collector.MIB)
+                self.assertEqual(result["cpu_ns"], value["workloads"][0]["metrics"]["cpu_ns"])
 
-    def test_missing_cpu_is_incomplete_and_not_substituted(self):
+    def test_missing_cpu_retains_partial_summary_without_substitution(self):
         value = payload(self.workload)
         value["workloads"][0]["samples"][3]["cpu_ns"] = None
         value["workloads"][0]["metrics"].update(cpu_ns=None, cpu_reason="CPU clock unavailable")
-        with self.assertRaises(collector.Incomplete):
-            self.parse(value)
+        result = self.parse(value)
+        self.assertIsNone(result["cpu_ns"])
+        self.assertIn("samples[3].cpu_ns", result["unavailable"])
+        self.assertEqual(result["p95_ns"], 1_000_000)
+        self.assertEqual(result["peak_rss_bytes"], 16 * collector.MIB)
+
+    def test_missing_cpu_resolution_retains_known_cpu_and_memory(self):
+        value = payload(self.workload)
+        value["cpu_timer_resolution_ns"] = None
+        result = self.parse(value)
+        self.assertIsNone(result["cpu_timer_resolution_ns"])
+        self.assertIn("cpu_timer_resolution_ns", result["unavailable"])
+        self.assertEqual(result["cpu_ns"], 100_000_000)
+        self.assertEqual(result["peak_rss_bytes"], 16 * collector.MIB)
 
     def test_final_owner_payload_and_live_bounds_are_independent(self):
         for metric, bad in (("bgr_retained_after_drop_bytes", 1),
@@ -321,6 +335,169 @@ class AcceptanceTests(unittest.TestCase):
         issues, _ = collector.compare_evidence(self.comparison, self.profile)
         self.assertTrue(any(issue["status"] == "incomplete" for issue in issues))
 
+    def test_missing_processes_preserve_every_known_ceiling_and_actual_identity(self):
+        workload = "selection-k16-dense1080p-keepall"
+        for role in ("baseline", "candidate"):
+            for metric, limit in self.profile["envelopes"][workload]["limits"].items():
+                with self.subTest(role=role, metric=metric):
+                    changed = copy.deepcopy(self.comparison)
+                    rows = changed["observations"][role][workload]
+                    rows.pop(1)
+                    rows[-1][metric] = limit + 1
+                    issues, benefits = collector.compare_evidence(changed, self.profile)
+                    self.assertTrue(any(issue["status"] == "failed"
+                                        and issue["attempt"] == f"{role}:{workload}:4"
+                                        and metric in issue["reason"] for issue in issues))
+                    self.assertTrue(any(issue["status"] == "incomplete" for issue in issues))
+                    self.assertNotIn(workload, benefits)
+
+    def test_independent_work_failures_survive_either_missing_role_cohort(self):
+        cases = (("batch8-cold-full1080p", "bgr_conversions", 1760),
+                 ("batch8-live-owner-roi320x180", "mapping_copies", 1760),
+                 ("selection-k16-dense1080p-keepall", "score_copied_bytes", 1))
+        for workload, metric, value in cases:
+            for missing_role in ("baseline", "candidate"):
+                with self.subTest(metric=metric, missing_role=missing_role):
+                    changed = copy.deepcopy(self.comparison)
+                    changed["observations"][missing_role][workload].pop(1)
+                    changed["observations"]["candidate"][workload][-1]["metrics"][metric] = value
+                    issues, benefits = collector.compare_evidence(changed, self.profile)
+                    self.assertTrue(any(issue["status"] == "failed"
+                                        and issue["attempt"] == f"candidate:{workload}:4" for issue in issues))
+                    self.assertTrue(any(issue["status"] == "incomplete" for issue in issues))
+                    self.assertNotIn(workload, benefits)
+
+    def test_baseline_relative_offsets_require_five_rows_not_unrelated_observations(self):
+        workload = "selection-k16-dense1080p-keepall"
+        for missing in ("process", "observation"):
+            with self.subTest(missing=missing):
+                changed = copy.deepcopy(self.comparison)
+                baseline = changed["observations"]["baseline"][workload]
+                if missing == "process":
+                    baseline.pop()
+                else:
+                    value = payload(workload)
+                    value["cpu_timer_resolution_ns"] = None
+                    baseline[0] = {**collector.observations(value, changed["manifest"], workload, False), "process": 0}
+                changed["observations"]["candidate"][workload][0]["metrics"]["score_offsets_scanned"] = 100_000_000
+                issues, benefits = collector.compare_evidence(changed, self.profile)
+                self.assertTrue(any(issue["status"] == "incomplete" for issue in issues))
+                self.assertEqual(any(issue["status"] == "failed"
+                                     and issue["attempt"] == f"candidate:{workload}:0" for issue in issues),
+                                 missing == "observation")
+                self.assertNotIn(workload, benefits)
+        self.comparison["observations"]["candidate"][workload].pop(1)
+        self.comparison["observations"]["candidate"][workload][-1]["metrics"]["score_offsets_scanned"] = 100_000_000
+        issues, _ = collector.compare_evidence(self.comparison, self.profile)
+        self.assertTrue(any(issue["status"] == "failed"
+                            and issue["attempt"] == f"candidate:{workload}:4" for issue in issues))
+
+    def test_missing_cohorts_cannot_claim_median_benefits(self):
+        workload = "batch8-cold-full1080p"
+        for role in ("baseline", "candidate"):
+            for remaining in (0, 4):
+                with self.subTest(role=role, remaining=remaining):
+                    changed = copy.deepcopy(self.comparison)
+                    for row in changed["observations"]["candidate"][workload]:
+                        for metric in ("p95_ns", "cpu_ns"):
+                            row[metric] = changed["observations"]["baseline"][workload][0][metric]
+                    changed["observations"][role][workload] = changed["observations"][role][workload][:remaining]
+                    issues, benefits = collector.compare_evidence(changed, self.profile)
+                    self.assertTrue(issues)
+                    self.assertTrue(all(issue["status"] == "incomplete" for issue in issues))
+                    self.assertNotIn(workload, benefits)
+
+    def test_known_benefit_failures_survive_unavailable_rss_or_cpu_resolution(self):
+        workload = "selection-k16-dense1080p-keepall"
+        for metric in ("p95_ns", "cpu_ns"):
+            for missing in ("rss", "cpu-resolution"):
+                for role in ("baseline", "candidate"):
+                    with self.subTest(metric=metric, missing=missing, role=role):
+                        changed = copy.deepcopy(self.comparison)
+                        value = payload(workload, candidate=role == "candidate")
+                        if missing == "rss":
+                            value["workloads"][0]["metrics"].update(
+                                peak_rss_bytes=None, native_resource_reason="API unavailable")
+                        else:
+                            value["cpu_timer_resolution_ns"] = None
+                        changed["observations"][role][workload][0] = {
+                            **collector.observations(value, changed["manifest"], workload, False), "process": 0}
+                        baseline = changed["observations"]["baseline"][workload][0][metric]
+                        allowance = self.profile["envelopes"][workload]["benefit_allowances"][metric]
+                        for row in changed["observations"]["candidate"][workload]:
+                            row[metric] = baseline - allowance
+                        issues, benefits = collector.compare_evidence(changed, self.profile)
+                        failures = [issue for issue in issues if issue["status"] == "failed"]
+                        self.assertEqual(len(failures), 1)
+                        self.assertIn(f"{metric} benefit", failures[0]["reason"])
+                        self.assertTrue(any(issue["status"] == "incomplete" for issue in issues))
+                        self.assertNotIn(workload, benefits)
+
+    def test_known_p95_benefit_failure_does_not_judge_unavailable_cpu(self):
+        workload = "selection-k16-dense1080p-keepall"
+        value = payload(workload, candidate=True)
+        value["workloads"][0]["samples"][3]["cpu_ns"] = None
+        value["workloads"][0]["metrics"].update(cpu_ns=None, cpu_reason="CPU clock unavailable")
+        candidates = self.comparison["observations"]["candidate"][workload]
+        candidates[0] = {**collector.observations(value, self.comparison["manifest"], workload, False), "process": 0}
+        baseline = self.comparison["observations"]["baseline"][workload][0]
+        allowance = self.profile["envelopes"][workload]["benefit_allowances"]["p95_ns"]
+        for row in candidates:
+            row["p95_ns"] = baseline["p95_ns"] - allowance
+            if row["cpu_ns"] is not None:
+                row["cpu_ns"] = baseline["cpu_ns"]
+        issues, benefits = collector.compare_evidence(self.comparison, self.profile)
+        failures = [issue for issue in issues if issue["status"] == "failed"]
+        self.assertEqual(len(failures), 1)
+        self.assertIn("p95_ns benefit", failures[0]["reason"])
+        self.assertFalse(any("cpu_ns benefit" in issue["reason"] for issue in issues))
+        self.assertTrue(any(issue["status"] == "incomplete" for issue in issues))
+        self.assertNotIn(workload, benefits)
+
+    def test_partial_process_reports_incomplete_unless_an_available_fact_fails(self):
+        calibration, comparison = self.root / "calibration", self.root / "comparison"
+        persist_campaign(calibration, "calibration")
+        profile = collector.profile_from(collector.evaluate(calibration), calibration, "reviewer", "controlled host")
+        specification = persist_campaign(comparison, "comparison", profile=profile)
+        workload = "selection-k16-dense1080p-keepall"
+        task = next(task for task in specification["schedule"]
+                    if task["role"] == "candidate" and task["workload"] == workload and task["process"] == 4)
+        path = comparison / "attempts" / f"{task['id']}.json"
+        original = collector.load(path)
+        cases = (("cpu-resolution", "cpu_timer_resolution_ns", "peak_rss_bytes"),
+                 ("cpu", "cpu_ns", "score_copied_bytes"),
+                 ("memory", "peak_heap_bytes", "peak_rss_bytes"))
+        for missing, unavailable, failure in cases:
+            for known_failure in (False, True):
+                with self.subTest(missing=missing, known_failure=known_failure):
+                    attempt = copy.deepcopy(original)
+                    value = collector.strict_json(attempt["record"]["stdout"])
+                    row = value["workloads"][0]
+                    if missing == "cpu-resolution":
+                        value["cpu_timer_resolution_ns"] = None
+                    elif missing == "cpu":
+                        row["samples"][3]["cpu_ns"] = None
+                        row["metrics"].update(cpu_ns=None, cpu_reason="CPU clock unavailable")
+                    else:
+                        row["metrics"].update(peak_heap_bytes=None, native_resource_reason="API unavailable")
+                    if known_failure:
+                        row["metrics"][failure] = (1 if failure == "score_copied_bytes"
+                                                   else profile["envelopes"][workload]["limits"][failure] + 1)
+                    attempt["record"]["stdout"] = json.dumps(value)
+                    path.write_bytes(collector.document(attempt))
+                    result = collector.report(comparison)
+                    self.assertEqual(result["status"], "failed" if known_failure else "incomplete")
+                    self.assertFalse(result["performance_qualified"])
+                    self.assertTrue(any(issue["status"] == "incomplete" for issue in result["issues"]))
+                    self.assertEqual(any(issue["status"] == "failed"
+                                         and issue["attempt"] == f"candidate:{workload}:4"
+                                         for issue in result["issues"]), known_failure)
+                    summary = result["process_observations"]["candidate"][workload][-1]
+                    self.assertEqual(summary["process"], 4)
+                    self.assertIsNone(summary[unavailable])
+                    self.assertTrue(summary["unavailable"])
+                    self.assertNotIn(workload, result["benefits"])
+
 
 class EvidenceTests(unittest.TestCase):
     def setUp(self):
@@ -368,6 +545,185 @@ class EvidenceTests(unittest.TestCase):
         collector.save(directory / "attempts/9999.json", {})
         with self.assertRaisesRegex(ValueError, "hidden retry"):
             collector.report(directory)
+
+    def test_started_attempt_is_incomplete_and_never_started_remains_not_run(self):
+        directory = self.root / "calibration"
+        specification = persist_campaign(directory, "calibration")
+        started = directory / "started"
+        started.mkdir()
+        attempt_path = directory / "attempts/0001.json"
+        attempt = collector.load(attempt_path)
+        attempt.update(identity_before=None, identity_after=None, record=None, started_unix_ns=1)
+        collector.save(started / attempt_path.name, attempt)
+        marker_hash = collector.sha256(started / attempt_path.name)
+        attempt_path.unlink()
+        (directory / "attempts/0002.json").unlink()
+        result = collector.report(directory)
+        issues = {issue["attempt"].split(":")[0]: issue for issue in result["issues"]}
+        self.assertEqual(result["status"], "incomplete")
+        self.assertEqual(issues["0001"]["status"], "incomplete")
+        self.assertEqual(issues["0001"]["file"], "started/0001.json")
+        self.assertEqual(issues["0002"]["status"], "not-run")
+        workload = specification["schedule"][1]["workload"]
+        self.assertEqual([row["process"] for row in result["process_observations"]["baseline"][workload]],
+                         [2, 3, 4])
+        self.assertIn({"file": "started/0001.json", "sha256": marker_hash}, result["attempts"])
+        self.assertEqual(collector.sha256(started / attempt_path.name), marker_hash)
+
+    def test_unexpected_started_marker_is_rejected_even_with_completed_attempts(self):
+        directory = self.root / "smoke"
+        persist_campaign(directory, "smoke", smoke=True)
+        (directory / "started").mkdir()
+        collector.save(directory / "started/9999.json", {})
+        with self.assertRaisesRegex(ValueError, "hidden retry"):
+            collector.report(directory)
+
+    def test_damaged_attempt_is_attributed_without_losing_other_results_or_hashes(self):
+        for damage in ("truncated", "encoding", "non-object", "unreadable"):
+            with self.subTest(damage=damage):
+                directory = self.root / damage
+                specification = persist_campaign(directory, "calibration")
+                plan_bytes = (directory / "plan.json").read_bytes()
+                path = directory / "attempts/0001.json"
+                intact_path = directory / "attempts/0002.json"
+                intact_bytes, intact_hash = intact_path.read_bytes(), collector.sha256(intact_path)
+                if damage == "unreadable":
+                    path.unlink()
+                    path.mkdir()
+                    damaged_hash = None
+                else:
+                    path.write_bytes({"truncated": b'{"task":', "encoding": b"\xff",
+                                      "non-object": b"[]"}[damage])
+                    damaged_hash = collector.sha256(path)
+                result = collector.report(directory)
+                self.assertEqual(result["status"], "failed")
+                issue = next(issue for issue in result["issues"] if issue["attempt"].startswith("0001:"))
+                self.assertEqual(issue["status"], "failed")
+                self.assertEqual(issue["file"], "attempts/0001.json")
+                self.assertIn("attempts/0001.json", issue["reason"])
+                self.assertEqual(len(result["attempts"]), len(specification["schedule"]))
+                self.assertIn({"file": "0001.json", "sha256": damaged_hash}, result["attempts"])
+                self.assertIn({"file": "0002.json", "sha256": intact_hash}, result["attempts"])
+                workload = specification["schedule"][1]["workload"]
+                self.assertEqual([row["process"] for row in result["process_observations"]["baseline"][workload]],
+                                 [1, 2, 3, 4])
+                self.assertEqual(intact_path.read_bytes(), intact_bytes)
+                self.assertEqual((directory / "plan.json").read_bytes(), plan_bytes)
+                self.assertEqual(result["plan_sha256"], collector.sha256(directory / "plan.json"))
+                self.assertEqual(specification["collector"], collector.collector_identity())
+
+    def test_damaged_started_marker_is_failed_not_never_started(self):
+        directory = self.root / "smoke"
+        persist_campaign(directory, "smoke", smoke=True)
+        (directory / "attempts/0001.json").unlink()
+        (directory / "started").mkdir()
+        marker = directory / "started/0001.json"
+        marker.write_bytes(b'{"task":')
+        result = collector.report(directory)
+        issue = next(issue for issue in result["issues"] if issue["attempt"].startswith("0001:"))
+        self.assertEqual(result["status"], "failed")
+        self.assertEqual(issue["status"], "failed")
+        self.assertEqual(issue["file"], "started/0001.json")
+        self.assertIn("JSONDecodeError", issue["reason"])
+        self.assertIn({"file": "started/0001.json", "sha256": collector.sha256(marker)}, result["attempts"])
+
+    def test_smoke_retains_unavailable_measurements_without_qualification(self):
+        directory = self.root / "smoke"
+        persist_campaign(directory, "smoke", smoke=True)
+        value = payload("single-small96x64", smoke=True)
+        value["cpu_timer_resolution_ns"] = None
+        self.mutate_attempt(directory, 1, lambda attempt: attempt["record"].update(stdout=json.dumps(value)))
+        result = collector.report(directory)
+        self.assertEqual(result["status"], "passed")
+        self.assertFalse(result["performance_qualified"])
+        self.assertFalse(result["issues"])
+        summary = result["process_observations"]["baseline"]["single-small96x64"][0]
+        self.assertEqual(summary["process"], 0)
+        self.assertIn("cpu_timer_resolution_ns", summary["unavailable"])
+        self.assertIsNone(summary["cpu_timer_resolution_ns"])
+        self.assertEqual(summary["peak_rss_bytes"], 16 * collector.MIB)
+
+    def test_interruption_propagates_with_only_observed_process_facts(self):
+        cases = (("before", KeyboardInterrupt), ("runner", KeyboardInterrupt),
+                 ("after", KeyboardInterrupt), ("runner", SystemExit))
+        for index, (stage, exception_type) in enumerate(cases):
+            with self.subTest(stage=stage, exception=exception_type.__name__):
+                destination = self.root / f"interrupted-{index}"
+                args = collector.parser().parse_args([
+                    "smoke", "--target", TARGET, "--baseline", "baseline", "--baseline-metadata", "build.json",
+                    "--output", str(destination), "--workload", "single-small96x64"])
+                interruption = exception_type("collection stopped")
+                record = {"exit_code": 0, "timed_out": False, "output_limited": False, "cleanup_ok": False,
+                          "launch_error": None, "stdout": json.dumps(manifest()), "stderr": "retained diagnostic",
+                          "duration_seconds": 0.1}
+                checks = [interruption] if stage == "before" else [None, interruption] if stage == "after" else [None]
+                binding = identity(self.root, "baseline")
+                with (mock.patch.object(collector, "host_identity", return_value={"target": TARGET, "node": "host"}),
+                      mock.patch.object(collector, "binary_identity", return_value=binding),
+                      mock.patch.object(collector, "check_files", side_effect=checks),
+                      mock.patch.object(collector, "exclusive_collector", return_value=contextlib.nullcontext()),
+                      mock.patch.object(collector, "run_process", return_value=record,
+                                        side_effect=interruption if stage == "runner" else None) as launch):
+                    with self.assertRaises(exception_type) as raised:
+                        collector.collect(args, "smoke")
+                self.assertIs(raised.exception, interruption)
+                self.assertEqual(launch.call_count, 0 if stage == "before" else 1)
+                attempt_path = destination / "attempts/0000.json"
+                attempt = collector.load(attempt_path)
+                self.assertEqual(attempt["interruption"], exception_type.__name__)
+                self.assertEqual(attempt["identity_before"], None if stage == "before" else binding)
+                self.assertIsNone(attempt["identity_after"])
+                self.assertIsNone(attempt["identity_error"])
+                if stage == "after":
+                    self.assertEqual(attempt["record"], record)
+                else:
+                    self.assertIsNone(attempt["record"])
+                self.assertNotIn("cleanup_ok", attempt)
+                self.assertTrue((destination / "started/0000.json").is_file())
+                self.assertFalse((destination / "started/0001.json").exists())
+                self.assertFalse((destination / "attempts/0001.json").exists())
+                self.assertFalse((destination / "report.json").exists())
+                result = collector.report(destination)
+                self.assertEqual(result["status"], "failed")
+                issues = {issue["attempt"].split(":")[0]: issue for issue in result["issues"]}
+                self.assertEqual(issues["0000"]["status"], "failed")
+                self.assertIn(exception_type.__name__, issues["0000"]["reason"])
+                self.assertEqual(issues["0001"]["status"], "not-run")
+                self.assertIn({"file": "0000.json", "sha256": collector.sha256(attempt_path)}, result["attempts"])
+                self.assertEqual(collector.load(destination / "plan.json")["collector"], collector.collector_identity())
+
+    def test_interruption_survives_real_evidence_write_failure(self):
+        destination = self.root / "interrupted"
+        args = collector.parser().parse_args([
+            "smoke", "--target", TARGET, "--baseline", "baseline", "--baseline-metadata", "build.json",
+            "--output", str(destination), "--workload", "single-small96x64"])
+        interruption = KeyboardInterrupt("collection stopped")
+
+        def interrupt_with_damaged_destination(*args, **kwargs):
+            (destination / "attempts/0000.json").mkdir()
+            raise interruption
+
+        with (mock.patch.object(collector, "host_identity", return_value={"target": TARGET, "node": "host"}),
+              mock.patch.object(collector, "binary_identity", return_value=identity(self.root, "baseline")),
+              mock.patch.object(collector, "check_files"),
+              mock.patch.object(collector, "exclusive_collector", return_value=contextlib.nullcontext()),
+              mock.patch.object(collector, "run_process", side_effect=interrupt_with_damaged_destination)):
+            with self.assertRaises(KeyboardInterrupt) as raised:
+                collector.collect(args, "smoke")
+        self.assertIs(raised.exception, interruption)
+        self.assertTrue((destination / "attempts/0000.json").is_dir())
+        started = collector.load(destination / "started/0000.json")
+        self.assertIsNone(started["record"])
+        self.assertIsNone(started["identity_after"])
+        self.assertFalse((destination / "attempts/0001.json").exists())
+        self.assertFalse((destination / "report.json").exists())
+        result = collector.report(destination)
+        issues = {issue["attempt"].split(":")[0]: issue for issue in result["issues"]}
+        self.assertEqual(result["status"], "failed")
+        self.assertEqual(issues["0000"]["status"], "failed")
+        self.assertEqual(issues["0000"]["file"], "attempts/0000.json")
+        self.assertEqual(issues["0001"]["status"], "not-run")
+        self.assertIn({"file": "0000.json", "sha256": None}, result["attempts"])
 
     def test_numeric_profile_is_rederived_and_raw_calibration_hashes_are_bound(self):
         directory = self.root / "calibration"

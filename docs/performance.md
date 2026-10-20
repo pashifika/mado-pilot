@@ -111,10 +111,17 @@ to Rust heap, steady growth or final-owner residual. Evicted BGR payload awaitin
 its last owner is reported separately from cache-held bytes. The runner preserves
 supplied thread settings rather than tuning them.
 
+Comparison reports retain known per-process violations alongside missing
+observations, with original process indices; missing values cannot qualify a
+benefit. Started attempts without a result remain `incomplete`, distinct from
+`not-run` work. Recorded interruptions and unreadable attempt records are `failed`.
+
 Hosted CI executes the short semantic plan on both targets and retains its JSON
 artifact. Smoke, missing resource observations, a missing target, or a failed
 envelope cannot establish performance acceptance. Existing historical profiles
 and their source/binary identities are unchanged.
+Revalidation uses the campaign's recorded collector revision. A collector change
+does not regrade earlier campaigns or replace their source hashes.
 
 The complete Apple comparison of implementation `560d868` is **failed**, despite
 zero oracle failures. RSS/timing guards and repeated-preparation benefit remain

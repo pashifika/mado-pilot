@@ -89,10 +89,6 @@ MEMORY = ("peak_rss_bytes", "rss_before_bytes", "rss_after_bytes", "rss_after_dr
           "heap_steady_before_bytes", "heap_steady_after_bytes")
 
 
-class Incomplete(ValueError):
-    """Required observations are explicitly unavailable, not passing zeros."""
-
-
 def require(condition, message):
     if not condition:
         raise ValueError(message)
@@ -332,8 +328,6 @@ def observations(value, manifest, workload, smoke):
                      ("before", "after", "after_drop", "steady_before", "steady_after")]
         if peak is not None and all(item is not None for item in endpoints):
             require(peak >= max(endpoints), f"{prefix} peak below measured endpoint")
-    if unavailable and not smoke:
-        raise Incomplete("unavailable observations: " + ", ".join(unavailable))
     elapsed = sorted(sample["elapsed_ns"] for sample in retained)
     summary = {"p50_ns": elapsed[(count - 1) // 2], "p95_ns": elapsed[math.ceil(0.95 * count) - 1],
                "max_ns": elapsed[-1], "cpu_ns": cpu, "timer_resolution_ns": timer,
@@ -389,22 +383,37 @@ def evaluate(directory):
     validate_plan(plan)
     manifests, observations_by_role, attempts, issues = {}, {}, [], []
     expected_files = {f"{task['id']}.json" for task in plan["schedule"]}
-    require(not {path.name for path in (directory / "attempts").glob("*.json")} - expected_files,
-            "unexpected attempts: hidden retry or extra process")
+    files = {}
+    for folder in ("attempts", "started"):
+        files[folder] = {path.name for path in (directory / folder).glob("*.json")}
+        require(not files[folder] - expected_files, f"unexpected {folder}: hidden retry or extra process")
+    plan_hash = sha256(directory / "plan.json")
     for task in plan["schedule"]:
-        path = directory / "attempts" / f"{task['id']}.json"
+        filename = f"{task['id']}.json"
         label = f"{task['id']}:{task['role']}:{task['workload'] or 'manifest'}"
-        if not path.exists():
-            issues.append({"attempt": label, "status": "not-run", "reason": "no completed attempt record"})
+        completed = filename in files["attempts"]
+        if not completed and filename not in files["started"]:
+            issues.append({"attempt": label, "status": "not-run", "reason": "no started or completed attempt record"})
             continue
-        attempt = load(path)
-        attempts.append({"file": path.name, "sha256": sha256(path)})
+        path = directory / ("attempts" if completed else "started") / filename
+        relative = path.relative_to(directory).as_posix()
+        retained = {"file": filename if completed else relative, "sha256": None}
+        attempts.append(retained)
         try:
+            raw = path.read_bytes()
+            retained["sha256"] = hashlib.sha256(raw).hexdigest()
+            attempt = strict_json(raw.decode("utf-8"))
+            require(isinstance(attempt, dict), "attempt record must be an object")
             require(attempt.get("task") == task, "attempt identity/order mismatch")
-            require(attempt.get("plan_sha256") == sha256(directory / "plan.json"), "attempt plan binding mismatch")
+            require(attempt.get("plan_sha256") == plan_hash, "attempt plan binding mismatch")
             binary = plan["binaries"][task["role"]]
             argv = command(binary, task, plan["mode"])
             require(attempt.get("argv") == argv, "attempt argv mismatch")
+            if not completed:
+                issues.append({"attempt": label, "file": relative, "status": "incomplete",
+                               "reason": "attempt started without a completed record"})
+                continue
+            require(attempt.get("interruption") is None, f"attempt interrupted: {attempt.get('interruption')}")
             require(attempt.get("identity_before") == binary and attempt.get("identity_after") == binary,
                     "binary/dependency identity changed or unavailable")
             require(attempt.get("identity_error") is None, "binary/dependency identity check failed")
@@ -416,14 +425,17 @@ def evaluate(directory):
             else:
                 require(task["role"] in manifests, "role has no valid manifest")
                 summary = observations(value, manifests[task["role"]], task["workload"], plan["mode"] == "smoke")
+                summary["process"] = task["process"]
                 observations_by_role.setdefault(task["role"], {}).setdefault(task["workload"], []).append(summary)
-        except Incomplete as error:
-            issues.append({"attempt": label, "status": "incomplete", "reason": str(error)})
-        except (ValueError, TypeError, KeyError, StopIteration) as error:
-            issues.append({"attempt": label, "status": "failed", "reason": str(error)})
+                if plan["mode"] != "smoke" and summary["unavailable"]:
+                    issues.append({"attempt": label, "file": relative, "status": "incomplete",
+                                   "reason": "unavailable observations: " + ", ".join(summary["unavailable"])})
+        except (OSError, ValueError, TypeError, KeyError, StopIteration) as error:
+            issues.append({"attempt": label, "file": relative, "status": "failed",
+                           "reason": f"{relative}: {type(error).__name__}: {error}"})
     if "candidate" in manifests and manifests.get("baseline") != manifests["candidate"]:
         issues.append({"attempt": "manifests", "status": "failed", "reason": "role fixture/workload/dependency identity mismatch"})
-    return {"plan": plan, "plan_sha256": sha256(directory / "plan.json"), "attempts": attempts,
+    return {"plan": plan, "plan_sha256": plan_hash, "attempts": attempts,
             "manifest": manifests.get("baseline"), "observations": observations_by_role, "issues": issues}
 
 
@@ -491,14 +503,14 @@ def compare_evidence(evidence, profile):
     for workload, definition in DEFINITIONS.items():
         cohorts = {role: evidence["observations"].get(role, {}).get(workload, [])
                    for role in ("baseline", "candidate")}
-        if any(len(rows) != 5 for rows in cohorts.values()):
-            issues.append({"attempt": workload, "status": "incomplete", "reason": "five valid processes per role required"})
-            continue
+        complete = all(len(rows) == 5 and all(not row["unavailable"] for row in rows)
+                       for rows in cohorts.values())
         envelope = profile["envelopes"][workload]
         for role, rows in cohorts.items():
-            for process, row in enumerate(rows):
+            for row in rows:
+                process = row["process"]
                 for metric, limit in envelope["limits"].items():
-                    if row[metric] > limit:
+                    if row[metric] is not None and row[metric] > limit:
                         issues.append({"attempt": f"{role}:{workload}:{process}", "status": "failed",
                                        "reason": f"{metric}={row[metric]} exceeds {limit}"})
                 if role == "candidate":
@@ -510,20 +522,26 @@ def compare_evidence(evidence, profile):
                         failures.append("cold batch must convert once per iteration")
                     if workload == "batch8-live-owner-roi320x180" and metrics["mapping_copies"] != metrics["iterations"]:
                         failures.append("live mapping owner must avoid duplicate ROI copies")
-                    if definition["category"] == "selection" and definition["improvement"]:
+                    if len(cohorts["baseline"]) == 5 and definition["category"] == "selection" and definition["improvement"]:
                         reference = min(item["metrics"]["score_offsets_scanned"] for item in cohorts["baseline"])
                         if metrics["score_offsets_scanned"] >= reference:
                             failures.append("selection offsets did not decrease")
                     for reason in failures:
                         issues.append({"attempt": f"{role}:{workload}:{process}", "status": "failed", "reason": reason})
-        if definition["improvement"]:
-            benefits[workload] = {}
+        if not complete:
+            issues.append({"attempt": workload, "status": "incomplete", "reason": "five complete processes per role required"})
+        if definition["improvement"] and all(len(rows) == 5 for rows in cohorts.values()):
+            if complete:
+                benefits[workload] = {}
             for metric, allowance in envelope["benefit_allowances"].items():
+                if any(row[metric] is None for rows in cohorts.values() for row in rows):
+                    continue
                 baseline = statistics.median(row[metric] for row in cohorts["baseline"])
                 candidate = statistics.median(row[metric] for row in cohorts["candidate"])
                 passed = baseline - candidate > allowance
-                benefits[workload][metric] = {"baseline_median": baseline, "candidate_median": candidate,
-                                             "allowance": allowance, "passed": passed}
+                if complete:
+                    benefits[workload][metric] = {"baseline_median": baseline, "candidate_median": candidate,
+                                                 "allowance": allowance, "passed": passed}
                 if not passed:
                     issues.append({"attempt": workload, "status": "failed", "reason": f"{metric} benefit does not exceed frozen noise"})
     return issues, benefits
@@ -639,6 +657,14 @@ def collect(args, mode):
                 attempt["identity_after"] = identity
             except (OSError, ValueError) as error:
                 attempt["identity_error"] = str(error)
+            except BaseException as error:
+                attempt["interruption"] = type(error).__name__
+                try:
+                    save(destination / "attempts" / f"{task['id']}.json", attempt)
+                except BaseException:
+                    # Evidence persistence must not replace the original interruption.
+                    pass
+                raise
             save(destination / "attempts" / f"{task['id']}.json", attempt)
             # A failed row is never retried or omitted. Unsafe cleanup stops remaining
             # processes, which stay visibly not-run in the immutable schedule.
