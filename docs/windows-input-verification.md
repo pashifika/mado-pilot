@@ -367,6 +367,8 @@ five seconds for termination, CTest rows to 60 seconds, and copied trees to
 Retain executable/DLL pre/post hashes, actual loaded-library identity, primary
 and cleanup outcomes. Exit77, missing prerequisites or incomplete cleanup is
 not acceptance. Do not change ACP, download dependencies or retry automatically.
+The verifier attempts CMake build-tree cleanup after every returned outcome and
+reports cleanup failures alongside the original configure/build/test result.
 
 ## Native evidence and limitations
 

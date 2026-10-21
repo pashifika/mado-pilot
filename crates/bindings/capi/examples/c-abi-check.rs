@@ -309,6 +309,7 @@ impl Paths {
 #[derive(Debug)]
 struct TemporaryCmakeBuild {
     path: PathBuf,
+    cleanup_attempted: bool,
 }
 
 impl TemporaryCmakeBuild {
@@ -320,17 +321,27 @@ impl TemporaryCmakeBuild {
             Err(error) => return Err(error),
         }
         std::fs::create_dir_all(&path)?;
-        Ok(Self { path })
+        Ok(Self {
+            path,
+            cleanup_attempted: false,
+        })
     }
 
     fn path(&self) -> &Path {
         &self.path
     }
+
+    fn cleanup(&mut self) -> std::io::Result<()> {
+        self.cleanup_attempted = true;
+        std::fs::remove_dir_all(&self.path)
+    }
 }
 
 impl Drop for TemporaryCmakeBuild {
     fn drop(&mut self) {
-        let _ = std::fs::remove_dir_all(&self.path);
+        if !self.cleanup_attempted {
+            let _ = self.cleanup();
+        }
     }
 }
 
@@ -1334,18 +1345,40 @@ fn check_cmake_consumer(
     c_only: bool,
     acceptance_paths: Option<(&Path, &Path)>,
 ) -> Result<(), Box<dyn std::error::Error>> {
-    let source = paths.root.join("crates/bindings/capi/tests/cmake");
     // A short, fresh cache also keeps generated paths within MSVC's limits.
-    let build = TemporaryCmakeBuild::new(if c_only { "c-only" } else { "c-cpp" })?;
+    let mut build = TemporaryCmakeBuild::new(if c_only { "c-only" } else { "c-cpp" })?;
+    let result = run_cmake_consumer(paths, c_only, acceptance_paths, build.path());
+    if let Err(error) = build.cleanup() {
+        return Err(format!("CMake result: {result:?}; build-tree cleanup failed: {error}").into());
+    }
+    result?;
+    println!(
+        "cmake: {}",
+        if c_only {
+            "C-only consumers ran with unavailable CXX; controlled OCR coverage is reported by CTest"
+        } else {
+            "C/C++ consumers ran; controlled OCR coverage is reported by CTest"
+        }
+    );
+    Ok(())
+}
+
+fn run_cmake_consumer(
+    paths: &Paths,
+    c_only: bool,
+    acceptance_paths: Option<(&Path, &Path)>,
+    build: &Path,
+) -> Result<(), Box<dyn std::error::Error>> {
+    let source = paths.root.join("crates/bindings/capi/tests/cmake");
     let package = paths.root.join("crates/bindings/capi");
     let package = package.to_string_lossy().replace('\\', "/");
     let artifacts = paths.artifacts.to_string_lossy().replace('\\', "/");
-    let unavailable_cxx = c_only.then(|| build.path().join("unavailable-cxx"));
+    let unavailable_cxx = c_only.then(|| build.join("unavailable-cxx"));
     let mut arguments = vec![
         OsString::from("-S"),
         source.into_os_string(),
         OsString::from("-B"),
-        build.path().as_os_str().to_os_string(),
+        build.as_os_str().to_os_string(),
         OsString::from(format!("-DMADOPILOT_SOURCE_DIR={package}")),
         OsString::from(format!("-DMADOPILOT_ARTIFACT_DIR={artifacts}")),
         OsString::from("-DCMAKE_BUILD_TYPE=Release"),
@@ -1391,7 +1424,7 @@ fn check_cmake_consumer(
 
     let arguments = vec![
         OsString::from("--build"),
-        build.path().as_os_str().to_os_string(),
+        build.as_os_str().to_os_string(),
         OsString::from("--config"),
         OsString::from("Release"),
     ];
@@ -1426,7 +1459,7 @@ fn check_cmake_consumer(
             &ctest(&paths.cmake),
             &[
                 OsString::from("--test-dir"),
-                build.path().as_os_str().to_os_string(),
+                build.as_os_str().to_os_string(),
                 OsString::from("--build-config"),
                 OsString::from("Release"),
                 OsString::from("--verbose"),
@@ -1442,16 +1475,6 @@ fn check_cmake_consumer(
             return Err(format!("the CMake {consumer} test failed").into());
         }
     }
-    std::fs::remove_dir_all(build.path())?;
-
-    println!(
-        "cmake: {}",
-        if c_only {
-            "C-only consumers ran with unavailable CXX; controlled OCR coverage is reported by CTest"
-        } else {
-            "C/C++ consumers ran; controlled OCR coverage is reported by CTest"
-        }
-    );
     Ok(())
 }
 
@@ -1784,4 +1807,57 @@ fn copy_windows_path_tree(
         return Err("controlled path tree contains a non-regular file".into());
     }
     Ok(())
+}
+
+#[cfg(all(test, windows))]
+mod tests {
+    use super::{Paths, TemporaryCmakeBuild, check_cmake_consumer};
+    use std::{env, fs};
+
+    #[test]
+    fn failed_cmake_configuration_reports_its_cleanup_outcome() {
+        let scratch = TemporaryCmakeBuild::new("cleanup-test").unwrap();
+        let script = scratch.path().join("cmake.cmd");
+        let paths = Paths {
+            root: scratch.path().to_path_buf(),
+            artifacts: scratch.path().to_path_buf(),
+            library: scratch.path().join("unused.dll"),
+            link: scratch.path().join("unused.lib"),
+            scratch: scratch.path().to_path_buf(),
+            cc: "unused".into(),
+            cxx: "unused".into(),
+            cmake: script.as_os_str().to_owned(),
+        };
+        let build = env::temp_dir().join(format!("mpc-{}-c-cpp", std::process::id()));
+
+        fs::write(&script, "@exit /b 23\r\n").unwrap();
+        let primary = check_cmake_consumer(&paths, false, None)
+            .unwrap_err()
+            .to_string();
+        assert!(
+            !build.exists(),
+            "failed configuration must remove its build tree"
+        );
+
+        // Replace the owned build directory with a file so directory removal fails.
+        fs::write(
+            &script,
+            "@echo off\r\nrmdir \"%~4\"\r\n> \"%~4\" echo cleanup-probe\r\nexit /b 23\r\n",
+        )
+        .unwrap();
+        let combined = check_cmake_consumer(&paths, false, None)
+            .unwrap_err()
+            .to_string();
+        let cleanup = fs::remove_dir_all(&build).unwrap_err().to_string();
+        fs::remove_file(&build).unwrap();
+
+        assert!(
+            combined.contains(&primary),
+            "original CMake failure was lost"
+        );
+        assert!(
+            combined.contains(&cleanup),
+            "cleanup failure was lost: {combined}"
+        );
+    }
 }
