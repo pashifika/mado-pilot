@@ -106,6 +106,10 @@ broadcasts, installs hooks, injects a helper, or elevates.
 
 ## Focus, integrity, receipts, and cleanup
 
+System absolute pointer moves run only the native `SendInput` call under PMv2.
+Authority checks and operation callbacks retain the caller's context; scope-entry
+failure refuses before input, and the native call restores the caller afterward.
+
 Window `System` input revalidates focus before every irreversible event.
 `Preserve` cannot satisfy a focus-requiring system path. `RequireFocused` never
 activates a window. `ActivateIfRequired` makes one ordinary

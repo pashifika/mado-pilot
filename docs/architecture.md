@@ -1625,9 +1625,10 @@ injection. A proven higher-integrity target is `PolicyRefused`; a zero
 does not identify UIPI through its return or last-error value.
 
 Physical desktop queries use a checked calling-thread PMv2 scope, and current
-cursor reads are physical. Ordinary messages convert physical points into the
-retained target's logical screen/client convention. Pointer posts use that target
-DPI context so USER32 does not scale the prepared coordinates again. Temporary
+cursor reads are physical. System absolute moves also scope their native
+`SendInput` call to PMv2, excluding authority checks and host callbacks.
+Ordinary messages convert physical points into the retained target's logical
+screen/client convention and post under that target's DPI context. Temporary
 scopes restore the caller; context/conversion failures refuse before submission.
 Process DPI, signed coordinate bounds and existing authority fences are unchanged.
 

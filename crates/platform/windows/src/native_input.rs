@@ -854,6 +854,19 @@ fn commit_window_message<S: WindowMessageCommitSource + ?Sized>(
     }
 }
 
+fn check_system_commit<S: SystemCommitSource + ?Sized>(
+    source: &S,
+    focus: FocusPolicy,
+    expected_geometry: Option<GeometryFingerprint>,
+    operation: &OperationContext,
+) -> Result<(), SubmissionFailure> {
+    operation_fault(operation)?;
+    source.revalidate_system_commit(focus, expected_geometry)?;
+    // Authority queries precede the final operation check and native DPI scope.
+    operation_fault(operation)?;
+    Ok(())
+}
+
 fn commit_prepared_system_input<S: SystemCommitSource + ?Sized>(
     source: &S,
     focus: FocusPolicy,
@@ -861,12 +874,7 @@ fn commit_prepared_system_input<S: SystemCommitSource + ?Sized>(
     operation: &OperationContext,
     inputs: &[INPUT],
 ) -> Result<usize, SubmissionFailure> {
-    operation_fault(operation)?;
-    source.revalidate_system_commit(focus, expected_geometry)?;
-    // Native revalidation can perform target, foreground, integrity, and geometry
-    // queries. Arbitration is therefore checked once more as the final operation
-    // immediately adjacent to the irreversible global insertion.
-    operation_fault(operation)?;
+    check_system_commit(source, focus, expected_geometry, operation)?;
     Ok(source.send_input(inputs))
 }
 
@@ -940,13 +948,16 @@ fn send_system_pointer_move(
         0,
         MOUSEEVENTF_MOVE | MOUSEEVENTF_ABSOLUTE | MOUSEEVENTF_VIRTUALDESK,
     );
-    send_exact(
-        std::slice::from_ref(&input),
-        driver,
-        focus,
-        pointer.expected_geometry,
-        operation,
-    )
+    check_system_commit(driver, focus, pointer.expected_geometry, operation)?;
+    let inserted = {
+        let _dpi = ThreadDpiContext::per_monitor().ok_or(InputFault::UnsupportedCoordinate)?;
+        driver.send_input(std::slice::from_ref(&input))
+    };
+    if inserted == 1 {
+        Ok(())
+    } else {
+        Err(send_failure(&driver.record, inserted))
+    }
 }
 
 fn physical_button(button: PointerButton) -> Result<u8, InputFault> {
