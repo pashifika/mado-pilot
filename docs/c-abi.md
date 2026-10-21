@@ -849,7 +849,9 @@ target_link_libraries(my_app PRIVATE MadoPilot::C)
 The import project enables no compiler and imposes no language standard. A
 C-only project uses `LANGUAGES C`, its own `.c` source and C standard, and the
 same target; no C++ compiler is required. `MADOPILOT_ARTIFACT_DIR` defaults to
-the repository's `target/debug` or `target/release` for the selected build type.
+the repository's `target/debug`, regardless of `CMAKE_BUILD_TYPE`. Set it
+explicitly for other profiles, target-specific builds, or a custom
+`CARGO_TARGET_DIR`.
 This is a source-tree import, not an installed/exported SDK.
 
 The native C verification programs' `--check` mode creates the real platform

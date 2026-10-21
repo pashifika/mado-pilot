@@ -265,9 +265,12 @@ bounded four-event request, immutable receipt/attempt inspection, a strictly
 newer expected-condition search, diagnostic drain and explicit close.
 `--extended-sequence` performs the same lifecycle with sixteen events: pointer
 movement, every button, both wheel axes, a function key, an ordered modifier
-chord, Unicode text and an observed delay. Both check the complete redacted
-fixture-event order. The ordinary flow requires `Unknown` capability and
-`TargetQueueAdmission`; the dedicated flow requires `Supported` and
+chord, Unicode text and an observed delay. `c-abi-check` verifies receipts,
+newer expected-condition frames and the extended delay. The native-phase2
+benchmark separately checks fixture-event order for the four-event default
+flow; the extended flow's fixture-event order is not checked. The ordinary
+flow requires `Unknown` capability and `TargetQueueAdmission`; the dedicated
+flow requires `Supported` and
 `TargetProtocolAcknowledgement`. Both preserve focus and permit no system
 fallback. Frozen ABI 1.0/1.2/1.3/1.4 layouts and callers, direct C/C++ samples
 and independent CMake consumers run in the same check.
