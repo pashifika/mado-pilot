@@ -2581,6 +2581,7 @@ fn interactive_system_delivery_targets_only_the_exact_fixture() {
 }
 
 /// Selects an observed effective-1/raw-2 frame during one bounded display circuit.
+#[cfg(feature = "private-fixture")]
 fn downscaled_system_frame(
     provider: &MacosCaptureProvider,
     capture: &dyn CaptureSession,
@@ -2607,21 +2608,17 @@ fn downscaled_system_frame(
             if !effective.has_scale(1.0) {
                 continue;
             }
-            let remaining = deadline.saturating_duration_since(Instant::now());
-            if remaining.is_zero() {
-                break;
-            }
-            let native = CaptureProvider::describe_window(provider, target, &bounded(remaining))
-                .expect("the retained window remains describable")
-                .window()
-                .expect("native window geometry")
-                .geometry()
-                .placement();
-            if approximately(native.scale().x(), 2.0)
-                && approximately(native.scale().y(), 2.0)
-                && native.desktop_origin() == effective.origin
-            {
+            let raw_scale = provider
+                .fixture_source_backing_scale(target, frame.stamp())
+                .expect("the owned source frame retains its raw geometry");
+            if approximately(raw_scale, 2.0) {
                 assert_fixture_frame_content(&frame, false, "downscaled System source");
+                println!(
+                    "downscaled-system-source effective={:?} raw={raw_scale} origin={:?} frame={:?}",
+                    effective.scale,
+                    effective.origin,
+                    frame.stamp()
+                );
                 return Some(frame);
             }
         }
@@ -2639,7 +2636,7 @@ fn qualify_system_raw_geometry(require_downscaled: bool) {
         "existing post-event authority is required"
     );
     let provider = provider();
-    let display_count = if require_downscaled {
+    let display_geometries = if require_downscaled {
         assert_eq!(
             QualificationTopology::required(),
             QualificationTopology::MixedScale
@@ -2649,9 +2646,12 @@ fn qualify_system_raw_geometry(require_downscaled: bool) {
             (2..=16).contains(&topology.len()),
             "the owned display circuit is bounded"
         );
-        topology.len()
+        topology
+            .into_iter()
+            .map(|display| display.geometry)
+            .collect::<Vec<_>>()
     } else {
-        0
+        Vec::new()
     };
     let mut fixture = Fixture::start_active(FixtureMode::Default)
         .expect("the owned signed fixture starts in front");
@@ -2660,22 +2660,47 @@ fn qualify_system_raw_geometry(require_downscaled: bool) {
         .expect("one exact owned fixture is selected");
     if require_downscaled {
         // Open a fresh 1x surface; a retained 2x surface never shrinks on display moves.
-        for _ in 0..display_count {
-            let scale = chosen
+        for _ in 0..display_geometries.len() {
+            let before = chosen
                 .window()
                 .expect("owned window geometry")
                 .geometry()
-                .placement()
-                .scale();
-            if approximately(scale.x(), 1.0) && approximately(scale.y(), 1.0) {
+                .placement();
+            if approximately(before.scale().x(), 1.0) && approximately(before.scale().y(), 1.0) {
                 break;
             }
             let moved = fixture
                 .command(FixtureCommandKind::MoveToNextDisplay, CONTENT_WAIT)
                 .expect("the owned fixture reaches its next display before capture");
             assert_eq!(moved.status, 0);
-            chosen = discover_unique_fixture(&provider, &fixture, CONTENT_WAIT)
-                .expect("the same owned fixture is rediscovered after its move");
+            // The command acknowledges AppKit movement, not fresh ScreenCaptureKit metadata.
+            let deadline = Instant::now() + CONTENT_WAIT;
+            loop {
+                let remaining = deadline.saturating_duration_since(Instant::now());
+                assert!(
+                    !remaining.is_zero(),
+                    "not-qualified: discovery did not observe the owned display move before capture"
+                );
+                chosen = discover_unique_fixture(&provider, &fixture, remaining)
+                    .expect("the same owned fixture is rediscovered after its move");
+                let geometry = chosen.window().expect("owned window geometry").geometry();
+                let placement = geometry.placement();
+                let observed = QualificationGeometry {
+                    origin: placement.desktop_origin(),
+                    logical: placement.logical_size(),
+                    backing: (geometry.extent().width(), geometry.extent().height()),
+                    scale: (placement.scale().x(), placement.scale().y()),
+                };
+                if observed.origin != before.desktop_origin()
+                    && display_for_window(&display_geometries, observed).is_ok()
+                {
+                    break;
+                }
+                thread::sleep(
+                    Duration::from_millis(25)
+                        .min(deadline.saturating_duration_since(Instant::now())),
+                );
+            }
         }
         let scale = chosen
             .window()
@@ -2706,14 +2731,19 @@ fn qualify_system_raw_geometry(require_downscaled: bool) {
         );
     }
     let source = if require_downscaled {
-        downscaled_system_frame(
-            &provider,
-            capture.as_ref(),
-            &mut fixture,
-            chosen.id(),
-            first.stamp(),
-            display_count,
-        )
+        #[cfg(not(feature = "private-fixture"))]
+        panic!("mixed-scale qualification requires private-fixture");
+        #[cfg(feature = "private-fixture")]
+        {
+            downscaled_system_frame(
+                &provider,
+                capture.as_ref(),
+                &mut fixture,
+                chosen.id(),
+                first.stamp(),
+                display_geometries.len(),
+            )
+        }
     } else {
         Some(first)
     };

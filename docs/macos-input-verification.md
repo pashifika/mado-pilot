@@ -628,9 +628,9 @@ intended to take focus from the user.
 
 ## Bounded focus and raw-geometry regressions
 
-These three ignored rows are pending native acceptance, not qualification
-results. Run them only with separately authorized owned-fixture input, existing
-Screen Recording and event-post grants, and the signed bundles described above.
+These three ignored rows require separate native acceptance; their presence is
+not a qualification result. Run them only with authorized owned-fixture input,
+existing Screen Recording and event-post grants, and the signed bundles above.
 The process-focus row requires both `MADO_PILOT_MACOS_FIXTURE_EXECUTABLE` and
 `MADO_PILOT_MACOS_FOREGROUND_FIXTURE_EXECUTABLE`; the System rows require the
 target executable. Each capture, control, and input operation is bounded by
@@ -651,23 +651,28 @@ The rows have distinct effects and acceptance conditions:
   same pointer/refusal procedure only after observing an effective-1/raw-2 frame.
   It requires `MADO_PILOT_MACOS_QUALIFICATION_TOPOLOGY=mixed-scale` and the existing
   signed-origin mixed-scale predicate over `2..=16` live displays. The fixture
-  first reaches and is rediscovered on a 1x display before fresh capture opens;
-  the first frame must have effective scale 1. One bounded `topology.len()`
-  display circuit then seeks effective scale 1 with described raw scale 2 at the
-  same origin. Missing that frame is explicitly not-qualified with no input;
-  an ordinary-scale frame cannot substitute.
+  first reaches and is rediscovered on a 1x display before fresh capture opens.
+  After each preparatory move, bounded rediscovery waits for a changed origin
+  and a position/scale match against the frozen displays before another move.
+  Command acknowledgement alone does not establish refreshed capture metadata.
+  The first frame must have effective scale 1. One bounded `topology.len()`
+  display circuit then seeks effective scale 1 with raw scale 2 recorded for the
+  same source frame. The `private-fixture` observation reads the existing bounded
+  geometry ledger; it does not query another window description or replace the
+  retained capture target. Missing that frame is explicitly not-qualified with
+  no input; an ordinary-scale frame cannot substitute.
 
 After establishing those prerequisites, invoke each row explicitly:
 
 ```sh
-cargo test --locked -p mado-pilot-platform-macos --test native_input \
+cargo test --locked -p mado-pilot-platform-macos --features private-fixture --test native_input \
   process_directed_require_focused_accepts_only_the_focused_fixture -- \
   --ignored --exact --nocapture --test-threads=1
-cargo test --locked -p mado-pilot-platform-macos --test native_input \
+cargo test --locked -p mado-pilot-platform-macos --features private-fixture --test native_input \
   system_require_unchanged_accepts_raw_geometry_and_refuses_real_changes -- \
   --ignored --exact --nocapture --test-threads=1
 MADO_PILOT_MACOS_QUALIFICATION_TOPOLOGY=mixed-scale \
-  cargo test --locked -p mado-pilot-platform-macos --test native_input \
+  cargo test --locked -p mado-pilot-platform-macos --features private-fixture --test native_input \
   system_require_unchanged_accepts_effective_one_raw_two_frame -- \
   --ignored --exact --nocapture --test-threads=1
 ```
