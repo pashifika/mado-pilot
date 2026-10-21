@@ -1516,16 +1516,21 @@ fn compatible_newer_publications_do_not_starve_first_backend_completion() {
         .capture
         .publish(0x32, Continuity::Continuous)
         .expect("published compatible pending frame");
-    harness
-        .capture
-        .publish(0x33, Continuity::Continuous)
-        .expect("published latest pending replacement");
-    let pending = wait_progress(&query, |progress| {
+    wait_progress(&query, |progress| {
         progress.pending_count() == 1
             && progress.in_flight_count() == 1
             && progress.work().get(TemplateWorkDisposition::Admitted) == 1
     });
-    assert_eq!(pending.work().get(TemplateWorkDisposition::Admitted), 1);
+    harness
+        .capture
+        .publish(0x33, Continuity::Continuous)
+        .expect("published latest pending replacement");
+    wait_progress(&query, |progress| {
+        progress.pending_count() == 1
+            && progress.in_flight_count() == 1
+            && progress.work().get(TemplateWorkDisposition::Admitted) == 1
+            && progress.work().get(TemplateWorkDisposition::Superseded) == 1
+    });
 
     first_gate.release();
     assert!(first_gate.wait_until_completed(Duration::from_secs(2)));
