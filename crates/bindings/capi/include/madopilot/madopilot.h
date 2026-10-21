@@ -1322,7 +1322,7 @@ typedef struct madopilot_ocr_zone_t {
  *
  * Every handle, string view, and zone element is borrowed for the synchronous
  * call only. package is required for an injected backend and null for an
- * integrated profile. zones contains one through eight size-versioned elements;
+ * integrated profile. zones contains one through sixteen size-versioned elements;
  * count and stride are ABI-native addressability quantities. */
 typedef struct madopilot_ocr_zone_scan_request_t {
     uint32_t struct_size;

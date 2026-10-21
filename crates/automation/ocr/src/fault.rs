@@ -30,7 +30,7 @@ pub enum OcrFault {
     ModelMismatch,
     /// The requested profile identity differs from the selected backend's profile.
     ProfileMismatch,
-    /// A grouped request did not contain one through eight zones.
+    /// A grouped request did not contain one through sixteen zones.
     ZoneCountOutOfRange,
     /// Candidate-to-zone memberships exceeded the grouped operation ceiling.
     ZoneMembershipCountAboveCeiling,
@@ -106,7 +106,7 @@ impl OcrFault {
             }
             Self::MappingAboveCeiling => "OCR source mapping exceeds the operation byte ceiling",
             Self::ProfileMismatch => "OCR request selected a different profile",
-            Self::ZoneCountOutOfRange => "OCR zone scan requires one through eight zones",
+            Self::ZoneCountOutOfRange => "OCR zone scan requires one through sixteen zones",
             Self::BackendUnavailable => "OCR backend is not available",
             Self::BackendFailed => "OCR backend failed",
             Self::BackendCandidateCountAboveCeiling => "OCR backend emitted too many candidates",

@@ -6,6 +6,7 @@ use std::sync::Arc;
 use mado_pilot_core::{CoordinateSpace, FrameStamp, PixelRect, Point, TransformSnapshot};
 
 use crate::backend::OcrBackendDescriptor;
+use crate::request::MAX_OCR_ZONES;
 
 /// A finite profile confidence observation in `0.0..=1.0`.
 #[derive(Debug, Clone, Copy, PartialEq)]
@@ -216,7 +217,7 @@ pub struct OcrZoneScanResult {
     backend: OcrBackendDescriptor,
     candidates: Arc<[RecognizedRegion]>,
     membership_indexes: Arc<[u16]>,
-    group_offsets: [u16; 9],
+    group_offsets: [u16; MAX_OCR_ZONES + 1],
 }
 
 impl fmt::Debug for OcrZoneScanResult {
@@ -248,7 +249,7 @@ impl OcrZoneScanResult {
         backend: OcrBackendDescriptor,
         candidates: Arc<[RecognizedRegion]>,
         membership_indexes: Arc<[u16]>,
-        group_offsets: [u16; 9],
+        group_offsets: [u16; MAX_OCR_ZONES + 1],
     ) -> Self {
         Self {
             stamp,

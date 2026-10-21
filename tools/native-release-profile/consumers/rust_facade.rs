@@ -269,7 +269,7 @@ fn empty_recognition(result: &OcrResult, stamp: FrameStamp, region: (i32, i32, i
 
 fn cpu_identity(selected: &OcrBackendDescriptor) -> bool {
     selected.id().as_str() == "onnxruntime-cpu"
-        && selected.version().as_str() == "0.4.0+ort-1.29.0-api17"
+        && selected.version().as_str() == "0.5.0+ort-1.29.0-api17"
         && selected.model().as_str() == "g-004-rapidocr-ppocrv4-det-v6-rec-small-v1"
         && selected.model_identity().version().as_str()
             == "rapidocr-3.9.2+095232a4c94f7f0e6600ba5bba1177010ad696d4"

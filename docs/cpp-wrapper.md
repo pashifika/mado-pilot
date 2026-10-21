@@ -585,9 +585,11 @@ wrapper never throws one.
   explicit CPU. A required policy returns the typed error and no engine.
 - Provider state never changes after publication. Inference failure is returned
   directly and is not retried on CPU.
-- `MADOPILOT_STATUS_INVALID_ARGUMENT` from grouped scanning includes zero/nine
-  zones, malformed geometry/identity, or an incomplete array element. The
-  wrapper preserves the C error rather than retrying singular OCR.
+- `MADOPILOT_STATUS_INVALID_ARGUMENT` from grouped scanning includes zero or
+  seventeen-or-more zones, malformed geometry/identity, or an incomplete array
+  element. Sixteen-zone admission requires a 0.5.0-or-later library; older
+  libraries accept at most eight. The wrapper preserves the C error rather than
+  retrying singular OCR.
 - A borrowed descriptor/text view that must outlive the grouped owner must be
   copied with `to_string()`; keep an explicit `clone()` when owner lifetime,
   rather than just the bytes, is required.

@@ -125,6 +125,12 @@ fn replay_facade_exposes_explicit_source_correlated_ocr() {
         zone(12.0, 6.0, 16.0, 12.0),
     ];
     let overlap = [zone(0.0, 0.0, 10.0, 8.0), zone(4.0, 0.0, 16.0, 8.0)];
+    let sixteen: Vec<_> = (0..16)
+        .map(|index| zone(f64::from(index % 4), f64::from(index / 4), 16.0, 12.0))
+        .collect();
+    let expected_zones: Vec<_> = (0..16)
+        .map(|index| PixelRect::new(index % 4, index / 4, 16, 12).expect("valid zone"))
+        .collect();
     let scan = |zones: &[OcrZone], operation: &OperationContext| {
         session
             .scan_ocr_zones(
@@ -144,6 +150,29 @@ fn replay_facade_exposes_explicit_source_correlated_ocr() {
     let three_result = scan(&three, &operation);
     let eight_result = scan(&eight, &operation);
     let overlap_result = scan(&overlap, &operation);
+    let sixteen_result = scan(&sixteen, &operation);
+
+    assert_eq!(sixteen_result.stamp(), frame.stamp());
+    assert_eq!(sixteen_result.transform(), frame.transform());
+    assert_eq!(sixteen_result.backend(), &selected);
+    assert_eq!(
+        sixteen_result.output_space(),
+        CoordinateSpace::CapturePixels
+    );
+    assert_eq!(sixteen_result.source_envelope(), result.effective_region());
+    assert_eq!(sixteen_result.effective_zones(), expected_zones);
+    assert_eq!(sixteen_result.unique_candidates().len(), 1);
+    for index in 0..16 {
+        let group = sixteen_result.group(index).expect("caller-order group");
+        assert_eq!(group.len(), 1);
+        let candidate = group.get(0).expect("membership including index fifteen");
+        assert_eq!(candidate, &result.regions()[0]);
+        assert!(std::ptr::eq(
+            candidate,
+            &sixteen_result.unique_candidates()[0]
+        ));
+    }
+    assert!(sixteen_result.group(16).is_none());
 
     assert_eq!(one_result.group(0).expect("group").len(), 1);
     assert_eq!(three_result.group(0).expect("group").len(), 1);
@@ -167,6 +196,7 @@ fn replay_facade_exposes_explicit_source_correlated_ocr() {
         "shared membership owns one candidate"
     );
 
+    let recognized_before_invalid = backend.recognition_count();
     let zero: [OcrZone; 0] = [];
     let zero_error = OcrZoneScanRequest::new(
         &frame,
@@ -178,17 +208,18 @@ fn replay_facade_exposes_explicit_source_correlated_ocr() {
     )
     .expect_err("zero zones are invalid");
     assert_eq!(zero_error.status(), Status::InvalidArgument);
-    let nine = [zone(0.0, 0.0, 16.0, 12.0); 9];
-    let nine_error = OcrZoneScanRequest::new(
+    let seventeen = [zone(0.0, 0.0, 16.0, 12.0); 17];
+    let seventeen_error = OcrZoneScanRequest::new(
         &frame,
         selected.backend_identity(),
         selected.model_identity(),
-        &nine,
+        &seventeen,
         CoordinateSpace::CapturePixels,
         &operation,
     )
-    .expect_err("nine zones are invalid");
-    assert_eq!(nine_error.status(), Status::InvalidArgument);
+    .expect_err("seventeen zones are invalid");
+    assert_eq!(seventeen_error.status(), Status::InvalidArgument);
+    assert_eq!(backend.recognition_count(), recognized_before_invalid);
 
     let cancellation = CancellationToken::new();
     cancellation.cancel();
@@ -217,6 +248,17 @@ fn replay_facade_exposes_explicit_source_correlated_ocr() {
     drop(engine);
     drop(backend);
     assert!(backend_lifetime.upgrade().is_none());
+    assert_eq!(sixteen_result.stamp(), result.stamp());
+    assert_eq!(sixteen_result.transform(), result.transform());
+    assert_eq!(sixteen_result.effective_zones(), expected_zones);
+    assert_eq!(
+        sixteen_result
+            .group(15)
+            .expect("retained sixteenth group")
+            .get(0)
+            .expect("retained sixteenth membership"),
+        &result.regions()[0]
+    );
     assert_eq!(
         overlap_result
             .group(0)

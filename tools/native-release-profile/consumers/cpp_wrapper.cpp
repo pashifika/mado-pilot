@@ -163,7 +163,7 @@ bool empty_recognition(const madopilot::OcrResult& result, const madopilot::Fram
            same_rect(info.value().effective_region, left, top, right, bottom) &&
            info.value().output_space == MADOPILOT_SPACE_CAPTURE_PIXELS &&
            info.value().backend_id.view() == "onnxruntime-cpu" &&
-           info.value().backend_version.view() == "0.4.0+ort-1.29.0-api17" &&
+           info.value().backend_version.view() == "0.5.0+ort-1.29.0-api17" &&
            info.value().model_id.view() == "g-004-rapidocr-ppocrv4-det-v6-rec-small-v1" &&
            info.value().model_version.view() == "rapidocr-3.9.2+095232a4c94f7f0e6600ba5bba1177010ad696d4" &&
            info.value().profile_id.view() == "g-004-rapidocr-ppocrv4-det-v6-rec-small-v1";
