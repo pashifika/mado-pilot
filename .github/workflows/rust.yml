@@ -550,11 +550,13 @@ jobs:
           cargo build --locked --package mado-pilot-platform-windows --bin mado-pilot-windows-input-fixture --bin mado-pilot-windows-window-message-fixture || exit /b 1
           cargo run --locked --package mado-pilot-capi --example c-abi-check -- --label "CI ${{ runner.os }} ${{ runner.arch }}" --windows-native-fixture || exit /b 1
           certutil -hashfile target\debug\madopilot.dll SHA256 || exit /b 1
+          certutil -hashfile target\debug\madopilot.dll.lib SHA256 || exit /b 1
           set "CARGO_TARGET_DIR=%RUNNER_TEMP%\c-abi-private-fixture"
           cargo build --locked --package mado-pilot-capi --features private-fixture || exit /b 1
           cargo test --locked --package mado-pilot-capi --features private-fixture --tests || exit /b 1
           cargo run --locked --package mado-pilot-capi --features private-fixture --example c-abi-check -- --label "CI ${{ runner.os }} ${{ runner.arch }} private-fixture" || exit /b 1
           certutil -hashfile "%CARGO_TARGET_DIR%\debug\madopilot.dll" SHA256 || exit /b 1
+          certutil -hashfile "%CARGO_TARGET_DIR%\debug\madopilot.dll.lib" SHA256 || exit /b 1
 
       - name: Check native profile procedure and external consumers
         shell: cmd
@@ -566,6 +568,17 @@ jobs:
           call "%VSROOT%\VC\Auxiliary\Build\vcvars64.bat" || exit /b 1
           cargo build --locked --release -p mado-pilot -p mado-pilot-capi || exit /b 1
           python tools/native-release-profile/check_consumers.py --root . --library-dir target/release --output target/profile-consumers-ci --model-root "%MADO_PILOT_G004_MODEL_ROOT%" --runtime "%MADO_PILOT_ONNX_RUNTIME%" --opencv-runtime "C:\opencv\build\x64\vc16\bin\opencv_world%OPENCV_VERSION:.=%.dll" || exit /b 1
+
+      - name: Retain direct C ABI consumer evidence
+        if: ${{ always() }}
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        with:
+          name: direct-c-abi-consumers-windows-${{ github.run_id }}-${{ github.run_attempt }}
+          path: |
+            target/profile-consumers-ci/result.json
+            target/profile-consumers-ci/*.log
+          if-no-files-found: error
+          retention-days: 14
 
       # This asserts nothing about the scores. It names the OpenCV build the run
       # actually used and prints what that build matched, so a provisioning drift
@@ -941,6 +954,17 @@ jobs:
           python3 tools/native-release-profile/check_consumers.py \
             --root . --library-dir target/release --output target/profile-consumers-ci \
             --model-root "${MADO_PILOT_G004_MODEL_ROOT}" --runtime "${MADO_PILOT_ONNX_RUNTIME}"
+
+      - name: Retain direct C ABI consumer evidence
+        if: ${{ always() }}
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        with:
+          name: direct-c-abi-consumers-macos-${{ github.run_id }}-${{ github.run_attempt }}
+          path: |
+            target/profile-consumers-ci/result.json
+            target/profile-consumers-ci/*.log
+          if-no-files-found: error
+          retention-days: 14
 
       # This asserts nothing about the scores. It names the OpenCV build the run
       # actually used and prints what that build matched, so a provisioning drift
