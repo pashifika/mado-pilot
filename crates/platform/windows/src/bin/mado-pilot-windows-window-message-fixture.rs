@@ -73,8 +73,8 @@ mod fixture {
     use windows::Win32::UI::Input::KeyboardAndMouse::{GetAsyncKeyState, VK_F6};
     use windows::Win32::UI::Input::{RAWINPUTDEVICE, RegisterRawInputDevices};
     use windows::Win32::UI::WindowsAndMessaging::{
-        CreateWindowExW, DefWindowProcW, DestroyWindow, DispatchMessageW, GetClientRect,
-        GetForegroundWindow, GetMessageW, GetWindowThreadProcessId, KillTimer, MSG,
+        ChildWindowFromPoint, CreateWindowExW, DefWindowProcW, DestroyWindow, DispatchMessageW,
+        GetClientRect, GetForegroundWindow, GetMessageW, GetWindowThreadProcessId, KillTimer, MSG,
         PostQuitMessage, RegisterClassExW, SW_SHOW, SW_SHOWNOACTIVATE, SWP_NOACTIVATE,
         SWP_NOZORDER, SetForegroundWindow, SetParent, SetTimer, SetWindowPos, SetWindowTextW,
         ShowWindow, WINDOW_STYLE, WM_CHAR, WM_CLOSE, WM_DESTROY, WM_INPUT, WM_KEYDOWN, WM_KEYUP,
@@ -651,9 +651,20 @@ mod fixture {
             print_line("coordinate-oracle failed=bounds");
             return;
         }
-        let client = POINT {
-            x: bounds.right / 2,
-            y: bounds.bottom / 2,
+        let Some(client) = [
+            POINT {
+                x: bounds.right / 2,
+                y: bounds.bottom / 2,
+            },
+            POINT { x: 2, y: 2 },
+        ]
+        .into_iter()
+        .find(|point| {
+            // SAFETY: this thread owns hwnd; both candidates are inside its client bounds.
+            unsafe { ChildWindowFromPoint(hwnd, *point) == hwnd }
+        }) else {
+            print_line("coordinate-oracle failed=target-hit");
+            return;
         };
         let span = bounds.right.min(bounds.bottom) / 4;
         let mut screen = client;
