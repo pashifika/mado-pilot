@@ -24,10 +24,10 @@ full-workflow result at `acc5d98ae8cfc4958970be826a28011bc12185c9`, described be
 Neither that case nor the historical results qualify it for arbitrary targets.
 
 Current-source final-focus ordering, `System` raw-geometry checks, and retained
-cached mapping have a separate pending native gate. The
-[bounded regression rows](#bounded-focus-and-raw-geometry-regressions) are
-procedures, not executed qualification. They do not refresh the source, hashes,
-support decisions, or performance measurements recorded above.
+cached mapping require separately bound native results. The
+[bounded regression rows](#bounded-focus-and-raw-geometry-regressions) describe
+procedures; this public document does not qualify their execution. They do not
+refresh the source, hashes, support decisions, or performance measurements above.
 
 ## Capability boundary
 
@@ -583,7 +583,7 @@ change. The accepted result was rerun at commit
 The current procedure also maps the retained original frame again after capture
 close and compares its bytes with the earlier mapping. Cached mapping remains
 legal after close; that added assertion is not attributed to the historical
-result above and remains part of the pending current-source native gate.
+result above. This public document does not qualify that added assertion.
 
 ## Explicit system-input check
 

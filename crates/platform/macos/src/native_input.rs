@@ -1154,16 +1154,14 @@ impl SystemCommitSource for NativeInputDriver {
         geometry: CommitGeometry,
         budget: NativeCommitBudget,
     ) -> Result<(), InputFault> {
-        let live_bounds = self.record.current_bounds(budget.remaining()?)?;
-        self.ensure_authorized()?;
-        budget.check()?;
-        let bounds = if self.record.kind() == TargetKind::Display {
-            live_bounds
-        } else {
-            self.system_focus_bounds(focus, budget.remaining()?)?
-        };
-        validate_system_geometry(geometry, bounds)?;
-        budget.check()
+        revalidate_system_commit_with(
+            self.record.kind(),
+            geometry,
+            budget,
+            |remaining| self.record.current_bounds(remaining),
+            || self.ensure_authorized(),
+            |remaining| self.system_focus_bounds(focus, remaining),
+        )
     }
 
     fn revalidate_cleanup_authorization(
@@ -1972,6 +1970,26 @@ fn system_policy_geometry(
         }
         _ => Err(InputFault::UnsupportedCombination),
     }
+}
+
+fn revalidate_system_commit_with(
+    kind: TargetKind,
+    geometry: CommitGeometry,
+    budget: NativeCommitBudget,
+    current: impl FnOnce(std::time::Duration) -> Result<shim::NativeBounds, InputFault>,
+    authorize: impl FnOnce() -> Result<(), InputFault>,
+    focused: impl FnOnce(std::time::Duration) -> Result<shim::NativeBounds, InputFault>,
+) -> Result<(), InputFault> {
+    let live_bounds = current(budget.remaining()?)?;
+    authorize()?;
+    budget.check()?;
+    let bounds = if kind == TargetKind::Display {
+        live_bounds
+    } else {
+        focused(budget.remaining()?)?
+    };
+    validate_system_geometry(geometry, bounds)?;
+    budget.check()
 }
 
 fn validate_system_geometry(

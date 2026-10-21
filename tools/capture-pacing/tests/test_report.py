@@ -155,20 +155,25 @@ def synchronize(value):
     value["process"]["stderr"] = value["stderr"]
 
 
-def campaign_rows():
+def campaign_rows(platform="windows"):
     """Runner-shaped rows: raw case records plus the runner's cached analysis."""
-    return [dict(record(case), analysis={"status": "pass"}) for case in ("semantic",) + CASES]
+    return [dict(record(case, platform), analysis={"status": "pass"}) for case in ("semantic",) + CASES]
 
 
-def write_campaign(root, rows=None, identity=UNCHANGED):
+def write_campaign(root, rows=None, identity=UNCHANGED, *, platform="windows"):
     """Publish a packet through the runner's own record, evidence and receipt writers."""
-    rows = campaign_rows() if rows is None else rows
+    rows = campaign_rows(platform) if rows is None else rows
+    authority, host = dict(AUTHORITY), dict(HOST)
+    if platform == "macos":
+        authority["target"] = "aarch64-apple-darwin"
+        host.update(system="Darwin", architecture="arm64")
+        del host["system_root"]
     (root / "semantic").mkdir(exist_ok=True)
     runner.save(root / "semantic" / "result.json", rows[0])
     receipt = runner.final_receipt(
-        AUTHORITY, rows, authority_bytes=runner.save(root / "authority.json", AUTHORITY),
+        authority, rows, authority_bytes=runner.save(root / "authority.json", authority),
         records=runner.save(root / "records.json", rows),
-        evidence=["authority.json", "semantic/result.json", "records.json"], host=HOST,
+        evidence=["authority.json", "semantic/result.json", "records.json"], host=host,
         native_binding={"scope": "controlled", "files": 3, "edges": []}, identity=dict(identity),
         elapsed_seconds=120.5, halt_reason=None)
     runner.save(root / "run.json", receipt)
@@ -746,14 +751,15 @@ class PublicationTests(PacketTest):
     def test_invalid_receipt_still_protects_declared_evidence(self):
         records, receipt = write_campaign(self.root)
         value = json.loads(receipt.read_bytes())
-        value["binding_unchanged"] = False
-        receipt.write_text(json.dumps(value), encoding="utf-8")
-        before = snapshot(self.root)
-        self.assertEqual(
-            run_report("--input", records, "--run-receipt", receipt,
-                       "--output", self.root / "semantic" / "result.json"),
-            (2, "capture-pacing-report: output-aliases-evidence\n"))
-        self.assertEqual(snapshot(self.root), before)
+        for mutation in ({"binding_unchanged": False}, {"target": "aarch64-apple-darwin"}):
+            with self.subTest(mutation=mutation):
+                receipt.write_text(json.dumps({**value, **mutation}), encoding="utf-8")
+                before = snapshot(self.root)
+                self.assertEqual(
+                    run_report("--input", records, "--run-receipt", receipt,
+                               "--output", self.root / "semantic" / "result.json"),
+                    (2, "capture-pacing-report: output-aliases-evidence\n"))
+                self.assertEqual(snapshot(self.root), before)
 
     def test_distinct_output_is_replaced_by_the_complete_report(self):
         records, receipt = write_campaign(self.root)
@@ -784,16 +790,139 @@ class PublicationTests(PacketTest):
 
 class FinalReceiptTests(PacketTest):
     def test_complete_bound_campaign_qualifies_its_recorded_scope(self):
-        records, receipt = write_campaign(self.root)
+        for platform, architectures in (("windows", ("AMD64", "x86_64")),
+                                        ("macos", ("arm64", "aarch64"))):
+            records, receipt = write_campaign(self.root, platform=platform)
+            value = json.loads(receipt.read_bytes())
+            for architecture in architectures:
+                with self.subTest(platform=platform, architecture=architecture):
+                    value["bound_host"]["architecture"] = architecture
+                    receipt.write_text(json.dumps(value), encoding="utf-8")
+                    before = snapshot(self.root)
+                    code, result = self.report(records, receipt)
+                    self.assertEqual(code, 0)
+                    self.assertEqual((result["schema"], result["view"], result["status"], result["observation_status"]),
+                                     (3, "prospective-qualification", "pass", "pass"))
+                    self.assertEqual(result["final_authority"], {"status": "verified", "receipt_schema": 3,
+                                                                 "campaign_status": "pass", "final_identity": UNCHANGED,
+                                                                 "failures": []})
+                    combined = next(row for row in result["comparisons"] if row["case"] == "combined")
+                    self.assertEqual(combined["rates"]["ocr_per_second"], {"ratio": 1.0, "reason": None})
+                    self.assert_evidence_unchanged(before)
+
+    def test_target_must_match_the_recorded_host_system_and_architecture(self):
+        for platform, other_target, other_host in (
+            ("windows", "aarch64-apple-darwin", {"system": "Darwin", "architecture": "arm64"}),
+            ("macos", "x86_64-pc-windows-msvc", {"system": "Windows", "architecture": "AMD64"}),
+        ):
+            records, receipt = write_campaign(self.root, platform=platform)
+            value = json.loads(receipt.read_bytes())
+            observations, _ = reporter.evaluate(records.read_bytes())
+            mutations = (
+                {"target": other_target}, {"target": "unsupported"}, {"target": []},
+                {"bound_host": {**value["bound_host"], **other_host}},
+                {"bound_host": {**value["bound_host"], "system": "Linux"}},
+                {"bound_host": {**value["bound_host"], "system": other_host["system"]}},
+                {"bound_host": {**value["bound_host"], "architecture": other_host["architecture"]}},
+                {"bound_host": {**value["bound_host"], "architecture": ""}},
+                {"bound_host": {**value["bound_host"], "architecture": None}},
+            )
+            for mutation in mutations:
+                with self.subTest(platform=platform, mutation=mutation):
+                    receipt.write_text(json.dumps({**value, **mutation}), encoding="utf-8")
+                    before = snapshot(self.root)
+                    code, result = self.report(records, receipt)
+                    self.assertEqual((code, result["status"], result["observation_status"]), (1, "fail", "pass"))
+                    self.assertEqual(result["final_authority"]["status"], "invalid")
+                    self.assertEqual(result["final_authority"]["failures"], ["final-receipt-invalid"])
+                    self.assertEqual(result["cases"], observations["cases"])
+                    self.assertEqual(result["semantic"], observations["semantic"])
+                    self.assertTrue(all(rate == {"ratio": None, "reason": "campaign-not-qualified"}
+                                        for row in result["comparisons"] for rate in row["rates"].values()))
+                    self.assert_evidence_unchanged(before)
+
+    def test_target_must_match_every_observed_semantic_and_comparison_platform(self):
+        all_cases = ("semantic",) + CASES
+        for platform, other_platform in (("windows", "macos"), ("macos", "windows")):
+            for changed_cases in [(case,) for case in all_cases] + [all_cases]:
+                with self.subTest(platform=platform, changed_cases=changed_cases):
+                    rows = campaign_rows(platform)
+                    for index, case in enumerate(all_cases):
+                        if case in changed_cases:
+                            rows[index] = dict(record(case, other_platform), analysis={"status": "pass"})
+                    records, receipt = write_campaign(self.root, rows, platform=platform)
+                    observations, _ = reporter.evaluate(records.read_bytes())
+                    before = snapshot(self.root)
+                    code, result = self.report(records, receipt)
+                    self.assertEqual((code, result["status"]), (1, "fail"))
+                    self.assertEqual(result["final_authority"]["status"], "failed")
+                    self.assertIn("final-receipt-platform-mismatch", result["final_authority"]["failures"])
+                    self.assertEqual(result["observation_status"], observations["observation_status"])
+                    self.assertEqual(result["cases"], observations["cases"])
+                    self.assertEqual(result["semantic"], observations["semantic"])
+                    self.assert_evidence_unchanged(before)
+
+    def test_partial_receipts_reconcile_every_nonpass_aggregate_exactly(self):
+        for platform in ("windows", "macos"):
+            not_run = [dict(placeholder(case), analysis={"status": "not-run"}) for case in ("semantic",) + CASES]
+            partial = copy.deepcopy(not_run)
+            partial[0] = campaign_rows(platform)[0]
+            incomplete = copy.deepcopy(not_run)
+            incomplete[0] = campaign_rows(platform)[0]
+            incomplete[0]["fixture"]["peak_rss_bytes"] = None
+            incomplete[0]["analysis"]["status"] = "incomplete"
+            unavailable_process = copy.deepcopy(not_run)
+            unavailable_process[0] = campaign_rows(platform)[0]
+            unavailable_process[0]["consumer"]["metrics"]["process"] = None
+            unavailable_process[0]["analysis"]["status"] = "incomplete"
+            synchronize(unavailable_process[0])
+            failed = copy.deepcopy(not_run)
+            failed[0] = campaign_rows(platform)[0]
+            failed[0]["process"]["cleanup_ok"] = False
+            failed[0]["analysis"]["status"] = "fail"
+            for name, rows, status in (
+                ("placeholders", not_run, "not-run"), ("partial", partial, "incomplete"),
+                ("missing-memory", incomplete, "incomplete"),
+                ("missing-process", unavailable_process, "incomplete"), ("failed", failed, "fail"),
+            ):
+                with self.subTest(platform=platform, campaign=name):
+                    records, receipt = write_campaign(self.root, rows, platform=platform)
+                    value = json.loads(receipt.read_bytes())
+                    self.assertEqual(value["status"], status)
+                    before = snapshot(self.root)
+                    code, result = self.report(records, receipt)
+                    self.assertEqual((code, result["status"], result["observation_status"]), (1, status, status))
+                    self.assertEqual(result["final_authority"]["status"], "failed" if status == "fail" else "verified")
+                    self.assert_evidence_unchanged(before)
+                    for supplied_status in ("pass", "fail", "incomplete", "not-run"):
+                        if supplied_status == status:
+                            continue
+                        with self.subTest(supplied_status=supplied_status):
+                            receipt.write_text(json.dumps({**value, "status": supplied_status}), encoding="utf-8")
+                            before = snapshot(self.root)
+                            code, contradicted = self.report(records, receipt)
+                            self.assertEqual((code, contradicted["status"], contradicted["observation_status"]),
+                                             (1, "fail", status))
+                            self.assertEqual(contradicted["final_authority"]["status"], "failed")
+                            self.assertEqual(contradicted["final_authority"]["failures"],
+                                             ["final-campaign-failed" if supplied_status == "fail"
+                                              else "final-receipt-status-mismatch"])
+                            self.assertEqual(contradicted["cases"], result["cases"])
+                            self.assertEqual(contradicted["semantic"], result["semantic"])
+                            self.assert_evidence_unchanged(before)
+
+    def test_permission_refusal_receipt_remains_verified_not_run(self):
+        rows = [dict(permission_refusal(), analysis={"status": "not-run"})]
+        rows += [dict(placeholder(case), analysis={"status": "not-run"}) for case in CASES]
+        records, receipt = write_campaign(self.root, rows, platform="macos")
+        before = snapshot(self.root)
         code, result = self.report(records, receipt)
-        self.assertEqual(code, 0)
-        self.assertEqual((result["schema"], result["view"], result["status"], result["observation_status"]),
-                         (3, "prospective-qualification", "pass", "pass"))
-        self.assertEqual(result["final_authority"], {"status": "verified", "receipt_schema": 3,
-                                                     "campaign_status": "pass", "final_identity": UNCHANGED,
-                                                     "failures": []})
-        combined = next(row for row in result["comparisons"] if row["case"] == "combined")
-        self.assertEqual(combined["rates"]["ocr_per_second"], {"ratio": 1.0, "reason": None})
+        self.assertEqual((code, result["status"], result["observation_status"]), (1, "not-run", "not-run"))
+        self.assertEqual(result["final_authority"]["status"], "verified")
+        self.assertEqual(result["final_authority"]["failures"], [])
+        self.assertEqual(result["semantic"]["reason"], "permission-denied-or-undetermined")
+        self.assertTrue(all(row["status"] == "not-run" for row in result["cases"]))
+        self.assert_evidence_unchanged(before)
 
     def test_passing_cases_cannot_override_a_changed_final_binding(self):
         suppressed = {"ratio": None, "reason": "campaign-not-qualified"}

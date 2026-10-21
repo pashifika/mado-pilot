@@ -195,6 +195,51 @@ class CampaignCheckpointTests(unittest.TestCase):
         self.assertEqual(errors, [])
         self.assertEqual(verified["reference"][1]["samples"], [self.sample])
 
+    def interrupt_digest(self, name):
+        original_sha256 = runner.sha256
+
+        def sha256(path):
+            if Path(path).name == name:
+                raise self.interrupt
+            return original_sha256(path)
+
+        with patch.object(runner, "sha256", side_effect=sha256):
+            with self.assertRaises(KeyboardInterrupt) as caught:
+                self.campaign()
+        self.assertIs(caught.exception, self.interrupt)
+        self.assertEqual(len(self.calls), 4)
+        retained = self.retained()
+        self.assertEqual(retained["execution"], "interrupted")
+        return retained, retained["attempts"][-1]
+
+    def test_raw_digest_interrupt_retains_completed_receipt_without_raw_digest(self):
+        retained, attempt = self.interrupt_digest("reference-1.jsonl")
+        self.assertEqual((attempt["index"], attempt["status"], attempt["process"]), (1, "completed", self.good))
+        receipt = self.args.report / attempt["receipt_path"]
+        self.assertEqual(report.sha256(receipt), attempt["receipt_sha256"])
+        self.assertEqual(json.loads(receipt.read_text()), {"index": 1, "process": self.good, "command": attempt["command"]})
+        pending = retained["profiles"]["reference"][-1]
+        self.assertEqual(pending["projection_state"], "raw-digest-pending")
+        self.assertNotIn("raw_sha256", pending)
+        verified, errors = report.reconcile_raw(retained, self.args.report)
+        self.assertEqual(errors, [])
+        self.assertEqual([process["index"] for process in verified["reference"]], [0])
+        errors = report.evaluate(retained, evidence_root=self.args.report)["validation_errors"]
+        self.assertIn({"kind": "incomplete", "profile": "reference", "process": 1,
+                       "message": "process receipt retained before its raw JSONL digest"}, errors)
+        self.assertFalse(any("attempt" in error["message"] and "differs" in error["message"] for error in errors))
+
+    def test_receipt_digest_interrupt_keeps_unbound_receipt_unconfirmed(self):
+        retained, attempt = self.interrupt_digest("reference-1.process.json")
+        self.assertEqual((attempt["index"], attempt["status"], attempt["process"]),
+                         (1, "attempted-unconfirmed", self.good))
+        self.assertNotIn("receipt_sha256", attempt)
+        self.assertTrue((self.args.report / attempt["receipt_path"]).is_file())
+        self.assertEqual([process["index"] for process in retained["profiles"]["reference"]], [0])
+        verified, errors = report.reconcile_raw(retained, self.args.report)
+        self.assertEqual(errors, [])
+        self.assertEqual([process["index"] for process in verified["reference"]], [0])
+
     def test_checkpoint_interrupt_survives_temporary_cleanup_failure(self):
         original_fsync, original_unlink = runner.os.fsync, Path.unlink
         interrupted = False

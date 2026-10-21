@@ -231,8 +231,14 @@ The intermediate evaluation projection uses `projection_state: "receipt-only"`.
 The evaluator verifies its exact index, command, process outcome, evidence paths
 and raw/receipt digests, then reconstructs the full original JSONL observations.
 Already verified quality failures remain failed rather than becoming unverified
-because parsing was interrupted. Parsed and legacy projections still require
-full reconciliation; existing schema-1/2 evidence interpretations are unchanged.
+because parsing was interrupted. Before the raw JSONL digest is recorded, the
+projection is `raw-digest-pending`: an interruption keeps the digest-bound
+receipt and attempt status, and the evaluator verifies that receipt projection
+but never evaluates the undigested raw bytes, so that process is incomplete while
+earlier verified findings remain. Partial raw/receipt files of an
+`attempted-unconfirmed` child without a recorded receipt digest are accounted
+for, never evaluated. Parsed and legacy projections still require full
+reconciliation; existing schema-1/2 evidence interpretations are unchanged.
 
 On `KeyboardInterrupt`, the runner checkpoints `execution: "interrupted"` with
 the retained parsed/receipt prefix and unconfirmed attempt, removes any aggregate

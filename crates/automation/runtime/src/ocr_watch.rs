@@ -1415,9 +1415,15 @@ impl OcrQueryShared {
         if !Self::execution_current(&state, work) {
             return;
         }
-        let mut terminal = refresh_interruption(authority, &self.request.operation, now)
-            .or(capture_refusal)
-            .map(Arc::new);
+        let authority = match authority {
+            None
+            | Some(OcrTextTerminalOutcome::Cancelled | OcrTextTerminalOutcome::DeadlineExceeded) => {
+                capture_refusal.or(authority)
+            }
+            _ => authority,
+        };
+        let mut terminal =
+            refresh_interruption(authority, &self.request.operation, now).map(Arc::new);
         let authority_discard = terminal.is_some();
         let mut disposition = None;
         if terminal.is_none() {
@@ -2587,6 +2593,130 @@ mod tests {
             let _ = query.cancel();
         }
         runtime.close();
+    }
+
+    #[test]
+    fn capture_refusal_survives_interruption_after_its_commitment() {
+        use mado_pilot_capture::{
+            CaptureFault, CaptureSession, FrameRequest, Lifecycle, SessionDescription,
+        };
+        use mado_pilot_testkit::{CompletionGate, ManualClock};
+
+        #[derive(Debug)]
+        struct InterruptAfterRefusal {
+            inner: Arc<dyn CaptureSession>,
+            clock: Arc<ManualClock>,
+            cancellation: CancellationToken,
+            cancel_after_refusal: bool,
+        }
+
+        impl CaptureSession for InterruptAfterRefusal {
+            fn description(&self) -> SessionDescription {
+                self.inner.description()
+            }
+
+            fn frame(&self, request: &FrameRequest, operation: &OperationContext) -> Result<Frame> {
+                self.inner.frame(request, operation)
+            }
+
+            fn commit_frame(&self, frame: &Frame, operation: &OperationContext) -> Result<()> {
+                let result = self.inner.commit_frame(frame, operation);
+                if result.as_ref().is_err_and(|error| {
+                    matches!(error.status(), Status::TargetLost | Status::CaptureFailed)
+                }) {
+                    if self.cancel_after_refusal {
+                        self.cancellation.cancel();
+                    } else {
+                        self.clock.advance(Duration::from_secs(2));
+                    }
+                }
+                result
+            }
+
+            fn close(&self, operation: &OperationContext) -> Result<()> {
+                self.inner.close(operation)
+            }
+
+            fn lifecycle(&self) -> Lifecycle {
+                self.inner.lifecycle()
+            }
+        }
+
+        for fault in [CaptureFault::TargetLost, CaptureFault::DeviceRemoved] {
+            for cancel_after_refusal in [false, true] {
+                let capture = ControlledCapture::new(
+                    Arc::new(IdentityIssuer::new()),
+                    PixelExtent::new(32, 24),
+                    PixelFormat::Bgra8,
+                )
+                .unwrap();
+                let acquisition = Arc::new(CompletionGate::new());
+                capture.set_frame_error_gate(acquisition.clone());
+                let runtime = quiet_runtime(Matcher::new(Arc::new(ControlledMatcher::new(
+                    PixelFormat::Rgba8,
+                ))));
+                let clock = Arc::new(ManualClock::new());
+                let cancellation = CancellationToken::new();
+                let session = runtime
+                    .register_session(Arc::new(InterruptAfterRefusal {
+                        inner: capture
+                            .open(
+                                capture.target(),
+                                &OpenRequest::new(),
+                                &OperationContext::new(),
+                            )
+                            .unwrap(),
+                        clock: clock.clone(),
+                        cancellation: cancellation.clone(),
+                        cancel_after_refusal,
+                    }))
+                    .unwrap();
+                let _acquisition_release = acquisition.release_guard();
+                let recognizer =
+                    selected_recognizer(ControlledOcr::new(PixelFormat::Bgra8).with_candidates(
+                        vec![ScriptedOcrCandidate::new(
+                            b"ready".as_slice(),
+                            [(1.0, 1.0), (8.0, 1.0), (8.0, 5.0), (1.0, 5.0)],
+                            0.8,
+                            0,
+                        )],
+                    ));
+                let query = session
+                    .start_ocr_query(
+                        text_request(
+                            OperationContext::new()
+                                .with_clock(clock)
+                                .with_cancellation(cancellation)
+                                .with_deadline(MonotonicInstant::from_origin(Duration::from_secs(
+                                    1,
+                                ))),
+                        ),
+                        Some(&recognizer),
+                    )
+                    .unwrap();
+                capture
+                    .publish(1, mado_pilot_capture::Continuity::Continuous)
+                    .unwrap();
+                let work = next_ocr(&runtime, 0);
+                capture.terminate(fault);
+                assert!(acquisition.wait_until_entered(Duration::from_secs(2)));
+                runtime.scheduler.process_ocr(work);
+                let outcome = query.wait(&OperationContext::new()).unwrap();
+                assert_eq!(outcome.status(), Some(fault.status()));
+                let progress = query.progress();
+                assert_eq!(progress.confirmed_observations(), 0);
+                assert_eq!(progress.last_accepted_frame(), None);
+                assert_eq!(progress.work().get(OcrTextWorkDisposition::Completed), 0);
+                acquisition.release();
+                assert!(acquisition.wait_until_completed(Duration::from_secs(2)));
+                assert!(Arc::ptr_eq(
+                    &outcome,
+                    &query.wait(&OperationContext::new()).unwrap()
+                ));
+                session.close(TemplateTerminalOutcome::SessionClosed);
+                runtime.close();
+            }
+        }
     }
 
     #[test]

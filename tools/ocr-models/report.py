@@ -200,7 +200,8 @@ def reconcile_raw(report, evidence_root):
     """Verified original processes per profile plus (profile, process, message) integrity errors.
 
     A process whose original receipt or JSONL cannot be verified is excluded; the
-    report's own projection is never evaluated.
+    report's own projection is never evaluated. A receipt-verified
+    ``raw-digest-pending`` projection is excluded too: its raw bytes were never digested.
     """
     if evidence_root is None:
         return {}, [(None, None, "original raw JSONL evidence root is required")]
@@ -215,6 +216,8 @@ def reconcile_raw(report, evidence_root):
             index = process.get("index") if isinstance(process, dict) else None
             stage = "raw JSONL"
             try:
+                state = process.get("projection_state")
+                pending = state == "raw-digest-pending"
                 absent = "raw_sha256" not in process
                 path = evidence_path(root, process.get("raw_path"), missing_ok=True)
                 if path.suffix != ".jsonl" or path in retained:
@@ -228,7 +231,7 @@ def reconcile_raw(report, evidence_root):
                 if receipt_path.is_file():
                     receipts.add(receipt_path)
                 stage = "raw JSONL"
-                if absent and os.path.lexists(path):
+                if absent and not pending and os.path.lexists(path):
                     raise ValueError("retained raw JSONL has no reported digest")
                 if not absent:
                     path = evidence_path(root, process.get("raw_path"))
@@ -247,8 +250,10 @@ def reconcile_raw(report, evidence_root):
                 if invoked_profiles != [profile]:
                     errors.append((None, None, "original process invocation/profile attribution mismatch"))
                 stage = "raw JSONL"
-                original = parse_process(path, receipt["process"], receipt["command"],
-                                         receipt["index"], evidence_root=root)
+                original = ({"index": receipt["index"], "process": receipt["process"], "command": command,
+                             "raw_path": path.resolve().relative_to(root).as_posix()} if pending
+                            else parse_process(path, receipt["process"], command, receipt["index"],
+                                               evidence_root=root))
                 if "profile" in original and original["profile"] != profile:
                     errors.append((None, None, "original Rust meta/profile attribution mismatch"))
                 if original["index"] != receipt["index"]:
@@ -258,33 +263,38 @@ def reconcile_raw(report, evidence_root):
                 if original.get("raw_sha256") != process.get("raw_sha256"):
                     errors.append((profile, index, "original raw JSONL digest mismatch"))
                 expected = original
-                if process.get("projection_state") == "receipt-only":
+                if state in ("receipt-only", "raw-digest-pending"):
                     expected = {key: original[key] for key in (
                         "index", "process", "command", "receipt_path", "receipt_sha256",
                         "raw_path", "raw_sha256"
                     ) if key in original}
-                    expected["projection_state"] = "receipt-only"
+                    expected["projection_state"] = state
                 # Absent-file failure text was host-specific when recorded.
                 ignored = {"parse_failure"} if absent else set()
                 differing = sorted(key for key in (set(expected) | set(process)) - ignored
                                    if key not in expected or key not in process or expected[key] != process[key])
                 if differing:
                     errors.append((profile, index, f"original raw JSONL projection mismatch: {', '.join(differing)}"))
-                verified.append(original)
+                if not pending:
+                    verified.append(original)
             except (ValueError, TypeError, KeyError, AttributeError, OSError, UnicodeError) as error:
                 errors.append((profile, index, f"original {stage} unavailable/invalid: {_describe(error)}"))
     for attempt in report.get("attempts", []):
+        # A child without a parent-bound receipt may leave partial raw/receipt files: accounted, never evaluated.
         if (attempt.get("kind") == "evaluation" and attempt.get("status") == "attempted-unconfirmed"
-                and attempt.get("process") is None):
+                and "receipt_sha256" not in attempt):
             try:
                 path = evidence_path(root, attempt.get("raw_path"), missing_ok=True)
-                if path.suffix != ".jsonl":
-                    raise ValueError("non-JSONL attempted evidence path")
+                receipt_path = evidence_path(root, attempt.get("receipt_path"), missing_ok=True)
+                if path.suffix != ".jsonl" or not receipt_path.name.endswith(".process.json"):
+                    raise ValueError("non-JSONL/receipt attempted evidence path")
                 if path.is_file():
                     retained.add(path)
+                if receipt_path.is_file():
+                    receipts.add(receipt_path)
             except (ValueError, OSError) as error:
                 errors.append((attempt.get("profile"), attempt.get("index"),
-                               f"unconfirmed raw attempt unavailable/invalid: {_describe(error)}"))
+                               f"unconfirmed attempt evidence unavailable/invalid: {_describe(error)}"))
     if {path.resolve() for path in root.rglob("*.jsonl")} != retained:
         errors.append((None, None, "original raw JSONL attempt set differs from retained report"))
     if {path.resolve() for path in root.rglob("*.process.json")} != receipts:
@@ -990,6 +1000,10 @@ def _evaluate(report, *, evidence_root, repository_root):
         evidence = evaluate_profile(profiles.get(profile, []), profile, binding, fixtures, budgets, identity, lifecycle_bound)
         for message in identity_failures(profile, identity, version):
             evidence.unverified(message)
+        for process in claimed.get(profile, []):
+            if _mapping(process).get("projection_state") == "raw-digest-pending":
+                evidence.gap(RULE_IDS, "process receipt retained before its raw JSONL digest",
+                             process=process.get("index"))
         observed[profile] = evidence
     for profile, index, message in raw_errors:
         if profile in observed:

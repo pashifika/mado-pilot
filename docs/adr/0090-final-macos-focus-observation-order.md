@@ -4,8 +4,8 @@
 - **Date:** 2026-10-21
 - **Resolves gate:** _none_
 - **Supersedes:** [ADR 0016](0016-macos-input-delivery-surface-and-focus-authority.md)
-  only for the ordering of the final retained-window inventory and Accessibility
-  focus observation
+  and [ADR 0029](0029-macos-process-directed-input.md), only for the ordering of the
+  final retained-window inventory and Accessibility focus observation
 
 ## Context
 
@@ -63,14 +63,15 @@ library-test procedure:
 
 - `system_required_focus_observes_changes_during_the_final_inventory` in
   [`native_input/tests.rs`](../../crates/platform/macos/src/native_input/tests.rs)
-  checks zero-post `FocusRequired` and stable-focus acceptance through the shared
-  native observation seam.
+  checks zero-post `FocusRequired` and stable-focus acceptance through the
+  production Rust final gate and shared native observation seam.
 - `process_required_focus_observes_changes_during_the_final_inventory` in
   [`shim.rs`](../../crates/platform/macos/src/shim.rs) checks the same ordering
   inside process-directed final commitment.
 
 The separately authorized ignored rows in the
 [macOS verification guide](../macos-input-verification.md#bounded-focus-and-raw-geometry-regressions)
-remain a pending current-source native gate. Deterministic tests do not qualify
-capture, physical input, the current host, or statistical performance; historical
-qualification artifacts remain bound to their recorded revisions.
+describe the native procedure; this public document does not qualify their
+execution. Deterministic tests do not qualify capture, physical input, the current
+host, or statistical performance. Historical qualification artifacts remain
+bound to their recorded revisions.

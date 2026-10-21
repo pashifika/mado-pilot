@@ -29,8 +29,8 @@ use super::{
     process_permission_denied_fault, process_pointer_for_non_move_with,
     process_policy_geometry_for, process_status_fault, release_pending_process, release_process,
     release_system, require_post_event_access, resolve_key_code, retain_pointer,
-    retain_process_press, system_policy_geometry, text_chunks, text_release_may_be_pending,
-    validate_system_geometry, wait_for_activation,
+    retain_process_press, revalidate_system_commit_with, system_policy_geometry, text_chunks,
+    text_release_may_be_pending, validate_system_geometry, wait_for_activation,
 };
 use crate::input::{
     InputDriver, MacosInputController, PendingTextRelease, SubmissionFailure, input_capability,
@@ -203,7 +203,7 @@ impl SystemCommitSource for FakeSource {
         &self,
         focus: FocusPolicy,
         geometry: CommitGeometry,
-        _budget: NativeCommitBudget,
+        budget: NativeCommitBudget,
     ) -> Result<(), InputFault> {
         *self.revalidations.lock().expect("uncontended") += 1;
         std::thread::sleep(*self.revalidation_delay.lock().expect("uncontended"));
@@ -218,13 +218,29 @@ impl SystemCommitSource for FakeSource {
         if let Some(fault) = *self.revalidation.lock().expect("uncontended") {
             return Err(fault);
         }
-        if let Some(lose_focus) = self.lose_focus_during_final_inventory {
-            let observation = shim::testing_input_focus_observation(lose_focus)
-                .expect("permission-independent native focus seam");
-            let bounds = focused_system_bounds(focus, observation)?;
-            validate_system_geometry(geometry, bounds)?;
-        } else if let Some(current) = *self.current_geometry.lock().expect("uncontended") {
-            validate_system_geometry(geometry, current)?;
+        let current = *self.current_geometry.lock().expect("uncontended");
+        if current.is_some() || self.lose_focus_during_final_inventory.is_some() {
+            // The early inventory differs from the focus observer's final bounds.
+            let current = current.unwrap_or(shim::NativeBounds {
+                origin: (0.0, 0.0),
+                size: (1.0, 1.0),
+                scale: 1.0,
+            });
+            revalidate_system_commit_with(
+                TargetKind::Window,
+                geometry,
+                budget,
+                |_| Ok(current),
+                || Ok(()),
+                |_| {
+                    let observation = match self.lose_focus_during_final_inventory {
+                        Some(lose_focus) => shim::testing_input_focus_observation(lose_focus)
+                            .expect("permission-independent native focus seam"),
+                        None => (true, current),
+                    };
+                    focused_system_bounds(focus, observation)
+                },
+            )?;
         }
         Ok(())
     }

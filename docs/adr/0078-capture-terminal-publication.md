@@ -38,8 +38,10 @@ before changing confirmations, stability, or success state. Capture commitment
 and clock reads run outside watcher guards; scheduler admission, session
 activation, and query-state arbitration retain their existing order. A recorded
 target loss, device fault, or close refuses held successful work even when the
-acquisition worker has not delivered its error. Typed terminal statuses remain
-unchanged; OCR public failure details remain redacted.
+acquisition worker has not delivered its error. A capture refusal precedes
+cancellation or expiry first observed after that refusal; already committed
+query terminals and session/scheduler closure retain precedence. Typed terminal
+statuses remain unchanged; OCR public failure details remain redacted.
 
 Ordinary finite replay/controlled exhaustion returns `CaptureFault::StreamEnded`
 without closing capture or invalidating its final frame. Watcher `source_ended`

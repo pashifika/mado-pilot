@@ -304,10 +304,16 @@ python3 -B tools/capture-pacing/report.py \
 
 Use the authority's actual `output_root` for both input paths and a distinct
 derived output. The reporter reconciles exact records bytes, per-case statuses,
-the five-case `comparison_status` before adding the semantic case, and the final
-aggregate status. Only complete passing observations and a verified passing
-receipt produce `pass`. Changed final bindings, mismatched bytes, contradictory
-statuses or a failed receipt cannot be overridden by passing individual cases.
+the five-case `comparison_status` before adding the semantic case, and the exact
+final aggregate status, including `incomplete` versus `not-run`. The recorded
+target must match the recorded host system and architecture and every observed
+semantic/comparison process platform. These checks use only recorded evidence,
+not today's host or the availability of historical binaries.
+Only complete passing observations and a verified passing receipt produce
+`pass`. Consistent partial, placeholder and permission-refused receipts retain
+their non-pass outcomes. Changed final bindings, mismatched bytes or platforms,
+contradictory statuses or an explicit failed receipt prevent qualification;
+individual observations remain visible.
 
 Omitting `--run-receipt` or supplying a schema-2 receipt produces
 `view: "legacy-inspection"`: otherwise passing observations are `incomplete`,

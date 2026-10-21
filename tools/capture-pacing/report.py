@@ -728,7 +728,10 @@ RECEIPT_KEYS = frozenset((
 HOST_TEXT = frozenset(("system", "architecture", "os_version", "os_build", "cpu"))
 HOST_KEYS = HOST_TEXT | {"memory_bytes", "logical_processors", "machine_id_sha256"}
 IDENTITY_KEYS = ("source", "inputs", "host", "native")
-TARGETS = ("x86_64-pc-windows-msvc", "aarch64-apple-darwin")
+TARGETS = {
+    "x86_64-pc-windows-msvc": ("Windows", ("amd64", "x86_64"), "windows"),
+    "aarch64-apple-darwin": ("Darwin", ("arm64", "aarch64"), "macos"),
+}
 
 
 def _written_file(value: object, name: str) -> None:
@@ -772,7 +775,9 @@ def _receipt_schema(receipt: dict) -> None:
              DIGEST.fullmatch(host["machine_id_sha256"]) is not None, invalid)
     _uint(host["memory_bytes"], invalid)
     _uint(host["logical_processors"], invalid)
-    _require(receipt["target"] in TARGETS, invalid)
+    _require(type(receipt["target"]) is str and receipt["target"] in TARGETS, invalid)
+    system, architectures, _ = TARGETS[receipt["target"]]
+    _require(host["system"] == system and host["architecture"].lower() in architectures, invalid)
     native = receipt["native_binding"]
     _keys(native, {"scope", "files", "edges"}, invalid)
     _require(type(native["scope"]) is str and type(native["edges"]) is list, invalid)
@@ -793,7 +798,8 @@ def _receipt_schema(receipt: dict) -> None:
 
 
 def _final_authority(receipt_data: bytes | None, records_data: bytes, observed: dict[str, str],
-                     observation_status: str, comparison_status: str) -> tuple[dict, list[str] | None]:
+                     observation_status: str, comparison_status: str,
+                     observed_platforms: list[object]) -> tuple[dict, list[str] | None]:
     """Reconcile the runner's final receipt with re-derived observations.
 
     A None declaration set forbids publication because evidence cannot be protected.
@@ -826,13 +832,15 @@ def _final_authority(receipt_data: bytes | None, records_data: bytes, observed: 
         failures.append("final-receipt-records-mismatch")
     failures.extend(f"final-{name}-identity-changed" for name in IDENTITY_KEYS
                     if not receipt["final_identity"][name])
+    if any(platform != TARGETS[receipt["target"]][2] for platform in observed_platforms):
+        failures.append("final-receipt-platform-mismatch")
     if any(observed.get(case, status) != status for case, status in receipt["case_statuses"].items()):
         failures.append("final-receipt-case-mismatch")
     if receipt["comparison_status"] != comparison_status:
         failures.append("final-receipt-comparison-mismatch")
     if receipt["status"] == "fail":
         failures.append("final-campaign-failed")
-    elif (receipt["status"] == "pass") != (observation_status == "pass"):
+    elif receipt["status"] != observation_status:
         failures.append("final-receipt-status-mismatch")
     authority["status"] = "failed" if failures else "verified"
     return authority, declared
@@ -866,8 +874,15 @@ def evaluate(records_data: bytes, receipt_data: bytes | None = None) -> tuple[di
     if "semantic" in observations:
         observed["semantic"] = observations["semantic"]["status"]
     observation_status = observations.pop("status")
+    observed_platforms = []
+    for row in records:
+        consumer = row.get("consumer") if type(row) is dict else None
+        metrics = consumer.get("metrics") if type(consumer) is dict else None
+        process = metrics.get("process") if type(metrics) is dict else None
+        if type(process) is dict:
+            observed_platforms.append(process.get("platform"))
     authority, declared = _final_authority(
-        receipt_data, records_data, observed, observation_status, comparison_status)
+        receipt_data, records_data, observed, observation_status, comparison_status, observed_platforms)
     final = {"unavailable": "incomplete", "invalid": "fail", "failed": "fail"}.get(
         authority["status"], authority["campaign_status"])
     if final == "fail":

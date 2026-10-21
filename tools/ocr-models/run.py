@@ -236,18 +236,21 @@ def campaign(args):
             command, seconds=args.timeout_seconds, output=args.output_limit_bytes, cleanup=args.cleanup_seconds)
         attempt["process"] = operational
         save(receipt_path, {"index": index, "process": operational, "command": command})
-        attempt["receipt_sha256"] = sha256(receipt_path)
-        if operational["exit_code"] is not None and operational["cleanup_ok"] is True:
-            attempt["status"] = "completed"
+        receipt_sha256 = sha256(receipt_path)
         if descriptor:
             report["commands"].append({"command": command, "process": operational})
         else:
+            # Receipt-bound before the raw digest; an interrupt retains this explicit pending state.
             process = {"index": index, "process": operational, "command": command,
-                       "receipt_path": receipt_path.name, "receipt_sha256": attempt["receipt_sha256"],
-                       "raw_path": raw_path.name, "projection_state": "receipt-only"}
-            if raw_path.is_file():
-                process["raw_sha256"] = sha256(raw_path)
+                       "receipt_path": receipt_path.name, "receipt_sha256": receipt_sha256,
+                       "raw_path": raw_path.name, "projection_state": "raw-digest-pending"}
             report["profiles"][profile].append(process)
+        attempt["receipt_sha256"] = receipt_sha256
+        if operational["exit_code"] is not None and operational["cleanup_ok"] is True:
+            attempt["status"] = "completed"
+        if not descriptor:
+            digest = {"raw_sha256": sha256(raw_path)} if raw_path.is_file() else {}
+            process.update(digest, projection_state="receipt-only")
         checkpoint(destination, report)
         return operational, attempt
 

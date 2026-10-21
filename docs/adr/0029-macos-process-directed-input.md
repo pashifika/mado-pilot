@@ -1,5 +1,7 @@
 # ADR 0029: macOS owning-process input delivery
 
+- **Amended:** [ADR 0090](0090-final-macos-focus-observation-order.md) supersedes
+  the final inventory/Accessibility ordering only.
 - **Status:** Accepted design, amended for authority timing and exact-source
   controlled evidence. Final measured candidate
   `dec43d7b6c91d415f2028e188e89fa289cb9c1c9` (tree
@@ -86,11 +88,11 @@ owning-process scope, on these rules:
    prerequisites and constructs the reversible native event. After construction,
    it performs the authoritative retained-window inventory read. Under the
    default preserving focus policy, that is the sole final inventory. When the
-   caller requires focus, a combined final focus observer then brackets the
-   potentially blocking Accessibility predicate with exact retained-window
-   samples and returns the post-focus native bounds. The geometry policy is
-   evaluated against those later bounds, so neither focus loss nor a
-   same-bounds replacement or movement during Accessibility can reach posting.
+   caller requires focus, the combined observer completes its last retained-window
+   inventory before the final Accessibility predicate, as specified by
+   [ADR 0090](0090-final-macos-focus-observation-order.md). Geometry validation
+   reuses that inventory's bounds without another blocking inventory after focus.
+   Accepted focus remains a last observation, not an atomic validate-and-post.
    `RequireFocused` therefore has additional retained-window observations and
    remains outside the one-read terminal profile. The gate then rechecks current
    non-prompting event-post access, original process lifetime and current PID
