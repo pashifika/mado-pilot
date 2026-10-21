@@ -285,6 +285,141 @@ class EvaluationTests(unittest.TestCase):
         self.assertFalse(terms & {"admitted", "target_qualified", "verdict", "rating", "recommendation",
                                   "fast", "balanced", "unrated"})
 
+    def attempt(self, profile, index, *, process=None):
+        source = {key: self.value["binding"][key] for key in
+                  ("source_revision", "source_tree", "frozen_revision", "executable_sha256", "catalog_sha256")}
+        return {"kind": "evaluation", "profile": profile, "index": index,
+                "status": "attempted-unconfirmed" if process is None else "completed",
+                "source": source, "binding": copy.deepcopy(self.value["binding"]),
+                "identity": copy.deepcopy(self.value["identities"][profile]),
+                "command": ["synthetic-onnx-cpu", "--model-evaluation", "--profile", profile,
+                            "--process-index", str(index)] if process is None else process["command"],
+                "process": None if process is None else process["process"],
+                "raw_path": f"{profile}-{index}.jsonl", "receipt_path": f"{profile}-{index}.process.json",
+                **({} if process is None else {"receipt_sha256": process["receipt_sha256"]})}
+
+    def test_complete_attempt_checkpoints_preserve_current_evaluation(self):
+        retain_raw(self.value, self.evidence_root)
+        self.value["attempts"] = [self.attempt(profile, process["index"], process=process)
+                                  for profile, processes in self.value["profiles"].items() for process in processes]
+        scope = self.evaluate(retain=False)
+        self.assertTrue(scope["complete"])
+        self.assertEqual(outcomes(scope, REFERENCE), expected(reference=True))
+        self.assertEqual(outcomes(scope, CANDIDATE), expected())
+
+    def test_interrupted_attempt_keeps_verified_prefix_quality_and_unknown_child_incomplete(self):
+        prefix = self.value["profiles"][REFERENCE][:1]
+        prefix[0]["samples"][2]["regions"][0]["text"] = "wrong"
+        self.value["profiles"] = {REFERENCE: prefix, CANDIDATE: []}
+        retain_raw(self.value, self.evidence_root)
+        self.value["attempts"] = [self.attempt(REFERENCE, 0, process=prefix[0]), self.attempt(REFERENCE, 1)]
+        self.value["execution"] = "interrupted"
+        (self.evidence_root / f"{REFERENCE}-1.jsonl").write_text('{"partial":', encoding="utf-8")
+        scope = self.evaluate(retain=False)
+        self.assertFalse(scope["complete"])
+        self.assertTrue(any("attempted-unconfirmed" in error["message"] for error in scope["validation_errors"]))
+        self.assertFalse(any(error["kind"] == "integrity" for error in scope["validation_errors"]))
+        self.assertEqual(outcomes(scope, REFERENCE)["text_order"], "failed")
+        self.assertEqual(len(scope["profiles"][REFERENCE]["processes"]), 1)
+        self.assertEqual(outcomes(scope, CANDIDATE), expected(default="not_run"))
+        self.assertIsNone(self.value["attempts"][-1]["process"])
+
+    def interrupted_failed_prefix(self):
+        """Interrupted reference prefix whose verified process 0 fails text_order."""
+        prefix = self.value["profiles"][REFERENCE][:2]
+        prefix[0]["samples"][2]["regions"][0]["text"] = "wrong"
+        self.value["profiles"] = {REFERENCE: prefix, CANDIDATE: []}
+        retain_raw(self.value, self.evidence_root)
+        self.value["attempts"] = [
+            self.attempt(REFERENCE, process["index"], process=process) for process in prefix
+        ]
+        self.value["execution"] = "interrupted"
+        return prefix
+
+    def assert_prefix_failure_survives(self):
+        scope = self.evaluate(retain=False)
+        self.assertFalse(scope["complete"])
+        self.assertFalse(any(error["kind"] == "integrity" for error in scope["validation_errors"]),
+                         scope["validation_errors"])
+        self.assertEqual(outcomes(scope, REFERENCE)["text_order"], "failed")
+        return scope
+
+    def pending_projection(self, profile, index):
+        """Runner state after the receipt digest and before the raw JSONL digest."""
+        processes = self.value["profiles"][profile]
+        processes[index] = {key: processes[index][key] for key in (
+            "index", "process", "command", "receipt_path", "receipt_sha256", "raw_path"
+        )}
+        processes[index]["projection_state"] = "raw-digest-pending"
+
+    def test_receipt_only_checkpoint_keeps_verified_prefix_quality_failure(self):
+        prefix = self.interrupted_failed_prefix()
+        receipt_only = {key: prefix[1][key] for key in (
+            "index", "process", "command", "receipt_path", "receipt_sha256", "raw_path", "raw_sha256"
+        )}
+        receipt_only["projection_state"] = "receipt-only"
+        prefix[1] = receipt_only
+        self.assert_prefix_failure_survives()
+
+    def test_raw_digest_pending_receipt_keeps_verified_prefix_quality_failure(self):
+        self.interrupted_failed_prefix()
+        self.pending_projection(REFERENCE, 1)
+        scope = self.assert_prefix_failure_survives()
+        self.assertIn({"kind": "incomplete", "profile": REFERENCE, "process": 1,
+                       "message": "process receipt retained before its raw JSONL digest"}, scope["validation_errors"])
+        self.assertEqual([process["index"] for process in scope["profiles"][REFERENCE]["processes"]], [0])
+
+    def test_raw_digest_pending_projection_is_receipt_bound_and_never_complete(self):
+        retain_raw(self.value, self.evidence_root)
+        self.pending_projection(CANDIDATE, 2)
+        scope = self.evaluate(retain=False)
+        self.assertFalse(scope["complete"])
+        self.assertFalse(any(error["kind"] == "integrity" for error in scope["validation_errors"]),
+                         scope["validation_errors"])
+        self.assertIn({"kind": "incomplete", "profile": CANDIDATE, "process": 2,
+                       "message": "process receipt retained before its raw JSONL digest"}, scope["validation_errors"])
+        self.assertEqual(outcomes(scope, REFERENCE), expected(reference=True))
+        self.assertEqual(outcomes(scope, CANDIDATE), expected(default="incomplete"))
+        base = copy.deepcopy(self.value)
+        for fragment, mutate in (("projection mismatch: process", lambda process: process["process"].update(exit_code=1)),
+                                 ("receipt digest mismatch", lambda process: process.update(receipt_sha256="0" * 64)),
+                                 ("raw JSONL digest mismatch", lambda process: process.update(raw_sha256="0" * 64)),
+                                 ("has no reported digest", lambda process: process.pop("projection_state"))):
+            with self.subTest(fragment=fragment):
+                self.value = copy.deepcopy(base)
+                mutate(self.value["profiles"][CANDIDATE][2])
+                self.assert_unverified(fragment, profiles=(CANDIDATE,), retain=False)
+
+    def test_unbound_receipt_of_unconfirmed_attempt_keeps_verified_prefix_quality_failure(self):
+        prefix = self.interrupted_failed_prefix()
+        # Interrupted while saving/digesting the receipt: observed process kept, receipt not bound.
+        unbound = self.value["attempts"][1]
+        unbound["status"] = "attempted-unconfirmed"
+        receipt_sha256 = unbound.pop("receipt_sha256")
+        del prefix[1]
+        self.assertTrue((self.evidence_root / unbound["receipt_path"]).is_file())
+        self.assert_prefix_failure_survives()
+        unbound["receipt_sha256"] = receipt_sha256
+        self.assert_unverified("receipt attempt set differs", retain=False)
+
+    def test_first_unconfirmed_attempt_is_execution_not_an_unattempted_profile(self):
+        self.value["profiles"] = {REFERENCE: [], CANDIDATE: []}
+        self.evidence_root.mkdir()
+        self.value["attempts"] = [self.attempt(REFERENCE, 0)]
+        self.value["execution"] = "interrupted"
+        scope = self.evaluate(retain=False)
+        self.assertFalse(scope["complete"])
+        self.assertEqual(outcomes(scope, REFERENCE), expected(reference=True, default="incomplete"))
+        self.assertEqual(outcomes(scope, CANDIDATE), expected(default="not_run"))
+        self.assertFalse(any(error["kind"] == "integrity" for error in scope["validation_errors"]))
+
+    def test_completed_attempt_must_match_its_independent_receipt_projection(self):
+        retain_raw(self.value, self.evidence_root)
+        process = self.value["profiles"][REFERENCE][0]
+        self.value["attempts"] = [self.attempt(REFERENCE, 0, process=process)]
+        self.value["attempts"][0]["receipt_sha256"] = "0" * 64
+        self.assert_unverified("completed campaign attempt differs", retain=False)
+
     def test_quality_failure_is_a_complete_evaluation_with_every_finding(self):
         oracle = self.candidate_row()["regions"][0]["text"]
         name = self.fail_text()

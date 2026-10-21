@@ -209,6 +209,7 @@ impl<'units> NativePost<'units> {
 pub(crate) enum CommitGeometry {
     NotApplicable,
     RequireCurrent(GeometryFingerprint),
+    RequireUnchanged(shim::NativeBounds),
     UseFrameSnapshot,
 }
 
@@ -372,7 +373,7 @@ impl NativeInputDriver {
             return Ok(true);
         }
         match self.record.is_focused(focus_wait(operation)) {
-            Ok(focused) => Ok(focused),
+            Ok((focused, _)) => Ok(focused),
             Err(ShimStatus::PermissionDenied) => Err(InputFault::NotAuthorized),
             Err(ShimStatus::TargetLost) => Err(InputFault::TargetLost),
             Err(ShimStatus::TimedOut) => {
@@ -384,33 +385,20 @@ impl NativeInputDriver {
         }
     }
 
-    fn is_focused_with_wait(&self, wait: std::time::Duration) -> Result<bool, InputFault> {
-        if self.record.kind() == TargetKind::Display {
-            return Ok(true);
-        }
-        match self.record.is_focused(wait) {
-            Ok(focused) => Ok(focused),
-            Err(ShimStatus::PermissionDenied) => Err(InputFault::NotAuthorized),
-            Err(ShimStatus::TargetLost) => Err(InputFault::TargetLost),
-            Err(_) => Err(InputFault::SubmissionFailed),
-        }
-    }
-
-    fn ensure_system_focus_with_wait(
+    fn system_focus_bounds(
         &self,
         policy: FocusPolicy,
         wait: std::time::Duration,
-    ) -> Result<(), InputFault> {
-        if self.is_focused_with_wait(wait)? {
-            return Ok(());
-        }
-        match policy {
-            FocusPolicy::Preserve | FocusPolicy::RequireFocused => Err(InputFault::FocusRequired),
-            // Activation is never a final-gate action: it can invoke application
-            // behavior and requires the caller's operation for bounded polling.
-            FocusPolicy::ActivateIfRequired => Err(InputFault::FocusRequired),
-            _ => Err(InputFault::UnsupportedCombination),
-        }
+    ) -> Result<shim::NativeBounds, InputFault> {
+        let observation = self
+            .record
+            .is_focused(wait)
+            .map_err(|status| match status {
+                ShimStatus::PermissionDenied => InputFault::NotAuthorized,
+                ShimStatus::TargetLost => InputFault::TargetLost,
+                _ => InputFault::SubmissionFailed,
+            })?;
+        focused_system_bounds(policy, observation)
     }
 
     fn ensure_system_focus(
@@ -491,43 +479,16 @@ impl NativeInputDriver {
         Ok((transform, GeometryFingerprint { extent, placement }))
     }
 
-    fn current_geometry(
-        &self,
-        operation: &OperationContext,
-    ) -> Result<(TransformSnapshot, GeometryFingerprint), InputFault> {
-        Self::geometry_from_bounds(self.record.current_bounds(focus_wait(operation))?)
-    }
-
-    fn current_geometry_with_wait(
-        &self,
-        wait: std::time::Duration,
-    ) -> Result<(TransformSnapshot, GeometryFingerprint), InputFault> {
-        Self::geometry_from_bounds(self.record.current_bounds(wait)?)
-    }
-
     fn policy_geometry(
         &self,
         geometry: PointerGeometry,
         operation: &OperationContext,
-    ) -> Result<(TransformSnapshot, GeometryFingerprint), InputFault> {
-        match geometry.policy() {
-            GeometryPolicy::ReprojectCurrent => self.current_geometry(operation),
-            GeometryPolicy::RequireUnchanged => {
-                let transform = self.source_transform(geometry)?;
-                let source_fingerprint = fingerprint(&transform)?;
-                let (_, current_fingerprint) = self.current_geometry(operation)?;
-                if source_fingerprint != current_fingerprint {
-                    return Err(InputFault::GeometryChanged);
-                }
-                Ok((transform, source_fingerprint))
-            }
-            GeometryPolicy::UseFrameSnapshot => {
-                let transform = self.source_transform(geometry)?;
-                let fingerprint = fingerprint(&transform)?;
-                Ok((transform, fingerprint))
-            }
-            _ => Err(InputFault::UnsupportedCombination),
-        }
+    ) -> Result<(TransformSnapshot, GeometryFingerprint, CommitGeometry), InputFault> {
+        system_policy_geometry(
+            geometry.policy(),
+            || self.source_geometry(geometry),
+            || self.record.current_bounds(focus_wait(operation)),
+        )
     }
 
     fn process_current_geometry(
@@ -608,18 +569,13 @@ impl NativeInputDriver {
             .ok_or(InputFault::UnsupportedCoordinate)
     }
 
-    fn source_transform(&self, geometry: PointerGeometry) -> Result<TransformSnapshot, InputFault> {
-        self.source_geometry(geometry)
-            .map(|(transform, _)| transform)
-    }
-
     fn resolve_pointer(
         &self,
         point: Point,
         geometry: PointerGeometry,
         operation: &OperationContext,
-    ) -> Result<PointerState, InputFault> {
-        let (transform, fingerprint) = self.policy_geometry(geometry, operation)?;
+    ) -> Result<(PointerState, CommitGeometry), InputFault> {
+        let (transform, fingerprint, commit) = self.policy_geometry(geometry, operation)?;
         let desktop = transform
             .convert_point(point, CoordinateSpace::DesktopLogical)
             .map_err(|_| InputFault::UnsupportedCoordinate)?;
@@ -627,10 +583,13 @@ impl NativeInputDriver {
         if !contains_desktop_point(fingerprint, location) {
             return Err(InputFault::UnsupportedCoordinate);
         }
-        Ok(PointerState {
-            desktop: location,
-            geometry: fingerprint,
-        })
+        Ok((
+            PointerState {
+                desktop: location,
+                geometry: fingerprint,
+            },
+            commit,
+        ))
     }
 
     fn pointer_for_non_move(
@@ -638,13 +597,13 @@ impl NativeInputDriver {
         geometry: PointerGeometry,
         state: &mut DriverState,
         operation: &OperationContext,
-    ) -> Result<PointerState, InputFault> {
-        let (_, current) = self.policy_geometry(geometry, operation)?;
+    ) -> Result<(PointerState, CommitGeometry), InputFault> {
+        let (_, current, commit) = self.policy_geometry(geometry, operation)?;
         if let Some(pointer) = state.pointer {
             if pointer.geometry != current {
                 return Err(InputFault::GeometryChanged);
             }
-            return Ok(pointer);
+            return Ok((pointer, commit));
         }
 
         let location = shim::input_pointer_location().map_err(|_| InputFault::SubmissionFailed)?;
@@ -656,7 +615,7 @@ impl NativeInputDriver {
             geometry: current,
         };
         state.pointer = Some(pointer);
-        Ok(pointer)
+        Ok((pointer, commit))
     }
 
     fn deliver_system(
@@ -674,24 +633,16 @@ impl NativeInputDriver {
 
         match event {
             InputEvent::PointerMove(point) => {
-                let resolved = self.resolve_pointer(*point, geometry, operation)?;
-                commit_system_pointer_move(
-                    self,
-                    focus,
-                    commit_geometry(geometry.policy(), resolved.geometry)?,
-                    operation,
-                    state,
-                    resolved,
-                    flags,
-                )
+                let (resolved, commit) = self.resolve_pointer(*point, geometry, operation)?;
+                commit_system_pointer_move(self, focus, commit, operation, state, resolved, flags)
             }
             InputEvent::PointerPress(button) => {
-                let pointer = self.pointer_for_non_move(geometry, state, operation)?;
+                let (pointer, commit) = self.pointer_for_non_move(geometry, state, operation)?;
                 let native = native_button(*button)?;
                 commit_prepared(
                     self,
                     focus,
-                    commit_geometry(geometry.policy(), pointer.geometry)?,
+                    commit,
                     operation,
                     NativePost::Pointer {
                         action: shim::INPUT_POINTER_PRESS,
@@ -708,7 +659,7 @@ impl NativeInputDriver {
                 Ok(())
             }
             InputEvent::PointerRelease(button) => {
-                let pointer = self.pointer_for_non_move(geometry, state, operation)?;
+                let (pointer, commit) = self.pointer_for_non_move(geometry, state, operation)?;
                 let index = state
                     .buttons
                     .iter()
@@ -719,7 +670,7 @@ impl NativeInputDriver {
                 commit_prepared(
                     self,
                     focus,
-                    commit_geometry(geometry.policy(), pointer.geometry)?,
+                    commit,
                     operation,
                     NativePost::Pointer {
                         action: shim::INPUT_POINTER_RELEASE,
@@ -738,11 +689,11 @@ impl NativeInputDriver {
                 horizontal,
                 vertical,
             } => {
-                let pointer = self.pointer_for_non_move(geometry, state, operation)?;
+                let (pointer, commit) = self.pointer_for_non_move(geometry, state, operation)?;
                 commit_prepared(
                     self,
                     focus,
-                    commit_geometry(geometry.policy(), pointer.geometry)?,
+                    commit,
                     operation,
                     NativePost::Scroll {
                         horizontal: i32::from(*horizontal),
@@ -1203,17 +1154,14 @@ impl SystemCommitSource for NativeInputDriver {
         geometry: CommitGeometry,
         budget: NativeCommitBudget,
     ) -> Result<(), InputFault> {
-        self.record.ensure_live(budget.remaining()?)?;
-        self.ensure_authorized()?;
-        budget.check()?;
-        self.ensure_system_focus_with_wait(focus, budget.remaining()?)?;
-        if let CommitGeometry::RequireCurrent(expected) = geometry {
-            let (_, current) = self.current_geometry_with_wait(budget.remaining()?)?;
-            if current != expected {
-                return Err(InputFault::GeometryChanged);
-            }
-        }
-        budget.check()
+        revalidate_system_commit_with(
+            self.record.kind(),
+            geometry,
+            budget,
+            |remaining| self.record.current_bounds(remaining),
+            || self.ensure_authorized(),
+            |remaining| self.system_focus_bounds(focus, remaining),
+        )
     }
 
     fn revalidate_cleanup_authorization(
@@ -1991,15 +1939,88 @@ fn commit_cleanup<S: SystemCommitSource + ?Sized>(
     Ok(())
 }
 
-fn commit_geometry(
+/// Raw bounds govern unchanged geometry; the source transform only maps coordinates.
+fn system_policy_geometry(
     policy: GeometryPolicy,
-    fingerprint: GeometryFingerprint,
-) -> Result<CommitGeometry, InputFault> {
+    source: impl FnOnce() -> Result<(TransformSnapshot, shim::NativeBounds), InputFault>,
+    current: impl FnOnce() -> Result<shim::NativeBounds, InputFault>,
+) -> Result<(TransformSnapshot, GeometryFingerprint, CommitGeometry), InputFault> {
     match policy {
-        GeometryPolicy::ReprojectCurrent | GeometryPolicy::RequireUnchanged => {
-            Ok(CommitGeometry::RequireCurrent(fingerprint))
+        GeometryPolicy::ReprojectCurrent => {
+            let (transform, fingerprint) = NativeInputDriver::geometry_from_bounds(current()?)?;
+            Ok((
+                transform,
+                fingerprint,
+                CommitGeometry::RequireCurrent(fingerprint),
+            ))
         }
-        GeometryPolicy::UseFrameSnapshot => Ok(CommitGeometry::UseFrameSnapshot),
+        GeometryPolicy::RequireUnchanged => {
+            let (transform, bounds) = source()?;
+            let commit = CommitGeometry::RequireUnchanged(bounds);
+            validate_system_geometry(commit, current()?)?;
+            Ok((transform, fingerprint(&transform)?, commit))
+        }
+        GeometryPolicy::UseFrameSnapshot => {
+            let (transform, _) = source()?;
+            Ok((
+                transform,
+                fingerprint(&transform)?,
+                CommitGeometry::UseFrameSnapshot,
+            ))
+        }
+        _ => Err(InputFault::UnsupportedCombination),
+    }
+}
+
+fn revalidate_system_commit_with(
+    kind: TargetKind,
+    geometry: CommitGeometry,
+    budget: NativeCommitBudget,
+    current: impl FnOnce(std::time::Duration) -> Result<shim::NativeBounds, InputFault>,
+    authorize: impl FnOnce() -> Result<(), InputFault>,
+    focused: impl FnOnce(std::time::Duration) -> Result<shim::NativeBounds, InputFault>,
+) -> Result<(), InputFault> {
+    let live_bounds = current(budget.remaining()?)?;
+    authorize()?;
+    budget.check()?;
+    let bounds = if kind == TargetKind::Display {
+        live_bounds
+    } else {
+        focused(budget.remaining()?)?
+    };
+    validate_system_geometry(geometry, bounds)?;
+    budget.check()
+}
+
+fn validate_system_geometry(
+    geometry: CommitGeometry,
+    bounds: shim::NativeBounds,
+) -> Result<(), InputFault> {
+    let matches = match geometry {
+        CommitGeometry::RequireCurrent(expected) => {
+            NativeInputDriver::geometry_from_bounds(bounds)?.1 == expected
+        }
+        CommitGeometry::RequireUnchanged(expected) => expected.capture_equivalent_to(bounds),
+        CommitGeometry::NotApplicable | CommitGeometry::UseFrameSnapshot => true,
+    };
+    if matches {
+        Ok(())
+    } else {
+        Err(InputFault::GeometryChanged)
+    }
+}
+
+fn focused_system_bounds(
+    policy: FocusPolicy,
+    (focused, bounds): (bool, shim::NativeBounds),
+) -> Result<shim::NativeBounds, InputFault> {
+    if focused {
+        return Ok(bounds);
+    }
+    match policy {
+        FocusPolicy::Preserve | FocusPolicy::RequireFocused | FocusPolicy::ActivateIfRequired => {
+            Err(InputFault::FocusRequired)
+        }
         _ => Err(InputFault::UnsupportedCombination),
     }
 }

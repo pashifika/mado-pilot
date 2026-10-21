@@ -28,6 +28,7 @@ sys.path.insert(0, str(HERE))
 from report import analyze_case, compare_cases
 
 CASES = ("semantic", "capture-off", "baseline", "cooldown-only", "native-only", "combined")
+INPUTS = ("consumer", "fixture", "runtime", "detector", "recognizer", "image")
 TARGETS = {"Windows": "x86_64-pc-windows-msvc", "Darwin": "aarch64-apple-darwin"}
 SOURCE_IMAGE_SHA256 = "10f0163cf298453e55922cc6104ee3066f59a328a55e9bac6c04f24d36c9e288"
 WINDOWS_IMAGE_SHA256 = "3ca2f418f6fb083e49a679638017609e11fe825ef4a1e6f56dc0e572c74f75e6"
@@ -343,12 +344,14 @@ def child_environment(authority: dict, scratch: Path) -> dict[str, str]:
     return environment
 
 
-def save(path: Path, value) -> None:
+def save(path: Path, value) -> bytes:
+    """Atomically publish JSON and return the exact bytes written."""
+    data = (json.dumps(value, ensure_ascii=False, indent=2, allow_nan=False) + "\n").encode("utf-8")
     temporary = path.with_suffix(path.suffix + ".tmp")
-    with temporary.open("x", encoding="utf-8", newline="\n") as output:
-        json.dump(value, output, ensure_ascii=False, indent=2, allow_nan=False)
-        output.write("\n")
+    with temporary.open("xb") as output:
+        output.write(data)
     temporary.replace(path)
+    return data
 
 
 def operational_success(result: dict) -> bool:
@@ -370,6 +373,43 @@ def aggregate_status(rows: list[dict], comparison: dict, binding_unchanged: bool
         return "incomplete"
     return "pass"
 
+
+def final_identity(authority: dict, inputs: dict[str, Path], observed_host: dict, native_binding: dict) -> dict:
+    """Recheck each pre-run identity independently after the last case."""
+    def unchanged(check) -> bool:
+        try:
+            check()
+        except (OSError, ValueError, subprocess.SubprocessError):
+            return False
+        return True
+    return {
+        "source": unchanged(lambda: source_identity(authority)),
+        "inputs": unchanged(lambda: [bound_file(authority[name]) for name in INPUTS]),
+        "host": unchanged(lambda: require(verify_host(authority) == observed_host, "host-changed")),
+        "native": unchanged(lambda: require(verify_native_bindings(authority, inputs) == native_binding,
+                                            "native-binding-changed")),
+    }
+
+
+def final_receipt(authority: dict, rows: list[dict], *, authority_bytes: bytes, records: bytes,
+                  evidence: list[str], host: dict, native_binding: dict, identity: dict,
+                  elapsed_seconds: float, halt_reason: str | None) -> dict:
+    """Schema-3 receipt: exact written authority/records bytes plus final identity outcomes."""
+    def written(name: str, data: bytes) -> dict:
+        return {"name": name, "bytes": len(data), "sha256": hashlib.sha256(data).hexdigest()}
+    comparison = compare_cases([row for row in rows if row["case"] != "semantic"])
+    binding_unchanged = all(identity.values())
+    return {"schema": 3, "status": aggregate_status(rows, comparison, binding_unchanged),
+            "records": written("records.json", records), "authority": written("authority.json", authority_bytes),
+            "evidence": evidence, "source_commit": authority["source_commit"],
+            "source_tree": authority["source_tree"], "bound_host": host, "target": authority["target"],
+            "native_binding": native_binding, "final_identity": identity,
+            "binding_unchanged": binding_unchanged, "elapsed_seconds": elapsed_seconds,
+            "halt_reason": halt_reason, "comparison_status": comparison["status"],
+            "case_statuses": {row["case"]: row["analysis"].get("status") for row in rows},
+            "scope": "Owned GDI/AppKit HUD fixture only; unavailable metrics do not establish savings or broader support."}
+
+
 def execute(authority_path: Path) -> tuple[dict, int]:
     if os.name != "nt":
         os.umask(0o077)
@@ -377,7 +417,7 @@ def execute(authority_path: Path) -> tuple[dict, int]:
     validate_authority(authority)
     observed_host = verify_host(authority)
     source_identity(authority)
-    inputs = {name: bound_file(authority[name]) for name in ("consumer", "fixture", "runtime", "detector", "recognizer", "image")}
+    inputs = {name: bound_file(authority[name]) for name in INPUTS}
     model_root = Path(authority["model_root"]).resolve(strict=True)
     require(model_root.is_dir(), "model-root-invalid")
     require(inputs["detector"] == model_root / "rapidocr-v3.9.2/ch_PP-OCRv4_det_mobile.onnx", "detector-root-binding")
@@ -388,7 +428,8 @@ def execute(authority_path: Path) -> tuple[dict, int]:
     output_root = Path(authority["output_root"])
     output_root.parent.mkdir(parents=True, exist_ok=True, mode=0o700)
     output_root.mkdir(mode=0o700)  # Exclusive root is the one-attempt claim.
-    save(output_root / "authority.json", authority)
+    authority_bytes = save(output_root / "authority.json", authority)
+    evidence = ["authority.json"]
     rows = []
     halt_reason = None
     started = time.monotonic()
@@ -439,29 +480,19 @@ def execute(authority_path: Path) -> tuple[dict, int]:
         rows.append(row)
         save(control_root / "result.json", row)
         save(control_root / "command.json", {"argv": argv, "parse_reason": parse_reason})
+        evidence.extend(f"{case}/{name}" for name in ("fixture-metrics.json", "result.json", "command.json")
+                        if (control_root / name).exists())
         save(output_root / "records.json", rows)
         if analysis.get("status") != "pass":
             halt_reason = analysis.get("reason", "prior-case-not-passed")
-    save(output_root / "records.json", rows)
-    comparison = compare_cases([row for row in rows if row["case"] != "semantic"])
-    binding_unchanged = True
-    try:
-        source_identity(authority)
-        for name in ("consumer", "fixture", "runtime", "detector", "recognizer", "image"):
-            bound_file(authority[name])
-        require(verify_host(authority) == observed_host, "host-changed")
-        require(verify_native_bindings(authority, inputs) == native_binding, "native-binding-changed")
-    except (OSError, ValueError, subprocess.SubprocessError):
-        binding_unchanged = False
-    status = aggregate_status(rows, comparison, binding_unchanged)
-    report = {"schema": 2, "status": status,
-              "source_commit": authority["source_commit"], "source_tree": authority["source_tree"],
-              "bound_host": observed_host, "target": authority["target"], "binding_unchanged": binding_unchanged,
-              "native_binding": native_binding,
-              "elapsed_seconds": time.monotonic() - started, "halt_reason": halt_reason,
-              "comparison": comparison, "case_statuses": {row["case"]: row["analysis"].get("status") for row in rows},
-              "scope": "Owned GDI/AppKit HUD fixture only; unavailable metrics do not establish savings or broader support."}
+    records = save(output_root / "records.json", rows)
+    evidence.append("records.json")
+    identity = final_identity(authority, inputs, observed_host, native_binding)
+    report = final_receipt(authority, rows, authority_bytes=authority_bytes, records=records, evidence=evidence,
+                           host=observed_host, native_binding=native_binding, identity=identity,
+                           elapsed_seconds=time.monotonic() - started, halt_reason=halt_reason)
     save(output_root / "run.json", report)
+    status = report["status"]
     return report, 0 if status == "pass" else 2 if status == "not-run" else 1
 
 

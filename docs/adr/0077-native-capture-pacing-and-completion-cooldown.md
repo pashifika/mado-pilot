@@ -174,6 +174,29 @@ overflow/count combinations, missing sessions or failed teardown still fail.
 This changes no native buffer, numerical workload budget or producer behavior.
 Prior failed run records remain unchanged; a new reporting authority is required.
 
+## Prospective final authority: report schema 3
+
+New runner receipts and derived reports use schema 3; consumer schema 2 and
+authority schema 1 remain unchanged. Require an explicit `--run-receipt` binding
+the exact records bytes and final source/input/host/native checks. Reconcile
+per-case status, the five-case `comparison_status` before semantic aggregation,
+and aggregate status. A passing report requires complete passing observations
+and a verified passing receipt. Raw-only or schema-2-receipt inspection cannot
+qualify; retain its case result as `observation_status`.
+
+Collect safe evidence, records and authority declarations before qualifying the
+receipt. Reject output aliases even for otherwise invalid receipts. Unreadable
+receipts or missing/unsafe declaration sets refuse publication; other invalid
+receipts may produce only a failed report at a distinct path. Publish bounded
+JSON through an owner-only sibling temporary file, `fsync` and atomic replacement.
+Refusal or publication failure preserves original evidence and existing output.
+The [usage guide](../capture-pacing.md#owned-native-verification-apparatus)
+defines commands and exit statuses.
+
+This amendment changes prospective evidence authority only. It records no native
+campaign, numerical budget or support change. Earlier schema-1/2 artifacts,
+commands, failures, accepted measurements and source applicability remain intact.
+
 ## Accepted native qualification
 
 The separately authorized Windows protocol-3 and macOS protocol-4 cohorts passed

@@ -7,8 +7,8 @@ use std::time::Duration;
 
 use mado_pilot_adapter_replay::{ReplayFrame, ReplayProvider, ReplaySource, ReplayTarget};
 use mado_pilot_capture::{
-    CapturePacingOutcome, CapturePacingReport, CapturePacingRequest, CaptureProvider, Continuity,
-    FrameDescriptor, FrameRequest, OpenRequest, PacingUnsupportedReason, PixelFormat,
+    CaptureFault, CapturePacingOutcome, CapturePacingReport, CapturePacingRequest, CaptureProvider,
+    Continuity, FrameDescriptor, FrameRequest, OpenRequest, PacingUnsupportedReason, PixelFormat,
     ResolvedCapturePacing,
 };
 use mado_pilot_core::{
@@ -44,6 +44,30 @@ fn memory_provider() -> ReplayProvider {
 
 fn fixture_provider() -> ReplayProvider {
     let source = ReplaySource::from_directory(fixture_directory()).expect("fixture loads");
+    ReplayProvider::new(Arc::new(IdentityIssuer::new()), source).expect("built")
+}
+
+/// Builds a one-target provider whose frames carry `formats` in order.
+fn formatted_provider(formats: &[PixelFormat]) -> ReplayProvider {
+    let frames = formats
+        .iter()
+        .zip(0u8..)
+        .map(|(format, fill)| {
+            let descriptor =
+                FrameDescriptor::packed(PixelExtent::new(8, 6), *format).expect("valid");
+            ReplayFrame::new(
+                descriptor,
+                MonotonicInstant::ORIGIN,
+                Continuity::Continuous,
+                None,
+                vec![fill; descriptor.byte_len()].into_boxed_slice(),
+            )
+            .expect("valid")
+        })
+        .collect();
+    let source =
+        ReplaySource::from_targets(vec![ReplayTarget::new("formats", frames).expect("valid")])
+            .expect("valid");
     ReplayProvider::new(Arc::new(IdentityIssuer::new()), source).expect("built")
 }
 
@@ -656,6 +680,118 @@ fn a_required_format_the_source_cannot_provide_fails_the_open() {
         .expect_err("the fixture is rgba8");
 
     assert_eq!(error.status(), Status::Unsupported);
+}
+
+#[test]
+fn a_required_format_must_hold_for_every_replay_frame() {
+    for (first, later) in [
+        (PixelFormat::Rgba8, PixelFormat::Bgra8),
+        (PixelFormat::Bgra8, PixelFormat::Rgba8),
+    ] {
+        let provider = formatted_provider(&[first, first, later]);
+        let operation = OperationContext::new();
+        let target = provider.discover(&operation).expect("discovered").remove(0);
+        assert_eq!(
+            target.format(),
+            first,
+            "the target advertises its first frame"
+        );
+
+        // Neither format describes the whole sequence, so no constrained
+        // session may exist to publish the frame that contradicts it.
+        for required in [first, later] {
+            let error = provider
+                .open(
+                    target.id(),
+                    &OpenRequest::new().require_format(required),
+                    &operation,
+                )
+                .expect_err("a mixed sequence cannot honor a required format");
+            assert_eq!(error, CaptureFault::UnsupportedOption.into());
+        }
+
+        let cancellation = CancellationToken::new();
+        cancellation.cancel();
+        assert_eq!(
+            provider
+                .open(
+                    target.id(),
+                    &OpenRequest::new().require_format(first),
+                    &OperationContext::new().with_cancellation(cancellation),
+                )
+                .expect_err("admission precedes format validation")
+                .status(),
+            Status::Cancelled
+        );
+        provider
+            .open(target.id(), &OpenRequest::new(), &operation)
+            .expect("the same sequence opens without a required format")
+            .close(&operation)
+            .expect("cleanup");
+    }
+}
+
+#[test]
+fn a_required_format_every_replay_frame_has_is_kept_by_every_frame() {
+    let provider = formatted_provider(&[PixelFormat::Bgra8; 3]);
+    let operation = OperationContext::new();
+    let target = provider.discover(&operation).expect("discovered").remove(0);
+    let session = provider
+        .open(
+            target.id(),
+            &OpenRequest::new().require_format(PixelFormat::Bgra8),
+            &operation,
+        )
+        .expect("every frame has the required format");
+
+    assert_eq!(session.description().format(), PixelFormat::Bgra8);
+    let mut current = session
+        .frame(&FrameRequest::latest(), &operation)
+        .expect("first frame");
+    for _ in 0..2 {
+        assert_eq!(current.descriptor().format(), PixelFormat::Bgra8);
+        current = session
+            .frame(&FrameRequest::newer_than(current.stamp()), &operation)
+            .expect("next frame");
+    }
+    assert_eq!(current.descriptor().format(), PixelFormat::Bgra8);
+    assert_eq!(current.stamp().epoch().value(), 0);
+    assert_eq!(current.stamp().sequence().value(), 2);
+}
+
+#[test]
+fn an_unconstrained_format_change_starts_a_later_epoch() {
+    let provider = formatted_provider(&[PixelFormat::Rgba8, PixelFormat::Bgra8]);
+    let operation = OperationContext::new();
+    let target = provider.discover(&operation).expect("discovered").remove(0);
+    let session = provider
+        .open(target.id(), &OpenRequest::new(), &operation)
+        .expect("no format was required");
+
+    let first = session
+        .frame(&FrameRequest::latest(), &operation)
+        .expect("first frame");
+    let changed = session
+        .frame(&FrameRequest::newer_than(first.stamp()), &operation)
+        .expect("format change");
+
+    assert_eq!(first.descriptor().format(), PixelFormat::Rgba8);
+    assert_eq!(changed.descriptor().format(), PixelFormat::Bgra8);
+    assert_eq!(changed.stamp().epoch().value(), 1);
+    assert_eq!(changed.stamp().sequence().value(), 0);
+    assert_ne!(changed.stamp().geometry(), first.stamp().geometry());
+    assert_eq!(
+        first.stamp().order(&changed.stamp()),
+        Ok(FrameOrder::Before)
+    );
+    assert_eq!(
+        first
+            .map(PixelFormat::Rgba8, &operation)
+            .expect("older frame still maps")
+            .descriptor()
+            .format(),
+        PixelFormat::Rgba8
+    );
 }
 
 #[test]

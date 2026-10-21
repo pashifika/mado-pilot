@@ -38,6 +38,29 @@ def save(path, value):
         stream.write(document_bytes(value))
 
 
+def checkpoint(path, value):
+    """Replace only this campaign's report after its complete checkpoint is durable."""
+    descriptor, temporary = tempfile.mkstemp(prefix=".report-", dir=Path(path).parent)
+    temporary = Path(temporary)
+    primary_error = None
+    try:
+        with os.fdopen(descriptor, "wb") as stream:
+            stream.write(document_bytes(value))
+            stream.flush()
+            os.fsync(stream.fileno())
+        os.replace(temporary, path)
+    except BaseException as error:
+        primary_error = error
+        raise
+    finally:
+        try:
+            temporary.unlink(missing_ok=True)
+        except OSError as cleanup_error:
+            if primary_error is None:
+                raise
+            primary_error.add_note(f"checkpoint temporary cleanup failed: {cleanup_error}")
+
+
 def environment():
     names = ("PATH", "HOME", "USERPROFILE", "HOMEDRIVE", "HOMEPATH", "LOCALAPPDATA", "APPDATA",
              "CARGO_HOME", "RUSTUP_HOME", "TMPDIR", "TEMP", "TMP", "SystemRoot", "SYSTEMROOT", "WINDIR")
@@ -183,12 +206,55 @@ def campaign(args):
     args.report.mkdir(parents=True, exist_ok=False)
     report = {"schema_version": 2, "criteria_id": CRITERIA["criteria_id"], "diagnostic": args.diagnostic,
               "reference_profile": args.reference_profile, "candidate_profile": args.profile,
-              "profiles": {}, "identities": {}, "preflight_failures": [], "commands": []}
+              "profiles": {}, "identities": {}, "preflight_failures": [], "commands": [], "attempts": [],
+              "execution": "in-progress"}
     report["reproduction_command"] = [sys.executable, *sys.argv]
     report["process_limits"] = {"timeout_seconds": args.timeout_seconds, "output_limit_bytes": args.output_limit_bytes,
                                 "cleanup_seconds": args.cleanup_seconds, "lifecycle_bound_ms": args.lifecycle_bound_ms}
     destination = args.report / "report.json"
     fatal = []
+
+    def retain_interruption(error):
+        report["execution"] = "interrupted"
+        report.pop("evaluation", None)
+        try:
+            checkpoint(destination, report)
+        except BaseException as persistence_error:
+            error.add_note(f"interrupted campaign checkpoint failed: {persistence_error}")
+
+    def launch(command, *, profile, index=None, raw_path=None):
+        descriptor = raw_path is None
+        receipt_path = args.report / (f"{profile}.descriptor.json" if descriptor else f"{profile}-{index}.process.json")
+        attempt = {"kind": "descriptor" if descriptor else "evaluation", "profile": profile, "index": index,
+                   "command": command, "source": report["source"], "binding": report.get("binding"),
+                   "identity": report["identities"].get(profile), "receipt_path": receipt_path.name,
+                   "raw_path": None if descriptor else raw_path.name,
+                   "status": "attempted-unconfirmed", "process": None}
+        report["attempts"].append(attempt)
+        checkpoint(destination, report)
+        operational = bounded(command) if descriptor else bounded(
+            command, seconds=args.timeout_seconds, output=args.output_limit_bytes, cleanup=args.cleanup_seconds)
+        attempt["process"] = operational
+        save(receipt_path, {"index": index, "process": operational, "command": command})
+        receipt_sha256 = sha256(receipt_path)
+        if descriptor:
+            report["commands"].append({"command": command, "process": operational})
+        else:
+            # Receipt-bound before the raw digest; an interrupt retains this explicit pending state.
+            process = {"index": index, "process": operational, "command": command,
+                       "receipt_path": receipt_path.name, "receipt_sha256": receipt_sha256,
+                       "raw_path": raw_path.name, "projection_state": "raw-digest-pending"}
+            report["profiles"][profile].append(process)
+        attempt["receipt_sha256"] = receipt_sha256
+        if operational["exit_code"] is not None and operational["cleanup_ok"] is True:
+            attempt["status"] = "completed"
+        if not descriptor:
+            digest = {"raw_sha256": sha256(raw_path)} if raw_path.is_file() else {}
+            process.update(digest, projection_state="receipt-only")
+        checkpoint(destination, report)
+        return operational, attempt
+
+    checkpoint(destination, report)
     try:
         revision = git("rev-parse", f"{args.frozen_revision}^{{commit}}")
         rows, manifests = fixtures(revision)
@@ -196,10 +262,12 @@ def campaign(args):
         fixture_path = args.report / "fixtures.json"
         save(fixture_path, {"fixtures": rows})
         described_build = None
+        report["source"] = {"source_revision": git("rev-parse", "HEAD"),
+                            "source_tree": git("rev-parse", "HEAD^{tree}"), "frozen_revision": revision,
+                            "executable_sha256": sha256(args.executable), "catalog_sha256": sha256(CATALOG_PATH)}
         for profile in (args.reference_profile, args.profile):
             command = [str(args.executable), "--model-evaluation", "--describe-profile", "--profile", profile]
-            raw = bounded(command)
-            report["commands"].append({"command": command, "process": raw})
+            raw, _ = launch(command, profile=profile)
             if not successful(raw):
                 raise ValueError(f"compiled descriptor unavailable: {profile}")
             description = strict_json(raw["stdout"])
@@ -271,18 +339,13 @@ def campaign(args):
                                "--report", str(raw_path), "--process-index", str(index),
                                "--output-limit-bytes", str(args.output_limit_bytes),
                                "--lifecycle-bound-ms", str(args.lifecycle_bound_ms)]
-                    operational = bounded(command, seconds=args.timeout_seconds, output=args.output_limit_bytes, cleanup=args.cleanup_seconds)
-                    # Preserve the parent's independent outcome before parsing child observations.
-                    receipt_path = args.report / f"{profile}-{index}.process.json"
-                    save(receipt_path, {"index": index, "process": operational, "command": command})
+                    operational, attempt = launch(command, profile=profile, index=index, raw_path=raw_path)
                     process = parse_process(raw_path, operational, command, index, evidence_root=args.report)
-                    process.update(receipt_path=receipt_path.name, receipt_sha256=sha256(receipt_path))
-                    report["profiles"][profile].append(process)
-                    if operational["cleanup_ok"] is not True:
-                        report["preflight_failures"].append("owned child cleanup failed; later launches withheld")
-                        break
-                if report["profiles"][profile] and report["profiles"][profile][-1]["process"]["cleanup_ok"] is not True:
-                    break
+                    process.update(receipt_path=attempt["receipt_path"], receipt_sha256=attempt["receipt_sha256"])
+                    report["profiles"][profile][-1] = process
+                    checkpoint(destination, report)
+                    if attempt["status"] != "completed":
+                        raise ValueError("owned child exit/cleanup unconfirmed; later launches withheld")
             report["execution"] = "diagnostic" if args.diagnostic else "evaluation"
             for name, path in (("executable_sha256", args.executable), ("runtime_sha256", args.runtime),
                                ("criteria_sha256", CRITERIA_PATH), ("catalog_sha256", CATALOG_PATH),
@@ -301,13 +364,20 @@ def campaign(args):
                 report["preflight_failures"].append("implementation revision changed during campaign")
             if git("status", "--porcelain", "--untracked-files=all", "--ignore-submodules=none") != dirty:
                 report["preflight_failures"].append("implementation source changed during campaign")
+    except KeyboardInterrupt as error:
+        retain_interruption(error)
+        raise
     except (OSError, ValueError, KeyError, TypeError) as error:
         report["preflight_failures"].append(f"preflight/apparatus failure: {error}")
         report["execution"] = "refused"
-    if args.diagnostic:
-        report["preflight_failures"].append("explicit diagnostic execution is never a complete evaluation")
-    report["evaluation"] = evaluation_bundle([evaluate(report, evidence_root=args.report, repository_root=ROOT)])
-    save(destination, report)
+    try:
+        if args.diagnostic:
+            report["preflight_failures"].append("explicit diagnostic execution is never a complete evaluation")
+        report["evaluation"] = evaluation_bundle([evaluate(report, evidence_root=args.report, repository_root=ROOT)])
+        checkpoint(destination, report)
+    except KeyboardInterrupt as error:
+        retain_interruption(error)
+        raise
     outcomes = {profile: {rule["rule_id"]: rule["outcome"] for rule in entry["rules"]}
                 for scope in report["evaluation"]["evaluations"] for profile, entry in scope["profiles"].items()}
     print(json.dumps({"report": str(destination), "execution": report["execution"],

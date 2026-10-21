@@ -8333,18 +8333,91 @@ mp_shim_status mp_shim_process_authority(const mp_shim_target *target,
     MP_SHIM_END
 }
 
-/*
- * Observes focus and retained-window authority against an absolute deadline.
- *
- * The public entry point and the final process-post gate share this one
- * definition, so a caller-selected focus requirement is evaluated by the same
- * rules wherever it is checked. A passed observation reads matching
- * Accessibility focus samples and the final focused rectangle, then takes its
- * second retained-window sample. Returning that final retained rectangle lets
- * the caller's geometry policy reject movement for RequireUnchanged without
- * leaving later Accessibility work outside the retained-window authority fence.
- * Exception containment belongs to the caller, which already establishes it.
- */
+typedef struct {
+    mp_shim_status (*inventory)(const mp_shim_target *, uint64_t, CGRect *, uint32_t *, void *);
+    mp_shim_status (*focused)(CGRect, uint64_t, bool *, void *);
+} MPShimFinalFocusOps;
+
+/* The last blocking inventory must precede the last focus predicate. */
+static mp_shim_status mp_shim_input_finish_focus(
+    const mp_shim_target *target, CGRect before, uint64_t deadline, bool *out_focused,
+    CGRect *out_bounds, uint32_t *out_matches, const MPShimFinalFocusOps *ops, void *context) {
+    *out_focused = false;
+    CGRect after = CGRectNull;
+    mp_shim_status status = ops->inventory(target, deadline, &after, out_matches, context);
+    if (status != MP_SHIM_OK) {
+        return status;
+    }
+    *out_bounds = after;
+    if (!CGRectEqualToRect(before, after)) {
+        return MP_SHIM_OK;
+    }
+    return ops->focused(after, deadline, out_focused, context);
+}
+
+typedef struct {
+    AXUIElementRef application;
+    AXUIElementRef focused;
+} MPShimFinalAXFocus;
+
+static mp_shim_status mp_shim_final_focus_inventory(
+    const mp_shim_target *target, uint64_t deadline, CGRect *out_bounds,
+    uint32_t *out_matches, void *context) {
+    (void)context;
+    return mp_shim_input_window_authority(
+        target, deadline, false, MP_SHIM_TARGET_LOST, out_bounds, out_matches);
+}
+
+static mp_shim_status mp_shim_final_ax_focus(
+    CGRect bounds, uint64_t deadline, bool *out_focused, void *context) {
+    const MPShimFinalAXFocus *sample = context;
+    CFTypeRef frontmost = NULL;
+    CFTypeRef focused = NULL;
+    @try {
+        mp_shim_status status = mp_shim_ax_copy_attribute(
+            sample->application, kAXFrontmostAttribute, deadline, &frontmost);
+        if (status != MP_SHIM_OK) {
+            return status;
+        }
+        if (CFGetTypeID(frontmost) != CFBooleanGetTypeID()) {
+            return MP_SHIM_PLATFORM_FAILURE;
+        }
+        if (!CFBooleanGetValue((CFBooleanRef)frontmost)) {
+            return MP_SHIM_OK;
+        }
+        status = mp_shim_ax_copy_attribute(
+            sample->application, kAXFocusedWindowAttribute, deadline, &focused);
+        if (status != MP_SHIM_OK) {
+            return status;
+        }
+        if (CFGetTypeID(focused) != AXUIElementGetTypeID()) {
+            return MP_SHIM_PLATFORM_FAILURE;
+        }
+        if (!CFEqual(sample->focused, focused)) {
+            return MP_SHIM_OK;
+        }
+        CGRect focused_bounds = CGRectNull;
+        status = mp_shim_ax_window_rect((AXUIElementRef)focused, deadline, &focused_bounds);
+        if (status == MP_SHIM_OK) {
+            *out_focused = CGRectEqualToRect(focused_bounds, bounds);
+        }
+        return status;
+    } @finally {
+        if (focused != NULL) {
+            CFRelease(focused);
+        }
+        if (frontmost != NULL) {
+            CFRelease(frontmost);
+        }
+    }
+}
+
+static const MPShimFinalFocusOps mp_shim_final_focus_ops = {
+    .inventory = mp_shim_final_focus_inventory,
+    .focused = mp_shim_final_ax_focus,
+};
+
+/* Shared System/ProcessDirected focus observation; callers contain exceptions. */
 static mp_shim_status mp_shim_input_focus_observation(
     const struct mp_shim_target *target, uint64_t deadline, bool *out_focused,
     CGRect *out_bounds, uint32_t *out_target_match_count) {
@@ -8366,8 +8439,6 @@ static mp_shim_status mp_shim_input_focus_observation(
     CFTypeRef frontmost = NULL;
     CFTypeRef focused = NULL;
     CFArrayRef windows = NULL;
-    CFTypeRef frontmost_after = NULL;
-    CFTypeRef focused_after = NULL;
     @try {
         do {
             application = AXUIElementCreateApplication((pid_t)target->owner_process);
@@ -8457,60 +8528,15 @@ static mp_shim_status mp_shim_input_focus_observation(
                 break;
             }
 
-
-            status = mp_shim_ax_copy_attribute(application, kAXFrontmostAttribute, deadline,
-                                               &frontmost_after);
-            if (status != MP_SHIM_OK) {
-                break;
-            }
-            if (CFGetTypeID(frontmost_after) != CFBooleanGetTypeID()) {
-                status = MP_SHIM_PLATFORM_FAILURE;
-                break;
-            }
-            if (!CFBooleanGetValue((CFBooleanRef)frontmost_after)) {
-                break;
-            }
-
-            status = mp_shim_ax_copy_attribute(application, kAXFocusedWindowAttribute, deadline,
-                                               &focused_after);
-            if (status != MP_SHIM_OK) {
-                break;
-            }
-            if (CFGetTypeID(focused_after) != AXUIElementGetTypeID()) {
-                status = MP_SHIM_PLATFORM_FAILURE;
-                break;
-            }
-            if (!CFEqual(focused, focused_after)) {
-                break;
-            }
-            CGRect focused_after_bounds = CGRectNull;
-            status = mp_shim_ax_window_rect((AXUIElementRef)focused_after, deadline,
-                                            &focused_after_bounds);
-            if (status != MP_SHIM_OK) {
-                break;
-            }
-
-            CGRect target_after = CGRectNull;
-            status = mp_shim_input_window_authority(
-                target, deadline, false, MP_SHIM_TARGET_LOST, &target_after,
-                out_target_match_count);
-            if (status != MP_SHIM_OK) {
-                break;
-            }
-            if (!CGRectEqualToRect(target_before, target_after) ||
-                !CGRectEqualToRect(focused_after_bounds, target_after)) {
-                break;
-            }
-            *out_bounds = target_after;
-            *out_focused = true;
+            MPShimFinalAXFocus sample = {
+                .application = application,
+                .focused = (AXUIElementRef)focused,
+            };
+            status = mp_shim_input_finish_focus(
+                target, target_before, deadline, out_focused, out_bounds,
+                out_target_match_count, &mp_shim_final_focus_ops, &sample);
         } while (false);
     } @finally {
-        if (focused_after != NULL) {
-            CFRelease(focused_after);
-        }
-        if (frontmost_after != NULL) {
-            CFRelease(frontmost_after);
-        }
         if (windows != NULL) {
             CFRelease(windows);
         }
@@ -8527,23 +8553,97 @@ static mp_shim_status mp_shim_input_focus_observation(
     return status;
 }
 
-mp_shim_status mp_shim_input_target_focused(const mp_shim_target *target,
-                                            uint64_t timeout_nanos, bool *out_focused) {
+mp_shim_status mp_shim_input_target_focused(
+    const mp_shim_target *target, uint64_t timeout_nanos, bool *out_focused,
+    mp_shim_process_authority_report *out_authority) {
     if (target == NULL || target->magic != MP_SHIM_TARGET_MAGIC || target->filter == NULL ||
         target->kind != MP_SHIM_TARGET_WINDOW || target->owner_process <= 0 ||
-        timeout_nanos == 0 || out_focused == NULL) {
+        timeout_nanos == 0 || out_focused == NULL || out_authority == NULL ||
+        out_authority->struct_size != sizeof(*out_authority)) {
         return MP_SHIM_INVALID_ARGUMENT;
     }
     *out_focused = false;
+    *out_authority = (mp_shim_process_authority_report){.struct_size = sizeof(*out_authority)};
     MP_SHIM_BEGIN
     uint64_t began = mp_shim_nanos_from_ticks(mach_absolute_time());
     uint64_t deadline =
         began > UINT64_MAX - timeout_nanos ? UINT64_MAX : began + timeout_nanos;
     CGRect bounds = CGRectNull;
-    uint32_t target_match_count = 0;
-    return mp_shim_input_focus_observation(target, deadline, out_focused, &bounds,
-                                           &target_match_count);
+    mp_shim_status status = mp_shim_input_focus_observation(
+        target, deadline, out_focused, &bounds, &out_authority->target_match_count);
+    if (status != MP_SHIM_OK || !*out_focused) {
+        return status;
+    }
+    double scale = mp_shim_scale_for_frame(bounds);
+    if (!isfinite(scale) || scale <= 0.0) {
+        *out_focused = false;
+        return MP_SHIM_PLATFORM_FAILURE;
+    }
+    out_authority->logical_x = bounds.origin.x;
+    out_authority->logical_y = bounds.origin.y;
+    out_authority->logical_width = bounds.size.width;
+    out_authority->logical_height = bounds.size.height;
+    out_authority->backing_scale = scale;
+    return MP_SHIM_OK;
     MP_SHIM_END
+}
+
+typedef struct {
+    bool lose_focus;
+    bool frontmost;
+} MPShimTestingFinalFocus;
+
+static mp_shim_status mp_shim_testing_final_inventory(
+    const mp_shim_target *target, uint64_t deadline, CGRect *out_bounds,
+    uint32_t *out_matches, void *context) {
+    (void)target;
+    (void)deadline;
+    MPShimTestingFinalFocus *sample = context;
+    if (sample->lose_focus) {
+        sample->frontmost = false;
+    }
+    *out_bounds = CGRectMake(100.0, 100.0, 320.0, 240.0);
+    *out_matches = 1;
+    return MP_SHIM_OK;
+}
+
+static mp_shim_status mp_shim_testing_final_focus(
+    CGRect bounds, uint64_t deadline, bool *out_focused, void *context) {
+    (void)deadline;
+    const MPShimTestingFinalFocus *sample = context;
+    *out_focused = sample->frontmost &&
+        CGRectEqualToRect(bounds, CGRectMake(100.0, 100.0, 320.0, 240.0));
+    return MP_SHIM_OK;
+}
+
+static mp_shim_status mp_shim_testing_finish_focus(
+    bool lose_focus, bool *out_focused, CGRect *out_bounds, uint32_t *out_matches) {
+    MPShimTestingFinalFocus sample = {.lose_focus = lose_focus, .frontmost = true};
+    const MPShimFinalFocusOps ops = {
+        .inventory = mp_shim_testing_final_inventory,
+        .focused = mp_shim_testing_final_focus,
+    };
+    return mp_shim_input_finish_focus(
+        NULL, CGRectMake(100.0, 100.0, 320.0, 240.0), UINT64_MAX, out_focused,
+        out_bounds, out_matches, &ops, &sample);
+}
+
+mp_shim_status mp_shim_testing_input_focus_observation(
+    bool lose_focus, bool *out_focused, mp_shim_process_authority_report *out_authority) {
+    if (out_focused == NULL || out_authority == NULL ||
+        out_authority->struct_size != sizeof(*out_authority)) {
+        return MP_SHIM_INVALID_ARGUMENT;
+    }
+    *out_authority = (mp_shim_process_authority_report){.struct_size = sizeof(*out_authority)};
+    CGRect bounds = CGRectNull;
+    mp_shim_status status = mp_shim_testing_finish_focus(
+        lose_focus, out_focused, &bounds, &out_authority->target_match_count);
+    out_authority->logical_x = bounds.origin.x;
+    out_authority->logical_y = bounds.origin.y;
+    out_authority->logical_width = bounds.size.width;
+    out_authority->logical_height = bounds.size.height;
+    out_authority->backing_scale = 2.0;
+    return status;
 }
 
 static mp_shim_status mp_shim_input_display_rect(const struct mp_shim_target *target,
@@ -10376,10 +10476,9 @@ static bool mp_shim_process_geometry_matches(
  * Confirms every mutable ordinary-post fact except the original process
  * lifetime.
  *
- * The potentially blocking retained-window authority read completes before a
- * caller-selected final focus predicate. That combined focus observation
- * returns a later exact-window geometry sample, so RequireUnchanged is applied
- * to facts that could not change unnoticed while Accessibility was responding.
+ * The final retained-window inventory precedes the final Accessibility focus
+ * predicate. Its bounds are reused for geometry without another inventory wait.
+ * This is a last observation, not an OS-atomic focus/post guarantee.
  * Event-post authorization follows those gates. The caller then checks the
  * native deadline budget, the original process lifetime, the budget again, and
  * adapter-owned atomic cancellation immediately before posting. Focus and
@@ -11136,6 +11235,13 @@ static mp_shim_status mp_shim_testing_process_focus(
     }
     *out_bounds = CGRectMake(100.0, 100.0, 320.0, 240.0);
     *out_target_match_count = 1;
+    if (probe->focus_calls >= 2 &&
+        (probe->scenario == MP_SHIM_TEST_PROCESS_FOCUS_LOST_DURING_FINAL_INVENTORY ||
+         probe->scenario == MP_SHIM_TEST_PROCESS_FOCUS_STABLE_FINAL_INVENTORY)) {
+        return mp_shim_testing_finish_focus(
+            probe->scenario == MP_SHIM_TEST_PROCESS_FOCUS_LOST_DURING_FINAL_INVENTORY,
+            out_focused, out_bounds, out_target_match_count);
+    }
     if (probe->scenario == MP_SHIM_TEST_PROCESS_FOCUS_REFUSED ||
         (probe->scenario == MP_SHIM_TEST_PROCESS_FOCUS_LOST_AFTER_PREPARE &&
          probe->focus_calls >= 2) ||
@@ -11306,7 +11412,7 @@ mp_shim_status mp_shim_testing_process_post(
         out_lifetime_calls == NULL || out_focus_calls == NULL || out_prepare_calls == NULL ||
         out_post_calls == NULL || out_release_calls == NULL || out_checkpoint_calls == NULL ||
         out_cancellation_calls == NULL ||
-        scenario > MP_SHIM_TEST_PROCESS_APPKIT_FOREGROUND_DURING_LIFETIME) {
+        scenario > MP_SHIM_TEST_PROCESS_FOCUS_STABLE_FINAL_INVENTORY) {
         return MP_SHIM_INVALID_ARGUMENT;
     }
     *out_delivery_status = MP_SHIM_PLATFORM_FAILURE;
@@ -11369,7 +11475,8 @@ mp_shim_status mp_shim_testing_process_post(
             .cancellation_context = &probe,
             .cancellation_callback = mp_shim_testing_process_cancellation,
         };
-        if (scenario >= MP_SHIM_TEST_PROCESS_APPKIT_FOREGROUND) {
+        if (scenario >= MP_SHIM_TEST_PROCESS_APPKIT_FOREGROUND &&
+            scenario <= MP_SHIM_TEST_PROCESS_APPKIT_FOREGROUND_DURING_LIFETIME) {
             event_source.pointer_mode = MP_SHIM_PROCESS_POINTER_APPKIT_BACKGROUND;
         }
         if (scenario == MP_SHIM_TEST_PROCESS_APPKIT_OWNED_RELEASE) {
@@ -11408,7 +11515,9 @@ mp_shim_status mp_shim_testing_process_post(
             scenario == MP_SHIM_TEST_PROCESS_TARGET_LOST_AFTER_FOCUS ||
             scenario == MP_SHIM_TEST_PROCESS_FOCUS_LOST_DURING_AUTHORITY ||
             scenario == MP_SHIM_TEST_PROCESS_GEOMETRY_CHANGED_DURING_FOCUS ||
-            scenario == MP_SHIM_TEST_PROCESS_GEOMETRY_MOVED_WITHOUT_REQUIRE_UNCHANGED) {
+            scenario == MP_SHIM_TEST_PROCESS_GEOMETRY_MOVED_WITHOUT_REQUIRE_UNCHANGED ||
+            scenario == MP_SHIM_TEST_PROCESS_FOCUS_LOST_DURING_FINAL_INVENTORY ||
+            scenario == MP_SHIM_TEST_PROCESS_FOCUS_STABLE_FINAL_INVENTORY) {
             request.focus_requirement = MP_SHIM_PROCESS_FOCUS_REQUIRE_FOCUSED;
         }
         const mp_shim_process_post_ops ops = {

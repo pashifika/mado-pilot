@@ -9,7 +9,7 @@ use mado_pilot_vision::{
     BackendDescriptor, BackendId, BackendRequest, Candidate, MatchBackend, PreparedTemplate,
     TemplateEncoding, TemplateSource, VisionFault,
 };
-use opencv::core::{Mat, MatTraitConst, MatTraitManual};
+use opencv::core::{Mat, MatTraitConst, MatTraitConstManual, MatTraitManual};
 use opencv::imgproc::{TM_CCOEFF_NORMED, match_template_def};
 
 use crate::candidates::{PeakSearch, peaks};
@@ -139,7 +139,19 @@ impl MatchBackend for OpenCvBackend {
         if extent != source.extent() {
             return Err(VisionFault::TemplatePreparationFailed.into());
         }
+        // CCOEFF's denominator is zero when every BGR channel is spatially constant.
+        let mut pixels = image
+            .data_bytes()
+            .map_err(|_| Error::from(VisionFault::TemplatePreparationFailed))?
+            .chunks_exact(3);
+        let first = pixels
+            .next()
+            .ok_or(VisionFault::TemplatePreparationFailed)?;
+        let constant = pixels.all(|pixel| pixel == first);
         checkpoint(operation)?;
+        if constant {
+            return Err(VisionFault::TemplatePreparationFailed.into());
+        }
 
         Ok(PreparedTemplate::new(
             BackendId::new(BACKEND_ID),

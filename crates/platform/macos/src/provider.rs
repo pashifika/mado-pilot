@@ -297,6 +297,22 @@ impl MacosCaptureProvider {
         })
     }
 
+    /// Reads the raw backing scale recorded for a private-fixture source frame.
+    #[cfg(feature = "private-fixture")]
+    #[doc(hidden)]
+    #[must_use]
+    pub fn fixture_source_backing_scale(
+        &self,
+        target: TargetId,
+        source: mado_pilot_core::FrameStamp,
+    ) -> Option<f64> {
+        let record = Arc::clone(self.registry().records.get(&target)?);
+        record
+            .geometry
+            .source_geometry(source)
+            .map(|(_, bounds)| bounds.scale)
+    }
+
     /// Returns the record an input operation names, or why it cannot be used.
     ///
     /// `TargetId` is snapshot-scoped exactly as it is for capture, so an accepted
@@ -579,8 +595,11 @@ impl TargetRecord {
             .process_post(event_source, request, operation)
     }
 
-    /// Reads focus for this exact retained selection within `wait`.
-    pub(crate) fn is_focused(&self, wait: Duration) -> std::result::Result<bool, ShimStatus> {
+    /// Reads focus and its final retained-target bounds within `wait`.
+    pub(crate) fn is_focused(
+        &self,
+        wait: Duration,
+    ) -> std::result::Result<(bool, NativeBounds), ShimStatus> {
         self.selection.input_focused(wait)
     }
 

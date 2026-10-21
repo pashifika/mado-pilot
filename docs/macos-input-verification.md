@@ -23,6 +23,12 @@ The opt-in `AppKitBackground` pointer construction has one separately authorized
 full-workflow result at `acc5d98ae8cfc4958970be826a28011bc12185c9`, described below.
 Neither that case nor the historical results qualify it for arbitrary targets.
 
+Current-source final-focus ordering, `System` raw-geometry checks, and retained
+cached mapping require separately bound native results. The
+[bounded regression rows](#bounded-focus-and-raw-geometry-regressions) describe
+procedures; this public document does not qualify their execution. They do not
+refresh the source, hashes, support decisions, or performance measurements above.
+
 ## Capability boundary
 
 Capabilities are operation-and-route pairs. macOS publishes two routes with
@@ -160,11 +166,12 @@ A request still fails when its geometry policy cannot resolve the named frame:
 - `ReprojectCurrent` reads the target's live rectangle and backing scale in Rust,
   maps from that geometry, and asks the final native gate to confirm the same
   fingerprint before posting.
-- `RequireUnchanged` maps from the source-frame transform and carries that
-  frame's raw screen rectangle and backing scale to the final native gate. The
-  gate compares source and live raw point sizes after backing-pixel
-  quantization; it does not reconstruct native bounds from an effective,
-  potentially downscaled transform.
+- `RequireUnchanged` maps from the exact source-frame transform and carries that
+  frame's raw screen rectangle and backing scale to the final native gate. Both
+  early and final `System` checks use raw `NativeBounds::capture_equivalent_to`:
+  exact origin and raw scale, with point sizes compared after backing-pixel
+  quantization. Fractional raw bounds are preserved; neither an effective
+  downscaled transform nor its normalized logical extent substitutes for them.
 - `UseFrameSnapshot` uses the retained source transform. A revision that is no
   longer retained is unsupported rather than reconstructed from current
   geometry; the final gate still checks exact retained-window authority but does
@@ -220,10 +227,15 @@ Focus is a `System`-route precondition and an optional caller predicate on
 `ProcessDirected`. Both use public, read-only Accessibility attributes: the
 owning application must be active, its focused window must appear in its public
 window list, and exactly one Accessibility window's top-left global position
-and size must equal the freshly verified frame. The shareable-content identity
-and frame are read again after the Accessibility snapshot. Missing required
-attributes make focus unobservable; a complete unequal or ambiguous observation
-establishes that the retained window is not focused. Both outcomes deliver nothing.
+and size must equal the freshly verified frame. The final retained-window
+inventory precedes the final frontmost, focused-window, and focused-window-bounds
+observations. Its returned bounds are reused for geometry without another
+blocking inventory read after accepted focus. Missing required attributes make
+focus unobservable; a complete unequal or ambiguous observation establishes that
+the retained window is not focused. Both outcomes deliver nothing. This is a
+last observation, not an OS-atomic focus/post guarantee;
+[ADR 0090](adr/0090-final-macos-focus-observation-order.md) supersedes only
+ADR 0016's final observation order.
 Titles and private Accessibility window identifiers are not read, and a same-PID
 replacement that recycles numeric metadata still makes the old `TargetId`
 report `TargetLost`. Every native observation is bounded by the caller's
@@ -290,7 +302,8 @@ the shim:
    the exact retained logical `SCWindow` is still present, equal, open,
    unminimized, on screen, at window layer zero, and finite;
 4. repeats the caller-selected focus predicate when `RequireFocused` applies;
-   the combined observer returns a later exact-window bounds sample;
+   its final inventory precedes the final Accessibility observations, and the
+   returned bounds require no subsequent inventory wait;
 5. applies the selected geometry policy to the latest authoritative bounds —
    compares them with the source frame for `RequireUnchanged`, compares them
    with the Rust live mapping for `ReprojectCurrent`, or retains snapshot
@@ -522,6 +535,17 @@ symbol enters a production shim consumer. The submission cases run against the
 driver seam rather than the desktop, because a live host cannot be made to
 revoke an authorization or refuse a release on cue.
 
+For the final inventory/focus boundary, run
+`system_required_focus_observes_changes_during_the_final_inventory` and
+`process_required_focus_observes_changes_during_the_final_inventory` through the
+library suite. The raw-geometry cases
+`system_unchanged_downscaled_geometry_uses_raw_bounds_at_both_gates` and
+`system_unchanged_raw_changes_refuse_at_early_and_final_gates` cover fractional
+effective-1/raw-2 sources and real origin, size, or scale changes.
+`a_cached_mapping_commits_with_its_mutex_released` checks cached allocation reuse
+with caller-clock observations outside the mapping mutex. These procedures
+require no native input and do not qualify the ignored native rows.
+
 The native integration test **submits nothing**. It exercises discovery, the
 input provider surface, and refusals that precede any event. Starting the
 fixture window takes focus and needs the fixture binary, which only the
@@ -556,6 +580,11 @@ change. The accepted result was rerun at commit
 `a1faf04505c8471deb4de8c136fddcc7f76105e7` and is retained in
 [`evidence/g-001/macos-owned-window-replacement.md`](evidence/g-001/macos-owned-window-replacement.md).
 
+The current procedure also maps the retained original frame again after capture
+close and compares its bytes with the earlier mapping. Cached mapping remains
+legal after close; that added assertion is not attributed to the historical
+result above. This public document does not qualify that added assertion.
+
 ## Explicit system-input check
 
 Run this only on an interactive Apple Silicon desktop with Screen Recording and
@@ -584,17 +613,74 @@ the exact retained fixture. Launch/signature, capture, mapping, or predicate
 failure stops before the first `RequireFocused` probe.
 It then waits 15 seconds: click that exact fixture window when prompted. The probe
 activates nothing, and every attempt before the exact retained window is focused
-submits zero events. Only then does it send Enter down and up and the fixed text
-`system-probe`. It sends no click and no pointer movement, and closes capture
-after input verification. The fixture event queue is deliberately delimited
-after focus is established, so ordinary mouse-enter or operator focus events are
-not attributed to that later submission sequence.
+submits zero events. Only then does it send Escape up, Enter down and up, and the
+fixed text `system-probe`. These are four logical events; it sends no click and
+no pointer movement, and closes capture after input verification. The fixture
+event queue is deliberately delimited after focus is established, so ordinary
+mouse-enter or operator focus events are not attributed to that later submission
+sequence.
 
 If the fixture is not focused in time, selection is ambiguous, deterministic
 content cannot be captured and mapped, the pixels do not match, or event-post
 access is absent, the check stops before further system input. Do not replace
 any failure with a permission request, a settings prompt, or an activation
 intended to take focus from the user.
+
+## Bounded focus and raw-geometry regressions
+
+These three ignored rows require separate native acceptance; their presence is
+not a qualification result. Run them only with authorized owned-fixture input,
+existing Screen Recording and event-post grants, and the signed bundles above.
+The process-focus row requires both `MADO_PILOT_MACOS_FIXTURE_EXECUTABLE` and
+`MADO_PILOT_MACOS_FOREGROUND_FIXTURE_EXECUTABLE`; the System rows require the
+target executable. Each capture, control, and input operation is bounded by
+`CONTENT_WAIT` (five seconds). Fixture launch deliberately takes foreground
+ownership; input requests themselves use `RequireFocused`, never activation.
+
+The rows have distinct effects and acceptance conditions:
+
+- `process_directed_require_focused_accepts_only_the_focused_fixture` submits one
+  balanced Enter pair to the owned active fixture. It then uses a separately
+  owned foreground fixture and requires zero-post `FocusRequired` from the
+  inactive target, with foreground and cursor preservation.
+- `system_require_unchanged_accepts_raw_geometry_and_refuses_real_changes`
+  submits one System pointer move using the exact source-frame transform. Owned
+  `Move` and `Resize` transitions must then refuse stale-frame requests with
+  `GeometryChanged`, zero fixture events, and no additional cursor movement.
+- `system_require_unchanged_accepts_effective_one_raw_two_frame` applies that
+  same pointer/refusal procedure only after observing an effective-1/raw-2 frame.
+  It requires `MADO_PILOT_MACOS_QUALIFICATION_TOPOLOGY=mixed-scale` and the existing
+  signed-origin mixed-scale predicate over `2..=16` live displays. The fixture
+  first reaches and is rediscovered on a 1x display before fresh capture opens.
+  After each preparatory move, bounded rediscovery waits for a changed origin
+  and a position/scale match against the frozen displays before another move.
+  Command acknowledgement alone does not establish refreshed capture metadata.
+  The first frame must have effective scale 1. One bounded `topology.len()`
+  display circuit then seeks effective scale 1 with raw scale 2 recorded for the
+  same source frame. The `private-fixture` observation reads the existing bounded
+  geometry ledger; it does not query another window description or replace the
+  retained capture target. Missing that frame is explicitly not-qualified with
+  no input; an ordinary-scale frame cannot substitute.
+
+After establishing those prerequisites, invoke each row explicitly:
+
+```sh
+cargo test --locked -p mado-pilot-platform-macos --features private-fixture --test native_input \
+  process_directed_require_focused_accepts_only_the_focused_fixture -- \
+  --ignored --exact --nocapture --test-threads=1
+cargo test --locked -p mado-pilot-platform-macos --features private-fixture --test native_input \
+  system_require_unchanged_accepts_raw_geometry_and_refuses_real_changes -- \
+  --ignored --exact --nocapture --test-threads=1
+MADO_PILOT_MACOS_QUALIFICATION_TOPOLOGY=mixed-scale \
+  cargo test --locked -p mado-pilot-platform-macos --features private-fixture --test native_input \
+  system_require_unchanged_accepts_effective_one_raw_two_frame -- \
+  --ignored --exact --nocapture --test-threads=1
+```
+
+Record the exact source, executable identities, host, permissions, topology, and
+bounded outcomes for any authorized run. These rows neither replace the
+historical fourteen-pair matrix nor broaden its exact two-display `same-scale`
+requirement, and they establish no statistical performance result.
 
 ## Explicit process-directed checks
 
@@ -776,11 +862,11 @@ mandatory topology row passes and every release pair is `qualified`.
 
 The privacy-reviewed
 [repository evidence](evidence/phase-2-native/macos-owning-process-qualification.md)
-keeps immutable historical records separate from the current decision. The
-tuning Change's
-[observed report](../rasen/changes/macos-process-directed-performance-tuning/evidence/observed-report.md)
-records exact commands, hashes, bounded outcomes, the stopped pre-sample
-attempt, and raw-log exclusion.
+keeps immutable historical records separate from the current decision and
+records artifact hashes, bounded outcomes, stopped pre-sample attempts, and
+raw-log exclusion. The
+[benchmark commands](#current-native-input-performance-evidence) are available
+in this guide without separate planning storage.
 
 ## Explicit facade check
 

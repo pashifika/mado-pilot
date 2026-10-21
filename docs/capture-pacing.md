@@ -92,7 +92,7 @@ Platform behavior is explicit:
 | macOS ScreenCaptureKit | Dynamic getter/setter negotiation; exact positive signed 64-bit nanoseconds at `CMTime` timescale `1000000000`. The maximum is `9223372036s + 854775807ns`. Configuration/readback precede stream creation/start; retained configuration preserves the interval through dimension updates. |
 | Replay / ControlledCapture | Required pacing is unsupported; preferred pacing is reported unapplied. Replay stays pull-driven and controlled publication stays caller-driven. |
 
-The macOS scalar handshake is private ABI22; it is not the released C ABI. Public
+The macOS scalar handshake is private ABI26; it is not the released C ABI. Public
 C/C++ structures, table prefixes and default projections do not gain pacing options.
 No sleep, software drop gate, queue-depth change or producer-buffer retention is
 used to imitate native pacing.
@@ -113,6 +113,8 @@ python3 tools/setup-native.py -- cargo run --locked -p mado-pilot \
 
 For Windows, use the documented x64 MSVC setup form with explicit OpenCV/libclang
 roots around the same Cargo command. See [native setup](../CONTRIBUTING.md#native-development-prerequisites).
+Set `CARGO_TARGET_DIR` to a fresh example-only root, separate from native and
+other hash-pinned qualification builds.
 
 Native execution is a separate, explicit action. After authorizing the target and
 reviewing the G-004 model/runtime paths, the argument order is:
@@ -121,7 +123,8 @@ reviewing the G-004 model/runtime paths, the argument order is:
 completion-paced-ocr --native <window|display> <exact-target-name> <model-root> <runtime-file> <source-default|required:MS|preferred:MS> <cooldown-ms> <operation-ms> <exact-stop-text>
 ```
 
-For example, a separately authorized macOS invocation is:
+For a separately authorized macOS invocation, use a fresh `CARGO_TARGET_DIR`
+distinct from the deterministic example's root:
 
 ```sh
 python3 tools/setup-native.py -- cargo run --locked -p mado-pilot \
@@ -287,8 +290,55 @@ cover closed-session lifetimes, not just the measurement window. Fixture draw
 intervals are application-requested work, not display FPS or general game
 performance. Source, host and bound native inputs are checked again after the run.
 
-Consumer and aggregate report schema 2 use `missed_poll_deadlines` for process
-polls delayed across their nominal 100ms deadlines. The count and maximum gap
+New runner receipts and derived reports use schema 3. `run.json` binds the exact
+`records.json` byte length and SHA-256, records the authority identity, and retains
+the final source, input, host and native-binding checks. Offline qualification
+requires an explicit receipt; it never discovers one beside the input:
+
+```sh
+python3 -B tools/capture-pacing/report.py \
+  --input .rasen/approved-pacing-run/records.json \
+  --run-receipt .rasen/approved-pacing-run/run.json \
+  --output .rasen/approved-pacing-report.json
+```
+
+Use the authority's actual `output_root` for both input paths and a distinct
+derived output. The reporter reconciles exact records bytes, per-case statuses,
+the five-case `comparison_status` before adding the semantic case, and the exact
+final aggregate status, including `incomplete` versus `not-run`. The recorded
+target must match the recorded host system and architecture and every observed
+semantic/comparison process platform. These checks use only recorded evidence,
+not today's host or the availability of historical binaries.
+Only complete passing observations and a verified passing receipt produce
+`pass`. Consistent partial, placeholder and permission-refused receipts retain
+their non-pass outcomes. Changed final bindings, mismatched bytes or platforms,
+contradictory statuses or an explicit failed receipt prevent qualification;
+individual observations remain visible.
+
+Omitting `--run-receipt` or supplying a schema-2 receipt produces
+`view: "legacy-inspection"`: otherwise passing observations are `incomplete`,
+not qualified. `observation_status` retains the independently derived case result;
+observed failures still fail. This inspection does not revise an archived verdict.
+A specified receipt that cannot be read is an input refusal, not legacy inspection.
+
+Publication protects the input, receipt and every safely declared evidence,
+records and authority path, including canonical, symlink and hard-link aliases.
+Declarations are collected before receipt qualification, so an otherwise invalid
+receipt still protects its evidence. Unreadable or unparseable input/receipt bytes,
+or a missing or unsafe declaration set, refuse publication. An invalid receipt
+with safe declarations may publish a failed report only at a distinct path.
+The reporter stages at most 1 MiB of JSON in an owner-only (`0600`) sibling
+temporary file, flushes and `fsync`s it, then atomically replaces the derived
+output. Publication failure preserves existing output and evidence; cleanup
+targets only the reporter's own temporary file.
+
+Reporter exit `0` means `pass`; `1` means a published non-pass report, including
+raw-only incomplete inspection; `2` means input, alias or publication refusal
+without replacing the output. These are offline reporter exits, not native
+consumer or supervisor exit meanings.
+
+Consumer report schema 2 retains `missed_poll_deadlines` for process polls delayed
+across their nominal 100ms deadlines. The count and maximum gap
 remain visible. A delayed poll is not a dropped stored observation: cumulative
 CPU, OS peak RSS and coherent copy intervals retain their own validity checks.
 Do not infer ideal polling coverage or continuous instantaneous peaks from
@@ -299,6 +349,10 @@ Schema-one reports and their failures are immutable and are not rescored by the
 new analyzer. The corrected accounting and complete-frame Windows presentation
 belong to separately bound new runs; they do not change historical product
 budgets. See the schema-two apparatus decision in [ADR0077](adr/0077-native-capture-pacing-and-completion-cooldown.md#qualification-apparatus-correction-report-schema-2).
+Schema-2 campaign receipts and accepted results likewise retain their original
+source, bytes and verdicts. Schema 3 governs new qualification; it records no new
+native campaign or performance result. See the prospective final-authority
+amendment in [ADR0077](adr/0077-native-capture-pacing-and-completion-cooldown.md#prospective-final-authority-report-schema-3).
 
 Protocol revision 3 also keeps the macOS fixture's preexisting `Prohibited`
 activation policy rather than promoting a CLI process to `Accessory`. Marker

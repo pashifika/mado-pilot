@@ -126,36 +126,44 @@ fn clones_share_preparation_until_the_last_backend_owner_ends() {
     }
 }
 
-/// A solid `rgb` template of `extent`.
-fn solid_template(id: &str, extent: PixelExtent, rgb: [u8; 3]) -> TemplateSource {
+/// A packed `rgb` template of `extent`.
+fn rgb_template(id: &str, extent: PixelExtent, rgb: &[u8]) -> TemplateSource {
     TemplateSource::new(TemplateSourceRequest {
         id: TemplateId::new(id).expect("id"),
         encoding: TemplateEncoding::Png,
         extent,
         space: CoordinateSpace::CapturePixels,
         defaults: MatchDefaults::new(0.9, 1).expect("defaults"),
-        content: Arc::from(png::solid_rgb(extent.width(), extent.height(), rgb)),
+        content: Arc::from(png::encode_rgb(extent.width(), extent.height(), rgb)),
     })
     .expect("source")
 }
 
 #[test]
 fn small_region_diagnostics_exclude_native_matrix_contents() {
-    // One BGR pixel, [5, 11, 233], stored in each accepted channel order.
-    for (format, pixel) in [
-        (PixelFormat::Bgra8, [5, 11, 233, 255]),
-        (PixelFormat::Rgba8, [233, 11, 5, 255]),
-    ] {
+    let rgb = [[233, 11, 5], [17, 91, 61], [47, 139, 181], [197, 29, 83]];
+    let bgr: Vec<u8> = rgb.iter().flat_map(|&[r, g, b]| [b, g, r]).collect();
+    for format in [PixelFormat::Bgra8, PixelFormat::Rgba8] {
+        let frame_pixels = rgb
+            .iter()
+            .flat_map(|&[r, g, b]| {
+                if format == PixelFormat::Bgra8 {
+                    [b, g, r, 255]
+                } else {
+                    [r, g, b, 255]
+                }
+            })
+            .collect();
         let backend = OpenCvBackend::new().expect("backend");
         let extent = PixelExtent::new(2, 2);
-        let frame = vision_contract::frame_with_pixels(extent, format, pixel.repeat(4));
+        let frame = vision_contract::frame_with_pixels(extent, format, frame_pixels);
         let operation = OperationContext::new();
         let pixels = frame
             .full_view()
             .expect("view")
             .map(format, &operation)
             .expect("mapping");
-        let source = solid_template("privacy", extent, [233, 11, 5]);
+        let source = rgb_template("privacy", extent, rgb.as_flattened());
         let template = backend.prepare(&source, &operation).expect("template");
         let found = backend
             .find(&request(&pixels, &template), &operation)
@@ -166,11 +174,7 @@ fn small_region_diagnostics_exclude_native_matrix_contents() {
             Lookup::Hit(image) => PreparedRegion::Shared(image),
             _ => panic!("cached small region"),
         };
-        assert_eq!(
-            region.matrix().data_bytes().expect("BGR"),
-            [5, 11, 233].repeat(4),
-            "{format}"
-        );
+        assert_eq!(region.matrix().data_bytes().expect("BGR"), bgr, "{format}");
         let native_debug = format!("{:?}", region.matrix());
         let diagnostic = format!("{backend:?}");
         assert!(!diagnostic.contains(&native_debug));
@@ -184,6 +188,50 @@ impl Clock for FixedClock {
     fn now(&self) -> MonotonicInstant {
         MonotonicInstant::ORIGIN
     }
+}
+
+#[derive(Debug)]
+struct ExpireAfterAdmission(AtomicBool);
+
+impl Clock for ExpireAfterAdmission {
+    fn now(&self) -> MonotonicInstant {
+        if self.0.swap(true, Ordering::AcqRel) {
+            MonotonicInstant::from_origin(Duration::from_secs(1))
+        } else {
+            MonotonicInstant::ORIGIN
+        }
+    }
+}
+
+#[test]
+fn preparation_requires_live_authority_before_decode_and_publication() {
+    let backend = OpenCvBackend::new().expect("backend");
+    let source = match_fixtures::planted_template("authority");
+    let token = CancellationToken::new();
+    token.cancel();
+    let cancelled = OperationContext::new().with_cancellation(token);
+    let expired = OperationContext::new()
+        .with_clock(Arc::new(FixedClock))
+        .with_deadline(MonotonicInstant::ORIGIN);
+    let expires_after_decode = OperationContext::new()
+        .with_clock(Arc::new(ExpireAfterAdmission(AtomicBool::new(false))))
+        .with_deadline(MonotonicInstant::from_origin(Duration::from_secs(1)));
+    for (operation, expected) in [
+        (&cancelled, Status::Cancelled),
+        (&expired, Status::DeadlineExceeded),
+        (&expires_after_decode, Status::DeadlineExceeded),
+    ] {
+        assert_eq!(
+            backend
+                .prepare(&source, operation)
+                .expect_err("interrupted preparation publishes nothing")
+                .status(),
+            expected
+        );
+    }
+    backend
+        .prepare(&source, &OperationContext::new())
+        .expect("independent live preparation");
 }
 
 #[test]
@@ -521,16 +569,37 @@ fn direct_preparation_does_not_extend_source_or_mapping_owners() {
     );
 }
 
+/// Adds spatial variation while preserving the controlled native storage lease.
+#[derive(Debug)]
+struct PatternedReadback(Arc<dyn FrameStorage>);
+
+impl FrameStorage for PatternedReadback {
+    fn descriptor(&self) -> FrameDescriptor {
+        self.0.descriptor()
+    }
+
+    fn cpu_pixels(&self) -> Option<Arc<CpuPixels>> {
+        None
+    }
+
+    fn read_cpu(&self, operation: &OperationContext) -> Result<Arc<CpuPixels>> {
+        let mut bytes = self.0.read_cpu(operation)?.bytes().to_vec();
+        bytes[..3].fill(74);
+        Ok(Arc::new(CpuPixels::new(bytes.into_boxed_slice())))
+    }
+}
+
 #[test]
 fn native_readback_reservations_end_with_their_owners_while_the_backend_survives() {
     let backend = OpenCvBackend::new().expect("backend");
     let operation = OperationContext::new();
-    // A solid template of the frame's own colour over one offset, as in the
-    // small-region fixture above: a single exact match at the origin.
+    // Matching the full frame leaves one exact offset and retains readback ownership.
     let extent = PixelExtent::new(8, 8);
-    let solid = backend
-        .prepare(&solid_template("solid", extent, [73; 3]), &operation)
-        .expect("solid template");
+    let mut rgb = [73; 3].repeat(8 * 8);
+    rgb[..3].fill(74);
+    let template = backend
+        .prepare(&rgb_template("readback", extent, &rgb), &operation)
+        .expect("nonconstant template");
     for format in [PixelFormat::Rgba8, PixelFormat::Bgra8] {
         let basis = vision_contract::frame(extent, format, 0);
         let producer = ControlledProducer::new(extent, format, 1, 1).expect("producer");
@@ -538,14 +607,16 @@ fn native_readback_reservations_end_with_their_owners_while_the_backend_survives
             basis.stamp(),
             basis.captured_at(),
             *basis.transform(),
-            producer.capture(73).expect("native frame"),
+            Arc::new(PatternedReadback(
+                producer.capture(73).expect("native frame"),
+            )),
         )
         .expect("frame");
         let pixels = frame.map(format, &operation).expect("readback");
         assert_eq!(pixels.descriptor().format(), format);
         for _ in 0..2 {
             let found = backend
-                .find(&request(&pixels, &solid), &operation)
+                .find(&request(&pixels, &template), &operation)
                 .expect("cold search, then persistent reuse");
             assert_eq!(
                 found

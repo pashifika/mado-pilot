@@ -52,6 +52,16 @@ source-bound runner validates each required metric and accepted profile/ADR,
 then combines numerical comparisons with independent semantic/identity/cleanup
 gates. Complete precursor observations alone do not qualify a numerical budget.
 
+Current [pacing evidence](capture-pacing.md#owned-native-verification-apparatus),
+[release-profile tools](evidence/native-release-profiles/README.md#current-apparatus-safeguards)
+and [OCR measurement tools](ocr-model-catalog.md#repeatable-rust-measurements)
+enforce final receipt authority, retained-snapshot accounting, pinned compiler
+identity and interruption checkpoints. These are apparatus safeguards, not a new
+native or statistical campaign. Historical schemas, exact evidence bytes,
+source/binary hashes, measured values, failed attempts, accepted ceilings and
+source applicability remain unchanged. Tool checks alone do not qualify current
+capture/input behavior, a new host or a broader release claim.
+
 ## Rust template-matching work efficiency
 
 `template-matching-efficiency` is a capture-free Rust benchmark, enabled only by
@@ -824,9 +834,9 @@ shapes for every committed process-directed profile. A newly generated native
 report also carries `benchmark_executable_sha256`, which must be retained when
 that report becomes a current profile. The
 [macOS input verification guide](macos-input-verification.md#current-native-input-performance-evidence)
-provides the runnable benchmark commands, and the tuning Change's
-[observed report](../rasen/changes/macos-process-directed-performance-tuning/evidence/observed-report.md)
-records their outputs and provenance. Game-like samples carry the fixture's
+provides the runnable benchmark commands, and the public
+[qualification record](evidence/phase-2-native/macos-owning-process-qualification.md#current-candidate-decision)
+records their outcomes and provenance. Game-like samples carry the fixture's
 explicit `mode=game-like renderer=opengl` fact, so they establish no result for
 another renderer, game, application, input stack, or anti-cheat system.
 

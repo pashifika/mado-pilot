@@ -1109,6 +1109,16 @@ package that follows:
   host DPI, because a plausible guess about coordinates places input somewhere
   the caller did not ask for.
 
+`TransformSnapshot::resolve_capture_pixels` preserves the original rectangle's
+emptiness in every supported coordinate space under both `Clip` and `Reject`;
+outward rounding cannot turn zero width or height into covered pixels. Fault
+precedence remains `ConversionUnsupported`, `ExtentOverflow`, `EmptyRegion`,
+then `OutsideExtent`. Nonempty regions still round outward. `Frame::view` maps
+unsupported conversion to `UnsupportedCoordinate` and other geometry failures
+to `RegionOutsideFrame`. Run the fractional-region and fault-precedence cases
+in `crates/automation/core/src/transform.rs` and
+`crates/automation/capture/src/frame.rs` to check this boundary.
+
 Capability and permission vocabulary lives here for a structural reason rather
 than a conceptual one: a discovered target reports what input it accepts, an input
 request is admitted against the same description, and neither the capture package
@@ -1193,9 +1203,21 @@ stream publication are separate critical sections: the queue and stream mutexes
 are never nested, and caller-supplied clock or cancellation code runs outside
 both.
 
-This is an additive Rust-only contract. It changes no facade behavior, C
-function table, C layout or header. The decision and its native performance
-acceptance conditions are recorded in
+A constrained replay open checks `required_format` against every configured
+frame descriptor before creating a session, without decoding or converting
+frames. Any mismatch returns `UnsupportedOption`; an unconstrained mixed-format
+source remains valid and changes epoch when its format changes.
+Contending `NewerThan` requests recheck the maintained frame after taking a
+reservation and before reporting exhaustion. An eligible publication can satisfy
+both requests without consuming another source frame; an unused reservation
+returns to the queue head. Run the format cases in
+`crates/adapter/replay/tests/capture_contract.rs` and the contention cases in
+`crates/adapter/replay/src/provider.rs` to check format admission, shared
+publication, and source order.
+
+`publish_recoverable` is an additive Rust-only contract. It changes no facade
+behavior, C function table, C layout or header. The decision and its native
+performance acceptance conditions are recorded in
 [ADR 0011](adr/0011-recoverable-stream-publication.md).
 
 `CaptureSession::commit_frame` adds a separate consumer commitment boundary.
@@ -1217,6 +1239,22 @@ C ABI capture-terminal errors retain the capture category without attributing an
 OCR or matching backend.
 No caller clock or backend work runs under either commitment gate. A host prepares
 its bounded candidate first and treats successful commitment as acceptance.
+
+Template and OCR watcher backend completions also commit their exact analyzed
+frame against capture before updating confirmations, stability, or success.
+Capture commitment and caller clocks run outside watcher guards; scheduler
+admission, session activation, and query-state arbitration retain their existing
+order. Recorded target loss, device failure, or close refuses held successful
+work even before acquisition delivers its terminal error. The original terminal
+status is preserved, with OCR public error details still redacted.
+
+Ordinary finite replay/controlled exhaustion returns `CaptureFault::StreamEnded`
+while capture stays open and its final frame remains committable. Watcher
+`source_ended` refuses later starts and drains already admitted or pending final
+work before closing unsatisfied queries. A `Closed` commitment is never
+accepted as finite-source success. The focused procedures in
+[ADR 0078](adr/0078-capture-terminal-publication.md) cover both watchers without
+adding workers, retries, or recapture.
 
 Termination ordered after commitment does not revoke immutable historical values.
 Mapping a retained frame remains legal after termination, but commitment does not
@@ -1466,11 +1504,15 @@ process can correlate native observations; that field remains outside admission,
 authority, posting, and receipt semantics.
 
 Producers never wait for capacity, call host code, or format a log line. A full or
-contended stream discards the record and accounts for the exact normal/debug loss
-in the next committed immutable batch. Draining reports `Batch`, `OpenEmpty`, or
-`EndOfStream`; a batch can contain only loss counts. Final engine and session
-producer release seals production, while an independently retained reader
-continues to drain already committed data before observing end of stream.
+contended stream accounts for normal/debug loss in the next immutable batch.
+Each pending per-level loss counter saturates at `2^63 - 1` between drains;
+aggregate and public loss counts remain saturating `u64`. Counts are exact below
+those bounds. Draining reports `Batch`, `OpenEmpty`, or `EndOfStream`; a batch can
+contain only loss counts. Final engine and session producer release seals both
+pending-loss admissions before sealing the queue. Drains preserve the seal, and
+an independently retained reader drains committed records and losses before
+observing stable `EndOfStream`. Late detached observations add neither records
+nor losses after that boundary.
 
 Diagnostic template metadata is bounded to 65,536 entries per engine. At that
 ceiling template preparation and search succeed unchanged; a terminal `Normal`
@@ -1493,10 +1535,15 @@ they do not merge them into an action result.
 
 Facade mapping is the observation seam: `Session::map_frame` emits the copied
 mapping fact, and public native workflows use it instead of calling `Frame::map`
-directly. Retained C frames carry only a weak mapping observer, so they can report
-mapping after the engine handle is released without retaining the diagnostic
-stream or delaying its seal. Raw capture-contract frames remain usable without a
-runtime observer.
+directly. Retained C frames carry only a weak mapping observer. Their mappings
+remain legal after engine release, but observation is suppressed once diagnostic
+production seals; they neither retain the stream nor delay its seal. Raw
+capture-contract frames remain usable without a runtime observer. Run the
+pre-seal loss, detached-observer, and saturation cases in
+`crates/automation/runtime/src/diagnostic.rs`, and
+`retained_frame_mapping_after_engine_close_keeps_diagnostic_eof` in
+`crates/bindings/capi/tests/diagnostics.rs`, to check retained mapping and stable
+end of stream without changing public layouts.
 
 ### Windows native input submission
 
@@ -1737,6 +1784,11 @@ logical extent while preserving the same backing extent. Effective content
 scale and captured content extent cannot substitute for the raw bounds when
 ScreenCaptureKit downscales a frame. Movement or resize refuses after
 reversible event construction and before posting.
+On `System`, both the early and final `RequireUnchanged` checks compare the
+same-frame raw `NativeBounds` through `capture_equivalent_to`; neither compares
+the effective capture fingerprint with live raw scale. Fractional raw bounds and
+backing scale remain authoritative even for effective-1/raw-2 frames, while the
+exact source transform still supplies coordinate conversion.
 `UseFrameSnapshot` also projects from the source transform but deliberately
 tolerates current movement while retaining exact-window and process-lifetime
 authority. The macOS target ledger retains the 64 most recent distinct geometry
@@ -1755,14 +1807,19 @@ Focus is mandatory for `System` windows and is evaluated for
 `ProcessDirected` when the caller selects `RequireFocused`. The owning
 application's public Accessibility object must be frontmost and its focused
 window must correspond one-to-one with the freshly verified frame through
-`kAXPositionAttribute` and `kAXSizeAttribute`. The shareable-content identity
-and frame are read again after the Accessibility snapshot; missing authority or
-attributes, changed geometry, an unequal window, or zero or multiple matches
-fail before posting. Numeric metadata and geometry only narrow and join live
-observations; neither can select a replacement. `ActivateIfRequired` activates
-the owning application only for the `System` route and repeats that bounded
-read-back, reporting `FocusRefused` when the exact retained window cannot be
-established as focused. `ProcessDirected` never activates. Neither route passes
+`kAXPositionAttribute` and `kAXSizeAttribute`. The final retained-window inventory
+precedes the final frontmost, focused-window, and focused-window-bounds
+observations. Its returned bounds supply geometry validation without another
+blocking inventory read after accepted focus. Missing authority or attributes,
+changed geometry, an unequal window, or zero or multiple matches fail before
+posting. This is a last observation, not an OS-atomic focus/post guarantee;
+[ADR 0090](adr/0090-final-macos-focus-observation-order.md) supersedes only
+ADR 0016's final observation order. Numeric metadata and geometry only narrow
+and join live observations; neither can select a replacement.
+`ActivateIfRequired` activates the owning application only for the `System` route
+and repeats that bounded read-back, reporting `FocusRefused` when the exact
+retained window cannot be established as focused. `ProcessDirected` never
+activates. Neither route passes
 `NSApplicationActivateIgnoringOtherApps`, uses a private Accessibility window
 identifier, or moves another application's windows. A same-process replacement
 that recycles the number makes the old public `TargetId` report `TargetLost`.
@@ -2177,6 +2234,11 @@ published descriptor declares, under that caller's own operation context. One
 conversion runs at a time and the rest wait for its result rather than each copying
 the same buffer; a conversion that finishes after it may no longer commit releases
 its bytes instead of caching them.
+Cached mappings clone the existing `Arc` under the mapping mutex and release it
+before final operation commitment, so caller clocks run without that guard.
+Reuse preserves the same allocation and accounting. Run
+`a_cached_mapping_commits_with_its_mutex_released` and the interruption case in
+`crates/platform/macos/src/storage.rs` to check that boundary.
 
 Every published macOS frame takes extent, content rectangle, effective scale, and
 onscreen placement from that sample buffer's frame-information dictionary.
@@ -2648,6 +2710,13 @@ score means to a caller. The OpenCV CPU adapter's profile is recorded in
 BGR, `TM_CCOEFF_NORMED`, the negative half of the correlation range clamped to no
 match, and suppression-aware bounded candidate extraction in canonical public
 score order.
+After decode and extent validation, preparation rejects all-equal BGR pixels
+with `VisionFault::TemplatePreparationFailed`; every `1x1` template and
+alpha-only variation are therefore unsupported template content. The exact check
+borrows decoded bytes once at preparation, with no extra retained image or
+per-search scan. Callers must supply spatial variation in at least one BGR
+channel. Public signatures, scoring, thresholds, ordering, suppression, cache
+limits, and valid successful no-match outcomes remain unchanged.
 
 The adapter accepts RGBA8 and BGRA8; BGRA8 remains its default/fallback.
 `BackendDescriptor::new` declares only its default. `with_alternate_format`
@@ -3013,13 +3082,15 @@ unchanged. [ADR 0070](adr/0070-ocr-watch-exact-bgra-change-evidence.md) records 
 compatible BGRA rows can be compared directly without an extra RGBA mapping.
 
 One immutable terminal gate rejects obsolete source/generation completions.
-Independent waits cannot change query authority; source end drains acquired
-final work. Logical close seals dispatch and diagnostics without waiting for
-an unreturned OCR call. Only that physical OCR worker may outlive final Rust
-owner release; template and acquisition joins remain. Its resources and native
-code must stay alive until actual return, and no replacement or forced
-termination is supplied. Retained-result extent counters are not de-duplicated
-native allocation/RSS measurements or a bound on arbitrary caller frame clones.
+Exact-frame capture commitment precedes confirmation or success-state changes.
+Independent waits cannot change query authority; ordinary finite source end
+drains acquired final work without accepting a terminal capture refusal. Logical
+close seals dispatch and diagnostics without waiting for an unreturned OCR call.
+Only that physical OCR worker may outlive final Rust owner release; template and
+acquisition joins remain. Its resources and native code must stay alive until
+actual return; no replacement or forced termination is supplied. Retained-result
+extent counters are not de-duplicated native allocation/RSS measurements or a
+bound on arbitrary caller frame clones.
 
 Qualification-only startup observation uses the nondefault
 `ocr-text-watch-qualification` facade feature, forwarding only the existing ONNX
@@ -3086,7 +3157,8 @@ Admission proceeds in this order:
    engine-wide slot. Equivalent requests coalesce only when backend capabilities,
    selected format, prepared-template and immutable frame instances, clipped ROI,
    options, preprocessing facts, and next generation match.
-6. Commit only the authoritative generation. A no-match resets stability; only
+6. Commit the exact analyzed frame against capture outside watcher guards, then
+   accept only the authoritative generation. A no-match resets stability; only
    confirmed matches increment consecutive observations or extend duration.
    Cancellation, deadline, target loss, close, overload, or a newer generation
    prevents late output from mutating state or producing a success diagnostic.

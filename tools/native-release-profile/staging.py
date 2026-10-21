@@ -174,6 +174,16 @@ def stage_files(
     return {"files": rows, "sizes": _sizes(rows, [source for source, _ in sources])}
 
 
+class SnapshotCleanupError(OSError):
+    """A rejected owned snapshot still consumes its reserved staging bytes."""
+
+    def __init__(self, primary: Exception, cleanup: OSError, retained_bytes: int):
+        super().__init__(f"{primary}; executable snapshot cleanup failed: {cleanup}")
+        self.primary = primary
+        self.cleanup = cleanup
+        self.retained_bytes = retained_bytes
+
+
 def snapshot_executable(source: Path, destination: Path | None, sha256: str, *, max_bytes: int) -> int:
     """Copy external bytes, or reverify an already-private staged file without relocating it."""
     directory = _resolve_directory(source.parent, "executable-root")
@@ -182,17 +192,28 @@ def snapshot_executable(source: Path, destination: Path | None, sha256: str, *, 
         raise ValueError("executable snapshot exceeds remaining staging bytes")
     if destination is None and metadata.st_nlink != 1:
         raise ValueError("staged executable must have no external hard-link alias")
-    with _open_regular(found, metadata, "executable") as source_fd:
-        if destination is None:
-            _stream(source_fd, metadata.st_size, sha256, "executable")
-        else:
-            descriptor = os.open(destination, _CREATE_FLAGS, 0o600)
+    created = False
+    try:
+        with _open_regular(found, metadata, "executable") as source_fd:
+            if destination is None:
+                _stream(source_fd, metadata.st_size, sha256, "executable")
+            else:
+                descriptor = os.open(destination, _CREATE_FLAGS, 0o600)
+                created = True
+                try:
+                    _stream(source_fd, metadata.st_size, sha256, "executable", _fd_writer(descriptor, "executable-snapshot"))
+                finally:
+                    os.close(descriptor)
+        if os.name != "nt":
+            os.chmod(source if destination is None else destination, 0o500)
+    except Exception as primary:
+        if created:
             try:
-                _stream(source_fd, metadata.st_size, sha256, "executable", _fd_writer(descriptor, "executable-snapshot"))
-            finally:
-                os.close(descriptor)
-    if os.name != "nt":
-        os.chmod(source if destination is None else destination, 0o500)
+                destination.unlink(missing_ok=True)
+            except OSError as cleanup:
+                # Keep the entire reservation charged even if the copy was partial.
+                raise SnapshotCleanupError(primary, cleanup, metadata.st_size) from primary
+        raise
     return 0 if destination is None else metadata.st_size
 
 

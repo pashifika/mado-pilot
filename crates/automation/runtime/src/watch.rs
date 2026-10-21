@@ -12,8 +12,8 @@
 //! snapshots release before acquiring activation or query state. A per-query
 //! diagnostic-emission lock precedes query state only while copying one payload;
 //! state-mutation paths never acquire it. Mapping-cache and worker-wake locks are
-//! independent. Capture waits, pixel mapping, change comparison, backend work,
-//! clock calls, diagnostic queue emission, waiter notification, and thread
+//! independent. Capture waits and commitments, pixel mapping, change comparison,
+//! backend work, clock calls, diagnostic queue emission, waiter notification, and thread
 //! teardown run after every state guard is released. This is the enforced order
 //! for start, publication, admission, completion, cancellation, and close; no
 //! callback or executor surface exists in this module.
@@ -1628,32 +1628,51 @@ impl QueryShared {
         result: std::result::Result<ImmutableAnalysisResult, Error>,
         now: MonotonicInstant,
     ) {
-        if let Some(interruption) = self.operation.interruption() {
-            self.terminate(interruption_outcome(interruption));
-            return;
+        let stamp = mapped.frame().stamp();
+        {
+            let state = lock(&self.state);
+            if state.terminal.is_some() || !state.in_flight.contains(&Some((generation, stamp))) {
+                return;
+            }
         }
+        let session = self.session.upgrade();
+        // Capture authority is independent of acquisition's copied terminal state.
+        let capture_refusal = session.as_ref().and_then(|session| {
+            session
+                .capture
+                .commit_frame(mapped.frame(), &self.operation)
+                .err()
+                .map(capture_outcome)
+        });
+        let commit_now = self.operation.now();
         let scheduler = self.scheduler.upgrade();
         let scheduler_authority = scheduler
             .as_ref()
             .map(|scheduler| lock(&scheduler.admission));
-        let session = self.session.upgrade();
         let session_authority = session.as_ref().map(|session| lock(&session.activation));
         let authority = session
             .as_ref()
             .and_then(|session| lock(&session.terminal_authority).clone())
             .or_else(|| {
+                session
+                    .as_ref()
+                    .is_none_or(|session| session.closed.load(Ordering::Acquire))
+                    .then_some(TemplateTerminalOutcome::SessionClosed)
+            })
+            .or_else(|| {
                 scheduler
                     .as_ref()
                     .is_none_or(|scheduler| scheduler.closed.load(Ordering::Acquire))
                     .then_some(TemplateTerminalOutcome::SchedulerClosed)
-            });
+            })
+            .or(capture_refusal)
+            .or_else(|| interruption_at(&self.operation, commit_now).map(interruption_outcome));
         if let Some(outcome) = authority {
             drop(session_authority);
             drop(scheduler_authority);
             self.terminate(outcome);
             return;
         }
-        let stamp = mapped.frame().stamp();
         let completion_disposition = if result.is_ok() {
             TemplateWorkDisposition::Completed
         } else {
@@ -1670,10 +1689,17 @@ impl QueryShared {
             else {
                 return;
             };
-            state.in_flight[slot] = None;
             if state.terminal.is_some() {
                 return;
             }
+            if let Some(interruption) = interruption_at(&self.operation, commit_now) {
+                drop(state);
+                drop(session_authority);
+                drop(scheduler_authority);
+                self.terminate(interruption_outcome(interruption));
+                return;
+            }
+            state.in_flight[slot] = None;
             let superseded_by_newer_generation = generation != state.generation;
             if superseded_by_newer_generation {
                 state.work.increment(TemplateWorkDisposition::Superseded);
@@ -3513,6 +3539,29 @@ const fn interruption_outcome(interruption: Interruption) -> TemplateTerminalOut
     }
 }
 
+fn interruption_at(operation: &OperationContext, now: MonotonicInstant) -> Option<Interruption> {
+    if operation
+        .cancellation()
+        .is_some_and(mado_pilot_core::CancellationToken::is_cancelled)
+    {
+        Some(Interruption::Cancelled)
+    } else if operation.deadline().is_some_and(|deadline| now >= deadline) {
+        Some(Interruption::DeadlineExceeded)
+    } else {
+        None
+    }
+}
+
+fn capture_outcome(error: Error) -> TemplateTerminalOutcome {
+    match error.status() {
+        Status::TargetLost => TemplateTerminalOutcome::TargetLost,
+        Status::Closed => TemplateTerminalOutcome::SessionClosed,
+        Status::Cancelled => TemplateTerminalOutcome::Cancelled,
+        Status::DeadlineExceeded => TemplateTerminalOutcome::DeadlineExceeded,
+        _ => TemplateTerminalOutcome::Failed(error),
+    }
+}
+
 fn duration_nanos(duration: Duration) -> u64 {
     u64::try_from(duration.as_nanos()).unwrap_or(u64::MAX)
 }
@@ -3568,6 +3617,41 @@ mod tests {
     impl Clock for SettableClock {
         fn now(&self) -> MonotonicInstant {
             MonotonicInstant::from_origin(Duration::from_nanos(self.nanos.load(Ordering::Acquire)))
+        }
+    }
+
+    #[derive(Default)]
+    pub(super) struct ReentrantClock {
+        probe: Mutex<Option<Box<dyn Fn() + Send + Sync>>>,
+        reads: AtomicUsize,
+    }
+
+    impl fmt::Debug for ReentrantClock {
+        fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+            formatter
+                .debug_struct("ReentrantClock")
+                .finish_non_exhaustive()
+        }
+    }
+
+    impl ReentrantClock {
+        pub(super) fn arm(&self, probe: impl Fn() + Send + Sync + 'static) {
+            *lock(&self.probe) = Some(Box::new(probe));
+        }
+
+        pub(super) fn disarm(&self) -> usize {
+            *lock(&self.probe) = None;
+            self.reads.load(Ordering::Acquire)
+        }
+    }
+
+    impl Clock for ReentrantClock {
+        fn now(&self) -> MonotonicInstant {
+            if let Some(probe) = lock(&self.probe).as_ref() {
+                probe();
+                self.reads.fetch_add(1, Ordering::AcqRel);
+            }
+            MonotonicInstant::ORIGIN
         }
     }
 
@@ -3911,5 +3995,96 @@ mod tests {
 
         assert_eq!(leader, second.id());
         assert_eq!(peers, [first.id()]);
+    }
+
+    #[test]
+    fn completion_clock_observes_unlocked_template_authority() {
+        use mado_pilot_capture::{CaptureProvider, Continuity, OpenRequest, PixelFormat};
+        use mado_pilot_core::{IdentityIssuer, PixelExtent};
+        use mado_pilot_testkit::{
+            CompletionGate, ControlledCapture, ControlledMatcher, match_fixtures,
+        };
+        use mado_pilot_vision::Candidate;
+
+        let issuer = Arc::new(IdentityIssuer::new());
+        let capture =
+            ControlledCapture::new(issuer, PixelExtent::new(32, 24), PixelFormat::Rgba8).unwrap();
+        capture.set_frame_limit(std::num::NonZeroU64::new(1).unwrap());
+        let acquisition = Arc::new(CompletionGate::new());
+        capture.set_frame_error_gate(acquisition.clone());
+        let backend = Arc::new(CompletionGate::new());
+        let matcher = Matcher::new(Arc::new(
+            ControlledMatcher::new(PixelFormat::Rgba8)
+                .with_candidates(vec![Candidate::new(1, 1, 0.99)])
+                .with_completion_gate(backend.clone()),
+        ));
+        let template = matcher
+            .prepare(
+                &match_fixtures::planted_template("commit-clock"),
+                &OperationContext::new(),
+            )
+            .unwrap();
+        let options = MatchOptions::from_defaults(template.defaults());
+        let runtime = WatchRuntime::new(matcher, None);
+        {
+            let mut threads = lock(&runtime._threads.state);
+            threads.workers = vec![thread::spawn(|| {}), thread::spawn(|| {})];
+            threads.supervisor = Some(thread::spawn(|| {}));
+        }
+        let session = runtime
+            .register_session(
+                capture
+                    .open(
+                        capture.target(),
+                        &OpenRequest::new(),
+                        &OperationContext::new(),
+                    )
+                    .unwrap(),
+            )
+            .unwrap();
+        let _backend_release = backend.release_guard();
+        let _acquisition_release = acquisition.release_guard();
+        let clock = Arc::new(ReentrantClock::default());
+        let query = session
+            .start_query(TemplateWatchRequest::new(
+                template,
+                options,
+                OperationContext::new()
+                    .with_clock(clock.clone())
+                    .with_deadline(MonotonicInstant::from_origin(Duration::from_secs(1))),
+            ))
+            .unwrap();
+        capture.publish(1, Continuity::Continuous).unwrap();
+        let deadline = std::time::Instant::now() + Duration::from_secs(2);
+        let work = loop {
+            if let Some(work) = runtime.scheduler.next_work() {
+                break work;
+            }
+            assert!(std::time::Instant::now() < deadline);
+            thread::yield_now();
+        };
+        let scheduler = runtime.scheduler.clone();
+        let worker = thread::spawn(move || scheduler.process(work));
+        assert!(backend.wait_until_entered(Duration::from_secs(2)));
+        assert!(acquisition.wait_until_entered(Duration::from_secs(2)));
+        let scheduler = Arc::downgrade(&runtime.scheduler);
+        let source = Arc::downgrade(&session);
+        let shared = Arc::downgrade(&query.shared);
+        clock.arm(move || {
+            assert!(scheduler.upgrade().unwrap().admission.try_lock().is_ok());
+            assert!(source.upgrade().unwrap().activation.try_lock().is_ok());
+            assert!(shared.upgrade().unwrap().state.try_lock().is_ok());
+        });
+        backend.release();
+        worker.join().unwrap();
+        assert!(clock.disarm() >= 2);
+        let outcome = query.shared.terminal().unwrap();
+        assert!(matches!(
+            outcome.as_ref(),
+            TemplateTerminalOutcome::Matched(_)
+        ));
+        acquisition.release();
+        session.close(TemplateTerminalOutcome::SessionClosed);
+        runtime.close();
     }
 }

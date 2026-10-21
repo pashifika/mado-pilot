@@ -8,6 +8,7 @@ import os
 from pathlib import Path
 import shutil
 import sys
+import tomllib
 
 from process_runner import run_process
 from qualify import digest_file, native_target, private_directory, write_bytes, write_record
@@ -87,9 +88,9 @@ def build_and_run(root: Path, libraries: Path, output: Path, model_root: Path, r
     sources = root / "tools/native-release-profile/consumers"
     compiler = shutil.which("cl" if windows else "clang")
     cpp_compiler = compiler if windows else shutil.which("clang++")
-    rustc = shutil.which("rustc")
-    if not all((compiler, cpp_compiler, rustc)):
-        raise ValueError("native C/C++ and pinned Rust compilers required")
+    rustup = shutil.which("rustup")
+    if not all((compiler, cpp_compiler, rustup)):
+        raise ValueError("native C/C++ compilers, rustup and the installed pinned Rust toolchain required")
     rows = []
     record = {"schema_version": 1, "target": native_target(), "admission": "development-host",
               "qualification": "not-selected", "library_sha256": digest_file(library),
@@ -100,6 +101,7 @@ def build_and_run(root: Path, libraries: Path, output: Path, model_root: Path, r
     inputs = [sources / name for name in ("rust_facade.rs", "c_abi.c", "cpp_abi.cpp")]
     inputs += [root / "tools/native-release-profile/host_load.c", include / "madopilot/madopilot.h",
                scene / "deterministic-scene.h"]
+    inputs.append(root / "rust-toolchain.toml")
     utf8_entry = root / "tools/native-release-profile/windows_utf8_entry.h"
     inputs.append(utf8_entry)
     for version in ("v1", "v1_2", "v1_3", "v1_4"):
@@ -133,6 +135,25 @@ def build_and_run(root: Path, libraries: Path, output: Path, model_root: Path, r
         return binary
 
     try:
+        pin = tomllib.loads((root / "rust-toolchain.toml").read_text(encoding="utf-8"))
+        channel = pin.get("toolchain", {}).get("channel")
+        if not isinstance(channel, str) or not channel:
+            raise ValueError("rust-toolchain.toml must declare the installed pinned Rust channel")
+        try:
+            selected = checked([rustup, "which", "--toolchain", channel, "rustc"], cwd=root,
+                               environment=environment, output=output, label="select-rustc", rows=rows)
+        except ValueError as error:
+            raise ValueError(f"installed pinned Rust {channel} compiler unavailable; see select-rustc logs") from error
+        rustc_path = Path(selected["stdout"].strip())
+        if not rustc_path.is_absolute() or not rustc_path.is_file():
+            raise ValueError("installed pinned Rust compiler unavailable; prepare rust-toolchain.toml's channel")
+        rustc = str(rustc_path.resolve(strict=True))
+        version = checked([rustc, "-Vv"], cwd=root, environment=environment, output=output,
+                          label="identify-rustc", rows=rows)["stdout"].strip()
+        if f"release: {channel}" not in version.splitlines():
+            raise ValueError("resolved Rust compiler version differs from rust-toolchain.toml")
+        record["rust_compiler"] = {"toolchain": channel, "path": rustc,
+                                   "sha256": digest_file(Path(rustc)), "version": version}
         shim = root / "tools/native-release-profile/host_load.c"
         if windows:
             shim_args = [compiler, "/nologo", "/W3", "/WX", "/utf-8", "/std:c11", "/c", str(shim),

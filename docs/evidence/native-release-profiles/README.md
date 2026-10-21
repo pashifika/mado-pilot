@@ -34,6 +34,60 @@ failures and the caller-library regression rather than rewriting them as passes.
 These are development-host observations only: G-007/G-012 and broader Direction
 acceptance remain open. None of the historical observations below is a setup pass.
 
+## Current apparatus safeguards
+
+New invocations of the private qualification tools retain the original protocol
+and ceilings; they do not rerun or reinterpret the historical records below.
+The 4 GiB staging envelope includes declared artifact bytes and retained external
+executable snapshots. A failed copy or digest check unlinks its owned snapshot
+before later rows may proceed. If unlink fails, the full reserved source size
+remains charged, including for a partial copy. The row's `snapshot_cleanup`
+retains the primary failure, cleanup failure and `reserved_bytes`; the total
+`staging_bytes_before_cleanup` includes that reservation. Later rows are withheld
+as `snapshot-cleanup-failed`. No rejected executable is launched and no quota is
+increased. Final scratch cleanup does not erase the failed row.
+
+For new supporting consumer checks, build ordinary libraries through native setup
+in a fresh purpose-specific Cargo root. Set `NATIVE_RELEASE_TARGET` to that
+absolute root and `NATIVE_CONSUMER_OUTPUT` to a new absolute evidence directory
+whose parent exists. Keep both separate from hash-pinned qualification roots and
+from later ordinary or fixture-feature builds. From the repository root:
+
+```sh
+: "${NATIVE_RELEASE_TARGET:?set a fresh absolute Cargo target root}"
+: "${NATIVE_CONSUMER_OUTPUT:?set a new absolute consumer evidence directory}"
+PYTHON="$(python3 -c 'import sys; print(sys.executable)')"
+CARGO_TARGET_DIR="$NATIVE_RELEASE_TARGET" \
+  "$PYTHON" tools/setup-native.py -- cargo build --locked --release \
+  -p mado-pilot -p mado-pilot-capi
+"$PYTHON" tools/setup-native.py -- \
+  "$PYTHON" tools/native-release-profile/check_consumers.py \
+  --root . --library-dir "$NATIVE_RELEASE_TARGET/release" \
+  --output "$NATIVE_CONSUMER_OUTPUT" \
+  --model-root "$MADO_PILOT_G004_MODEL_ROOT" \
+  --runtime "$MADO_PILOT_ONNX_RUNTIME"
+```
+
+Resolve the Python 3.13+ executable before setup: SDK `PATH` precedence can
+otherwise select a different interpreter. On Windows, use the selected absolute
+Python path, native shell variable notation and the x64 MSVC setup form with
+explicit `--opencv-root` and `--libclang-path` around both commands.
+Pass `--opencv-runtime` with the controlled `opencv_world4140.dll` path to
+`check_consumers.py`. Setup must be repeated for the consumer command because it
+configures only its child environment.
+
+The consumer driver reads `rust-toolchain.toml` from `--root` and runs
+`rustup which --toolchain <pin> rustc` with that repository as its working
+directory. The selected image must exist at an absolute path, and its `-Vv`
+`release` must equal the pin. Both the external Rust executable and deferred
+module builds use that resolved image even though their working directory is
+outside the checkout. `result.json` records `rust_compiler.toolchain`, `path`,
+`version` and `sha256`; private logs retain selection and version commands.
+Missing or mismatched compilers stop before consumer compilation. The driver
+does not fall back to ambient `rustc`, install a toolchain or change a global
+rustup override. These safeguards confer no clean-host, release-profile or
+performance qualification.
+
 ## Frozen qualification method (historical)
 
 [`protocol.json`](protocol.json) (`native-release-profile-v1`) fixes the original

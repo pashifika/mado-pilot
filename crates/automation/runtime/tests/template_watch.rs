@@ -2,6 +2,7 @@
 
 mod support;
 
+use std::num::NonZeroU64;
 use std::sync::Arc;
 use std::sync::atomic::{AtomicUsize, Ordering};
 use std::time::{Duration, Instant};
@@ -267,6 +268,11 @@ fn completed_result_survives_session_close() {
         other => panic!("expected match, got {other:?}"),
     };
 
+    harness.capture.terminate(CaptureFault::DeviceRemoved);
+    assert!(Arc::ptr_eq(
+        &retained,
+        &query.wait(&wait_context()).unwrap()
+    ));
     session
         .close(&wait_context())
         .expect("session closed after completion");
@@ -878,6 +884,7 @@ fn source_end_allows_an_already_pending_last_frame_to_complete() {
             ScriptedMatchCall::new(vec![Candidate::new(1, 1, 0.99)]),
         ]),
     );
+    harness.capture.set_frame_limit(NonZeroU64::new(2).unwrap());
     let session = opened(&harness);
     let (template, options) = request(&harness);
     let operation = OperationContext::new().with_clock(clock.clone());
@@ -899,7 +906,6 @@ fn source_end_allows_an_already_pending_last_frame_to_complete() {
     wait_progress(&query, |progress| {
         progress.work().get(TemplateWorkDisposition::DeferredRate) == 1
     });
-    harness.capture.terminate(CaptureFault::StreamEnded);
     clock.advance(Duration::from_secs(60));
 
     let outcome = query
@@ -2343,6 +2349,7 @@ fn session_close_authority_wins_over_in_flight_backend_success() {
 #[test]
 fn exhausted_source_refuses_later_queries_on_the_same_session() {
     let harness = Harness::silent();
+    harness.capture.set_frame_limit(NonZeroU64::new(1).unwrap());
     let session = opened(&harness);
     let (template, options) = request(&harness);
     let first = session
@@ -2352,11 +2359,6 @@ fn exhausted_source_refuses_later_queries_on_the_same_session() {
             OperationContext::new(),
         ))
         .expect("started first query");
-    wait_progress(&first, |progress| {
-        progress.work().get(TemplateWorkDisposition::Completed) == 1
-    });
-
-    harness.capture.terminate(CaptureFault::StreamEnded);
     let first_outcome = first.wait(&wait_context()).expect("source end observed");
     assert!(matches!(
         first_outcome.as_ref(),
@@ -2420,5 +2422,243 @@ fn active_session_capacity_is_reusable_after_acquisition_exits() {
     let _ = replacement_query.cancel();
     for (_, query) in active {
         let _ = query.cancel();
+    }
+}
+
+#[test]
+fn capture_commit_refuses_success_before_acquisition_delivers_its_error() {
+    for fault in [
+        CaptureFault::TargetLost,
+        CaptureFault::DeviceRemoved,
+        CaptureFault::DeviceReset,
+        CaptureFault::SessionClosed,
+        CaptureFault::StreamEnded,
+        CaptureFault::ExplicitlyStopped,
+    ] {
+        for confirmations in [1, 2] {
+            let backend = Arc::new(CompletionGate::new());
+            let acquisition = Arc::new(CompletionGate::new());
+            let harness = Harness::with_diagnostics(
+                ControlledMatcher::new(mado_pilot_runtime::PixelFormat::Rgba8)
+                    .with_candidates(vec![Candidate::new(1, 1, 0.99)])
+                    .with_completion_gate(backend.clone()),
+                64,
+            );
+            harness.capture.set_frame_error_gate(acquisition.clone());
+            let session = opened(&harness);
+            let _backend_release = backend.release_guard();
+            let _acquisition_release = acquisition.release_guard();
+            let reader = harness.engine.take_diagnostic_reader().unwrap();
+            let frame = session
+                .acquire_frame(&mado_pilot_runtime::FrameRequest::latest(), &wait_context())
+                .unwrap();
+            let (template, options) = request(&harness);
+            let query = session
+                .start_template_watch(
+                    TemplateWatchRequest::new(template, options, OperationContext::new())
+                        .with_stability(TemplateStability::consecutive(confirmations).unwrap()),
+                )
+                .unwrap();
+            assert!(backend.wait_until_entered(Duration::from_secs(2)));
+            harness.capture.terminate(fault);
+            assert!(acquisition.wait_until_entered(Duration::from_secs(2)));
+            let refusal = session.commit_frame(&frame, &wait_context()).unwrap_err();
+            let expected: mado_pilot_runtime::Error = fault.into();
+            assert_eq!(refusal.status(), expected.status());
+            assert!(matches!(query.poll(), TemplateQueryOutcome::Pending(_)));
+            let requests = harness.capture.frame_request_count();
+
+            backend.release();
+            let outcome = query.wait(&wait_context()).unwrap();
+            match (fault.status(), outcome.as_ref()) {
+                (Status::TargetLost, TemplateTerminalOutcome::TargetLost)
+                | (Status::Closed, TemplateTerminalOutcome::SessionClosed) => {}
+                (Status::CaptureFailed, TemplateTerminalOutcome::Failed(error)) => {
+                    assert_eq!(error.status(), expected.status());
+                }
+                _ => panic!("capture refusal must win: {fault:?}: {outcome:?}"),
+            }
+            acquisition.release();
+            assert!(backend.wait_until_completed(Duration::from_secs(2)));
+            assert!(acquisition.wait_until_completed(Duration::from_secs(2)));
+            let matcher = harness.matcher.clone();
+            let capture = harness.capture.clone();
+            drop(session);
+            drop(harness);
+            assert!(Arc::ptr_eq(&outcome, &query.wait(&wait_context()).unwrap()));
+            assert_eq!(capture.frame_request_count(), requests);
+            assert_eq!(matcher.find_count(), 1);
+            let mut terminals = 0;
+            while let DiagnosticDrain::Batch(batch) = reader.drain() {
+                for record in batch.records() {
+                    if let DiagnosticPayload::TemplateWatch(value) = record.payload()
+                        && value.query == query.id()
+                    {
+                        assert_ne!(value.outcome, Some(TemplateWatchDiagnosticOutcome::Matched));
+                        assert_eq!(value.confirmed_observations, 0);
+                        assert_eq!(value.work.get(TemplateWorkDisposition::Completed), 0);
+                        terminals += usize::from(value.outcome.is_some());
+                    }
+                }
+            }
+            assert_eq!(terminals, 1);
+        }
+    }
+}
+
+#[test]
+fn finite_source_commits_final_analysis_or_closes_unsatisfied_stability() {
+    for (confirmations, positive) in [(1, true), (1, false), (2, true)] {
+        let backend = Arc::new(CompletionGate::new());
+        let acquisition = Arc::new(CompletionGate::new());
+        let candidates = if positive {
+            vec![Candidate::new(1, 1, 0.99)]
+        } else {
+            Vec::new()
+        };
+        let harness = Harness::new(
+            ControlledMatcher::new(mado_pilot_runtime::PixelFormat::Rgba8).with_calls([
+                ScriptedMatchCall::new(candidates).with_completion_gate(backend.clone()),
+            ]),
+        );
+        harness.capture.set_frame_limit(NonZeroU64::new(1).unwrap());
+        harness.capture.set_frame_error_gate(acquisition.clone());
+        let session = opened(&harness);
+        let _backend_release = backend.release_guard();
+        let _acquisition_release = acquisition.release_guard();
+        let frame = session
+            .acquire_frame(&mado_pilot_runtime::FrameRequest::latest(), &wait_context())
+            .unwrap();
+        let (template, options) = request(&harness);
+        let query = session
+            .start_template_watch(
+                TemplateWatchRequest::new(template.clone(), options, OperationContext::new())
+                    .with_stability(TemplateStability::consecutive(confirmations).unwrap()),
+            )
+            .unwrap();
+        assert!(backend.wait_until_entered(Duration::from_secs(2)));
+        assert!(acquisition.wait_until_entered(Duration::from_secs(2)));
+        let sentinel = session
+            .start_template_watch(
+                TemplateWatchRequest::new(template, options, OperationContext::new()).with_region(
+                    RegionSelection::pixels(
+                        PixelRect::new(0, 0, 16, 24).unwrap(),
+                        ClipPolicy::Reject,
+                    )
+                    .unwrap(),
+                ),
+            )
+            .unwrap();
+        acquisition.release();
+        assert!(matches!(
+            sentinel.wait(&wait_context()).unwrap().as_ref(),
+            TemplateTerminalOutcome::SessionClosed
+        ));
+        // The idle query proves source end is recorded before final work completes.
+        session.commit_frame(&frame, &wait_context()).unwrap();
+        backend.release();
+        let outcome = query.wait(&wait_context()).unwrap();
+        if confirmations == 1 && positive {
+            let TemplateTerminalOutcome::Matched(result) = outcome.as_ref() else {
+                panic!("finite final frame must match: {outcome:?}");
+            };
+            assert_eq!(result.frame().stamp(), frame.stamp());
+            assert_eq!(result.confirmed_observations(), 1);
+        } else {
+            assert!(matches!(
+                outcome.as_ref(),
+                TemplateTerminalOutcome::SessionClosed
+            ));
+        }
+        let (template, options) = request(&harness);
+        assert_eq!(
+            session
+                .start_template_watch(TemplateWatchRequest::new(
+                    template,
+                    options,
+                    OperationContext::new(),
+                ))
+                .unwrap_err()
+                .status(),
+            Status::Closed
+        );
+        let capture = harness.capture.clone();
+        let matcher = harness.matcher.clone();
+        drop(session);
+        drop(harness);
+        assert_eq!(matcher.find_count(), 1);
+        // One explicit latest read, one watcher frame, one exhaustion request.
+        assert_eq!(capture.frame_request_count(), 3);
+    }
+}
+
+#[test]
+fn explicit_authority_rejects_held_success_without_confirmation_or_late_diagnostics() {
+    for stop in 0..5 {
+        let gate = Arc::new(CompletionGate::new());
+        let harness = Harness::with_diagnostics(
+            ControlledMatcher::new(mado_pilot_runtime::PixelFormat::Rgba8)
+                .with_candidates(vec![Candidate::new(1, 1, 0.99)])
+                .with_completion_gate(gate.clone()),
+            64,
+        );
+        let session = opened(&harness);
+        let _release = gate.release_guard();
+        let reader = harness.engine.take_diagnostic_reader().unwrap();
+        let clock = Arc::new(ManualClock::new());
+        let cancellation = CancellationToken::new();
+        let (template, options) = request(&harness);
+        let query = session
+            .start_template_watch(TemplateWatchRequest::new(
+                template,
+                options,
+                OperationContext::new()
+                    .with_clock(clock.clone())
+                    .with_cancellation(cancellation.clone())
+                    .with_deadline(MonotonicInstant::from_origin(Duration::from_secs(1))),
+            ))
+            .unwrap();
+        assert!(gate.wait_until_entered(Duration::from_secs(2)));
+        wait_progress(&query, |_| harness.capture.frame_request_count() == 2);
+        let mut engine = Some(harness.engine);
+        match stop {
+            0 => {
+                let _ = query.cancel();
+            }
+            1 => cancellation.cancel(),
+            2 => clock.advance(Duration::from_secs(1)),
+            3 => session.close(&wait_context()).unwrap(),
+            4 => drop(engine.take()),
+            _ => unreachable!(),
+        }
+        let outcome = query.wait(&wait_context()).unwrap();
+        assert!(matches!(
+            (stop, outcome.as_ref()),
+            (0 | 1, TemplateTerminalOutcome::Cancelled)
+                | (2, TemplateTerminalOutcome::DeadlineExceeded)
+                | (3, TemplateTerminalOutcome::SessionClosed)
+                | (4, TemplateTerminalOutcome::SchedulerClosed)
+        ));
+        gate.release();
+        assert!(gate.wait_until_completed(Duration::from_secs(2)));
+        drop(session);
+        drop(engine);
+        assert!(Arc::ptr_eq(&outcome, &query.wait(&wait_context()).unwrap()));
+        assert_eq!(harness.capture.frame_request_count(), 2);
+        assert_eq!(harness.matcher.find_count(), 1);
+        let mut terminals = 0;
+        while let DiagnosticDrain::Batch(batch) = reader.drain() {
+            for record in batch.records() {
+                if let DiagnosticPayload::TemplateWatch(value) = record.payload()
+                    && value.query == query.id()
+                {
+                    assert_ne!(value.outcome, Some(TemplateWatchDiagnosticOutcome::Matched));
+                    assert_eq!(value.confirmed_observations, 0);
+                    assert_eq!(value.work.get(TemplateWorkDisposition::Completed), 0);
+                    terminals += usize::from(value.outcome.is_some());
+                }
+            }
+        }
+        assert_eq!(terminals, 1);
     }
 }

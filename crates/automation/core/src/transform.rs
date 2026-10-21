@@ -332,14 +332,16 @@ impl TransformSnapshot {
     ///
     /// Near edges are floored and far edges are ceiled, so the result is the
     /// smallest pixel rectangle that fully contains the request. `policy` is then
-    /// applied against the frame extent.
+    /// applied against the frame extent. Emptiness is the request's own: a
+    /// rectangle with zero width or height covers no pixel, and outward
+    /// rounding of its fractional edges cannot give it one.
     ///
     /// # Errors
     ///
     /// Returns [`GeometryFault::ConversionUnsupported`] when the source space is
     /// not represented, [`GeometryFault::ExtentOverflow`] when a rounded edge does
-    /// not fit the pixel range, and [`GeometryFault::OutsideExtent`] according to
-    /// `policy`.
+    /// not fit the pixel range, [`GeometryFault::EmptyRegion`] when `rect` is
+    /// empty, and [`GeometryFault::OutsideExtent`] according to `policy`.
     pub fn resolve_capture_pixels(
         &self,
         rect: Rect,
@@ -347,11 +349,16 @@ impl TransformSnapshot {
     ) -> Result<PixelRect, GeometryFault> {
         let (left, top) = self.project_to_pixels(rect.space(), rect.left(), rect.top())?;
         let (right, bottom) = self.project_to_pixels(rect.space(), rect.right(), rect.bottom())?;
+        let (left, top) = (floor_to_pixel(left)?, floor_to_pixel(top)?);
+        let (right, bottom) = (ceil_to_pixel(right)?, ceil_to_pixel(bottom)?);
+        // An axis the request does not span keeps its near edge, so the empty
+        // result reaches `resolve_against`'s policy-independent refusal with
+        // every earlier fault in its existing order.
         let resolved = PixelRect::new(
-            floor_to_pixel(left)?,
-            floor_to_pixel(top)?,
-            ceil_to_pixel(right)?,
-            ceil_to_pixel(bottom)?,
+            left,
+            top,
+            if rect.width() > 0.0 { right } else { left },
+            if rect.height() > 0.0 { bottom } else { top },
         )?;
         resolved.resolve_against(self.frame_extent, policy)
     }
@@ -696,6 +703,123 @@ mod tests {
         assert_eq!(
             snapshot.resolve_capture_pixels(rect, ClipPolicy::Clip),
             PixelRect::new(1900, 1070, 1920, 1080)
+        );
+    }
+
+    /// Both bounds policies, which an empty request must not distinguish.
+    const POLICIES: [ClipPolicy; 2] = [ClipPolicy::Reject, ClipPolicy::Clip];
+
+    fn rect(space: CoordinateSpace, edges: (f64, f64, f64, f64)) -> Rect {
+        Rect::new(space, edges.0, edges.1, edges.2, edges.3).expect("valid geometry")
+    }
+
+    #[test]
+    fn a_fractional_empty_region_never_becomes_a_pixel() {
+        let snapshot = frame_only();
+        for edges in [
+            (2.5, 1.0, 2.5, 3.0),
+            (1.0, 2.5, 3.0, 2.5),
+            (2.5, 2.5, 2.5, 2.5),
+            (2.0, 1.0, 2.0, 3.0),
+            // Empty before it is outside, exactly as an integral one is.
+            (2000.5, 1.0, 2000.5, 3.0),
+        ] {
+            for policy in POLICIES {
+                assert_eq!(
+                    snapshot.resolve_capture_pixels(rect(PIXELS, edges), policy),
+                    Err(GeometryFault::EmptyRegion),
+                    "{edges:?} under {policy:?}"
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn an_empty_region_stays_empty_through_every_supported_projection() {
+        let covering = TransformSnapshot::with_target_extent(
+            GeometryRevision::FIRST,
+            PixelExtent::new(1920, 1080),
+        );
+        let placed = with_target();
+        // Each empty axis projects to a fractional capture pixel, so outward
+        // rounding alone would cover one pixel along it.
+        for (snapshot, rect) in [
+            (frame_only(), rect(FRAME, (0.0013, 0.1, 0.0013, 0.2))),
+            (
+                covering,
+                rect(TARGET_NORMALIZED, (0.1, 0.0013, 0.2, 0.0013)),
+            ),
+            (placed, rect(TARGET_LOGICAL, (1.25, 0.5, 1.25, 1.5))),
+            (placed, rect(TARGET_LOGICAL, (0.5, 1.25, 1.5, 1.25))),
+            (placed, rect(DESKTOP, (101.25, 50.5, 101.25, 51.5))),
+        ] {
+            for policy in POLICIES {
+                assert_eq!(
+                    snapshot.resolve_capture_pixels(rect, policy),
+                    Err(GeometryFault::EmptyRegion),
+                    "{rect:?} under {policy:?}"
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn a_nonempty_fractional_region_still_rounds_outward_under_both_policies() {
+        let placed = with_target();
+        let sliver = PixelRect::new(2, 1, 3, 3).expect("valid");
+        for (snapshot, rect) in [
+            (frame_only(), rect(PIXELS, (2.5, 1.0, 2.6, 3.0))),
+            (placed, rect(TARGET_LOGICAL, (1.25, 0.5, 1.3, 1.5))),
+            (placed, rect(DESKTOP, (101.25, 50.5, 101.3, 51.5))),
+        ] {
+            for policy in POLICIES {
+                assert_eq!(
+                    snapshot.resolve_capture_pixels(rect, policy),
+                    Ok(sliver),
+                    "{rect:?} under {policy:?}"
+                );
+            }
+        }
+
+        let overhanging = rect(PIXELS, (1919.5, 1079.5, 1920.5, 1080.5));
+        assert_eq!(
+            frame_only().resolve_capture_pixels(overhanging, ClipPolicy::Reject),
+            Err(GeometryFault::OutsideExtent)
+        );
+        assert_eq!(
+            frame_only().resolve_capture_pixels(overhanging, ClipPolicy::Clip),
+            PixelRect::new(1919, 1079, 1920, 1080)
+        );
+    }
+
+    #[test]
+    fn invalid_geometry_keeps_its_fault_ahead_of_emptiness() {
+        let snapshot = frame_only();
+        let unsupported = rect(TARGET_LOGICAL, (1.25, 0.0, 1.25, 1.0));
+        let unrepresentable = rect(PIXELS, (3.0e9, 0.5, 3.0e9, 0.5));
+        for policy in POLICIES {
+            assert_eq!(
+                snapshot.resolve_capture_pixels(unsupported, policy),
+                Err(GeometryFault::ConversionUnsupported),
+                "an unsupported space is reported before the region is examined"
+            );
+            assert_eq!(
+                snapshot.resolve_capture_pixels(unrepresentable, policy),
+                Err(GeometryFault::ExtentOverflow),
+                "an unrepresentable edge is reported before emptiness"
+            );
+        }
+        assert_eq!(
+            Rect::new(PIXELS, f64::NAN, 1.0, f64::NAN, 3.0),
+            Err(GeometryFault::NotFinite)
+        );
+        assert_eq!(
+            Rect::new(FRAME, 1.5, 0.0, 1.5, 0.5),
+            Err(GeometryFault::OutOfNormalizedRange)
+        );
+        assert_eq!(
+            Rect::new(PIXELS, 2.5, 3.0, 2.5, 1.0),
+            Err(GeometryFault::NegativeSize)
         );
     }
 

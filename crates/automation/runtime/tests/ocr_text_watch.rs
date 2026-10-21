@@ -1,5 +1,6 @@
 //! Consumer-facing OCR watch authority, scheduling and retention regressions.
 
+use std::num::NonZeroU64;
 use std::sync::{Arc, Mutex, mpsc};
 use std::time::{Duration, Instant};
 
@@ -742,37 +743,6 @@ fn invalid_resize_and_target_loss_cannot_become_matches() {
 }
 
 #[test]
-fn source_end_drains_final_admitted_work_without_inventing_success() {
-    for positive in [false, true] {
-        let gate = Arc::new(CompletionGate::new());
-        let harness = Harness::new(Arc::new(backend().with_calls(vec![
-            call(if positive { b"ready" } else { b"missing" }).with_completion_gate(gate.clone()),
-        ])));
-        let session = harness.open();
-        let query = session
-            .start_ocr_text_watch(request("ready", OperationContext::new()))
-            .unwrap();
-        let _release = gate.release_guard();
-        harness.publish(1);
-        assert!(gate.wait_until_entered(LIMIT));
-        harness.capture.terminate(CaptureFault::SessionClosed);
-        gate.release();
-        let outcome = query.wait(&bounded()).unwrap();
-        assert_eq!(outcome.is_match(), positive);
-        if !positive {
-            assert!(matches!(&*outcome, OcrTextTerminalOutcome::SessionClosed));
-        }
-        assert_eq!(
-            session
-                .start_ocr_text_watch(request("ready", OperationContext::new()))
-                .unwrap_err()
-                .status(),
-            Status::Closed
-        );
-    }
-}
-
-#[test]
 fn template_progress_and_other_ocr_authority_survive_a_held_ocr_backend() {
     let gate = Arc::new(CompletionGate::new());
     let harness = Harness::with_options(
@@ -864,6 +834,8 @@ fn retained_result_tracks_exact_pixels_without_pinning_capture_pool_and_ignores_
         harness.capture.publish_from(&producer, fill).unwrap();
     }
     assert_eq!(producer.producer_slots_free(), producer.pool());
+    harness.capture.terminate(CaptureFault::DeviceRemoved);
+    assert!(Arc::ptr_eq(&outcome, &query.wait(&bounded()).unwrap()));
     session.close(&bounded()).unwrap();
     drop(query);
     drop(session);
@@ -1191,6 +1163,7 @@ fn final_pending_rate_deferred_frame_drains_under_the_query_clock() {
     let harness = Harness::new(Arc::new(
         backend().with_calls(vec![call(b"missing"), call(b"ready")]),
     ));
+    harness.capture.set_frame_limit(NonZeroU64::new(2).unwrap());
     let session = harness.open();
     let clock = Arc::new(ManualClock::new());
     let query = session
@@ -1215,7 +1188,6 @@ fn final_pending_rate_deferred_frame_drains_under_the_query_clock() {
     let final_stamp = progress(&query, |p| p.pending_count() == 1)
         .last_frame()
         .unwrap();
-    harness.capture.terminate(CaptureFault::SessionClosed);
     clock.advance(Duration::from_secs(60));
     let outcome = query.wait(&bounded()).unwrap();
     assert_eq!(matched(&outcome).frame().stamp(), final_stamp);
@@ -1935,4 +1907,244 @@ fn an_unrepresentable_next_rate_instant_never_becomes_unrestricted_analysis() {
         Some(Status::InvalidArgument)
     );
     assert_eq!(ocr.recognition_count(), 1);
+}
+
+#[test]
+fn capture_commit_refuses_success_before_acquisition_delivers_its_error() {
+    for fault in [
+        CaptureFault::TargetLost,
+        CaptureFault::DeviceRemoved,
+        CaptureFault::DeviceReset,
+        CaptureFault::SessionClosed,
+        CaptureFault::StreamEnded,
+        CaptureFault::ExplicitlyStopped,
+    ] {
+        for confirmations in [1, 2] {
+            let backend_gate = Arc::new(CompletionGate::new());
+            let acquisition = Arc::new(CompletionGate::new());
+            let ocr = Arc::new(backend().with_calls(vec![
+                call(b"ready").with_completion_gate(backend_gate.clone()),
+            ]));
+            let harness = Harness::with_options(
+                Some(ocr.clone()),
+                ControlledMatcher::new(PixelFormat::Rgba8),
+                EngineOptions::new().with_diagnostics(DiagnosticOptions::debug(128).unwrap()),
+            );
+            harness.capture.set_frame_error_gate(acquisition.clone());
+            let session = harness.open();
+            let _backend_release = backend_gate.release_guard();
+            let _acquisition_release = acquisition.release_guard();
+            let reader = harness.engine.take_diagnostic_reader().unwrap();
+            let query = session
+                .start_ocr_text_watch(configured(
+                    "ready",
+                    0.8,
+                    OcrTextStability::consecutive(confirmations).unwrap(),
+                    ChangeDetectionPolicy::AnalysisAlways,
+                    OperationContext::new(),
+                ))
+                .unwrap();
+            harness.publish(1);
+            assert!(backend_gate.wait_until_entered(LIMIT));
+            let frame = session
+                .acquire_frame(&FrameRequest::latest(), &bounded())
+                .unwrap();
+            harness.capture.terminate(fault);
+            assert!(acquisition.wait_until_entered(LIMIT));
+            let refusal = session.commit_frame(&frame, &bounded()).unwrap_err();
+            let expected: Error = fault.into();
+            assert_eq!(refusal.status(), expected.status());
+            assert!(matches!(query.poll(), OcrTextQueryOutcome::Pending(_)));
+            let requests = harness.capture.frame_request_count();
+
+            backend_gate.release();
+            let outcome = query.wait(&bounded()).unwrap();
+            match (fault.status(), outcome.as_ref()) {
+                (Status::TargetLost, OcrTextTerminalOutcome::TargetLost)
+                | (Status::Closed, OcrTextTerminalOutcome::SessionClosed) => {}
+                (Status::CaptureFailed, OcrTextTerminalOutcome::Failed(error)) => {
+                    assert_eq!(error.status(), expected.status());
+                }
+                _ => panic!("capture refusal must win: {fault:?}: {outcome:?}"),
+            }
+            until(|| query.progress().physical_in_flight_count() == 0);
+            assert_eq!(query.progress().confirmed_observations(), 0);
+            assert_eq!(query.progress().last_accepted_frame(), None);
+            assert_eq!(
+                query
+                    .progress()
+                    .work()
+                    .get(OcrTextWorkDisposition::Completed),
+                0
+            );
+            acquisition.release();
+            assert!(acquisition.wait_until_completed(LIMIT));
+            let capture = harness.capture.clone();
+            drop(session);
+            drop(harness);
+            assert!(Arc::ptr_eq(&outcome, &query.wait(&bounded()).unwrap()));
+            assert_eq!(capture.frame_request_count(), requests);
+            assert_eq!(ocr.recognition_count(), 1);
+            let mut terminals = 0;
+            while let DiagnosticDrain::Batch(batch) = reader.drain() {
+                for record in batch.records() {
+                    if let DiagnosticPayload::OcrTextWatch(value) = record.payload()
+                        && value.query == Some(query.id())
+                    {
+                        assert_ne!(value.outcome, Some(OcrTextWatchDiagnosticOutcome::Matched));
+                        let progress = value.progress.unwrap();
+                        assert_eq!(progress.confirmed_observations(), 0);
+                        assert_eq!(progress.work().get(OcrTextWorkDisposition::Completed), 0);
+                        terminals += usize::from(value.outcome.is_some());
+                    }
+                }
+            }
+            assert_eq!(terminals, 1);
+        }
+    }
+}
+
+#[test]
+fn finite_source_commits_final_analysis_or_closes_unsatisfied_stability() {
+    for (confirmations, positive) in [(1, true), (1, false), (2, true)] {
+        let backend_gate = Arc::new(CompletionGate::new());
+        let acquisition = Arc::new(CompletionGate::new());
+        let ocr = Arc::new(backend().with_calls(vec![
+            call(if positive { b"ready" } else { b"missing" })
+                .with_completion_gate(backend_gate.clone()),
+        ]));
+        let harness = Harness::new(ocr.clone());
+        harness.capture.set_frame_limit(NonZeroU64::new(1).unwrap());
+        harness.capture.set_frame_error_gate(acquisition.clone());
+        let session = harness.open();
+        let _backend_release = backend_gate.release_guard();
+        let _acquisition_release = acquisition.release_guard();
+        let query = session
+            .start_ocr_text_watch(configured(
+                "ready",
+                0.8,
+                OcrTextStability::consecutive(confirmations).unwrap(),
+                ChangeDetectionPolicy::AnalysisAlways,
+                OperationContext::new(),
+            ))
+            .unwrap();
+        harness.publish(1);
+        assert!(backend_gate.wait_until_entered(LIMIT));
+        assert!(acquisition.wait_until_entered(LIMIT));
+        let frame = session
+            .acquire_frame(&FrameRequest::latest(), &bounded())
+            .unwrap();
+        let sentinel = session
+            .start_ocr_text_watch(request("never-matches", OperationContext::new()))
+            .unwrap();
+        acquisition.release();
+        assert!(matches!(
+            sentinel.wait(&bounded()).unwrap().as_ref(),
+            OcrTextTerminalOutcome::SessionClosed
+        ));
+        // The idle query proves source end is recorded before final work completes.
+        session.commit_frame(&frame, &bounded()).unwrap();
+        backend_gate.release();
+        let outcome = query.wait(&bounded()).unwrap();
+        if confirmations == 1 && positive {
+            assert_eq!(matched(&outcome).frame().stamp(), frame.stamp());
+            assert_eq!(matched(&outcome).confirmed_observations(), 1);
+        } else {
+            assert!(matches!(
+                outcome.as_ref(),
+                OcrTextTerminalOutcome::SessionClosed
+            ));
+        }
+        assert_eq!(
+            session
+                .start_ocr_text_watch(request("ready", OperationContext::new()))
+                .unwrap_err()
+                .status(),
+            Status::Closed
+        );
+        until(|| query.progress().physical_in_flight_count() == 0);
+        let capture = harness.capture.clone();
+        drop(session);
+        drop(harness);
+        assert_eq!(ocr.recognition_count(), 1);
+        assert_eq!(capture.frame_request_count(), 3);
+    }
+}
+
+#[test]
+fn explicit_authority_rejects_held_success_without_confirmation_or_late_diagnostics() {
+    for stop in 0..5 {
+        let gate = Arc::new(CompletionGate::new());
+        let ocr =
+            Arc::new(backend().with_calls(vec![call(b"ready").with_completion_gate(gate.clone())]));
+        let harness = Harness::with_options(
+            Some(ocr.clone()),
+            ControlledMatcher::new(PixelFormat::Rgba8),
+            EngineOptions::new().with_diagnostics(DiagnosticOptions::debug(128).unwrap()),
+        );
+        let session = harness.open();
+        let _release = gate.release_guard();
+        let reader = harness.engine.take_diagnostic_reader().unwrap();
+        let clock = Arc::new(ManualClock::new());
+        let cancellation = CancellationToken::new();
+        let query = session
+            .start_ocr_text_watch(request(
+                "ready",
+                OperationContext::new()
+                    .with_clock(clock.clone())
+                    .with_cancellation(cancellation.clone())
+                    .with_deadline(MonotonicInstant::from_origin(Duration::from_secs(1))),
+            ))
+            .unwrap();
+        harness.publish(1);
+        assert!(gate.wait_until_entered(LIMIT));
+        until(|| harness.capture.frame_request_count() == 2);
+        let mut engine = Some(harness.engine);
+        match stop {
+            0 => {
+                let _ = query.cancel();
+            }
+            1 => cancellation.cancel(),
+            2 => clock.advance(Duration::from_secs(1)),
+            3 => session.close(&bounded()).unwrap(),
+            4 => drop(engine.take()),
+            _ => unreachable!(),
+        }
+        let outcome = query.wait(&bounded()).unwrap();
+        assert!(matches!(
+            (stop, outcome.as_ref()),
+            (0 | 1, OcrTextTerminalOutcome::Cancelled)
+                | (2, OcrTextTerminalOutcome::DeadlineExceeded)
+                | (3, OcrTextTerminalOutcome::SessionClosed)
+                | (4, OcrTextTerminalOutcome::SchedulerClosed)
+        ));
+        gate.release();
+        until(|| query.progress().physical_in_flight_count() == 0);
+        assert_eq!(query.progress().confirmed_observations(), 0);
+        assert_eq!(query.progress().last_accepted_frame(), None);
+        assert_eq!(
+            query
+                .progress()
+                .work()
+                .get(OcrTextWorkDisposition::Completed),
+            0
+        );
+        assert!(Arc::ptr_eq(&outcome, &query.wait(&bounded()).unwrap()));
+        drop(session);
+        drop(engine);
+        assert_eq!(harness.capture.frame_request_count(), 2);
+        assert_eq!(ocr.recognition_count(), 1);
+        let mut terminals = 0;
+        while let DiagnosticDrain::Batch(batch) = reader.drain() {
+            for record in batch.records() {
+                if let DiagnosticPayload::OcrTextWatch(value) = record.payload()
+                    && value.query == Some(query.id())
+                {
+                    assert_ne!(value.outcome, Some(OcrTextWatchDiagnosticOutcome::Matched));
+                    terminals += usize::from(value.outcome.is_some());
+                }
+            }
+        }
+        assert_eq!(terminals, 1);
+    }
 }
