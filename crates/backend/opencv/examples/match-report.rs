@@ -42,9 +42,18 @@ fn main() {
     println!("  \"backend\": {},", quote(descriptor.id()));
     println!("  \"opencvVersion\": {},", quote(descriptor.version()));
     println!(
-        "  \"pixelFormat\": {},",
+        "  \"defaultPixelFormat\": {},",
         quote(&descriptor.format().to_string())
     );
+    print!("  \"acceptedPixelFormats\": [");
+    let mut separator = "";
+    for format in [PixelFormat::Rgba8, PixelFormat::Bgra8] {
+        if descriptor.accepts_format(format) {
+            print!("{separator}{}", quote(&format.to_string()));
+            separator = ", ";
+        }
+    }
+    println!("],");
     println!("  \"fixtures\": [");
 
     let fixtures = [

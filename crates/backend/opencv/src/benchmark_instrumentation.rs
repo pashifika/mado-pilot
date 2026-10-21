@@ -1,10 +1,11 @@
 //! Opt-in process-local matching observations; cumulative counters are never reset.
 
 use std::sync::atomic::{AtomicU64, Ordering};
-use std::time::Duration;
+use std::sync::{Arc, Condvar, Mutex, Weak};
+use std::time::{Duration, Instant};
 
 use mado_pilot_core::{Interruption, OperationContext};
-use mado_pilot_vision::Suppression;
+use mado_pilot_vision::{MatchBackend, Suppression};
 
 use crate::candidates::{Peak, PeakSearch, peaks};
 
@@ -110,6 +111,183 @@ pub(crate) fn retire_bgr(bytes: usize) {
 
 pub(crate) fn release_evicted_bgr(bytes: usize) {
     BGR_EVICTED_BYTES.fetch_sub(bytes as u64, Ordering::Release);
+}
+
+const READER_WAIT: Duration = Duration::from_secs(5);
+static READER_PAUSE: Mutex<Option<Weak<ReaderPause>>> = Mutex::new(None);
+
+struct ReaderPause {
+    state: Mutex<ReaderState>,
+    changed: Condvar,
+}
+
+struct ReaderState {
+    claimed: bool,
+    resumed: bool,
+    admitted: Option<usize>,
+}
+
+/// Exclusive one-shot pause after production preparation admission.
+///
+/// Only the production search owns the active reader; this guard retains scalars.
+/// Every wait has a five-second ceiling; dropping this owner resumes the search.
+pub struct PreparedReaderPause {
+    shared: Arc<ReaderPause>,
+}
+
+impl std::fmt::Debug for PreparedReaderPause {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        formatter
+            .debug_struct("PreparedReaderPause")
+            .finish_non_exhaustive()
+    }
+}
+
+/// Installs one bounded observation; another installed owner is refused.
+#[must_use]
+pub fn install_prepared_reader_pause() -> Option<PreparedReaderPause> {
+    let mut slot = READER_PAUSE.lock().ok()?;
+    if slot.as_ref().and_then(Weak::upgrade).is_some() {
+        return None;
+    }
+    let shared = Arc::new(ReaderPause {
+        state: Mutex::new(ReaderState {
+            claimed: false,
+            resumed: false,
+            admitted: None,
+        }),
+        changed: Condvar::new(),
+    });
+    *slot = Some(Arc::downgrade(&shared));
+    Some(PreparedReaderPause { shared })
+}
+
+impl PreparedReaderPause {
+    /// Waits at most five seconds for the first admitted shared image.
+    #[must_use]
+    pub fn wait_ready(&self) -> bool {
+        let Ok(state) = self.shared.state.lock() else {
+            return false;
+        };
+        self.shared
+            .changed
+            .wait_timeout_while(state, READER_WAIT, |state| state.admitted.is_none())
+            .is_ok_and(|(state, _)| state.admitted.is_some())
+    }
+
+    /// Returns admitted payload bytes, not pixels or another image owner.
+    #[must_use]
+    pub fn admitted_payload(&self) -> Option<usize> {
+        self.shared.state.lock().ok()?.admitted
+    }
+
+    /// Resumes the production search and its final active reader.
+    pub fn resume(&self) {
+        if let Ok(mut state) = self.shared.state.lock() {
+            state.resumed = true;
+            self.shared.changed.notify_all();
+        }
+    }
+}
+
+impl Drop for PreparedReaderPause {
+    fn drop(&mut self) {
+        self.resume();
+    }
+}
+
+pub(crate) fn observe_prepared_reader(
+    region: &crate::prepared_images::PreparedRegion,
+    operation: &OperationContext,
+) -> mado_pilot_core::Result<()> {
+    let pause = READER_PAUSE
+        .lock()
+        .ok()
+        .and_then(|slot| slot.as_ref().and_then(Weak::upgrade));
+    let Some(pause) = pause else {
+        return Ok(());
+    };
+    let Some(admitted) = region.observed_payload() else {
+        return Ok(());
+    };
+    let mut state = pause
+        .state
+        .lock()
+        .map_err(|_| mado_pilot_core::Error::from(mado_pilot_vision::VisionFault::BackendFailed))?;
+    if state.claimed {
+        return Ok(());
+    }
+    state.claimed = true;
+    state.admitted = Some(admitted);
+    pause.changed.notify_all();
+    let deadline = Instant::now() + READER_WAIT;
+    while !state.resumed {
+        drop(state);
+        if let Some(interruption) = operation.interruption() {
+            return Err(interruption.into());
+        }
+        let remaining = deadline.saturating_duration_since(Instant::now());
+        if remaining.is_zero() {
+            return Err(Interruption::DeadlineExceeded.into());
+        }
+        state = pause.state.lock().map_err(|_| {
+            mado_pilot_core::Error::from(mado_pilot_vision::VisionFault::BackendFailed)
+        })?;
+        if state.resumed {
+            break;
+        }
+        let (next, _) = pause
+            .changed
+            .wait_timeout(state, remaining.min(Duration::from_millis(10)))
+            .map_err(|_| {
+                mado_pilot_core::Error::from(mado_pilot_vision::VisionFault::BackendFailed)
+            })?;
+        state = next;
+    }
+    drop(state);
+    if let Some(interruption) = operation.interruption() {
+        return Err(interruption.into());
+    }
+    Ok(())
+}
+
+/// Constructs the single-format public-mapping control without changing OpenCV.
+///
+/// Only this opt-in diagnostic adapter removes the alternate from its descriptor.
+///
+/// # Errors
+/// Returns the ordinary OpenCV initialization failure.
+pub fn forced_bgra_matcher() -> mado_pilot_core::Result<mado_pilot_vision::Matcher> {
+    #[derive(Debug)]
+    struct BgraControl(crate::OpenCvBackend);
+
+    impl MatchBackend for BgraControl {
+        fn descriptor(&self) -> mado_pilot_vision::BackendDescriptor {
+            self.0
+                .descriptor()
+                .with_alternate_format(mado_pilot_capture::PixelFormat::Bgra8)
+        }
+
+        fn prepare(
+            &self,
+            source: &mado_pilot_vision::TemplateSource,
+            operation: &OperationContext,
+        ) -> mado_pilot_core::Result<mado_pilot_vision::PreparedTemplate> {
+            self.0.prepare(source, operation)
+        }
+
+        fn find(
+            &self,
+            request: &mado_pilot_vision::BackendRequest<'_>,
+            operation: &OperationContext,
+        ) -> mado_pilot_core::Result<Vec<mado_pilot_vision::Candidate>> {
+            self.0.find(request, operation)
+        }
+    }
+
+    Ok(mado_pilot_vision::Matcher::new(Arc::new(BgraControl(
+        crate::OpenCvBackend::new()?,
+    ))))
 }
 
 /// Selection-only benchmark input; the supplied score slice is disposable.

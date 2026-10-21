@@ -87,10 +87,12 @@ impl Workload {
                 Kind::WatchExactRgba => Some("ExactRgba"),
                 _ => None,
             },
+            "format_contract": matches!(self.kind, Kind::RoiFormatTransition).then(super::formats::manifest),
             "timing_boundary": match self.kind {
                 Kind::Selection => "production selection; scratch restoration and reference oracle excluded",
                 Kind::Concurrent => "barrier release through two public Matcher calls and joins; worker creation excluded",
                 Kind::WatchAnalysisAlways | Kind::WatchExactRgba => "public fixed-policy watcher lifecycle including final-owner teardown; contract only",
+                Kind::RoiFormatTransition => "finite public mapping/matching and owner checkpoints; non-statistical",
                 _ => "all public Matcher searches; fixture, key creation, retained ROI owner and teardown excluded",
             },
         })
@@ -393,7 +395,7 @@ pub(super) const WORKLOADS: [Workload; 21] = [
         "contract",
         false,
         false,
-        "same-backend-alternate-roi-and-distinct-BGRA-source",
+        "ordered-direct-layouts-forced-BGRA-persistent-hit-and-active-eviction",
         Kind::RoiFormatTransition,
         1920,
         1080,
@@ -608,11 +610,17 @@ pub(super) fn manifest() -> (String, Value) {
         })
         .collect();
     let fixture = json!({
-        "generator": "template-efficiency-integer-v1", "license": "repository-first-party",
+        "generator": "template-efficiency-integer-v2-direct-formats", "license": "repository-first-party",
         "background_seed": 0x3141_5926_u32, "patch_seed_base": 0xabc0_0000_u32,
         "patch_width": PATCH.width(), "patch_height": PATCH.height(),
         "roi": [ROI.0, ROI.1, ROI.2, ROI.3], "score_tolerance": SCORE_TOLERANCE,
         "templates": template_digests, "scenes": scenes, "score_maps": scores,
+        "direct_formats": {
+            "helper_source_sha256": ContentDigest::of(include_bytes!("template_efficiency_formats.rs")).to_string(),
+            "fixture_source_sha256": ContentDigest::of(include_bytes!("template_efficiency_fixtures.rs")).to_string(),
+            "protocol": super::formats::manifest(),
+            "padded_row_bytes": 16, "padding_value": 0xA5,
+        },
         "watcher": {
             "helper_source_sha256": ContentDigest::of(include_bytes!("template_efficiency_watch.rs")).to_string(),
             "generator_source_sha256": ContentDigest::of(include_bytes!("../../../support/testkit/src/match_fixtures.rs")).to_string(),

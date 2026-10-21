@@ -4,6 +4,7 @@
 - **Date:** 2026-10-20
 - **Resolves gate:** none
 - **Supersedes:** none
+- **Amended:** 2026-10-21, for dual accepted RGBA8/BGRA8 input under [ADR 0003](0003-opencv-matching-profile-and-public-score.md); retention bounds and historical measurements are unchanged.
 
 ## Context
 
@@ -35,8 +36,9 @@ ownership contracts unchanged.
 - Backend clones share two inline prepared-image slots, retaining at most
   33,554,432 bytes of owned immutable BGR payload. Keys use the mapped pixels'
   frame instance, complete stamp, effective region and descriptor, under the
-  fixed BGRA-to-BGR profile. Diagnostic request regions and template identity
-  do not identify pixel preparation.
+  unchanged three-channel BGR scoring profile. RGBA8 and BGRA8 map directly to
+  BGR according to their actual descriptors. Diagnostic request regions and
+  template identity do not identify pixel preparation.
 - Cache access uses `try_lock`; contention or poisoned optional state bypasses
   reuse. Conversion, reservations, clocks, allocation and owner destruction
   occur outside guards. Publication deduplicates racing fills. Oversized images

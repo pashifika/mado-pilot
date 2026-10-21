@@ -74,14 +74,13 @@ impl Candidate {
 /// Everything a backend needs to execute one search.
 ///
 /// The region has already been resolved, clipped, and proven large enough to
-/// hold the template, and the pixels have already been mapped into the format
-/// the backend's descriptor asked for. A backend that receives this can search;
-/// it never has to decide whether it should.
+/// hold the template. The mapping descriptor identifies the actual layout,
+/// which the backend's descriptor accepts.
 #[derive(Debug)]
 pub struct BackendRequest<'a> {
     /// The prepared template to search for.
     pub template: &'a PreparedTemplate,
-    /// The searched region's pixels, in the backend's declared format.
+    /// The searched region's pixels, in an explicitly accepted format.
     pub pixels: &'a CpuMapping,
     /// The searched region, in full-frame capture pixels, for diagnostics.
     pub region: PixelRect,
@@ -97,21 +96,32 @@ pub struct BackendDescriptor {
     id: Arc<str>,
     version: Arc<str>,
     format: PixelFormat,
+    alternate_format: Option<PixelFormat>,
 }
 
 impl BackendDescriptor {
-    /// Builds a descriptor.
-    ///
-    /// `format` is the pixel format the backend requires; the matcher maps the
-    /// searched region into it, so a backend never converts pixels a second
-    /// time to get the layout it wanted.
+    /// Builds a descriptor accepting only `format`, its default mapping format.
     #[must_use]
     pub fn new(id: impl Into<Arc<str>>, version: impl Into<Arc<str>>, format: PixelFormat) -> Self {
         Self {
             id: id.into(),
             version: version.into(),
             format,
+            alternate_format: None,
         }
+    }
+
+    /// Replaces the accepted alternate; supplying the default clears it.
+    #[must_use]
+    pub fn with_alternate_format(mut self, format: PixelFormat) -> Self {
+        self.alternate_format = (format != self.format).then_some(format);
+        self
+    }
+
+    /// Reports whether the backend accepts this actual mapping format.
+    #[must_use]
+    pub fn accepts_format(&self, format: PixelFormat) -> bool {
+        self.format == format || self.alternate_format == Some(format)
     }
 
     /// Returns the backend's stable identifier.
@@ -127,7 +137,7 @@ impl BackendDescriptor {
         &self.version
     }
 
-    /// Returns the pixel format the backend requires.
+    /// Returns the default mapping format when the source layout is not accepted.
     #[must_use]
     pub const fn format(&self) -> PixelFormat {
         self.format
@@ -147,7 +157,7 @@ impl fmt::Display for BackendDescriptor {
 /// `mado-pilot-testkit` produces scripted candidates, latency, and failures,
 /// and the OpenCV adapter produces real ones.
 pub trait MatchBackend: fmt::Debug + Send + Sync {
-    /// Returns the backend's public identity and required pixel format.
+    /// Returns the backend's public identity and accepted pixel formats.
     ///
     /// The descriptor must remain unchanged for the backend's lifetime. A
     /// [`crate::Matcher`] snapshots it during construction so scheduling and

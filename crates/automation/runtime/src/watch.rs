@@ -2744,6 +2744,7 @@ impl MappingCache {
         }
         if let Some(index) = self.entries.iter().position(|entry| {
             entry.mapping.stamp() == mapping.stamp()
+                && entry.mapping.source_instance() == mapping.source_instance()
                 && entry.mapping.region() == mapping.region()
                 && entry.mapping.descriptor() == mapping.descriptor()
         }) && let Some(existing) = self.entries.remove(index)
@@ -3568,6 +3569,68 @@ mod tests {
         fn now(&self) -> MonotonicInstant {
             MonotonicInstant::from_origin(Duration::from_nanos(self.nanos.load(Ordering::Acquire)))
         }
+    }
+
+    #[test]
+    fn mapping_history_preserves_equal_stamp_pixels_and_actual_layouts() {
+        use mado_pilot_capture::{FrameDescriptor, PixelFormat};
+        use mado_pilot_core::{
+            GeometryRevision, IdentityIssuer, PixelExtent, StreamCursor, TransformSnapshot,
+        };
+
+        let issuer = IdentityIssuer::new();
+        let mut cursor = StreamCursor::new(issuer.issue_stream().expect("stream"));
+        let stamp = cursor
+            .publish(GeometryRevision::FIRST)
+            .expect("first stamp");
+        let newer = cursor
+            .publish(GeometryRevision::FIRST)
+            .expect("newer stamp");
+        let extent = PixelExtent::new(4, 4);
+        let make = |stamp: FrameStamp, format, fill| {
+            let descriptor = FrameDescriptor::packed(extent, format).expect("descriptor");
+            Frame::new(
+                stamp,
+                MonotonicInstant::ORIGIN,
+                descriptor,
+                TransformSnapshot::frame_only(stamp.geometry(), extent),
+                vec![fill; descriptor.byte_len()].into_boxed_slice(),
+            )
+            .expect("independent frame")
+            .map(format, &OperationContext::new())
+            .expect("mapped")
+        };
+        let original = make(stamp, PixelFormat::Rgba8, 0x21);
+        let changed = make(stamp, PixelFormat::Rgba8, 0x87);
+        let bgra = make(stamp, PixelFormat::Bgra8, 0x87);
+        let current = make(newer, PixelFormat::Rgba8, 0x87);
+        let mut history = MappingCache::default();
+        let original_history = history.remember_pixels(&original).expect("history");
+        let changed_history = history.remember_pixels(&changed).expect("changed history");
+        let bgra_history = history.remember_pixels(&bgra).expect("BGRA history");
+        let detector = ChangeDetector::selected_default();
+
+        assert_eq!(
+            detector.compare(
+                &original_history.upgrade().expect("retained original"),
+                &current
+            ),
+            ChangeDecision::AnalysisRequired
+        );
+        assert_eq!(
+            detector.compare(
+                &changed_history.upgrade().expect("retained changed source"),
+                &current
+            ),
+            ChangeDecision::Unchanged
+        );
+        assert_eq!(
+            detector.compare(
+                &bgra_history.upgrade().expect("retained actual BGRA"),
+                &current
+            ),
+            ChangeDecision::AnalysisRequired
+        );
     }
 
     #[test]

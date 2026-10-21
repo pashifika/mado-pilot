@@ -3,13 +3,13 @@
 //! The shared vision contract suite covers the rules that hold whatever an image
 //! contains. These fixtures cover the part it deliberately cannot: a real image
 //! with a known answer, searched by a real backend. The scene and both templates
-//! come from `mado-pilot-testkit`'s fixture generator, so the expectations below
-//! are checked against how the inputs were built rather than against a recorded
-//! file.
+//! come from `mado-pilot-testkit`'s fixture generator, and the colour and
+//! oversized fixtures from integer noise below, so the expectations are checked
+//! against how the inputs were built rather than against a recorded file.
 
 use std::sync::Arc;
 
-use mado_pilot_capture::PixelFormat;
+use mado_pilot_capture::{CpuPixels, FrameDescriptor, FrameStorage, PixelFormat};
 use mado_pilot_core::{
     ClipPolicy, CoordinateSpace, Error, GeometryFault, OperationContext, PixelExtent, PixelRect,
     Rect, Status,
@@ -65,6 +65,30 @@ const ABSENT_SCORE_CEILING: f64 = 0.3;
 /// live in `docs/evidence/vision-opencv/`.
 const DEGRADED_TOLERANCE: f64 = 1e-3;
 
+/// The threshold the result-limit fixture searches the scene at.
+///
+/// Fifteen offsets clear it: both exact copies, the degraded copy and twelve
+/// neighbours of the exact copies, the lowest at 0.481. The highest excluded
+/// offset scores 0.456, so the survivor counts below rest on margins above
+/// 0.01 rather than on rounding. The eighth survivor scores 0.507 and the ninth
+/// 0.503, which is what makes the first eight a set rather than a tie.
+const LIMIT_THRESHOLD: f64 = 0.47;
+
+/// Both layouts the adapter converts directly.
+const LAYOUTS: [PixelFormat; 2] = [PixelFormat::Rgba8, PixelFormat::Bgra8];
+
+/// Trailing bytes per row in the padded fixtures.
+const PADDING: usize = 64;
+
+/// The colour fixture's template extent.
+const COLOUR_PATCH: PixelExtent = PixelExtent::new(12, 10);
+
+/// Where the colour fixture plants its template in its own colours.
+const TRUE_COLOURS: (u32, u32) = (4, 7);
+
+/// Where the colour fixture plants the template with red and blue exchanged.
+const SWAPPED_COLOURS: (u32, u32) = (30, 7);
+
 fn matcher() -> Matcher {
     Matcher::new(Arc::new(
         OpenCvBackend::new().expect("the development OpenCV installation is usable"),
@@ -84,62 +108,84 @@ fn search_scene(format: PixelFormat, min_score: f64) -> MatchResult {
 /// bytes on every row.
 fn search_padded_scene(format: PixelFormat, min_score: f64, padding: usize) -> MatchResult {
     search_frame(
-        match_fixtures::scene_frame_with_padded_rows(format, padding),
+        &match_fixtures::scene_frame_with_padded_rows(format, padding),
         RegionSelection::FullFrame,
         min_score,
     )
 }
 
 fn search(format: PixelFormat, selection: RegionSelection, min_score: f64) -> MatchResult {
-    search_frame(match_fixtures::scene_frame(format), selection, min_score)
+    search_frame(&match_fixtures::scene_frame(format), selection, min_score)
 }
 
 fn search_frame(
-    frame: mado_pilot_capture::Frame,
+    frame: &mado_pilot_capture::Frame,
     selection: RegionSelection,
     min_score: f64,
 ) -> MatchResult {
+    find_in(
+        frame,
+        &planted_template("patch"),
+        selection,
+        options(min_score),
+    )
+}
+
+/// Searches `frame` for `template` on a fresh backend.
+fn find_in(
+    frame: &mado_pilot_capture::Frame,
+    template: &TemplateSource,
+    selection: RegionSelection,
+    options: MatchOptions,
+) -> MatchResult {
     let matcher = matcher();
     let prepared = matcher
-        .prepare(&planted_template("patch"), &OperationContext::new())
-        .expect("the patch prepares");
+        .prepare(template, &OperationContext::new())
+        .expect("the template prepares");
 
     matcher
         .find(
-            MatchRequest::new(&frame, selection, &prepared, options(min_score)),
+            MatchRequest::new(frame, selection, &prepared, options),
             &OperationContext::new(),
         )
         .expect("a well-formed search")
 }
 
-/// The half-open capture-pixel rectangle a planted copy occupies.
-fn planted_bounds(index: usize) -> PixelRect {
-    let (left, top) = PLANTED[index];
+/// The scene in each accepted layout, packed and with padded rows.
+fn scene_frames() -> Vec<mado_pilot_capture::Frame> {
+    LAYOUTS
+        .into_iter()
+        .flat_map(|format| {
+            [
+                match_fixtures::scene_frame(format),
+                match_fixtures::scene_frame_with_padded_rows(format, PADDING),
+            ]
+        })
+        .collect()
+}
+
+/// The half-open capture-pixel rectangle of `extent` at `origin`.
+fn bounds_at((left, top): (u32, u32), extent: PixelExtent) -> PixelRect {
     let left = i32::try_from(left).expect("small");
     let top = i32::try_from(top).expect("small");
 
     PixelRect::new(
         left,
         top,
-        left + i32::try_from(PATCH.width()).expect("small"),
-        top + i32::try_from(PATCH.height()).expect("small"),
+        left + i32::try_from(extent.width()).expect("small"),
+        top + i32::try_from(extent.height()).expect("small"),
     )
     .expect("a valid rectangle")
 }
 
+/// The half-open capture-pixel rectangle a planted copy occupies.
+fn planted_bounds(index: usize) -> PixelRect {
+    bounds_at(PLANTED[index], PATCH)
+}
+
 /// The rectangle the half-strength copy occupies.
 fn degraded_bounds() -> PixelRect {
-    let (left, top) = DEGRADED;
-    let left = i32::try_from(left).expect("small");
-    let top = i32::try_from(top).expect("small");
-
-    PixelRect::new(
-        left,
-        top,
-        left + i32::try_from(PATCH.width()).expect("small"),
-        top + i32::try_from(PATCH.height()).expect("small"),
-    )
-    .expect("a valid rectangle")
+    bounds_at(DEGRADED, PATCH)
 }
 
 /// A result's match bounds, sorted geometrically so a comparison does not depend
@@ -157,6 +203,157 @@ fn bounds_of(result: &MatchResult) -> Vec<PixelRect> {
 
 fn rect(left: f64, top: f64, right: f64, bottom: f64) -> Rect {
     Rect::new(CoordinateSpace::CapturePixels, left, top, right, bottom).expect("a valid rectangle")
+}
+
+/// Asserts that the scene's exact copies score one and its degraded copy its
+/// measured value, each within its own tolerance.
+fn assert_scene_scores(result: &MatchResult) {
+    for found in result.matches() {
+        let (expected, tolerance) = if found.bounds() == degraded_bounds() {
+            (DEGRADED_MATCH_SCORE, DEGRADED_TOLERANCE)
+        } else {
+            (EXACT_MATCH_SCORE, SCORE_TOLERANCE)
+        };
+        assert!(
+            (found.score() - expected).abs() <= tolerance,
+            "{:?} scored {}",
+            found.bounds(),
+            found.score()
+        );
+    }
+}
+
+/// Asserts that two results report the same bounds, with scores equal within
+/// the exact-score tolerance rather than bit for bit.
+fn assert_equivalent(left: &MatchResult, right: &MatchResult) {
+    assert_eq!(bounds_of(left), bounds_of(right));
+    for found in left.matches() {
+        let other = right
+            .matches()
+            .iter()
+            .find(|other| other.bounds() == found.bounds())
+            .expect("the same bounds");
+        assert!(
+            (found.score() - other.score()).abs() <= SCORE_TOLERANCE,
+            "{:?}: {} against {}",
+            found.bounds(),
+            found.score(),
+            other.score()
+        );
+    }
+}
+
+/// Integer noise, identical on both release targets.
+fn noise(x: u32, y: u32, salt: u32) -> [u8; 4] {
+    let mut hash =
+        x.wrapping_mul(0x9e37_79b1) ^ y.wrapping_mul(0x85eb_ca77) ^ salt.wrapping_mul(0xc2b2_ae3d);
+    hash ^= hash >> 16;
+    hash = hash.wrapping_mul(0x85eb_ca6b);
+    hash ^= hash >> 13;
+    hash = hash.wrapping_mul(0xc2b2_ae35);
+    (hash ^ (hash >> 16)).to_le_bytes()
+}
+
+/// Stores one RGB pixel in `format` with `alpha`.
+fn four_channel(format: PixelFormat, [red, green, blue]: [u8; 3], alpha: u8) -> [u8; 4] {
+    match format {
+        PixelFormat::Rgba8 => [red, green, blue, alpha],
+        PixelFormat::Bgra8 => [blue, green, red, alpha],
+        _ => panic!("no fixture layout for {format}"),
+    }
+}
+
+fn template_source(id: &str, extent: PixelExtent, content: &[u8]) -> TemplateSource {
+    TemplateSource::new(TemplateSourceRequest {
+        id: TemplateId::new(id).expect("non-empty"),
+        encoding: TemplateEncoding::Png,
+        extent,
+        space: CoordinateSpace::CapturePixels,
+        defaults: MatchDefaults::new(0.9, 8).expect("valid defaults"),
+        content: Arc::from(content),
+    })
+    .expect("a valid template source")
+}
+
+/// A pixel whose blue channel inverts its red one, so exchanging the two
+/// inverts the template's correlation instead of preserving it.
+fn chroma(x: u32, y: u32) -> [u8; 3] {
+    let [red, green, ..] = noise(x, y, 1);
+    [red, green, 0xff - red]
+}
+
+fn exchange_red_and_blue([red, green, blue]: [u8; 3]) -> [u8; 3] {
+    [blue, green, red]
+}
+
+/// A noise scene in `format` holding the colour template at [`TRUE_COLOURS`]
+/// and its red/blue exchange at [`SWAPPED_COLOURS`], with both templates.
+///
+/// Each template correlates at one with its own copy and at about -0.33 with
+/// the other, which the public score clamps to zero; nothing else in the scene
+/// reaches 0.2. A conversion that swapped red and blue would therefore find
+/// each template at the other's origin instead.
+fn colour_fixture(
+    format: PixelFormat,
+) -> (mado_pilot_capture::Frame, TemplateSource, TemplateSource) {
+    let extent = PixelExtent::new(48, 24);
+    let planted = |(left, top): (u32, u32), x: u32, y: u32| {
+        (x >= left
+            && y >= top
+            && x < left + COLOUR_PATCH.width()
+            && y < top + COLOUR_PATCH.height())
+        .then(|| chroma(x - left, y - top))
+    };
+    let mut pixels = Vec::new();
+    for y in 0..extent.height() {
+        for x in 0..extent.width() {
+            let [red, green, blue, _] = noise(x, y, 2);
+            let rgb = planted(TRUE_COLOURS, x, y)
+                .or_else(|| planted(SWAPPED_COLOURS, x, y).map(exchange_red_and_blue))
+                .unwrap_or([red, green, blue]);
+            pixels.extend_from_slice(&four_channel(format, rgb, 0xff));
+        }
+    }
+
+    let mut colours = Vec::new();
+    let mut exchanged = Vec::new();
+    for y in 0..COLOUR_PATCH.height() {
+        for x in 0..COLOUR_PATCH.width() {
+            colours.extend_from_slice(&chroma(x, y));
+            exchanged.extend_from_slice(&exchange_red_and_blue(chroma(x, y)));
+        }
+    }
+    let encode = |rgb: &[u8]| png::encode_rgb(COLOUR_PATCH.width(), COLOUR_PATCH.height(), rgb);
+
+    (
+        vision_contract::frame_with_pixels(extent, format, pixels),
+        template_source("colours", COLOUR_PATCH, &encode(&colours)),
+        template_source("exchanged", COLOUR_PATCH, &encode(&exchanged)),
+    )
+}
+
+/// Storage whose CPU bytes may end before its own descriptor does.
+///
+/// Safe public storage can publish such bytes, and a full-frame mapping in
+/// the source layout shares them without a copy that would notice.
+#[derive(Debug)]
+struct ShortPixels {
+    descriptor: FrameDescriptor,
+    pixels: Arc<CpuPixels>,
+}
+
+impl FrameStorage for ShortPixels {
+    fn descriptor(&self) -> FrameDescriptor {
+        self.descriptor
+    }
+
+    fn cpu_pixels(&self) -> Option<Arc<CpuPixels>> {
+        Some(Arc::clone(&self.pixels))
+    }
+
+    fn read_cpu(&self, _operation: &OperationContext) -> mado_pilot_core::Result<Arc<CpuPixels>> {
+        Ok(Arc::clone(&self.pixels))
+    }
 }
 
 /// Builds a repeated non-uniform pattern with exact matches at x=0, 2, and 4.
@@ -262,68 +459,122 @@ fn a_weaker_copy_is_ordered_after_the_exact_ones() {
 
 #[test]
 fn the_two_supported_frame_formats_reach_the_same_answer() {
-    let rgba = search_scene(PixelFormat::Rgba8, 0.9);
-    let bgra = search_scene(PixelFormat::Bgra8, 0.9);
+    // The lower threshold admits the degraded copy, so a measured score is
+    // compared as well as the exact ones.
+    let rgba = search_scene(PixelFormat::Rgba8, 0.5);
+    let bgra = search_scene(PixelFormat::Bgra8, 0.5);
 
-    assert_eq!(bounds_of(&rgba), bounds_of(&bgra));
-    for (left, right) in rgba.matches().iter().zip(bgra.matches()) {
+    for result in [&rgba, &bgra] {
         assert_eq!(
-            left.score(),
-            right.score(),
-            "a channel swap in the mapping must not move a score"
+            bounds_of(result),
+            vec![planted_bounds(0), planted_bounds(1), degraded_bounds()]
         );
+        assert_scene_scores(result);
+    }
+    assert_equivalent(&rgba, &bgra);
+}
+
+#[test]
+fn a_red_blue_inversion_does_not_match_in_either_layout() {
+    for format in LAYOUTS {
+        let (frame, colours, exchanged) = colour_fixture(format);
+        for (template, origin) in [(&colours, TRUE_COLOURS), (&exchanged, SWAPPED_COLOURS)] {
+            let result = find_in(&frame, template, RegionSelection::FullFrame, options(0.9));
+
+            assert_eq!(
+                bounds_of(&result),
+                vec![bounds_at(origin, COLOUR_PATCH)],
+                "{format} must keep red and blue apart"
+            );
+            assert!(
+                (result.matches()[0].score() - EXACT_MATCH_SCORE).abs() <= SCORE_TOLERANCE,
+                "{format}: {}",
+                result.matches()[0].score()
+            );
+        }
+    }
+}
+
+#[test]
+fn alpha_is_neither_a_mask_nor_a_scoring_channel() {
+    let patch_rgba: Vec<u8> = match_fixtures::patch_rgb()
+        .chunks_exact(3)
+        .zip(0_u32..)
+        .flat_map(|(rgb, index)| [rgb[0], rgb[1], rgb[2], noise(index, 0, 5)[3]])
+        .collect();
+    let opaque_template = planted_template("patch");
+    let translucent_template = template_source(
+        "translucent",
+        PATCH,
+        &png::encode_rgba(PATCH.width(), PATCH.height(), &patch_rgba),
+    );
+    for format in LAYOUTS {
+        let opaque = match_fixtures::scene_frame(format);
+        let mut pixels = match_fixtures::scene_pixels(format);
+        for (pixel, index) in pixels.chunks_exact_mut(4).zip(0_u32..) {
+            pixel[3] = noise(index, 0, 4)[3];
+        }
+        let translucent = vision_contract::frame_with_pixels(SCENE, format, pixels);
+        let reference = find_in(
+            &opaque,
+            &opaque_template,
+            RegionSelection::FullFrame,
+            options(0.5),
+        );
+        assert_eq!(
+            bounds_of(&reference),
+            vec![planted_bounds(0), planted_bounds(1), degraded_bounds()]
+        );
+        assert_scene_scores(&reference);
+
+        for (frame, template) in [
+            (&opaque, &translucent_template),
+            (&translucent, &opaque_template),
+            (&translucent, &translucent_template),
+        ] {
+            assert_equivalent(
+                &find_in(frame, template, RegionSelection::FullFrame, options(0.5)),
+                &reference,
+            );
+        }
     }
 }
 
 #[test]
 fn a_frame_whose_rows_are_padded_reaches_the_same_answer() {
-    // Bgra8 is the layout the backend requires, so the matcher maps the whole
-    // frame without converting it and the frame's own stride reaches
-    // `region_to_bgr`. That is the path a Windows capture frame takes first: a
-    // driver's row pitch is not the caller's to choose, and every other fixture
-    // in this repository is packed. A backend that used `width * 4` where the
-    // stride belongs reads each row shifted a little further into the previous
-    // one's padding, so the answers below stop agreeing.
-    let packed = search_scene(PixelFormat::Bgra8, 0.9);
-    let padded = search_padded_scene(PixelFormat::Bgra8, 0.9, 64);
+    // Both accepted layouts map the whole frame without converting it, so the
+    // frame's own stride reaches `region_to_bgr`. That is the path a Windows
+    // capture frame takes first: a driver's row pitch is not the caller's to
+    // choose, and most fixtures in this repository are packed. A backend that
+    // used `width * 4` where the stride belongs reads each row shifted a
+    // little further into the previous one's padding, so the answers below
+    // stop agreeing.
+    for format in LAYOUTS {
+        let packed = search_scene(format, 0.9);
+        let padded = search_padded_scene(format, 0.9, PADDING);
 
-    assert_eq!(
-        bounds_of(&padded),
-        bounds_of(&packed),
-        "padding the rows must not move a match"
-    );
-    for (packed, padded) in packed.matches().iter().zip(padded.matches()) {
-        assert!(
-            (packed.score() - padded.score()).abs() <= SCORE_TOLERANCE,
-            "padding the rows must not move a score: {} against {}",
-            packed.score(),
-            padded.score()
+        assert_equivalent(&padded, &packed);
+        assert_eq!(
+            padded.matches().len(),
+            PLANTED.len(),
+            "and both planted copies are still found"
         );
     }
-    assert_eq!(
-        padded.matches().len(),
-        PLANTED.len(),
-        "and both planted copies are still found"
-    );
 }
 
 #[test]
 fn a_patch_the_scene_does_not_contain_is_a_successful_empty_result() {
-    let matcher = matcher();
-    let frame = match_fixtures::scene_frame(PixelFormat::Rgba8);
-    let prepared = matcher
-        .prepare(&absent_template("absent"), &OperationContext::new())
-        .expect("the absent patch prepares");
+    for frame in scene_frames() {
+        let result = find_in(
+            &frame,
+            &absent_template("absent"),
+            RegionSelection::FullFrame,
+            options(0.9),
+        );
 
-    let result = matcher
-        .find(
-            MatchRequest::new(&frame, RegionSelection::FullFrame, &prepared, options(0.9)),
-            &OperationContext::new(),
-        )
-        .expect("a well-formed question with the answer 'not there'");
-
-    assert!(result.is_empty());
-    assert_eq!(result.stamp(), frame.stamp());
+        assert!(result.is_empty());
+        assert_eq!(result.stamp(), frame.stamp());
+    }
 }
 
 #[test]
@@ -358,56 +609,63 @@ fn an_absent_patch_stays_well_below_the_fixture_threshold() {
 #[test]
 fn a_region_of_interest_reports_full_frame_coordinates() {
     let expected = planted_bounds(1);
-    let result = search(
-        PixelFormat::Rgba8,
-        RegionSelection::Region {
-            rect: rect(55.0, 35.0, 80.0, 60.0),
-            policy: ClipPolicy::Reject,
-        },
-        0.9,
-    );
+    for frame in scene_frames() {
+        let result = search_frame(
+            &frame,
+            RegionSelection::Region {
+                rect: rect(55.0, 35.0, 80.0, 60.0),
+                policy: ClipPolicy::Reject,
+            },
+            0.9,
+        );
 
-    assert_eq!(
-        result.matches().len(),
-        1,
-        "only the copy inside the region is searched for"
-    );
-    assert_eq!(
-        result.matches()[0].bounds(),
-        expected,
-        "a match is reported against the whole frame, never against the region"
-    );
-    assert_eq!(
-        result.searched(),
-        PixelRect::new(55, 35, 80, 60).expect("valid")
-    );
+        assert_eq!(
+            result.matches().len(),
+            1,
+            "only the copy inside the region is searched for: {:?}",
+            frame.descriptor()
+        );
+        assert_eq!(
+            result.matches()[0].bounds(),
+            expected,
+            "a match is reported against the whole frame, never against the region"
+        );
+        assert_eq!(
+            result.searched(),
+            PixelRect::new(55, 35, 80, 60).expect("valid")
+        );
+        assert_eq!(result.transform(), frame.transform());
+    }
 }
 
 #[test]
 fn a_clipped_region_reports_full_frame_coordinates() {
     let expected = planted_bounds(1);
-    let result = search(
-        PixelFormat::Rgba8,
-        RegionSelection::Region {
-            rect: rect(55.0, 35.0, 200.0, 200.0),
-            policy: ClipPolicy::Clip,
-        },
-        0.9,
-    );
+    for frame in scene_frames() {
+        let result = search_frame(
+            &frame,
+            RegionSelection::Region {
+                rect: rect(55.0, 35.0, 200.0, 200.0),
+                policy: ClipPolicy::Clip,
+            },
+            0.9,
+        );
 
-    assert_eq!(
-        result.searched(),
-        PixelRect::new(
-            55,
-            35,
-            i32::try_from(SCENE.width()).expect("small"),
-            i32::try_from(SCENE.height()).expect("small")
-        )
-        .expect("valid"),
-        "the region is clipped to the frame's own extent"
-    );
-    assert_eq!(result.matches().len(), 1);
-    assert_eq!(result.matches()[0].bounds(), expected);
+        assert_eq!(
+            result.searched(),
+            PixelRect::new(
+                55,
+                35,
+                i32::try_from(SCENE.width()).expect("small"),
+                i32::try_from(SCENE.height()).expect("small")
+            )
+            .expect("valid"),
+            "the region is clipped to the frame's own extent"
+        );
+        assert_eq!(result.matches().len(), 1, "{:?}", frame.descriptor());
+        assert_eq!(result.matches()[0].bounds(), expected);
+        assert_eq!(result.transform(), frame.transform());
+    }
 }
 
 #[test]
@@ -464,24 +722,74 @@ fn keep_all_reports_overlapping_opencv_candidates() {
 
 #[test]
 fn a_template_larger_than_the_region_is_a_successful_empty_result() {
-    let matcher = matcher();
-    let frame = match_fixtures::scene_frame(PixelFormat::Rgba8);
-    let prepared = matcher
-        .prepare(
+    for format in LAYOUTS {
+        let frame = match_fixtures::scene_frame(format);
+        let result = find_in(
+            &frame,
             &match_fixtures::oversized_template("wide", PixelExtent::new(120, 80)),
-            &OperationContext::new(),
-        )
-        .expect("an oversized template still prepares");
+            RegionSelection::FullFrame,
+            options(0.5),
+        );
 
-    let result = matcher
-        .find(
-            MatchRequest::new(&frame, RegionSelection::FullFrame, &prepared, options(0.5)),
-            &OperationContext::new(),
-        )
-        .expect("a well-formed search of a region too small to hold the template");
+        assert!(result.is_empty());
+        assert_eq!(result.stamp(), frame.stamp());
+    }
+}
 
-    assert!(result.is_empty());
-    assert_eq!(result.stamp(), frame.stamp());
+#[test]
+fn suppression_and_result_limits_are_unchanged_in_both_layouts() {
+    let template = planted_template("patch");
+    for (suppression, survivors) in [
+        (Suppression::DropOverlapping, 3),
+        (Suppression::KeepAll, 15),
+    ] {
+        let mut unlimited = Vec::new();
+        for format in LAYOUTS {
+            let frame = match_fixtures::scene_frame(format);
+            let search = |limit| {
+                let options = options(LIMIT_THRESHOLD)
+                    .with_max_results(limit)
+                    .expect("a positive limit")
+                    .with_suppression(suppression);
+                find_in(&frame, &template, RegionSelection::FullFrame, options)
+            };
+            // Sixty-four is above either policy's survivor count.
+            let all = search(64);
+            let matches = all.matches();
+            assert_eq!(matches.len(), survivors, "{suppression:?} in {format}");
+            assert!(
+                matches
+                    .windows(2)
+                    .all(|pair| pair[0].score() >= pair[1].score()),
+                "canonical order is descending score"
+            );
+            let mut leaders: Vec<_> = matches[..3].iter().map(|found| found.bounds()).collect();
+            leaders.sort_by_key(|rectangle| (rectangle.top(), rectangle.left()));
+            assert_eq!(
+                leaders,
+                [planted_bounds(0), planted_bounds(1), degraded_bounds()]
+            );
+
+            for limit in [1, 8, 64] {
+                let limited = search(limit);
+                let kept = survivors.min(usize::try_from(limit).expect("small"));
+                assert_eq!(limited.matches().len(), kept, "limit {limit}");
+                if kept == 1 {
+                    // The two exact copies tie within rounding, so either may lead.
+                    let leader = &limited.matches()[0];
+                    assert!([planted_bounds(0), planted_bounds(1)].contains(&leader.bounds()));
+                    assert!((leader.score() - EXACT_MATCH_SCORE).abs() <= SCORE_TOLERANCE);
+                } else {
+                    let mut prefix: Vec<_> =
+                        matches[..kept].iter().map(|found| found.bounds()).collect();
+                    prefix.sort_by_key(|rectangle| (rectangle.top(), rectangle.left()));
+                    assert_eq!(bounds_of(&limited), prefix, "limit {limit}");
+                }
+            }
+            unlimited.push(all);
+        }
+        assert_equivalent(&unlimited[0], &unlimited[1]);
+    }
 }
 
 #[test]
@@ -539,32 +847,34 @@ fn a_template_that_decodes_to_another_extent_fails_preparation() {
 
 #[test]
 fn a_result_keeps_its_own_source_after_a_later_frame_exists() {
-    let matcher = matcher();
-    let frame = match_fixtures::scene_frame(PixelFormat::Rgba8);
-    let expected_stamp = frame.stamp();
-    let expected_transform = *frame.transform();
-    let prepared = matcher
-        .prepare(&planted_template("patch"), &OperationContext::new())
-        .expect("prepares");
+    for format in LAYOUTS {
+        let matcher = matcher();
+        let frame = match_fixtures::scene_frame(format);
+        let expected_stamp = frame.stamp();
+        let expected_transform = *frame.transform();
+        let prepared = matcher
+            .prepare(&planted_template("patch"), &OperationContext::new())
+            .expect("prepares");
 
-    let result = matcher
-        .find(
-            MatchRequest::new(&frame, RegionSelection::FullFrame, &prepared, options(0.9)),
-            &OperationContext::new(),
-        )
-        .expect("searches");
+        let result = matcher
+            .find(
+                MatchRequest::new(&frame, RegionSelection::FullFrame, &prepared, options(0.9)),
+                &OperationContext::new(),
+            )
+            .expect("searches");
 
-    // A newer frame with a different extent, published after the search.
-    let later = vision_contract::frame(PixelExtent::new(32, 32), PixelFormat::Rgba8, 0x7f);
-    assert_ne!(later.stamp(), expected_stamp);
+        // A newer frame with a different extent, published after the search.
+        let later = vision_contract::frame(PixelExtent::new(32, 32), format, 0x7f);
+        assert_ne!(later.stamp(), expected_stamp);
 
-    drop(frame);
-    assert_eq!(result.stamp(), expected_stamp);
-    assert_eq!(result.transform(), &expected_transform);
-    assert_eq!(
-        bounds_of(&result),
-        vec![planted_bounds(0), planted_bounds(1)]
-    );
+        drop(frame);
+        assert_eq!(result.stamp(), expected_stamp);
+        assert_eq!(result.transform(), &expected_transform);
+        assert_eq!(
+            bounds_of(&result),
+            vec![planted_bounds(0), planted_bounds(1)]
+        );
+    }
 }
 
 #[test]
@@ -608,35 +918,74 @@ fn one_retained_frame_keeps_different_template_results_independent() {
     }
 }
 
+/// Publishes `pixels` in `format` under `basis`'s stamp and transform.
+fn equal_stamp_frame(
+    basis: &mado_pilot_capture::Frame,
+    format: PixelFormat,
+    pixels: Vec<u8>,
+) -> mado_pilot_capture::Frame {
+    mado_pilot_capture::Frame::new(
+        basis.stamp(),
+        basis.captured_at(),
+        FrameDescriptor::packed(basis.descriptor().extent(), format).expect("descriptor"),
+        *basis.transform(),
+        pixels.into_boxed_slice(),
+    )
+    .expect("same metadata with independent immutable pixels")
+}
+
 #[test]
 fn equal_stamp_frames_never_share_different_pixels() {
     let matcher = matcher();
     let scene = match_fixtures::scene_frame(PixelFormat::Rgba8);
-    let background = mado_pilot_capture::Frame::new(
-        scene.stamp(),
-        scene.captured_at(),
-        scene.descriptor(),
-        *scene.transform(),
-        match_fixtures::background_pixels(PixelFormat::Rgba8).into_boxed_slice(),
-    )
-    .expect("same metadata with independent immutable pixels");
+    let same = |format, pixels| equal_stamp_frame(&scene, format, pixels);
+    let background = same(
+        PixelFormat::Rgba8,
+        match_fixtures::background_pixels(PixelFormat::Rgba8),
+    );
+    let bgra_scene = same(
+        PixelFormat::Bgra8,
+        match_fixtures::scene_pixels(PixelFormat::Bgra8),
+    );
+    let bgra_background = same(
+        PixelFormat::Bgra8,
+        match_fixtures::background_pixels(PixelFormat::Bgra8),
+    );
+    let clone = scene.clone();
     let context = OperationContext::new();
     let prepared = matcher
         .prepare(&planted_template("patch"), &context)
         .expect("template");
-    for (frame, expected) in [
-        (&scene, vec![planted_bounds(0), planted_bounds(1)]),
-        (&background, vec![]),
-        (&scene, vec![planted_bounds(0), planted_bounds(1)]),
+    let region = RegionSelection::Region {
+        rect: rect(10.0, 5.0, 45.0, 30.0),
+        policy: ClipPolicy::Reject,
+    };
+    for (frame, found) in [
+        (&scene, true),
+        (&background, false),
+        (&bgra_scene, true),
+        (&bgra_background, false),
+        (&clone, true),
+        (&bgra_scene, true),
+        (&scene, true),
     ] {
-        let result = matcher
-            .find(
-                MatchRequest::new(frame, RegionSelection::FullFrame, &prepared, options(0.9)),
-                &context,
-            )
-            .expect("search");
-        assert_eq!(bounds_of(&result), expected);
-        assert_eq!(result.stamp(), scene.stamp());
+        for (selection, expected) in [
+            (
+                RegionSelection::FullFrame,
+                vec![planted_bounds(0), planted_bounds(1)],
+            ),
+            (region, vec![planted_bounds(0)]),
+        ] {
+            let result = matcher
+                .find(
+                    MatchRequest::new(frame, selection, &prepared, options(0.9)),
+                    &context,
+                )
+                .expect("search");
+            let expected = if found { expected } else { vec![] };
+            assert_eq!(bounds_of(&result), expected, "{:?}", frame.descriptor());
+            assert_eq!(result.stamp(), scene.stamp());
+        }
     }
 }
 
@@ -644,45 +993,238 @@ fn equal_stamp_frames_never_share_different_pixels() {
 fn backend_preparation_uses_the_mapping_region_not_the_diagnostic_region() {
     let backend = OpenCvBackend::new().expect("backend");
     let frame = match_fixtures::scene_frame(PixelFormat::Rgba8);
+    let background = equal_stamp_frame(
+        &frame,
+        PixelFormat::Bgra8,
+        match_fixtures::background_pixels(PixelFormat::Bgra8),
+    );
     let context = OperationContext::new();
     let template = backend
         .prepare(&planted_template("patch"), &context)
         .expect("template");
     let diagnostic = PixelRect::new(999, 999, 1011, 1009).expect("diagnostic rectangle");
-    for format in [PixelFormat::Bgra8, PixelFormat::Rgba8, PixelFormat::Bgra8] {
-        for (region, present) in [
-            (rect(20.0, 12.0, 32.0, 22.0), true),
-            (rect(0.0, 0.0, 12.0, 10.0), false),
-            (rect(20.0, 12.0, 32.0, 22.0), true),
+    let patch = Some(rect(20.0, 12.0, 32.0, 22.0));
+    let corner = Some(rect(0.0, 0.0, 12.0, 10.0));
+    for format in [PixelFormat::Rgba8, PixelFormat::Bgra8, PixelFormat::Rgba8] {
+        for (source, region, expected) in [
+            (&frame, patch, vec![(0, 0)]),
+            (&frame, corner, vec![]),
+            (&frame, None, vec![(20, 12), (60, 40)]),
+            (&background, patch, vec![]),
+            (&background, None, vec![]),
+            (&frame, patch, vec![(0, 0)]),
         ] {
-            let pixels = frame
-                .view(region, ClipPolicy::Reject)
-                .expect("view")
-                .map(format, &context)
-                .expect("pixels");
-            let outcome = backend.find(
-                &mado_pilot_vision::BackendRequest {
-                    template: &template,
-                    pixels: &pixels,
-                    region: diagnostic,
-                    options: options(0.9),
-                },
-                &context,
+            let view = match region {
+                Some(region) => source.view(region, ClipPolicy::Reject),
+                None => source.full_view(),
+            };
+            let pixels = view.expect("view").map(format, &context).expect("pixels");
+            assert_eq!(pixels.descriptor().format(), format);
+            let found = backend
+                .find(
+                    &mado_pilot_vision::BackendRequest {
+                        template: &template,
+                        pixels: &pixels,
+                        region: diagnostic,
+                        options: options(0.9),
+                    },
+                    &context,
+                )
+                .expect("either accepted layout searches");
+            let mut origins: Vec<_> = found.iter().map(|candidate| candidate.origin()).collect();
+            origins.sort_unstable();
+            assert_eq!(origins, expected, "{format} of {:?}", source.descriptor());
+            assert!(
+                found
+                    .iter()
+                    .all(|candidate| (candidate.score() - EXACT_MATCH_SCORE).abs()
+                        <= SCORE_TOLERANCE)
             );
-            if format == PixelFormat::Rgba8 {
-                assert_eq!(
-                    outcome.expect_err("profile requires BGRA").status(),
-                    Status::VisionFailed
-                );
-                continue;
+        }
+    }
+}
+
+#[test]
+fn a_persistent_backend_follows_frame_turnover_layouts_and_regions() {
+    let matcher = matcher();
+    let context = OperationContext::new();
+    let prepared = matcher
+        .prepare(&planted_template("patch"), &context)
+        .expect("template");
+    let roi = |left, top, right, bottom, policy| RegionSelection::Region {
+        rect: rect(left, top, right, bottom),
+        policy,
+    };
+    let first = roi(10.0, 5.0, 45.0, 30.0, ClipPolicy::Reject);
+    let second = roi(55.0, 35.0, 200.0, 200.0, ClipPolicy::Clip);
+    let both = vec![planted_bounds(0), planted_bounds(1)];
+    let cases = [
+        (
+            match_fixtures::scene_frame(PixelFormat::Rgba8),
+            RegionSelection::FullFrame,
+            both.clone(),
+        ),
+        (
+            match_fixtures::scene_frame(PixelFormat::Bgra8),
+            second,
+            vec![planted_bounds(1)],
+        ),
+        (
+            match_fixtures::scene_frame_with_padded_rows(PixelFormat::Rgba8, PADDING),
+            first,
+            vec![planted_bounds(0)],
+        ),
+        (
+            vision_contract::frame_with_pixels(
+                SCENE,
+                PixelFormat::Bgra8,
+                match_fixtures::background_pixels(PixelFormat::Bgra8),
+            ),
+            RegionSelection::FullFrame,
+            vec![],
+        ),
+        (
+            match_fixtures::scene_frame_with_padded_rows(PixelFormat::Bgra8, PADDING),
+            RegionSelection::FullFrame,
+            both,
+        ),
+    ];
+    // Five sources outnumber the two retained preparations, so every round
+    // turns the earlier ones over; each case repeats once as a compatible hit.
+    for _ in 0..2 {
+        for (frame, selection, expected) in &cases {
+            for _ in 0..2 {
+                let result = matcher
+                    .find(
+                        MatchRequest::new(frame, *selection, &prepared, options(0.9)),
+                        &context,
+                    )
+                    .expect("search");
+                assert_eq!(&bounds_of(&result), expected, "{:?}", frame.descriptor());
+                assert_eq!(result.stamp(), frame.stamp());
             }
-            let found = outcome.expect("search");
-            if present {
-                assert_eq!(found.len(), 1);
-                assert_eq!(found[0].origin(), (0, 0));
-                assert!((found[0].score() - EXACT_MATCH_SCORE).abs() < SCORE_TOLERANCE);
+        }
+    }
+}
+
+#[test]
+fn a_region_above_the_preparation_allowance_is_still_searched() {
+    // 4096 by 2731 converts to 33,558,528 BGR bytes, just above the
+    // 33,554,432 a backend may retain, so the search runs on uncached pixels.
+    let extent = PixelExtent::new(4096, 2731);
+    let origin = (3001, 2003);
+    let patch = match_fixtures::patch_rgb();
+    let rgb: Vec<[u8; 3]> = (0..extent.height())
+        .flat_map(|y| (0..extent.width()).map(move |x| (x, y)))
+        .map(|(x, y)| {
+            if x >= origin.0
+                && y >= origin.1
+                && x < origin.0 + PATCH.width()
+                && y < origin.1 + PATCH.height()
+            {
+                let index = usize::try_from((y - origin.1) * PATCH.width() + (x - origin.0))
+                    .expect("small")
+                    * 3;
+                [patch[index], patch[index + 1], patch[index + 2]]
             } else {
-                assert!(found.is_empty());
+                let [red, green, blue, _] = noise(x, y, 3);
+                [red, green, blue]
+            }
+        })
+        .collect();
+    let matcher = matcher();
+    let context = OperationContext::new();
+    let prepared = matcher
+        .prepare(&planted_template("patch"), &context)
+        .expect("template");
+    for format in LAYOUTS {
+        let pixels = rgb
+            .iter()
+            .flat_map(|&pixel| four_channel(format, pixel, 0xff))
+            .collect();
+        let frame = vision_contract::frame_with_pixels(extent, format, pixels);
+        let result = matcher
+            .find(
+                MatchRequest::new(&frame, RegionSelection::FullFrame, &prepared, options(0.9)),
+                &context,
+            )
+            .expect("an oversized region is searched, not refused");
+
+        assert_eq!(
+            bounds_of(&result),
+            vec![bounds_at(origin, PATCH)],
+            "{format}"
+        );
+        assert!((result.matches()[0].score() - EXACT_MATCH_SCORE).abs() <= SCORE_TOLERANCE);
+    }
+    let scene = match_fixtures::scene_frame(PixelFormat::Rgba8);
+    let result = matcher
+        .find(
+            MatchRequest::new(&scene, RegionSelection::FullFrame, &prepared, options(0.9)),
+            &context,
+        )
+        .expect("ordinary preparation still works");
+    assert_eq!(
+        bounds_of(&result),
+        vec![planted_bounds(0), planted_bounds(1)]
+    );
+}
+
+#[test]
+fn pixels_short_of_their_last_readable_row_are_refused_before_opencv_reads_them() {
+    let context = OperationContext::new();
+    for format in LAYOUTS {
+        for padding in [0, PADDING] {
+            let basis = match_fixtures::scene_frame_with_padded_rows(format, padding);
+            let descriptor = basis.descriptor();
+            let bytes = basis
+                .map(format, &context)
+                .expect("basis bytes")
+                .bytes()
+                .to_vec();
+            // The last row needs its pixels but not its padding.
+            let readable = descriptor.byte_len() - padding;
+            for (length, accepted) in [(readable, true), (readable - 1, false)] {
+                let storage = Arc::new(ShortPixels {
+                    descriptor,
+                    pixels: Arc::new(CpuPixels::new(bytes[..length].into())),
+                });
+                let frame = mado_pilot_capture::Frame::from_storage(
+                    basis.stamp(),
+                    basis.captured_at(),
+                    *basis.transform(),
+                    storage,
+                )
+                .expect("safe public storage");
+                let matcher = matcher();
+                let prepared = matcher
+                    .prepare(&planted_template("patch"), &context)
+                    .expect("template");
+                // A refusal that had published preparation would succeed the
+                // second time.
+                for _ in 0..2 {
+                    let outcome = matcher.find(
+                        MatchRequest::new(
+                            &frame,
+                            RegionSelection::FullFrame,
+                            &prepared,
+                            options(0.9),
+                        ),
+                        &context,
+                    );
+                    if accepted {
+                        assert_eq!(
+                            bounds_of(&outcome.expect("every readable byte is present")),
+                            vec![planted_bounds(0), planted_bounds(1)]
+                        );
+                    } else {
+                        assert_eq!(
+                            outcome.expect_err("one byte short of the last row"),
+                            Error::from(VisionFault::BackendFailed),
+                            "{format} with {padding} bytes of padding"
+                        );
+                    }
+                }
             }
         }
     }

@@ -18,14 +18,13 @@ use mado_pilot_core::PixelExtent;
 use mado_pilot_vision::TemplateSource;
 use opencv::core::{CV_8UC4, Mat, MatTraitConst};
 use opencv::imgcodecs::{IMREAD_COLOR, imdecode};
-use opencv::imgproc::{COLOR_BGRA2BGR, cvt_color_def};
+use opencv::imgproc::{COLOR_BGRA2BGR, COLOR_RGBA2BGR, cvt_color_def};
 
-/// The pixel format the adapter asks the matcher to map a searched region into.
-///
-/// OpenCV's own channel order is blue-green-red, so asking for BGRA means the
-/// matcher performs any channel swap once, while it is already copying, and the
-/// adapter then only has to drop the alpha channel.
-pub(crate) const REQUIRED_FORMAT: PixelFormat = PixelFormat::Bgra8;
+/// The mapping format requested for a source layout the adapter does not accept.
+pub(crate) const DEFAULT_FORMAT: PixelFormat = PixelFormat::Bgra8;
+
+/// The other source layout the adapter converts directly to BGR.
+pub(crate) const ALTERNATE_FORMAT: PixelFormat = PixelFormat::Rgba8;
 
 /// The bytes this profile's decoded matrix stores per pixel.
 ///
@@ -52,7 +51,7 @@ const MAX_DECODED_BYTES: u64 = TemplateSource::MAX_PIXELS * BGR_CHANNELS;
 pub(crate) enum ImageFault {
     /// A dimension or byte count does not fit what OpenCV accepts.
     Unrepresentable,
-    /// The mapped pixels were not in the format the descriptor promised.
+    /// The mapped pixels are in a layout this adapter does not convert.
     UnexpectedFormat,
     /// The mapped pixels were shorter than their own descriptor requires.
     Truncated,
@@ -64,18 +63,24 @@ pub(crate) enum ImageFault {
     Rejected,
 }
 
-/// Converts a mapped BGRA region into an owned three-channel BGR matrix.
+/// Converts a mapped RGBA or BGRA region into an owned three-channel BGR matrix.
+///
+/// The mapping's own descriptor selects the conversion; alpha is dropped.
 ///
 /// # Errors
 ///
-/// Returns [`ImageFault`] when the mapping contradicts its own descriptor, when
-/// a dimension does not fit OpenCV's signed extents, or when OpenCV rejects the
-/// conversion.
+/// Returns [`ImageFault`] when the mapping is in an unsupported layout or
+/// contradicts its own descriptor, when a dimension does not fit OpenCV's
+/// signed extents, or when OpenCV rejects the conversion.
 pub(crate) fn region_to_bgr(pixels: &CpuMapping) -> Result<Mat, ImageFault> {
     let descriptor = pixels.descriptor();
-    if descriptor.format() != REQUIRED_FORMAT {
-        return Err(ImageFault::UnexpectedFormat);
-    }
+    let code = match descriptor.format() {
+        PixelFormat::Bgra8 => COLOR_BGRA2BGR,
+        PixelFormat::Rgba8 => COLOR_RGBA2BGR,
+        // `PixelFormat` is `#[non_exhaustive]`; a later layout is refused
+        // rather than read as one of these.
+        _ => return Err(ImageFault::UnexpectedFormat),
+    };
 
     let extent = descriptor.extent();
     let rows = signed(extent.height())?;
@@ -119,7 +124,7 @@ pub(crate) fn region_to_bgr(pixels: &CpuMapping) -> Result<Mat, ImageFault> {
     }
     .map_err(|_| ImageFault::Rejected)?;
 
-    cvt_color_def(&view, &mut bgr, COLOR_BGRA2BGR).map_err(|_| ImageFault::Rejected)?;
+    cvt_color_def(&view, &mut bgr, code).map_err(|_| ImageFault::Rejected)?;
     drop(view);
     #[cfg(feature = "benchmark-instrumentation")]
     crate::benchmark_instrumentation::record_bgr_conversion(bgr.total().saturating_mul(3));
@@ -233,10 +238,22 @@ fn signed(value: u32) -> Result<i32, ImageFault> {
 
 #[cfg(test)]
 mod tests {
-    use mado_pilot_core::PixelExtent;
-    use opencv::core::MatTraitConst;
+    use mado_pilot_capture::PixelFormat;
+    use mado_pilot_core::{OperationContext, PixelExtent};
+    use mado_pilot_testkit::vision_contract;
+    use opencv::core::{MatTraitConst, MatTraitConstManual};
 
-    use super::{ImageFault, decode_to_bgr, extent_of};
+    use super::{ImageFault, decode_to_bgr, extent_of, region_to_bgr};
+
+    /// Distinct red, green and blue in every pixel, so a red/blue inversion
+    /// cannot pass as the same image.
+    const RGB: [[u8; 3]; 4] = [[200, 10, 30], [1, 2, 3], [40, 50, 60], [250, 128, 7]];
+
+    /// `RGB` as packed BGR, the only layout this profile stores.
+    const BGR: [u8; 12] = [30, 10, 200, 3, 2, 1, 60, 50, 40, 7, 128, 250];
+
+    /// Varying alpha, which no conversion may treat as colour or as a mask.
+    const ALPHA: [u8; 4] = [0, 85, 170, 255];
 
     /// A two-by-two PNG, so the decode path is exercised against real bytes
     /// rather than a signature.
@@ -255,6 +272,53 @@ mod tests {
 
         assert_eq!(decoded.channels(), 3);
         assert_eq!(extent_of(&decoded).expect("a real extent"), extent());
+    }
+
+    #[test]
+    fn both_accepted_layouts_convert_to_the_same_bgr_without_alpha_or_padding() {
+        for (format, order) in [
+            (PixelFormat::Rgba8, [0, 1, 2]),
+            (PixelFormat::Bgra8, [2, 1, 0]),
+        ] {
+            let mut packed = Vec::new();
+            for (rgb, alpha) in RGB.iter().zip(ALPHA) {
+                packed.extend_from_slice(&[rgb[order[0]], rgb[order[1]], rgb[order[2]], alpha]);
+            }
+            // Twelve bytes of padding is three pixels of filler per row, which
+            // would change the output if the stride were ignored.
+            for padding in [0, 12] {
+                let frame =
+                    vision_contract::frame_with_padded_rows(extent(), format, padding, &packed);
+                let pixels = frame
+                    .map(format, &OperationContext::new())
+                    .expect("direct mapping");
+                let bgr = region_to_bgr(&pixels).expect("an accepted layout converts");
+
+                assert_eq!(bgr.channels(), 3);
+                assert_eq!(bgr.data_bytes().expect("packed BGR"), BGR, "{format}");
+            }
+        }
+    }
+
+    #[test]
+    fn an_alpha_carrying_template_decodes_to_its_colour_channels_only() {
+        let rgba: Vec<u8> = RGB
+            .iter()
+            .zip(ALPHA)
+            .flat_map(|(rgb, alpha)| [rgb[0], rgb[1], rgb[2], alpha])
+            .collect();
+        let opaque = decode_to_bgr(
+            &mado_pilot_testkit::png::encode_rgb(2, 2, RGB.as_flattened()),
+            extent(),
+        )
+        .expect("an RGB PNG decodes");
+        let translucent =
+            decode_to_bgr(&mado_pilot_testkit::png::encode_rgba(2, 2, &rgba), extent())
+                .expect("an RGBA PNG decodes");
+
+        assert_eq!(translucent.channels(), 3);
+        assert_eq!(opaque.data_bytes().expect("packed BGR"), BGR);
+        assert_eq!(translucent.data_bytes().expect("packed BGR"), BGR);
     }
 
     #[test]

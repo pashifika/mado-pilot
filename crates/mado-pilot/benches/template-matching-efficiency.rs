@@ -24,8 +24,12 @@ use serde_json::{Value, json};
 mod cpu;
 #[path = "support/template_efficiency_fixtures.rs"]
 mod fixtures;
+#[path = "support/template_efficiency_formats.rs"]
+mod formats;
 #[path = "support/ocr_text_watch_resources.rs"]
 mod resources;
+#[path = "support/template_efficiency_runtime.rs"]
+mod runtime;
 #[path = "support/template_efficiency_watch.rs"]
 mod watch;
 use fixtures::{Kind, PATCH, ROI, SCORE_TOLERANCE, WORKLOADS, Workload};
@@ -118,6 +122,12 @@ fn nanos(value: Duration) -> u64 {
     u64::try_from(value.as_nanos()).expect("bounded benchmark duration fits u64 nanoseconds")
 }
 
+fn operation() -> OperationContext {
+    OperationContext::new()
+        .with_timeout(Duration::from_secs(5))
+        .expect("bounded matching operation")
+}
+
 fn matcher() -> Result<Matcher, String> {
     OpenCvBackend::new()
         .map(|backend| Matcher::new(std::sync::Arc::new(backend)))
@@ -127,6 +137,13 @@ fn matcher() -> Result<Matcher, String> {
 fn replay_frame(row: Workload, pixels: Vec<u8>, format: PixelFormat) -> Result<Frame, String> {
     let descriptor =
         FrameDescriptor::packed(row.extent(), format).map_err(|error| error.to_string())?;
+    replay_frame_with_descriptor(descriptor, pixels)
+}
+
+fn replay_frame_with_descriptor(
+    descriptor: FrameDescriptor,
+    pixels: Vec<u8>,
+) -> Result<Frame, String> {
     let replay = ReplayFrame::new(
         descriptor,
         MonotonicInstant::ORIGIN,
@@ -139,7 +156,7 @@ fn replay_frame(row: Workload, pixels: Vec<u8>, format: PixelFormat) -> Result<F
         .map_err(|error| error.to_string())?;
     let source = ReplaySource::from_targets(vec![target]).map_err(|error| error.to_string())?;
     let engine = mado_pilot::replay_engine(source).map_err(|error| error.to_string())?;
-    let operation = OperationContext::new();
+    let operation = operation();
     let targets = engine
         .discover(&operation)
         .map_err(|error| error.to_string())?;
@@ -238,7 +255,7 @@ impl SearchFixture {
         let compiler = matcher()?;
         let count = match row.kind {
             Kind::ColdBatch | Kind::LiveOwnerBatch | Kind::WarmBatch => 8,
-            Kind::Concurrent | Kind::RoiFormatTransition => 2,
+            Kind::Concurrent => 2,
             _ => 1,
         };
         let templates = fixtures::templates()
@@ -246,7 +263,7 @@ impl SearchFixture {
             .take(count)
             .map(|source| {
                 compiler
-                    .prepare(source, &OperationContext::new())
+                    .prepare(source, &operation())
                     .map_err(|error| error.to_string())
             })
             .collect::<Result<Vec<_>, _>>()?;
@@ -297,11 +314,6 @@ impl SearchFixture {
                     )?);
                 }
             }
-            Kind::RoiFormatTransition => self.frames.push(replay_frame(
-                self.row,
-                fixtures::scene(self.row.extent(), 0, PixelFormat::Bgra8),
-                PixelFormat::Bgra8,
-            )?),
             _ => {}
         }
         if matches!(self.row.kind, Kind::LiveOwnerBatch | Kind::ExpiredMapping) {
@@ -309,12 +321,11 @@ impl SearchFixture {
                 .map_err(|error| error.to_string())?;
             let owner = view
                 .map(
-                    self.matcher
-                        .as_ref()
-                        .expect("created matcher")
-                        .descriptor()
-                        .format(),
-                    &OperationContext::new(),
+                    selected_format(
+                        self.matcher.as_ref().expect("created matcher"),
+                        &self.frames[0],
+                    ),
+                    &operation(),
                 )
                 .map_err(|error| error.to_string())?;
             if matches!(self.row.kind, Kind::LiveOwnerBatch) {
@@ -358,21 +369,6 @@ impl SearchFixture {
                 requests[2] = (2, 0, 2, searched);
                 4
             }
-            Kind::RoiFormatTransition => {
-                requests[1] = (
-                    0,
-                    1,
-                    0,
-                    PixelRect::new(72, 56, 376, 220).expect("alternate ROI"),
-                );
-                requests[2] = (
-                    1,
-                    0,
-                    0,
-                    PixelRect::new(0, 0, 1920, 1080).expect("full frame"),
-                );
-                3
-            }
             _ => 1,
         };
         (requests, count)
@@ -382,7 +378,7 @@ impl SearchFixture {
         let matcher = self.matcher.as_ref().expect("iteration prepared");
         let (requests, count) = self.requests();
         let requests = &requests[..count];
-        let operation = OperationContext::new();
+        let operation = operation();
         let mut results: [Option<mado_pilot::Result<MatchResult>>; 8] =
             std::array::from_fn(|_| None);
         let started = ClockStart::now();
@@ -439,7 +435,7 @@ impl SearchFixture {
         let ready = Barrier::new(3);
         let go = Barrier::new(3);
         let worker = |index| {
-            let operation = OperationContext::new();
+            let operation = operation();
             ready.wait();
             go.wait();
             let start = Instant::now();
@@ -522,7 +518,7 @@ impl SelectionFixture {
 
     fn run(&mut self) -> Sample {
         self.scratch.copy_from_slice(&self.source);
-        let operation = OperationContext::new();
+        let operation = operation();
         let started = ClockStart::now();
         let result = backend::select_scores(&mut self.scratch, self.request, &operation);
         let (elapsed_ns, cpu_ns) = started.finish();
@@ -543,6 +539,14 @@ impl SelectionFixture {
     }
 }
 
+fn selected_format(matcher: &Matcher, frame: &Frame) -> PixelFormat {
+    let source = frame.descriptor().format();
+    if matcher.descriptor().accepts_format(source) {
+        source
+    } else {
+        matcher.descriptor().format()
+    }
+}
 fn observe(row: Workload, smoke: bool) -> Value {
     let (warmups, count) = row.plan(smoke);
     let mut warmup_samples = Vec::with_capacity(warmups);
@@ -556,7 +560,9 @@ fn observe(row: Workload, smoke: bool) -> Value {
     let mut setup_error = None;
     let mut selection = matches!(row.kind, Kind::Selection).then(|| SelectionFixture::new(row));
     let is_watch = matches!(row.kind, Kind::WatchAnalysisAlways | Kind::WatchExactRgba);
-    let mut search = if selection.is_none() && !is_watch {
+    let is_formats = matches!(row.kind, Kind::RoiFormatTransition);
+    let mut format_observations = Vec::with_capacity(warmups + count);
+    let mut search = if selection.is_none() && !is_watch && !is_formats {
         match SearchFixture::new(row) {
             Ok(fixture) => Some(fixture),
             Err(error) => {
@@ -571,6 +577,21 @@ fn observe(row: Workload, smoke: bool) -> Value {
         for iteration in 0..warmups + count {
             let sample = if let Some(fixture) = &mut selection {
                 fixture.run()
+            } else if is_formats {
+                let started = ClockStart::now();
+                let result = formats::run(row);
+                let (elapsed_ns, cpu_ns) = started.finish();
+                let correct = result.as_ref().is_ok_and(|value| value["correct"] == true);
+                let error = result.as_ref().err().cloned();
+                if let Ok(value) = result {
+                    format_observations.push(value);
+                }
+                Sample {
+                    elapsed_ns,
+                    cpu_ns,
+                    correct,
+                    error,
+                }
             } else if is_watch {
                 let started = ClockStart::now();
                 let result = watch::run(matches!(row.kind, Kind::WatchAnalysisAlways));
@@ -654,6 +675,9 @@ fn observe(row: Workload, smoke: bool) -> Value {
     object.insert("warmup_samples".into(), json!(warmup_samples));
     object.insert("oracle_failures".into(), json!(oracle_failures));
     object.insert("setup_error".into(), json!(setup_error));
+    if is_formats {
+        object.insert("format_observations".into(), json!(format_observations));
+    }
     let mut metrics = json!({
         "iterations": warmups + count, "cpu_ns": cpu_ns,
         "cpu_reason": if cpu_missing { Some("process CPU observation unavailable or nonmonotonic") } else { None },
@@ -805,6 +829,7 @@ fn run(arguments: Arguments) -> Result<Value, String> {
     Ok(json!({
         "format_version": 1, "kind": if arguments.list { "manifest" } else { "observations" },
         "target": target(), "opencv_version": version, "fixture_sha256": fixture_sha256,
+        "loaded_native_runtime": runtime::observe()?,
         "fixture": fixture, "warmups": if arguments.smoke { 1 } else { 20 },
         "sample_count": if arguments.smoke { 3 } else { 200 },
         "timer_resolution_ns": timer_resolution_ns, "cpu_timer_resolution_ns": cpu_timer_resolution_ns,
