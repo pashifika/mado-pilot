@@ -273,7 +273,6 @@ struct Arguments {
     #[cfg(windows)]
     ordinary_fixture_executable: Option<PathBuf>,
     c_executable: Option<ExecutableArtifact>,
-    cpp_executable: Option<ExecutableArtifact>,
     language_library: Option<ExecutableArtifact>,
     hardware: String,
     os_version: String,
@@ -344,13 +343,10 @@ impl Arguments {
         } else {
             None
         };
-        let (c_executable, cpp_executable) = if set == WorkloadSet::Input {
-            (
-                Some(language_executable("--c-executable", "C")?),
-                Some(language_executable("--cpp-executable", "C++")?),
-            )
+        let c_executable = if set == WorkloadSet::Input {
+            Some(language_executable("--c-executable", "C")?)
         } else {
-            (None, None)
+            None
         };
         #[cfg(target_os = "macos")]
         let language_library = if set == WorkloadSet::Input {
@@ -379,9 +375,9 @@ impl Arguments {
         let permissions_signing = required("--permissions-signing")?;
         let language_memory = if set == WorkloadSet::Input {
             format!(
-                "; C/C++ peak_allocated_bytes counts only harness-side Rust allocations, while \
+                "; C peak_allocated_bytes counts only harness-side Rust allocations, while \
                  peak_resident_bytes is the child process peak reported by the native OS after \
-                 owned-handle cleanup; each C/C++ child has a {} s execution bound, a 1 s \
+                 owned-handle cleanup; each C child has a {} s execution bound, a 1 s \
                  termination/reap allowance, and a 65536-byte stdout/stderr cap per stream",
                 LANGUAGE_PROCESS_WAIT.as_secs()
             )
@@ -390,7 +386,7 @@ impl Arguments {
         };
         #[cfg(target_os = "macos")]
         let executable_binding = if set == WorkloadSet::Input {
-            "; benchmark and fixture SHA-256 bytes are bound to validity-checked static and live Security code identities; each C/C++ program retains unique executable and library pins inside controller-owned mode-0500 directories, every spawned child must match the executable pin's live code identity, and both directory/file identities and bytes are rechecked after each exit"
+            "; benchmark and fixture SHA-256 bytes are bound to validity-checked static and live Security code identities; each C program retains unique executable and library pins inside controller-owned mode-0500 directories, every spawned child must match the executable pin's live code identity, and both directory/file identities and bytes are rechecked after each exit"
         } else {
             "; benchmark and fixture SHA-256 bytes are bound to validity-checked static and audit-token-selected live Security code identities"
         };
@@ -454,9 +450,6 @@ impl Arguments {
         if let Some(executable) = c_executable.as_ref() {
             binary_hashes.push_str(&format!("; C executable sha256 {}", executable.digest()));
         }
-        if let Some(executable) = cpp_executable.as_ref() {
-            binary_hashes.push_str(&format!("; C++ executable sha256 {}", executable.digest()));
-        }
         if let Some(library) = language_library.as_ref() {
             binary_hashes.push_str(&format!(
                 "; MadoPilot dynamic library sha256 {}",
@@ -477,7 +470,6 @@ impl Arguments {
             #[cfg(windows)]
             ordinary_fixture_executable,
             c_executable,
-            cpp_executable,
             language_library,
             hardware,
             os_version,
@@ -871,14 +863,6 @@ impl LanguageProgram {
             }
         }
     }
-
-    fn expected_fixture_events(&self) -> &'static [protocol::EventSummary] {
-        if self.example_name == cpp_example_name() {
-            &CPP_LANGUAGE_EVENTS
-        } else {
-            &COMMON_LANGUAGE_EVENTS
-        }
-    }
 }
 
 fn language_common_fixture(
@@ -905,14 +889,14 @@ pub(super) fn run() {
                 "resize-allocation|process-directed|process-directed-game-like|",
                 "process-diagnostics> ",
                 "--fixture-executable <path> [--ordinary-fixture-executable <path> ",
-                "--c-executable <path> --cpp-executable <path> --library <path>] ",
+                "--c-executable <path> --library <path>] ",
                 "--hardware <description> --os-version <description> ",
                 "--deployment-target <description> ",
                 "--source-revision <commit> --source-tree <tree> ",
                 "--toolchain <versions> --gpu-driver <description> ",
                 "--display-topology <description> ",
                 "--permissions-signing <description>\n",
-                "(on Windows the ordinary fixture, C, and C++ executables are required for the input set)",
+                "(on Windows the ordinary fixture and C executable are required for the input set)",
             )
         )
     });
@@ -1021,14 +1005,6 @@ fn workloads(set: WorkloadSet, plan: Plan) -> Vec<Workload> {
                 c_example_name(),
                 "receipt: outcome 1 submitted 4 fault 0 cleanup 0",
             );
-            let cpp = LanguageProgram::new(
-                args.cpp_executable
-                    .clone()
-                    .expect("the input benchmark requires its C++ executable"),
-                args.language_library.clone(),
-                cpp_example_name(),
-                cpp_receipt_line(),
-            );
             let workloads = vec![
                 measure(
                     "input_request_receipt",
@@ -1056,20 +1032,6 @@ fn workloads(set: WorkloadSet, plan: Plan) -> Vec<Workload> {
                     "the released C ABI uses explicit ProcessDirected delivery and checks its invocation-only receipt separately from exact owned-fixture events",
                     plan,
                     || language_common_fixture(c.clone(), Rc::clone(&fixture)),
-                    language_common_flow,
-                ),
-                measure(
-                    "cpp_process_load",
-                    "a fresh C++ process loads its wrapper and negotiates the released ABI without opening native capabilities",
-                    plan,
-                    || cpp.clone(),
-                    language_process_load,
-                ),
-                measure(
-                    "cpp_common_flow",
-                    cpp_correctness_oracle(),
-                    plan,
-                    || language_common_fixture(cpp.clone(), Rc::clone(&fixture)),
                     language_common_flow,
                 ),
             ];

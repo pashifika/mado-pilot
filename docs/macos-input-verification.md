@@ -1,10 +1,10 @@
 # macOS Input Adapter and Verification
 
 The macOS platform package implements input at the Adapter boundary, and
-`mado_pilot::macos_engine` wires it into the runtime and public Rust facade. The
-C ABI and header-only C++ wrapper consume that same facade-owned engine. Release
-acceptance consists of the explicit native checks below; ordinary test runs never
-send desktop input or open the opt-in fixture window.
+`mado_pilot::macos_engine` wires it into the runtime and public Rust facade.
+C and C++ consume that same engine directly through the C ABI. Release acceptance
+uses the explicit native checks below; ordinary checks do not send desktop input
+or open the opt-in fixture window.
 
 Current candidate release status: **14 qualified, 0 rejected, and 0 unexecuted
 controlled pairs**. Final candidate
@@ -812,11 +812,11 @@ title. A complete receipt is not treated as success until an independent
 strictly newer frame has the expected changed fill. Drained records carry only
 the documented metadata for the shared activity tag.
 
-## Explicit C and C++ boundary checks
+## Explicit C ABI boundary checks
 
-The ABI check compiles and runs both native common-flow examples in `--check`
-mode. That mode creates the real macOS engine, verifies the ABI 1.2 route,
-permission, and diagnostic records without prompting, and stops before discovery
+The ABI checker runs the small direct C/C++ samples without native operations.
+Its C native verifier uses `--check`: it creates the macOS engine, verifies input,
+permission and diagnostic records without prompting, and stops before discovery
 or input:
 
 ```sh
@@ -824,25 +824,25 @@ cargo run --locked --package mado-pilot-capi --example c-abi-check -- \
   --label "<host>"
 ```
 
-After starting the dedicated fixture in `--animate-on-input` mode, the same
-binaries exercise engine construction, both permission reads, exact discovery,
-capture, mapping, a frame-bound explicit process-directed request, immutable
-receipt and attempt inspection, a strictly newer expected-condition search,
-diagnostic drain, and explicit close through C and then through the header-only
-C++ wrapper:
+After starting the dedicated fixture in `--animate-on-input` mode, the C verifier
+exercises engine construction, both permission reads, exact discovery, capture,
+mapping, a frame-bound process-directed request, immutable receipt/attempt
+inspection, a strictly newer expected-condition search, diagnostic drain and
+explicit close. Run the default and extended sequences against separately
+prepared fixture state:
 
 ```sh
 target/debug/c-abi-check/macos-native-input \
   "MadoPilot Input Fixture [<pid>]"
-target/debug/c-abi-check/macos-native-input-cpp \
+target/debug/c-abi-check/macos-native-input --extended-sequence \
   "MadoPilot Input Fixture [<pid>]"
 ```
 
-Full mode selects the ABI 1.2 process-directed operation and delivery values
-explicitly — pointer and keyboard in the C flow; pointer, keyboard, and text in
-the C++ flow — asserts process scope, `Unknown` compatibility, and
-invocation-only evidence, permits no other route, and never activates the
-fixture, then independently evaluates a newer frame. Apply the same Screen
+The four-event default selects pointer and keyboard explicitly;
+`--extended-sequence` adds text for five events and checks the twenty-millisecond
+delay. Both assert process scope, `Unknown` compatibility and invocation-only
+evidence, permit no other route, and never activate the
+fixture, then independently evaluate a newer frame. Apply the same Screen
 Recording, event-post-access, exact-title, and owned-window restrictions as the
 Rust facade check. `--check` remains the only mode run unattended.
 

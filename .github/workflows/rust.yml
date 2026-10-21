@@ -533,23 +533,9 @@ jobs:
         shell: bash
         run: cargo doc --locked --workspace --no-deps
 
-      # The only check in this repository that is not `cargo` alone. It compiles
-      # the tracked C header with the release target's own C compiler — MSVC here,
-      # the Xcode Command Line Tools on macOS — and compares the layout it produces
-      # field by field against the one `rustc` produced; then builds and runs the C
-      # example, the C++ ownership probe, and the C++ example against the library;
-      # then configures, builds, and runs the CMake consumer project. The Ubuntu
-      # repository-policy job deliberately compiles nothing and does not run this.
-      # See docs/adr/0004-c-header-authorship-and-abi-verification.md and
-      # docs/adr/0005-cpp-wrapper-shape-and-cmake-surface.md.
-      # `cl` is installed on this image but is not on `PATH` until the developer
-      # environment is entered, so the step runs under `cmd` and calls
-      # `vcvars64.bat` itself rather than exporting a whole environment to later
-      # steps. The install path is discovered with `vswhere` instead of being
-      # hard-coded, because it carries the Visual Studio edition. That environment
-      # also sets `VSINSTALLDIR`, through which the check finds the CMake Visual
-      # Studio ships if the runner image ever stops carrying one on `PATH`.
-      - name: Check the C ABI and the C++ wrapper
+      # Native compilers verify direct C/C++ consumers and frozen C ABI layouts.
+      # Windows native input stays confined to the repository-owned fixtures.
+      - name: Check the C ABI and direct C/C++ consumers
         shell: cmd
         run: |
           for /f "usebackq tokens=*" %%i in (`"%ProgramFiles(x86)%\Microsoft Visual Studio\Installer\vswhere.exe" -latest -products * -requires Microsoft.VisualStudio.Component.VC.Tools.x86.x64 -property installationPath`) do set "VSROOT=%%i"
@@ -564,6 +550,11 @@ jobs:
           cargo build --locked --package mado-pilot-platform-windows --bin mado-pilot-windows-input-fixture --bin mado-pilot-windows-window-message-fixture || exit /b 1
           cargo run --locked --package mado-pilot-capi --example c-abi-check -- --label "CI ${{ runner.os }} ${{ runner.arch }}" --windows-native-fixture || exit /b 1
           certutil -hashfile target\debug\madopilot.dll SHA256 || exit /b 1
+          set "CARGO_TARGET_DIR=%RUNNER_TEMP%\c-abi-private-fixture"
+          cargo build --locked --package mado-pilot-capi --features private-fixture || exit /b 1
+          cargo test --locked --package mado-pilot-capi --features private-fixture --tests || exit /b 1
+          cargo run --locked --package mado-pilot-capi --features private-fixture --example c-abi-check -- --label "CI ${{ runner.os }} ${{ runner.arch }} private-fixture" || exit /b 1
+          certutil -hashfile "%CARGO_TARGET_DIR%\debug\madopilot.dll" SHA256 || exit /b 1
 
       - name: Check native profile procedure and external consumers
         shell: cmd
@@ -923,17 +914,9 @@ jobs:
         shell: bash
         run: cargo doc --locked --workspace --no-deps
 
-      # The only check in this repository that is not `cargo` alone. It compiles
-      # the tracked C header with the release target's own C compiler — the Xcode
-      # Command Line Tools here, MSVC on Windows — and compares the layout it
-      # produces field by field against the one `rustc` produced; then builds and
-      # runs the C example, the C++ ownership probe, and the C++ example against
-      # the library; then configures, builds, and runs the CMake consumer project.
-      # The Ubuntu repository-policy job deliberately compiles nothing and does
-      # not run this. See
-      # docs/adr/0004-c-header-authorship-and-abi-verification.md and
-      # docs/adr/0005-cpp-wrapper-shape-and-cmake-surface.md.
-      - name: Check the C ABI and the C++ wrapper
+      # Direct C/C++ consumers share the released C header and library.
+      # Keep private-fixture builds separate from the ordinary library.
+      - name: Check the C ABI and direct C/C++ consumers
         shell: bash
         run: |
           cargo check --locked --package mado-pilot-capi --all-targets --features coreml-provider
@@ -941,6 +924,12 @@ jobs:
           cargo run --locked --package mado-pilot-capi --example c-abi-check -- \
             --label "CI ${{ runner.os }} ${{ runner.arch }}"
           shasum -a 256 target/debug/libmadopilot.dylib
+          export CARGO_TARGET_DIR="${RUNNER_TEMP}/c-abi-private-fixture"
+          cargo build --locked --package mado-pilot-capi --features private-fixture
+          cargo test --locked --package mado-pilot-capi --features private-fixture --tests
+          cargo run --locked --package mado-pilot-capi --features private-fixture --example c-abi-check -- \
+            --label "CI ${{ runner.os }} ${{ runner.arch }} private-fixture"
+          shasum -a 256 "${CARGO_TARGET_DIR}/debug/libmadopilot.dylib"
 
       - name: Check native profile procedure and external consumers
         shell: bash

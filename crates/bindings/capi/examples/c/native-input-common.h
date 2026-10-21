@@ -7,6 +7,9 @@
  * targets while each public example remains explicit about what its platform
  * can do.
  *
+ * `--extended-sequence` opts into complete event-variant verification on an
+ * explicit fixture; the default four-event workload remains unchanged.
+ *
  * This is example source, not a public header.
  */
 #ifndef MADOPILOT_NATIVE_INPUT_COMMON_H
@@ -104,9 +107,8 @@ static int capability_matches_contract(
 
 static int descriptor_matches_contract(
     const madopilot_input_descriptor_t* descriptor,
-    madopilot_example_route_contract_t contract)
+    madopilot_example_route_contract_t contract, uint64_t required)
 {
-    const uint64_t required = MADOPILOT_EXAMPLE_REQUIRED_PAIRS;
     if (contract == MADOPILOT_EXAMPLE_ROUTE_ORDINARY_WINDOW) {
         return (descriptor->unknown_pairs & required) == required &&
                (descriptor->known_pairs & required) == 0 &&
@@ -443,6 +445,7 @@ static int select_target(const madopilot_api_t* api,
                          madopilot_target_list_t* targets,
                          const char* title,
                          madopilot_example_route_contract_t contract,
+                         uint64_t required_pairs,
                          size_t* selected,
                          uint64_t* target_id,
                          madopilot_input_address_scope_t* address_scope,
@@ -493,7 +496,7 @@ static int select_target(const madopilot_api_t* api,
     for (index = 0; index < 9; index += 1) {
         const uint64_t bit = UINT64_C(1) << index;
         madopilot_input_capability_t capability;
-        if ((MADOPILOT_EXAMPLE_REQUIRED_PAIRS & bit) == 0) {
+        if ((required_pairs & bit) == 0) {
             continue;
         }
         memset(&capability, 0, sizeof(capability));
@@ -545,9 +548,17 @@ static int deliver(const madopilot_api_t* api,
                    madopilot_frame_t* frame,
                    const madopilot_frame_info_t* frame_info,
                    madopilot_input_address_scope_t address_scope,
-                   madopilot_submission_evidence_t evidence)
+                   madopilot_submission_evidence_t evidence,
+                   int extended_sequence)
 {
-    madopilot_input_event_t events[4];
+#if defined(_WIN32)
+    madopilot_input_event_t events[16];
+#else
+    madopilot_input_event_t events[5];
+#endif
+    const size_t event_count = extended_sequence ? sizeof(events) / sizeof(events[0]) : 4;
+    uint64_t send_started = 0;
+    uint64_t send_finished = 0;
     madopilot_input_delivery_t delivery = MADOPILOT_EXAMPLE_DELIVERY;
     madopilot_input_request_t request;
     madopilot_input_receipt_info_t info;
@@ -555,7 +566,7 @@ static int deliver(const madopilot_api_t* api,
     madopilot_operation_t operation;
     madopilot_error_t* error = NULL;
 
-    memset(events, 0, sizeof(events));
+    memset(events, 0, event_count * sizeof(events[0]));
     events[0].struct_size = (uint32_t)sizeof(events[0]);
     events[0].kind = MADOPILOT_INPUT_EVENT_POINTER_MOVE;
     events[0].space = MADOPILOT_SPACE_CAPTURE_PIXELS;
@@ -566,11 +577,53 @@ static int deliver(const madopilot_api_t* api,
     events[3].struct_size = (uint32_t)sizeof(events[3]);
     events[3].kind = MADOPILOT_INPUT_EVENT_DELAY;
     events[3].delay_nanos = UINT64_C(20000000);
+    if (extended_sequence) {
+        for (size_t index = 0; index < event_count; ++index) {
+            events[index].struct_size = (uint32_t)sizeof(events[index]);
+        }
+#if defined(_WIN32)
+        const madopilot_pointer_button_t buttons[3] = {
+            MADOPILOT_POINTER_BUTTON_PRIMARY,
+            MADOPILOT_POINTER_BUTTON_SECONDARY,
+            MADOPILOT_POINTER_BUTTON_MIDDLE,
+        };
+        for (size_t index = 0; index < 3; ++index) {
+            events[1 + index * 2].kind = MADOPILOT_INPUT_EVENT_POINTER_PRESS;
+            events[1 + index * 2].button = buttons[index];
+            events[2 + index * 2].kind = MADOPILOT_INPUT_EVENT_POINTER_RELEASE;
+            events[2 + index * 2].button = buttons[index];
+        }
+        events[7].kind = MADOPILOT_INPUT_EVENT_POINTER_SCROLL;
+        events[7].horizontal = -1;
+        events[7].vertical = 2;
+        set_key_event(&events[8], MADOPILOT_INPUT_EVENT_KEY_PRESS, 6);
+        events[8].key = MADOPILOT_KEY_FUNCTION;
+        set_key_event(&events[9], MADOPILOT_INPUT_EVENT_KEY_RELEASE, 6);
+        events[9].key = MADOPILOT_KEY_FUNCTION;
+        set_key_event(&events[10], MADOPILOT_INPUT_EVENT_KEY_PRESS,
+                      MADOPILOT_MODIFIER_CONTROL);
+        events[10].key = MADOPILOT_KEY_MODIFIER;
+        set_key_event(&events[11], MADOPILOT_INPUT_EVENT_KEY_PRESS, (uint32_t)'m');
+        set_key_event(&events[12], MADOPILOT_INPUT_EVENT_KEY_RELEASE, (uint32_t)'m');
+        set_key_event(&events[13], MADOPILOT_INPUT_EVENT_KEY_RELEASE,
+                      MADOPILOT_MODIFIER_CONTROL);
+        events[13].key = MADOPILOT_KEY_MODIFIER;
+        events[14].kind = MADOPILOT_INPUT_EVENT_TEXT;
+        events[14].text.data = "A\xF0\x9F\x98\x80";
+        events[14].text.len = 5;
+#else
+        events[3].kind = MADOPILOT_INPUT_EVENT_TEXT;
+        events[3].text.data = "m";
+        events[3].text.len = 1;
+#endif
+        events[event_count - 1].kind = MADOPILOT_INPUT_EVENT_DELAY;
+        events[event_count - 1].delay_nanos = UINT64_C(20000000);
+    }
 
     memset(&request, 0, sizeof(request));
     request.struct_size = (uint32_t)sizeof(request);
     request.events = events;
-    request.event_count = sizeof(events) / sizeof(events[0]);
+    request.event_count = event_count;
     request.event_stride = sizeof(events[0]);
     request.deliveries = &delivery;
     request.delivery_count = 1;
@@ -579,10 +632,24 @@ static int deliver(const madopilot_api_t* api,
     request.source_frame = frame;
 
     if (!bounded_operation(api, UINT64_C(2000000000), &operation) ||
-        !require_ok(api,
+        (extended_sequence &&
+         !expect(api->clock_now(&send_started) == MADOPILOT_STATUS_OK,
+                 "clock before the extended sequence"))) {
+        return 0;
+    }
+    if (!require_ok(api,
                     api->session_send_input(session, &request, &operation,
                                             &receipt, &error),
                     &error, "session_send_input")) {
+        return 0;
+    }
+    if (extended_sequence &&
+        (!expect(api->clock_now(&send_finished) == MADOPILOT_STATUS_OK,
+                 "clock after the extended sequence") ||
+         !expect(send_finished >= send_started &&
+                     send_finished - send_started >= UINT64_C(20000000),
+                 "the extended sequence observes its bounded delay"))) {
+        api->input_receipt_release(receipt);
         return 0;
     }
     memset(&info, 0, sizeof(info));
@@ -597,9 +664,12 @@ static int deliver(const madopilot_api_t* api,
            (int)info.outcome, info.submitted,
            (int)info.fault, (int)info.cleanup);
     api->input_receipt_release(receipt);
+    if (extended_sequence) {
+        printf("sequence: extended events %zu delay-nanos %" PRIu64 "\n",
+               event_count, send_finished - send_started);
+    }
     return expect(info.outcome == MADOPILOT_SEQUENCE_COMPLETE &&
-                      info.submitted ==
-                          (uint64_t)(sizeof(events) / sizeof(events[0])) &&
+                      info.submitted == (uint64_t)event_count &&
                       info.attempt_count == UINT64_C(1) &&
                       (info.flags & (MADOPILOT_INPUT_RECEIPT_HAS_SELECTED_ROUTE |
                                      MADOPILOT_INPUT_RECEIPT_HAS_EVIDENCE)) ==
@@ -613,7 +683,8 @@ static int deliver(const madopilot_api_t* api,
 }
 
 static int run_native(const madopilot_api_t* api, const char* title, int check_only,
-                      madopilot_example_route_contract_t contract)
+                      madopilot_example_route_contract_t contract,
+                      int extended_sequence)
 {
     madopilot_source_t source;
     madopilot_engine_options_t engine_options;
@@ -640,6 +711,14 @@ static int run_native(const madopilot_api_t* api, const char* title, int check_o
     madopilot_input_address_scope_t address_scope = MADOPILOT_INPUT_ADDRESS_NONE;
     madopilot_submission_evidence_t evidence = MADOPILOT_SUBMISSION_EVIDENCE_NONE;
     int worked = 0;
+    uint64_t required_pairs = MADOPILOT_EXAMPLE_REQUIRED_PAIRS;
+    if (extended_sequence) {
+#if defined(_WIN32)
+        required_pairs |= MADOPILOT_INPUT_PAIR_TEXT_WINDOW_MESSAGE;
+#else
+        required_pairs |= MADOPILOT_INPUT_PAIR_TEXT_PROCESS_DIRECTED;
+#endif
+    }
 
     memset(&source, 0, sizeof(source));
     source.struct_size = (uint32_t)sizeof(source);
@@ -687,8 +766,8 @@ static int run_native(const madopilot_api_t* api, const char* title, int check_o
     if (!bounded_operation(api, UINT64_C(5000000000), &operation) ||
         !require_ok(api, api->engine_discover(engine, &operation, &targets, &error),
                     &error, "engine_discover") ||
-        !select_target(api, targets, title, contract, &selected, &target_id,
-                       &address_scope, &evidence)) {
+        !select_target(api, targets, title, contract, required_pairs, &selected,
+                       &target_id, &address_scope, &evidence)) {
         goto cleanup;
     }
 
@@ -698,7 +777,7 @@ static int run_native(const madopilot_api_t* api, const char* title, int check_o
                     api->engine_input_descriptor(engine, targets, selected, &operation,
                                                  &input_descriptor, &error),
                     &error, "engine_input_descriptor") ||
-        !expect(descriptor_matches_contract(&input_descriptor, contract),
+        !expect(descriptor_matches_contract(&input_descriptor, contract, required_pairs),
                 "the live descriptor retains the expected required pairs")) {
         goto cleanup;
     }
@@ -708,7 +787,7 @@ static int run_native(const madopilot_api_t* api, const char* title, int check_o
     memset(&input_open_request, 0, sizeof(input_open_request));
     input_open_request.struct_size = (uint32_t)sizeof(input_open_request);
     input_open_request.requirement = MADOPILOT_INPUT_REQUIRED;
-    input_open_request.required_pairs = MADOPILOT_EXAMPLE_REQUIRED_PAIRS;
+    input_open_request.required_pairs = required_pairs;
     if (!bounded_operation(api, UINT64_C(5000000000), &operation) ||
         !require_ok(api,
                     api->session_open_with_input(engine, targets, selected,
@@ -734,7 +813,7 @@ static int run_native(const madopilot_api_t* api, const char* title, int check_o
     if (!expect(api->session_input_descriptor(
                     session, &session_input_descriptor) == MADOPILOT_STATUS_OK,
                 "session_input_descriptor") ||
-        !expect(descriptor_matches_contract(&session_input_descriptor, contract),
+        !expect(descriptor_matches_contract(&session_input_descriptor, contract, required_pairs),
                 "the session descriptor retains the expected required pairs")) {
         goto cleanup;
     }
@@ -787,7 +866,8 @@ static int run_native(const madopilot_api_t* api, const char* title, int check_o
     }
     printf("mapping: %zu byte(s)\n", image.bytes.len);
 
-    worked = deliver(api, session, frame, &frame_info, address_scope, evidence);
+    worked = deliver(api, session, frame, &frame_info, address_scope, evidence,
+                     extended_sequence);
     if (worked) {
         api->mapping_release(mapping);
         mapping = NULL;
@@ -936,9 +1016,16 @@ int main(int argc, char** argv)
     int check_only = 0;
     int load_only = 0;
     int unsupported_only = 0;
+    int extended_sequence = 0;
+    const char* program = argv[0];
     madopilot_example_route_contract_t contract =
         MADOPILOT_EXAMPLE_ROUTE_DEFAULT;
 
+    if (argc > 1 && strcmp(argv[1], "--extended-sequence") == 0) {
+        extended_sequence = 1;
+        --argc;
+        ++argv;
+    }
     if (argc == 2 && strcmp(argv[1], "--load-check") == 0) {
         load_only = 1;
     } else if (argc == 2 && strcmp(argv[1], "--unsupported-check") == 0) {
@@ -958,8 +1045,13 @@ int main(int argc, char** argv)
     } else {
         fprintf(stderr,
                 "usage: %s --load-check | --unsupported-check | --check | "
-                "[--ordinary | --acknowledged] \"<full fixture window title>\"\n",
-                argv[0]);
+                "[--extended-sequence] [--ordinary | --acknowledged] "
+                "\"<full fixture window title>\"\n",
+                program);
+        return 2;
+    }
+    if (extended_sequence && (check_only || load_only || unsupported_only)) {
+        fprintf(stderr, "--extended-sequence requires an explicit fixture window title\n");
         return 2;
     }
 
@@ -1013,7 +1105,7 @@ int main(int argc, char** argv)
         printf("%s complete (load check)\n", MADOPILOT_EXAMPLE_NAME);
         return 0;
     }
-    if (!run_native(api, title, check_only, contract)) {
+    if (!run_native(api, title, check_only, contract, extended_sequence)) {
         return 1;
     }
     report_peak_resident_bytes();

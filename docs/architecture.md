@@ -18,7 +18,7 @@ targets under ADR 0064.** Platform-neutral contracts,
 deterministic replay, asset loading, OpenCV matching, bounded ONNX OCR with
 explicit initialization-time provider policy, finite template watcher
 scheduling, runtime orchestration, engine-scoped diagnostics, the Rust facade,
-C ABI 1.5, and the header-only C++ wrapper are implemented.
+C ABI 1.5, and direct C/C++ consumption are implemented.
 Rust OCR text-presence queries are also implemented through the explicit CPU
 bounded-v2 profile, with controlled API and both-target real CPU replay verified.
 ADR0075 accepts workload ceilings; native capture and final numeric enforcement remain open;
@@ -291,14 +291,14 @@ Windows half is fixed by ADR 0019 at serviced Windows 11 25H2 build family
 
 ## Integration surfaces
 
-Three public surfaces exist, in this dependency order:
+Two public interfaces exist, in this dependency order:
 
 1. An idiomatic Rust API through the `mado-pilot` facade package.
-2. A separately versioned C ABI with opaque handles and explicit ownership.
-3. A thin C++ RAII wrapper that consumes only the released C ABI.
+2. A separately versioned C ABI for C and C++, with opaque handles and explicit ownership.
 
-The C++ wrapper is not a Cargo package. It links through the released C ABI,
-never through Rust internals.
+C and C++ consumers include `madopilot.h` and link `MadoPilot::C`, never Rust
+internals. Applications own resource management, request storage, errors and
+higher-level policy.
 
 [c-abi.md](c-abi.md) is the C boundary's own contract document: handle
 lifetimes, structure-prefix rules, statuses, one-shot OCR ownership, admitted
@@ -313,14 +313,11 @@ are frozen complete prefixes under ADRs 0007 and 0023. ABI 1.3 appends one-shot
 OCR after the 592-byte 1.2 extent under
 [ADR 0035](adr/0035-ocr-public-surfaces-and-private-fixture-boundary.md).
 
-[cpp-wrapper.md](cpp-wrapper.md) is the C++ adapter's contract: move-only owners,
-explicit `clone` and `close`, exception-free `Result` values, typed OCR/input
-requests, immutable OCR results and receipts, borrowed views and their owners,
-and the CMake targets.
-
-The C++ wrapper is header-only and produces no artifact of its own, so the C ABI
-remains the only ABI the project has; see
-[ADR 0005](adr/0005-cpp-wrapper-shape-and-cmake-surface.md).
+The small C/C++ samples demonstrate negotiation, status checks, a cancellation
+lifecycle and explicit release. The larger C workflows and external direct-C-ABI
+C++ consumer verify library behavior; they are not a public abstraction layer.
+[ADR 0089](adr/0089-direct-c-abi-consumption.md) retires the official wrapper,
+its types and its separate target without changing the C ABI.
 
 ## Workspace layout
 
@@ -354,12 +351,11 @@ mado-pilot/
 │   │   └── onnx/
 │   ├── bindings/
 │   │   └── capi/
-│   │       ├── CMakeLists.txt  # the MadoPilot::C and MadoPilot::Cpp targets
-│   │       ├── include/        # the tracked C header and C++ wrapper
-│   │       ├── examples/c/     # deterministic and native C common flows
-│   │       ├── examples/cpp/   # deterministic and native C++ common flows
+│   │       ├── CMakeLists.txt  # the shared MadoPilot::C target
+│   │       ├── include/        # the tracked C header
+│   │       ├── examples/c/     # small direct sample and verification flows
+│   │       ├── examples/cpp/   # small direct C ABI sample
 │   │       ├── tests/c/        # C ABI layout probe
-│   │       ├── tests/cpp/      # C++ ownership and runtime probe
 │   │       ├── tests/cmake/    # independent CMake consumer project
 │   │       └── tests/abi-compat/ # one immutable fixture per released header
 │   └── support/
@@ -367,7 +363,6 @@ mado-pilot/
 ├── docs/
 │   ├── architecture.md
 │   ├── c-abi.md
-│   ├── cpp-wrapper.md
 │   ├── validation-gates.md
 │   ├── performance.md
 │   ├── third-party-dependencies.md
@@ -431,7 +426,7 @@ prefix.
 | `crates/platform/macos` | `mado-pilot-platform-macos` | Non-prompting macOS target discovery, permission probes, ScreenCaptureKit capture, `CGEvent` system input, and gated process-directed input to the retained window's owning process, wired into the runtime and the facade by `mado_pilot::macos_engine` |
 | `crates/backend/opencv` | `mado-pilot-backend-opencv` | OpenCV CPU template matching |
 | `crates/backend/onnx` | `mado-pilot-backend-onnx` | Bounded ONNX Runtime 1.29 OCR for the exact accepted native G-004 and explicit bounded-detector profiles, with CPU defaults and target-gated explicit provider policy |
-| `crates/bindings/capi` | `mado-pilot-capi` | Separately versioned C ABI and ownership boundary, and the header-only C++ wrapper and CMake targets over it |
+| `crates/bindings/capi` | `mado-pilot-capi` | Separately versioned C ABI and ownership boundary, direct C/C++ samples, and the shared `MadoPilot::C` development-tree target |
 | `crates/support/testkit` | `mado-pilot-testkit` | Controlled capture, storage, permission, matching/OCR backend, and input doubles, synthetic clocks, gated completion scripts, allocation accounting, contract-fixture support, the deterministic offline `G-005` evaluator, and native watcher tracked-report privacy/schema plus typed environment admission |
 | `tools/dependency-check` | `mado-pilot-dependency-check` | Repository maintenance: workspace inventory, dependency-direction, and release-scope checking |
 
@@ -577,10 +572,9 @@ The rules the table encodes:
 6. Only `mado-pilot` names a concrete adapter, because default wiring is its
    responsibility.
 7. Production `mado-pilot-capi` depends on `mado-pilot`, never the reverse.
-8. C++ wrapper code consumes only the released C header and library. It is not a
-   Cargo package and the dependency checker does not see it; the rule is enforced
-   by the wrapper having nothing else to include and by the CMake consumer test
-   linking `MadoPilot::Cpp` alone.
+8. C and C++ consumers use only the released C header and library. Independent
+   CMake consumers link `MadoPilot::C`; the import project enables no compiler
+   and imposes no consumer language standard.
 
 The facade's row lists no contract package. That is deliberate — default wiring is
 the facade's only job — but it means every core, capture, input, vision, OCR, or
@@ -829,8 +823,8 @@ verification, and reports three stable check names:
 | Check | Host | Scope |
 |---|---|---|
 | `Repository policy` | `ubuntu-latest` | Package inventory, dependency directions, formatting, dependency policy |
-| `Windows x86_64-pc-windows-msvc` | `windows-2025` | Native inventory, lint, test, doctest, and documentation checks, and the C ABI and C++ wrapper check |
-| `macOS aarch64-apple-darwin` | `macos-26` | Native inventory, lint, test, doctest, and documentation checks, and the C ABI and C++ wrapper check |
+| `Windows x86_64-pc-windows-msvc` | `windows-2025` | Native inventory, lint, test, doctest, documentation, C ABI and direct C/C++ consumer checks |
+| `macOS aarch64-apple-darwin` | `macos-26` | Native inventory, lint, test, doctest, documentation, C ABI and direct C/C++ consumer checks |
 
 That split is not incidental, so the rule behind it is recorded here rather than
 inferred from the table. The `Repository policy` job builds no product package,
@@ -891,16 +885,13 @@ tree produces today, or a reservation a later phase fills.
 | GitHub repository | `mado-pilot` | Exists |
 | Rust facade package | `mado-pilot` | Exists |
 | Rust import | `mado_pilot` | Exists |
-| C header | `include/madopilot/madopilot.h` | Exists, tracked and hand-written |
-| C++ header | `include/madopilot/madopilot.hpp` | Exists, header-only |
+| C/C++ header | `include/madopilot/madopilot.h` | Exists, tracked and hand-written |
 | C symbol prefix | `madopilot_` | Exists — `madopilot_get_api` is the one exported symbol |
-| C++ namespace | `madopilot` | Exists |
 | Windows ABI-major DLL | `madopilot-1.dll` | Reserved; the development build produces the undecorated artifact |
 | Windows import library | `madopilot-1.lib` | Reserved, on the same terms |
 | macOS ABI-major install name | `libmadopilot.1.dylib` | Reserved, on the same terms |
 | CMake package | `MadoPilot` | Exists, for development-tree consumption |
-| CMake C target | `MadoPilot::C` | Exists |
-| CMake C++ wrapper target | `MadoPilot::Cpp` | Exists as an `INTERFACE` target |
+| CMake C/C++ target | `MadoPilot::C` | Exists |
 | pkg-config package | `madopilot-1` | Reserved; not generated |
 
 The loader names carry the ABI major version so that an incompatible ABI is a
@@ -924,11 +915,10 @@ against the Rust definitions by a cross-language layout probe; see
 [ADR 0004](adr/0004-c-header-authorship-and-abi-verification.md) and
 [c-abi.md](c-abi.md).
 
-`include/madopilot/madopilot.hpp`, the namespace `madopilot`, and the CMake
-targets `MadoPilot::C` and `MadoPilot::Cpp` now exist as well. The wrapper is
-header-only, so `MadoPilot::Cpp` is an `INTERFACE` target and produces no
-artifact; see [ADR 0005](adr/0005-cpp-wrapper-shape-and-cmake-surface.md) and
-[cpp-wrapper.md](cpp-wrapper.md).
+`MadoPilot::C` imports the same C ABI library for both languages. The project
+provides no C++ wrapper, namespace, forwarding header or target alias.
+[ADR 0089](adr/0089-direct-c-abi-consumption.md) records the clean cutover;
+[c-abi.md](c-abi.md) describes direct consumption and caller ownership.
 
 What the table marks reserved is withheld for three reasons. The `staticlib`
 kind is withheld because [`G-008`](validation-gates.md#g-008) has not recorded
@@ -952,7 +942,7 @@ Version one implements, in later phases:
 - versioned asset manifests with deterministic, network-free, validated loading;
 - structured diagnostics that exclude captured images and recognized text by
   default;
-- the Rust facade, the separately versioned C ABI, and the C++ wrapper over it.
+- the Rust facade and the separately versioned C ABI shared by C and C++.
 
 ### Non-goals
 
@@ -1083,12 +1073,12 @@ responsibilities a later phase takes on.
 | Default adapter wiring and backend rules | OpenCV matching remains required. Every pre-provider constructor preserves CPU behavior. `*_engine_with_ocr_provider` is the only integrated provider-policy path; automatic selection uses only a release-qualified target accelerator, preferred fallback is initialization-only, and required/provider inference failure never falls back |
 | C ABI functions, C header, dynamic library | Implemented through ABI 1.5. ABI 1.0, 1.2, 1.3, and 1.4 remain frozen complete 424-, 592-, 648-, and 720-byte prefixes. ABI 1.5 appends provider construction at offset 720 and engine-owned provider descriptor access at offset 728 for a complete 736-byte table under ADR 0046 |
 | C ABI static library and ABI-major release loader names | Not implemented; see [c-abi.md](c-abi.md) |
-| C++ RAII wrapper, `MadoPilot::C` and `MadoPilot::Cpp` CMake targets | Implemented through ABI 1.5 as a header-only adapter, including owning profile/zone/provider options with repaired projections, move-only grouped results, explicit clone, lvalue-only borrowed OCR/provider descriptor views, typed empty groups, and complete negotiated-suffix refusal |
+| Direct C/C++ consumption and `MadoPilot::C` | Implemented through the unchanged C ABI 1.5, with small explicit-ownership samples and independent C/C++ and C-only CMake consumers. No official C++ wrapper or separate C++ target |
 | CMake install and export set, pkg-config file | Not implemented; consumption is from the development tree |
 | Numeric performance budgets | Phase 1 and accepted Phase 2 profiles remain revision-bound under ADRs 0008 and 0024–0032. ADRs 0037, 0039–0041, 0044, 0045, 0048, and 0049 retain their exact OCR/provider evidence. ADRs 0051 and 0052 retain replay/OpenCV watcher ceilings, and ADR 0053 retains independent native WGC and ScreenCaptureKit latency, heap, RSS, and growth budgets. Qualification V2 does not reinterpret those measurements: target-specific statistical enforcement is optional Lane C evidence and cannot replace either required Lane B semantic result |
 | Native permission behavior | Implemented on macOS as non-prompting probes. Windows has no permission probe; its input path performs non-prompting integrity comparison and reports proven UIPI without elevation |
 | Release artifacts | `v0.4.0` is source-only; installable packaging remains unimplemented |
-| ABI compatibility testing | Implemented for frozen ABI 1.0, 1.2, 1.3, and 1.4 headers against current ABI 1.5. Historical callers compile only against immutable headers, negotiate their exact extents, and execute against the current library; current C++ tests refuse partial 1.3, 1.4, and 1.5 operations before reading missing entries |
+| ABI compatibility testing | Implemented for frozen ABI 1.0, 1.2, 1.3, and 1.4 headers against current ABI 1.5. Historical callers compile only against immutable headers, negotiate their exact extents, and execute against the current library; direct C ABI tests preserve partial-table negotiation |
 
 The existence of a package is not evidence that its behavior exists. Each product
 package documents its own planned responsibility, allowed seam, and implementation
@@ -1204,8 +1194,8 @@ are never nested, and caller-supplied clock or cancellation code runs outside
 both.
 
 This is an additive Rust-only contract. It changes no facade behavior, C
-function table, C layout, header, or C++ wrapper. The decision and its native
-performance acceptance conditions are recorded in
+function table, C layout or header. The decision and its native performance
+acceptance conditions are recorded in
 [ADR 0011](adr/0011-recoverable-stream-publication.md).
 
 `CaptureSession::commit_frame` adds a separate consumer commitment boundary.
@@ -1262,7 +1252,7 @@ input-authoritative frame placement and coordinate fingerprint.
 for one frame and simultaneous session-retained image payload. Native adapters
 enforce required options or refuse; replay, controlled and custom providers
 without support must return `UnsupportedOption`. Omitted options retain their
-previous behavior. The public C ABI and C++ wrapper are unchanged.
+previous behavior. The public C ABI is unchanged.
 
 Byte accounting covers declared producer/texture payload, detached storage,
 staging/CPU copies and observable linear padding, not opaque GPU/driver allocation
@@ -1609,9 +1599,9 @@ documented ABA risk. Commands, redaction rules, and exact limitations are in
 [windows-input-verification.md](windows-input-verification.md).
 
 This implementation is reached through runtime composition, the Rust facade,
-the ABI 1.2 C table, and the C++ wrapper. The Rust and native-language examples
-require `WindowMessage`, preserve focus, inspect the receipt, then evaluate a
-strictly newer visual condition as an independent success oracle.
+and the preserved C input table shared by C and C++. The Rust and C verification
+flows require `WindowMessage`, preserve focus, inspect the receipt, then
+evaluate a strictly newer visual condition as an independent success oracle.
 
 ### macOS native input submission
 
@@ -1801,8 +1791,8 @@ accepts its private socket peer only when kernel credentials bind that exact
 PID, user, canonical executable, and audit-token lifetime. The artifact SHA-256
 is paired with a validity-first Security.framework unique code identity; the
 peer's audit-token-selected running identity must match before ready facts are
-trusted. The benchmark's own process uses the same binding. Each C and C++
-workload retains unique executable and dynamic-library pins inside
+trusted. The benchmark's own process uses the same binding. Its C workload
+retains unique executable and dynamic-library pins inside
 controller-owned mode-0500 directories; every child must match the executable
 pin's live code identity, and both directory/file identities and bytes are
 rechecked after each exit. Each `ProcessDirected`
@@ -3326,17 +3316,14 @@ result data rather than a second failure channel. A contained boundary panic
 leaves outputs in their documented failure states and does not prove no native
 input took effect.
 
-Every C entry contains Rust panic unwinding. The C++ header owns and copies only
-according to C lifetimes, requires the complete entry extent before profile or
-provider construction, requires 712 bytes before creating a high-level grouped
-owner, 720 bytes before returning the frozen OCR descriptor, and all 736 bytes
-before returning provider descriptor views. Centralized projections rebind every
-owned string, provider root, and zone pointer after copy, move, assignment, or
-container relocation. No C++ path adds normalization, scheduling,
-per-inference retry, or provider switching. ADRs 0035/0036 record singular
-ownership/default construction; ADR 0043 records ABI 1.4 layout/grouped
-ownership; ADR 0046 records ABI 1.5 provider construction, descriptor ownership,
-and frozen-prefix obligations.
+Every C entry contains Rust panic unwinding. C and C++ callers check the
+required entry extent against both their known table and the returned table,
+keep request backing storage valid for the call, and retain owners of borrowed
+result/descriptor views. The library adds no C++ projection, copy/move policy
+or ownership layer. ADRs 0035/0036 record singular ownership/default
+construction; ADR 0043 records ABI 1.4 layout/grouped ownership; ADR 0046 records
+ABI 1.5 provider construction, descriptor ownership and frozen-prefix
+obligations. ADR 0089 retires only their wrapper-specific projections.
 
 The source-defined diagnostic benchmark measures capture/mapping, input
 submission, and explicit close/drain with diagnostics `Off`, `Normal`, `Debug`,
@@ -3398,11 +3385,11 @@ against.
 | Verification class | Status | Phase 0 |
 |---|---|---|
 | Numeric runtime performance budgets | Implemented for Phase 1 and accepted target-specific Phase 2 workloads by ADRs 0008 and 0024–0032. ADR 0037 additionally accepts Apple M1 Pro and Core i7-12700KF default-OCR profiles with executable correctness, growth, inference, startup, heap, mapping/copy, tensor/session, cleanup, and target-native resident accounting. Phase 3 default-OCR `G-013` is complete on both release targets |
-| ABI layout and old-header compatibility | Implemented. The cross-language layout probe compares `rustc` against the platform C compiler field by field; immutable ABI 1.0 and 1.2 callers negotiate only their 424-byte and 592-byte extents and run against ABI 1.3. The OCR owner/accessor suffix ends at 640 bytes; the default constructor completes ABI 1.3 at 648 bytes while frozen `madopilot_engine_options_t` remains 16-byte/alignment-4. Partial-prefix C++ tests refuse before reading missing entries. The unreleased 1.1 draft remains unsupported |
+| ABI layout and old-header compatibility | Implemented. The cross-language layout probe compares `rustc` against the platform C compiler field by field; immutable ABI 1.0, 1.2, 1.3 and 1.4 callers negotiate their 424-, 592-, 648- and 720-byte extents and run against ABI 1.5. Direct C ABI tests preserve partial-prefix negotiation; callers check extents before reading entries. The unreleased 1.1 draft remains unsupported |
 | Capture, mapping, and matching contract suites | Implemented for the contracts Phase 1 has. Both capture adapters pass the shared capture contract suite, and the vision contract suite covers the matching backend | Not applicable; no contract was implemented |
 | Change-detection policy and recorded-sequence contracts | The frozen `G-005` loader/evaluator tests cover strict manifests, exact fixture digests, ROI clipping, repeated pixels, geometry/epoch discontinuity, malformed/duplicate/reordered inputs, overflow, bounded content-redacted transition ids, candidate failure, deterministic aggregate output, privacy, report/runtime descriptor parity, and accepted ADR 0050 drift. The closed runtime policy tests cover exact pixels, sequence gaps, fail-safe identity/geometry/ROI/format boundaries, unsupported policy codes, stable defaults, thread safety, and absence of worker state. Both hosted release targets reproduced canonical report v2 and independent correctness, security/privacy, and specification review is clean | Not applicable |
-| OCR, watcher, input, and diagnostic contract suites | OCR contract/backend/runtime/facade/C/C++ tests cover accepted default and explicit composition, identity, clipping, normalization, malformed output, deadline/cancellation, out-of-order completion, close, immutable ownership, initialized ABI outputs, frozen-prefix negotiation, request projection rebinding, repeated cleanup, and content-redacted diagnostics. Rust watcher/runtime/facade suites cover current/newer frames, repeated pixels, appearance/disappearance, ROI, rate deferral, exact coalescing equality/inequality, saturation/expiry, two-session fairness, stale generations, target loss, geometry/epoch reset, terminal interleavings, retained results, diagnostic loss/redaction, replay/OpenCV execution, and the accepted WGC/ScreenCaptureKit final matrix under ADR 0057. Hosted native jobs retain Rust/C/C++/CMake smoke and hard benchmark gates; the C/C++ checks remain regression proof because no watcher start/query surface exists there | Not applicable |
-| Native permission behavior and permission probes | Implemented on macOS and enforceable: Screen Recording and event-post access are read separately through non-prompting checks, discovery and open preflight capture authorization, macOS input re-reads the public `CGPreflightPostEventAccess` decision before every irreversible event on both routes and treats an unavailable or unreadable state as unauthorized, the legacy Accessibility observation is retained only as a paired qualification fact, and no permission-request API is called. The facade, C ABI, and C++ wrapper expose the same non-prompting states. Windows advertises no permission-probe capability; its input path compares integrity non-promptingly, proves the same-integrity dedicated fixture path and higher-integrity ordinary refusal path natively, and retains controlled-driver coverage for receipt edge cases | Not applicable; no permission was requested or probed |
+| OCR, watcher, input, and diagnostic contract suites | OCR contract/backend/runtime/facade/C ABI tests and direct consumers cover accepted default and explicit composition, identity, clipping, normalization, malformed output, deadline/cancellation, out-of-order completion, close, immutable ownership, initialized ABI outputs, frozen-prefix negotiation, repeated cleanup, and content-redacted diagnostics. Rust watcher/runtime/facade suites cover current/newer frames, repeated pixels, appearance/disappearance, ROI, rate deferral, exact coalescing equality/inequality, saturation/expiry, two-session fairness, stale generations, target loss, geometry/epoch reset, terminal interleavings, retained results, diagnostic loss/redaction, replay/OpenCV execution, and the accepted WGC/ScreenCaptureKit final matrix under ADR 0057. Hosted native jobs retain Rust/C/C++/CMake smoke and hard benchmark gates; the C/C++ checks remain regression proof because no watcher start/query surface exists there | Not applicable |
+| Native permission behavior and permission probes | Implemented on macOS and enforceable: Screen Recording and event-post access are read separately through non-prompting checks, discovery and open preflight capture authorization, macOS input re-reads the public `CGPreflightPostEventAccess` decision before every irreversible event on both routes and treats an unavailable or unreadable state as unauthorized, the legacy Accessibility observation is retained only as a paired qualification fact, and no permission-request API is called. The facade and shared C/C++ ABI expose the same non-prompting states. Windows advertises no permission-probe capability; its input path compares integrity non-promptingly, proves the same-integrity dedicated fixture path and higher-integrity ordinary refusal path natively, and retains controlled-driver coverage for receipt edge cases | Not applicable; no permission was requested or probed |
 | Windows capture ownership and native resource lifetime | Implemented and enforceable in `mado-pilot-platform-windows` for staged current/previous discovery generations, two-frame WGC detachment, an extent-derived process-shared retained maximum capped at 40, checked 128 MiB surfaces and 2 GiB session / 4 GiB process retained-byte ceilings, deterministic multi-session contention/release behavior, producer leases bound to queued/quarantined native ownership, lock-free drop debt, lazy mapping, resize generations, callback admission fencing, apartment-safe asynchronous native teardown, typed terminal loss, runtime-resolved optional exports, and retryable close. Controlled common and Windows-native tests are linked from [windows-capture-contract-tests.md](windows-capture-contract-tests.md). ADR 0031 accepts the revision-bound 1280×720 production matrix and ADR 0032 accepts the exact two-display mixed-DPI dual-4K matrix, including callback-copy/staging/resident observations and lifecycle/resource budgets | Not applicable; no native capture existed |
 | Windows input submission and cleanup | Implemented and enforceable in `mado-pilot-platform-windows` for separate `System` and explicit exact-window `WindowMessage` routes, ordinary `Unknown` compatibility with target-queue evidence, fixture `Supported` compatibility with protocol acknowledgement, retained-authority pre/post fences, conservative message translation, focus and signed-coordinate policies, system native-record accounting, integrity/UIPI classification, non-fallback after native submission begins, bounded sequence-owned same-route cleanup, target loss, cancellation/deadline races, and close. [ADR 0027](adr/0027-windows-window-message-queue-submission.md) supersedes ADR 0022's ordinary system-only consequence without claiming application consumption or generation-atomic `HWND` safety. Native ordinary/fixture, negative-consumer, queue-pressure, lifecycle, single-display, same-DPI and mixed-DPI topology, unrelated-foreground, visual/no-visual, and higher-integrity/UIPI refusal rows are recorded; same-value recurrence remains an explicit unproved row |
 | macOS input submission and cleanup | Implemented and enforceable in `mado-pilot-platform-macos` for the target-kind capability matrix, system-stream admission evidence, process-directed input with owning-process scope, unknown compatibility, and invocation-only evidence, absence of any window-message pair, route-sensitive early authority, one final native retained-window/process-lifetime commit per ordinary native unit, source-frame `RequireUnchanged` comparison, live `ReprojectCurrent`, snapshot projection, release-purpose cleanup without a retained-window inventory read, focus outcomes, Retina and signed multi-display point mapping, layout-resolved keys and refused modifier-only characters, sequence-owned modifier flags, surrogate-safe text chunking, non-fallback after possible effect, bounded sequence-owned cleanup, target loss, cancellation/deadline races, and close. Exact-window focus joins current shareable-content identity to a public read-only Accessibility focused-window snapshot and never raises an Accessibility window; successful submission is not presented as application consumption. Final candidate `dec43d7` passed the controlled profiles and independent `single`, exact two-display non-mirrored `same-scale`, and `mixed-scale` matrices. All fourteen controlled release pairs are qualified |

@@ -8,13 +8,8 @@
 //! structures with documented mandatory prefixes, explicit pointer-length views,
 //! module-owned allocation and release, and panic containment at every entry.
 //!
-//! It also holds the artifacts that are not Rust: the tracked C header, the
-//! header-only C++ wrapper over it, the deterministic and native examples, the
-//! layout, ownership, compatibility, and consumer probes, and the CMake project
-//! that defines `MadoPilot::C` and `MadoPilot::Cpp`. None of those is a Cargo
-//! target — Cargo ignores a directory under `examples/` or `tests/` with no
-//! `main.rs` — and the C++ wrapper is not a Cargo package. They live here
-//! because they are this boundary.
+//! It also owns the C header, direct C/C++ samples, boundary verification
+//! consumers, and the development-tree `MadoPilot::C` CMake target.
 //!
 //! # Allowed seam
 //!
@@ -46,10 +41,8 @@
 //! construction and immutable provider facts. It contains no watcher, query,
 //! callback, automatic-input, or native-frame entry.
 //!
-//! The C++ wrapper covers exactly the negotiated table and declares no ABI of
-//! its own, so it adds no binary compatibility surface;
-//! `docs/adr/0005-cpp-wrapper-shape-and-cmake-surface.md` records why it is
-//! header-only.
+//! C and C++ consume the same C ABI. Applications own handle management,
+//! request storage, and higher-level policy; no official C++ wrapper is provided.
 //!
 //! **Every released numeric value, structure prefix, field offset, and table
 //! position is frozen for ABI major 1.** ADR 0007 froze ABI 1.0, ADR 0023 froze
@@ -61,14 +54,10 @@
 //!
 //! # Where to start
 //!
-//! `include/madopilot/madopilot.h` is the contract as a C caller reads it.
-//! `examples/c/deterministic-slice.c` and `examples/c/native-input-common.h`
-//! are its replay and native common flows. The corresponding C++ surfaces are
-//! `include/madopilot/madopilot.hpp`,
-//! `examples/cpp/deterministic-slice.cpp`, and
-//! `examples/cpp/native-input.cpp`. `docs/c-abi.md` records the ownership,
-//! structure-prefix, status, and build rules, and `docs/cpp-wrapper.md` records
-//! what the C++ adapter adds on top.
+//! Start with `examples/c/direct-abi.c` or `examples/cpp/direct-abi.cpp`.
+//! Both use `include/madopilot/madopilot.h` directly. `docs/c-abi.md` records
+//! ownership, structure-prefix, status, and build rules. The larger C examples
+//! are replay, native-input, and OCR verification consumers.
 
 // The C surface is named the way C names it. Rust casing here would make the
 // header and the definitions it mirrors two vocabularies for one contract.

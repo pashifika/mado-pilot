@@ -1,9 +1,9 @@
 # Windows Input Adapter and Verification
 
 The Windows platform package implements input at the Adapter boundary.
-`mado_pilot::windows_engine` wires it into the public Rust facade, and C ABI 1.2
-plus the header-only C++ wrapper expose the same negotiated workflow. `System`
-and `WindowMessage` remain separate caller-selected routes. Ordinary retained
+`mado_pilot::windows_engine` wires it into the public Rust facade. C and C++
+consume that workflow directly through C ABI 1.5's preserved input entries.
+`System` and `WindowMessage` remain separate caller-selected routes. Ordinary retained
 top-level windows expose `WindowMessage` as unknown-but-attemptable with
 target-queue evidence; only the dedicated acknowledged fixture raises that
 evidence to target-protocol acknowledgement. Neither receipt proves application
@@ -239,20 +239,20 @@ a helper, or a privileged identity. It refuses zero or multiple title matches.
 Its receipt and newer-frame result are printed as independent facts; neither
 titles, pixels, nor typed payloads enter diagnostics.
 
-## Explicit C and C++ boundary checks
+## Explicit C ABI boundary checks
 
-The ABI check compiles and runs both native common-flow examples in `--check`
-mode by default. That mode creates the real Windows engine, verifies ABI 1.2
-route-capability and diagnostic surfaces, confirms that no permission-probe
-capability is advertised, and stops before discovery or input:
+The ABI checker runs the small direct C/C++ samples without native operations.
+Its C native verifier uses `--check` by default: it creates the Windows engine,
+checks the input/diagnostic surface and absence of a permission-probe capability,
+then stops before discovery or input:
 
 ```bat
 cargo run --locked --package mado-pilot-capi --example c-abi-check -- --label "<host>"
 ```
 
 The unattended Windows matrix owns both fixture lifecycles. Build them first,
-then let `c-abi-check` pass the ordinary and acknowledged exact titles to each C
-and C++ flow:
+then let `c-abi-check` give the C default and extended flows separate fresh
+ordinary/acknowledged fixtures and their exact titles:
 
 ```bat
 cargo build --locked --package mado-pilot-platform-windows --bin mado-pilot-windows-input-fixture --bin mado-pilot-windows-window-message-fixture
@@ -260,22 +260,22 @@ cargo build --locked --package mado-pilot-capi
 cargo run --locked --package mado-pilot-capi --example c-abi-check -- --label "<host>" --windows-native-fixture
 ```
 
-The C flow independently performs engine construction, discovery, capture,
-mapping, a bounded four-event request, immutable receipt/attempt inspection, a
-strictly newer expected-condition search, diagnostic drain, and explicit close
-for both contracts. The Windows C++ flow performs the same lifecycle with a
-16-event request covering pointer movement, every button, both wheel axes, a
-function key, an ordered modifier chord, Unicode text, and an observed delay;
-the harness also checks the complete redacted fixture-event order. The ordinary
-flow requires `Unknown` capability and `TargetQueueAdmission`; the dedicated
-flow requires `Supported` and `TargetProtocolAcknowledgement`. Both preserve
-focus and permit no system fallback. Frozen ABI 1.0 layout and negotiation, ABI
-1.2 wrapper ownership, and the independent CMake consumer run in the same check.
+The C default flow performs engine construction, discovery, capture, mapping, a
+bounded four-event request, immutable receipt/attempt inspection, a strictly
+newer expected-condition search, diagnostic drain and explicit close.
+`--extended-sequence` performs the same lifecycle with sixteen events: pointer
+movement, every button, both wheel axes, a function key, an ordered modifier
+chord, Unicode text and an observed delay. Both check the complete redacted
+fixture-event order. The ordinary flow requires `Unknown` capability and
+`TargetQueueAdmission`; the dedicated flow requires `Supported` and
+`TargetProtocolAcknowledgement`. Both preserve focus and permit no system
+fallback. Frozen ABI 1.0/1.2/1.3/1.4 layouts and callers, direct C/C++ samples
+and independent CMake consumers run in the same check.
 
 When the caller owns a fixture lifecycle, pass `--ordinary "<full title>"` or
-`--acknowledged "<full title>"` directly to `windows-native-input.exe` or
-`windows-native-input-cpp.exe`. Output excludes the title, captured bytes, and
-typed text.
+`--acknowledged "<full title>"` to `windows-native-input.exe`; prefix either with
+`--extended-sequence` for the extended case. Output excludes the title, captured
+bytes and typed text.
 
 ## Native evidence and limitations
 

@@ -664,6 +664,13 @@ records, and still return four complete receipts on both targets.
 
 ## Phase 2 native performance status
 
+The records in this section remain bound to their named source revisions.
+Under [ADR 0089](adr/0089-direct-c-abi-consumption.md), the current benchmark's
+input set runs Rust and C only; its official-wrapper C++ executable option,
+workloads and oracles are retired. Historical C++ rows are reproducible with
+their original source, not relabeled as direct-C-ABI C++ or C measurements.
+This cutover records no replacement profile or qualification.
+
 Phase 2's affected [`G-013`](validation-gates.md#g-013) production and
 target-specific native profiles are accepted. Windows final-source Phase 1
 reruns pass on the exact exit candidate; Apple Silicon runs remain attributed

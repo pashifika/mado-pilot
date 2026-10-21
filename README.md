@@ -83,8 +83,7 @@ separate target/action authorization.
 | Language | Entry point and reference |
 |---|---|
 | Rust | Depend on [`mado-pilot`](crates/mado-pilot) and import `mado_pilot`. The [crate documentation](crates/mado-pilot/src/lib.rs) introduces the public API. |
-| C | Use the separately versioned [C ABI](docs/c-abi.md) for ownership rules, compatibility, and build instructions. |
-| C++17 | Use the header-only [C++ wrapper](docs/cpp-wrapper.md) for automatic handle ownership and development-tree CMake targets. |
+| C / C++ | Use [`madopilot.h` and `MadoPilot::C`](docs/c-abi.md) directly; small samples demonstrate explicit handle ownership. |
 
 Generate the full Rust API reference locally:
 
