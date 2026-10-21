@@ -94,6 +94,8 @@ evicted revision from current DPI.
 Physical desktop metrics use a checked, thread-local PMv2 scope; current-cursor
 queries use `GetPhysicalCursorPos`. Message coordinates are converted into the
 target's logical screen convention, then into client coordinates where required.
+Pointer messages are also posted under the target's DPI context, preventing
+USER32 from scaling the prepared coordinates again from the caller's context.
 Every temporary DPI scope restores the caller's context. Failed scope entry or
 conversion refuses the event without changing process DPI or input authority.
 

@@ -1626,9 +1626,10 @@ does not identify UIPI through its return or last-error value.
 
 Physical desktop queries use a checked calling-thread PMv2 scope, and current
 cursor reads are physical. Ordinary messages convert physical points into the
-retained target's logical screen/client convention. Temporary DPI scopes restore
-the caller's context; conversion failures refuse before submission. Process DPI,
-signed coordinate bounds and existing authority fences are unchanged.
+retained target's logical screen/client convention. Pointer posts use that target
+DPI context so USER32 does not scale the prepared coordinates again. Temporary
+scopes restore the caller; context/conversion failures refuse before submission.
+Process DPI, signed coordinate bounds and existing authority fences are unchanged.
 
 An odd System UTF-16 prefix records one private pending key-up. The controller
 releases it before prior sequence-owned keys/buttons under one cleanup context

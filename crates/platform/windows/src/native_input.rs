@@ -42,7 +42,7 @@ use windows::Win32::UI::WindowsAndMessaging::{
     GetForegroundWindow, GetPhysicalCursorPos, GetSystemMetrics, GetWindowThreadProcessId,
     PostMessageW, SM_CXVIRTUALSCREEN, SM_CYVIRTUALSCREEN, SM_SWAPBUTTON, SM_XVIRTUALSCREEN,
     SM_YVIRTUALSCREEN, SMTO_ABORTIFHUNG, SMTO_BLOCK, SendMessageTimeoutW, SetForegroundWindow,
-    WM_COPYDATA,
+    WM_COPYDATA, WM_MOUSEHWHEEL, WM_MOUSEMOVE,
 };
 
 use crate::discovery::{NativeKey, current_placement};
@@ -322,6 +322,18 @@ impl NativeInputDriver {
 
     fn raw_post_window_message(&self, unit: MessageUnit) -> Result<(), InputFault> {
         let hwnd = self.hwnd()?;
+        // USER32 scales queued pointer coordinates from the posting thread's context.
+        let _dpi = if (WM_MOUSEMOVE..=WM_MOUSEHWHEEL).contains(&unit.message) {
+            let scope = window_dpi_context(hwnd)
+                .and_then(|context| ThreadDpiContext::enter(&NativeThreadDpi, context));
+            if scope.is_none() {
+                self.ensure_window_authority()?;
+                return Err(InputFault::UnsupportedCoordinate);
+            }
+            scope
+        } else {
+            None
+        };
         // SAFETY: the caller immediately revalidated `hwnd`. The scalar
         // system-message parameters contain no borrowed pointer, and the
         // generated wrapper captures the thread's last error before returning.
