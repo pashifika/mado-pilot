@@ -125,7 +125,7 @@ pub fn candidate_interest_membership(
     quadrilateral: [(f64, f64); 4],
     source_extent: PixelExtent,
     interests: BackendInterests<'_>,
-) -> Result<u8> {
+) -> Result<u16> {
     let width = f64::from(source_extent.width());
     let height = f64::from(source_extent.height());
     for (x, y) in quadrilateral {
@@ -152,14 +152,14 @@ pub fn candidate_interest_membership(
         return Err(OcrFault::BackendGeometryInvalid.into());
     }
 
-    let mut membership = 0_u8;
+    let mut membership = 0_u16;
     for (index, zone) in interests.zones().iter().enumerate() {
         if f64::from(zone.left()) <= centroid.0
             && centroid.0 < f64::from(zone.right())
             && f64::from(zone.top()) <= centroid.1
             && centroid.1 < f64::from(zone.bottom())
         {
-            membership |= 1_u8 << index;
+            membership |= 1_u16 << index;
         }
     }
     Ok(membership)
@@ -462,14 +462,14 @@ mod tests {
     }
 
     #[test]
-    fn interest_view_refuses_zero_and_nine_entries() {
+    fn interest_view_refuses_zero_and_seventeen_entries() {
         assert_eq!(
             BackendInterests::new(&[]).unwrap_err().status(),
             Status::InvalidArgument
         );
-        let nine = [PixelRect::new(0, 0, 1, 1).unwrap(); 9];
+        let seventeen = [PixelRect::new(0, 0, 1, 1).unwrap(); 17];
         assert_eq!(
-            BackendInterests::new(&nine).unwrap_err().status(),
+            BackendInterests::new(&seventeen).unwrap_err().status(),
             Status::InvalidArgument
         );
     }

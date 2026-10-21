@@ -74,12 +74,14 @@ int main(int argc, char** argv)
     madopilot_package_t* package = NULL;
     madopilot_ocr_result_t* result = NULL;
     madopilot_ocr_zone_scan_result_t* grouped_result = NULL;
+    madopilot_ocr_zone_scan_result_t* sixteen_result = NULL;
+    madopilot_ocr_zone_scan_result_t* refused_result = NULL;
     madopilot_diagnostic_reader_t* reader = NULL;
     madopilot_diagnostic_batch_t* batch = NULL;
     madopilot_engine_options_t options = {0};
     options.struct_size = (uint32_t)sizeof(options);
     options.diagnostic_level = MADOPILOT_DIAGNOSTIC_LEVEL_DEBUG;
-    options.diagnostic_capacity = 16;
+    options.diagnostic_capacity = 32;
     madopilot_error_t* error = NULL;
 
     if (!ok(madopilot_fixture_engine_create(
@@ -160,6 +162,36 @@ int main(int argc, char** argv)
         goto fail;
     }
 
+    madopilot_ocr_zone_t expanded_zones[17] = {0};
+    for (size_t index = 0; index < 17; ++index) {
+        expanded_zones[index].struct_size = (uint32_t)sizeof(expanded_zones[index]);
+        expanded_zones[index].region.space = MADOPILOT_SPACE_CAPTURE_PIXELS;
+        expanded_zones[index].region.left = (int32_t)(index % 4);
+        expanded_zones[index].region.top = (int32_t)(index / 4);
+        expanded_zones[index].region.right = 32;
+        expanded_zones[index].region.bottom = 24;
+        expanded_zones[index].clip_policy = MADOPILOT_CLIP_POLICY_REJECT;
+    }
+    grouped_request.zones = expanded_zones;
+    grouped_request.zone_count = 16;
+    if (!ok(api->session_scan_ocr_zones(
+                session, &grouped_request, &operation, &sixteen_result, &error),
+            "session_scan_ocr_zones sixteen")) {
+        goto fail;
+    }
+    grouped_request.zone_count = 17;
+    const madopilot_status_t refused_status = api->session_scan_ocr_zones(
+        session, &grouped_request, &operation, &refused_result, &error);
+    if (refused_status != MADOPILOT_STATUS_INVALID_ARGUMENT ||
+        refused_result != NULL) {
+        fprintf(stderr, "seventeen OCR zones were not refused atomically\n");
+        goto fail;
+    }
+    if (error != NULL) {
+        api->error_release(error);
+        error = NULL;
+    }
+
     if (!ok(api->session_close(session, &operation, &error), "session_close")) {
         goto fail;
     }
@@ -182,6 +214,20 @@ int main(int argc, char** argv)
         !ok(api->ocr_result_region_at(result, 0, &region), "ocr_result_region_at") ||
         !ok(api->ocr_result_text_at(result, 0, &text), "ocr_result_text_at")) {
         goto fail;
+    }
+    const char expected_text[] = "\xe9\xad\x94\xe5\xb0\x8e\xe5\xa3\xab A-7";
+    const double expected_points[4][2] = {
+        {1.0, 2.0}, {20.0, 2.0}, {20.0, 9.0}, {1.0, 9.0}};
+    if (text.len != sizeof(expected_text) - 1 ||
+        memcmp(text.data, expected_text, sizeof(expected_text) - 1) != 0 ||
+        region.confidence != 0.91) {
+        goto fail;
+    }
+    for (size_t point = 0; point < 4; ++point) {
+        if (region.points[point].x != expected_points[point][0] ||
+            region.points[point].y != expected_points[point][1]) {
+            goto fail;
+        }
     }
 
     madopilot_ocr_zone_scan_result_info_t grouped_info = {0};
@@ -230,6 +276,61 @@ int main(int argc, char** argv)
         grouped_text.data != overlap_text.data ||
         grouped_text.len != overlap_text.len) {
         goto fail;
+    }
+
+    madopilot_ocr_zone_scan_result_info_t sixteen_info = {0};
+    sixteen_info.struct_size = (uint32_t)sizeof(sixteen_info);
+    if (!ok(api->ocr_zone_scan_result_info(sixteen_result, &sixteen_info),
+            "ocr_zone_scan_result_info sixteen") ||
+        sixteen_info.zone_count != 16 ||
+        sixteen_info.unique_candidate_count != 1 ||
+        sixteen_info.membership_count != 16 ||
+        sixteen_info.source.stream != info.source.stream ||
+        sixteen_info.source.epoch != info.source.epoch ||
+        sixteen_info.source.sequence != info.source.sequence ||
+        sixteen_info.source.geometry != info.source.geometry ||
+        sixteen_info.output_space != MADOPILOT_SPACE_CAPTURE_PIXELS ||
+        sixteen_info.source_envelope.space != MADOPILOT_SPACE_CAPTURE_PIXELS ||
+        sixteen_info.source_envelope.left != 0 ||
+        sixteen_info.source_envelope.top != 0 ||
+        sixteen_info.source_envelope.right != 32 ||
+        sixteen_info.source_envelope.bottom != 24) {
+        goto fail;
+    }
+    madopilot_ocr_zone_result_t last_group = {0};
+    madopilot_str_t shared_text = {0};
+    for (size_t index = 0; index < 16; ++index) {
+        last_group.struct_size = (uint32_t)sizeof(last_group);
+        madopilot_ocr_region_t member = {0};
+        member.struct_size = (uint32_t)sizeof(member);
+        madopilot_str_t member_text = {0};
+        if (!ok(api->ocr_zone_scan_result_zone_at(sixteen_result, index, &last_group),
+                "ocr_zone_scan_result_zone_at sixteen") ||
+            last_group.region_count != 1 ||
+            last_group.effective_zone.space != expanded_zones[index].region.space ||
+            last_group.effective_zone.left != expanded_zones[index].region.left ||
+            last_group.effective_zone.top != expanded_zones[index].region.top ||
+            last_group.effective_zone.right != expanded_zones[index].region.right ||
+            last_group.effective_zone.bottom != expanded_zones[index].region.bottom ||
+            !ok(api->ocr_zone_scan_result_region_at(sixteen_result, index, 0, &member),
+                "ocr_zone_scan_result_region_at sixteen") ||
+            member.confidence != region.confidence ||
+            !ok(api->ocr_zone_scan_result_text_at(sixteen_result, index, 0, &member_text),
+                "ocr_zone_scan_result_text_at sixteen") ||
+            member_text.len != text.len ||
+            memcmp(member_text.data, text.data, text.len) != 0) {
+            goto fail;
+        }
+        for (size_t point = 0; point < 4; ++point) {
+            if (member.points[point].x != region.points[point].x ||
+                member.points[point].y != region.points[point].y) {
+                goto fail;
+            }
+        }
+        if (index == 0) shared_text = member_text;
+        if (member_text.data != shared_text.data || member_text.len != shared_text.len) {
+            goto fail;
+        }
     }
 
     madopilot_diagnostic_drain_state_t drain_state =
@@ -313,6 +414,15 @@ int main(int argc, char** argv)
     printf("ocr: sequence=%llu text=", (unsigned long long)info.source.sequence);
     fwrite(text.data, 1, text.len, stdout);
     printf(" confidence=%.5f\n", region.confidence);
+    printf("ocr-zones: groups=%llu unique=%llu memberships=%llu last-index=15 "
+           "last-memberships=%llu sequence=%llu refused17=%d\n",
+           (unsigned long long)sixteen_info.zone_count,
+           (unsigned long long)sixteen_info.unique_candidate_count,
+           (unsigned long long)sixteen_info.membership_count,
+           (unsigned long long)last_group.region_count,
+           (unsigned long long)sixteen_info.source.sequence, (int)refused_status);
+    api->ocr_zone_scan_result_release(sixteen_result);
+    sixteen_result = NULL;
     api->ocr_result_release(result);
     result = NULL;
     api->ocr_zone_scan_result_release(grouped_result);
@@ -323,6 +433,8 @@ fail:
     if (error != NULL) api->error_release(error);
     if (result != NULL) api->ocr_result_release(result);
     if (grouped_result != NULL) api->ocr_zone_scan_result_release(grouped_result);
+    if (sixteen_result != NULL) api->ocr_zone_scan_result_release(sixteen_result);
+    if (refused_result != NULL) api->ocr_zone_scan_result_release(refused_result);
     if (batch != NULL) api->diagnostic_batch_release(batch);
     if (reader != NULL) api->diagnostic_reader_release(reader);
     if (frame != NULL) api->frame_release(frame);

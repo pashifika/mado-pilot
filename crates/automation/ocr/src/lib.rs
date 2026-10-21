@@ -10,7 +10,7 @@
 //! model discovery, download, default wiring, or inference itself.
 //!
 //! [`OcrRecognizer::recognize`] maps one borrowed immutable frame region.
-//! [`OcrRecognizer::scan_zones`] resolves one through eight caller-order zones,
+//! [`OcrRecognizer::scan_zones`] resolves one through sixteen caller-order zones,
 //! maps their smallest capture-pixel envelope once, and carries relative
 //! interests through the unchanged backend trait. Both accept borrowed
 //! candidates through a core-owned bounded sink and commit atomically without
@@ -22,7 +22,7 @@
 //! finite confidence in `0.0..=1.0` to five decimals, and orders by the backend's
 //! unique stable detector order. Grouped results apply exact half-open centroid
 //! membership, own each relevant candidate once, expose explicit empty groups,
-//! and bound one through eight zones to at most 8,000 compact memberships.
+//! and bound one through sixteen zones to at most 16,000 compact memberships.
 
 pub mod backend;
 pub mod catalog;

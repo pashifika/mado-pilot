@@ -702,7 +702,7 @@ document together, with an architecture decision record.
 | Cargo resolver | `3` |
 | Rust edition | `2024` |
 | Pinned toolchain and minimum supported Rust version | `1.97.1` |
-| Package version | `0.4.0` |
+| Package version | `0.5.0` (unreleased) |
 | Package license | `Apache-2.0` |
 | Repository | `https://github.com/pashifika/mado-pilot` |
 
@@ -1079,7 +1079,7 @@ responsibilities a later phase takes on.
 | Rust OCR text-presence queries | Implemented through explicit CPU bounded-v2 with immutable source/result retention, finite mixed scheduling and selective OCR shutdown. Both-target real CPU replay passes; ADR0075 accepts fixed-workload ceilings. Native capture and final numerical enforcement remain open |
 | OCR work coalescing | Not implemented; OCR query work remains distinct |
 | Public Rust operations for the deterministic replay workflow | Implemented in `mado-pilot`, including the blocking replay template watcher example with separate query/wait operation contexts |
-| Public Rust operations for native and replay workflows | Implemented in `mado-pilot`, including explicit optional backend wiring, accepted CPU default/profile constructors, owning provider-policy constructors, immutable provider descriptors, borrowed one-to-eight-zone scans, and Rust template query types over replay, WGC, and ScreenCaptureKit sessions. Replay/OpenCV and native WGC/ScreenCaptureKit watcher support is qualified on the named release targets under ADR 0064. No platform-native, `ort`, worker, channel, Tokio, or callback type crosses the facade; C ABI/C++ watcher APIs remain absent |
+| Public Rust operations for native and replay workflows | Implemented in `mado-pilot`, including explicit optional backend wiring, accepted CPU default/profile constructors, owning provider-policy constructors, immutable provider descriptors, borrowed one-to-sixteen-zone scans, and Rust template query types over replay, WGC, and ScreenCaptureKit sessions. Replay/OpenCV and native WGC/ScreenCaptureKit watcher support is qualified on the named release targets under ADR 0064. No platform-native, `ort`, worker, channel, Tokio, or callback type crosses the facade; C ABI/C++ watcher APIs remain absent |
 | Default adapter wiring and backend rules | OpenCV matching remains required. Every pre-provider constructor preserves CPU behavior. `*_engine_with_ocr_provider` is the only integrated provider-policy path; automatic selection uses only a release-qualified target accelerator, preferred fallback is initialization-only, and required/provider inference failure never falls back |
 | C ABI functions, C header, dynamic library | Implemented through ABI 1.5. ABI 1.0, 1.2, 1.3, and 1.4 remain frozen complete 424-, 592-, 648-, and 720-byte prefixes. ABI 1.5 appends provider construction at offset 720 and engine-owned provider descriptor access at offset 728 for a complete 736-byte table under ADR 0046 |
 | C ABI static library and ABI-major release loader names | Not implemented; see [c-abi.md](c-abi.md) |
@@ -2775,10 +2775,12 @@ One `OcrRequest` borrows one immutable `Frame`, one exact
 `OcrBackendIdentity` (stable ID plus implementation version), one complete
 `OcrModelIdentity`, and one `OperationContext`, then explicitly names the
 optional source region and clip policy and output coordinate space. The separate
-`OcrZoneScanRequest` borrows the same exact identities plus one through eight
+`OcrZoneScanRequest` borrows the same exact identities plus one through sixteen
 caller-order `OcrZone` entries. It resolves and clips every zone before mapping,
 rejects the whole request if any effective zone is empty, and maps the smallest
 capture-pixel envelope containing them once.
+The capacity expansion is recorded by [ADR 0088](adr/0088-sixteen-zone-ocr-capacity.md);
+the shared-envelope semantics and historical eight-zone qualification remain unchanged.
 
 The model identity includes model revision, detector and recognizer byte
 identities, profile and language/preprocessing/decoder/normalization identities,
@@ -2791,7 +2793,7 @@ in caller order.
 Results own all normalized text and converted geometry, so retaining one does
 not retain a frame, backend candidate buffer, model bytes, mapping, tensor,
 session lock, or capture storage slot. A grouped result owns each unique
-candidate once and stores group membership as checked `u16` indexes with nine
+candidate once and stores group membership as checked `u16` indexes with seventeen
 offsets; empty groups have equal adjacent offsets. Manual `Debug`
 implementations report only reviewed identities, geometry, counts, and byte
 lengths; they never print recognized text or model bytes.
@@ -2815,12 +2817,12 @@ is at most 4 KiB. A backend lends candidate text to an `OcrCandidateSink` rather
 than returning an owned `Vec<Arc<[u8]>>`; the sink refuses the 1,001st candidate
 before collection and bounds normalization before copying retained text.
 
-A grouped operation additionally permits one through eight zones, at most 8,000
+A grouped operation additionally permits one through sixteen zones, at most 16,000
 logical memberships, a 256 MiB mapping, 262,144 temporary semantic bytes,
-16,000 membership-index bytes, and 5,242,880 immutable-result semantic bytes.
+32,000 membership-index bytes, and 5,242,880 immutable-result semantic bytes.
 Candidate/zone and per-candidate text limits entail the aggregate raw,
 normalized, membership, temporary, index, and result ceilings; compile-time
-layout assertions prove those products. A putative 8,001st membership requires
+layout assertions prove those products. A putative 16,001st membership requires
 candidate 1,001 and therefore fails the earlier candidate gate. Mapping size
 remains input-dependent: the complete source descriptor is checked because a
 native conversion may materialize the full source before cropping, and the
@@ -2895,7 +2897,7 @@ digest/path/bytes, vocabulary, pixels/hash, recognized text, credential, or
 free-form backend output.
 `mado-pilot-testkit` supplies a FIFO-scripted controlled backend and common
 suite: gated calls through recognizer clones prove out-of-order isolation and
-terminal authority, while grouped cases cover one/three/eight zones, caller
+terminal authority, while grouped cases cover one/three/eight/nine/sixteen zones, caller
 reordering, clipping, exact half-open edges, empty groups, ignored versus
 honored interests, hard derived bounds, malformed output, final-commit races,
 redacted observations, overlap safety, and independence from backend buffers,

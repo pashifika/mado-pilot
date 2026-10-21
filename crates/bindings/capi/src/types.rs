@@ -1809,7 +1809,7 @@ pub struct madopilot_ocr_zone_scan_request_t {
     pub reserved: u32,
     /// Caller-owned array of size-versioned zones.
     pub zones: *const madopilot_ocr_zone_t,
-    /// Number of zone elements; must be one through eight.
+    /// Number of zone elements; must be one through sixteen.
     pub zone_count: usize,
     /// Byte stride between zone elements.
     pub zone_stride: usize,

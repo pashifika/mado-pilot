@@ -24,12 +24,12 @@ pub const MAX_CANDIDATES: usize = 1_000;
 pub const MAX_TEXT_BYTES: usize = 4 * 1024;
 /// Maximum raw text bytes a backend may submit for one candidate.
 pub const MAX_BACKEND_TEXT_BYTES: usize = 16 * 1024;
-const MAX_ZONE_MEMBERSHIPS: usize = 8_000;
+const MAX_ZONE_MEMBERSHIPS: usize = 16_000;
 const MAX_AGGREGATE_RAW_TEXT_BYTES: usize = 16_384_000;
 const MAX_AGGREGATE_NORMALIZED_TEXT_BYTES: usize = 4_096_000;
 const MAX_MAPPING_BYTES: usize = 268_435_456;
 const MAX_TEMPORARY_GROUPED_BYTES: usize = 262_144;
-const MAX_MEMBERSHIP_INDEX_BYTES: usize = 16_000;
+const MAX_MEMBERSHIP_INDEX_BYTES: usize = 32_000;
 const MAX_GROUPED_RESULT_BYTES: usize = 5_242_880;
 
 /// Applies one platform-neutral OCR contract over a selected backend.
@@ -74,7 +74,7 @@ impl OcrRecognizer {
         prepare(self, request)?.execute()
     }
 
-    /// Scans one through eight zones through one shared source envelope.
+    /// Scans one through sixteen zones through one shared source envelope.
     ///
     /// One operation context governs identity validation, zone resolution,
     /// mapping, backend work, grouping, and final all-or-nothing commit.
@@ -531,7 +531,7 @@ impl OcrCandidateSink for Normalizer<'_> {
 #[derive(Debug)]
 struct GroupedNormalizedCandidate {
     detector_order: u32,
-    membership: u8,
+    membership: u16,
     region: Option<RecognizedRegion>,
 }
 
@@ -539,10 +539,12 @@ struct GroupedNormalizedCandidate {
 struct GroupedNormalization {
     candidates: Vec<RecognizedRegion>,
     membership_indexes: Vec<u16>,
-    group_offsets: [u16; 9],
+    group_offsets: [u16; MAX_OCR_ZONES + 1],
 }
 
 const _: () = {
+    assert!(MAX_OCR_ZONES <= u16::BITS as usize);
+    assert!(MAX_ZONE_MEMBERSHIPS <= u16::MAX as usize);
     assert!(MAX_CANDIDATES * MAX_OCR_ZONES <= MAX_ZONE_MEMBERSHIPS);
     assert!(MAX_CANDIDATES * MAX_BACKEND_TEXT_BYTES <= MAX_AGGREGATE_RAW_TEXT_BYTES);
     assert!(MAX_CANDIDATES * MAX_TEXT_BYTES <= MAX_AGGREGATE_NORMALIZED_TEXT_BYTES);
@@ -550,7 +552,7 @@ const _: () = {
         MAX_CANDIDATES
             * (size_of::<GroupedNormalizedCandidate>()
                 + size_of::<RecognizedRegion>()
-                + size_of::<u8>())
+                + size_of::<u16>())
             <= MAX_TEMPORARY_GROUPED_BYTES
     );
     assert!(MAX_ZONE_MEMBERSHIPS * size_of::<u16>() <= MAX_MEMBERSHIP_INDEX_BYTES);
@@ -666,12 +668,12 @@ impl<'a> GroupedNormalizer<'a> {
             .filter(|&count| count <= MAX_ZONE_MEMBERSHIPS)
             .ok_or_else(|| Error::from(OcrFault::ZoneMembershipCountAboveCeiling))?;
         let mut membership_indexes = Vec::with_capacity(membership_count);
-        let mut group_offsets = [0_u16; 9];
+        let mut group_offsets = [0_u16; MAX_OCR_ZONES + 1];
         for group in 0..self.interests.zones().len() {
             if let Some(interruption) = self.operation.interruption() {
                 return Err(interruption.into());
             }
-            let group_bit = 1_u8 << group;
+            let group_bit = 1_u16 << group;
             for (candidate, membership) in memberships.iter().copied().enumerate() {
                 if membership & group_bit != 0 {
                     membership_indexes.push(

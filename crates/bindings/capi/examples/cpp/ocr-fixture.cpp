@@ -1,4 +1,4 @@
-/* Deterministic one-shot OCR through the thin C++ ABI 1.3 wrapper. */
+/* Deterministic singular and grouped OCR through the thin C++ ABI 1.4 wrapper. */
 
 #include "ocr-private-fixture.hpp"
 
@@ -170,6 +170,26 @@ int main(int argc, char** argv)
         std::move(grouped_retained);
     grouped.reset();
 
+    auto sixteen_zone_request = one_zone_request;
+    sixteen_zone_request.clear_zones();
+    for (std::int32_t index = 0; index < 16; ++index) {
+        sixteen_zone_request.zone(
+            {MADOPILOT_SPACE_CAPTURE_PIXELS, index % 4, index / 4, 32, 24});
+    }
+    auto sixteen_scanned = session.scan_ocr_zones(sixteen_zone_request, operation);
+    madopilot::ZoneScanOcrResult sixteen;
+    if (!take(sixteen_scanned, sixteen, "scan sixteen OCR zones")) return 1;
+    auto sixteen_retained = sixteen.clone();
+    madopilot::ZoneScanOcrResult sixteen_moved = std::move(sixteen_retained);
+    sixteen.reset();
+
+    sixteen_zone_request.zone({MADOPILOT_SPACE_CAPTURE_PIXELS, 0, 0, 32, 24});
+    auto refused = session.scan_ocr_zones(sixteen_zone_request, operation);
+    if (refused || refused.status() != MADOPILOT_STATUS_INVALID_ARGUMENT) {
+        std::fprintf(stderr, "seventeen OCR zones were not refused atomically\n");
+        return 1;
+    }
+
     const auto closed = session.close(operation);
     if (!closed) return 1;
     frame.reset();
@@ -184,6 +204,19 @@ int main(int argc, char** argv)
     if (!info || !region || !text || info.value().region_count != 1) {
         std::fprintf(stderr, "OCR result access failed\n");
         return 1;
+    }
+    const std::string_view expected_text =
+        "\xe9\xad\x94\xe5\xb0\x8e\xe5\xa3\xab A-7";
+    const double expected_points[4][2] = {
+        {1.0, 2.0}, {20.0, 2.0}, {20.0, 9.0}, {1.0, 9.0}};
+    if (text.value().view() != expected_text || region.value().confidence != 0.91) {
+        return 1;
+    }
+    for (std::size_t point = 0; point < region.value().points.size(); ++point) {
+        if (region.value().points[point].x != expected_points[point][0] ||
+            region.value().points[point].y != expected_points[point][1]) {
+            return 1;
+        }
     }
 
     const auto grouped_info = grouped_moved.describe();
@@ -209,6 +242,51 @@ int main(int argc, char** argv)
         grouped_text.value().view() != overlap_text.value().view()) {
         std::fprintf(stderr, "grouped OCR ownership/access failed\n");
         return 1;
+    }
+
+    const auto sixteen_info = sixteen_moved.describe();
+    if (!sixteen_info || sixteen_info.value().zone_count != 16 ||
+        sixteen_info.value().unique_candidate_count != 1 ||
+        sixteen_info.value().membership_count != 16 ||
+        sixteen_info.value().source.stream != info.value().source.stream ||
+        sixteen_info.value().source.epoch != info.value().source.epoch ||
+        sixteen_info.value().source.sequence != info.value().source.sequence ||
+        sixteen_info.value().source.geometry != info.value().source.geometry ||
+        sixteen_info.value().output_space != MADOPILOT_SPACE_CAPTURE_PIXELS ||
+        sixteen_info.value().source_envelope.space != MADOPILOT_SPACE_CAPTURE_PIXELS ||
+        sixteen_info.value().source_envelope.left != 0 ||
+        sixteen_info.value().source_envelope.top != 0 ||
+        sixteen_info.value().source_envelope.right != 32 ||
+        sixteen_info.value().source_envelope.bottom != 24) {
+        return 1;
+    }
+    const auto shared_text = sixteen_moved.text_at(0, 0);
+    if (!shared_text) return 1;
+    std::uint64_t last_memberships = 0;
+    for (std::size_t index = 0; index < 16; ++index) {
+        const auto group = sixteen_moved.zone_at(index);
+        const auto member = sixteen_moved.region_at(index, 0);
+        const auto member_text = sixteen_moved.text_at(index, 0);
+        if (!group || !member || !member_text ||
+            group.value().region_count != 1 ||
+            group.value().effective_zone.space != MADOPILOT_SPACE_CAPTURE_PIXELS ||
+            group.value().effective_zone.left != static_cast<std::int32_t>(index % 4) ||
+            group.value().effective_zone.top != static_cast<std::int32_t>(index / 4) ||
+            group.value().effective_zone.right != 32 ||
+            group.value().effective_zone.bottom != 24 ||
+            member.value().confidence != region.value().confidence ||
+            member_text.value().view() != text.value().view() ||
+            member_text.value().data() != shared_text.value().data()) {
+            std::fprintf(stderr, "sixteen-zone retained membership mismatch\n");
+            return 1;
+        }
+        for (std::size_t point = 0; point < member.value().points.size(); ++point) {
+            if (member.value().points[point].x != region.value().points[point].x ||
+                member.value().points[point].y != region.value().points[point].y) {
+                return 1;
+            }
+        }
+        last_memberships = group.value().region_count;
     }
 
     auto drained = reader.drain();
@@ -282,5 +360,13 @@ int main(int argc, char** argv)
                 static_cast<unsigned long long>(info.value().source.sequence),
                 static_cast<int>(text.value().size()), text.value().data(),
                 region.value().confidence);
+    std::printf("ocr-zones: groups=%llu unique=%llu memberships=%llu last-index=15 "
+                "last-memberships=%llu sequence=%llu refused17=%d\n",
+                static_cast<unsigned long long>(sixteen_info.value().zone_count),
+                static_cast<unsigned long long>(sixteen_info.value().unique_candidate_count),
+                static_cast<unsigned long long>(sixteen_info.value().membership_count),
+                static_cast<unsigned long long>(last_memberships),
+                static_cast<unsigned long long>(sixteen_info.value().source.sequence),
+                static_cast<int>(refused.status()));
     return 0;
 }

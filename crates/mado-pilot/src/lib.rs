@@ -123,7 +123,7 @@
 //! `*_engine_with_ocr_profile` selects implemented catalog IDs through
 //! [`OcrProfileConfig::from_id`] or the legacy [`OcrProfile::BoundedDetector`] variant.
 //! [`Session::recognize`] preserves singular optional-region results, while
-//! [`Session::scan_ocr_zones`] borrows one through eight capture-pixel zones and
+//! [`Session::scan_ocr_zones`] borrows one through sixteen capture-pixel zones and
 //! returns one independent caller-grouped result.
 //! [`Session::start_template_watch`] returns one owning poll/wait/cancel handle
 //! over fixed finite scheduling and separate query/wait operation contexts. See
@@ -148,7 +148,7 @@
 //! extend is already `#[non_exhaustive]`, so keep a fallback arm. Renaming or
 //! removing one of these names is a breaking change and needs an ADR and a
 //! version bump. The stability promise itself begins at 1.0; this package is
-//! at 0.4.0.
+//! at 0.5.0.
 //!
 //! The C ABI beneath this one is versioned separately. ABI 1.0, 1.2, and 1.3
 //! are frozen complete prefixes; ABI 1.4 appends explicit profile construction,

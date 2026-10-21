@@ -205,13 +205,13 @@ fn zone_scan_request_is_bounded_borrowed_and_fully_explicit() {
         .status(),
         Status::InvalidArgument
     );
-    let nine = [zones[0]; 9];
+    let seventeen = [zones[0]; 17];
     assert_eq!(
         OcrZoneScanRequest::new(
             &source,
             descriptor.backend_identity(),
             descriptor.model_identity(),
-            &nine,
+            &seventeen,
             CoordinateSpace::CapturePixels,
             &context,
         )
@@ -443,6 +443,146 @@ fn qualified_eight_zone_fixture_and_caller_reordering_are_deterministic() {
         ["right-ready", "left-name", "right-mana"]
     );
     assert_eq!(backend.recognition_count(), 2);
+}
+
+#[test]
+fn ninth_and_sixteenth_groups_preserve_sparse_membership_order_and_ownership() {
+    for zone_count in [9_i32, 16] {
+        let zones: Vec<_> = (0..zone_count)
+            .map(|index| {
+                let left = 4.0 + f64::from(index * 8);
+                zone(left, 2.0, left + 6.0, 12.0, ClipPolicy::Reject)
+            })
+            .collect();
+        let last = zones.len() - 1;
+        let left = f64::from((zone_count - 1) * 8);
+        let outputs: [ScriptedOutput; 2] = [
+            (
+                b"first",
+                [
+                    (left + 1.0, 1.0),
+                    (left + 5.0, 1.0),
+                    (left + 5.0, 4.0),
+                    (left + 1.0, 4.0),
+                ],
+                0,
+            ),
+            (
+                b"second",
+                [
+                    (left + 1.0, 6.0),
+                    (left + 5.0, 6.0),
+                    (left + 5.0, 9.0),
+                    (left + 1.0, 9.0),
+                ],
+                1,
+            ),
+        ];
+        let source = ocr_contract::frame(PixelExtent::new(132, 16), PixelFormat::Bgra8, 0);
+        let mut ignored_result = None;
+        for honor_interests in [false, true] {
+            let mut candidates: Vec<_> = outputs
+                .iter()
+                .rev()
+                .map(|(text, quad, order)| candidate_with(text, *quad, 0.9, *order))
+                .collect();
+            candidates.push(candidate_with(
+                b"outside",
+                [(6.25, 1.0), (7.75, 1.0), (7.75, 4.0), (6.25, 4.0)],
+                0.8,
+                2,
+            ));
+            let backend = ControlledOcr::new(PixelFormat::Bgra8).with_candidates(candidates);
+            let backend = Arc::new(if honor_interests {
+                backend.honoring_interests()
+            } else {
+                backend
+            });
+            let recognizer = OcrRecognizer::new(backend.clone());
+            let result =
+                scan_zones(&recognizer, &source, &zones, &OperationContext::new()).unwrap();
+
+            assert_eq!(backend.recognition_count(), 1);
+            assert_eq!(
+                backend.last_region(),
+                Some(PixelRect::new(4, 2, 4 + (zone_count - 1) * 8 + 6, 12).unwrap())
+            );
+            assert_eq!(result.source_envelope(), backend.last_region().unwrap());
+            assert_eq!(result.stamp(), source.stamp());
+            assert_eq!(result.transform(), source.transform());
+            assert_eq!(result.effective_zones().len(), zones.len());
+            assert_eq!(result.unique_candidates().len(), 2);
+            assert_eq!(result.group(last).unwrap().len(), 2);
+            assert!(result.group(zones.len()).is_none());
+            for group in 0..last {
+                assert!(result.group(group).unwrap().is_empty());
+            }
+            for (index, (text, quad, _)) in outputs.iter().enumerate() {
+                let region = result.group(last).unwrap().get(index).unwrap();
+                assert!(std::ptr::eq(region, &result.unique_candidates()[index]));
+                assert_eq!(region.text(), std::str::from_utf8(text).unwrap());
+                for (point, &(x, y)) in region.geometry().points().iter().zip(quad) {
+                    assert_eq!(
+                        *point,
+                        mado_pilot_core::Point::new(
+                            CoordinateSpace::CapturePixels,
+                            x + 4.0,
+                            y + 2.0,
+                        )
+                        .unwrap()
+                    );
+                }
+            }
+
+            let reordered: Vec<_> = zones.iter().copied().rev().collect();
+            let reordered =
+                scan_zones(&recognizer, &source, &reordered, &OperationContext::new()).unwrap();
+            assert_eq!(backend.recognition_count(), 2);
+            assert_eq!(
+                backend.last_selected_candidates(),
+                if honor_interests { 2 } else { 3 }
+            );
+            assert_eq!(
+                backend.last_ignored_candidates(),
+                usize::from(honor_interests)
+            );
+            assert_eq!(reordered.source_envelope(), result.source_envelope());
+            assert_eq!(reordered.unique_candidates(), result.unique_candidates());
+            for group in 0..zones.len() {
+                assert_eq!(
+                    reordered.effective_zones()[group],
+                    result.effective_zones()[last - group]
+                );
+                assert_eq!(
+                    reordered.group(group).unwrap().iter().collect::<Vec<_>>(),
+                    result
+                        .group(last - group)
+                        .unwrap()
+                        .iter()
+                        .collect::<Vec<_>>()
+                );
+            }
+            drop(recognizer);
+            drop(backend);
+            assert_eq!(reordered.group(0).unwrap().get(1).unwrap().text(), "second");
+            if let Some(ignored) = &ignored_result {
+                assert_eq!(&result, ignored);
+            } else {
+                ignored_result = Some(result);
+            }
+        }
+        drop(source);
+        assert_eq!(
+            ignored_result
+                .unwrap()
+                .group(last)
+                .unwrap()
+                .get(0)
+                .unwrap()
+                .text(),
+            "first"
+        );
+    }
 }
 
 #[test]
@@ -781,23 +921,23 @@ fn grouped_scan_accepts_exact_aggregate_bounds_and_refuses_the_next_candidate() 
     let backend = Arc::new(ControlledOcr::new(PixelFormat::Bgra8).with_candidates(candidates));
     let recognizer = OcrRecognizer::new(backend);
     let source = frame();
-    let zones = [zone(0.0, 0.0, 32.0, 24.0, ClipPolicy::Reject); 8];
+    let zones = [zone(0.0, 0.0, 32.0, 24.0, ClipPolicy::Reject); 16];
     let result = scan_zones(&recognizer, &source, &zones, &OperationContext::new()).unwrap();
 
-    assert_eq!(
-        result.unique_candidates().len(),
-        mado_pilot_ocr::MAX_CANDIDATES
-    );
-    for group in 0..8 {
-        assert_eq!(
-            result.group(group).unwrap().len(),
-            mado_pilot_ocr::MAX_CANDIDATES
-        );
+    assert_eq!(mado_pilot_ocr::MAX_CANDIDATES, 1_000);
+    assert_eq!(result.unique_candidates().len(), 1_000);
+    assert_eq!(result.effective_zones().len(), 16);
+    let mut memberships = 0;
+    for group in 0..16 {
+        let group = result.group(group).unwrap();
+        assert_eq!(group.len(), 1_000);
+        memberships += group.len();
+        for (index, region) in group.iter().enumerate() {
+            assert!(std::ptr::eq(region, &result.unique_candidates()[index]));
+        }
     }
-    assert!(std::ptr::eq(
-        result.group(0).unwrap().get(0).unwrap(),
-        result.group(7).unwrap().get(0).unwrap(),
-    ));
+    assert_eq!(memberships, 16_000);
+    assert!(result.group(16).is_none());
 
     let maximum_raw_text: Arc<[u8]> = Arc::from(vec![b' '; mado_pilot_ocr::MAX_BACKEND_TEXT_BYTES]);
     let raw_boundary = (0..mado_pilot_ocr::MAX_CANDIDATES)
@@ -830,7 +970,7 @@ fn grouped_scan_accepts_exact_aggregate_bounds_and_refuses_the_next_candidate() 
         scan_zones(
             &OcrRecognizer::new(backend),
             &source,
-            &zones[..1],
+            &zones,
             &OperationContext::new(),
         )
         .unwrap_err()

@@ -32,6 +32,8 @@ bytes. ABI 1.5 appends `engine_create_with_ocr_provider` at offset 720 and
 under [ADR 0046](adr/0046-onnx-accelerator-provider-policy.md).
 The `v0.4.0` product version leaves this separately versioned ABI unchanged and
 adds no watcher entry.
+The unreleased `v0.5.0` expands grouped OCR to sixteen zones without changing
+ABI 1.5 or any released layout.
 
 The unreleased 1.1 draft remains intentionally unsupported. Within ABI major 1:
 
@@ -131,18 +133,24 @@ An existing 1.3 caller remains unchanged. To use ABI 1.4:
    runtime views, then call `engine_create_with_ocr_profile`;
 3. call `engine_ocr_descriptor` and read the exact bounded
    backend/model/profile identity from its engine-borrowed views;
-4. retain one exact frame and supply `1..=8` complete
+4. retain one exact frame and supply `1..=16` complete
    `madopilot_ocr_zone_t` elements through a pointer, `size_t` count, and
    aligned byte stride for the synchronous call;
 5. own the returned `madopilot_ocr_zone_scan_result_t` independently, inspect
    source/envelope/counts, then use zone plus group-relative region indexes; and
 6. retain borrowed descriptor/text views only while that grouped owner lives.
 
-Zero/nine zones, null or misaligned arrays, short/misaligned strides, overflowing
+Zero or seventeen-or-more zones, null or misaligned arrays, short/misaligned strides, overflowing
 final addresses, short elements, non-capture-pixel zones, unknown profile/enums,
 identity mismatches, interruption, close, and backend faults publish no result.
 The caller owns duplicate/adjacent/overlapping-zone reconciliation; ordinary
 exact membership remains deterministic but carries no quality/performance claim.
+
+Sixteen-zone admission requires product version 0.5.0 or later, reported by
+`build_info.library_version`. ABI 1.4 negotiation establishes entry availability,
+not this higher limit: older libraries accept at most eight zones and return
+`MADOPILOT_STATUS_INVALID_ARGUMENT` above that bound. Existing one-through-eight
+requests remain unchanged.
 
 ## One exported symbol
 

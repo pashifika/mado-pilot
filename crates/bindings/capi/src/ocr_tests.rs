@@ -554,19 +554,15 @@ fn owned_c_result_and_views_survive_every_parent_release() {
 #[test]
 fn grouped_result_owns_unique_candidates_and_survives_every_parent() {
     let mut fixture = opened(successful_backend());
-    let zones = [
-        c_zone(0, 0, 16, 12),
-        c_zone(24, 0, 32, 12),
-        c_zone(8, 0, 24, 12),
-    ];
+    let zones: Vec<_> = (0..16)
+        .map(|index| c_zone(index % 4, index / 4, 32, 24))
+        .collect();
     let request = c_zone_request(fixture.frame, fixture.package, &zones);
     let operation = operation();
     let mut result = ptr::NonNull::<madopilot_ocr_zone_scan_result_t>::dangling().as_ptr();
     let mut error = ptr::null_mut();
-
-    // SAFETY: all handles, views, the zone array, and writable outputs remain live.
     assert_eq!(
-        // SAFETY: the complete inputs and outputs remain live for this call.
+        // SAFETY: all handles, views, zone elements, and writable outputs remain live.
         unsafe {
             (fixture.api.session_scan_ocr_zones)(
                 fixture.session,
@@ -581,60 +577,20 @@ fn grouped_result_owns_unique_candidates_and_survives_every_parent() {
     assert!(!result.is_null());
     assert!(error.is_null());
 
-    let mut info = empty_zone_info();
-    // SAFETY: the result is retained and `info` is writable.
+    let mut expected_source =
+        madopilot_frame_stamp_t::cleared(struct_size::<madopilot_frame_stamp_t>());
     assert_eq!(
-        // SAFETY: this fixture owns the retained result and writable output.
-        unsafe { (fixture.api.ocr_zone_scan_result_info)(result, &mut info) },
+        // SAFETY: the fixture owns the frame and the complete writable output.
+        unsafe { (fixture.api.frame_stamp)(fixture.frame, &mut expected_source) },
         MADOPILOT_STATUS_OK
     );
-    assert_eq!(info.zone_count, 3);
-    assert_eq!(info.unique_candidate_count, 1);
-    assert_eq!(info.membership_count, 2);
-    assert_eq!(text(info.backend_id), BACKEND_ID);
-    assert_eq!(text(info.model_id), MODEL_ID);
-
-    let mut first = empty_zone_result();
-    let mut empty = empty_zone_result();
-    let mut overlap = empty_zone_result();
-    // SAFETY: each index is in range and every output is writable.
-    unsafe {
-        assert_eq!(
-            (fixture.api.ocr_zone_scan_result_zone_at)(result, 0, &mut first),
-            MADOPILOT_STATUS_OK
-        );
-        assert_eq!(
-            (fixture.api.ocr_zone_scan_result_zone_at)(result, 1, &mut empty),
-            MADOPILOT_STATUS_OK
-        );
-        assert_eq!(
-            (fixture.api.ocr_zone_scan_result_zone_at)(result, 2, &mut overlap),
-            MADOPILOT_STATUS_OK
-        );
-    }
-    assert_eq!(first.region_count, 1);
-    assert_eq!(empty.region_count, 0);
-    assert_eq!(overlap.region_count, 1);
-
     let mut first_text = madopilot_str_t::empty();
-    let mut overlap_text = madopilot_str_t::empty();
-    // SAFETY: both group-relative indexes exist and outputs are writable.
-    unsafe {
-        assert_eq!(
-            (fixture.api.ocr_zone_scan_result_text_at)(result, 0, 0, &mut first_text),
-            MADOPILOT_STATUS_OK
-        );
-        assert_eq!(
-            (fixture.api.ocr_zone_scan_result_text_at)(result, 2, 0, &mut overlap_text),
-            MADOPILOT_STATUS_OK
-        );
-    }
-    assert_eq!(text(first_text), "魔導士 A-7");
-    assert_eq!(first_text.data, overlap_text.data);
-    assert_eq!(first_text.len, overlap_text.len);
-
-    // SAFETY: retain creates a second owner; the first release balances the
-    // original reference and the final release balances the retained one.
+    assert_eq!(
+        // SAFETY: the retained result contains the first group and membership.
+        unsafe { (fixture.api.ocr_zone_scan_result_text_at)(result, 0, 0, &mut first_text) },
+        MADOPILOT_STATUS_OK
+    );
+    // SAFETY: retain creates a second owner; release balances the original owner.
     unsafe {
         assert_eq!(
             (fixture.api.ocr_zone_scan_result_retain)(result),
@@ -647,17 +603,57 @@ fn grouped_result_owns_unique_candidates_and_survives_every_parent() {
     }
     fixture.release_parents();
 
-    let mut retained_text = madopilot_str_t::empty();
-    // SAFETY: one result reference remains live after every parent release.
+    let mut info = empty_zone_info();
     assert_eq!(
-        // SAFETY: one retained result reference survives all released parents.
-        unsafe { (fixture.api.ocr_zone_scan_result_text_at)(result, 0, 0, &mut retained_text) },
+        // SAFETY: one result owner and its complete writable output remain live.
+        unsafe { (fixture.api.ocr_zone_scan_result_info)(result, &mut info) },
         MADOPILOT_STATUS_OK
     );
-    assert_eq!(text(retained_text), "魔導士 A-7");
-    // SAFETY: gives up the final owned result reference.
+    assert_eq!(info.zone_count, 16);
+    assert_eq!(info.unique_candidate_count, 1);
+    assert_eq!(info.membership_count, 16);
+    assert_eq!(info.source, expected_source);
+    assert_eq!(info.source_envelope, c_zone(0, 0, 32, 24).region);
+    assert_eq!(info.output_space, MADOPILOT_SPACE_CAPTURE_PIXELS);
+    assert_eq!(text(info.backend_id), BACKEND_ID);
+    assert_eq!(text(info.model_id), MODEL_ID);
+    for (index, expected_zone) in zones.iter().enumerate() {
+        let mut group = empty_zone_result();
+        let mut region = empty_region();
+        let mut retained_text = madopilot_str_t::empty();
+        // SAFETY: the retained result owns all sixteen groups and memberships.
+        unsafe {
+            assert_eq!(
+                (fixture.api.ocr_zone_scan_result_zone_at)(result, index, &mut group),
+                MADOPILOT_STATUS_OK
+            );
+            assert_eq!(
+                (fixture.api.ocr_zone_scan_result_region_at)(result, index, 0, &mut region),
+                MADOPILOT_STATUS_OK
+            );
+            assert_eq!(
+                (fixture.api.ocr_zone_scan_result_text_at)(result, index, 0, &mut retained_text),
+                MADOPILOT_STATUS_OK
+            );
+        }
+        assert_eq!(group.effective_zone, expected_zone.region);
+        assert_eq!(group.region_count, 1);
+        assert_eq!(region.confidence, 0.91);
+        for (point, (x, y)) in
+            region
+                .points
+                .iter()
+                .zip([(1.0, 2.0), (20.0, 2.0), (20.0, 9.0), (1.0, 9.0)])
+        {
+            assert_eq!((point.x, point.y), (x, y));
+        }
+        assert_eq!(text(retained_text), "魔導士 A-7");
+        assert_eq!(retained_text.data, first_text.data);
+        assert_eq!(retained_text.len, first_text.len);
+    }
+    assert_eq!(text(first_text), "魔導士 A-7");
     assert_eq!(
-        // SAFETY: this gives up the final retained result reference.
+        // SAFETY: this gives up the final retained result owner.
         unsafe { (fixture.api.ocr_zone_scan_result_release)(result) },
         MADOPILOT_STATUS_OK
     );
@@ -999,9 +995,9 @@ fn grouped_array_and_accessor_edges_fail_before_dereference_or_borrow() {
         call(&c_zone_request(fixture.frame, fixture.package, &zero)),
         MADOPILOT_STATUS_INVALID_ARGUMENT
     );
-    let nine = [c_zone(0, 0, 32, 24); 9];
+    let seventeen = [c_zone(0, 0, 32, 24); 17];
     assert_eq!(
-        call(&c_zone_request(fixture.frame, fixture.package, &nine)),
+        call(&c_zone_request(fixture.frame, fixture.package, &seventeen)),
         MADOPILOT_STATUS_INVALID_ARGUMENT
     );
 
