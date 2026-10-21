@@ -335,6 +335,10 @@ Before execution, bind the integrated commit/tree, host/SDK, exact fixture and
 test executables, loaded libraries, display topology and current input authority.
 Set `MADO_PILOT_WINDOWS_DPI_INPUT=1` and
 `MADO_PILOT_WINDOWS_DPI_TOPOLOGY=single-display` or `mixed-dpi-signed`.
+Set `MADO_PILOT_WINDOWS_DPI_MONITORS` to the approved enumeration-order rows:
+`left,top,right,bottom,dpi_x,dpi_y`, separated by `;`. Every physical bound and
+effective DPI must match before the first fixture starts; count or DPI changes
+refuse the run without input.
 Optional `MADO_PILOT_WINDOWS_DPI_CALLER` and `MADO_PILOT_WINDOWS_DPI_TARGET`
 accept `unaware`, `system` or `per-monitor-v2`; omission selects all three.
 

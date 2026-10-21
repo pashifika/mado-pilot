@@ -711,7 +711,7 @@ fn compile_with(
     let mut command = Command::new(compiler);
 
     if is_msvc(compiler) {
-        command.arg("/nologo");
+        command.arg("/nologo").arg("/utf-8");
         match language {
             Language::C => command.arg("/std:c11"),
             Language::Cpp => command.arg("/std:c++17").arg("/EHsc"),

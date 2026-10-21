@@ -2234,6 +2234,74 @@ fn dpi_modes(variable: &str) -> Vec<DpiMode> {
     }
 }
 
+fn declared_monitors_match(declaration: &str, monitors: &[MonitorRow]) -> bool {
+    let mut rows = declaration.split(';');
+    for monitor in monitors {
+        let Some(row) = rows.next() else {
+            return false;
+        };
+        let mut fields = row.split(',');
+        for expected in [
+            i64::from(monitor.bounds.left),
+            i64::from(monitor.bounds.top),
+            i64::from(monitor.bounds.right),
+            i64::from(monitor.bounds.bottom),
+            i64::from(monitor.dpi_x),
+            i64::from(monitor.dpi_y),
+        ] {
+            if fields.next().and_then(|field| field.parse::<i64>().ok()) != Some(expected) {
+                return false;
+            }
+        }
+        if fields.next().is_some() {
+            return false;
+        }
+    }
+    rows.next().is_none()
+}
+
+#[test]
+fn declared_dpi_monitors_reject_topology_changes() {
+    let monitors = [
+        MonitorRow {
+            bounds: RECT {
+                left: 0,
+                top: 0,
+                right: 2560,
+                bottom: 1440,
+            },
+            dpi_x: 144,
+            dpi_y: 144,
+        },
+        MonitorRow {
+            bounds: RECT {
+                left: -1920,
+                top: 0,
+                right: 0,
+                bottom: 1080,
+            },
+            dpi_x: 120,
+            dpi_y: 120,
+        },
+    ];
+    let declaration = "0,0,2560,1440,144,144;-1920,0,0,1080,120,120";
+    assert!(declared_monitors_match(declaration, &monitors));
+    assert!(!declared_monitors_match(declaration, &monitors[..1]));
+    assert!(!declared_monitors_match(
+        declaration,
+        &[monitors[0], monitors[1], monitors[0]]
+    ));
+    let mut changed = monitors;
+    changed[1].dpi_y = 144;
+    assert!(!declared_monitors_match(declaration, &changed));
+    changed = monitors;
+    changed[1].bounds.left = -2000;
+    assert!(!declared_monitors_match(declaration, &changed));
+    for malformed in ["", "0,0,2560,1440,144", "0,0,2560,1440,144,invalid"] {
+        assert!(!declared_monitors_match(malformed, &monitors[..1]));
+    }
+}
+
 struct DpiDesktopRestore(Option<DesktopState>);
 
 impl DpiDesktopRestore {
@@ -2357,12 +2425,18 @@ fn dpi_arrival_matrix(route: InputDelivery) {
     );
     let topology = std::env::var("MADO_PILOT_WINDOWS_DPI_TOPOLOGY")
         .expect("declare single-display or mixed-dpi-signed before execution");
+    let declared_monitors = std::env::var("MADO_PILOT_WINDOWS_DPI_MONITORS")
+        .expect("declare each monitor's physical bounds and effective DPI before execution");
     let callers = dpi_modes("MADO_PILOT_WINDOWS_DPI_CALLER");
     let targets = dpi_modes("MADO_PILOT_WINDOWS_DPI_TARGET");
     let _serial = NATIVE_MATRIX.lock().expect("native matrix serialized");
     select_process_dpi_awareness();
     let _physical_scope = DpiScope::enter(DpiMode::PerMonitorV2).expect("physical setup scope");
     let monitors = monitor_rows();
+    assert!(
+        declared_monitors_match(&declared_monitors, &monitors),
+        "declared monitor bounds/DPI unavailable"
+    );
     match topology.as_str() {
         "single-display" => assert_eq!(monitors.len(), 1, "declared topology unavailable"),
         "mixed-dpi-signed" => {
