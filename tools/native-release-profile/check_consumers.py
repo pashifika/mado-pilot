@@ -97,9 +97,9 @@ def build_and_run(root: Path, libraries: Path, output: Path, model_root: Path, r
     if windows:
         record["opencv_runtime"] = {"bytes": opencv_runtime.stat().st_size,
                                     "sha256": digest_file(opencv_runtime)}
-    inputs = [sources / name for name in ("rust_facade.rs", "c_abi.c", "cpp_wrapper.cpp")]
+    inputs = [sources / name for name in ("rust_facade.rs", "c_abi.c", "cpp_abi.cpp")]
     inputs += [root / "tools/native-release-profile/host_load.c", include / "madopilot/madopilot.h",
-               include / "madopilot/madopilot.hpp", scene / "deterministic-scene.h"]
+               scene / "deterministic-scene.h"]
     utf8_entry = root / "tools/native-release-profile/windows_utf8_entry.h"
     inputs.append(utf8_entry)
     for version in ("v1", "v1_2", "v1_3", "v1_4"):
@@ -173,7 +173,7 @@ def build_and_run(root: Path, libraries: Path, output: Path, model_root: Path, r
                 output=output, label="build-rust-module", rows=rows)
         consumers = [("rust-facade", rust_binary, "MADO_PROFILE_RESULT=passed")]
         consumers += [("c-current", compile_c(sources / "c_abi.c", "c-current"), "MADO_PROFILE_RESULT=passed"),
-                      ("cpp-current", compile_c(sources / "cpp_wrapper.cpp", "cpp-current", cpp=True), "MADO_PROFILE_RESULT=passed")]
+                      ("cpp-abi-current", compile_c(sources / "cpp_abi.cpp", "cpp-abi-current", cpp=True), "MADO_PROFILE_RESULT=passed")]
         for version in ("v1", "v1_2", "v1_3", "v1_4"):
             headers = root / "crates/bindings/capi/tests/abi-compat" / version
             binary = compile_c(headers / "old-prefix.c", "prefix-" + version, headers=headers)
@@ -191,7 +191,7 @@ def build_and_run(root: Path, libraries: Path, output: Path, model_root: Path, r
                                                        "sha256": digest_file(binary)})
         prototype_consumers = [
             ("c-host-load", compile_c(sources / "c_abi.c", "c-host-load", host_load=True), library),
-            ("cpp-host-load", compile_c(sources / "cpp_wrapper.cpp", "cpp-host-load", cpp=True, host_load=True), library),
+            ("cpp-abi-host-load", compile_c(sources / "cpp_abi.cpp", "cpp-abi-host-load", cpp=True, host_load=True), library),
             ("rust-deferred", output / ("rust-bootstrap" + suffix), rust_module),
         ]
         common_args = ["--package", str(package), "--model-root", str(model_root), "--runtime", str(runtime)]

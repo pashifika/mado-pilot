@@ -357,9 +357,9 @@ paths remain allowlisted, while revision-pinned Hugging Face and
 `hf-mirror.com` transports reproduce the same accepted bytes.
 
 Both jobs run the backend contract for native and bounded profiles, Rust default
-facade, production C/C++/CMake default flows, frozen C headers, the released
-default-profile benchmark smoke, and the identical-input native/bounded smoke
-matrix.
+facade, production C/CMake OCR and external direct-C-ABI C++ consumers, frozen C
+headers, the released default-profile benchmark smoke, and the identical-input
+native/bounded smoke matrix.
 
 This is verification-fixture transport, not a product download path, release
 bundle, shipped cache, ambient discovery mechanism, or approved-host
@@ -369,12 +369,12 @@ changes no model/runtime byte, accepted digest, profile, production dependency,
 or license family.
 
 ADR 0036 keeps the default an explicit native G-004 composition choice: ordinary
-engine constructors remain unchanged, while `*_engine_with_default_ocr`,
-`engine_create_with_default_ocr`, and C++ `DefaultOcrOptions` require the caller
-to supply the two controlled paths. ADR 0040 adds only the explicit Rust
-candidate-v2 backend selection; no dependency changes. ADR 0037's native G-004
-budgets remain accepted, and ADRs 0039/0041 fix the bounded procedure and target
-budgets. The rejected rectangular and accepted candidate-v2 precursors remain
+engine constructors remain unchanged. Rust `*_engine_with_default_ocr` and the
+shared C/C++ entry `engine_create_with_default_ocr` require both controlled paths.
+ADR 0040 adds only the explicit Rust candidate-v2 backend selection; no dependency
+changes. ADR 0037's native G-004 budgets remain accepted, and ADRs 0039/0041 fix
+the bounded procedure and target budgets.
+The rejected rectangular and accepted candidate-v2 precursors remain
 separate evidence. Both approved-host precursors and strict final enforcement
 pass; the explicit profile is qualified without changing dependency,
 provisioning, bundling, or default-selection policy. Hosted Windows Server smoke

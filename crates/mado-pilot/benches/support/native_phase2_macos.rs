@@ -103,22 +103,13 @@ const fn language_event(kind: u32, text_units: u32) -> protocol::EventSummary {
 }
 
 #[cfg(target_os = "macos")]
-const CPP_LANGUAGE_EVENTS: [protocol::EventSummary; 5] = [
-    COMMON_LANGUAGE_EVENTS[0],
-    COMMON_LANGUAGE_EVENTS[1],
-    COMMON_LANGUAGE_EVENTS[2],
-    language_event(protocol::EVENT_KEY_DOWN, 1),
-    language_event(protocol::EVENT_KEY_UP, 1),
-];
-
-#[cfg(target_os = "macos")]
 const fn input_workload_description() -> &'static str {
-    "native Rust System input plus released C and C++ ProcessDirected common flows"
+    "native Rust System input plus the released C ProcessDirected common flow"
 }
 
 #[cfg(target_os = "macos")]
 const fn input_queue_policy() -> &'static str {
-    "session latest-wins queue depth 1; Rust System and C/C++ explicit ProcessDirected sequences execute serially with no fallback"
+    "session latest-wins queue depth 1; Rust System and C explicit ProcessDirected sequences execute serially with no fallback"
 }
 
 #[cfg(target_os = "macos")]
@@ -1552,7 +1543,7 @@ fn language_common_flow(program: &LanguageProgram) -> Sample {
         .as_deref()
         .is_some_and(|stdout| stdout.lines().any(|line| line == program.receipt_line));
     let fixture_acknowledged = if process_succeeded || receipt_present {
-        fixture.next_flow(program.expected_fixture_events())
+        fixture.next_flow(&COMMON_LANGUAGE_EVENTS)
     } else {
         false
     };
@@ -1810,21 +1801,6 @@ fn native_engine_with_diagnostics(diagnostics: DiagnosticOptions) -> NativeEngin
 #[cfg(target_os = "macos")]
 const fn c_example_name() -> &'static str {
     "macos-native-input"
-}
-
-#[cfg(target_os = "macos")]
-const fn cpp_example_name() -> &'static str {
-    "macos-native-input-cpp"
-}
-
-#[cfg(target_os = "macos")]
-const fn cpp_correctness_oracle() -> &'static str {
-    "the released C++ wrapper uses explicit ProcessDirected delivery and checks its invocation-only receipt separately from exact owned-fixture events"
-}
-
-#[cfg(target_os = "macos")]
-const fn cpp_receipt_line() -> &'static str {
-    "receipt: outcome 1 submitted 5 evidence 1 cleanup 0"
 }
 
 #[cfg(target_os = "macos")]

@@ -1,39 +1,7 @@
-//! Compiles the C and C++ surfaces against this library and checks that they
-//! agree with it and with each other.
+//! Checks current/frozen C layouts, direct C/C++ samples, and CMake consumers.
+//! Retains deterministic, native, and controlled OCR verification through C.
 //!
-//! The header is hand-written, so its agreement with the Rust `#[repr(C)]`
-//! definitions is proved rather than assumed, and the C++ wrapper is
-//! header-only, so it has no artifact of its own that a build would otherwise
-//! exercise. This program:
-//!
-//! 1. compiles and runs `tests/c/madopilot-abi-layout.c`, which reports sizes,
-//!    alignments, and field offsets as the C compiler produced them;
-//! 2. compares that report line by line against the same values measured from
-//!    the Rust definitions;
-//! 3. compiles, links, and runs `examples/c/deterministic-slice.c` against the
-//!    built library and checks its outcome;
-//! 4. compiles, links, and runs the current platform's native C example in its
-//!    unattended, non-prompting mode;
-//! 5. compiles, links, and runs `tests/cpp/madopilot-cpp-ownership.cpp`, whose
-//!    static assertions prove the wrapper's ownership shape at compile time and
-//!    whose checks prove its behaviour at run time;
-//! 6. compiles, links, and runs `examples/cpp/deterministic-slice.cpp` and
-//!    checks that it answers exactly what the C example answered;
-//! 7. compiles, links, and runs `examples/cpp/native-input.cpp` in the same safe
-//!    native mode through the C++ wrapper;
-//! 8. compiles and runs the same layout probe a second time against each frozen
-//!    header under `tests/abi-compat/`, and checks that every structure, field,
-//!    and table entry that header declares is still where it said it was;
-//! 9. compiles every frozen header fixture under `tests/abi-compat/` against
-//!    its own header rather than the working one, links it to this library, and
-//!    checks that it still negotiates and still gets the same answers;
-//! 10. configures, builds, and runs the CMake consumer project in
-//!     `tests/cmake/`, which reaches the library only through `MadoPilot::C` and
-//!     `MadoPilot::Cpp`.
-//!
-//! Two compilers, one comparison. A divergence names the structure and the
-//! field. See `docs/adr/0004-c-header-authorship-and-abi-verification.md` and
-//! `docs/adr/0005-cpp-wrapper-shape-and-cmake-surface.md`.
+//! Build the library separately: `cargo run` need not produce the `cdylib`.
 //!
 //! ```text
 //! cargo build --locked --package mado-pilot-capi
@@ -45,11 +13,6 @@
 //! cargo run --locked --package mado-pilot-capi --example c-abi-check -- \
 //!   --label "<host>" --windows-native-fixture
 //! ```
-//!
-//! The build step is separate on purpose: this program needs the `cdylib` that
-//! `cargo run` alone does not necessarily produce, and shelling back into cargo
-//! from inside a cargo-launched process is a worse failure mode than a missing
-//! artifact with an actionable message.
 
 #[cfg(all(windows, feature = "qualification-unsupported-api"))]
 use mado_pilot::{NativeEngineRequest, OperationContext, Status};
@@ -97,65 +60,16 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     println!("library: {}", paths.library.display());
 
     check_layout(&paths)?;
+    run_direct_abi_samples(&paths)?;
     run_c_example(&paths, &label)?;
-    let run_windows_native_fixture = windows_native_fixture_requested();
-    let native_fixtures = if run_windows_native_fixture {
-        Some([
-            WindowsNativeFixture::spawn(&paths, WindowsFixtureKind::Ordinary)?,
-            WindowsNativeFixture::spawn(&paths, WindowsFixtureKind::Acknowledged)?,
-        ])
-    } else {
-        None
-    };
-    match &native_fixtures {
-        Some([ordinary, acknowledged]) => run_native_c_example(
-            &paths,
-            &[
-                (
-                    WindowsFixtureKind::Ordinary.contract_argument(),
-                    ordinary.title(),
-                ),
-                (
-                    WindowsFixtureKind::Acknowledged.contract_argument(),
-                    acknowledged.title(),
-                ),
-            ],
-        )?,
-        None => run_native_c_example(&paths, &[])?,
-    }
-    drop(native_fixtures);
-    check_cpp_ownership(&paths)?;
-    run_cpp_example(&paths, &label)?;
+    run_native_c_example(&paths, windows_native_fixture_requested())?;
     #[cfg(feature = "private-fixture")]
     run_ocr_fixture_examples(&paths)?;
     run_default_ocr_examples(&paths)?;
-    let native_fixtures = if run_windows_native_fixture {
-        Some([
-            WindowsNativeFixture::spawn(&paths, WindowsFixtureKind::Ordinary)?,
-            WindowsNativeFixture::spawn(&paths, WindowsFixtureKind::Acknowledged)?,
-        ])
-    } else {
-        None
-    };
-    match &native_fixtures {
-        Some([ordinary, acknowledged]) => run_native_cpp_example(
-            &paths,
-            &[
-                (
-                    WindowsFixtureKind::Ordinary.contract_argument(),
-                    ordinary.title(),
-                ),
-                (
-                    WindowsFixtureKind::Acknowledged.contract_argument(),
-                    acknowledged.title(),
-                ),
-            ],
-        )?,
-        None => run_native_cpp_example(&paths, &[])?,
-    }
     check_frozen_layout(&paths)?;
     check_frozen_headers(&paths)?;
-    check_cmake_consumer(&paths)?;
+    check_cmake_consumer(&paths, false)?;
+    check_cmake_consumer(&paths, true)?;
 
     println!("c-abi-check complete");
 
@@ -321,13 +235,12 @@ impl Paths {
         })
     }
 
-    /// The directory holding `madopilot/madopilot.h` and `madopilot.hpp`.
+    /// The directory holding `madopilot/madopilot.h`.
     fn include(&self) -> PathBuf {
         self.root.join("crates/bindings/capi/include")
     }
 
-    /// The directory holding `deterministic-scene.h`, which both examples and
-    /// the C++ ownership probe include.
+    /// Shared C verification headers.
     fn shared_sources(&self) -> PathBuf {
         self.root.join("crates/bindings/capi/examples")
     }
@@ -358,8 +271,8 @@ struct TemporaryCmakeBuild {
 }
 
 impl TemporaryCmakeBuild {
-    fn new() -> std::io::Result<Self> {
-        let path = env::temp_dir().join(format!("mpc-{}", std::process::id()));
+    fn new(mode: &str) -> std::io::Result<Self> {
+        let path = env::temp_dir().join(format!("mpc-{}-{mode}", std::process::id()));
         match std::fs::remove_dir_all(&path) {
             Ok(()) => {}
             Err(error) if error.kind() == std::io::ErrorKind::NotFound => {}
@@ -738,9 +651,7 @@ fn compile_with(
         Language::Cpp => &paths.cxx,
     };
     let output = paths.program(name);
-    // Named after the program rather than after the source: the C and C++
-    // examples share a file name, and two object files called
-    // `deterministic-slice.o` would be one object file.
+    // C and C++ samples share a basename but need distinct object files.
     let object = paths.scratch.join(format!(
         "{name}.{}",
         if is_msvc(compiler) { "obj" } else { "o" }
@@ -751,8 +662,6 @@ fn compile_with(
         command.arg("/nologo");
         match language {
             Language::C => command.arg("/std:c11"),
-            // `/EHsc` because the standard library this wrapper uses assumes
-            // exceptions are enabled, even though the wrapper never throws one.
             Language::Cpp => command.arg("/std:c++17").arg("/EHsc"),
         };
         command
@@ -856,6 +765,38 @@ fn report_output(what: &str, output: &Output) {
     }
 }
 
+/// Checks real build facts, cancellation state, and cleanup in both languages.
+fn run_direct_abi_samples(paths: &Paths) -> Result<(), Box<dyn std::error::Error>> {
+    for (language, directory, extension, name) in [
+        (Language::C, "c", "c", "direct-abi-c"),
+        (Language::Cpp, "cpp", "cpp", "direct-abi-cpp"),
+    ] {
+        let source = paths
+            .shared_sources()
+            .join(directory)
+            .join(format!("direct-abi.{extension}"));
+        let program = compile(paths, language, name, &source, true)?;
+        let output = run(paths, &program, &[])?;
+        report_output(name, &output);
+        let stdout = String::from_utf8(output.stdout)?.replace("\r\n", "\n");
+        print!("{stdout}");
+        let expected = format!(
+            "{name}: abi {}.{}, table {} bytes, using {} bytes, library {}\n\
+             {name}: is_cancelled before cancel = 0, after cancel = 1\n\
+             {name}: cancellation_release ok\n",
+            madopilot::MADOPILOT_ABI_MAJOR,
+            madopilot::MADOPILOT_ABI_MINOR,
+            madopilot::MADOPILOT_API_SIZE_CURRENT,
+            size_of::<madopilot::madopilot_api_t>(),
+            env!("CARGO_PKG_VERSION"),
+        );
+        if !output.status.success() || stdout != expected {
+            return Err(format!("the {name} sample returned unexpected observations").into());
+        }
+    }
+    Ok(())
+}
+
 /// The C program that reports the layout its compiler produced.
 ///
 /// It is compiled twice: once against the working header, and once per frozen
@@ -923,7 +864,7 @@ fn diff(expected: &str, measured: &str) -> Vec<String> {
     differences
 }
 
-/// The tracked deterministic asset package both examples load.
+/// The tracked deterministic asset package used by C verification.
 fn package(paths: &Paths) -> String {
     paths
         .root
@@ -941,47 +882,37 @@ fn ocr_package(paths: &Paths) -> String {
         .into_owned()
 }
 
-/// Runs the C and C++ OCR examples against the explicit private fixture backend.
+/// Runs deterministic OCR through the private C fixture entry.
 #[cfg(feature = "private-fixture")]
 fn run_ocr_fixture_examples(paths: &Paths) -> Result<(), Box<dyn std::error::Error>> {
-    let c_source = paths
+    let source = paths
         .root
         .join("crates/bindings/capi/examples/c/ocr-fixture.c");
-    let c = compile(paths, Language::C, "ocr-fixture-c", &c_source, true)?;
-    let cpp_source = paths
-        .root
-        .join("crates/bindings/capi/examples/cpp/ocr-fixture.cpp");
-    let cpp = compile(paths, Language::Cpp, "ocr-fixture-cpp", &cpp_source, true)?;
+    let program = compile(paths, Language::C, "ocr-fixture-c", &source, true)?;
     let package = ocr_package(paths);
-    let c_output = run(paths, &c, &["--package", &package])?;
-    let cpp_output = run(paths, &cpp, &["--package", &package])?;
-    report_output("OCR fixture C", &c_output);
-    report_output("OCR fixture C++", &cpp_output);
-    if !c_output.status.success() || !cpp_output.status.success() {
-        return Err("an OCR fixture example failed".into());
+    let output = run(paths, &program, &["--package", &package])?;
+    report_output("OCR fixture C", &output);
+    let stdout = String::from_utf8(output.stdout)?.replace("\r\n", "\n");
+    print!("{stdout}");
+    let expected = format!(
+        "ocr: sequence=0 text=魔導士 A-7 confidence=0.91000\n\
+         ocr-zones: groups=16 unique=1 memberships=16 last-index=15 \
+         last-memberships=1 sequence=0 refused17={}\n",
+        madopilot::MADOPILOT_STATUS_INVALID_ARGUMENT,
+    );
+    if !output.status.success() || stdout != expected {
+        return Err("the C OCR fixture returned unexpected observations".into());
     }
-    let c_stdout = String::from_utf8(c_output.stdout)?.replace("\r\n", "\n");
-    let cpp_stdout = String::from_utf8(cpp_output.stdout)?.replace("\r\n", "\n");
-    print!("{c_stdout}");
-    print!("{cpp_stdout}");
-    if c_stdout != cpp_stdout {
-        return Err("C/C++ OCR fixture observations diverged".into());
-    }
-    println!("OCR fixture examples agree");
+    println!("OCR fixture C: retained text, grouped memberships, and refusal verified");
     Ok(())
 }
 
-/// Compiles the production default and explicit-profile OCR examples in C and
-/// C++, then runs them when reviewed native prerequisites are available.
+/// Runs production C OCR examples only with explicit model/runtime paths.
 fn run_default_ocr_examples(paths: &Paths) -> Result<(), Box<dyn std::error::Error>> {
     let c_source = paths
         .root
         .join("crates/bindings/capi/examples/c/ocr-default.c");
     let c = compile(paths, Language::C, "ocr-default-c", &c_source, true)?;
-    let cpp_source = paths
-        .root
-        .join("crates/bindings/capi/examples/cpp/ocr-default.cpp");
-    let cpp = compile(paths, Language::Cpp, "ocr-default-cpp", &cpp_source, true)?;
     let profile_c_source = paths
         .root
         .join("crates/bindings/capi/examples/c/ocr-profile-zones.c");
@@ -992,23 +923,13 @@ fn run_default_ocr_examples(paths: &Paths) -> Result<(), Box<dyn std::error::Err
         &profile_c_source,
         true,
     )?;
-    let profile_cpp_source = paths
-        .root
-        .join("crates/bindings/capi/examples/cpp/ocr-profile-zones.cpp");
-    let profile_cpp = compile(
-        paths,
-        Language::Cpp,
-        "ocr-profile-zones-cpp",
-        &profile_cpp_source,
-        true,
-    )?;
 
     let (Some(model_root), Some(runtime)) = (
         env::var_os("MADO_PILOT_G004_MODEL_ROOT"),
         env::var_os("MADO_PILOT_ONNX_RUNTIME"),
     ) else {
         println!(
-            "default/profile OCR C/C++ examples compiled; native run skipped without explicit paths"
+            "default/profile OCR C examples compiled; native run skipped without explicit paths"
         );
         return Ok(());
     };
@@ -1023,41 +944,29 @@ fn run_default_ocr_examples(paths: &Paths) -> Result<(), Box<dyn std::error::Err
         runtime.as_str(),
     ];
     let c_output = run(paths, &c, &arguments)?;
-    let cpp_output = run(paths, &cpp, &arguments)?;
     let profile_c_output = run(paths, &profile_c, &arguments)?;
-    let profile_cpp_output = run(paths, &profile_cpp, &arguments)?;
     report_output("default OCR C", &c_output);
-    report_output("default OCR C++", &cpp_output);
     report_output("profile zone OCR C", &profile_c_output);
-    report_output("profile zone OCR C++", &profile_cpp_output);
-    if !c_output.status.success()
-        || !cpp_output.status.success()
-        || !profile_c_output.status.success()
-        || !profile_cpp_output.status.success()
-    {
+    if !c_output.status.success() || !profile_c_output.status.success() {
         return Err("a production OCR example failed".into());
     }
     let c_stdout = String::from_utf8(c_output.stdout)?.replace("\r\n", "\n");
-    let cpp_stdout = String::from_utf8(cpp_output.stdout)?.replace("\r\n", "\n");
     let profile_c_stdout = String::from_utf8(profile_c_output.stdout)?.replace("\r\n", "\n");
-    let profile_cpp_stdout = String::from_utf8(profile_cpp_output.stdout)?.replace("\r\n", "\n");
     print!("{c_stdout}");
-    print!("{cpp_stdout}");
     print!("{profile_c_stdout}");
-    print!("{profile_cpp_stdout}");
     let expected = format!(
         "default-ocr: backend={} model={} full=0 region=0\n",
         mado_pilot::DEFAULT_OCR_BACKEND_ID,
         mado_pilot::ACCEPTED_G004_MODEL_ID,
     );
-    if c_stdout != expected || cpp_stdout != expected {
-        return Err("C/C++ default OCR observations diverged".into());
+    if c_stdout != expected {
+        return Err("the C default OCR observations differ from the expected result".into());
     }
-    println!("default OCR C/C++ examples agree");
-    if !profile_c_stdout.is_empty() || profile_c_stdout != profile_cpp_stdout {
-        return Err("C/C++ profile-zone OCR observations diverged".into());
+    println!("default OCR C: full-frame and region results verified");
+    if !profile_c_stdout.is_empty() {
+        return Err("the C profile-zone OCR example reported unexpected text".into());
     }
-    println!("profile zone OCR C/C++ examples agree");
+    println!("profile zone OCR C: empty grouped results verified");
     Ok(())
 }
 
@@ -1074,13 +983,10 @@ fn run_c_example(paths: &Paths, label: &str) -> Result<(), Box<dyn std::error::E
     check_example("C", &output)
 }
 
-/// Compiles, links, and runs the current release target's native C probe.
-///
-/// With no targets, `--check` stops before discovery and sends no input. Each
-/// target is one exact repository fixture title and its required contract.
+/// Runs non-prompting checks or separate default/extended owned-fixture flows.
 fn run_native_c_example(
     paths: &Paths,
-    targets: &[(&str, &str)],
+    fixture_backed: bool,
 ) -> Result<(), Box<dyn std::error::Error>> {
     let name = if cfg!(target_os = "windows") {
         "windows-native-input"
@@ -1098,12 +1004,26 @@ fn run_native_c_example(
     if windows_unsupported_qualification_requested() {
         check_unsupported_native_program(paths, &program, name, "C")?;
     }
-    if targets.is_empty() {
-        check_native_program(paths, &program, name, "C", None)?;
-    } else {
-        for &target in targets {
-            check_native_program(paths, &program, name, "C", Some(target))?;
+    if fixture_backed {
+        for extended_sequence in [false, true] {
+            let ordinary = WindowsNativeFixture::spawn(paths, WindowsFixtureKind::Ordinary)?;
+            let acknowledged =
+                WindowsNativeFixture::spawn(paths, WindowsFixtureKind::Acknowledged)?;
+            for (kind, fixture) in [
+                (WindowsFixtureKind::Ordinary, &ordinary),
+                (WindowsFixtureKind::Acknowledged, &acknowledged),
+            ] {
+                check_native_program(
+                    paths,
+                    &program,
+                    name,
+                    Some((kind.contract_argument(), fixture.title())),
+                    extended_sequence,
+                )?;
+            }
         }
+    } else {
+        check_native_program(paths, &program, name, None, false)?;
     }
     Ok(())
 }
@@ -1112,16 +1032,19 @@ fn check_native_program(
     paths: &Paths,
     program: &Path,
     name: &str,
-    language: &str,
     target: Option<(&str, &str)>,
+    extended_sequence: bool,
 ) -> Result<(), Box<dyn std::error::Error>> {
     let output = match target {
+        Some((contract, title)) if extended_sequence => {
+            run(paths, program, &["--extended-sequence", contract, title])?
+        }
         Some((contract, title)) => run(paths, program, &[contract, title])?,
         None => run(paths, program, &["--check"])?,
     };
-    let stdout = String::from_utf8(output.stdout.clone())?;
+    report_output("native C example", &output);
+    let stdout = String::from_utf8(output.stdout)?;
     print!("{stdout}");
-    report_output(&format!("native {language} example"), &output);
 
     let mode = target.map_or("non-prompting check", |_| "fixture-backed flow");
     if !output.status.success() {
@@ -1142,6 +1065,16 @@ fn check_native_program(
                 "the {name} {mode} did not verify the requested {contract} contract"
             )
             .into());
+        }
+        let events = if extended_sequence { 16 } else { 4 };
+        let receipt = format!("receipt: outcome 1 submitted {events} fault 0 cleanup 0");
+        if !stdout.contains(&receipt) || !stdout.contains("expected condition: stream ") {
+            return Err(format!("the {name} {mode} omitted receipt or visual evidence").into());
+        }
+        if extended_sequence && !stdout.contains("sequence: extended events 16 delay-nanos ") {
+            return Err(
+                format!("the {name} omitted the extended sequence delay observation").into(),
+            );
         }
     }
     Ok(())
@@ -1169,61 +1102,7 @@ fn check_unsupported_native_program(
     Ok(())
 }
 
-/// Compiles, links, and runs the C++ example, which answers the same questions.
-fn run_cpp_example(paths: &Paths, label: &str) -> Result<(), Box<dyn std::error::Error>> {
-    let source = paths
-        .root
-        .join("crates/bindings/capi/examples/cpp/deterministic-slice.cpp");
-    let program = compile(
-        paths,
-        Language::Cpp,
-        "deterministic-slice-cpp",
-        &source,
-        true,
-    )?;
-
-    let package = package(paths);
-    let output = run(paths, &program, &["--package", &package, "--label", label])?;
-
-    check_example("C++", &output)
-}
-
-/// Compiles, links, and runs the native flow through the C++ RAII wrapper.
-fn run_native_cpp_example(
-    paths: &Paths,
-    targets: &[(&str, &str)],
-) -> Result<(), Box<dyn std::error::Error>> {
-    let name = if cfg!(target_os = "windows") {
-        "windows-native-input-cpp"
-    } else if cfg!(target_os = "macos") {
-        "macos-native-input-cpp"
-    } else {
-        return Err("the native C++ example requires a release-target host".into());
-    };
-    let source = paths
-        .root
-        .join("crates/bindings/capi/examples/cpp/native-input.cpp");
-    let program = compile(paths, Language::Cpp, name, &source, true)?;
-    #[cfg(all(windows, feature = "qualification-unsupported-api"))]
-    if windows_unsupported_qualification_requested() {
-        check_unsupported_native_program(paths, &program, name, "C++")?;
-    }
-    if targets.is_empty() {
-        check_native_program(paths, &program, name, "C++", None)?;
-    } else {
-        for &target in targets {
-            check_native_program(paths, &program, name, "C++", Some(target))?;
-        }
-    }
-    Ok(())
-}
-
-/// Checks an example's outcome, and that it reached the end.
-///
-/// Each example checks its own expectations and exits non-zero on the first
-/// surprise. These lines guard against one exiting zero without having got
-/// there, and are the same for both languages because both must answer the same
-/// question with the same numbers.
+/// Checks the deterministic C workflow's observed results and completion.
 fn check_example(language: &str, output: &Output) -> Result<(), Box<dyn std::error::Error>> {
     let stdout = String::from_utf8_lossy(&output.stdout).into_owned();
     print!("{stdout}");
@@ -1243,39 +1122,6 @@ fn check_example(language: &str, output: &Output) -> Result<(), Box<dyn std::err
         if !stdout.contains(required) {
             return Err(format!("the {language} example never printed `{required}`").into());
         }
-    }
-
-    Ok(())
-}
-
-/// Compiles and runs the C++ ownership probe.
-///
-/// Its static assertions are checked by the compile; its behaviour checks are
-/// checked by the run.
-fn check_cpp_ownership(paths: &Paths) -> Result<(), Box<dyn std::error::Error>> {
-    let source = paths
-        .root
-        .join("crates/bindings/capi/tests/cpp/madopilot-cpp-ownership.cpp");
-    let program = compile(
-        paths,
-        Language::Cpp,
-        "madopilot-cpp-ownership",
-        &source,
-        true,
-    )?;
-
-    let package = package(paths);
-    let output = run(paths, &program, &["--package", &package])?;
-
-    let stdout = String::from_utf8_lossy(&output.stdout).into_owned();
-    print!("{stdout}");
-    report_output("C++ ownership probe", &output);
-
-    if !output.status.success() {
-        return Err("the C++ ownership probe reported a failure".into());
-    }
-    if !stdout.contains("madopilot-cpp-ownership complete") {
-        return Err("the C++ ownership probe never reached the end".into());
     }
 
     Ok(())
@@ -1441,85 +1287,104 @@ fn check_frozen_headers(paths: &Paths) -> Result<(), Box<dyn std::error::Error>>
     Ok(())
 }
 
-/// Configures, builds, and runs the CMake consumer project.
-///
-/// It is a separate project with its own cache: it knows the two target names
-/// and nothing else, so a `MadoPilot::Cpp` that failed to carry its include
-/// directory or to bring `MadoPilot::C` with it would fail here.
-fn check_cmake_consumer(paths: &Paths) -> Result<(), Box<dyn std::error::Error>> {
+/// Runs an independent consumer build, optionally with CXX unavailable.
+fn check_cmake_consumer(paths: &Paths, c_only: bool) -> Result<(), Box<dyn std::error::Error>> {
     let source = paths.root.join("crates/bindings/capi/tests/cmake");
-    // CMake derives object directories from absolute sources outside this
-    // consumer project. A process-unique system-temporary root keeps those
-    // names below legacy MSVC path ceilings even when the checkout is deep.
-    // The guard removes stale same-PID state before use and cleans every exit.
-    let build = TemporaryCmakeBuild::new()?;
+    // A short, fresh cache also keeps generated paths within MSVC's limits.
+    let build = TemporaryCmakeBuild::new(if c_only { "c-only" } else { "c-cpp" })?;
     let package = paths.root.join("crates/bindings/capi");
-    // CMake paths use forward slashes on every host. Passing `Path::display()`
-    // directly leaves Windows separators in an untyped `-D` value; older
-    // supported CMake releases then parse sequences such as `\W` as invalid
-    // escapes when the value is expanded into a source path.
     let package = package.to_string_lossy().replace('\\', "/");
     let artifacts = paths.artifacts.to_string_lossy().replace('\\', "/");
-
-    // One configuration on both single-config and multi-config generators: the
-    // former reads CMAKE_BUILD_TYPE, the latter ignores it and takes `--config`.
-    // No generator is named, so each host uses the one it has — Ninja is not
-    // guaranteed on either runner, and MSBuild and Unix Makefiles are.
+    let unavailable_cxx = c_only.then(|| build.path().join("unavailable-cxx"));
+    let mut arguments = vec![
+        OsString::from("-S"),
+        source.into_os_string(),
+        OsString::from("-B"),
+        build.path().as_os_str().to_os_string(),
+        OsString::from(format!("-DMADOPILOT_SOURCE_DIR={package}")),
+        OsString::from(format!("-DMADOPILOT_ARTIFACT_DIR={artifacts}")),
+        OsString::from("-DCMAKE_BUILD_TYPE=Release"),
+        OsString::from("-DCMAKE_OBJECT_PATH_MAX=200"),
+    ];
+    if c_only && cfg!(windows) {
+        // Use compiler-driven discovery for the unavailable-CXX probe.
+        arguments.extend([OsString::from("-G"), OsString::from("NMake Makefiles")]);
+    }
+    if let Some(compiler) = &unavailable_cxx {
+        arguments.push(OsString::from("-DMADOPILOT_C_ONLY=ON"));
+        arguments.push(OsString::from(format!(
+            "-DCMAKE_CXX_COMPILER:FILEPATH={}",
+            compiler.to_string_lossy().replace('\\', "/")
+        )));
+        println!("cmake C-only: CXX={}", compiler.display());
+    }
     let configure = cmake_step(
         paths,
-        &paths.cmake.clone(),
-        &[
-            OsString::from("-S"),
-            source.clone().into_os_string(),
-            OsString::from("-B"),
-            build.path().as_os_str().to_os_string(),
-            OsString::from(format!("-DMADOPILOT_SOURCE_DIR={package}")),
-            OsString::from(format!("-DMADOPILOT_ARTIFACT_DIR={artifacts}")),
-            OsString::from("-DCMAKE_BUILD_TYPE=Release"),
-            // Hash source-derived object paths before legacy MSVC's boundary.
-            OsString::from("-DCMAKE_OBJECT_PATH_MAX=200"),
-        ],
+        &paths.cmake,
+        &arguments,
         "cmake configure",
+        unavailable_cxx.as_deref(),
     )?;
     if !configure.status.success() {
         return Err("configuring the CMake consumer project failed".into());
     }
 
+    let mut arguments = vec![
+        OsString::from("--build"),
+        build.path().as_os_str().to_os_string(),
+        OsString::from("--config"),
+        OsString::from("Release"),
+    ];
+    if c_only {
+        arguments.extend([OsString::from("--target"), OsString::from("consumer-c")]);
+    }
     let built = cmake_step(
         paths,
-        &paths.cmake.clone(),
-        &[
-            OsString::from("--build"),
-            build.path().as_os_str().to_os_string(),
-            OsString::from("--config"),
-            OsString::from("Release"),
-        ],
+        &paths.cmake,
+        &arguments,
         "cmake build",
+        unavailable_cxx.as_deref(),
     )?;
     if !built.status.success() {
         return Err("building the CMake consumer project failed".into());
     }
 
-    let tested = cmake_step(
-        paths,
-        &ctest(&paths.cmake),
-        &[
-            OsString::from("--test-dir"),
-            build.path().as_os_str().to_os_string(),
-            OsString::from("--build-config"),
-            OsString::from("Release"),
-            OsString::from("--output-on-failure"),
-        ],
-        "ctest",
-    )?;
-    let stdout = String::from_utf8_lossy(&tested.stdout).into_owned();
-    if !tested.status.success() {
-        print!("{stdout}");
-        return Err("the CMake consumer tests failed".into());
+    let consumers: &[&str] = if c_only {
+        &["consumer-c"]
+    } else {
+        &["consumer-c", "consumer-cpp", "consumer-ocr-profile-c"]
+    };
+    for consumer in consumers {
+        let tested = cmake_step(
+            paths,
+            &ctest(&paths.cmake),
+            &[
+                OsString::from("--test-dir"),
+                build.path().as_os_str().to_os_string(),
+                OsString::from("--build-config"),
+                OsString::from("Release"),
+                OsString::from("--verbose"),
+                OsString::from("--no-tests=error"),
+                OsString::from("-R"),
+                OsString::from(format!("^{consumer}$")),
+            ],
+            consumer,
+            unavailable_cxx.as_deref(),
+        )?;
+        print!("{}", String::from_utf8_lossy(&tested.stdout));
+        if !tested.status.success() {
+            return Err(format!("the CMake {consumer} test failed").into());
+        }
     }
 
-    println!("cmake: the consumer project built and all consumers ran");
-
+    println!(
+        "cmake: {}",
+        if c_only {
+            "C-only consumer ran with unavailable CXX"
+        } else {
+            "C/C++ consumers ran; controlled OCR coverage is reported by CTest"
+        }
+    );
     Ok(())
 }
 
@@ -1528,9 +1393,13 @@ fn cmake_step(
     program: &OsString,
     arguments: &[OsString],
     what: &str,
+    unavailable_cxx: Option<&Path>,
 ) -> Result<Output, Box<dyn std::error::Error>> {
     let mut command = Command::new(program);
     command.args(arguments);
+    if let Some(compiler) = unavailable_cxx {
+        command.env("CXX", compiler);
+    }
     reachable(paths, &mut command)?;
 
     let output = command

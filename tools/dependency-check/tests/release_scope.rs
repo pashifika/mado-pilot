@@ -45,8 +45,7 @@ fn compliant_observation() -> ReleaseScopeObservation {
         cmake_project: include_str!("fixtures/v0.4.0-CMakeLists.txt").to_owned(),
         c_header: include_str!("../../../crates/bindings/capi/include/madopilot/madopilot.h")
             .to_owned(),
-        cpp_header: include_str!("../../../crates/bindings/capi/include/madopilot/madopilot.hpp")
-            .to_owned(),
+        cpp_header: include_str!("fixtures/v0.4.0-cpp-header-observation.txt").to_owned(),
     }
 }
 

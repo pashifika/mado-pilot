@@ -13,8 +13,9 @@ MadoPilot is a headless visual automation runtime for applications and agents. I
 The primary implementation is Rust. Public integration surfaces are:
 
 - an idiomatic Rust API through the `mado-pilot` facade crate;
-- a separately versioned C ABI with opaque handles and explicit ownership;
-- a thin C++ RAII wrapper that consumes only the released C ABI.
+- a separately versioned C ABI for C and C++ with opaque handles and explicit ownership.
+
+C and C++ callers use `madopilot.h` and `MadoPilot::C` directly. Applications own handle management, request storage, error handling, and higher-level abstractions; the project provides small samples rather than a C++ wrapper.
 
 The initial release targets are `x86_64-pc-windows-msvc` and `aarch64-apple-darwin`.
 
@@ -39,7 +40,7 @@ Follow ports-and-adapters dependency direction:
 - backend crates implement vision or OCR contracts;
 - the public facade performs default wiring;
 - the C ABI depends on the facade, never the reverse;
-- the C++ wrapper links through the released C ABI only.
+- C and C++ consumers link through the released C ABI only.
 
 Organize modules by responsibility. Do not introduce a general `utils` layer. Do not add empty crates for deferred adapters.
 

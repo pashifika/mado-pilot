@@ -1269,7 +1269,7 @@ typedef struct madopilot_match_options_t {
  * are identical and stating the default for one and not the other invites the
  * reader to think they differ.
  *
- * The field is `tmpl` rather than `template` because the C++ wrapper includes
+ * The field is `tmpl` rather than `template` because C++ callers include
  * this header and that word is a keyword there. */
 typedef struct madopilot_find_request_t {
     uint32_t struct_size;

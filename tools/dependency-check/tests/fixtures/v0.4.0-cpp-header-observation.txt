@@ -1,0 +1,2 @@
+Synthetic v0.4.0 C++ header observation for release-scope mutation tests.
+Only the historical surface-exclusion rule consumes this text; it is not a header implementation.

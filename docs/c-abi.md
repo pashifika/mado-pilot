@@ -17,9 +17,25 @@ The production default/profile-zone and fixture OCR flows are
 [`examples/c/ocr-profile-zones.c`](../crates/bindings/capi/examples/c/ocr-profile-zones.c),
 and [`examples/c/ocr-fixture.c`](../crates/bindings/capi/examples/c/ocr-fixture.c).
 
-A C++ caller uses the header-only RAII wrapper over this contract rather than
-calling the table directly; see [cpp-wrapper.md](cpp-wrapper.md). Everything
-below still applies to it, because it is the same contract.
+C and C++ callers include `madopilot/madopilot.h` and call the negotiated table
+directly. Both link `MadoPilot::C`; no official C++ wrapper or compatibility shim
+is provided. See [ADR 0089](adr/0089-direct-c-abi-consumption.md).
+
+## Direct C and C++ consumption
+
+Start with [`direct-abi.c`](../crates/bindings/capi/examples/c/direct-abi.c) or
+[`direct-abi.cpp`](../crates/bindings/capi/examples/cpp/direct-abi.cpp). Each
+negotiates the table, reads build information, creates a cancellation handle,
+observes its state before and after cancellation, and releases it. These small
+programs need only the built library, not models, capture/input permission, or a
+desktop target.
+
+Applications choose ownership abstractions, error handling, request storage,
+deadlines, cancellation, and sequencing. Keep pointer-length inputs alive for
+their documented call scope, read borrowed views only while their owner is
+retained, and explicitly release each owned handle. Every status and output
+contract below applies equally to both languages. The larger C workflows and
+external consumers are verification programs, not an additional public API.
 
 ## ABI 1.5, with complete released 1.0, 1.2, 1.3, and 1.4 prefixes preserved
 
@@ -49,14 +65,14 @@ Use the smaller of caller `sizeof(madopilot_api_t)` and the returned
 720 bytes. ABI 1.5 provider construction requires
 `MADOPILOT_API_SIZE_ENGINE_CREATE_WITH_OCR_PROVIDER` (728 bytes); provider
 descriptor access requires `MADOPILOT_API_SIZE_ENGINE_OCR_PROVIDER_DESCRIPTOR`
-(736 bytes). The C++ wrapper checks both caller-known and returned extents before
-reading either pointer.
+(736 bytes). Every caller checks both caller-known and returned extents before
+reading a function pointer.
 
 The released promise is executable. `tests/abi-compat/v1/`, `v1_2/`, `v1_3/`,
 and `v1_4/` keep exact headers/callers, compile without the working header, link
 to the current library, negotiate only their declared extents, and execute their
-complete flows. Current C++ checks also negotiate partial 1.3, 1.4, and 1.5
-extents and refuse high-level operations before a missing entry is read.
+complete flows. Direct C ABI tests also negotiate an incomplete current input
+suffix without reading an entry outside the caller-known extent.
 
 ## Migrating an ABI 1.4 caller to provider-policy OCR
 
@@ -798,27 +814,47 @@ a compiler.
 
 ### Compiling
 
+On macOS, build the development library and run either small sample:
+
 ```sh
-cargo build --locked --package mado-pilot-capi
+python3 tools/setup-native.py -- cargo build --locked --package mado-pilot-capi
 cc -std=c11 -I crates/bindings/capi/include \
-   -I crates/bindings/capi/examples \
-   -o deterministic-slice \
-   crates/bindings/capi/examples/c/deterministic-slice.c \
-   target/debug/libmadopilot.dylib -Wl,-rpath,target/debug
-./deterministic-slice --package fixtures/assets/phase1-slice
+   crates/bindings/capi/examples/c/direct-abi.c \
+   target/debug/libmadopilot.dylib -Wl,-rpath,"$PWD/target/debug" \
+   -o target/debug/direct-abi-c
+c++ -std=c++17 -I crates/bindings/capi/include \
+   crates/bindings/capi/examples/cpp/direct-abi.cpp \
+   target/debug/libmadopilot.dylib -Wl,-rpath,"$PWD/target/debug" \
+   -o target/debug/direct-abi-cpp
+target/debug/direct-abi-c
+target/debug/direct-abi-cpp
 ```
 
 On Windows, link `target\debug\madopilot.dll.lib` and put `target\debug` on
-`PATH` before running.
+`PATH` before running. Keep ordinary and private-fixture artifacts in separate
+Cargo target directories.
 
-The second include directory is for `deterministic-scene.h`, which holds the
-deterministic scene both the C and C++ examples build their replay frame from. A
-program of your own needs only the first.
+Both languages use the same development-tree CMake import:
 
-CMake targets are available as well, and are what a C++ consumer uses; see
-[cpp-wrapper.md](cpp-wrapper.md#building-against-it).
+```cmake
+cmake_minimum_required(VERSION 3.22)
+project(my_app LANGUAGES CXX)
+set(MADOPILOT_ARTIFACT_DIR "<absolute Cargo profile directory>")
+add_subdirectory("<MadoPilot source>/crates/bindings/capi" madopilot)
+add_executable(my_app main.cpp)
+target_compile_features(my_app PRIVATE cxx_std_17)
+target_link_libraries(my_app PRIVATE MadoPilot::C)
+```
 
-The native C examples have two modes. `--check` creates the real platform
+The import project enables no compiler and imposes no language standard. A
+C-only project uses `LANGUAGES C`, its own `.c` source and C standard, and the
+same target; no C++ compiler is required. `MADOPILOT_ARTIFACT_DIR` defaults to
+the repository's `target/debug`, regardless of `CMAKE_BUILD_TYPE`. Set it
+explicitly for other profiles, target-specific builds, or a custom
+`CARGO_TARGET_DIR`.
+This is a source-tree import, not an installed/exported SDK.
+
+The native C verification programs' `--check` mode creates the real platform
 engine, verifies capability reporting, and reads only non-prompting permission
 state; it stops before discovery and sends no input. That remains the default on
 macOS and for an ordinary local run:
@@ -827,10 +863,9 @@ macOS and for an ordinary local run:
 cargo run --locked --package mado-pilot-capi --example c-abi-check -- --label "<host>"
 ```
 
-On Windows, `--windows-native-fixture` launches both already-built repository
-fixtures, obtains their exact titles, runs the C and C++ common flows once
-against the ordinary contract and once against the acknowledged contract, and
-terminates both fixtures:
+On Windows, `--windows-native-fixture` runs the C default and extended sequences.
+Each gets fresh already-built ordinary and acknowledged repository fixtures,
+uses their exact titles, and terminates them after its flow:
 
 ```bat
 cargo build --locked --package mado-pilot-platform-windows --bin mado-pilot-windows-input-fixture --bin mado-pilot-windows-window-message-fixture
@@ -849,8 +884,12 @@ focus, permit no system-input fallback, and print no title, captured bytes, or
 typed text.
 
 When a caller owns the fixture lifecycle, pass `--ordinary "<full title>"` or
-`--acknowledged "<full title>"` directly to `windows-native-input.exe`; the C++
-counterpart accepts the same flags.
+`--acknowledged "<full title>"` directly to `windows-native-input.exe`. Prefix
+either form with `--extended-sequence` for the sixteen-event pointer, keyboard,
+Unicode-text and delay sequence. The default remains four events. On macOS,
+`macos-native-input --extended-sequence "<full title>"` adds text to the default
+flow for five events. These live flows require separately authorized owned
+fixtures; the small direct-ABI samples perform no native operation.
 
 ## How the header is verified
 
@@ -861,30 +900,34 @@ with the Rust `#[repr(C)]` definitions is proved rather than asserted:
 ```sh
 cargo build --locked --package mado-pilot-capi
 cargo run --locked --package mado-pilot-capi --example c-abi-check -- --label "<host>"
-cargo build --locked --package mado-pilot-capi --features private-fixture
+cargo build --locked --package mado-pilot-capi --features private-fixture \
+  --target-dir target/c-abi-private-fixture
 cargo run --locked --package mado-pilot-capi --features private-fixture \
-  --example c-abi-check -- --label "<host>"
+  --target-dir target/c-abi-private-fixture --example c-abi-check -- --label "<host>"
 ```
 
-The checker compares every C and Rust size/alignment/offset, compiles and runs
-the deterministic/native consumers, and then compiles frozen ABI 1.0 and 1.2
-callers only against their own headers. Those callers negotiate 424 and 592
-bytes and run unchanged against ABI 1.3. Current C++ checks negotiate complete
-1.2 and partial 1.3 extents and refuse OCR/default construction before a missing
-function pointer is read.
+The checker compares every current C and Rust size/alignment/offset. It also
+checks the declarations and behavior of frozen ABI 1.0, 1.2, 1.3 and 1.4 callers,
+compiled only against their own headers. Their 424-, 592-, 648- and 720-byte
+tables run against the current 736-byte ABI 1.5 library.
 
-The ordinary checker also compiles and runs the production C and C++ default OCR
-examples with reviewed prerequisites, requires identical normalized
-backend/model/count output, and runs the independent CMake consumer. The
-`private-fixture` mode separately runs deterministic C/C++ OCR against the
-fixture-only constructor and validates content-redacted diagnostics. Both paths
-exercise ownership, repeated close, and immutable result independence without
-turning the fixture symbol into a release entry.
+Both direct samples must report the real build facts, cancellation transition
+and successful release. The independent CMake project builds and runs those
+same sources in C/C++ mode, then builds and runs C alone in a fresh cache with
+`CXX` and `CMAKE_CXX_COMPILER` set to an unavailable path. CTest reports each
+named consumer separately.
+The Windows C-only probe uses NMake from the same MSVC developer prompt so that
+the unavailable CXX path controls compiler discovery; ordinary C/C++ consumers
+keep the default generator.
 
-The same command continues into the C++ surface: compile-time and runtime
-ownership tests, replay/native/default examples, and the independent CMake
-consumer project. See
-[cpp-wrapper.md](cpp-wrapper.md#how-the-wrapper-is-verified).
+Deterministic/native C workflows retain their observed-result checks. With
+reviewed model/runtime paths, the ordinary checker runs production C default
+and profile-zone OCR and the CMake OCR consumer. Missing prerequisites produce
+explicit skips, not successful OCR coverage. The isolated `private-fixture`
+build runs deterministic C OCR, validates content-redacted diagnostics, sixteen
+groups, shared candidates/membership and the seventeen-zone refusal. Owned
+results remain readable after parent release; the fixture constructor is not a
+release entry.
 
 The invariants that need no C compiler — versioned prefixes, per-event required
 fields, fixed numeric values, thin handles, table order, invalid-input failure

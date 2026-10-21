@@ -1714,8 +1714,7 @@ impl madopilot_match_options_t {
 
 /// One template search against one session.
 ///
-/// Mandatory prefix: through `tmpl`. The field is not called `template` because
-/// the C++ wrapper includes this header and that word is a keyword there.
+/// Mandatory prefix: through `tmpl`, named to avoid the C++ keyword `template`.
 #[repr(C)]
 #[derive(Debug, Clone, Copy)]
 pub struct madopilot_find_request_t {

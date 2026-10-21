@@ -495,16 +495,15 @@ RUSTDOCFLAGS="-D warnings" python3 tools/setup-native.py -- cargo doc --locked -
 # 7. Dependency licenses, advisories, sources, and duplicate versions
 cargo deny --locked check
 
-# 8. C/C++ ABI 1.5, provider feature compilation, ownership, frozen
-#    1.0/1.2/1.3/1.4 callers, current examples, and CMake consumers. The
-#    private-fixture run additionally compiles/runs local OCR fixtures; its
-#    constructor is absent from release builds and the public table.
+# 8. Direct C/C++ samples, ABI 1.5, provider compilation, ownership, frozen
+#    1.0/1.2/1.3/1.4 callers, and CMake consumers (including C-only without CXX).
+#    Keep the private OCR fixture library separate from the ordinary artifact.
 python3 tools/setup-native.py -- cargo build --locked --package mado-pilot-capi
 python3 tools/setup-native.py -- cargo check --locked --package mado-pilot-capi --all-targets --all-features
 python3 tools/setup-native.py -- cargo run --locked --package mado-pilot-capi --example c-abi-check -- --label "<host>"
 python3 tools/setup-native.py -- cargo run --locked --package mado-pilot --example ocr-fixture
-python3 tools/setup-native.py -- cargo build --locked --package mado-pilot-capi --features private-fixture
-python3 tools/setup-native.py -- cargo run --locked --package mado-pilot-capi --features private-fixture --example c-abi-check -- --label "<host>"
+python3 tools/setup-native.py -- cargo build --locked --package mado-pilot-capi --features private-fixture --target-dir target/c-abi-private-fixture
+python3 tools/setup-native.py -- cargo run --locked --package mado-pilot-capi --features private-fixture --target-dir target/c-abi-private-fixture --example c-abi-check -- --label "<host>"
 
 # 9. macOS host only: the macOS adapter as the *other* release target sees it.
 #    Step 3 above cannot reach that configuration here, because on this host the
@@ -643,9 +642,8 @@ already have a CMake. Setup selects `CC` and `CXX` from the native toolchain; se
 `CMAKE` to choose a different CMake. The ABI checker also accepts `CC`/`CXX`
 overrides when invoked directly from an already configured environment.
 
-[docs/c-abi.md](docs/c-abi.md) records what it compiles and why the header is
-verified this way rather than generated;
-[docs/cpp-wrapper.md](docs/cpp-wrapper.md) records the C++ half.
+[docs/c-abi.md](docs/c-abi.md) records direct consumption from both languages,
+the small samples, explicit ownership, and the header/consumer verification.
 
 On Windows, run step 8 from a Developer Command Prompt. `cl` is not on `PATH`
 otherwise, and the same environment sets `VSINSTALLDIR`, through which the check
