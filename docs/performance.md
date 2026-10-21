@@ -169,11 +169,14 @@ mapping/source/result release and active eviction. The active reader completes
 before final backend release; these are separate checkpoints, not RSS-return
 or all-native-allocation guarantees.
 
-Build in a fresh root, retaining the command and Cargo JSON output:
+Use Python 3.11 or newer. Resolve its absolute executable before native setup,
+which may prepend a different Python to `PATH`. Build in a fresh root, retaining
+the command and Cargo JSON output:
 
 ```sh
+PYTHON="$(python3 -c 'import sys; print(sys.executable)')"
 CARGO_TARGET_DIR=target/direct-format-smoke \
-  python3 tools/setup-native.py -- cargo bench --locked \
+  "$PYTHON" tools/setup-native.py -- cargo bench --locked \
   --config 'profile.bench.build-override.strip="none"' \
   --package mado-pilot --features template-matching-benchmark \
   --bench template-matching-efficiency --no-run --message-format=json
@@ -185,11 +188,11 @@ is the actual supported host target and `EVIDENCE` is a new output directory.
 Windows uses its configured MSVC/OpenCV environment and `python`.
 
 ```sh
-python3 tools/template-matching-efficiency.py policy
-python3 tools/setup-native.py -- python3 tools/template-matching-efficiency.py attest \
+"$PYTHON" tools/template-matching-efficiency.py policy
+"$PYTHON" tools/setup-native.py -- "$PYTHON" tools/template-matching-efficiency.py attest \
   --target "$TARGET" --binary "$BINARY" --build-argv-json "$BUILD_ARGV_JSON" \
   --output "$EVIDENCE/build-metadata.json"
-python3 tools/setup-native.py -- python3 tools/template-matching-efficiency.py smoke \
+"$PYTHON" tools/setup-native.py -- "$PYTHON" tools/template-matching-efficiency.py smoke \
   --target "$TARGET" --baseline "$BINARY" \
   --baseline-metadata "$EVIDENCE/build-metadata.json" \
   --output "$EVIDENCE/campaign"
@@ -203,6 +206,12 @@ source/tree, dirty status, binary, command, corpus and raw process records.
 complete transitive native-library closure or prove reproducible builds.
 Both native CI jobs retain this packet independently. Work reduction establishes
 neither elapsed benefit nor release-host statistical qualification.
+
+The 2026-10-21 local Apple Silicon smoke of source `e788b59` passed all 21 rows
+with one warmup and three retained iterations. Full-frame RGBA/BGRA mapped
+without copying; explicit forced-BGRA mapping and nonzero ROI controls retained
+their declared copies. This is bounded semantic/work evidence, not a timing
+comparison or Windows execution claim.
 
 ## Where benchmark files live
 
