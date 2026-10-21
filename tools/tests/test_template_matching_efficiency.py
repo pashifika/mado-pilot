@@ -5,7 +5,7 @@ import copy
 import importlib.util
 import json
 import os
-from pathlib import Path
+from pathlib import Path, PurePosixPath
 import shutil
 import sys
 import tempfile
@@ -19,6 +19,7 @@ SPEC = importlib.util.spec_from_file_location(
 collector = importlib.util.module_from_spec(SPEC)
 SPEC.loader.exec_module(collector)
 TARGET = "aarch64-apple-darwin"
+NATIVE_TARGET = collector.TARGETS[1] if os.name == "nt" else TARGET
 RUNTIME = {"method": "dyld-loaded-image-paths",
            "images": [{"path": "/runtime/libopencv_core.dylib", "sha256": "e" * 64}]}
 
@@ -126,6 +127,7 @@ def payload(workload, *, candidate=False, smoke=False):
 
 
 def identity(root, role):
+    root = PurePosixPath("/binary-root") / root.name
     return {"path": str(root / role), "sha256": ("a" if role == "baseline" else "b") * 64,
             "metadata_path": str(root / f"{role}.json"), "metadata_sha256": "d" * 64,
             "build": {"target": TARGET, "source_revision": ("a" if role == "baseline" else "b") * 40,
@@ -343,6 +345,27 @@ class ParserTests(unittest.TestCase):
         binding["build"]["dependencies"][0]["path"] = r"C:\another\opencv_world4140.dll"
         with self.assertRaisesRegex(ValueError, "path/hash"):
             collector.loaded_runtime(value, binding)
+
+    def test_dependency_paths_follow_recorded_target_and_detect_aliases(self):
+        cases = (
+            (TARGET, "/runtime/libopencv_core.dylib", "runtime/libopencv_core.dylib"),
+            (collector.TARGETS[1], r"C:\opencv\opencv_world4140.dll", r"C:opencv_world4140.dll"),
+        )
+        for target, absolute, relative in cases:
+            with self.subTest(target=target):
+                build = identity(Path("/binary-root"), "baseline")["build"]
+                build["target"] = target
+                build["dependencies"] = [{"path": absolute, "sha256": "e" * 64}]
+                collector.validate_build(build, target)
+                build["dependencies"][0]["path"] = relative
+                with self.assertRaisesRegex(ValueError, "absolute"):
+                    collector.validate_build(build, target)
+        build["dependencies"] = [
+            {"path": r"C:\opencv\opencv_world4140.dll", "sha256": "e" * 64},
+            {"path": r"\\?\C:\OPENCV\opencv_world4140.dll", "sha256": "e" * 64},
+        ]
+        with self.assertRaisesRegex(ValueError, "unique"):
+            collector.validate_build(build, collector.TARGETS[1])
 
 
 class AcceptanceTests(unittest.TestCase):
@@ -645,6 +668,22 @@ class EvidenceTests(unittest.TestCase):
         self.assertEqual(result["targets"]["x86_64-pc-windows-msvc"], "not-run")
         self.assertEqual(result["whole_change_acceptance"], "incomplete")
 
+    def test_recorded_binary_paths_follow_the_producer_target(self):
+        specification = plan(self.root, "smoke")
+        collector.validate_plan(specification)
+        windows = collector.TARGETS[1]
+        specification["target"] = windows
+        specification["host"]["target"] = windows
+        binding = specification["binaries"]["baseline"]
+        binding["path"] = r"D:\recorded\benchmark.exe"
+        binding["build"]["target"] = windows
+        binding["build"]["dependencies"] = [
+            {"path": r"C:\opencv\opencv_world4140.dll", "sha256": "e" * 64}]
+        collector.validate_plan(specification)
+        binding["path"] = r"D:benchmark.exe"
+        with self.assertRaisesRegex(ValueError, "absolute"):
+            collector.validate_plan(specification)
+
     def test_missing_attempt_remains_not_run_and_no_retry_is_accepted(self):
         directory = self.root / "smoke"
         persist_campaign(directory, "smoke", smoke=True)
@@ -880,17 +919,18 @@ class EvidenceTests(unittest.TestCase):
         binary.write_bytes(b"explicit prebuilt bytes")
         dependency.write_bytes(b"native library bytes")
         build = identity(self.root, "baseline")["build"]
+        build["target"] = NATIVE_TARGET
         build["binary_sha256"] = collector.sha256(binary)
         build["dependencies"][0]["path"] = str(dependency)
         build["dependencies"][0]["sha256"] = collector.sha256(dependency)
         collector.save(metadata, build)
-        binding = collector.binary_identity(binary, metadata, TARGET)
+        binding = collector.binary_identity(binary, metadata, NATIVE_TARGET)
         dependency.write_bytes(b"another native library")
         with self.assertRaisesRegex(ValueError, "native dependency changed"):
             collector.check_files(binding)
         binary.write_bytes(b"rebuilt in place")
         with self.assertRaisesRegex(ValueError, "binary does not match"):
-            collector.binary_identity(binary, metadata, TARGET)
+            collector.binary_identity(binary, metadata, NATIVE_TARGET)
 
     @unittest.skipUnless(shutil.which("git") and shutil.which("rustc"), "git and rustc required")
     def test_attestation_collects_source_identity_through_real_process_runner(self):
@@ -914,6 +954,9 @@ class EvidenceTests(unittest.TestCase):
                     "-c", "commit.gpgsign=false", "commit", "--quiet", "-m", "fixture")
         expected_revision = git_command("rev-parse", "HEAD")
         value = manifest()
+        value["target"] = NATIVE_TARGET
+        if NATIVE_TARGET == collector.TARGETS[1]:
+            value["loaded_native_runtime"]["method"] = "K32EnumProcessModules-GetModuleFileNameW"
         value["loaded_native_runtime"]["images"] = [{"path": str(dependency), "sha256": collector.sha256(dependency)}]
         probe = {"exit_code": 0, "timed_out": False, "output_limited": False, "cleanup_ok": True,
                  "launch_error": None, "duration_seconds": 0.1, "stdout": json.dumps(value), "stderr": ""}
@@ -925,10 +968,10 @@ class EvidenceTests(unittest.TestCase):
 
         metadata = self.root / "observed-build.json"
         args = collector.parser().parse_args([
-            "attest", "--target", TARGET, "--binary", str(binary),
+            "attest", "--target", NATIVE_TARGET, "--binary", str(binary),
             "--build-argv-json", '["cargo","bench","--no-run","--locked"]', "--output", str(metadata)])
         with (mock.patch.object(collector, "ROOT", self.root),
-              mock.patch.object(collector, "host_identity", return_value={"target": TARGET}),
+              mock.patch.object(collector, "host_identity", return_value={"target": NATIVE_TARGET}),
               mock.patch.object(collector, "run_process", side_effect=launch_probe)):
             collector.attest(args)
         observed = collector.load(metadata)

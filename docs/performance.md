@@ -204,6 +204,9 @@ and five-second cleanup. No failed sample is retried or replaced. It retains
 source/tree, dirty status, binary, command, corpus and raw process records.
 `attest` observes loaded OpenCV image paths and hashes; it does not attest the
 complete transitive native-library closure or prove reproducible builds.
+Recorded executable and dependency paths use the producer target's path syntax,
+independent of the host reviewing the packet. Windows path aliases are compared
+case-insensitively; raw observed paths remain in the evidence.
 Both native CI jobs retain this packet independently. Work reduction establishes
 neither elapsed benefit nor release-host statistical qualification.
 

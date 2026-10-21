@@ -22,7 +22,7 @@ import sys
 import tempfile
 import time
 from pathlib import Path
-from pathlib import PureWindowsPath
+from pathlib import PurePosixPath, PureWindowsPath
 
 ROOT = Path(__file__).resolve().parents[1]
 RUNNER_DIR = ROOT / "tools/native-release-profile"
@@ -146,7 +146,7 @@ def direct_format_contract():
 
 def native_path(path, target):
     path = nonempty(path, "loaded runtime path")
-    require((PureWindowsPath(path) if target == TARGETS[1] else Path(path)).is_absolute(),
+    require((PureWindowsPath(path) if target == TARGETS[1] else PurePosixPath(path)).is_absolute(),
             "loaded runtime path must be absolute")
     return path.replace("\\", "/").removeprefix("//?/").casefold() if target == TARGETS[1] else path
 
@@ -276,8 +276,8 @@ def validate_build(build, target):
     paths = set()
     for dependency in dependencies:
         require(isinstance(dependency, dict), "invalid dependency")
-        path = nonempty(dependency.get("path"), "dependency path")
-        require(Path(path).is_absolute() and path not in paths, "dependency paths must be unique and absolute")
+        path = native_path(dependency.get("path"), target)
+        require(path not in paths, "dependency paths must be unique and absolute")
         paths.add(path)
         digest(dependency.get("sha256"), "dependency sha256")
 
@@ -534,7 +534,7 @@ def validate_plan(plan):
         validate_build(identity.get("build"), target)
         require(identity.get("sha256") == identity["build"]["binary_sha256"], "binary/source binding mismatch")
         digest(identity.get("metadata_sha256"), "metadata_sha256")
-        require(Path(identity.get("path", "")).is_absolute(), "binary path missing")
+        native_path(identity.get("path"), target)
     require(isinstance(plan.get("environment"), dict), "environment missing")
 
 
