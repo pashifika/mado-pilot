@@ -318,6 +318,15 @@ root. It executes conversion/allocation/borrow-lifetime seams, not OCR or input.
 Forced odd writes, failed releases and cancellation/deadline races use fake
 native calls only. Do not reproduce stuck keys or short writes on a real desktop.
 
+On a scaled interactive desktop, keep the cursor stationary for these read-only
+checks. They verify physical cursor reads and caller-DPI restoration without
+fixture activation or input; they do not prove arrival.
+
+```text
+cargo test --locked -p mado-pilot-platform-windows --lib native_input::tests::coordinates::native_non_move_cursor_preserves_physical_coordinates_and_caller_dpi -- --ignored --exact --nocapture
+cargo test --locked -p mado-pilot-platform-windows --test window_message_native desktop_snapshots_preserve_physical_coordinates_and_caller_dpi -- --ignored --exact --nocapture
+```
+
 ### Owned-fixture DPI arrival
 
 Before execution, bind the integrated commit/tree, host/SDK, exact fixture and

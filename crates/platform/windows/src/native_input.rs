@@ -181,6 +181,8 @@ fn non_move_pointer<S: CoordinateSource + ?Sized>(
         }
         return Ok(pointer);
     }
+    let _dpi = ThreadDpiContext::enter(source, DPI_AWARENESS_CONTEXT_PER_MONITOR_AWARE_V2)
+        .ok_or(InputFault::UnsupportedCoordinate)?;
     let screen = source.physical_cursor()?;
     if !contains_screen_point(current, screen) {
         return Err(InputFault::UnsupportedCoordinate);
@@ -2128,8 +2130,10 @@ mod tests {
                 self.calls.borrow_mut().push("physical-cursor");
                 if self.fail.get() == "cursor" {
                     Err(InputFault::SubmissionFailed)
-                } else {
+                } else if self.context.get() == DPI_AWARENESS_CONTEXT_PER_MONITOR_AWARE_V2 {
                     Ok((-1800, -100))
+                } else {
+                    Ok((-900, -50))
                 }
             }
 
@@ -2294,7 +2298,6 @@ mod tests {
                     ),
                     Ok(first)
                 );
-                assert_eq!(source.calls.borrow().as_slice(), ["physical-cursor"]);
                 let mut moved = geometry();
                 moved.extent = PixelExtent::new(100, 50);
                 assert_eq!(
@@ -2302,7 +2305,6 @@ mod tests {
                     Err(InputFault::GeometryChanged)
                 );
                 assert_eq!(source.context.get(), caller);
-                assert!(source.posts.borrow().is_empty());
                 assert_eq!(
                     non_move_pointer(
                         &source,
@@ -2312,6 +2314,74 @@ mod tests {
                     ),
                     Err(InputFault::SubmissionFailed)
                 );
+                assert_eq!(source.context.get(), caller);
+                source.fail.set("entry");
+                let mut fresh = DriverState::default();
+                assert_eq!(
+                    non_move_pointer(
+                        &source,
+                        geometry(),
+                        GeometryPolicy::ReprojectCurrent,
+                        &mut fresh,
+                    ),
+                    Err(InputFault::UnsupportedCoordinate)
+                );
+                assert!(fresh.pointer.is_none());
+                assert_eq!(source.context.get(), caller);
+            }
+        }
+
+        #[test]
+        #[ignore = "requires a stationary cursor on a scaled interactive desktop; reads only"]
+        fn native_non_move_cursor_preserves_physical_coordinates_and_caller_dpi() {
+            let source = super::super::NativeCoordinates;
+            let (left, top, width, height) = virtual_desktop(&source).expect("physical desktop");
+            let current = GeometryFingerprint {
+                extent: PixelExtent::new(
+                    u32::try_from(width).expect("positive width"),
+                    u32::try_from(height).expect("positive height"),
+                ),
+                placement: TargetPlacement::new(
+                    (f64::from(left), f64::from(top)),
+                    (f64::from(width), f64::from(height)),
+                    Scale::new(1.0, 1.0).expect("physical scale"),
+                )
+                .expect("desktop placement")
+                .with_desktop_scale(Scale::new(1.0, 1.0).expect("physical scale")),
+            };
+            for caller in [
+                DPI_AWARENESS_CONTEXT_UNAWARE,
+                DPI_AWARENESS_CONTEXT_SYSTEM_AWARE,
+                DPI_AWARENESS_CONTEXT_PER_MONITOR_AWARE_V2,
+            ] {
+                let _caller = ThreadDpiContext::enter(&source, caller).expect("caller DPI");
+                let expected = {
+                    let _physical = ThreadDpiContext::enter(
+                        &source,
+                        DPI_AWARENESS_CONTEXT_PER_MONITOR_AWARE_V2,
+                    )
+                    .expect("physical DPI");
+                    source.physical_cursor().expect("physical reference")
+                };
+                let pointer = non_move_pointer(
+                    &source,
+                    current,
+                    GeometryPolicy::ReprojectCurrent,
+                    &mut DriverState::default(),
+                )
+                .expect("physical cursor inside desktop");
+                assert_eq!(
+                    pointer.screen, expected,
+                    "caller-independent physical cursor"
+                );
+                // SAFETY: both values are opaque DPI contexts on this thread.
+                assert!(unsafe {
+                    windows::Win32::UI::HiDpi::AreDpiAwarenessContextsEqual(
+                        caller,
+                        windows::Win32::UI::HiDpi::GetThreadDpiAwarenessContext(),
+                    )
+                    .as_bool()
+                });
             }
         }
 

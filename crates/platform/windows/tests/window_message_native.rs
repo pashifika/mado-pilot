@@ -416,6 +416,7 @@ struct DesktopState {
 
 impl DesktopState {
     fn capture() -> Self {
+        let _physical = DpiScope::enter(DpiMode::PerMonitorV2).expect("physical snapshot DPI");
         let mut cursor = POINT::default();
         // SAFETY: cursor is a complete writable POINT.
         unsafe { GetPhysicalCursorPos(&raw mut cursor) }.expect("read physical cursor");
@@ -425,17 +426,13 @@ impl DesktopState {
     }
 
     fn assert_unchanged(&self) {
-        let mut current = POINT::default();
-        // SAFETY: current is a complete writable POINT.
-        unsafe { GetPhysicalCursorPos(&raw mut current) }.expect("read physical cursor");
-        // SAFETY: the return is an opaque snapshot and is not dereferenced.
-        let foreground = unsafe { GetForegroundWindow() };
+        let current = Self::capture();
         assert_eq!(
-            current, self.cursor,
+            current.cursor, self.cursor,
             "WindowMessage moved the physical cursor"
         );
         assert_eq!(
-            foreground, self.foreground,
+            current.foreground, self.foreground,
             "WindowMessage changed the unrelated foreground window"
         );
     }
@@ -2590,4 +2587,28 @@ fn dpi_system_arrival_matrix() {
 #[ignore = "requires explicit owned-desktop authority and declared DPI/topology; posts real messages"]
 fn dpi_window_message_arrival_matrix() {
     dpi_arrival_matrix(InputDelivery::WindowMessage);
+}
+
+#[test]
+#[ignore = "requires a stationary cursor on a scaled interactive desktop; reads only"]
+fn desktop_snapshots_preserve_physical_coordinates_and_caller_dpi() {
+    let _serial = NATIVE_MATRIX.lock().expect("native matrix serialized");
+    select_process_dpi_awareness();
+    let _physical = DpiScope::enter(DpiMode::PerMonitorV2).expect("physical reference");
+    let expected = DesktopState::capture();
+    for caller in [DpiMode::Unaware, DpiMode::System, DpiMode::PerMonitorV2] {
+        let _caller = DpiScope::enter(caller).expect("caller DPI");
+        // SAFETY: this reads only the calling thread's opaque DPI context.
+        let incoming = unsafe { GetThreadDpiAwarenessContext() };
+        let observed = DesktopState::capture();
+        assert_eq!(
+            observed.cursor, expected.cursor,
+            "caller-independent physical snapshot"
+        );
+        expected.assert_unchanged();
+        // SAFETY: both opaque contexts were returned by USER32 on this thread.
+        assert!(unsafe {
+            AreDpiAwarenessContextsEqual(incoming, GetThreadDpiAwarenessContext()).as_bool()
+        });
+    }
 }
