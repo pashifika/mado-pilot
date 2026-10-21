@@ -21,9 +21,6 @@ use windows::Win32::Graphics::Gdi::{
     ClientToScreen, EnumDisplayMonitors, GetMonitorInfoW, HDC, HMONITOR, MONITORINFOEXW,
 };
 use windows::Win32::System::WinRT::Graphics::Capture::IGraphicsCaptureItemInterop;
-use windows::Win32::UI::HiDpi::{
-    DPI_AWARENESS_CONTEXT, DPI_AWARENESS_CONTEXT_PER_MONITOR_AWARE_V2, SetThreadDpiAwarenessContext,
-};
 use windows::Win32::UI::WindowsAndMessaging::{
     EnumWindows, GetClassNameW, GetClientRect, GetWindowDisplayAffinity, GetWindowTextLengthW,
     GetWindowTextW, IsIconic, IsWindow, IsWindowVisible,
@@ -32,29 +29,14 @@ use windows::core::BOOL;
 
 use crate::availability::capture_item_factory;
 use crate::input::input_capability;
-use crate::optional_api::{logical_to_physical, monitor_scale, window_dpi};
+use crate::optional_api::{
+    NativeThreadDpi, ThreadDpiContext, logical_to_physical, monitor_scale, window_dpi,
+    window_dpi_context,
+};
 use crate::storage::validate_surface;
 use crate::window_authority::{RetainedWindowAuthority, WindowAuthorityStatus};
 
 const DEFAULT_DPI: u32 = 96;
-
-struct ThreadDpiContext(DPI_AWARENESS_CONTEXT);
-
-impl ThreadDpiContext {
-    fn per_monitor() -> Self {
-        // SAFETY: this changes only the calling thread and returns the context
-        // that Drop restores before control leaves the display query.
-        Self(unsafe { SetThreadDpiAwarenessContext(DPI_AWARENESS_CONTEXT_PER_MONITOR_AWARE_V2) })
-    }
-}
-
-impl Drop for ThreadDpiContext {
-    fn drop(&mut self) {
-        // SAFETY: self.0 is exactly the context returned when this guard changed
-        // the current thread, and restoration happens on that same thread.
-        let _restored = unsafe { SetThreadDpiAwarenessContext(self.0) };
-    }
-}
 
 /// Private lookup key. Public native-window keys are descriptive, never authority.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, PartialOrd, Ord)]
@@ -172,7 +154,7 @@ pub(crate) fn current_placement(key: NativeKey, extent: PixelExtent) -> Option<T
             window_placement(hwnd, extent)
         }
         NativeKey::Display(raw) => {
-            let _dpi = ThreadDpiContext::per_monitor();
+            let _dpi = ThreadDpiContext::per_monitor()?;
             let monitor = HMONITOR(std::ptr::with_exposed_provenance_mut::<c_void>(raw));
             let (_, bounds) = monitor_metadata(monitor)?;
             monitor_placement(monitor, bounds, extent).ok()
@@ -199,10 +181,7 @@ pub(crate) fn current_window_geometry(
         return Err(CaptureFault::UnsupportedOption);
     };
     let hwnd = HWND(std::ptr::with_exposed_provenance_mut::<c_void>(raw));
-    let dpi = ThreadDpiContext::per_monitor();
-    if dpi.0.0.is_null() {
-        return Err(CaptureFault::UnsupportedOption);
-    }
+    let _dpi = ThreadDpiContext::per_monitor().ok_or(CaptureFault::UnsupportedOption)?;
     // SAFETY: these calls inspect the retained opaque HWND without mutating it.
     if !unsafe { IsWindow(Some(hwnd)).as_bool() } {
         return Err(CaptureFault::TargetLost);
@@ -375,12 +354,15 @@ fn window_candidates(factory: &IGraphicsCaptureItemInterop) -> Result<Vec<Candid
 }
 
 fn display_candidates(factory: &IGraphicsCaptureItemInterop) -> Result<Vec<Candidate>> {
-    let _dpi = ThreadDpiContext::per_monitor();
     let mut candidates = Vec::new();
     for raw in monitor_handles()? {
         // SAFETY: the value came directly from EnumDisplayMonitors.
         let monitor = HMONITOR(std::ptr::with_exposed_provenance_mut::<c_void>(raw));
-        let Some((device_name, bounds)) = monitor_metadata(monitor) else {
+        let metadata = {
+            let _dpi = ThreadDpiContext::per_monitor().ok_or(CaptureFault::UnsupportedOption)?;
+            monitor_metadata(monitor)
+        };
+        let Some((device_name, bounds)) = metadata else {
             continue;
         };
         // SAFETY: factory is the desktop capture-item interop factory and the
@@ -395,7 +377,10 @@ fn display_candidates(factory: &IGraphicsCaptureItemInterop) -> Result<Vec<Candi
         let Some(extent) = positive_extent(size.Width, size.Height) else {
             continue;
         };
-        let placement = monitor_placement(monitor, bounds, extent)?;
+        let placement = {
+            let _dpi = ThreadDpiContext::per_monitor().ok_or(CaptureFault::UnsupportedOption)?;
+            monitor_placement(monitor, bounds, extent)?
+        };
         candidates.push(Candidate {
             key: NativeKey::Display(raw),
             metadata: TargetMetadata {
@@ -500,6 +485,7 @@ fn window_class(hwnd: HWND) -> Option<String> {
 }
 
 fn window_placement(hwnd: HWND, extent: PixelExtent) -> Option<TargetPlacement> {
+    let _dpi = ThreadDpiContext::enter(&NativeThreadDpi, window_dpi_context(hwnd)?)?;
     let mut client = RECT::default();
     // SAFETY: client is writable and hwnd is from the current enumeration.
     if unsafe { GetClientRect(hwnd, &raw mut client) }.is_err() {

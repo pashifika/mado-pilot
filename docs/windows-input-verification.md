@@ -91,6 +91,12 @@ with current authority. `UseFrameSnapshot` requires that exact stream, epoch, an
 geometry revision to remain retained; the Adapter does not reconstruct an
 evicted revision from current DPI.
 
+Physical desktop metrics use a checked, thread-local PMv2 scope; current-cursor
+queries use `GetPhysicalCursorPos`. Message coordinates are converted into the
+target's logical screen convention, then into client coordinates where required.
+Every temporary DPI scope restores the caller's context. Failed scope entry or
+conversion refuses the event without changing process DPI or input authority.
+
 The route never synthesizes `WM_INPUT`, mutates global asynchronous key state,
 activates the target, moves the physical cursor, calls `SendInput`,
 `SendMessageTimeoutW`, or `BlockInput`, attaches queues, changes message filters,
@@ -137,6 +143,13 @@ first through the same route and retained authority. It admits no more than 256
 release events and starts no new release after 250 milliseconds. Cleanup cannot
 switch to `System`, revive a lost target, or turn queue admission into proof of
 application state.
+
+An odd accepted System text prefix owes one Unicode key-up. That private state
+is released before earlier sequence-owned keys/buttons, using the controller's
+single event allowance and fresh cleanup deadline. Zero allowance sends nothing;
+a failed release stops cleanup. `Complete`, `Incomplete`, and `Exhausted` report
+aggregate owed/released counts without changing the original fault or complete
+logical-event prefix. Cancellation never authorizes text retry or fallback.
 
 ## Repository-owned fixtures
 
@@ -279,6 +292,81 @@ When the caller owns a fixture lifecycle, pass `--ordinary "<full title>"` or
 `--acknowledged "<full title>"` to `windows-native-input.exe`; prefix either with
 `--extended-sequence` for the extended case. Output excludes the title, captured
 bytes and typed text.
+
+## Audit 2, 6 and 16 acceptance
+
+The repairs have deterministic coverage; current-source physical arrival and
+real non-ASCII package/OCR acceptance remain separate, unexecuted gates.
+Historical rows below retain their original source and artifact bindings.
+
+### Non-input checks
+
+Use an x64 MSVC developer environment and the installed prerequisites from
+[`CONTRIBUTING.md`](../CONTRIBUTING.md). Keep ordinary, private-fixture and
+qualification build roots separate.
+
+```text
+cargo test --locked -p mado-pilot-platform-windows --lib input
+cargo test --locked -p mado-pilot-platform-windows --lib window_message::tests
+cargo test --locked -p mado-pilot-platform-windows --test window_message_native dpi_selectors_accept_only_declared_modes
+cargo clippy --locked -p mado-pilot-platform-windows --all-targets -- -D warnings
+cargo run --locked -p mado-pilot-capi --example c-abi-check -- --windows-ingress-only
+```
+
+The last command requires the separately built C library in the same output
+root. It executes conversion/allocation/borrow-lifetime seams, not OCR or input.
+Forced odd writes, failed releases and cancellation/deadline races use fake
+native calls only. Do not reproduce stuck keys or short writes on a real desktop.
+
+### Owned-fixture DPI arrival
+
+Before execution, bind the integrated commit/tree, host/SDK, exact fixture and
+test executables, loaded libraries, display topology and current input authority.
+Set `MADO_PILOT_WINDOWS_DPI_INPUT=1` and
+`MADO_PILOT_WINDOWS_DPI_TOPOLOGY=single-display` or `mixed-dpi-signed`.
+Optional `MADO_PILOT_WINDOWS_DPI_CALLER` and `MADO_PILOT_WINDOWS_DPI_TARGET`
+accept `unaware`, `system` or `per-monitor-v2`; omission selects all three.
+
+```text
+cargo test --locked -p mado-pilot-platform-windows --test window_message_native dpi_system_arrival_matrix -- --ignored --exact --nocapture --test-threads=1
+cargo test --locked -p mado-pilot-platform-windows --test window_message_native dpi_window_message_arrival_matrix -- --ignored --exact --nocapture --test-threads=1
+```
+
+The fixture supplies an independent physical/client/screen oracle before input.
+System tolerance is the virtual-desktop absolute-coordinate quantization bound;
+client tolerance includes its measured target scale and one rounding pixel.
+WindowMessage allows one logical rounding pixel. Never widen a failed row's
+printed tolerance. Require actual target arrival, restored caller DPI state,
+zero wrong-window observations and unchanged unrelated foreground/cursor for
+WindowMessage. System also requires the independently observed physical cursor.
+Fresh System button/wheel sequences exercise the physical current-cursor path;
+ordinary WindowMessage retains its prior-sequence-position requirement.
+
+Operations and arrival waits are bounded at five seconds. Input/capture close
+use two seconds each, desktop restoration 500 ms, and fixture termination must
+complete. Failed primary or teardown outcomes block acceptance. Missing topology
+or authority leaves the row unexecuted.
+
+### Actual non-ASCII C consumers
+
+Windows samples use owned strict UTF-8 converted from `wmain` and, for the
+profile sample, `_wgetenv`. Arguments override environment values; missing
+prerequisites remain exit77, while malformed UTF-16/allocation failure is exit1.
+
+On an approved non-UTF-8-ACP host, build the library and verifier with
+`private-fixture` in their own output root. Supply the controlled model/runtime
+environment variables, then explicitly select `c-abi-check --windows-path-acceptance`.
+This mode creates Japanese/supplementary-character paths outside the observed
+ACP, runs actual package/default/profile/private-OCR consumers, and checks the
+C-only CMake profile with environment-only paths. No native input runs.
+
+Before task6 execution, use a supervising controller with a declared whole-run
+and cleanup deadline. The verifier bounds direct consumers to 90 seconds plus
+five seconds for termination, CTest rows to 60 seconds, and copied trees to
+512 entries/2 GiB/depth16; these are not a total CMake/build/deletion deadline.
+Retain executable/DLL pre/post hashes, actual loaded-library identity, primary
+and cleanup outcomes. Exit77, missing prerequisites or incomplete cleanup is
+not acceptance. Do not change ACP, download dependencies or retry automatically.
 
 ## Native evidence and limitations
 

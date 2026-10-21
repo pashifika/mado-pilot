@@ -36,19 +36,21 @@ use mado_pilot_platform_windows::fixture_protocol::{
     FixtureVisualState, ORDINARY_CLASS_NAME, TARGET_LOSS_ACKNOWLEDGEMENT, ordinary_fixture_title,
 };
 use ordinary_fixture_startup::{
-    Failure as StartupFailure, PREFIX as STARTUP_ERROR_PREFIX, ParseError as StartupParseError,
+    DpiMode, DpiScope, Failure as StartupFailure, PREFIX as STARTUP_ERROR_PREFIX,
+    ParseError as StartupParseError,
 };
 use windows::Win32::Foundation::{HWND, LPARAM, POINT, RECT, WPARAM};
 use windows::Win32::Graphics::Gdi::{
     EnumDisplayMonitors, GetMonitorInfoW, HDC, HMONITOR, MONITORINFO,
 };
 use windows::Win32::UI::HiDpi::{
-    DPI_AWARENESS_CONTEXT_PER_MONITOR_AWARE_V2, GetDpiForMonitor, MDT_EFFECTIVE_DPI,
-    SetProcessDpiAwarenessContext,
+    AreDpiAwarenessContextsEqual, DPI_AWARENESS_CONTEXT_PER_MONITOR_AWARE_V2, GetDpiForMonitor,
+    GetThreadDpiAwarenessContext, MDT_EFFECTIVE_DPI, SetProcessDpiAwarenessContext,
 };
 use windows::Win32::UI::WindowsAndMessaging::{
-    FindWindowW, GetCursorPos, GetForegroundWindow, GetWindowRect, PostMessageW, SetCursorPos,
-    SetForegroundWindow, WM_MOUSEMOVE, WM_NULL,
+    FindWindowW, GetForegroundWindow, GetPhysicalCursorPos, GetSystemMetrics, GetWindowRect,
+    PostMessageW, SM_CXVIRTUALSCREEN, SM_CYVIRTUALSCREEN, SetForegroundWindow,
+    SetPhysicalCursorPos, WM_MOUSEMOVE, WM_NULL,
 };
 use windows::core::{BOOL, PCWSTR};
 
@@ -129,10 +131,28 @@ impl FixtureProcess {
     }
 
     fn spawn_with_options(token: String, activate: bool, inject_failure: bool) -> Self {
+        Self::spawn_configured(token, activate, inject_failure, None)
+    }
+
+    fn spawn_coordinates(token: String, dpi: DpiMode, activate: bool) -> Self {
+        Self::spawn_configured(token, activate, false, Some(dpi))
+    }
+
+    fn spawn_configured(
+        token: String,
+        activate: bool,
+        inject_failure: bool,
+        dpi: Option<DpiMode>,
+    ) -> Self {
         let mut command = Command::new(env!(
             "CARGO_BIN_EXE_mado-pilot-windows-window-message-fixture"
         ));
         command.arg(format!("--title-token={token}"));
+        if let Some(dpi) = dpi {
+            command
+                .arg(format!("--dpi={}", dpi.label()))
+                .arg("--coordinate-oracle");
+        }
         if activate {
             command.arg("--activate");
         }
@@ -348,20 +368,43 @@ impl FixtureProcess {
         parse_report(&self.wait_for("report ", Duration::from_secs(5)))
     }
 
-    fn terminate(&mut self) {
+    fn terminate(&mut self) -> bool {
+        let deadline = Instant::now() + Duration::from_secs(2);
+        let mut complete = true;
         if let Some(mut child) = self.child.take() {
             let _killed = child.kill();
-            let _waited = child.wait();
+            loop {
+                match child.try_wait() {
+                    Ok(Some(_)) => break,
+                    Ok(None) if Instant::now() < deadline => {
+                        thread::sleep(Duration::from_millis(2))
+                    }
+                    _ => {
+                        complete = false;
+                        break;
+                    }
+                }
+            }
         }
         if let Some(reader) = self.reader.take() {
-            reader.join().expect("fixture output reader joined");
+            while !reader.is_finished() && Instant::now() < deadline {
+                thread::sleep(Duration::from_millis(2));
+            }
+            if reader.is_finished() {
+                complete &= reader.join().is_ok();
+            } else {
+                complete = false;
+            }
         }
+        complete
     }
 }
 
 impl Drop for FixtureProcess {
     fn drop(&mut self) {
-        self.terminate();
+        if !self.terminate() {
+            eprintln!("fixture teardown incomplete");
+        }
     }
 }
 
@@ -375,7 +418,7 @@ impl DesktopState {
     fn capture() -> Self {
         let mut cursor = POINT::default();
         // SAFETY: cursor is a complete writable POINT.
-        unsafe { GetCursorPos(&raw mut cursor) }.expect("read physical cursor");
+        unsafe { GetPhysicalCursorPos(&raw mut cursor) }.expect("read physical cursor");
         // SAFETY: the return is an opaque snapshot and is not dereferenced.
         let foreground = unsafe { GetForegroundWindow() };
         Self { cursor, foreground }
@@ -384,7 +427,7 @@ impl DesktopState {
     fn assert_unchanged(&self) {
         let mut current = POINT::default();
         // SAFETY: current is a complete writable POINT.
-        unsafe { GetCursorPos(&raw mut current) }.expect("read physical cursor");
+        unsafe { GetPhysicalCursorPos(&raw mut current) }.expect("read physical cursor");
         // SAFETY: the return is an opaque snapshot and is not dereferenced.
         let foreground = unsafe { GetForegroundWindow() };
         assert_eq!(
@@ -454,7 +497,7 @@ impl OwnedForeground {
                 }
                 let mut current = POINT::default();
                 // SAFETY: current is a complete writable POINT.
-                if unsafe { GetCursorPos(&raw mut current) }.is_err() {
+                if unsafe { GetPhysicalCursorPos(&raw mut current) }.is_err() {
                     monitor_violation.store(3, Ordering::Release);
                     return;
                 }
@@ -550,29 +593,42 @@ impl OwnedForeground {
         );
     }
 
-    fn stop_monitor(&mut self) {
+    fn stop_monitor(&mut self) -> bool {
         self.stop.store(true, Ordering::Release);
         if let Some(monitor) = self.monitor.take() {
-            monitor.join().expect("foreground monitor joined");
+            let deadline = Instant::now() + Duration::from_secs(2);
+            while !monitor.is_finished() && Instant::now() < deadline {
+                thread::sleep(Duration::from_millis(2));
+            }
+            return monitor.is_finished() && monitor.join().is_ok();
         }
+        true
     }
 
     fn finish(mut self) {
         self.assert_stable();
-        self.stop_monitor();
+        assert!(self.stop_monitor(), "bounded foreground monitor teardown");
         assert_eq!(
             self.violation.load(Ordering::Acquire),
             0,
             "owned foreground monitor observed no transient mutation"
         );
+        assert!(
+            self.fixture.terminate(),
+            "bounded foreground fixture teardown"
+        );
+        println!("teardown foreground-monitor=complete foreground-fixture=complete");
     }
 }
 
 impl Drop for OwnedForeground {
     fn drop(&mut self) {
-        self.stop_monitor();
-        // SAFETY: the saved coordinates came from GetCursorPos.
-        let _restored = unsafe { SetCursorPos(self.original.cursor.x, self.original.cursor.y) };
+        if !self.stop_monitor() {
+            eprintln!("foreground monitor teardown incomplete");
+        }
+        // SAFETY: the saved coordinates came from GetPhysicalCursorPos.
+        let _restored =
+            unsafe { SetPhysicalCursorPos(self.original.cursor.x, self.original.cursor.y) };
         if self.original.foreground != HWND::default() {
             // SAFETY: this is the opaque foreground handle captured before the test.
             let _restored = unsafe { SetForegroundWindow(self.original.foreground) };
@@ -624,7 +680,7 @@ fn watcher_visual_controls_acknowledge_before_fixture_cleanup() {
         absent_acknowledgement
     );
 
-    fixture.terminate();
+    assert!(fixture.terminate(), "bounded fixture teardown");
     assert!(fixture.child.is_none());
     assert!(fixture.reader.is_none());
 }
@@ -727,7 +783,7 @@ fn wgc_reports_target_loss_after_acknowledged_fixture_destruction() {
     session
         .close(&timed(Duration::from_secs(20)))
         .expect("target-lost session close");
-    fixture.terminate();
+    assert!(fixture.terminate(), "bounded fixture teardown");
 }
 
 #[test]
@@ -2080,4 +2136,458 @@ fn timed(timeout: Duration) -> OperationContext {
 
 fn wide(value: &str) -> Vec<u16> {
     value.encode_utf16().chain(Some(0)).collect()
+}
+
+#[derive(Debug, Clone, Copy)]
+struct CoordinateOracle {
+    client: (i32, i32),
+    screen: (i32, i32),
+    physical: (i32, i32),
+    physical_span: (i32, i32),
+    logical_span: i32,
+}
+
+fn coordinate_field(line: &str, name: &str) -> i32 {
+    line.split_whitespace()
+        .find_map(|field| field.strip_prefix(name))
+        .unwrap_or_else(|| panic!("coordinate record omitted {name}: {line}"))
+        .parse()
+        .expect("signed coordinate field")
+}
+
+impl FixtureProcess {
+    fn coordinate_oracle(&mut self) -> CoordinateOracle {
+        self.control(self.target(), CONTROL_REPORT, 1);
+        let line = self.wait_for("coordinate-oracle ", Duration::from_secs(5));
+        assert!(!line.contains("failed="), "{line}");
+        let oracle = CoordinateOracle {
+            client: (
+                coordinate_field(&line, "client-x="),
+                coordinate_field(&line, "client-y="),
+            ),
+            screen: (
+                coordinate_field(&line, "screen-x="),
+                coordinate_field(&line, "screen-y="),
+            ),
+            physical: (
+                coordinate_field(&line, "physical-x="),
+                coordinate_field(&line, "physical-y="),
+            ),
+            physical_span: (
+                coordinate_field(&line, "span-x="),
+                coordinate_field(&line, "span-y="),
+            ),
+            logical_span: coordinate_field(&line, "logical-span="),
+        };
+        assert!(oracle.physical_span.0 > 0 && oracle.physical_span.1 > 0);
+        assert!(oracle.logical_span > 0);
+        self.wait_for("report ", Duration::from_secs(5));
+        oracle
+    }
+
+    fn assert_coordinate(
+        &mut self,
+        family: &str,
+        after: u32,
+        expected: (i32, i32),
+        tolerance: i32,
+    ) {
+        let deadline = Instant::now() + Duration::from_secs(5);
+        loop {
+            let line = self.wait_for(
+                "coordinate ",
+                deadline.saturating_duration_since(Instant::now()),
+            );
+            if !line.contains(&format!("family={family} ")) {
+                continue;
+            }
+            let sequence = coordinate_field(&line, "sequence=");
+            if sequence <= i32::try_from(after).expect("bounded fixture count") {
+                continue;
+            }
+            assert!(
+                line.contains("role=target "),
+                "wrong window observed the event: {line}"
+            );
+            assert_point_near(
+                (coordinate_field(&line, "x="), coordinate_field(&line, "y=")),
+                expected,
+                tolerance,
+            );
+            return;
+        }
+    }
+}
+
+fn assert_point_near(actual: (i32, i32), expected: (i32, i32), tolerance: i32) {
+    assert!(
+        (i64::from(actual.0) - i64::from(expected.0)).abs() <= i64::from(tolerance)
+            && (i64::from(actual.1) - i64::from(expected.1)).abs() <= i64::from(tolerance),
+        "arrival {actual:?} differs from {expected:?}, declared tolerance={tolerance}",
+    );
+}
+
+fn dpi_modes(variable: &str) -> Vec<DpiMode> {
+    match std::env::var(variable) {
+        Ok(value) => vec![value.parse().expect("explicit supported DPI selector")],
+        Err(std::env::VarError::NotPresent) => {
+            vec![DpiMode::Unaware, DpiMode::System, DpiMode::PerMonitorV2]
+        }
+        Err(error) => panic!("invalid DPI selector: {error}"),
+    }
+}
+
+struct DpiDesktopRestore(Option<DesktopState>);
+
+impl DpiDesktopRestore {
+    fn restore(&mut self) -> bool {
+        let Some(saved) = self.0.take() else {
+            return true;
+        };
+        // SAFETY: this opt-in row owns restoration of its saved physical cursor.
+        let cursor = unsafe { SetPhysicalCursorPos(saved.cursor.x, saved.cursor.y) }.is_ok();
+        // SAFETY: no handle is dereferenced; Windows validates the saved foreground.
+        if unsafe { GetForegroundWindow() } != saved.foreground
+            && saved.foreground != HWND::default()
+        {
+            // SAFETY: Windows validates the saved opaque window handle.
+            let _requested = unsafe { SetForegroundWindow(saved.foreground) };
+        }
+        let deadline = Instant::now() + Duration::from_millis(500);
+        loop {
+            let current = DesktopState::capture();
+            if current.cursor == saved.cursor && current.foreground == saved.foreground {
+                println!("dpi-teardown desktop=complete");
+                return cursor;
+            }
+            if Instant::now() >= deadline {
+                eprintln!("dpi-teardown desktop=incomplete");
+                return false;
+            }
+            thread::sleep(Duration::from_millis(2));
+        }
+    }
+}
+
+impl Drop for DpiDesktopRestore {
+    fn drop(&mut self) {
+        let _restored = self.restore();
+    }
+}
+
+struct DpiSessions {
+    input: Arc<dyn InputController>,
+    capture: Arc<dyn mado_pilot_capture::CaptureSession>,
+    closed: bool,
+}
+
+impl DpiSessions {
+    fn close(&mut self) -> bool {
+        if self.closed {
+            return true;
+        }
+        self.closed = true;
+        let started = Instant::now();
+        let input = self.input.close(&timed(Duration::from_secs(2))).is_ok();
+        let capture = self.capture.close(&timed(Duration::from_secs(2))).is_ok();
+        let bounded = started.elapsed() <= Duration::from_secs(5);
+        println!("dpi-teardown input={input} capture={capture} bounded={bounded}");
+        input && capture && bounded
+    }
+}
+
+impl Drop for DpiSessions {
+    fn drop(&mut self) {
+        let _closed = self.close();
+    }
+}
+
+fn assert_wrong_window_delta(before: ObservationReport, after: ObservationReport) {
+    assert_eq!(
+        (
+            after.replacement,
+            after.game,
+            after.sibling,
+            after.child,
+            after.foreground,
+            after.raw_legacy,
+            after.state_legacy
+        ),
+        (
+            before.replacement,
+            before.game,
+            before.sibling,
+            before.child,
+            before.foreground,
+            before.raw_legacy,
+            before.state_legacy
+        ),
+        "input reached a wrong owned window",
+    );
+}
+
+fn execute_dpi_row(
+    foreground: Option<&OwnedForeground>,
+    input: &Arc<dyn InputController>,
+    request: &InputRequest,
+    caller: DpiMode,
+) -> mado_pilot_input::InputReceipt {
+    let _caller = DpiScope::enter(caller).expect("selected caller DPI context");
+    // SAFETY: this reads only the calling thread's opaque DPI context.
+    let incoming = unsafe { GetThreadDpiAwarenessContext() };
+    let operation = timed(Duration::from_secs(5));
+    let receipt = if let Some(foreground) = foreground {
+        execute_observed(foreground, input, request, &operation)
+    } else {
+        input.execute(request, &operation)
+    }
+    .expect("DPI input receipt");
+    assert!(
+        // SAFETY: both opaque contexts were returned by USER32 on this thread.
+        unsafe { AreDpiAwarenessContextsEqual(incoming, GetThreadDpiAwarenessContext()).as_bool() },
+        "adapter leaked its temporary DPI context"
+    );
+    assert_eq!(receipt.outcome(), SequenceOutcome::Complete, "{receipt:?}");
+    assert_eq!(receipt.submitted(), request.sequence().len());
+    receipt
+}
+
+fn dpi_arrival_matrix(route: InputDelivery) {
+    assert_eq!(
+        std::env::var("MADO_PILOT_WINDOWS_DPI_INPUT").as_deref(),
+        Ok("1"),
+        "set current owned-desktop input authority explicitly"
+    );
+    let topology = std::env::var("MADO_PILOT_WINDOWS_DPI_TOPOLOGY")
+        .expect("declare single-display or mixed-dpi-signed before execution");
+    let callers = dpi_modes("MADO_PILOT_WINDOWS_DPI_CALLER");
+    let targets = dpi_modes("MADO_PILOT_WINDOWS_DPI_TARGET");
+    let _serial = NATIVE_MATRIX.lock().expect("native matrix serialized");
+    select_process_dpi_awareness();
+    let _physical_scope = DpiScope::enter(DpiMode::PerMonitorV2).expect("physical setup scope");
+    let monitors = monitor_rows();
+    match topology.as_str() {
+        "single-display" => assert_eq!(monitors.len(), 1, "declared topology unavailable"),
+        "mixed-dpi-signed" => {
+            assert!(monitors.len() > 1);
+            assert!(
+                monitors
+                    .iter()
+                    .any(|row| row.bounds.left < 0 || row.bounds.top < 0)
+            );
+            assert!(
+                monitors
+                    .iter()
+                    .any(|row| (row.dpi_x, row.dpi_y) != (monitors[0].dpi_x, monitors[0].dpi_y)),
+                "mixed DPI unavailable"
+            );
+        }
+        _ => panic!("unsupported declared topology"),
+    }
+    // Absolute input has 65536 positions per axis; include its endpoint rounding.
+    // SAFETY: setup is PMv2 and both metrics are documented scalar queries.
+    let extent =
+        unsafe { GetSystemMetrics(SM_CXVIRTUALSCREEN).max(GetSystemMetrics(SM_CYVIRTUALSCREEN)) };
+    assert!(extent > 0);
+    let physical_tolerance =
+        i32::try_from((i64::from(extent) + 65534) / 65535).expect("bounded quantization");
+    let mut restore = DpiDesktopRestore(Some(DesktopState::capture()));
+    for target_dpi in targets {
+        for (index, monitor) in monitors.iter().enumerate() {
+            let mut fixture = FixtureProcess::spawn_coordinates(
+                format!("dpi-{}-{index}", target_dpi.label()),
+                target_dpi,
+                route == InputDelivery::System,
+            );
+            fixture.set_geometry(
+                fixture.target(),
+                monitor.bounds.left + 48,
+                monitor.bounds.top + 48,
+                480,
+                320,
+            );
+            fixture.wait_for("control geometry=ready", Duration::from_secs(5));
+            let oracle = fixture.coordinate_oracle();
+            assert!(
+                oracle.physical.0 >= monitor.bounds.left
+                    && oracle.physical.0 < monitor.bounds.right
+                    && oracle.physical.1 >= monitor.bounds.top
+                    && oracle.physical.1 < monitor.bounds.bottom
+            );
+            let target_span = oracle.physical_span.0.min(oracle.physical_span.1);
+            let message_tolerance = if route == InputDelivery::System {
+                // Convert the declared physical quantization bound through the
+                // fixture's measured scale, plus one logical rounding pixel.
+                i32::try_from(
+                    (i64::from(physical_tolerance) * i64::from(oracle.logical_span)
+                        + i64::from(target_span)
+                        - 1)
+                        / i64::from(target_span),
+                )
+                .expect("client tolerance")
+                    + 1
+            } else {
+                1
+            };
+            println!(
+                "dpi-oracle topology={topology} target={} monitor={index} physical={:?} client={:?} screen={:?} physical-tolerance={physical_tolerance} message-tolerance={message_tolerance}",
+                target_dpi.label(),
+                oracle.physical,
+                oracle.client,
+                oracle.screen,
+            );
+            let foreground = if route == InputDelivery::WindowMessage {
+                Some(OwnedForeground::establish())
+            } else {
+                None
+            };
+            let provider = WindowsCaptureProvider::new(Arc::new(IdentityIssuer::new()));
+            let (target, input) = open_ordinary_title(&provider, &fixture.title());
+            let capture = CaptureProvider::open(
+                &provider,
+                target,
+                &OpenRequest::new().require_format(PixelFormat::Bgra8),
+                &timed(Duration::from_secs(5)),
+            )
+            .expect("opened frame-derived DPI oracle");
+            let mut sessions = DpiSessions {
+                input,
+                capture,
+                closed: false,
+            };
+            for caller in &callers {
+                let frame = sessions
+                    .capture
+                    .frame(&FrameRequest::latest(), &timed(Duration::from_secs(5)))
+                    .expect("source frame");
+                let physical = Point::new(
+                    CoordinateSpace::DesktopLogical,
+                    f64::from(oracle.physical.0),
+                    f64::from(oracle.physical.1),
+                )
+                .expect("physical oracle");
+                let point = frame
+                    .transform()
+                    .convert_point(physical, CoordinateSpace::CapturePixels)
+                    .expect("frame-derived oracle point");
+                let before = fixture.report(fixture.target());
+                let desktop = DesktopState::capture();
+                if route == InputDelivery::System {
+                    assert_eq!(
+                        desktop.foreground,
+                        fixture.target(),
+                        "owned System target must be focused"
+                    );
+                }
+                let request = InputRequest::new(
+                    target,
+                    InputSequence::new(vec![InputEvent::PointerMove(point)]).expect("move"),
+                    DeliveryPlan::require(route),
+                )
+                .with_focus(if route == InputDelivery::System {
+                    FocusPolicy::RequireFocused
+                } else {
+                    FocusPolicy::Preserve
+                })
+                .with_pointer_geometry(PointerGeometry::require_unchanged_since(frame.stamp()));
+                let receipt =
+                    execute_dpi_row(foreground.as_ref(), &sessions.input, &request, *caller);
+                assert_eq!(receipt.selected_route(), Some(route));
+                fixture.assert_coordinate(
+                    "pointer-move",
+                    before.target,
+                    oracle.client,
+                    message_tolerance,
+                );
+                if route == InputDelivery::System {
+                    let arrived = DesktopState::capture();
+                    assert_eq!(arrived.foreground, fixture.target());
+                    assert_point_near(
+                        (arrived.cursor.x, arrived.cursor.y),
+                        oracle.physical,
+                        physical_tolerance,
+                    );
+                } else {
+                    desktop.assert_unchanged();
+                }
+                let after_move = fixture.report(fixture.target());
+                assert_wrong_window_delta(before, after_move);
+                let mut events = Vec::new();
+                if route == InputDelivery::WindowMessage {
+                    events.push(InputEvent::PointerMove(point));
+                }
+                events.extend([
+                    InputEvent::PointerPress(PointerButton::Primary),
+                    InputEvent::PointerRelease(PointerButton::Primary),
+                    InputEvent::PointerScroll {
+                        horizontal: 1,
+                        vertical: 1,
+                    },
+                ]);
+                let non_move = InputRequest::new(
+                    target,
+                    InputSequence::new(events).expect("bounded non-move sequence"),
+                    DeliveryPlan::require(route),
+                )
+                .with_focus(request.focus())
+                .with_pointer_geometry(PointerGeometry::require_unchanged_since(frame.stamp()));
+                let desktop = DesktopState::capture();
+                execute_dpi_row(foreground.as_ref(), &sessions.input, &non_move, *caller);
+                fixture.assert_coordinate(
+                    "button-down",
+                    after_move.target,
+                    oracle.client,
+                    message_tolerance,
+                );
+                fixture.assert_coordinate(
+                    "button-up",
+                    after_move.target,
+                    oracle.client,
+                    message_tolerance,
+                );
+                fixture.assert_coordinate(
+                    "vertical-wheel",
+                    after_move.target,
+                    oracle.screen,
+                    message_tolerance,
+                );
+                fixture.assert_coordinate(
+                    "horizontal-wheel",
+                    after_move.target,
+                    oracle.screen,
+                    message_tolerance,
+                );
+                desktop.assert_unchanged();
+                let after = fixture.report(fixture.target());
+                assert_wrong_window_delta(after_move, after);
+                if route == InputDelivery::WindowMessage {
+                    assert_eq!((after.raw, after.state), (before.raw, before.state));
+                }
+                println!(
+                    "dpi-arrival caller={} target={} route={route:?} monitor={index} arrival=complete",
+                    caller.label(),
+                    target_dpi.label()
+                );
+            }
+            assert!(sessions.close(), "session teardown blocks acceptance");
+            if let Some(foreground) = foreground {
+                foreground.finish();
+            }
+            assert!(fixture.terminate(), "fixture teardown blocks acceptance");
+            println!("dpi-teardown fixture=complete");
+        }
+    }
+    assert!(restore.restore(), "desktop restoration blocks acceptance");
+}
+
+#[test]
+#[ignore = "requires explicit owned-desktop authority and declared DPI/topology; sends real input"]
+fn dpi_system_arrival_matrix() {
+    dpi_arrival_matrix(InputDelivery::System);
+}
+
+#[test]
+#[ignore = "requires explicit owned-desktop authority and declared DPI/topology; posts real messages"]
+fn dpi_window_message_arrival_matrix() {
+    dpi_arrival_matrix(InputDelivery::WindowMessage);
 }

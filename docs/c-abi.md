@@ -37,6 +37,14 @@ retained, and explicitly release each owned handle. Every status and output
 contract below applies equally to both languages. The larger C workflows and
 external consumers are verification programs, not an additional public API.
 
+On Windows, the argument-consuming C samples convert `wmain` UTF-16 arguments
+into owned UTF-8 before ABI use. The profile OCR sample also converts `_wgetenv`
+fallbacks; explicit arguments win. Storage survives every borrowing call and is
+freed on return. Invalid UTF-16 or allocation failure is an error, not lossy
+replacement or prerequisite skip. This private sample code adds no helper API or
+ABI entry. See [Windows verification](windows-input-verification.md#audit-2-6-and-16-acceptance)
+for conversion-only coverage and the separate real-consumer acceptance gate.
+
 ## ABI 1.5, with complete released 1.0, 1.2, 1.3, and 1.4 prefixes preserved
 
 The current header declares ABI 1.5. ADR 0007 freezes ABI 1.0's 424-byte
@@ -653,6 +661,11 @@ Presence flags distinguish absent values from valid zeroes. `NOT_NEEDED`
 and `COMPLETE` are the only cleanup values proving no sequence-owned state
 remains held; treat `INCOMPLETE`, `EXHAUSTED`, and unknown later values
 conservatively.
+
+Windows partial System text can owe one Unicode key-up even when the Text event
+adds no complete logical event. That release shares the sequence's single cleanup
+event/time budget with held keys/buttons. It neither replaces the original fault
+nor authorizes a retry; existing receipt fields report the combined counts.
 
 A contained boundary panic leaves the receipt handle null but cannot prove no
 native input took effect, so the caller must not automatically retry.

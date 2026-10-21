@@ -35,6 +35,7 @@
 
 #include "madopilot/madopilot.h"
 #include "../native-expected-condition.h"
+#include "windows-utf8-entry.h"
 
 #ifndef MADOPILOT_EXAMPLE_NAME
 #error "the platform example must define MADOPILOT_EXAMPLE_NAME"

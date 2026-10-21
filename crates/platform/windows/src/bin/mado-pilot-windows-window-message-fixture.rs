@@ -1,7 +1,7 @@
 //! Ordinary-window native fixture for `WindowMessage` evidence.
 //!
-//! The fixture reports only bounded counters and message families. It never
-//! prints message payloads, native handles, process identifiers, or input text.
+//! Payload-free observations are the default. The opt-in coordinate oracle
+//! reports only owned fixture positions, never input text or native handles.
 
 #[cfg(not(windows))]
 fn main() {
@@ -38,8 +38,8 @@ mod fixture {
     use std::time::Duration;
 
     use super::ordinary_fixture_startup::{
-        ActivationPath, Context, DpiAfterFailure, Failure, Foreground, Stage, Status,
-        activate_with_fallback, ready_record,
+        ActivationPath, Context, DpiAfterFailure, DpiMode, DpiScope, Failure, Foreground, Stage,
+        Status, activate_with_fallback, ready_record,
     };
 
     use mado_pilot_platform_windows::fixture_protocol::{
@@ -55,12 +55,12 @@ mod fixture {
         visual_token_cell,
     };
     use windows::Win32::Foundation::{
-        COLORREF, GetLastError, HINSTANCE, HWND, LPARAM, LRESULT, RECT, SetLastError, WIN32_ERROR,
-        WPARAM,
+        COLORREF, GetLastError, HINSTANCE, HWND, LPARAM, LRESULT, POINT, RECT, SetLastError,
+        WIN32_ERROR, WPARAM,
     };
     use windows::Win32::Graphics::Gdi::{
-        BeginPaint, CreateSolidBrush, DeleteObject, EndPaint, FillRect, HDC, HGDIOBJ,
-        InvalidateRect, PAINTSTRUCT, UpdateWindow,
+        BeginPaint, ClientToScreen, CreateSolidBrush, DeleteObject, EndPaint, FillRect, HDC,
+        HGDIOBJ, InvalidateRect, PAINTSTRUCT, UpdateWindow,
     };
     use windows::Win32::System::LibraryLoader::GetModuleHandleW;
     use windows::Win32::System::Threading::{AttachThreadInput, GetCurrentThreadId};
@@ -68,7 +68,7 @@ mod fixture {
         AreDpiAwarenessContextsEqual, DPI_AWARENESS_CONTEXT_PER_MONITOR_AWARE_V2,
         DPI_AWARENESS_PER_MONITOR_AWARE, DPI_AWARENESS_SYSTEM_AWARE, DPI_AWARENESS_UNAWARE,
         GetAwarenessFromDpiAwarenessContext, GetThreadDpiAwarenessContext,
-        SetProcessDpiAwarenessContext,
+        LogicalToPhysicalPointForPerMonitorDPI, SetProcessDpiAwarenessContext,
     };
     use windows::Win32::UI::Input::KeyboardAndMouse::{GetAsyncKeyState, VK_F6};
     use windows::Win32::UI::Input::{RAWINPUTDEVICE, RegisterRawInputDevices};
@@ -100,6 +100,7 @@ mod fixture {
     static ANIMATED: AtomicBool = AtomicBool::new(false);
     static GEOMETRY_REPAINTS: AtomicU32 = AtomicU32::new(0);
     static WATCH_VISUAL_STATE: AtomicU64 = AtomicU64::new(0);
+    static COORDINATE_ORACLE: AtomicBool = AtomicBool::new(false);
 
     static TARGET_EVENTS: AtomicU32 = AtomicU32::new(0);
     static REPLACEMENT_EVENTS: AtomicU32 = AtomicU32::new(0);
@@ -146,13 +147,30 @@ mod fixture {
         token: String,
         activate: bool,
         fail_request: bool,
+        dpi: DpiMode,
+        coordinate_oracle: bool,
     }
 
     pub(super) fn options() -> Result<Options, String> {
         let mut token = None;
         let mut activate = false;
         let mut fail_request = false;
+        let mut dpi = None;
+        let mut coordinate_oracle = false;
         for argument in std::env::args().skip(1) {
+            if argument == "--coordinate-oracle" {
+                if coordinate_oracle {
+                    return Err("--coordinate-oracle may be supplied only once".to_owned());
+                }
+                coordinate_oracle = true;
+                continue;
+            }
+            if let Some(value) = argument.strip_prefix("--dpi=") {
+                if dpi.replace(value.parse::<DpiMode>()?).is_some() {
+                    return Err("--dpi may be supplied only once".to_owned());
+                }
+                continue;
+            }
             if argument == "--activate" {
                 if activate {
                     return Err("--activate may be supplied only once".to_owned());
@@ -169,7 +187,7 @@ mod fixture {
             }
             let Some(value) = argument.strip_prefix("--title-token=") else {
                 return Err(format!(
-                    "unknown argument `{argument}`; expected --title-token=<token>, --activate, or --fail-stage=foreground-request"
+                    "unknown argument `{argument}`; expected --title-token, --dpi, --coordinate-oracle, --activate, or --fail-stage=foreground-request"
                 ));
             };
             if value.is_empty() || value.chars().count() > 64 {
@@ -186,6 +204,8 @@ mod fixture {
             token: token.unwrap_or_else(|| std::process::id().to_string()),
             activate,
             fail_request,
+            dpi: dpi.unwrap_or(DpiMode::PerMonitorV2),
+            coordinate_oracle,
         })
     }
 
@@ -297,16 +317,21 @@ mod fixture {
             token,
             activate,
             fail_request,
+            dpi,
+            coordinate_oracle,
         } = options;
         let mut context = Context::new();
         // SAFETY: this is the fixture's first DPI-dependent call.
-        let dpi_result =
-            unsafe { SetProcessDpiAwarenessContext(DPI_AWARENESS_CONTEXT_PER_MONITOR_AWARE_V2) };
+        let dpi_result = unsafe { SetProcessDpiAwarenessContext(dpi.context()) };
         if let Err(error) = dpi_result {
             context = context.with_dpi_after_failure(observe_dpi_after_failure());
             return Err(windows_failure(Stage::DpiAwareness, error, context));
         }
         TITLE_TOKEN.set(token).expect("title token set once");
+        COORDINATE_ORACLE.store(coordinate_oracle, Ordering::Release);
+        if coordinate_oracle {
+            print_line(&format!("coordinate-dpi target={}", dpi.label()));
+        }
         ANIMATED.store(false, Ordering::Release);
         let class_name = wide(ORDINARY_CLASS_NAME);
         // SAFETY: null requests the current executable module.
@@ -406,6 +431,9 @@ mod fixture {
     ) -> LRESULT {
         match message {
             CONTROL_REPORT => {
+                if wparam.0 == 1 && COORDINATE_ORACLE.load(Ordering::Acquire) {
+                    print_coordinate_oracle(hwnd);
+                }
                 print_report();
                 LRESULT(0)
             }
@@ -452,19 +480,25 @@ mod fixture {
                 let height = u32::try_from(size >> 32)
                     .expect("shifted size fits u32")
                     .cast_signed();
-                // SAFETY: the retained target is live and this is its owning GUI thread.
-                let updated = unsafe {
-                    SetWindowPos(
-                        hwnd,
-                        None,
-                        x,
-                        y,
-                        width,
-                        height,
-                        SWP_NOACTIVATE | SWP_NOZORDER,
-                    )
-                }
-                .is_ok();
+                let updated = {
+                    let Some(_dpi) = DpiScope::enter(DpiMode::PerMonitorV2) else {
+                        print_line("control geometry=failed");
+                        return LRESULT(0);
+                    };
+                    // SAFETY: this thread owns hwnd; control coordinates are physical.
+                    unsafe {
+                        SetWindowPos(
+                            hwnd,
+                            None,
+                            x,
+                            y,
+                            width,
+                            height,
+                            SWP_NOACTIVATE | SWP_NOZORDER,
+                        )
+                    }
+                    .is_ok()
+                };
                 if updated {
                     GEOMETRY_REPAINTS.store(64, Ordering::Release);
                 }
@@ -547,15 +581,15 @@ mod fixture {
                 paint(hwnd);
                 LRESULT(0)
             }
-            WM_MOUSEMOVE => observe_legacy(hwnd, "pointer-move"),
+            WM_MOUSEMOVE => observe_pointer(hwnd, "pointer-move", lparam),
             WM_LBUTTONDOWN | WM_RBUTTONDOWN | WM_MBUTTONDOWN | WM_XBUTTONDOWN => {
-                observe_legacy(hwnd, "button-down")
+                observe_pointer(hwnd, "button-down", lparam)
             }
             WM_LBUTTONUP | WM_RBUTTONUP | WM_MBUTTONUP | WM_XBUTTONUP => {
-                observe_legacy(hwnd, "button-up")
+                observe_pointer(hwnd, "button-up", lparam)
             }
-            WM_MOUSEWHEEL => observe_legacy(hwnd, "vertical-wheel"),
-            WM_MOUSEHWHEEL => observe_legacy(hwnd, "horizontal-wheel"),
+            WM_MOUSEWHEEL => observe_pointer(hwnd, "vertical-wheel", lparam),
+            WM_MOUSEHWHEEL => observe_pointer(hwnd, "horizontal-wheel", lparam),
             WM_KEYDOWN => observe_legacy(hwnd, "key-down"),
             WM_KEYUP => observe_legacy(hwnd, "key-up"),
             WM_CHAR => observe_legacy(hwnd, "text-unit"),
@@ -586,6 +620,75 @@ mod fixture {
             let _invalidated = unsafe { InvalidateRect(Some(hwnd), None, false) };
         }
         LRESULT(0)
+    }
+
+    fn observe_pointer(hwnd: HWND, family: &'static str, lparam: LPARAM) -> LRESULT {
+        let result = observe_legacy(hwnd, family);
+        let (role, counter) = role(hwnd);
+        if COORDINATE_ORACLE.load(Ordering::Acquire) {
+            let bits = lparam.0.cast_unsigned();
+            let x = u16::try_from(bits & 0xffff)
+                .expect("masked x")
+                .cast_signed();
+            let y = u16::try_from((bits >> 16) & 0xffff)
+                .expect("masked y")
+                .cast_signed();
+            print_line(&format!(
+                "coordinate role={role} family={family} sequence={} x={x} y={y}",
+                counter.load(Ordering::Acquire),
+            ));
+        }
+        result
+    }
+
+    fn print_coordinate_oracle(hwnd: HWND) {
+        let mut bounds = RECT::default();
+        // SAFETY: this thread owns hwnd and bounds is writable.
+        if unsafe { GetClientRect(hwnd, &raw mut bounds) }.is_err()
+            || bounds.right < 4
+            || bounds.bottom < 4
+        {
+            print_line("coordinate-oracle failed=bounds");
+            return;
+        }
+        let client = POINT {
+            x: bounds.right / 2,
+            y: bounds.bottom / 2,
+        };
+        let span = bounds.right.min(bounds.bottom) / 4;
+        let mut screen = client;
+        let mut far = POINT {
+            x: client.x + span,
+            y: client.y + span,
+        };
+        // SAFETY: both points are writable and this thread owns the target.
+        if !unsafe {
+            ClientToScreen(hwnd, &raw mut screen).as_bool()
+                && ClientToScreen(hwnd, &raw mut far).as_bool()
+        } {
+            print_line("coordinate-oracle failed=client");
+            return;
+        }
+        let mut physical = screen;
+        // SAFETY: this fixture owns hwnd and both points remain writable.
+        if !unsafe {
+            LogicalToPhysicalPointForPerMonitorDPI(Some(hwnd), &raw mut physical).as_bool()
+                && LogicalToPhysicalPointForPerMonitorDPI(Some(hwnd), &raw mut far).as_bool()
+        } {
+            print_line("coordinate-oracle failed=physical");
+            return;
+        }
+        print_line(&format!(
+            "coordinate-oracle client-x={} client-y={} screen-x={} screen-y={} physical-x={} physical-y={} span-x={} span-y={} logical-span={span}",
+            client.x,
+            client.y,
+            screen.x,
+            screen.y,
+            physical.x,
+            physical.y,
+            far.x - physical.x,
+            far.y - physical.y,
+        ));
     }
 
     fn role(hwnd: HWND) -> (&'static str, &'static AtomicU32) {
