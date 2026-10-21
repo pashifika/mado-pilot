@@ -4,21 +4,32 @@ from __future__ import annotations
 
 import copy
 import importlib.util
+import io
 import json
+import os
 from pathlib import Path
 import subprocess
 import sys
 import tempfile
 import unittest
+from unittest import mock
 
 SCRIPT = Path(__file__).resolve().parents[1] / "report.py"
 SPEC = importlib.util.spec_from_file_location("capture_pacing_report", SCRIPT)
 reporter = importlib.util.module_from_spec(SPEC)
 SPEC.loader.exec_module(reporter)
+RUNNER_SPEC = importlib.util.spec_from_file_location("capture_pacing_receipt_runner", SCRIPT.parent / "run.py")
+runner = importlib.util.module_from_spec(RUNNER_SPEC)
+RUNNER_SPEC.loader.exec_module(runner)
 ROOT = SCRIPT.parents[2]
 CASES = ("capture-off", "baseline", "cooldown-only", "native-only", "combined")
 NS = 1_000_000_000
 MIB = 1024**2
+UNCHANGED = {"source": True, "inputs": True, "host": True, "native": True}
+HOST = {"system": "Windows", "architecture": "AMD64", "os_version": "controlled", "os_build": "1.0",
+        "cpu": "controlled CPU", "memory_bytes": 32 * 1024**3, "logical_processors": 20,
+        "machine_id_sha256": "c" * 64, "system_root": "C:\\Windows"}
+AUTHORITY = {"schema": 1, "source_commit": "a" * 40, "source_tree": "b" * 40, "target": "x86_64-pc-windows-msvc"}
 
 
 def consumer(case="baseline", platform="windows"):
@@ -142,6 +153,38 @@ def permission_refusal(case="semantic"):
 def synchronize(value):
     value["process"]["stdout"] = json.dumps(value["consumer"])
     value["process"]["stderr"] = value["stderr"]
+
+
+def campaign_rows():
+    """Runner-shaped rows: raw case records plus the runner's cached analysis."""
+    return [dict(record(case), analysis={"status": "pass"}) for case in ("semantic",) + CASES]
+
+
+def write_campaign(root, rows=None, identity=UNCHANGED):
+    """Publish a packet through the runner's own record, evidence and receipt writers."""
+    rows = campaign_rows() if rows is None else rows
+    (root / "semantic").mkdir(exist_ok=True)
+    runner.save(root / "semantic" / "result.json", rows[0])
+    receipt = runner.final_receipt(
+        AUTHORITY, rows, authority_bytes=runner.save(root / "authority.json", AUTHORITY),
+        records=runner.save(root / "records.json", rows),
+        evidence=["authority.json", "semantic/result.json", "records.json"], host=HOST,
+        native_binding={"scope": "controlled", "files": 3, "edges": []}, identity=dict(identity),
+        elapsed_seconds=120.5, halt_reason=None)
+    runner.save(root / "run.json", receipt)
+    return root / "records.json", root / "run.json"
+
+
+def snapshot(root):
+    return {path.relative_to(root).as_posix(): path.read_bytes() for path in root.rglob("*") if path.is_file()}
+
+
+def run_report(*arguments):
+    stderr = io.StringIO()
+    with mock.patch.object(sys, "argv", [str(SCRIPT), *map(str, arguments)]), \
+         mock.patch.object(sys, "stderr", stderr):
+        code = reporter.main()
+    return code, stderr.getvalue()
 
 
 class CaseValidationTests(unittest.TestCase):
@@ -619,7 +662,7 @@ class CampaignTests(unittest.TestCase):
         self.assertEqual(malformed["status"], "fail")
         self.assertNotEqual(malformed["reason"], "permission-denied-or-undetermined")
 
-    def test_cli_consumes_raw_records_without_native_or_model(self):
+    def test_cli_inspects_raw_records_without_native_model_or_final_authority(self):
         scratch = ROOT / ".rasen"
         scratch.mkdir(exist_ok=True)
         with tempfile.TemporaryDirectory(prefix="capture-pacing-report-", dir=scratch) as directory:
@@ -629,14 +672,16 @@ class CampaignTests(unittest.TestCase):
             source.write_text(json.dumps(records), encoding="utf-8")
             completed = subprocess.run([sys.executable, str(SCRIPT), "--input", str(source), "--output", str(output)],
                                        capture_output=True, text=True, timeout=10, check=False)
-            self.assertEqual(completed.returncode, 0, completed.stderr)
-            self.assertEqual(json.loads(output.read_text(encoding="utf-8"))["status"], "pass")
+            self.assertEqual(completed.returncode, 1, completed.stderr)
+            result = json.loads(output.read_text(encoding="utf-8"))
+            self.assertEqual((result["schema"], result["view"], result["status"], result["observation_status"]),
+                             (3, "legacy-inspection", "incomplete", "pass"))
             source.write_text(json.dumps([permission_refusal()] + [placeholder(case) for case in CASES]), encoding="utf-8")
             completed = subprocess.run([sys.executable, str(SCRIPT), "--input", str(source), "--output", str(output)],
                                        capture_output=True, text=True, timeout=10, check=False)
             self.assertEqual(completed.returncode, 1)
             result = json.loads(output.read_text(encoding="utf-8"))
-            self.assertEqual(result["status"], "not-run")
+            self.assertEqual((result["status"], result["observation_status"]), ("incomplete", "not-run"))
             self.assertEqual(result["semantic"]["reason"], "permission-denied-or-undetermined")
             self.assertTrue(all(row["status"] == "not-run" for row in result["cases"]))
             incomplete = record("semantic")
@@ -645,11 +690,236 @@ class CampaignTests(unittest.TestCase):
             completed = subprocess.run([sys.executable, str(SCRIPT), "--input", str(source), "--output", str(output)],
                                        capture_output=True, text=True, timeout=10, check=False)
             self.assertEqual(completed.returncode, 1)
-            self.assertEqual(json.loads(output.read_text(encoding="utf-8"))["status"], "incomplete")
+            result = json.loads(output.read_text(encoding="utf-8"))
+            self.assertEqual((result["status"], result["observation_status"]), ("incomplete", "incomplete"))
             source.write_text("[NaN]", encoding="utf-8")
             completed = subprocess.run([sys.executable, str(SCRIPT), "--input", str(source), "--output", str(output)],
                                        capture_output=True, text=True, timeout=10, check=False)
             self.assertEqual(completed.returncode, 2)
+
+
+class PacketTest(unittest.TestCase):
+    def setUp(self):
+        scratch = ROOT / ".rasen"
+        scratch.mkdir(exist_ok=True)
+        directory = tempfile.TemporaryDirectory(prefix="capture-pacing-report-", dir=scratch)
+        self.addCleanup(directory.cleanup)
+        self.root = Path(directory.name).resolve()
+        self.output = self.root / "report.json"
+
+    def report(self, records, receipt=None):
+        arguments = ["--input", records, "--output", self.output]
+        if receipt is not None:
+            arguments += ["--run-receipt", receipt]
+        code, stderr = run_report(*arguments)
+        self.assertEqual(stderr, "")
+        return code, json.loads(self.output.read_text(encoding="utf-8"))
+
+    def assert_evidence_unchanged(self, before):
+        after = snapshot(self.root)
+        after.pop("report.json", None)
+        before = dict(before)
+        before.pop("report.json", None)
+        self.assertEqual(after, before)
+
+
+class PublicationTests(PacketTest):
+    def test_output_aliases_of_evidence_are_refused_before_replacement(self):
+        records, receipt = write_campaign(self.root)
+        (self.root / "nested").mkdir()
+        (self.root / "run-link").symlink_to(self.root, target_is_directory=True)
+        (self.root / "records-link.json").symlink_to(records)
+        os.link(receipt, self.root / "receipt-copy.json")
+        before = snapshot(self.root)
+        refused = (2, "capture-pacing-report: output-aliases-evidence\n")
+        aliases = (records, self.root / "nested" / ".." / "records.json", os.path.relpath(records),
+                   self.root / "run-link" / "records.json", self.root / "records-link.json", receipt,
+                   self.root / "receipt-copy.json", self.root / "authority.json",
+                   self.root / "semantic" / "result.json")
+        for output in aliases:
+            with self.subTest(output=str(output)):
+                self.assertEqual(run_report("--input", records, "--run-receipt", receipt, "--output", output), refused)
+                self.assertEqual(snapshot(self.root), before)
+        self.assertEqual(run_report("--input", records, "--output", self.root / "records-link.json"), refused)
+        self.assertEqual(snapshot(self.root), before)
+
+    def test_invalid_receipt_still_protects_declared_evidence(self):
+        records, receipt = write_campaign(self.root)
+        value = json.loads(receipt.read_bytes())
+        value["binding_unchanged"] = False
+        receipt.write_text(json.dumps(value), encoding="utf-8")
+        before = snapshot(self.root)
+        self.assertEqual(
+            run_report("--input", records, "--run-receipt", receipt,
+                       "--output", self.root / "semantic" / "result.json"),
+            (2, "capture-pacing-report: output-aliases-evidence\n"))
+        self.assertEqual(snapshot(self.root), before)
+
+    def test_distinct_output_is_replaced_by_the_complete_report(self):
+        records, receipt = write_campaign(self.root)
+        self.output.write_bytes(b"previous derived report\n")
+        before = snapshot(self.root)
+        code, result = self.report(records, receipt)
+        self.assertEqual((code, result["status"]), (0, "pass"))
+        self.assert_evidence_unchanged(before)
+
+    def test_failed_publication_preserves_previous_output_and_inputs(self):
+        records, receipt = write_campaign(self.root)
+        self.output.write_bytes(b"previous derived report\n")
+        before = snapshot(self.root)
+        for stage in ("fsync", "replace"):
+            with self.subTest(stage=stage), mock.patch.object(reporter.os, stage, side_effect=OSError("controlled")):
+                self.assertEqual(run_report("--input", records, "--run-receipt", receipt, "--output", self.output),
+                                 (2, "capture-pacing-report: output-failed\n"))
+            self.assertEqual(snapshot(self.root), before)
+
+    def test_unserializable_or_oversized_report_is_never_staged(self):
+        self.output.write_bytes(b"previous derived report\n")
+        for value in ({"ratio": float("nan")}, {"payload": "x" * reporter.MAX_OUTPUT_BYTES}):
+            with self.subTest(keys=tuple(value)):
+                with self.assertRaises(ValueError):
+                    reporter._publish(self.output, value)
+                self.assertEqual(snapshot(self.root), {"report.json": b"previous derived report\n"})
+
+
+class FinalReceiptTests(PacketTest):
+    def test_complete_bound_campaign_qualifies_its_recorded_scope(self):
+        records, receipt = write_campaign(self.root)
+        code, result = self.report(records, receipt)
+        self.assertEqual(code, 0)
+        self.assertEqual((result["schema"], result["view"], result["status"], result["observation_status"]),
+                         (3, "prospective-qualification", "pass", "pass"))
+        self.assertEqual(result["final_authority"], {"status": "verified", "receipt_schema": 3,
+                                                     "campaign_status": "pass", "final_identity": UNCHANGED,
+                                                     "failures": []})
+        combined = next(row for row in result["comparisons"] if row["case"] == "combined")
+        self.assertEqual(combined["rates"]["ocr_per_second"], {"ratio": 1.0, "reason": None})
+
+    def test_passing_cases_cannot_override_a_changed_final_binding(self):
+        suppressed = {"ratio": None, "reason": "campaign-not-qualified"}
+        for changed in UNCHANGED:
+            with self.subTest(changed=changed):
+                records, receipt = write_campaign(self.root, identity={**UNCHANGED, changed: False})
+                self.assertEqual(json.loads(receipt.read_bytes())["status"], "fail")
+                code, result = self.report(records, receipt)
+                self.assertEqual((code, result["status"], result["observation_status"]), (1, "fail", "pass"))
+                self.assertEqual(result["final_authority"]["failures"],
+                                 [f"final-{changed}-identity-changed", "final-campaign-failed"])
+                self.assertEqual({row["status"] for row in result["cases"] + [result["semantic"]]}, {"pass"})
+                self.assertTrue(all(rate == suppressed for row in result["comparisons"]
+                                    for rate in row["rates"].values()))
+
+    def test_failed_or_inconsistent_final_status_is_never_accepted(self):
+        records, receipt = write_campaign(self.root)
+        value = json.loads(receipt.read_bytes())
+        for mutation, failure in (({"status": "fail"}, "final-campaign-failed"),
+                                  ({"binding_unchanged": False}, "final-receipt-invalid")):
+            with self.subTest(mutation=mutation):
+                receipt.write_text(json.dumps({**value, **mutation}), encoding="utf-8")
+                code, result = self.report(records, receipt)
+                self.assertEqual((code, result["status"], result["observation_status"]), (1, "fail", "pass"))
+                self.assertIn(failure, result["final_authority"]["failures"])
+
+    def test_contradictory_comparison_status_cannot_qualify(self):
+        records, receipt = write_campaign(self.root)
+        value = json.loads(receipt.read_bytes())
+        for status in ("fail", "incomplete", "not-run"):
+            with self.subTest(comparison_status=status):
+                receipt.write_text(json.dumps({**value, "comparison_status": status}), encoding="utf-8")
+                code, result = self.report(records, receipt)
+                self.assertEqual((code, result["status"], result["observation_status"]), (1, "fail", "pass"))
+                self.assertIn("final-receipt-comparison-mismatch", result["final_authority"]["failures"])
+
+    def test_absent_receipt_is_incomplete_without_inferred_identity(self):
+        records, _ = write_campaign(self.root)
+        code, result = self.report(records)
+        self.assertEqual((code, result["view"], result["status"], result["observation_status"]),
+                         (1, "legacy-inspection", "incomplete", "pass"))
+        self.assertEqual(result["final_authority"], {"status": "unavailable", "receipt_schema": None,
+                                                     "campaign_status": None, "final_identity": None,
+                                                     "failures": ["final-receipt-missing"]})
+
+    def test_receipt_and_records_must_agree(self):
+        records, receipt = write_campaign(self.root)
+        records.write_text(json.dumps(json.loads(records.read_bytes())), encoding="utf-8")
+        code, result = self.report(records, receipt)
+        self.assertEqual((code, result["status"], result["observation_status"]), (1, "fail", "pass"))
+        self.assertEqual(result["final_authority"]["failures"], ["final-receipt-records-mismatch"])
+        contradicted = ["final-receipt-case-mismatch", "final-receipt-status-mismatch"]
+        rows = campaign_rows()
+        rows[-1]["analysis"] = {"status": "incomplete"}
+        records, receipt = write_campaign(self.root, rows)
+        code, result = self.report(records, receipt)
+        self.assertEqual((code, result["status"], result["final_authority"]["failures"]), (1, "fail", contradicted))
+        rows = campaign_rows()
+        rows[-1]["consumer"]["samples"][1]["cooldown_gap_ns"] = 0
+        synchronize(rows[-1])
+        records, receipt = write_campaign(self.root, rows)
+        value = json.loads(receipt.read_bytes())
+        self.assertEqual(value["status"], "fail")
+        receipt.write_text(json.dumps({**value, "status": "pass", "comparison_status": "pass"}), encoding="utf-8")
+        code, result = self.report(records, receipt)
+        self.assertEqual((code, result["status"], result["observation_status"]), (1, "fail", "fail"))
+        self.assertEqual(set(result["final_authority"]["failures"]),
+                         {*contradicted, "final-receipt-comparison-mismatch"})
+        self.assertEqual(next(row for row in result["cases"] if row["case"] == "combined")["status"], "fail")
+
+    def test_malformed_receipt_fails_and_preserves_observations(self):
+        records, receipt = write_campaign(self.root)
+        value = json.loads(receipt.read_bytes())
+        missing = {key: item for key, item in value.items() if key != "evidence"}
+        malformed = (
+            ("{", False), ('{"schema":3,"schema":3}', False),
+            (json.dumps({**value, "schema": 4}), True), (json.dumps(missing), False),
+            (json.dumps({**value, "extra": None}), True),
+            (json.dumps({**value, "records": {**value["records"], "sha256": "A" * 64}}), True),
+            (json.dumps({**value, "evidence": ["../outside.json"]}), False),
+            (json.dumps({**value, "case_statuses": {"semantic": "pass"}}), True),
+            (json.dumps({**value, "final_identity": {**UNCHANGED, "source": 1}}), True),
+        )
+        self.output.write_bytes(b"previous derived report\n")
+        for text, publishable in malformed:
+            with self.subTest(text=text[:48]):
+                receipt.write_text(text, encoding="utf-8")
+                if publishable:
+                    code, result = self.report(records, receipt)
+                    self.assertEqual(code, 1)
+                else:
+                    before = snapshot(self.root)
+                    self.assertEqual(
+                        run_report("--input", records, "--run-receipt", receipt, "--output", self.output),
+                        (2, "capture-pacing-report: input-invalid\n"))
+                    self.assertEqual(snapshot(self.root), before)
+                    result, declared = reporter.evaluate(records.read_bytes(), receipt.read_bytes())
+                    self.assertIsNone(declared)
+                self.assertEqual((result["view"], result["status"], result["observation_status"]),
+                                 ("prospective-qualification", "fail", "pass"))
+                self.assertEqual(result["final_authority"]["failures"], ["final-receipt-invalid"])
+                self.assertEqual([row["status"] for row in result["cases"]], ["pass"] * len(CASES))
+
+    def test_legacy_packets_are_inspected_without_promotion(self):
+        records, legacy = self.root / "records.json", self.root / "run.json"
+        records.write_text(json.dumps(campaign_rows(), indent=2) + "\n", encoding="utf-8")
+        legacy.write_text(json.dumps({"schema": 2, "status": "pass", "binding_unchanged": True}) + "\n",
+                          encoding="utf-8")
+        before = snapshot(self.root)
+        for receipt, schema, failure in ((None, None, "final-receipt-missing"),
+                                         (legacy, 2, "final-receipt-legacy-unbound")):
+            with self.subTest(receipt_schema=schema):
+                code, result = self.report(records, receipt)
+                self.assertEqual((code, result["view"], result["status"], result["observation_status"]),
+                                 (1, "legacy-inspection", "incomplete", "pass"))
+                self.assertEqual((result["final_authority"]["receipt_schema"], result["final_authority"]["failures"]),
+                                 (schema, [failure]))
+                combined = next(row for row in result["comparisons"] if row["case"] == "combined")
+                self.assertEqual(combined["rates"]["ocr_per_second"], {"ratio": 1.0, "reason": None})
+                self.assert_evidence_unchanged(before)
+        rows = campaign_rows()
+        rows[-1]["consumer"]["samples"][1]["cooldown_gap_ns"] = 0
+        synchronize(rows[-1])
+        records.write_text(json.dumps(rows, indent=2) + "\n", encoding="utf-8")
+        code, result = self.report(records, legacy)
+        self.assertEqual((code, result["status"], result["observation_status"]), (1, "fail", "fail"))
 
 
 if __name__ == "__main__":

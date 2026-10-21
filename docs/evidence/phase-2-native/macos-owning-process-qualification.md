@@ -53,7 +53,7 @@ latency result was substituted for another.
 | Memory / environment gates | zero process-profile allocation growth; foreground and physical cursor unchanged; one matching fixture event per terminal sequence |
 | ASan / ABI / packaging (`dec43d7`) | 254 ASan library tests passed; C ABI 1.2 table 592 bytes; frozen ABI 1.0 prefix 424 bytes and 222 layout lines held; C/C++/CMake, linkage, signing, and panic containment passed |
 | Hosted CI | repository policy, branch flow, Windows x86_64, and macOS Apple Silicon passed on source/test commit `7ce1602` with pushed evidence head `705c713` |
-| Detailed current procedure and outcomes | [`verification-procedure.md`](../../../rasen/changes/macos-process-directed-performance-tuning/evidence/verification-procedure.md) and [`observed-report.md`](../../../rasen/changes/macos-process-directed-performance-tuning/evidence/observed-report.md) |
+| Public verification procedure | [Automated checks](../../macos-input-verification.md#automated-macos-checks) and [benchmark commands](../../macos-input-verification.md#current-native-input-performance-evidence); revision-bound outcomes and artifact identities are recorded above. |
 
 The full input benchmark provisions each C/C++ sample's fresh approved
 fixture outside its timed span and retains controller-owned mode-0500

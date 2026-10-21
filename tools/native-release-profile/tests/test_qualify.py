@@ -12,6 +12,7 @@ from unittest.mock import patch
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 import qualify
+import staging
 
 
 class AttemptTests(unittest.TestCase):
@@ -230,6 +231,91 @@ class AttemptTests(unittest.TestCase):
             result, code = self.execute()
         self.assertEqual(code, 0)
         self.assertEqual(result["rows"][0]["status"], "passed")
+
+
+class SnapshotQuotaTests(unittest.TestCase):
+    execute = AttemptTests.execute
+
+    def setUp(self):
+        AttemptTests.setUp(self)
+        executable = self.root / "input" / "external"
+        executable.write_bytes(b"x" * 512)
+        row = self.manifest["rows"][0]
+        self.manifest["rows"] = [
+            dict(row, id=f"stale-{index}", argv=["{input}/external"], executable_sha256="0" * 64)
+            for index in range(3)
+        ]
+
+    def test_repeated_hash_refusals_reclaim_before_next_row_under_stage_ceiling(self):
+        sizes, before = [], []
+        original_snapshot = qualify.snapshot_executable
+        original_writer = staging._fd_writer
+
+        def staged_bytes(snapshot):
+            scratch = snapshot.parent.parent
+            return sum(path.stat().st_size for path in scratch.rglob("*") if path.is_file())
+
+        def snapshot(source, destination, digest, **limits):
+            before.append(staged_bytes(destination))
+            try:
+                return original_snapshot(source, destination, digest, **limits)
+            finally:
+                sizes.append(staged_bytes(destination))
+
+        def writer(descriptor, label):
+            write = original_writer(descriptor, label)
+
+            def observe(data):
+                write(data)
+                scratch = next((self.root / "out" / self.candidate / "one").glob("scratch-*"))
+                sizes.append(sum(path.stat().st_size for path in scratch.rglob("*") if path.is_file()))
+            return observe
+
+        with patch.dict(qualify.LIMITS, stage_bytes=1024), \
+                patch.object(qualify, "snapshot_executable", side_effect=snapshot), \
+                patch.object(staging, "_fd_writer", side_effect=writer), \
+                patch.object(qualify, "run_process") as launch:
+            result, code = self.execute()
+        self.assertEqual(code, 1)
+        self.assertEqual(before, [14, 14, 14])
+        self.assertEqual(max(sizes), 526)
+        self.assertTrue(all(size <= 1024 for size in sizes))
+        self.assertEqual([row["reason"] for row in result["rows"]], ["executable-identity-mismatch"] * 3)
+        self.assertEqual(result["staging_bytes_before_cleanup"], 14)
+        launch.assert_not_called()
+
+    def test_unreclaimed_snapshot_stops_rows_with_primary_rejection_and_charged_bytes(self):
+        original_unlink = Path.unlink
+        retained = []
+        original_rmtree = qualify.shutil.rmtree
+
+        def unlink(path, *args, **kwargs):
+            if path.name == "external" and path.parent.name.startswith("executable-"):
+                raise PermissionError("snapshot-unlink-denied")
+            return original_unlink(path, *args, **kwargs)
+
+        def cleanup(path):
+            retained.append(sum(item.stat().st_size for item in path.rglob("*") if item.is_file()))
+            return original_rmtree(path)
+
+        with patch.dict(qualify.LIMITS, stage_bytes=1024), \
+                patch.object(Path, "unlink", new=unlink), \
+                patch.object(qualify.shutil, "rmtree", side_effect=cleanup), \
+                patch.object(qualify, "snapshot_executable", wraps=qualify.snapshot_executable) as snapshot, \
+                patch.object(qualify, "run_process") as launch:
+            result, code = self.execute()
+        self.assertEqual(code, 1)
+        self.assertEqual(snapshot.call_count, 1)
+        launch.assert_not_called()
+        self.assertEqual(retained, [526])
+        self.assertEqual(result["staging_bytes_before_cleanup"], 526)
+        self.assertFalse(result["rows"][0]["snapshot_cleanup"]["ok"])
+        self.assertIn("SHA-256", result["rows"][0]["snapshot_cleanup"]["primary"])
+        self.assertIn("snapshot-unlink-denied", result["rows"][0]["snapshot_cleanup"]["failure"])
+        self.assertEqual([row["status"] for row in result["rows"]], ["failed", "unexecuted", "unexecuted"])
+        failure = (self.root / "out" / self.candidate / "one" / "failure.log").read_text()
+        self.assertIn("SHA-256", failure)
+        self.assertIn("snapshot-unlink-denied", failure)
 
 
 if __name__ == "__main__":

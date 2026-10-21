@@ -579,8 +579,11 @@ impl TargetRecord {
             .process_post(event_source, request, operation)
     }
 
-    /// Reads focus for this exact retained selection within `wait`.
-    pub(crate) fn is_focused(&self, wait: Duration) -> std::result::Result<bool, ShimStatus> {
+    /// Reads focus and its final retained-target bounds within `wait`.
+    pub(crate) fn is_focused(
+        &self,
+        wait: Duration,
+    ) -> std::result::Result<(bool, NativeBounds), ShimStatus> {
         self.selection.input_focused(wait)
     }
 

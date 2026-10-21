@@ -220,6 +220,32 @@ evaluation. For relocated evidence, pass one `--evidence-roots` entry per report
 repository-relative `path`, frozen commit, regular-file tree entry and blob bytes.
 Rewriting embedded policy bytes or summary values cannot replace those originals.
 
+Before each descriptor or evaluation child, the runner checkpoints an
+`attempted-unconfirmed` marker with its command, source and available binding/
+profile identity. A failed prelaunch checkpoint prevents that launch. After a
+child returns, its independent receipt is saved and checkpointed before parsing;
+the completed parsed prefix is checkpointed separately. `completed` confirms an
+observed exit and successful cleanup, not a passing quality result.
+
+The intermediate evaluation projection uses `projection_state: "receipt-only"`.
+The evaluator verifies its exact index, command, process outcome, evidence paths
+and raw/receipt digests, then reconstructs the full original JSONL observations.
+Already verified quality failures remain failed rather than becoming unverified
+because parsing was interrupted. Parsed and legacy projections still require
+full reconciliation; existing schema-1/2 evidence interpretations are unchanged.
+
+On `KeyboardInterrupt`, the runner checkpoints `execution: "interrupted"` with
+the retained parsed/receipt prefix and unconfirmed attempt, removes any aggregate
+evaluation, and rethrows the same exception. If that checkpoint fails, the prior
+durable prefix remains and the failure is attached as an exception note.
+Temporary-file cleanup failure likewise does not replace the primary exception.
+Unknown exit or cleanup remains unknown; failed or unconfirmed cleanup withholds
+later launches. Neither raw output nor an interrupt proves child termination.
+Inspect retained evidence with the `evaluate` command and its explicit
+`--evidence-roots` above; evaluation launches no replacement child and provides
+no resume or restart. This retention contract changes no model availability,
+historical result or campaign authority.
+
 The benchmark embeds its build revision, tree, compiler and dirty state behind
 `benchmark-instrumentation`; ordinary SDK builds perform no Git collection.
 Preflight and validation reconcile those facts against the requested source and

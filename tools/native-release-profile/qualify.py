@@ -15,7 +15,7 @@ import sys
 import tempfile
 
 from process_runner import run_process
-from staging import _resolve_directory, snapshot_executable, stage_files
+from staging import SnapshotCleanupError, _resolve_directory, snapshot_executable, stage_files
 
 CANDIDATES = {
     "cpu-host-windows": ("x86_64-pc-windows-msvc", []),
@@ -176,6 +176,7 @@ def execute(manifest: dict, *, manifest_bytes: bytes, manifest_digest: str, atte
     scratch = None
     completed = False
     interruption = None
+    withheld_reason = "attempt-interrupted"
     try:
         if native_target() != CANDIDATES[manifest["candidate"]][0]:
             raise ValueError("target-mismatch")
@@ -188,6 +189,7 @@ def execute(manifest: dict, *, manifest_bytes: bytes, manifest_digest: str, atte
         record["inventory"] = stage_files(manifest["artifacts"], roots, stage, max_bytes=LIMITS["stage_bytes"])
         expanded_roots = dict(roots, stage=stage, scratch=scratch)
         snapshot_bytes = sum(row["bytes"] for row in manifest["artifacts"])
+        record["staging_bytes_before_cleanup"] = snapshot_bytes
         for row in manifest["rows"]:
             observed = {"id": row["id"], "status": "unexecuted", "command": row["argv"],
                         "environment": row["environment"], "expected_exit": row["expected_exit"],
@@ -214,6 +216,15 @@ def execute(manifest: dict, *, manifest_bytes: bytes, manifest_digest: str, atte
                     snapshot = launch_root / executable.name
                     snapshot_bytes += snapshot_executable(executable, snapshot, row["executable_sha256"],
                                                           max_bytes=LIMITS["stage_bytes"] - snapshot_bytes)
+                    record["staging_bytes_before_cleanup"] = snapshot_bytes
+            except SnapshotCleanupError as error:
+                snapshot_bytes += error.retained_bytes
+                record["staging_bytes_before_cleanup"] = snapshot_bytes
+                observed.update(status="failed", reason="executable-identity-mismatch",
+                                snapshot_cleanup={"ok": False, "reserved_bytes": error.retained_bytes,
+                                                  "primary": str(error.primary), "failure": str(error.cleanup)})
+                withheld_reason = "snapshot-cleanup-failed"
+                raise
             except (OSError, ValueError):
                 observed.update(status="failed", reason="executable-identity-mismatch")
                 continue
@@ -263,7 +274,7 @@ def execute(manifest: dict, *, manifest_bytes: bytes, manifest_digest: str, atte
         seen = {row["id"] for row in record["rows"]}
         for row in manifest["rows"]:
             if row["id"] not in seen:
-                record["rows"].append({"id": row["id"], "status": "unexecuted", "reason": "attempt-interrupted"})
+                record["rows"].append({"id": row["id"], "status": "unexecuted", "reason": withheld_reason})
         if completed and record["failure"] is None and record["cleanup_ok"]:
             statuses = {row["status"] for row in record["rows"]}
             record["procedure_status"] = "passed" if statuses == {"passed"} else "failed" if "failed" in statuses else "unexecuted"

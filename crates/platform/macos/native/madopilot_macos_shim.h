@@ -30,7 +30,7 @@ extern "C" {
 #endif
 
 /* The version of this internal surface. Rust asserts it at load. */
-#define MP_SHIM_ABI_VERSION 25u
+#define MP_SHIM_ABI_VERSION 26u
 
 /* The largest extent, budget, and default wait the shim will accept or apply. */
 #define MP_SHIM_MAX_PIXEL_EXTENT 32768u
@@ -750,6 +750,8 @@ mp_shim_status mp_shim_testing_target_release_exception(
 #define MP_SHIM_TEST_PROCESS_APPKIT_LOCATE_EXCEPTION 41u
 #define MP_SHIM_TEST_PROCESS_APPKIT_BACKGROUND_UNAVAILABLE 42u
 #define MP_SHIM_TEST_PROCESS_APPKIT_FOREGROUND_DURING_LIFETIME 43u
+#define MP_SHIM_TEST_PROCESS_FOCUS_LOST_DURING_FINAL_INVENTORY 44u
+#define MP_SHIM_TEST_PROCESS_FOCUS_STABLE_FINAL_INVENTORY 45u
 
 /* Non-posting NSEvent construction, scalar observations after autorelease drain. */
 mp_shim_status mp_shim_testing_appkit_pointer(
@@ -1225,14 +1227,19 @@ mp_shim_status mp_shim_process_post(const mp_shim_process_post_request *request,
  * attributes then report the active application, its focused window, and its
  * window list. Focus is true only when exactly one Accessibility window has the
  * freshly verified window's unchanged position and size and that element is
- * focused. Missing or internally inconsistent required attributes return a
- * failure status; a complete unequal or ambiguous observation writes false. No
- * title, private Accessibility identifier, or window-raising action is used.
- *
- * `timeout_nanos` bounds the shareable-content and Accessibility observations.
+ * focused. The final inventory precedes the final Accessibility predicate;
+ * `out_authority` returns those bounds on a focused result, without another wait.
+ * Missing or inconsistent attributes fail; a complete unequal or ambiguous
+ * observation writes false. No title, private identifier, or activation is used.
+ * `timeout_nanos` bounds both observations; this is not an OS-atomic focus fence.
  */
-mp_shim_status mp_shim_input_target_focused(const mp_shim_target *target,
-                                            uint64_t timeout_nanos, bool *out_focused);
+mp_shim_status mp_shim_input_target_focused(
+    const mp_shim_target *target, uint64_t timeout_nanos, bool *out_focused,
+    mp_shim_process_authority_report *out_authority);
+
+/* Permission-independent production final-focus ordering seam; never posts. */
+mp_shim_status mp_shim_testing_input_focus_observation(
+    bool lose_focus, bool *out_focused, mp_shim_process_authority_report *out_authority);
 
 /*
  * Reports the retained selection's current on-screen rectangle in the global

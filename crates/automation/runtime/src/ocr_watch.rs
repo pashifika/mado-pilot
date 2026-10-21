@@ -800,16 +800,10 @@ fn interrupted(
     context: &OperationContext,
     now: MonotonicInstant,
 ) -> Option<OcrTextTerminalOutcome> {
-    if context
-        .cancellation()
-        .is_some_and(CancellationToken::is_cancelled)
-    {
-        Some(OcrTextTerminalOutcome::Cancelled)
-    } else if context.deadline().is_some_and(|deadline| now >= deadline) {
-        Some(OcrTextTerminalOutcome::DeadlineExceeded)
-    } else {
-        None
-    }
+    interruption_at(context, now).map(|interruption| match interruption {
+        Interruption::Cancelled => OcrTextTerminalOutcome::Cancelled,
+        Interruption::DeadlineExceeded => OcrTextTerminalOutcome::DeadlineExceeded,
+    })
 }
 
 fn refresh_interruption(
@@ -830,6 +824,8 @@ pub(super) fn source_outcome(outcome: &TemplateTerminalOutcome) -> OcrTextTermin
         TemplateTerminalOutcome::TargetLost => OcrTextTerminalOutcome::TargetLost,
         TemplateTerminalOutcome::SchedulerClosed => OcrTextTerminalOutcome::SchedulerClosed,
         TemplateTerminalOutcome::Failed(error) => redacted_failure(error.clone()),
+        TemplateTerminalOutcome::Cancelled => OcrTextTerminalOutcome::Cancelled,
+        TemplateTerminalOutcome::DeadlineExceeded => OcrTextTerminalOutcome::DeadlineExceeded,
         _ => OcrTextTerminalOutcome::SessionClosed,
     }
 }
@@ -1402,6 +1398,12 @@ impl OcrQueryShared {
             (state.confirmed, state.first_confirmed)
         };
         let evaluated = output.and_then(|output| self.evaluate(work, output, confirmed, first));
+        let capture_refusal = work
+            .session
+            .capture
+            .commit_frame(&work.frame, &self.request.operation)
+            .err()
+            .map(|error| source_outcome(&capture_outcome(error)));
         let now = self.request.operation.now();
         let scheduler = self.scheduler.upgrade();
         let admission = scheduler
@@ -1413,8 +1415,9 @@ impl OcrQueryShared {
         if !Self::execution_current(&state, work) {
             return;
         }
-        let mut terminal =
-            refresh_interruption(authority, &self.request.operation, now).map(Arc::new);
+        let mut terminal = refresh_interruption(authority, &self.request.operation, now)
+            .or(capture_refusal)
+            .map(Arc::new);
         let authority_discard = terminal.is_some();
         let mut disposition = None;
         if terminal.is_none() {
@@ -2583,6 +2586,83 @@ mod tests {
         for query in &queries {
             let _ = query.cancel();
         }
+        runtime.close();
+    }
+
+    #[test]
+    fn completion_clock_observes_unlocked_ocr_authority() {
+        use super::super::tests::ReentrantClock;
+        use mado_pilot_testkit::CompletionGate;
+
+        let capture = ControlledCapture::new(
+            Arc::new(IdentityIssuer::new()),
+            PixelExtent::new(32, 24),
+            PixelFormat::Bgra8,
+        )
+        .unwrap();
+        capture.set_frame_limit(std::num::NonZeroU64::new(1).unwrap());
+        let acquisition = Arc::new(CompletionGate::new());
+        capture.set_frame_error_gate(acquisition.clone());
+        let backend = Arc::new(CompletionGate::new());
+        let recognizer = selected_recognizer(
+            ControlledOcr::new(PixelFormat::Bgra8)
+                .with_candidates(vec![ScriptedOcrCandidate::new(
+                    b"ready".as_slice(),
+                    [(1.0, 1.0), (8.0, 1.0), (8.0, 5.0), (1.0, 5.0)],
+                    0.8,
+                    0,
+                )])
+                .with_completion_gate(backend.clone()),
+        );
+        let runtime = quiet_runtime(Matcher::new(Arc::new(ControlledMatcher::new(
+            PixelFormat::Rgba8,
+        ))));
+        let session = runtime
+            .register_session(
+                capture
+                    .open(
+                        capture.target(),
+                        &OpenRequest::new(),
+                        &OperationContext::new(),
+                    )
+                    .unwrap(),
+            )
+            .unwrap();
+        let _backend_release = backend.release_guard();
+        let _acquisition_release = acquisition.release_guard();
+        let clock = Arc::new(ReentrantClock::default());
+        let query = session
+            .start_ocr_query(
+                text_request(
+                    OperationContext::new()
+                        .with_clock(clock.clone())
+                        .with_deadline(MonotonicInstant::from_origin(Duration::from_secs(1))),
+                ),
+                Some(&recognizer),
+            )
+            .unwrap();
+        capture
+            .publish(1, mado_pilot_capture::Continuity::Continuous)
+            .unwrap();
+        let work = next_ocr(&runtime, 0);
+        let scheduler = runtime.scheduler.clone();
+        let worker = thread::spawn(move || scheduler.process_ocr(work));
+        assert!(backend.wait_until_entered(Duration::from_secs(2)));
+        assert!(acquisition.wait_until_entered(Duration::from_secs(2)));
+        let scheduler = Arc::downgrade(&runtime.scheduler);
+        let source = Arc::downgrade(&session);
+        let shared = Arc::downgrade(&query.shared);
+        clock.arm(move || {
+            assert!(scheduler.upgrade().unwrap().admission.try_lock().is_ok());
+            assert!(source.upgrade().unwrap().activation.try_lock().is_ok());
+            assert!(shared.upgrade().unwrap().state.try_lock().is_ok());
+        });
+        backend.release();
+        worker.join().unwrap();
+        assert!(clock.disarm() >= 2);
+        assert!(query.wait(&OperationContext::new()).unwrap().is_match());
+        acquisition.release();
+        session.close(TemplateTerminalOutcome::SessionClosed);
         runtime.close();
     }
 }

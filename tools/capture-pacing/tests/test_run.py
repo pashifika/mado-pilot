@@ -140,6 +140,29 @@ class AdmissionTests(unittest.TestCase):
         self.assertEqual(runner.aggregate_status(rows("pass", "fail"), {"status": "incomplete"}, True), "fail")
         self.assertEqual(runner.aggregate_status(rows("pass"), {"status": "pass"}, False), "fail")
 
+    def test_final_identity_records_each_post_run_change_independently(self):
+        host = {"system": "Darwin", "os_build": "controlled"}
+        native = {"scope": "controlled", "files": 1, "edges": []}
+        authority = {name: {} for name in runner.INPUTS}
+        unchanged = {"source": True, "inputs": True, "host": True, "native": True}
+        changes = {
+            "source": ("source_identity", {"side_effect": runner.Refusal("source-tree-mismatch")}),
+            "inputs": ("bound_file", {"side_effect": FileNotFoundError("replaced input")}),
+            "host": ("verify_host", {"return_value": {**host, "os_build": "updated"}}),
+            "native": ("verify_native_bindings", {"return_value": {**native, "files": 2}}),
+        }
+        for changed, (name, behavior) in (("none", (None, {})), *changes.items()):
+            with self.subTest(changed=changed), \
+                 mock.patch.object(runner, "source_identity", return_value=None), \
+                 mock.patch.object(runner, "bound_file", return_value=Path("controlled")), \
+                 mock.patch.object(runner, "verify_host", return_value=host), \
+                 mock.patch.object(runner, "verify_native_bindings", return_value=native), \
+                 mock.patch.object(runner, "run_process", side_effect=AssertionError("native launch")):
+                if name is not None:
+                    getattr(runner, name).configure_mock(**behavior)
+                expected = unchanged if changed == "none" else {**unchanged, changed: False}
+                self.assertEqual(runner.final_identity(authority, {}, host, native), expected)
+
     def test_windows_runtime_uses_its_own_directory_not_path_or_redirection(self):
         with tempfile.TemporaryDirectory() as temporary:
             root = Path(temporary).resolve()

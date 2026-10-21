@@ -9,19 +9,22 @@
 //! description of replay.
 
 use std::fmt;
+use std::num::NonZeroU64;
+use std::sync::atomic::{AtomicU64, AtomicUsize, Ordering};
 use std::sync::{Arc, Mutex};
 
 use mado_pilot_capture::{
     CaptureFault, CapturePacingReport, CaptureProvider, CaptureSession, Continuity,
-    CoordinateSupport, Frame, FrameDescriptor, FrameRequest, Lifecycle, OpenRequest,
-    PacingUnsupportedReason, PixelFormat, Publication, ResolvedCapturePacing, SessionDescription,
-    StreamState, TargetDescription,
+    CoordinateSupport, Frame, FrameDescriptor, FrameRequest, FrameSelection, Lifecycle,
+    OpenRequest, PacingUnsupportedReason, PixelFormat, Publication, ResolvedCapturePacing,
+    SessionDescription, StreamState, TargetDescription,
 };
 use mado_pilot_core::{
-    Error, IdentityIssuer, MonotonicInstant, OperationContext, PixelExtent, ProviderId, Result,
-    Status, TargetCapability, TargetId,
+    Error, FrameOrder, IdentityIssuer, MonotonicInstant, OperationContext, PixelExtent, ProviderId,
+    Result, Status, TargetCapability, TargetId,
 };
 
+use crate::controlled_ocr::CompletionGate;
 use crate::controlled_storage::ControlledProducer;
 
 /// Provider name qualifying this double's target identities.
@@ -43,6 +46,9 @@ pub struct ControlledCapture {
     descriptor: FrameDescriptor,
     targets: Mutex<Vec<ControlledTarget>>,
     sessions: Mutex<Vec<Arc<ControlledSession>>>,
+    frame_limit: AtomicU64,
+    frame_error_gate: Mutex<Option<Arc<CompletionGate>>>,
+    frame_requests: Arc<AtomicUsize>,
 }
 
 impl ControlledCapture {
@@ -70,6 +76,9 @@ impl ControlledCapture {
                 present: true,
             }]),
             sessions: Mutex::new(Vec::new()),
+            frame_limit: AtomicU64::new(0),
+            frame_error_gate: Mutex::new(None),
+            frame_requests: Arc::new(AtomicUsize::new(0)),
         })
     }
 
@@ -77,6 +86,28 @@ impl ControlledCapture {
     #[must_use]
     pub const fn target(&self) -> TargetId {
         self.target
+    }
+
+    /// Makes newly opened sessions report finite exhaustion after this many
+    /// continuous frames. Publication stays test-driven; retained frames remain
+    /// committable until an explicit close or terminal fault.
+    pub fn set_frame_limit(&self, frames: NonZeroU64) {
+        self.frame_limit.store(frames.get(), Ordering::Release);
+    }
+
+    /// Holds capture errors after stream arbitration and before delivery for
+    /// newly opened sessions. Cancellation and deadline errors are not held.
+    pub fn set_frame_error_gate(&self, gate: Arc<CompletionGate>) {
+        *self
+            .frame_error_gate
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner) = Some(gate);
+    }
+
+    /// Returns the number of frame calls across this provider's sessions.
+    #[must_use]
+    pub fn frame_request_count(&self) -> usize {
+        self.frame_requests.load(Ordering::Acquire)
     }
 
     /// Declares what this provider can do with its first target.
@@ -382,6 +413,13 @@ impl CaptureProvider for ControlledCapture {
             )
             .with_capture_pacing(pacing),
             state: StreamState::new(stream),
+            frame_limit: self.frame_limit.load(Ordering::Acquire),
+            frame_error_gate: self
+                .frame_error_gate
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner)
+                .clone(),
+            frame_requests: Arc::clone(&self.frame_requests),
         });
         self.sessions().push(Arc::clone(&session));
         Ok(session as Arc<dyn CaptureSession>)
@@ -391,6 +429,9 @@ impl CaptureProvider for ControlledCapture {
 struct ControlledSession {
     description: SessionDescription,
     state: StreamState,
+    frame_limit: u64,
+    frame_error_gate: Option<Arc<CompletionGate>>,
+    frame_requests: Arc<AtomicUsize>,
 }
 
 impl fmt::Debug for ControlledSession {
@@ -409,7 +450,29 @@ impl CaptureSession for ControlledSession {
     }
 
     fn frame(&self, request: &FrameRequest, operation: &OperationContext) -> Result<Frame> {
-        self.state.frame(request, operation)
+        self.frame_requests.fetch_add(1, Ordering::AcqRel);
+        let result = if self.frame_limit != 0
+            && let FrameSelection::NewerThan(stamp) = request.selection()
+            && let Some(current) = self.state.current()
+            && current.stamp().sequence().value() >= self.frame_limit - 1
+            && matches!(
+                current.stamp().order(&stamp),
+                Ok(FrameOrder::Same | FrameOrder::Before)
+            ) {
+            self.state
+                .frame(&FrameRequest::latest(), operation)
+                .and_then(|_| Err(CaptureFault::StreamEnded.into()))
+        } else {
+            self.state.frame(request, operation)
+        };
+        if result.as_ref().err().is_some_and(|error| {
+            !matches!(error.status(), Status::Cancelled | Status::DeadlineExceeded)
+        }) && let Some(gate) = &self.frame_error_gate
+        {
+            gate.enter_and_wait();
+            gate.complete();
+        }
+        result
     }
 
     fn commit_frame(&self, frame: &Frame, operation: &OperationContext) -> Result<()> {

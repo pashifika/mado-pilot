@@ -48,7 +48,7 @@ use mado_pilot_capture::{
 use mado_pilot_core::{OperationContext, PermissionState, PixelExtent};
 
 /// The internal surface version this build was written against.
-pub(crate) const ABI_VERSION: u32 = 25;
+pub(crate) const ABI_VERSION: u32 = 26;
 
 const PACING_SOURCE_DEFAULT: u32 = 0;
 const PACING_REQUIRED: u32 = 1;
@@ -943,8 +943,8 @@ impl TargetToken {
         input_target_bounds(self, wait)
     }
 
-    /// Reads whether this exact retained window is focused within a bounded wait.
-    pub(crate) fn input_focused(&self, wait: Duration) -> Result<bool, ShimStatus> {
+    /// Reads focus and the final retained-window bounds within one bounded wait.
+    pub(crate) fn input_focused(&self, wait: Duration) -> Result<(bool, NativeBounds), ShimStatus> {
         input_target_focused(self, wait)
     }
 
@@ -1835,16 +1835,41 @@ fn native_pixels_from_points(points: f64, scale: f64) -> Option<u32> {
     Some(pixels as u32)
 }
 
-/// Reports whether the exact retained window is focused.
-fn input_target_focused(target: &TargetToken, wait: Duration) -> Result<bool, ShimStatus> {
+/// Reports exact focus and the raw geometry observed before its final predicate.
+fn input_target_focused(
+    target: &TargetToken,
+    wait: Duration,
+) -> Result<(bool, NativeBounds), ShimStatus> {
     let mut focused = false;
-    // SAFETY: the target pointer is either its retained native handle or null for
-    // a test-only synthetic token, the timeout is bounded, and the output is
-    // writable for one C boolean.
-    let status =
-        unsafe { mp_shim_input_target_focused(target.as_ptr(), nanos(wait), &raw mut focused) };
+    let mut native = NativeProcessAuthority::empty();
+    // SAFETY: the retained target outlives the call and both outputs are writable
+    // with the exact layouts declared to C.
+    let status = unsafe {
+        mp_shim_input_target_focused(
+            target.as_ptr(),
+            nanos(wait),
+            &raw mut focused,
+            &raw mut native,
+        )
+    };
     ShimStatus::from_raw(status).into_result()?;
-    Ok(focused)
+    Ok((focused, native.bounds()))
+}
+
+/// Runs the production final-inventory/focus ordering without host authority.
+#[cfg(test)]
+pub(crate) fn testing_input_focus_observation(
+    lose_focus: bool,
+) -> Result<(bool, NativeBounds), ShimStatus> {
+    let mut focused = false;
+    let mut native = NativeProcessAuthority::empty();
+    // SAFETY: the synchronous seam writes only these correctly sized outputs;
+    // it neither retains pointers nor discovers or posts to a desktop target.
+    let status = unsafe {
+        mp_shim_testing_input_focus_observation(lose_focus, &raw mut focused, &raw mut native)
+    };
+    ShimStatus::from_raw(status).into_result()?;
+    Ok((focused, native.bounds()))
 }
 
 /// Reports one target's current rectangle, and thereby whether it still exists.
@@ -1910,16 +1935,7 @@ fn process_target_authority(
             target_match_count: 0,
         });
     };
-    let mut native = NativeProcessAuthority {
-        struct_size: u32::try_from(size_of::<NativeProcessAuthority>())
-            .expect("structure size fits u32"),
-        target_match_count: 0,
-        logical_x: 0.0,
-        logical_y: 0.0,
-        logical_width: 0.0,
-        logical_height: 0.0,
-        backing_scale: 0.0,
-    };
+    let mut native = NativeProcessAuthority::empty();
     // SAFETY: the retained opaque target stays alive for the call and `native`
     // is writable for the exact size-versioned structure declared to C.
     let status = ShimStatus::from_raw(unsafe {
@@ -1932,11 +1948,7 @@ fn process_target_authority(
         });
     }
     Ok(ProcessAuthority {
-        bounds: NativeBounds {
-            origin: (native.logical_x, native.logical_y),
-            size: (native.logical_width, native.logical_height),
-            scale: native.backing_scale,
-        },
+        bounds: native.bounds(),
         target_match_count: native.target_match_count,
     })
 }
@@ -3759,6 +3771,28 @@ struct NativeProcessAuthority {
     backing_scale: f64,
 }
 
+impl NativeProcessAuthority {
+    fn empty() -> Self {
+        Self {
+            struct_size: u32::try_from(size_of::<Self>()).expect("structure size fits u32"),
+            target_match_count: 0,
+            logical_x: 0.0,
+            logical_y: 0.0,
+            logical_width: 0.0,
+            logical_height: 0.0,
+            backing_scale: 0.0,
+        }
+    }
+
+    fn bounds(&self) -> NativeBounds {
+        NativeBounds {
+            origin: (self.logical_x, self.logical_y),
+            size: (self.logical_width, self.logical_height),
+            scale: self.backing_scale,
+        }
+    }
+}
+
 #[repr(C)]
 #[derive(Debug)]
 struct NativeProcessPostRequest {
@@ -4193,6 +4227,13 @@ unsafe extern "C" {
         target: *const OpaqueTarget,
         timeout_nanos: u64,
         out_focused: *mut bool,
+        out_authority: *mut NativeProcessAuthority,
+    ) -> u32;
+    #[cfg(test)]
+    fn mp_shim_testing_input_focus_observation(
+        lose_focus: bool,
+        out_focused: *mut bool,
+        out_authority: *mut NativeProcessAuthority,
     ) -> u32;
     fn mp_shim_input_target_bounds(
         target: *const OpaqueTarget,
@@ -5636,6 +5677,32 @@ mod tests {
         assert_eq!(observed.invoked_native_units, 1);
         assert_eq!(observed.target_match_count, 1);
         assert_eq!(observed.calls, [1, 2, 2, 0, 1, 1, 1, 2, 1]);
+    }
+
+    #[test]
+    fn process_required_focus_observes_changes_during_the_final_inventory() {
+        for (scenario, status, invoked, focus) in [
+            (
+                44,
+                ShimStatus::FocusRequired,
+                0,
+                ProcessFocusObservation::Refused,
+            ),
+            (45, ShimStatus::Ok, 1, ProcessFocusObservation::Passed),
+        ] {
+            let observed = testing_process_post(scenario).expect("non-posting native seam");
+            assert_eq!(observed.delivery, status);
+            assert_eq!(observed.invoked_native_units, invoked);
+            assert_eq!(observed.focus, focus);
+            assert_eq!(observed.native_effect_may_have_occurred, invoked != 0);
+            assert_eq!(observed.calls[3], 2, "early focus and final focus both ran");
+            assert_eq!(observed.calls[4], 1, "the pending event was prepared");
+            assert_eq!(
+                observed.calls[5], invoked,
+                "refused focus cannot reach posting"
+            );
+            assert_eq!(observed.calls[6], 1, "prepared ownership was released");
+        }
     }
 
     #[test]

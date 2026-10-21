@@ -3,11 +3,15 @@
 from __future__ import annotations
 
 import argparse
+import contextlib
+import hashlib
 import json
 import math
+import os
 from pathlib import Path
 import re
 import sys
+import tempfile
 
 __all__ = ("analyze_case", "compare_cases")
 
@@ -16,6 +20,9 @@ ALL_CASES = ("semantic",) + CASES
 U64_MAX = (1 << 64) - 1
 MAX_INPUT_BYTES = 8 * 1024 * 1024
 MAX_CHANNEL_BYTES = 1024 * 1024
+MAX_OUTPUT_BYTES = 1024 * 1024
+EVALUATOR = "tools/capture-pacing/report.py"
+STATUSES = ("pass", "fail", "incomplete", "not-run")
 GATES = {
     "process_peak_rss_bytes": 2 * 1024**3,
     "fixture_peak_rss_bytes": 256 * 1024**2,
@@ -650,7 +657,7 @@ def _aggregate_status(statuses: list[str], *, failures: bool = False) -> str:
 
 def compare_cases(cases: list[dict]) -> dict:
     """Analyze one record per fresh case; ratios use each counter's actual scope."""
-    result = {"schema": 2, "status": "fail", "failures": [], "cases": [], "comparisons": [],
+    result = {"status": "fail", "failures": [], "cases": [], "comparisons": [],
               "predeclared_gates": dict(GATES),
               "scope": "owned-gdi-appkit-renderer-not-compositor-gpu-or-general-game-fps",
               "normalization": {"ocr_and_caller_mapping": "consumer.metrics.measurement_ns",
@@ -709,38 +716,242 @@ def compare_cases(cases: list[dict]) -> dict:
     return result
 
 
+DIGEST = re.compile(r"[0-9a-f]{64}\Z")
+OBJECT_ID = re.compile(r"[0-9a-f]{40}\Z")
+EVIDENCE_NAME = re.compile(r"(?:[a-z][a-z0-9-]{0,95}/)?[a-z][a-z0-9-]{0,95}\.json\Z")
+MAX_EVIDENCE_FILES = 32
+RECEIPT_KEYS = frozenset((
+    "schema", "status", "records", "authority", "evidence", "source_commit", "source_tree", "bound_host",
+    "target", "native_binding", "final_identity", "binding_unchanged", "elapsed_seconds", "halt_reason",
+    "comparison_status", "case_statuses", "scope",
+))
+HOST_TEXT = frozenset(("system", "architecture", "os_version", "os_build", "cpu"))
+HOST_KEYS = HOST_TEXT | {"memory_bytes", "logical_processors", "machine_id_sha256"}
+IDENTITY_KEYS = ("source", "inputs", "host", "native")
+TARGETS = ("x86_64-pc-windows-msvc", "aarch64-apple-darwin")
+
+
+def _written_file(value: object, name: str) -> None:
+    _keys(value, {"name", "bytes", "sha256"}, "final-receipt-invalid")
+    _require(value["name"] == name and type(value["sha256"]) is str and
+             DIGEST.fullmatch(value["sha256"]) is not None, "final-receipt-invalid")
+    _uint(value["bytes"], "final-receipt-invalid", maximum=MAX_INPUT_BYTES)
+
+
+def _declared_evidence(receipt: dict) -> list[str]:
+    """Collect safe declarations independently of the campaign verdict."""
+    invalid = "final-receipt-invalid"
+    _require(type(receipt) is dict, invalid)
+    legacy = type(receipt.get("schema")) is int and receipt["schema"] == 2
+    evidence = receipt.get("evidence", [] if legacy else None)
+    _require(type(evidence) is list and (0 if legacy else 1) <= len(evidence) <= MAX_EVIDENCE_FILES and
+             all(type(name) is str and EVIDENCE_NAME.fullmatch(name) is not None for name in evidence) and
+             len(set(evidence)) == len(evidence), invalid)
+    declared = list(evidence)
+    for key in ("records", "authority"):
+        if legacy and key not in receipt:
+            continue
+        item = receipt.get(key)
+        _require(type(item) is dict and type(item.get("name")) is str and
+                 EVIDENCE_NAME.fullmatch(item["name"]) is not None, invalid)
+        declared.append(item["name"])
+    return declared
+
+
+def _receipt_schema(receipt: dict) -> None:
+    invalid = "final-receipt-invalid"
+    _keys(receipt, RECEIPT_KEYS, invalid)
+    _written_file(receipt["records"], "records.json")
+    _written_file(receipt["authority"], "authority.json")
+    _require(all(type(receipt[key]) is str and OBJECT_ID.fullmatch(receipt[key]) is not None
+                 for key in ("source_commit", "source_tree")), invalid)
+    host = receipt["bound_host"]
+    _require(type(host) is dict and HOST_KEYS <= host.keys() <= HOST_KEYS | {"system_root"} and
+             all(type(host[key]) is str for key in HOST_TEXT | (host.keys() & {"system_root"})) and
+             type(host["machine_id_sha256"]) is str and
+             DIGEST.fullmatch(host["machine_id_sha256"]) is not None, invalid)
+    _uint(host["memory_bytes"], invalid)
+    _uint(host["logical_processors"], invalid)
+    _require(receipt["target"] in TARGETS, invalid)
+    native = receipt["native_binding"]
+    _keys(native, {"scope", "files", "edges"}, invalid)
+    _require(type(native["scope"]) is str and type(native["edges"]) is list, invalid)
+    _uint(native["files"], invalid)
+    identity = receipt["final_identity"]
+    _keys(identity, set(IDENTITY_KEYS), invalid)
+    _require(all(type(value) is bool for value in identity.values()) and
+             type(receipt["binding_unchanged"]) is bool and
+             receipt["binding_unchanged"] == all(identity.values()), invalid)
+    elapsed = receipt["elapsed_seconds"]
+    _require(type(elapsed) in (int, float) and math.isfinite(elapsed) and elapsed >= 0, invalid)
+    _label(receipt["halt_reason"], invalid, optional=True)
+    _require(receipt["status"] in STATUSES and receipt["comparison_status"] in STATUSES, invalid)
+    statuses = receipt["case_statuses"]
+    _require(type(statuses) is dict and statuses.keys() == set(ALL_CASES) and
+             all(value in STATUSES for value in statuses.values()), invalid)
+    _require(type(receipt["scope"]) is str, invalid)
+
+
+def _final_authority(receipt_data: bytes | None, records_data: bytes, observed: dict[str, str],
+                     observation_status: str, comparison_status: str) -> tuple[dict, list[str] | None]:
+    """Reconcile the runner's final receipt with re-derived observations.
+
+    A None declaration set forbids publication because evidence cannot be protected.
+    """
+    authority = {"status": "unavailable", "receipt_schema": None, "campaign_status": None,
+                 "final_identity": None, "failures": []}
+    if receipt_data is None:
+        authority["failures"].append("final-receipt-missing")
+        return authority, []
+    declared = None
+    try:
+        _require(len(receipt_data) <= MAX_INPUT_BYTES, "final-receipt-invalid")
+        receipt = _load_json(receipt_data.decode("utf-8"))
+        declared = _declared_evidence(receipt)
+        schema = receipt.get("schema") if type(receipt) is dict else None
+        if type(schema) is int and schema == 2:
+            # Schema-2 run.json never bound records; inspect, never promote.
+            authority.update(receipt_schema=2, failures=["final-receipt-legacy-unbound"])
+            return authority, declared
+        _require(type(schema) is int and schema == 3, "final-receipt-invalid")
+        _receipt_schema(receipt)
+    except (ValueError, TypeError, KeyError, OverflowError):
+        authority.update(status="invalid", failures=["final-receipt-invalid"])
+        return authority, declared
+    failures = authority["failures"]
+    authority.update(receipt_schema=3, campaign_status=receipt["status"],
+                     final_identity=receipt["final_identity"])
+    records = receipt["records"]
+    if records["bytes"] != len(records_data) or records["sha256"] != hashlib.sha256(records_data).hexdigest():
+        failures.append("final-receipt-records-mismatch")
+    failures.extend(f"final-{name}-identity-changed" for name in IDENTITY_KEYS
+                    if not receipt["final_identity"][name])
+    if any(observed.get(case, status) != status for case, status in receipt["case_statuses"].items()):
+        failures.append("final-receipt-case-mismatch")
+    if receipt["comparison_status"] != comparison_status:
+        failures.append("final-receipt-comparison-mismatch")
+    if receipt["status"] == "fail":
+        failures.append("final-campaign-failed")
+    elif (receipt["status"] == "pass") != (observation_status == "pass"):
+        failures.append("final-receipt-status-mismatch")
+    authority["status"] = "failed" if failures else "verified"
+    return authority, declared
+
+
+def evaluate(records_data: bytes, receipt_data: bytes | None = None) -> tuple[dict, list[str] | None]:
+    """Derive the schema-3 report; only a verified receipt and passing observations qualify.
+
+    Returns the report and receipt-declared evidence names relative to the receipt.
+    """
+    _require(len(records_data) <= MAX_INPUT_BYTES, "input-bound-exceeded")
+    records = _load_json(records_data.decode("utf-8"))
+    _require(type(records) is list and 1 <= len(records) <= len(ALL_CASES), "case-record-count-invalid")
+    semantic = [row for row in records if type(row) is dict and row.get("case") == "semantic"]
+    comparison = [row for row in records if type(row) is not dict or row.get("case") != "semantic"]
+    observations = compare_cases(comparison)
+    comparison_status = observations["status"]
+    if len(semantic) != 1:
+        observations["failures"].append("semantic-case-missing-or-duplicate")
+        observations["status"] = "fail"
+    else:
+        try:
+            observations["semantic"] = _analyze_record(semantic[0])
+            observations["status"] = _aggregate_status(
+                [observations["status"], observations["semantic"]["status"]],
+                failures=bool(observations["failures"]))
+        except (ValueError, TypeError, KeyError, OverflowError) as error:
+            observations["failures"].append(str(error) if type(error) is ValueError else "semantic-record-invalid")
+            observations["status"] = "fail"
+    observed = {row["case"]: row["status"] for row in observations["cases"]}
+    if "semantic" in observations:
+        observed["semantic"] = observations["semantic"]["status"]
+    observation_status = observations.pop("status")
+    authority, declared = _final_authority(
+        receipt_data, records_data, observed, observation_status, comparison_status)
+    final = {"unavailable": "incomplete", "invalid": "fail", "failed": "fail"}.get(
+        authority["status"], authority["campaign_status"])
+    if final == "fail":
+        for row in observations["comparisons"]:
+            for rate in row["rates"].values():
+                rate.update(ratio=None, reason="campaign-not-qualified")
+    report = {"schema": 3, "evaluator": EVALUATOR,
+              "view": "legacy-inspection" if authority["status"] == "unavailable" else "prospective-qualification",
+              "status": _aggregate_status([observation_status, final]),
+              "observation_status": observation_status, "final_authority": authority}
+    report.update(observations)
+    return report, declared
+
+
+def _read_bounded(path: Path) -> bytes:
+    with path.open("rb") as source:
+        return source.read(MAX_INPUT_BYTES + 1)
+
+
+def _refuse_aliases(output: Path, evidence: list[Path]) -> None:
+    """Refuse an output that resolves to, links to or shares an inode with evidence."""
+    target = output.resolve()
+    try:
+        existing = output.stat()
+    except FileNotFoundError:
+        existing = None
+    for path in evidence:
+        _require(path.resolve() != target, "output-aliases-evidence")
+        if existing is None:
+            continue
+        try:
+            info = path.stat()
+        except FileNotFoundError:
+            continue
+        _require((info.st_dev, info.st_ino) != (existing.st_dev, existing.st_ino), "output-aliases-evidence")
+
+
+def _publish(output: Path, result: dict) -> None:
+    """Stage complete bounded JSON beside output, then atomically replace it."""
+    data = (json.dumps(result, ensure_ascii=True, allow_nan=False, indent=2) + "\n").encode("ascii")
+    _require(len(data) <= MAX_OUTPUT_BYTES, "output-bound-exceeded")
+    descriptor, name = tempfile.mkstemp(prefix=f".{output.name}.", suffix=".tmp", dir=output.parent)
+    staged = Path(name)
+    try:
+        with os.fdopen(descriptor, "wb") as stream:
+            stream.write(data)
+            stream.flush()
+            os.fsync(stream.fileno())
+        os.replace(staged, output)
+    except BaseException:
+        with contextlib.suppress(OSError):
+            staged.unlink()
+        raise
+
+
 def main() -> int:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--input", type=Path, required=True)
+    parser.add_argument("--run-receipt", type=Path)
     parser.add_argument("--output", type=Path, required=True)
     args = parser.parse_args()
     try:
-        with args.input.open("rb") as source:
-            data = source.read(MAX_INPUT_BYTES + 1)
-        _require(len(data) <= MAX_INPUT_BYTES, "input-bound-exceeded")
-        records = _load_json(data.decode("utf-8"))
-        _require(type(records) is list and 1 <= len(records) <= len(ALL_CASES), "case-record-count-invalid")
-        semantic = [row for row in records if type(row) is dict and row.get("case") == "semantic"]
-        comparison = [row for row in records if type(row) is not dict or row.get("case") != "semantic"]
-        result = compare_cases(comparison)
-        if len(semantic) != 1:
-            result["failures"].append("semantic-case-missing-or-duplicate")
-            result["status"] = "fail"
-        else:
-            try:
-                result["semantic"] = _analyze_record(semantic[0])
-                result["status"] = _aggregate_status(
-                    [result["status"], result["semantic"]["status"]], failures=bool(result["failures"]))
-            except (ValueError, TypeError, KeyError, OverflowError) as error:
-                result["failures"].append(str(error) if type(error) is ValueError else "semantic-record-invalid")
-                result["status"] = "fail"
+        records = _read_bounded(args.input)
+        receipt = None if args.run_receipt is None else _read_bounded(args.run_receipt)
+        result, declared = evaluate(records, receipt)
+        _require(declared is not None, "evidence-declarations-invalid")
     except (OSError, UnicodeError, ValueError, RecursionError):
         print("capture-pacing-report: input-invalid", file=sys.stderr)
         return 2
     try:
-        args.output.write_text(json.dumps(result, ensure_ascii=True, allow_nan=False, indent=2) + "\n",
-                               encoding="utf-8")
-    except (OSError, ValueError):
+        evidence = [args.input]
+        if args.run_receipt is not None:
+            root = args.run_receipt.resolve().parent
+            evidence += [args.run_receipt, *(root / name for name in declared)]
+        _refuse_aliases(args.output, evidence)
+    except ValueError:
+        print("capture-pacing-report: output-aliases-evidence", file=sys.stderr)
+        return 2
+    except (OSError, RuntimeError):
+        print("capture-pacing-report: output-failed", file=sys.stderr)
+        return 2
+    try:
+        _publish(args.output, result)
+    except (OSError, ValueError, TypeError):
         print("capture-pacing-report: output-failed", file=sys.stderr)
         return 2
     return 0 if result["status"] == "pass" else 1

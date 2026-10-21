@@ -251,3 +251,12 @@ bound to the unchanged Apple v4 report. New v5 raw reports remain private becaus
 they can contain unexpected recognized text; only approved identity, aggregate,
 gate, privacy, consumed-fixture, code-digest, and typed resident fields may enter
 the reserved tracked v5 reports.
+
+`validate.py` applies one recursive privacy policy to the Apple, Windows, and
+v5 reports. It rejects `text`, `observed`, and `raw` keys and host-local paths
+inside dictionaries or lists, retaining each report's existing failure label.
+The model-free privacy and public-evidence reference checks run with:
+
+```sh
+python3 -B -m unittest discover -s tools/tests -p test_evidence_validation.py -v
+```

@@ -805,6 +805,144 @@ fn a_malformed_option_is_refused_before_the_backend_runs() {
 }
 
 #[test]
+fn spatially_constant_templates_cannot_match_an_unrelated_blue_frame() {
+    let matcher = matcher();
+    for extent in [PixelExtent::new(1, 1), PixelExtent::new(2, 2)] {
+        for rgb in [[255, 0, 0], [0, 0, 0], [255, 255, 255], [73; 3]] {
+            let source = template_source(
+                "constant",
+                extent,
+                &png::solid_rgb(extent.width(), extent.height(), rgb),
+            );
+            assert_eq!(
+                matcher
+                    .prepare(&source, &OperationContext::new())
+                    .expect_err("constant content must fail before publishing a prepared template"),
+                Error::from(VisionFault::TemplatePreparationFailed),
+                "{extent:?}, {rgb:?}"
+            );
+        }
+    }
+    for format in LAYOUTS {
+        let frame = vision_contract::frame_with_pixels(
+            PixelExtent::new(8, 8),
+            format,
+            four_channel(format, [0, 0, 255], 255).repeat(8 * 8),
+        );
+        let operation = OperationContext::new();
+        let prepared = matcher
+            .prepare(&planted_template("valid-after-rejection"), &operation)
+            .expect("nonconstant content remains eligible");
+        let unrelated = matcher
+            .find(
+                MatchRequest::new(&frame, RegionSelection::FullFrame, &prepared, options(0.9)),
+                &operation,
+            )
+            .expect("a valid template can search either source layout after refusal");
+        assert!(unrelated.matches().is_empty());
+        let scene = match_fixtures::scene_frame(format);
+        for _ in 0..2 {
+            let result = matcher
+                .find(
+                    MatchRequest::new(&scene, RegionSelection::FullFrame, &prepared, options(0.5)),
+                    &operation,
+                )
+                .expect("valid preparation remains reusable");
+            assert_eq!(
+                bounds_of(&result),
+                [planted_bounds(0), planted_bounds(1), degraded_bounds()]
+            );
+            assert_scene_scores(&result);
+            assert_eq!(result.stamp(), scene.stamp());
+            assert_eq!(result.backend(), &matcher.descriptor());
+            assert_eq!(result.matches()[2].bounds(), degraded_bounds());
+            assert!(
+                result
+                    .matches()
+                    .windows(2)
+                    .all(|pair| pair[0].score() >= pair[1].score())
+            );
+        }
+    }
+}
+
+#[test]
+fn alpha_only_variation_is_a_typed_preparation_failure() {
+    let extent = PixelExtent::new(2, 2);
+    let matcher = matcher();
+    for rgb in [[255, 0, 0], [0, 0, 0], [255, 255, 255], [31, 79, 151]] {
+        let rgba: Vec<u8> = [0, 73, 179, 255]
+            .into_iter()
+            .flat_map(|alpha| [rgb[0], rgb[1], rgb[2], alpha])
+            .collect();
+        let source = template_source(
+            "alpha-only",
+            extent,
+            &png::encode_rgba(extent.width(), extent.height(), &rgba),
+        );
+        assert_eq!(
+            matcher
+                .prepare(&source, &OperationContext::new())
+                .expect_err("alpha is not a scoring channel"),
+            Error::from(VisionFault::TemplatePreparationFailed),
+            "{rgb:?}"
+        );
+    }
+}
+
+#[test]
+fn variation_in_any_one_bgr_channel_remains_reusable_in_both_source_layouts() {
+    let extent = PixelExtent::new(2, 2);
+    let matcher = matcher();
+    let operation = OperationContext::new();
+    for channel in 0..3 {
+        let mut rgb = [[31, 79, 151]; 4];
+        // A last-pixel difference must suffice even when two channels are constant.
+        rgb[3][channel] += 100;
+        let rgba: Vec<u8> = rgb
+            .iter()
+            .zip([0, 73, 179, 255])
+            .flat_map(|(pixel, alpha)| [pixel[0], pixel[1], pixel[2], alpha])
+            .collect();
+        for encoded in [
+            png::encode_rgb(extent.width(), extent.height(), rgb.as_flattened()),
+            png::encode_rgba(extent.width(), extent.height(), &rgba),
+        ] {
+            let source = template_source("one-channel", extent, &encoded);
+            let prepared = matcher
+                .prepare(&source, &operation)
+                .expect("spatial variation");
+            for format in LAYOUTS {
+                let pixels = rgb
+                    .iter()
+                    .flat_map(|&pixel| four_channel(format, pixel, 211))
+                    .collect();
+                let frame = vision_contract::frame_with_pixels(extent, format, pixels);
+                for _ in 0..2 {
+                    let result = matcher
+                        .find(
+                            MatchRequest::new(
+                                &frame,
+                                RegionSelection::FullFrame,
+                                &prepared,
+                                options(0.9),
+                            ),
+                            &operation,
+                        )
+                        .expect("prepared template remains reusable");
+                    assert_eq!(result.backend(), &matcher.descriptor());
+                    assert_eq!(result.stamp(), frame.stamp());
+                    assert_eq!(bounds_of(&result), [bounds_at((0, 0), extent)]);
+                    assert!(
+                        (result.matches()[0].score() - EXACT_MATCH_SCORE).abs() <= SCORE_TOLERANCE
+                    );
+                }
+            }
+        }
+    }
+}
+
+#[test]
 fn content_that_does_not_decode_fails_preparation() {
     let source = TemplateSource::new(TemplateSourceRequest {
         id: TemplateId::new("truncated").expect("non-empty"),

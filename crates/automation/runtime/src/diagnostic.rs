@@ -929,6 +929,11 @@ struct StreamState {
     sealed: bool,
 }
 
+// Each contention counter reserves its high bit for irreversible admission close.
+// The remaining bits saturate independently at 2^63 - 1 between drains.
+const LOSS_ADMISSION_SEALED: u64 = 1 << 63;
+const PENDING_LOSS_MASK: u64 = LOSS_ADMISSION_SEALED - 1;
+
 #[derive(Debug)]
 struct DiagnosticStream {
     level: DiagnosticLevel,
@@ -1033,7 +1038,7 @@ impl DiagnosticStream {
             DiagnosticLevel::Off => return,
         };
         let _ = counter.fetch_update(Ordering::AcqRel, Ordering::Acquire, |value| {
-            Some(value.saturating_add(1))
+            (value < PENDING_LOSS_MASK).then(|| value + 1)
         });
     }
 
@@ -1108,8 +1113,14 @@ impl DiagnosticStream {
             .lock()
             .unwrap_or_else(std::sync::PoisonError::into_inner);
         let pending = DiagnosticLosses {
-            normal: self.pending_normal.swap(0, Ordering::AcqRel),
-            debug: self.pending_debug.swap(0, Ordering::AcqRel),
+            normal: self
+                .pending_normal
+                .fetch_and(LOSS_ADMISSION_SEALED, Ordering::AcqRel)
+                & PENDING_LOSS_MASK,
+            debug: self
+                .pending_debug
+                .fetch_and(LOSS_ADMISSION_SEALED, Ordering::AcqRel)
+                & PENDING_LOSS_MASK,
         };
         let losses = DiagnosticLosses {
             normal: state.losses.normal.saturating_add(pending.normal),
@@ -1132,10 +1143,17 @@ impl DiagnosticStream {
     }
 
     fn seal(&self) {
-        self.state
+        let mut state = self
+            .state
             .lock()
-            .unwrap_or_else(std::sync::PoisonError::into_inner)
-            .sealed = true;
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        // Each loss CAS commits before its fence or refuses the sealed counter.
+        // Publish queue closure only after both level-specific fences are closed.
+        self.pending_normal
+            .fetch_or(LOSS_ADMISSION_SEALED, Ordering::AcqRel);
+        self.pending_debug
+            .fetch_or(LOSS_ADMISSION_SEALED, Ordering::AcqRel);
+        state.sealed = true;
     }
 }
 
@@ -1376,6 +1394,8 @@ impl DetachedObservation {
 
 #[cfg(test)]
 mod tests {
+    use std::sync::mpsc;
+    use std::time::Duration;
     use std::{sync::Arc, sync::Barrier, thread};
 
     use mado_pilot_capture::{CoordinateSupport, PixelFormat, TargetDescription};
@@ -2095,6 +2115,152 @@ mod tests {
         assert!(batch.is_empty());
         assert_eq!(batch.losses().normal(), 1);
         assert_eq!(batch.losses().debug(), 0);
+    }
+
+    #[test]
+    fn preseal_contended_losses_drain_exactly_by_level() {
+        let (sink, reader) = enabled(DiagnosticLevel::Debug, 4);
+        let context = OperationContext::new();
+        let operation = observe(&sink, &context);
+        assert_eq!(batch(&reader).len(), 1);
+        let start = Barrier::new(2);
+        let (finished, completion) = mpsc::channel();
+
+        thread::scope(|scope| {
+            let guard = sink.stream.state.lock().expect("uncontended");
+            scope.spawn(|| {
+                start.wait();
+                for _ in 0..2 {
+                    sink.normal(operation, &context, input_payload);
+                }
+                for _ in 0..3 {
+                    sink.debug(operation, &context, input_payload);
+                }
+                finished.send(()).expect("completion receiver is retained");
+            });
+            start.wait();
+            let emitted = completion.recv_timeout(Duration::from_secs(5));
+            drop(guard);
+            emitted.expect("emission completes while the queue mutex is held");
+        });
+
+        drop(sink);
+        let losses = batch(&reader);
+        assert!(losses.is_empty());
+        assert_eq!(losses.losses().normal(), 2);
+        assert_eq!(losses.losses().debug(), 3);
+        for _ in 0..3 {
+            assert!(matches!(reader.drain(), DiagnosticDrain::EndOfStream));
+        }
+    }
+
+    #[test]
+    fn preobtained_observer_cannot_publish_after_sealed_eof() {
+        let (sink, reader) = enabled(DiagnosticLevel::Debug, 4);
+        let context = OperationContext::new();
+        let observed = sink
+            .emitter()
+            .observe(&context, DiagnosticOperationKind::Mapping)
+            .expect("observation succeeds")
+            .expect("producer is live");
+        drop(sink);
+        assert_eq!(batch(&reader).len(), 1);
+        assert!(matches!(reader.drain(), DiagnosticDrain::EndOfStream));
+        let start = Barrier::new(2);
+        let (finished, completion) = mpsc::channel();
+
+        thread::scope(|scope| {
+            let guard = reader.stream.state.lock().expect("uncontended");
+            scope.spawn(|| {
+                start.wait();
+                for _ in 0..3 {
+                    observed.debug(&context, input_payload);
+                }
+                finished.send(()).expect("completion receiver is retained");
+            });
+            start.wait();
+            let emitted = completion.recv_timeout(Duration::from_secs(5));
+            drop(guard);
+            emitted.expect("late emission completes while the queue mutex is held");
+        });
+
+        for _ in 0..3 {
+            assert!(matches!(reader.drain(), DiagnosticDrain::EndOfStream));
+            observed.debug(&context, input_payload);
+            reader.stream.count_loss(DiagnosticLevel::Normal);
+        }
+        assert!(matches!(reader.drain(), DiagnosticDrain::EndOfStream));
+    }
+
+    #[test]
+    fn pending_loss_saturation_does_not_close_admission() {
+        let (sink, reader) = enabled(DiagnosticLevel::Debug, 4);
+        let context = OperationContext::new();
+        let operation = observe(&sink, &context);
+        assert_eq!(batch(&reader).len(), 1);
+        let guard = sink.stream.state.lock().expect("uncontended");
+        sink.stream
+            .pending_normal
+            .store(PENDING_LOSS_MASK - 1, Ordering::Release);
+        sink.stream
+            .pending_debug
+            .store(PENDING_LOSS_MASK - 1, Ordering::Release);
+        for _ in 0..2 {
+            sink.normal_loss();
+            sink.debug(operation, &context, input_payload);
+        }
+        drop(guard);
+
+        let saturated = batch(&reader);
+        assert!(saturated.is_empty());
+        assert_eq!(saturated.losses().normal(), PENDING_LOSS_MASK);
+        assert_eq!(saturated.losses().debug(), PENDING_LOSS_MASK);
+        assert!(matches!(reader.drain(), DiagnosticDrain::OpenEmpty));
+
+        let guard = sink.stream.state.lock().expect("uncontended");
+        sink.normal_loss();
+        sink.debug(operation, &context, input_payload);
+        drop(guard);
+        drop(sink);
+        let resumed = batch(&reader);
+        assert!(resumed.is_empty());
+        assert_eq!(resumed.losses().normal(), 1);
+        assert_eq!(resumed.losses().debug(), 1);
+        assert!(matches!(reader.drain(), DiagnosticDrain::EndOfStream));
+    }
+
+    #[test]
+    fn sealed_losses_preserve_aggregate_u64_saturation() {
+        let (sink, reader) = enabled(DiagnosticLevel::Debug, 4);
+        let context = OperationContext::new();
+        let operation = observe(&sink, &context);
+        assert_eq!(batch(&reader).len(), 1);
+        let mut guard = sink.stream.state.lock().expect("uncontended");
+        guard.losses = DiagnosticLosses {
+            normal: u64::MAX - PENDING_LOSS_MASK,
+            debug: u64::MAX - PENDING_LOSS_MASK + 1,
+        };
+        sink.stream
+            .pending_normal
+            .store(PENDING_LOSS_MASK - 1, Ordering::Release);
+        sink.stream
+            .pending_debug
+            .store(PENDING_LOSS_MASK - 1, Ordering::Release);
+        sink.normal_loss();
+        sink.debug(operation, &context, input_payload);
+        drop(guard);
+        sink.seal();
+        sink.seal();
+
+        let saturated = batch(&reader);
+        assert!(saturated.is_empty());
+        assert_eq!(saturated.losses().normal(), u64::MAX);
+        assert_eq!(saturated.losses().debug(), u64::MAX);
+        for _ in 0..3 {
+            sink.normal_loss();
+            sink.stream.count_loss(DiagnosticLevel::Debug);
+            assert!(matches!(reader.drain(), DiagnosticDrain::EndOfStream));
+        }
     }
 
     #[test]

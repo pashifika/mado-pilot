@@ -9,6 +9,7 @@ import unittest
 import zipfile
 from pathlib import Path
 from types import SimpleNamespace
+from unittest.mock import patch
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
@@ -463,6 +464,70 @@ class StagingTests(unittest.TestCase):
 
         with self.assertRaises(FileExistsError):
             staging.write_package_archive(result["files"], self.destination, archive)
+
+
+class SnapshotTests(unittest.TestCase):
+    def setUp(self):
+        temporary = tempfile.TemporaryDirectory()
+        self.addCleanup(temporary.cleanup)
+        self.root = Path(temporary.name).resolve()
+        self.source = self.root / "source"
+        self.source.write_bytes(b"x" * 512)
+        self.destination = self.root / "snapshot"
+
+    def test_rejected_hash_reclaims_all_copied_bytes(self):
+        with self.assertRaisesRegex(ValueError, "SHA-256"):
+            staging.snapshot_executable(self.source, self.destination, "0" * 64, max_bytes=512)
+        self.assertFalse(self.destination.exists())
+        self.assertEqual(self.source.read_bytes(), b"x" * 512)
+
+    def test_partial_write_failure_reclaims_bytes_and_preserves_original_error(self):
+        original_write = os.write
+        failure = OSError("partial-copy-failure")
+
+        def partial_write(descriptor, data):
+            original_write(descriptor, data[:19])
+            raise failure
+
+        with patch.object(staging.os, "write", side_effect=partial_write):
+            with self.assertRaises(OSError) as caught:
+                staging.snapshot_executable(self.source, self.destination, sha256(b"x" * 512), max_bytes=512)
+        # Staging preserves its relative-label error policy and original context.
+        self.assertIs(caught.exception.__context__, failure)
+        self.assertFalse(self.destination.exists())
+
+    def test_failed_reclamation_keeps_primary_cause_and_reservation(self):
+        primary = ValueError("rejected-copy")
+        cleanup = OSError("unlink-denied")
+
+        def partial_copy(fd, size, digest, label, write):
+            write(b"x" * 19)
+            raise primary
+
+        with patch.object(staging, "_stream", side_effect=partial_copy), \
+                patch.object(Path, "unlink", side_effect=cleanup):
+            with self.assertRaises(staging.SnapshotCleanupError) as caught:
+                staging.snapshot_executable(self.source, self.destination, "0" * 64, max_bytes=512)
+        self.assertIs(caught.exception.__cause__, primary)
+        self.assertIs(caught.exception.cleanup, cleanup)
+        self.assertEqual(caught.exception.retained_bytes, 512)
+        self.assertEqual(self.destination.stat().st_size, 19)
+
+    def test_chmod_failure_reclaims_verified_copy(self):
+        if os.name == "nt":
+            self.skipTest("executable chmod is POSIX-only")
+        failure = OSError("chmod-denied")
+        with patch.object(staging.os, "chmod", side_effect=failure):
+            with self.assertRaises(OSError) as caught:
+                staging.snapshot_executable(self.source, self.destination, sha256(b"x" * 512), max_bytes=512)
+        self.assertIs(caught.exception, failure)
+        self.assertFalse(self.destination.exists())
+
+    def test_existing_destination_is_not_owned_or_removed(self):
+        self.destination.write_bytes(b"prior")
+        with self.assertRaises(FileExistsError):
+            staging.snapshot_executable(self.source, self.destination, sha256(b"x" * 512), max_bytes=512)
+        self.assertEqual(self.destination.read_bytes(), b"prior")
 
 
 if __name__ == "__main__":

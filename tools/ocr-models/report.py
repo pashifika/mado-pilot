@@ -257,15 +257,34 @@ def reconcile_raw(report, evidence_root):
                                 receipt_sha256=receipt_sha256)
                 if original.get("raw_sha256") != process.get("raw_sha256"):
                     errors.append((profile, index, "original raw JSONL digest mismatch"))
+                expected = original
+                if process.get("projection_state") == "receipt-only":
+                    expected = {key: original[key] for key in (
+                        "index", "process", "command", "receipt_path", "receipt_sha256",
+                        "raw_path", "raw_sha256"
+                    ) if key in original}
+                    expected["projection_state"] = "receipt-only"
                 # Absent-file failure text was host-specific when recorded.
                 ignored = {"parse_failure"} if absent else set()
-                differing = sorted(key for key in (set(original) | set(process)) - ignored
-                                   if key not in original or key not in process or original[key] != process[key])
+                differing = sorted(key for key in (set(expected) | set(process)) - ignored
+                                   if key not in expected or key not in process or expected[key] != process[key])
                 if differing:
                     errors.append((profile, index, f"original raw JSONL projection mismatch: {', '.join(differing)}"))
                 verified.append(original)
             except (ValueError, TypeError, KeyError, AttributeError, OSError, UnicodeError) as error:
                 errors.append((profile, index, f"original {stage} unavailable/invalid: {_describe(error)}"))
+    for attempt in report.get("attempts", []):
+        if (attempt.get("kind") == "evaluation" and attempt.get("status") == "attempted-unconfirmed"
+                and attempt.get("process") is None):
+            try:
+                path = evidence_path(root, attempt.get("raw_path"), missing_ok=True)
+                if path.suffix != ".jsonl":
+                    raise ValueError("non-JSONL attempted evidence path")
+                if path.is_file():
+                    retained.add(path)
+            except (ValueError, OSError) as error:
+                errors.append((attempt.get("profile"), attempt.get("index"),
+                               f"unconfirmed raw attempt unavailable/invalid: {_describe(error)}"))
     if {path.resolve() for path in root.rglob("*.jsonl")} != retained:
         errors.append((None, None, "original raw JSONL attempt set differs from retained report"))
     if {path.resolve() for path in root.rglob("*.process.json")} != receipts:
@@ -942,6 +961,29 @@ def _evaluate(report, *, evidence_root, repository_root):
     identities = _mapping(report.get("identities"))
     lifecycle_bound = _mapping(_mapping(budgets).get("process_limits")).get("lifecycle_bound_ms")
     roles = {reference_id: "reference", candidate_id: "candidate"}
+    attempted_profiles = set()
+    for attempt in report.get("attempts", []):
+        profile, status = attempt.get("profile"), attempt.get("status")
+        if profile not in roles or attempt.get("kind") not in ("descriptor", "evaluation"):
+            integrity.append("invalid campaign attempt attribution")
+            continue
+        if status == "attempted-unconfirmed":
+            scope_gaps.append("campaign retains an attempted-unconfirmed child")
+        elif status != "completed":
+            integrity.append("invalid campaign attempt status")
+        if attempt["kind"] != "evaluation":
+            continue
+        attempted_profiles.add(profile)
+        if (attempt.get("binding") != binding or attempt.get("identity") != identities.get(profile)
+                or any(_mapping(attempt.get("source")).get(key) != binding.get(key)
+                       for key in ("source_revision", "source_tree", "frozen_revision",
+                                   "executable_sha256", "catalog_sha256"))):
+            integrity.append("campaign attempt source/descriptor binding mismatch")
+        if status == "completed":
+            processes = [process for process in claimed.get(profile, []) if process.get("index") == attempt.get("index")]
+            if (len(processes) != 1 or any(processes[0].get(key) != attempt.get(key)
+                                           for key in ("command", "process", "raw_path", "receipt_path", "receipt_sha256"))):
+                integrity.append("completed campaign attempt differs from retained process receipt")
     observed = {}
     for profile in roles:
         identity = identities.get(profile)
@@ -954,7 +996,8 @@ def _evaluate(report, *, evidence_root, repository_root):
             observed[profile].unverified(message, process=index)
         else:
             integrity.append(message if profile is None else f"{profile}: {message}")
-    executed = {profile: bool(claimed.get(profile)) or bool(profiles.get(profile)) for profile in roles}
+    executed = {profile: profile in attempted_profiles or bool(claimed.get(profile)) or bool(profiles.get(profile))
+                for profile in roles}
     reference, candidate = observed[reference_id], observed[candidate_id]
     if executed[candidate_id]:
         if not executed[reference_id] or reference.invalid or "relative_latency" in reference.gap_rules():

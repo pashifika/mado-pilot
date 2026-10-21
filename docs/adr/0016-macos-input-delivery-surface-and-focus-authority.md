@@ -1,11 +1,15 @@
 # ADR 0016: macOS input delivery surface and focus authority
 
 - **Status:** Superseded by [ADR 0029](0029-macos-process-directed-input.md) for
-  the system-only delivery surface; retained for the `System` focus authority,
-  non-prompting permission, controlled-linkage, no-private-window-control, and
-  no-implicit-fallback rules
+  the system-only delivery surface and by
+  [ADR 0090](0090-final-macos-focus-observation-order.md) only for final
+  inventory/Accessibility ordering; retained for the remaining `System` focus
+  authority, non-prompting permission, controlled-linkage,
+  no-private-window-control, and no-implicit-fallback rules
 - **Date:** 2026-08-02
 - **Amended:** 2026-08-10
+- **Amended:** 2026-10-21, to identify ADR 0090's scoped observation-order successor;
+  historical support and verification facts are unchanged.
 - **Resolves gate:** _none_
 - **Supersedes:** _none_
 
@@ -74,12 +78,15 @@ Four rules follow from that surface and are part of the platform contract:
    application's [`kAXWindowsAttribute`][ax-windows] elements; and the freshly
    verified frame corresponds one-to-one with that element's
    [`kAXPositionAttribute`][ax-position] and
-   [`kAXSizeAttribute`][ax-size]. Shareable content is read again after the
-   Accessibility snapshot. A changed frame, missing attribute, unequal logical
-   window, or zero or multiple geometry matches establishes no focus and delivers
-   nothing. Geometry is only a fail-closed join between live public observations
-   after retained logical identity has been established; it never selects a
-   replacement. Both native observations are caller-bounded.
+   [`kAXSizeAttribute`][ax-size]. Final observation order follows
+   [ADR 0090](0090-final-macos-focus-observation-order.md): the last retained-window
+   inventory precedes the final Accessibility predicate, and its returned bounds
+   supply geometry without another inventory wait. A changed frame, missing
+   attribute, unequal logical window, or zero or multiple geometry matches
+   establishes no focus and delivers nothing. Geometry is only a fail-closed join
+   between live public observations after retained logical identity has been
+   established; it never selects a replacement. Both native observations are
+   caller-bounded.
    `ActivateIfRequired` activates an application, never a window, then
    repeats that read-back for a bounded period and reports `FocusRefused` when the
    exact retained window is not established as focused.

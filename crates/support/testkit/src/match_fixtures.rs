@@ -173,7 +173,7 @@ pub fn absent_template(id: &str) -> TemplateSource {
     template(id, &absent_rgb())
 }
 
-/// Builds a template source of `extent` that is a solid colour.
+/// Builds a nonconstant template source of `extent`.
 ///
 /// Used where the fixture is about the extent rather than the content, such as a
 /// template deliberately larger than the region it is searched in.
@@ -183,17 +183,7 @@ pub fn absent_template(id: &str) -> TemplateSource {
 /// Panics for an identity or extent a template cannot have.
 #[must_use]
 pub fn oversized_template(id: &str, extent: PixelExtent) -> TemplateSource {
-    let content = crate::png::solid_rgb(extent.width(), extent.height(), [0x11, 0x22, 0x33]);
-
-    TemplateSource::new(TemplateSourceRequest {
-        id: TemplateId::new(id).expect("a non-empty identity"),
-        encoding: TemplateEncoding::Png,
-        extent,
-        space: CoordinateSpace::CapturePixels,
-        defaults: MatchDefaults::new(0.5, 8).expect("valid defaults"),
-        content: Arc::from(content.as_slice()),
-    })
-    .expect("a valid template source")
+    crate::vision_contract::template(id, extent)
 }
 
 fn template(id: &str, rgb: &[u8]) -> TemplateSource {

@@ -8,6 +8,7 @@
 - **Supersedes:** _none_
 - **Amended:** 2026-07-28, after the Phase 1 verification pass aligned backend extraction with the public suppression policy and canonical public-score ordering.
 - **Amended:** 2026-10-21, to accept RGBA8 and BGRA8 input directly without changing three-channel scoring; statistical qualification remains separate under [ADR 0087](0087-v0-5-0-release-performance-qualification.md).
+- **Amended:** 2026-10-21, to require spatially nonconstant decoded BGR templates at preparation; historical scores and qualification records remain revision-bound.
 
 ## Context
 
@@ -36,6 +37,10 @@ Two further decisions turned out to be inseparable from the first, because each
 one determines what a score *means* to a caller: what preprocessing the profile
 performs, and what counts as one candidate in a dense correlation map.
 
+A spatially constant decoded BGR template has zero normalization variance;
+OpenCV's result for it is not evidence of a match. Preparation therefore needs
+an explicit content constraint, independent of alpha and source channel layout.
+
 ## Decision
 
 The Phase 1 OpenCV CPU profile is:
@@ -46,6 +51,11 @@ The Phase 1 OpenCV CPU profile is:
    mapping directly with `COLOR_BGRA2BGR` or `COLOR_RGBA2BGR` into owned BGR.
    Template content is decoded with `IMREAD_COLOR`; alpha is not a mask or a
    scoring channel. Required cropping and native CPU readback remain.
+   After decode and extent validation, preparation rejects a template whose BGR
+   pixels are all equal with `VisionFault::TemplatePreparationFailed`. Every
+   `1x1` template and alpha-only variation therefore fail preparation. The exact
+   check borrows decoded bytes once during preparation; it adds no retained image
+   or per-search scan. Variation in any one BGR channel is sufficient.
 2. **`TM_CCOEFF_NORMED`.**
 3. **The public score is the raw value clamped to `0.0..=1.0`.** The two ends are
    clamped for different reasons, and only the lower one is a decision: below
@@ -129,6 +139,10 @@ exchange:
   A caller that needs to detect an inverted pattern cannot express it, and adding
   it later means a new option rather than a changed score, because changing the
   mapping would move every existing threshold.
+- **Templates must contain spatial BGR variation.** Callers replace constant
+  content with a nonconstant template rather than treating preparation refusal
+  as a successful no-match. Public signatures, error types, scoring, thresholds,
+  ordering, suppression, and preparation-cache limits remain unchanged.
 - **`Suppression::KeepAll` preserves overlapping placements.**
   `Suppression::DropOverlapping` keeps the canonical peak and suppresses its
   overlap window. The two policies therefore remain observably distinct for this
@@ -181,6 +195,12 @@ scope is static-link feasibility.
   counts, canonical ordering where scores separate, full-frame coordinates from a
   region and from a clipped region, and the absent template's margin below the
   fixture threshold.
+- In `crates/backend/opencv/tests/algorithm.rs`, run
+  `spatially_constant_templates_cannot_match_an_unrelated_blue_frame`,
+  `alpha_only_variation_is_a_typed_preparation_failure`, and
+  `variation_in_any_one_bgr_channel_remains_reusable_in_both_source_layouts`.
+  These procedures cover typed refusal, RGBA8/BGRA8 reuse, and successful
+  no-match behavior without changing the historical score evidence below.
 - The measured scores behind the tolerance are recorded in
   [../evidence/vision-opencv/](../evidence/vision-opencv/), produced on both
   release targets by `cargo run --release --package mado-pilot-backend-opencv

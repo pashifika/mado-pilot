@@ -4,6 +4,8 @@
 - **Date:** 2026-09-28
 - **Resolves gate:** none
 - **Supersedes:** none
+- **Amended:** 2026-10-21, to apply exact-frame commitment to both template and OCR
+  watchers while preserving finite-source drain.
 
 ## Context
 
@@ -23,12 +25,27 @@ first terminal fault and closing transition under that same mutex. Foreign-strea
 frames are refused; older retained frames from the same stream remain eligible.
 Every in-tree capture adapter implements the contract without a default fallback.
 
-Runtime acquisition, singular/grouped OCR and template search apply this boundary
-after preparing their successful candidate. The monotonic runtime-close check
-follows capture commitment without intervening caller work: success proves close
-had not started at the earlier capture commitment point; a later close can cause
-conservative refusal. Host work and caller clocks never run under a commitment
-lock, and commitment adds no frame copy, worker or queue.
+Runtime acquisition orders its returned frame through `CaptureSession::frame`;
+singular/grouped OCR and template search use `commit_frame` after preparing their
+successful candidate. The monotonic runtime-close check follows capture
+commitment without intervening caller work: success proves close had not started
+at the earlier capture commitment point; a later close can cause conservative
+refusal. Host work and caller clocks never run under a commitment lock, and
+commitment adds no frame copy, worker or queue.
+
+Template and OCR watcher backend completions commit their exact analyzed frame
+before changing confirmations, stability, or success state. Capture commitment
+and clock reads run outside watcher guards; scheduler admission, session
+activation, and query-state arbitration retain their existing order. A recorded
+target loss, device fault, or close refuses held successful work even when the
+acquisition worker has not delivered its error. Typed terminal statuses remain
+unchanged; OCR public failure details remain redacted.
+
+Ordinary finite replay/controlled exhaustion returns `CaptureFault::StreamEnded`
+without closing capture or invalidating its final frame. Watcher `source_ended`
+refuses later starts and drains already admitted or pending final work; queries
+whose condition remains unsatisfied then end. This does not permit `Closed` from
+`commit_frame`: a recorded terminal or explicit close still refuses commitment.
 
 A host prepares its bounded candidate before calling `Session::commit_frame` and
 uses success as the acceptance linearization point. Terminal-first refuses the
@@ -80,6 +97,15 @@ commit-before-terminal retained access, exact-stream identity, cancellation and
 deadline refusal, explicit close, and held OCR/template work. The capture suite
 includes a reentrant clock that terminates the stream during the last operation
 check, reproducing the acquisition failure without sleeps or native authority.
+
+In both `crates/automation/runtime/tests/template_watch.rs` and
+`crates/automation/runtime/tests/ocr_text_watch.rs`, run
+`capture_commit_refuses_success_before_acquisition_delivers_its_error`,
+`finite_source_commits_final_analysis_or_closes_unsatisfied_stability`, and
+`explicit_authority_rejects_held_success_without_confirmation_or_late_diagnostics`.
+The finite-source rows record source end before releasing final backend work;
+positive, no-match, and insufficient-confirmation outcomes remain distinct.
+These are deterministic procedures, not native qualification results.
 
 Run the focused tests through the installed-native setup wrapper, then the full
 [contributor verification sequence](../../CONTRIBUTING.md#verification):
