@@ -2526,7 +2526,64 @@ fn dpi_arrival_matrix(route: InputDelivery) {
                 capture,
                 closed: false,
             };
+            let preparation = (route == InputDelivery::System).then(|| {
+                (
+                    POINT {
+                        x: oracle
+                            .physical
+                            .0
+                            .checked_add(oracle.physical_span.0)
+                            .expect("oracle x"),
+                        y: oracle
+                            .physical
+                            .1
+                            .checked_add(oracle.physical_span.1)
+                            .expect("oracle y"),
+                    },
+                    (
+                        oracle
+                            .client
+                            .0
+                            .checked_add(oracle.logical_span)
+                            .expect("client x"),
+                        oracle
+                            .client
+                            .1
+                            .checked_add(oracle.logical_span)
+                            .expect("client y"),
+                    ),
+                )
+            });
             for caller in &callers {
+                if let Some((physical, client)) = preparation {
+                    // A no-op move need not emit WM_MOUSEMOVE; settle setup before the baseline.
+                    let current = DesktopState::capture();
+                    assert_eq!(current.foreground, fixture.target());
+                    // SAFETY: setup is PMv2; Windows validates the physical hit-test point.
+                    let hit = unsafe {
+                        windows::Win32::UI::WindowsAndMessaging::WindowFromPoint(physical)
+                    };
+                    assert_eq!(
+                        hit,
+                        fixture.target(),
+                        "preparation must hit the owned target"
+                    );
+                    if current.cursor != physical {
+                        let before = fixture.report(fixture.target());
+                        // SAFETY: the declared preparation point hits this live owned fixture.
+                        unsafe { SetPhysicalCursorPos(physical.x, physical.y) }
+                            .expect("owned cursor preparation");
+                        fixture.assert_coordinate(
+                            "pointer-move",
+                            before.target,
+                            client,
+                            message_tolerance,
+                        );
+                    }
+                    let settled = DesktopState::capture();
+                    assert_eq!(settled.cursor, physical);
+                    assert_eq!(settled.foreground, fixture.target());
+                }
                 let frame = sessions
                     .capture
                     .frame(&FrameRequest::latest(), &timed(Duration::from_secs(5)))

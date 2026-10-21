@@ -352,6 +352,9 @@ cargo test --locked -p mado-pilot-platform-windows --test window_message_native 
 ```
 
 The fixture supplies an independent physical/client/screen oracle before input.
+Each System caller starts at the oracle's other owned client point; setup movement
+is observed before the tested frame and counters. The tested destination stays
+identical across callers, so every arrival request requires a real cursor move.
 System tolerance is the virtual-desktop absolute-coordinate quantization bound;
 client tolerance includes its measured target scale and one rounding pixel.
 WindowMessage allows one logical rounding pixel. Never widen a failed row's
