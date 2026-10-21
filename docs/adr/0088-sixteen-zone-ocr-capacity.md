@@ -27,6 +27,9 @@ The public Rust `candidate_interest_membership` return type becomes `Result<u16>
 Workspace/CMake metadata and the current metadata checker advance to unreleased
 0.5.0, following ADR 0006's minor-version boundary. C ABI 1.5, table ordering,
 structure layouts and frozen headers do not change.
+Current development-host Rust/C/C++ consumers verify backend version
+`0.5.0+ort-1.29.0-api17`; historical qualification receipts keep their original
+source revisions and backend identities.
 
 ## Alternatives
 

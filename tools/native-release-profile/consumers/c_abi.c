@@ -251,7 +251,7 @@ static int empty_recognition(const madopilot_ocr_result_t* result,
            same_rect(&info.effective_region, left, top, right, bottom) &&
            info.output_space == MADOPILOT_SPACE_CAPTURE_PIXELS &&
            same_text(info.backend_id, borrow("onnxruntime-cpu")) &&
-           same_text(info.backend_version, borrow("0.4.0+ort-1.29.0-api17")) &&
+           same_text(info.backend_version, borrow("0.5.0+ort-1.29.0-api17")) &&
            same_text(info.model_id, borrow("g-004-rapidocr-ppocrv4-det-v6-rec-small-v1")) &&
            same_text(info.model_version, borrow("rapidocr-3.9.2+095232a4c94f7f0e6600ba5bba1177010ad696d4")) &&
            same_text(info.profile_id, borrow("g-004-rapidocr-ppocrv4-det-v6-rec-small-v1"));
