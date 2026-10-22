@@ -1,15 +1,28 @@
 # Private Apple Silicon OCR text-watch procedure
 
-## Current v3 contract — native verification pending
+## Current v3 contract — verified native cohort
 
 `ocr-text-watch-apple-v3` follows
 [ADR 0093](adr/0093-ocr-native-target-rediscovery.md). It separates controlled
 window disappearance, exact process-generation disappearance, SDK notification,
 explicit caller close, and fresh-session capture/OCR. The private topology is one
 consumer and two sequential owned fixture generations, with at most two native
-children alive at once. No production API, adapter behavior or automatic recovery
-is added. All nine semantic rows and the independent resource/cleanup endpoints
-require a freshly authorized source/artifact-bound run; v3 is not yet qualified.
+children alive at once. No production API, macOS adapter behavior or automatic
+recovery is added.
+
+The source-bound `86a482d074e691c74aba8280c0ad42de31fead7a` execution passed all
+nine semantic rows and the separate resource/cleanup endpoints on Apple M1 Pro,
+macOS27.0.1/build26A434, Retina2x, CPU bounded-v2. It distinguished window-only
+loss with the original process alive from normal process-generation exit/reap,
+then obtained fresh acknowledged OCR in both replacement sessions. All three
+children exited0 and were reaped without force; retained original pixels stayed
+identical after all three sessions and the engine closed. Both actual SDK loss
+signals were `TargetLost`; this does not require that signal for every close.
+The complete source/artifact/authority/image/command record is
+`macos-v3-window-server-native-20261022.json` in the separately versioned Change
+evidence. This is one owned cohort, not crash, accelerator, Windows or general
+platform/numerical qualification. Every further execution still needs a fresh
+exact binding.
 
 The source-bound `5ddc7806` v2 attempt passed acknowledged transition, retained
 producer progress, resize reset/invalidity and parent-close retention. Its

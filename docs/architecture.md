@@ -1985,6 +1985,13 @@ the surface has the pool size and content larger than it is clipped. The
 replacement producer reservation is acquired before `Recreate`; native failure
 keeps the old reservation, while success swaps and releases it only after native
 ownership changes.
+An acquire request waits for actual native publication under its operation
+context; `Recreate` does not promise a successor notification within a fixed
+interval for unchanged content. The private OCR procedure at `fd98dba` passed
+all five semantic endpoints and resource/cleanup on one instrumentation-enabled
+Windows26300.9711/DELL-WCG cohort. Its clipped960×576 transition texture was
+discarded before a real1024×640 successor passed exact source validation.
+This is not feature-off native verification or a general resize-recovery promise.
 The producer reservation and frame pool live in one native-owner allocation. The
 core holds only a weak link,
 so queued teardown and process-lifetime quarantine remain charged, while native
@@ -2406,11 +2413,15 @@ without attributing that signal to a process exit. ScreenCaptureKit need not
 report immediate loss for every destroyed window. After independently
 establishing loss, caller code closes the old session before fresh discovery/open;
 replacement targets use new sessions and streams, never old-session rebinding.
-[ADR 0093](adr/0093-ocr-native-target-rediscovery.md) defines the planned owned
-OCR qualification of window loss with a live original process generation and
-process loss with that exact generation reaped. It adds no public API,
-background polling, automatic recovery or platform fallback and claims no new
-native acceptance.
+[ADR 0093](adr/0093-ocr-native-target-rediscovery.md) defines the owned OCR
+qualification of window loss with a live original process generation and process
+loss with that exact generation reaped. Its source-bound `86a482d` Apple
+Silicon/Retina CPU cohort passes all nine semantic rows, both explicit
+rediscovery paths, retained-byte checks and resource/cleanup endpoints. Optional
+SDK metadata is not absence evidence: the private consumer independently
+observes the acknowledged WindowServer ID and owner. This adds no public API,
+background polling, automatic recovery or platform fallback; it does not extend
+the result to process crashes, other cohorts or Windows.
 
 This is an implementation claim, not release acceptance. Its enforceability is
 uneven and the tables above say which cases run where: the scenarios that drive a

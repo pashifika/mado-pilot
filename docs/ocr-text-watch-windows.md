@@ -1,16 +1,23 @@
 # Windows owned WGC OCR procedure
 
-**Task 7.2 remains partially verified; the current resize fix needs native execution.**
-On the selected DELL/WCG cohort, the owned `3fdbcfe` diagnostic attempt passed
-the initial exact-source OCR transition, retained-result producer progress,
-resource accounting and cleanup. Its resize checkpoint delivered no successor
-through the first public acquire call within20 seconds; mapping and pixel checks
-were not reached. The exact-window-loss scenario remains unverified.
-The adapter keeps extent-only changes separate from movement/DPI freshness
-fences, including a previously unsatisfied fence across pool recreation.
-This implementation change is not yet native acceptance. Historical failures and
-their source/artifact bindings remain unchanged. Existing template and C/C++
-results do not qualify this OCR procedure; no input or permission change is used.
+**The fixed Windows native procedure passed on its recorded cohort.**
+Source `fd98dba26ae5eb3375ab2111ae9f272258e39e99`, with
+`benchmark-instrumentation` enabled, passed acknowledged OCR transition,
+retained-result producer progress, resize confirmation reset, explicit native
+`TargetLost`, and retention after parent close. Resource and cleanup endpoints
+also passed. The single execution used Windows build26300.9711 and the selected
+secondary DELL `DISPLAY1`, WCG/HDR-user-off,150%, CPU bounded-v2.
+
+At resize, native `ContentSize` was1024×640 while the transition texture was
+960×576. That clipped frame was not published as full-size content. A subsequent
+1024×640 frame passed the exact source-pixel/marker check in50ms, on the same
+public stream with epoch1 and geometry revision1.
+
+This is one instrumented cohort, not a causal fix or repeatability result.
+Metadata observation can affect scheduling; feature-off native execution and
+broader application/display compatibility are unmeasured. `FrameRequest` waits
+for actual publication; it does not generate a successor after `Recreate`.
+No automatic restart, repaint, fallback, input or permission change is added.
 
 ## Fixed scope and oracle
 

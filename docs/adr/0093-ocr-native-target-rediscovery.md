@@ -2,7 +2,7 @@
 
 - **Status:** Accepted
 - **Date:** 2026-10-22
-- **Resolves gate:** _none_; current native verification and Slice A9 remain open
+- **Resolves gate:** _none_; finite native evidence is scoped to the independently recorded Apple and Windows cohorts, not general release acceptance
 - **Supersedes:** [ADR 0076](0076-bound-native-ocr-evidence-channels.md)'s private child-count and role-list restriction only, for Apple OCR procedure v3
 
 ## Context
@@ -125,12 +125,16 @@ packaging, deployment floor, G-013 ceiling or platform support claim.
 
 ## Verification
 
-Current v3 verification is pending. The planned semantic rows are
-`acknowledged-transition`, `retained-producer-progress`, `resize-reset`,
-`resize-invalidity`, `window-loss-classification`, `same-process-rediscovery`,
-`process-loss-classification`, `new-process-rediscovery` and
-`parent-close-retention`. The four classification/rediscovery rows are new
-obligations, not existing passes or aliases for historical `exact-window-loss`.
+The source-bound `86a482d074e691c74aba8280c0ad42de31fead7a` v3 execution passed
+all nine semantic rows on Apple M1 Pro, macOS27.0.1/build26A434, Retina2x and CPU
+bounded-v2: acknowledged transition, retained producer progress, resize reset
+and invalidity, window-loss classification, same-process rediscovery,
+process-loss classification, new-process rediscovery and parent-close retention.
+Separate resource/cleanup endpoints passed; all three direct children exited0
+and were reaped without force. Both observed SDK signals were `TargetLost`;
+the independently proven causes and explicit old-session closes remain separate.
+The complete bound record is `macos-v3-window-server-native-20261022.json` in
+the Change evidence. These are new v3 observations, not renamed historical rows.
 
 Existing contract suites must cover forged/stale generation receipts,
 premature/duplicate successor launch, unowned transitions, immutable terminal
@@ -138,10 +142,12 @@ state, unchanged resource/channel bounds and exact-child cleanup. Actual harmles
 supervised subprocesses are required where the existing supervisor suite uses
 them; source-text checks alone do not prove process ownership or reaping.
 
-Native acceptance additionally requires a freshly authorized source/artifact-bound
-run with real acknowledged capture/OCR, independent window/process evidence,
-physical OCR quiescence, retained-byte equality and complete bounded cleanup.
-Source review must keep Windows explicit-loss expectations separate from the
-macOS independent-classification path and confirm no production recovery path
-was added. The historical replacement probe and failed current attempt motivate
-this decision; neither supplies v3 acceptance. Tasks7.2/7.4 and A9 remain open.
+Native acceptance requires a freshly authorized source/artifact-bound run with
+real acknowledged capture/OCR, independent window/process evidence, physical OCR
+quiescence, retained-byte equality and complete bounded cleanup. Source review
+keeps Windows explicit-loss expectations separate from the macOS classification
+path; no production recovery path is added. Task7.4 is complete for the recorded
+Apple cohort. Separate Windows task7.2 at `fd98dba` passed its five existing
+semantic endpoints and resource/cleanup on the instrumented DELL-WCG cohort.
+Together they satisfy scoped A9 evidence, not feature-off Windows reliability,
+crash behavior, broad compatibility or product release.
