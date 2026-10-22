@@ -102,6 +102,13 @@ mod native {
             self.0.flush().map_err(|_| Failure::Rule("evidence-write"))
         }
     }
+    #[derive(Clone, Copy, Debug, Eq, PartialEq)]
+    enum MarkerCheck {
+        Matched,
+        ColorMismatch,
+        TokenMismatch,
+        StateMismatch,
+    }
     struct Fixture {
         root: PathBuf,
         nonce: String,
@@ -180,7 +187,7 @@ mod native {
             )?;
             self.ack(sequence, command, CONTROL)
         }
-        fn marker(&self, mapping: &CpuMapping, state: u32) -> Check<bool> {
+        fn marker(&self, mapping: &CpuMapping, state: u32) -> Check<MarkerCheck> {
             let descriptor = mapping.descriptor();
             let width = descriptor.extent().width() as usize;
             let height = descriptor.extent().height() as usize;
@@ -199,13 +206,17 @@ mod native {
                 } else if pixel[0] > 215 && pixel[1] < 40 && pixel[2] < 40 {
                     false
                 } else {
-                    return Ok(false);
+                    return Ok(MarkerCheck::ColorMismatch);
                 };
                 if one != observed {
-                    return Ok(false);
+                    return Ok(if bit < 64 {
+                        MarkerCheck::TokenMismatch
+                    } else {
+                        MarkerCheck::StateMismatch
+                    });
                 }
             }
-            Ok(true)
+            Ok(MarkerCheck::Matched)
         }
     }
     fn map(frame: &Frame) -> Check<CpuMapping> {
@@ -221,25 +232,62 @@ mod native {
         fixture: &Fixture,
         state: u32,
         after: Option<FrameStamp>,
+        evidence: &mut Evidence,
     ) -> Check<Frame> {
         let operation = context(CONTROL)?;
         let mut request = after.map_or_else(FrameRequest::latest, FrameRequest::newer_than);
-        loop {
-            let frame =
-                api(session.acquire_frame(&request, &operation)).map_err(
-                    |failure| match failure {
-                        Failure::Api(Status::DeadlineExceeded) => {
-                            Failure::Rule("producer-progress-absent-frame")
+        let mut acquired = 0_u64;
+        let mut mapped = 0_u64;
+        let mut rejected = [0_u64; 3];
+        let mut last_frame = None;
+        let mut last_mapping = None;
+        let mut last_marker = None;
+        let mut phase = "acquire";
+        let result = (|| {
+            loop {
+                let frame =
+                    api(session.acquire_frame(&request, &operation)).map_err(|failure| {
+                        match failure {
+                            Failure::Api(Status::DeadlineExceeded) => {
+                                Failure::Rule("producer-progress-absent-frame")
+                            }
+                            other => other,
                         }
-                        other => other,
-                    },
-                )?;
-            let mapping = api(frame.map(PixelFormat::Bgra8, &operation))?;
-            if fixture.marker(&mapping, state)? {
-                return Ok(frame);
+                    })?;
+                acquired += 1;
+                last_frame = Some(frame.stamp());
+                last_mapping = None;
+                last_marker = None;
+                phase = "map";
+                let mapping = api(frame.map(PixelFormat::Bgra8, &operation))?;
+                mapped += 1;
+                last_mapping = Some(mapping.descriptor());
+                phase = "marker";
+                let marker = fixture.marker(&mapping, state)?;
+                last_marker = Some(marker);
+                match marker {
+                    MarkerCheck::Matched => return Ok(frame),
+                    MarkerCheck::ColorMismatch => rejected[0] += 1,
+                    MarkerCheck::TokenMismatch => rejected[1] += 1,
+                    MarkerCheck::StateMismatch => rejected[2] += 1,
+                }
+                request = FrameRequest::newer_than(frame.stamp());
+                phase = "acquire";
             }
-            request = FrameRequest::newer_than(frame.stamp());
-        }
+        })();
+        // One bounded summary per checkpoint, never per-frame output or pixels.
+        // Mapping/marker metadata always belongs to last_frame, not a prior frame.
+        evidence.line(format!(
+            "source_checkpoint={state} phase={phase} acquired={acquired} mapped={mapped} \
+             rejected_color={} rejected_token={} rejected_state={} \
+             last_frame={last_frame:?} last_mapping={last_mapping:?} \
+             last_marker={last_marker:?} outcome={}",
+            rejected[0],
+            rejected[1],
+            rejected[2],
+            result.as_ref().map_or_else(Failure::label, |_| "matched"),
+        ))?;
+        result
     }
     fn start(session: &Session, roi: Rect, confirmations: u32) -> Check<OcrTextQuery> {
         api(session.start_ocr_text_watch(api(OcrTextWatchRequest::new(
@@ -516,7 +564,7 @@ mod native {
         let semantic = (|| -> Check<()> {
             let query = start(&session, rect(480.0, 270.0)?, 2)?;
             fixture.command(1, "arm-blank")?;
-            let initial = source(&session, &fixture, 1, None)?;
+            let initial = source(&session, &fixture, 1, None, &mut evidence)?;
             let checkpoint = initial.stamp();
             let blank = map(&initial)?;
             require(
@@ -568,7 +616,8 @@ mod native {
             )?;
             let mapping = map(result.frame())?;
             require(
-                fixture.marker(&mapping, 2)? || fixture.marker(&mapping, 3)?,
+                fixture.marker(&mapping, 2)? == MarkerCheck::Matched
+                    || fixture.marker(&mapping, 3)? == MarkerCheck::Matched,
                 "match-not-acknowledged-state",
             )?;
             evidence.line(format!(
@@ -588,7 +637,7 @@ mod native {
                 .as_ref()
                 .ok_or(Failure::Rule("retained-frame-missing"))?
                 .stamp();
-            let blank = source(&session, &fixture, 4, Some(old))?;
+            let blank = source(&session, &fixture, 4, Some(old), &mut evidence)?;
             evidence.line(format!(
                 "row=retained-producer-progress status=passed newer={}",
                 blank.stamp()
@@ -599,7 +648,13 @@ mod native {
             stage = "resize-reset";
             let resizing = start(&session, rect(480.0, 270.0)?, 2)?;
             fixture.command(5, "show")?;
-            let shown = source(&session, &fixture, 5, Some(retained_checkpoint))?;
+            let shown = source(
+                &session,
+                &fixture,
+                5,
+                Some(retained_checkpoint),
+                &mut evidence,
+            )?;
             let before = progress(&resizing, |value| {
                 value.confirmed_observations() > 0
                     && value.pending_count() == 0
@@ -642,7 +697,7 @@ mod native {
                     && reset_stamp.epoch() > before_stamp.epoch(),
                 "resize-source-not-successor",
             )?;
-            let resized = source(&session, &fixture, 6, Some(before_stamp))?;
+            let resized = source(&session, &fixture, 6, Some(before_stamp), &mut evidence)?;
             require(
                 reset_stamp.geometry() == resized.stamp().geometry()
                     && reset_stamp.epoch() == resized.stamp().epoch(),
@@ -675,7 +730,7 @@ mod native {
             require(
                 successor_result.frame().stamp().geometry() == reset_stamp.geometry()
                     && successor_result.frame().stamp().epoch() == reset_stamp.epoch()
-                    && fixture.marker(&map(successor_result.frame())?, 7)?,
+                    && fixture.marker(&map(successor_result.frame())?, 7)? == MarkerCheck::Matched,
                 "resize-result-authority",
             )?;
             evidence.line("row=resize-reset status=passed")?;
@@ -688,12 +743,19 @@ mod native {
 
             stage = "resize-invalidity";
             fixture.command(8, "blank")?;
-            let before_shrink = source(&session, &fixture, 8, Some(successor_stamp))?;
+            let before_shrink =
+                source(&session, &fixture, 8, Some(successor_stamp), &mut evidence)?;
             let edge = Rect::new(CoordinateSpace::TargetLogical, 490.0, 280.0, 510.0, 290.0)
                 .map_err(|_| Failure::Rule("fixed-edge-roi"))?;
             let invalid = start(&session, edge, 1)?;
             fixture.command(9, "shrink-blank")?;
-            let shrunk = source(&session, &fixture, 9, Some(before_shrink.stamp()))?;
+            let shrunk = source(
+                &session,
+                &fixture,
+                9,
+                Some(before_shrink.stamp()),
+                &mut evidence,
+            )?;
             require(
                 shrunk.stamp().geometry() != before_shrink.stamp().geometry(),
                 "shrink-geometry-unchanged",
@@ -825,6 +887,134 @@ mod native {
             Ok(())
         } else {
             std::process::exit(1);
+        }
+    }
+
+    #[cfg(test)]
+    mod tests {
+        use std::io::{Seek, SeekFrom};
+        use std::sync::atomic::{AtomicU64, Ordering};
+
+        use mado_pilot::replay::{ReplayFrame, ReplaySource, ReplayTarget};
+        use mado_pilot::{Continuity, FrameDescriptor, MonotonicInstant, ReplayEngineRequest};
+
+        use super::*;
+
+        fn replay_frame(marker: MarkerCheck) -> ReplayFrame {
+            let descriptor =
+                FrameDescriptor::new(PixelExtent::new(400, 32), PixelFormat::Bgra8, 1664)
+                    .expect("padded BGRA descriptor");
+            let mut pixels = vec![255; descriptor.byte_len()];
+            // Token 0, state 1. Draw full 4x16 cells independently of the sample
+            // location; padding and the non-marker area stay white.
+            for y in 16..32 {
+                for bit in 0..96 {
+                    let color = if bit == 95 || (marker == MarkerCheck::TokenMismatch && bit == 63)
+                    {
+                        [0, 255, 255, 255]
+                    } else {
+                        [255, 0, 0, 255]
+                    };
+                    let color = match (marker, bit) {
+                        (MarkerCheck::ColorMismatch, 0) => [255; 4],
+                        (MarkerCheck::StateMismatch, 95) => [255, 0, 0, 255],
+                        _ => color,
+                    };
+                    for x in bit * 4..(bit + 1) * 4 {
+                        let offset = y * descriptor.stride() + x * 4;
+                        pixels[offset..offset + 4].copy_from_slice(&color);
+                    }
+                }
+            }
+            ReplayFrame::new(
+                descriptor,
+                MonotonicInstant::ORIGIN,
+                Continuity::Continuous,
+                None,
+                pixels.into_boxed_slice(),
+            )
+            .expect("synthetic frame")
+        }
+
+        fn evidence() -> Evidence {
+            static NEXT: AtomicU64 = AtomicU64::new(0);
+            let path = std::env::temp_dir().join(format!(
+                "madopilot-checkpoint-{}-{}.report",
+                std::process::id(),
+                NEXT.fetch_add(1, Ordering::Relaxed)
+            ));
+            let file = OpenOptions::new()
+                .read(true)
+                .write(true)
+                .create_new(true)
+                .open(&path)
+                .expect("exclusive evidence file");
+            // This module is macOS-only: the open file survives unlink, including
+            // unwinding, without leaving shared test filesystem state.
+            fs::remove_file(path).expect("unlink owned evidence");
+            Evidence(file)
+        }
+
+        #[test]
+        fn checkpoint_replay_rejects_unowned_or_unacknowledged_pixels() {
+            for rejected in [
+                MarkerCheck::ColorMismatch,
+                MarkerCheck::TokenMismatch,
+                MarkerCheck::StateMismatch,
+            ] {
+                let frames = vec![replay_frame(rejected), replay_frame(MarkerCheck::Matched)];
+                let replay = ReplaySource::from_targets(vec![
+                    ReplayTarget::new("checkpoint-fixture", frames).expect("replay target"),
+                ])
+                .expect("replay source");
+                let engine = mado_pilot::replay_engine(ReplayEngineRequest::new(replay))
+                    .expect("capture-free engine");
+                let operation = OperationContext::new();
+                let target = engine.discover(&operation).expect("replay discovery")[0].id();
+                let session = engine
+                    .open(target, &OpenRequest::new(), &operation)
+                    .expect("replay session");
+                let fixture = Fixture {
+                    root: PathBuf::new(),
+                    nonce: String::new(),
+                    token: 0,
+                    pid: 0,
+                    window: 0,
+                };
+                let first = session
+                    .acquire_frame(&FrameRequest::latest(), &operation)
+                    .expect("first synthetic frame");
+                let mapping = first.map(PixelFormat::Bgra8, &operation).expect("mapping");
+                assert_eq!(
+                    fixture
+                        .marker(&mapping, 1)
+                        .unwrap_or_else(|error| panic!("{}", error.label())),
+                    rejected
+                );
+                let mut evidence = evidence();
+                let accepted = source(&session, &fixture, 1, None, &mut evidence)
+                    .unwrap_or_else(|error| panic!("{}", error.label()));
+                assert!(newer(accepted.stamp(), first.stamp()));
+                assert_eq!(accepted.stamp().sequence().value(), 1);
+                assert_eq!(
+                    fixture
+                        .marker(
+                            &map(&accepted).unwrap_or_else(|error| panic!("{}", error.label())),
+                            1
+                        )
+                        .unwrap_or_else(|error| panic!("{}", error.label())),
+                    MarkerCheck::Matched
+                );
+                session.close(&operation).expect("replay close");
+                assert!(matches!(
+                    source(&session, &fixture, 1, None, &mut evidence),
+                    Err(Failure::Api(Status::Closed))
+                ));
+                evidence.0.seek(SeekFrom::Start(0)).expect("rewind report");
+                let mut report = String::new();
+                evidence.0.read_to_string(&mut report).expect("read report");
+                println!("capture_free_case={rejected:?}\n{report}");
+            }
         }
     }
 }

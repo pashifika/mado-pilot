@@ -22,10 +22,18 @@ and all source/artifact hashes matched. The owned fixture acknowledged
 Resource and cleanup checks passed, including zero logical/physical OCR work
 after close and unforced exit/reaping of both children.
 
-The checkpoint error covers both an acquisition deadline and a deadline after
-rejecting a marker. The retained record does not distinguish them; it is not
-proof that capture delivered no frames. Source geometry/marker correlation
-needs further diagnosis before another separately authorized capture.
+The historical checkpoint error covers both an acquisition deadline and a
+deadline after rejecting a marker. Its retained record does not distinguish
+them; it is not proof that capture delivered no frames. The current consumer
+records one bounded summary per checkpoint: acquisition/mapping counts, color,
+ownership-token and state rejection counts, the final phase, and the last exact
+frame stamp, mapped extent/stride and marker verdict. No pixels, decoded token
+or OCR text are recorded. Each mapping/marker observation belongs to the last
+acquired frame; a later mapping failure cannot inherit an earlier frame's facts.
+The marker's acceptance thresholds and five-second operation deadline are
+unchanged. Capture-free replay rejects each mismatch class and accepts only its
+acknowledged successor; it also exercises acquisition refusal after close.
+Native source correlation remains unresolved pending a freshly authorized run.
 No permission setting or input action was performed. These observations do not
 qualify ScreenCaptureKit OCR, macOS support, recognition quality or numerical
 workload budgets.
@@ -218,9 +226,15 @@ ceiling, task-8 qualification, deployment floor or numeric floor.
 | Unreached scenario | `not-run`; earlier executed failures remain failed. |
 
 Private `consumer.report` contains source stamps, backend/provider descriptors,
-work observations, actual retained/mapped extents and row verdicts. `record.json`
-uses `procedure: "ocr-text-watch-apple-v2"` and adds exact commands/outputs,
-host, approval/build-record hashes, clean Git head/tree,
+work observations, actual retained/mapped extents and row verdicts. Each of the
+six source checkpoints adds at most one `source_checkpoint` summary on return,
+within the same report/output budgets. `acquired=0` distinguishes an acquisition
+refusal with no observed frame from marker rejection; `phase=map` identifies a
+mapping failure. Rejection counters describe the first failed marker check on
+each rejected frame, not every incorrect cell. They cannot establish the cause
+of an unrecognized color or change the scenario verdict.
+`record.json` uses `procedure: "ocr-text-watch-apple-v2"` and adds exact
+commands/outputs, host, approval/build-record hashes, clean Git head/tree,
 consumer/fixture/model/runtime/source hashes, valid signing metadata, actual
 dyld-loaded image paths/hashes, exit status and cleanup facts. Private channel
 facts record observed/retained bytes, EOF/completeness and failures without
