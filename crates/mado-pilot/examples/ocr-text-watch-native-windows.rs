@@ -374,6 +374,7 @@ mod windows_procedure {
         image: &[u8],
         evidence: &mut File,
     ) -> Checked<FrameStamp> {
+        let capture_before = mado_pilot_platform_windows::benchmark::capture_metrics();
         let started = Instant::now();
         let mut phase = "context";
         let mut acquire_attempts = 0_u32;
@@ -467,6 +468,7 @@ mod windows_procedure {
             phase = "frame-bound";
             Err("checkpoint-frame-bound".into())
         })();
+        let capture_after = mado_pilot_platform_windows::benchmark::capture_metrics();
         // One scalar summary per checkpoint, including API-error/deadline exits.
         // No extra acquisition, mapping, deadline, or retained frame for diagnostics.
         let recorded = writeln!(
@@ -477,7 +479,8 @@ mod windows_procedure {
              rejected_size={rejected_size} rejected_expected_pixel={rejected_expected_pixel} \
              rejected_marker={rejected_marker} last_frame={last_frame:?} \
              last_frame_extent={last_frame_extent:?} last_mapping={last_mapping:?} \
-             last_pixel_check={last_pixel_check:?} elapsed_ms={} outcome={}",
+             last_pixel_check={last_pixel_check:?} elapsed_ms={} outcome={} \
+             capture_before={capture_before:?} capture_after={capture_after:?}",
             ack.sequence,
             ack.state,
             ack.width,
@@ -1054,8 +1057,9 @@ mod windows_procedure {
         cleanup_ok &= start.elapsed() <= CLOSE;
         writeln!(
             evidence,
-            "engine_release_ms={}",
-            start.elapsed().as_millis()
+            "engine_release_ms={} capture_after_close={:?}",
+            start.elapsed().as_millis(),
+            mado_pilot_platform_windows::benchmark::capture_metrics()
         )?;
         let mut retention_ok = retained.len() == 2;
         for saved in &retained {

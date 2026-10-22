@@ -417,14 +417,19 @@ impl NativeSession {
         let frame_callbacks = Arc::clone(&callbacks);
         let frame_handler =
             TypedEventHandler::<Direct3D11CaptureFramePool, IInspectable>::new(move |sender, _| {
+                crate::benchmark_metrics::record_callback_entry();
                 let Some(_lease) = frame_callbacks.admit() else {
+                    crate::benchmark_metrics::record_callback_admission_refusal();
                     return Ok(());
                 };
                 let Some(core) = frame_weak.upgrade() else {
+                    crate::benchmark_metrics::record_callback_owner_unavailable();
                     return Ok(());
                 };
                 if let Some(sender) = sender.as_ref() {
                     core.on_frame(sender);
+                } else {
+                    crate::benchmark_metrics::record_callback_sender_unavailable();
                 }
                 Ok(())
             });
@@ -1207,6 +1212,7 @@ impl SessionCore {
     fn on_frame(&self, sender: &Direct3D11CaptureFramePool) {
         let result = self.process_frame(sender);
         if let Err(fault) = result {
+            crate::benchmark_metrics::record_callback_fault();
             if fault == CaptureFault::SessionClosed && self.state.lifecycle() != Lifecycle::Open {
                 return;
             }
@@ -1227,11 +1233,15 @@ impl SessionCore {
     ) -> std::result::Result<(), CaptureFault> {
         let mut transition = match self.transition.try_lock() {
             Ok(transition) => transition,
-            Err(TryLockError::WouldBlock) => return Ok(()),
+            Err(TryLockError::WouldBlock) => {
+                crate::benchmark_metrics::record_transition_lock_contention();
+                return Ok(());
+            }
             Err(TryLockError::Poisoned(poisoned)) => poisoned.into_inner(),
         };
         let frame = sender.TryGetNextFrame().map_err(native_fault)?;
         let frame = WgcFrameGuard(Some(frame));
+        crate::benchmark_metrics::record_native_frame_acquired();
         let content_size = frame.frame().ContentSize().map_err(native_fault)?;
         let native_time = frame
             .frame()
@@ -1244,6 +1254,7 @@ impl SessionCore {
         let required_geometry = self.check_required_geometry(extent);
 
         if extent != transition.extent {
+            crate::benchmark_metrics::record_resize_detected();
             required_geometry?;
             let layout = self
                 .memory
@@ -1277,6 +1288,7 @@ impl SessionCore {
                 .and_then(Weak::upgrade)
                 .ok_or(CaptureFault::SessionClosed)?;
             native.replace_producer_after_recreate(producer_bytes, || {
+                crate::benchmark_metrics::record_recreate_begun();
                 sender
                     .Recreate(
                         &device,
@@ -1284,7 +1296,9 @@ impl SessionCore {
                         WGC_PRODUCER_POOL_SIZE,
                         content_size,
                     )
-                    .map_err(native_fault)
+                    .map_err(native_fault)?;
+                crate::benchmark_metrics::record_recreate_completed();
+                Ok(())
             })?;
             let _retired = self.textures.try_retire_for_resize();
             transition.pool_recreated(extent);
@@ -1295,6 +1309,7 @@ impl SessionCore {
             current_placement(self.key, extent).ok_or_else(|| target_fault(self.target_kind))
         })?;
         if !transition.accepts_frame_geometry(placement, native_time, native_monotonic_now) {
+            crate::benchmark_metrics::record_geometry_fence_refusal();
             let _drop = self.state.try_record_drop();
             return Ok(());
         }
@@ -1307,7 +1322,10 @@ impl SessionCore {
         let mut native_descriptor = D3D11_TEXTURE2D_DESC::default();
         // SAFETY: output is valid for the complete descriptor.
         unsafe { source.GetDesc(&raw mut native_descriptor) };
-        let Some(descriptor) = descriptor_from_native(&native_descriptor, extent)? else {
+        let Some(descriptor) = descriptor_from_native(&native_descriptor, extent)
+            .inspect_err(|_| crate::benchmark_metrics::record_texture_descriptor_refusal())?
+        else {
+            crate::benchmark_metrics::record_texture_descriptor_refusal();
             let _drop = self.state.try_record_drop();
             return Ok(());
         };
@@ -1317,6 +1335,7 @@ impl SessionCore {
             .textures
             .try_acquire(native_descriptor)
             .map_err(|error| {
+                crate::benchmark_metrics::record_detached_lease_refusal();
                 if error.status() == mado_pilot_core::Status::LimitExceeded {
                     CaptureFault::ResourceLimitExceeded
                 } else {
@@ -1326,16 +1345,21 @@ impl SessionCore {
                 }
             })?;
         let Some(lease) = lease else {
+            crate::benchmark_metrics::record_detached_lease_refusal();
             let _drop = self.state.try_record_drop();
             return Ok(());
         };
-        let Some(callback_copy) = self.domain.try_copy(
-            lease.texture(),
-            &source,
-            u64::try_from(descriptor.byte_len()).expect("validated frame byte length fits u64"),
-            self.stream.get(),
-        )?
+        let Some(callback_copy) = self
+            .domain
+            .try_copy(
+                lease.texture(),
+                &source,
+                u64::try_from(descriptor.byte_len()).expect("validated frame byte length fits u64"),
+                self.stream.get(),
+            )
+            .inspect_err(|_| crate::benchmark_metrics::record_detached_copy_refusal())?
         else {
+            crate::benchmark_metrics::record_detached_copy_refusal();
             let _drop = self.state.try_record_drop();
             return Ok(());
         };
@@ -1362,6 +1386,7 @@ impl SessionCore {
         // The detach copy may overlap a window transition. Revalidate the same
         // retained record immediately before stream publication, not by HWND.
         self.check_required_geometry(extent)?;
+        crate::benchmark_metrics::record_publish_attempt();
         self.state
             .publish_storage_with(
                 StoragePublication {
@@ -1376,12 +1401,14 @@ impl SessionCore {
                 },
             )
             .map_err(|refused| {
+                crate::benchmark_metrics::record_publish_refusal();
                 if refused.error().status() == mado_pilot_core::Status::Closed {
                     CaptureFault::SessionClosed
                 } else {
                     CaptureFault::SourceInvalid
                 }
             })?;
+        crate::benchmark_metrics::record_publish_success();
         transition.placement = placement;
         transition.pending_discontinuity = false;
         transition.pending_geometry_change = false;

@@ -154,6 +154,45 @@ successor delivery from a mapping failure, but cannot by itself identify which
 native publication/recreation branch ran. These are private diagnostic facts,
 not a resize fix, a relaxed oracle or a Windows qualification claim.
 
+The existing `benchmark-instrumentation` feature also exposes fixed process-wide
+callback progress counters through `CaptureMetricsSnapshot`. The private Windows
+consumer's existing dev-dependency enables it; no runtime API or Cargo feature
+change is required. Each `source_checkpoint` summary includes absolute
+`capture_before` (before the checkpoint context) and `capture_after` (after the
+loop returns, including errors). The existing `engine_release_ms` record includes
+`capture_after_close`, taken after session close and engine drop. The consumer
+does not reset counters or introduce another wait, acquisition, map or repaint.
+
+The counters distinguish handler entry, admission refusal, missing weak owner or
+sender, transition-lock contention, successful native frame acquisition, resize
+detection, actual frame-pool `Recreate` begin/success, geometry-fence refusal,
+descriptor/lease/copy refusal, storage-publication attempt/success/refusal and
+frame-processing faults. Descriptor, lease and copy refusal each includes both
+an error and an unusable/unavailable result; no error is swallowed. A recreate
+completion counts the API's success before owner/transition bookkeeping. A
+callback fault includes an existing late `SessionClosed` error ignored during
+teardown; it is not necessarily a newly terminal session failure.
+
+New callback hooks perform only one relaxed atomic increment when enabled and
+are no-ops with the feature off. They add no allocation, I/O, clock read, lock or
+retry and do not change callback admission, pool recreation, frame refusal,
+resource ownership or publication decisions. Existing timing instrumentation is
+unchanged. Counter increments wrap modulo 2^64; only the existing quiescent
+profile reset clears them. These independent atomic loads are **not a coherent
+transaction**: concurrent callbacks and other capture sessions in the process
+can contribute, and a snapshot may straddle an increment. Post-close does not
+make unrelated sessions quiescent. The checkpoint starts after the fixture ACK,
+so resize callbacks may already be included in `capture_before`. Keep absolute
+observations; do not assert callback-to-ACK identity or exact event ordering from
+subtraction, equality between counters, or a zero interval difference.
+
+Interpretation remains hypothesis-driven: H1 predicts completed recreation with
+no subsequent callback progress; H2 predicts callback notification lost at
+transition-lock contention; H3 predicts later progress ending at an existing
+geometry, descriptor, resource/copy or publication refusal. These counters can
+narrow those boundaries but do not alone prove which callback caused the missing
+public successor. No images, raw pixel values or recognized text are added.
+
 ## Prospective endpoints and accounting
 
 | Endpoint | Fixed bound |
