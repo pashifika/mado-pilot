@@ -201,6 +201,12 @@ capture must contain the exact marker bits on the new session's stream. A public
 `TargetId` is reissued at each discovery and its absence is not disappearance.
 No discovery retargets an existing session.
 
+Before opening a session, `target_admission` records the owned generation's
+expected PID/window number and the uniquely selected SDK candidate's optional
+native-window and process-PID metadata. This scalar-only private record
+distinguishes unavailable metadata from a conflicting identity. Missing or
+conflicting metadata still refuses admission; it is not a disappearance result.
+
 | Generation / sequence | Operation / mandatory observation |
 |---|---|
 | 1 / 0 | Start fully white, with ownership marker only. Ready follows AppKit display processing and pending CATransaction submission. |

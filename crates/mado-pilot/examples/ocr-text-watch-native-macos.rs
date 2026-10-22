@@ -678,6 +678,18 @@ mod native {
             .next()
             .ok_or(Failure::Rule("owned-window-absent"))?;
         require(selected.next().is_none(), "owned-window-ambiguous")?;
+        evidence.line(format!(
+            "target_admission generation={} fixture_pid={} fixture_window={} target={} \
+             native_window={:?} process_pid={:?}",
+            fixture.generation,
+            fixture.pid,
+            fixture.window,
+            target.id(),
+            target.window().map(|window| window.id()),
+            target
+                .process_identity()
+                .map(|identity| identity.process_id().get()),
+        ))?;
         require(
             owns(target, fixture.pid, fixture.native_window()?),
             "owned-window-provenance",
