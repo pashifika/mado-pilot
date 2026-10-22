@@ -47,6 +47,32 @@ use mado_pilot_capture::{
 };
 use mado_pilot_core::{OperationContext, PermissionState, PixelExtent};
 
+#[cfg(test)]
+thread_local! {
+    static CANCEL_AFTER_START: std::cell::RefCell<Option<mado_pilot_core::CancellationToken>> =
+        const { std::cell::RefCell::new(None) };
+}
+
+#[cfg(test)]
+pub(crate) fn testing_cancel_after_start<T>(
+    cancellation: mado_pilot_core::CancellationToken,
+    body: impl FnOnce() -> T,
+) -> T {
+    struct Reset;
+    impl Drop for Reset {
+        fn drop(&mut self) {
+            CANCEL_AFTER_START.with(|slot| slot.borrow_mut().take());
+        }
+    }
+
+    CANCEL_AFTER_START.with(|slot| {
+        assert!(slot.borrow().is_none(), "start cancellation already armed");
+        *slot.borrow_mut() = Some(cancellation);
+    });
+    let _reset = Reset;
+    body()
+}
+
 /// The internal surface version this build was written against.
 pub(crate) const ABI_VERSION: u32 = 26;
 
@@ -1122,6 +1148,17 @@ impl Session {
     pub(crate) fn start(&self, wait: Duration) -> Result<(), ShimStatus> {
         // SAFETY: the handle is owned here.
         let status = unsafe { mp_shim_session_start(self.handle.as_ptr(), nanos(wait)) };
+        #[cfg(test)]
+        if matches!(
+            ShimStatus::from_raw(status),
+            ShimStatus::Ok | ShimStatus::TimedOut
+        ) {
+            CANCEL_AFTER_START.with(|slot| {
+                if let Some(cancellation) = slot.borrow_mut().take() {
+                    cancellation.cancel();
+                }
+            });
+        }
         ShimStatus::from_raw(status).into_result()
     }
 
