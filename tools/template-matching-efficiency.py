@@ -5,6 +5,8 @@ Run ``policy`` before calibration; ``freeze`` reviews a successful calibration;
 ``compare`` consumes that immutable, SHA-256-pinned profile. No command builds.
 Build metadata is an operator-supplied provenance attestation, not a reproducible
 build proof. Keep the calibration directory with its reviewed profile.
+Protocol three separates common semantic inputs from each role's apparatus.
+Protocols one and two retain their historical corpus and numerical policies.
 """
 from __future__ import annotations
 
@@ -57,6 +59,30 @@ WORKLOADS = (
 )
 DEFINITIONS = {row[0]: dict(zip(("id", "category", "improvement", "statistical"), row))
                for row in WORKLOADS}
+
+# Protocols one and two keep their original component corpus.
+SESSION_WORKLOADS = tuple(
+    (f"session-retained-{fmt}-{region}-{outcome}", "session", False, True)
+    for fmt in ("rgba", "bgra") for region in ("full", "roi") for outcome in ("hit", "miss")
+) + tuple(
+    (f"session-group8-{fmt}-{region}", "session", False, True)
+    for fmt in ("rgba", "bgra") for region in ("full", "same-roi", "distinct-roi")
+) + tuple(
+    (f"session-owner8-{fmt}-roi", "session", False, True) for fmt in ("rgba", "bgra")
+) + tuple(
+    (f"{family}-{fmt}-{region}", category, False, statistical)
+    for family, category, statistical in (
+        ("session-patch64", "session", True), ("session-turnover", "session", True),
+        ("query-match", "session", True), ("query-deadline", "contract", False))
+    for fmt in ("rgba", "bgra") for region in ("full", "roi")
+) + tuple(
+    (f"lifecycle-{kind}-{fmt}-{region}", "contract", False, False)
+    for kind, region in (("session", "roi"), ("independent", "4k")) for fmt in ("rgba", "bgra")
+)
+SESSION_DEFINITIONS = {
+    row[0]: dict(zip(("id", "category", "improvement", "statistical"), row))
+    for row in SESSION_WORKLOADS}
+V3_DEFINITIONS = {**DEFINITIONS, **SESSION_DEFINITIONS}
 MIB = 1024 * 1024
 POLICY = {
     "id": "template-efficiency-v1",
@@ -105,6 +131,10 @@ V2_POLICY = {**POLICY, "id": "template-efficiency-v2-prospective", "processes": 
              "resource_ceiling": "max(calibration6) + max(spread, fixed slack); live cache only on native RSS peak",
              "control": "all processes within ceilings; order and half-cohort median differences <= allowance",
              "scope": "component only; no actual-consumer coverage or accepted numerical qualification"}
+V3_POLICY = {**V2_POLICY, "id": "template-efficiency-v3-session-prospective",
+             "resource_ceiling": "max(calibration6) + max(spread, fixed slack); native RSS peak live cache is row-scoped by simultaneous independent backend count",
+             "strata": "turnover hit and miss remain process-local; grade each stratum and the overlapping primary cycle independently",
+             "scope": "prospective Session component apparatus; no accepted method, profile or actual-consumer qualification"}
 NORMAL_UNAVAILABLE_METRICS = (
     "allocations", "heap_before_bytes", "heap_after_bytes", "heap_after_drop_bytes",
     "heap_steady_before_bytes", "heap_steady_after_bytes", "peak_heap_bytes", "peak_heap_scope",
@@ -126,16 +156,24 @@ NORMAL_UNAVAILABLE_WORKLOADS = (
 )
 
 
-def definitions_for(build_mode):
-    require(build_mode in ("normal", "instrumented"), "v2 requires --build-mode normal|instrumented")
-    return {key: value for key, value in DEFINITIONS.items()
+def policy_for(protocol_version):
+    return V3_POLICY if protocol_version == 3 else V2_POLICY if protocol_version == 2 else POLICY
+
+
+def definitions_for(build_mode, protocol_version=2):
+    require(protocol_version in (2, 3), "unsupported component protocol")
+    require(build_mode in ("normal", "instrumented"), "component protocol requires --build-mode normal|instrumented")
+    definitions = V3_DEFINITIONS if protocol_version == 3 else DEFINITIONS
+    return {key: value for key, value in definitions.items()
             if build_mode == "instrumented" or key not in NORMAL_UNAVAILABLE_WORKLOADS}
 
 
-def mode_identity(value, build_mode):
-    definitions_for(build_mode)
-    require(value.get("format_version") == 2 and value.get("build_mode") == build_mode,
+def mode_identity(value, build_mode, protocol_version=2):
+    definitions_for(build_mode, protocol_version)
+    require(value.get("format_version") == protocol_version and value.get("build_mode") == build_mode,
             "compiled build mode/protocol mismatch")
+    if protocol_version == 3:
+        integer(value.get("format_version"), "format_version")
     require(value.get("global_allocator") == (
         "system" if build_mode == "normal" else "accounting-over-system"), "allocator mode mismatch")
     unavailable = value.get("unavailable")
@@ -157,18 +195,20 @@ def execution_limits(mode, slots):
             "max_attempts": slots, "campaign_output_limit_bytes": slots * 8 * MIB}
 
 
-def validate_v2_build(identity, target, build_mode):
+def validate_v2_build(identity, target, build_mode, protocol_version=2):
     build = identity["build"]
     validate_build(build, target)
-    require(build.get("protocol_version") == 2 and build.get("build_mode") == build_mode,
-            "v2 build attestation mode/protocol mismatch")
+    require(build.get("protocol_version") == protocol_version and build.get("build_mode") == build_mode,
+            "component build attestation mode/protocol mismatch")
+    if protocol_version == 3:
+        integer(build.get("protocol_version"), "attested protocol_version")
     probe = build.get("provenance_commands")
     require(isinstance(probe, list) and len(probe) == 5 and all(
         isinstance(item, dict) and isinstance(item.get("record"), dict)
         and successful(item["record"]) for item in probe),
         "v2 source-bound manifest/source probes required")
-    require(probe[0].get("argv") == [identity["path"], "--protocol-version", "2", "--list"]
-            and successful(probe[0].get("record", {})), "v2 attested manifest command mismatch")
+    require(probe[0].get("argv") == [identity["path"], "--protocol-version", str(protocol_version), "--list"]
+            and successful(probe[0].get("record", {})), "attested manifest command mismatch")
     for index, key in ((1, "source_revision"), (2, "source_tree"), (3, "source_status_porcelain"), (4, "rustc")):
         actual = probe[index]["record"]["stdout"]
         require(build.get(key) == (actual.strip() if index in (1, 2) else actual),
@@ -177,8 +217,11 @@ def validate_v2_build(identity, target, build_mode):
             [["rev-parse", "HEAD"], ["rev-parse", "HEAD^{tree}"], ["status", "--porcelain"], ["-vV"]],
             "source provenance command mismatch")
     observed = strict_json(probe[0]["record"]["stdout"])
-    frozen = manifest_identity(observed, target, build["opencv_version"], 2, build_mode)
+    frozen = manifest_identity(observed, target, build["opencv_version"], protocol_version, build_mode)
     require(build.get("benchmark_manifest") == frozen, "attested source/mode manifest mismatch")
+    if protocol_version == 3:
+        require(apparatus_identity(build.get("apparatus")) == frozen["apparatus"],
+                "attested role apparatus differs from executable/source manifest")
     loaded_runtime(observed, identity)
     return frozen
 
@@ -215,8 +258,9 @@ def native_thread_issues(settings, roles):
 
 def validate_runtime_bundle(bundle, identity, target, build_mode):
     """Revalidate retained representative runs; no live target or dependency reads."""
+    version = identity["build"].get("protocol_version", 2)
     require(isinstance(bundle, dict) and bundle.get("kind") == "component-runtime-preflight"
-            and bundle.get("format_version") == 2, "runtime preflight bundle missing")
+            and bundle.get("format_version") == version, "runtime preflight bundle missing")
     plan = bundle.get("plan")
     require(isinstance(plan, dict) and plan.get("target") == target
             and plan.get("build_mode") == build_mode, "runtime preflight target/mode mismatch")
@@ -226,8 +270,8 @@ def validate_runtime_bundle(bundle, identity, target, build_mode):
             and base.get("build") == {key: value for key, value in identity["build"].items()
                                      if key != "runtime_image_preflight"},
             "runtime preflight executable/source binding mismatch")
-    selected = list(definitions_for(build_mode))
-    expected_schedule = schedule("smoke", selected, 2)
+    selected = list(definitions_for(build_mode, version))
+    expected_schedule = schedule("smoke", selected, version)
     limits = {**execution_limits("smoke", len(expected_schedule)), "runtime_binding_seconds": 120}
     require(plan.get("schedule") == expected_schedule and plan.get("execution_limits") == limits,
             "runtime preflight selected paths or bounds differ")
@@ -239,12 +283,12 @@ def validate_runtime_bundle(bundle, identity, target, build_mode):
     runs = bundle.get("attempts")
     require(isinstance(runs, list) and len(runs) == len(expected_schedule),
             "runtime preflight has unrun paths")
-    manifest = validate_v2_build(base, target, build_mode)
+    manifest = validate_v2_build(base, target, build_mode, version)
     threads = effective_threads(strict_json(base["build"]["provenance_commands"][0]["record"]["stdout"]))
     receipts = []
     for task, attempt in zip(expected_schedule, runs):
         require(isinstance(attempt, dict) and attempt.get("task") == task
-                and attempt.get("argv") == command(base, task, "smoke", 2),
+                and attempt.get("argv") == command(base, task, "smoke", version),
                 "runtime preflight path/order mismatch")
         require(attempt.get("identity_before") == base and attempt.get("identity_after") == base
                 and attempt.get("identity_error") is None and attempt.get("interruption") is None,
@@ -270,7 +314,7 @@ def validate_runtime_bundle(bundle, identity, target, build_mode):
         loaded_runtime(value, base)
         require(effective_threads(value) == threads, "runtime preflight native thread setting changed")
         if task["workload"] is None:
-            require(manifest_identity(value, target, base["build"]["opencv_version"], 2, build_mode) == manifest,
+            require(manifest_identity(value, target, base["build"]["opencv_version"], version, build_mode) == manifest,
                     "runtime preflight manifest changed")
         else:
             observations(value, manifest, task["workload"], True)
@@ -318,7 +362,7 @@ def validate_runtime_attempt(attempt, runtime):
 
 
 def runtime_closure_admission(identity, target, build_mode, bundle_path=None):
-    validate_v2_build(identity, target, build_mode)
+    validate_v2_build(identity, target, build_mode, identity["build"].get("protocol_version", 2))
     reference = identity["build"].get("runtime_image_preflight")
     require(target == TARGETS[0] and isinstance(reference, dict),
             "missing runtime closure prerequisite: full native image preflight required; zero launches")
@@ -338,7 +382,8 @@ def reviewed_method(path, expected_sha256, plan):
     digest(expected_sha256, "method_review_sha256")
     require(path is not None and sha256(path) == expected_sha256, "method review hash mismatch")
     review = load(path)
-    require(isinstance(review, dict) and review.get("format_version") == 2
+    version = plan.get("format_version", 2)
+    require(isinstance(review, dict) and review.get("format_version") == version
             and review.get("kind") == "component-method-review",
             "prospective source/host/cost method review required")
     require(review.get("decision") == "accepted", "method review has not accepted this lane")
@@ -351,7 +396,7 @@ def reviewed_method(path, expected_sha256, plan):
     for key in ("reviewer", "rationale", "source_host_cost_review", "runtime_observer_eligibility_review"):
         nonempty(review.get(key), key)
     require(review.get("stage_limits") == {
-        mode: execution_limits(mode, len(schedule(mode, plan["workloads"], 2)))
+        mode: execution_limits(mode, len(schedule(mode, plan["workloads"], version)))
         for mode in ("calibration", "control", "comparison")}, "method review finite cost/bounds mismatch")
     return {"path": str(Path(path).resolve()), "sha256": expected_sha256}
 DIRECT_FORMAT_WORKLOAD = "contract-roi-format-transition"
@@ -587,27 +632,545 @@ def execution_failures(record):
     return [(category, reason) for category, passed, reason in checks if not passed]
 
 
+ACCOUNTING_CONTRACT = "prepared-cache-row-winner-v1"
+APPARATUS_SOURCES = (
+    "crates/mado-pilot/benches/template-matching-efficiency.rs",
+    *(f"crates/mado-pilot/benches/support/template_efficiency_{name}.rs" for name in (
+        "fixtures", "session_fixtures", "sessions", "queries", "formats", "watch", "runtime")),
+    "crates/mado-pilot/benches/support/process_cpu.rs",
+    "crates/mado-pilot/benches/support/ocr_text_watch_resources.rs",
+    "crates/support/testkit/src/match_fixtures.rs",
+)
+OWNER_ORDER = ("before-setup", "after-warmups", "after-samples", "frame-and-result-released",
+               "session-closed", "runtime-and-source-released", "final-backend-released")
+SESSION_OWNER_ORDER = ("before-setup", "live-outcome", "caller-frame-released", "session-closed",
+                       "mapping-released", "outcome-released", "runtime-and-source-released",
+                       "final-backend-released")
+INDEPENDENT_OWNER_ORDER = ("before-setup", "two-backends-live", "a-released", "b-reused",
+                           "frame-and-result-released", "final-backend-released")
+CHECKPOINT_METRICS = ("rss_bytes", "peak_rss_bytes", "private_bytes", "footprint_bytes",
+                      "heap_bytes", "bgr_retained_bytes", "bgr_evicted_bytes")
+
+
+def apparatus_identity(value):
+    require(isinstance(value, dict) and set(value) == {"accounting_contract", "source_files"}
+            and value["accounting_contract"] == ACCOUNTING_CONTRACT,
+            "unsupported or missing role apparatus accounting contract")
+    sources = value["source_files"]
+    require(isinstance(sources, dict) and set(sources) == set(APPARATUS_SOURCES),
+            "complete authored apparatus source set required")
+    for path, checksum in sources.items():
+        digest(checksum, f"apparatus source {path}")
+    return value
+
+
+def common_manifest(value):
+    if not isinstance(value, dict) or value.get("format_version") != 3:
+        return value
+    return {key: item for key, item in value.items() if key != "apparatus"}
+
+
+def exact_value(actual, expected):
+    if type(actual) is not type(expected):
+        return False
+    if isinstance(expected, dict):
+        return set(actual) == set(expected) and all(exact_value(actual[key], expected[key]) for key in expected)
+    if isinstance(expected, list):
+        return len(actual) == len(expected) and all(exact_value(a, b) for a, b in zip(actual, expected))
+    return actual == expected
+
+
+def direct_format_inputs():
+    declaration = direct_format_contract()
+    keys = ("id", "source_format", "row_padding_bytes", "nonzero_roi",
+            "forced_bgra_public_mapping", "expected_matches", "expected_bounds")
+    return {
+        "cases": [{key: row[key] for key in keys} for row in declaration["cases"]],
+        "transition_cases": [
+            {key: row[key] for key in ("id", "region", "expected_bounds")}
+            | {"source_format": "bgra8" if index == 2 else "rgba8"}
+            for index, row in enumerate(declaration["transition_cases"])],
+        "operation_timeout_seconds": 5, "prepared_reader_pause_timeout_seconds": 5,
+        "padded_row_bytes": 16, "padding_value": 0xA5}
+
+
+def validate_session_fixture(corpus):
+    require(corpus.get("generator") == "template-efficiency-integer-v3-session"
+            and corpus.get("historical_component_generator") == "template-efficiency-integer-v2-direct-formats",
+            "Session fixture generator identity mismatch")
+    require(set(corpus) == {
+        "generator", "license", "historical_component_generator", "background_seed", "patch_seed_base",
+        "patch_width", "patch_height", "roi", "score_tolerance", "templates", "scenes", "score_maps",
+        "direct_formats", "watcher", "sessions"}, "complete common semantic fixture required")
+    for key, expected in (("background_seed", 0x31415926), ("patch_seed_base", 0xABC00000),
+                          ("patch_width", 12), ("patch_height", 10), ("roi", [64, 48, 384, 228]),
+                          ("score_tolerance", 1e-5), ("direct_formats", direct_format_inputs())):
+        require(exact_value(corpus[key], expected), f"common semantic fixture mismatch: {key}")
+    watcher = corpus["watcher"]
+    hashes = ("scene_rgba_sha256", "background_rgba_sha256", "patch_png_sha256", "absent_png_sha256")
+    require(isinstance(watcher, dict) and set(watcher) == {*hashes, "roi", "min_score", "consecutive_frames"},
+            "watcher semantic inputs missing")
+    for key in hashes:
+        digest(watcher[key], f"watcher {key}")
+    require(exact_value(watcher["roi"], [16, 8, 48, 32]) and exact_value(watcher["min_score"], 0.95)
+            and exact_value(watcher["consecutive_frames"], 2), "watcher semantic options mismatch")
+    legacy = corpus["scenes"]
+    descriptors = ((96, 64, 0, "Rgba8"), (1920, 1080, 0, "Rgba8"), (3840, 2160, 0, "Rgba8"),
+                   (1920, 1080, 1, "Rgba8"), (1920, 1080, 2, "Rgba8"),
+                   (4096, 2732, 0, "Rgba8"), (1920, 1080, 0, "Bgra8"))
+    require(isinstance(legacy, list) and len(legacy) == len(descriptors), "historical scene inputs missing")
+    for scene, descriptor in zip(legacy, descriptors):
+        require(isinstance(scene, dict) and set(scene) == {"width", "height", "variant", "format", "sha256"}
+                and all(exact_value(scene[key], expected) for key, expected in
+                        zip(("width", "height", "variant", "format"), descriptor)),
+                "historical scene descriptor order mismatch")
+        digest(scene["sha256"], "historical scene sha256")
+    scores = corpus["score_maps"]
+    selected = [key for key, row in DEFINITIONS.items() if row["category"] == "selection"]
+    require(isinstance(scores, list) and len(scores) == len(selected), "historical score maps missing")
+    for score, workload in zip(scores, selected):
+        require(isinstance(score, dict) and set(score) == {"id", "sha256"} and score["id"] == workload,
+                "historical score-map order mismatch")
+        digest(score["sha256"], "score-map sha256")
+    sessions = corpus.get("sessions")
+    require(isinstance(sessions, dict) and set(sessions) == {
+        "generator", "license", "min_score", "result_limit", "suppression", "score_tolerance",
+        "small_templates", "large_templates", "scenes", "origins", "distinct_regions", "workloads"},
+        "complete Session semantic inputs required")
+    require(sessions["generator"] == "template-efficiency-session-v1"
+            and sessions["license"] == "repository-first-party"
+            and exact_value(sessions["min_score"], 0.9) and exact_value(sessions["result_limit"], 8)
+            and sessions["suppression"] == "DropOverlapping"
+            and exact_value(sessions["score_tolerance"], 1e-5), "Session fixture options mismatch")
+    for name, prefix in (("small_templates", "efficiency.patch"), ("large_templates", "efficiency.patch64x48.")):
+        templates = sessions[name]
+        require(isinstance(templates, list) and len(templates) == 8, "eight authored Session templates required")
+        for index, template in enumerate(templates):
+            require(isinstance(template, dict) and set(template) == {"id", "sha256"}
+                    and template["id"] == f"{prefix}{index}", "Session template identity/order mismatch")
+            digest(template["sha256"], "Session template sha256")
+        require(len({template["sha256"] for template in templates}) == 8, "Session templates must be distinct")
+    require(exact_value(sessions["small_templates"], corpus.get("templates")),
+            "Session small templates must preserve historical PNG inputs")
+    origins = [[80 + i % 4 * 72, 64 + i // 4 * 72] for i in range(8)]
+    require(exact_value(sessions["origins"], origins)
+            and exact_value(sessions["distinct_regions"], session_regions("session-group8-rgba-distinct-roi")),
+            "Session origin/distinct-region order mismatch")
+    scenes = sessions["scenes"]
+    require(isinstance(scenes, list) and len(scenes) == 10, "ten Session source scenes required")
+    definitions = [(name, width, height, extent, fmt)
+                   for fmt in ("rgba8", "bgra8") for name, width, height, extent in (
+                       ("H0", 1920, 1080, [12, 10]), ("H1", 1920, 1080, [12, 10]),
+                       ("M", 1920, 1080, [12, 10]), ("H64", 1920, 1080, [64, 48]),
+                       ("H0", 3840, 2160, [12, 10]))]
+    for scene, (name, width, height, extent, fmt) in zip(scenes, definitions):
+        require(isinstance(scene, dict) and set(scene) == {
+            "name", "width", "height", "format", "stride", "patch_extent", "sha256"},
+            "Session source scene fields missing")
+        expected = {"name": name, "width": width, "height": height, "format": fmt,
+                    "stride": width * 4, "patch_extent": extent}
+        require(all(exact_value(scene[key], value) for key, value in expected.items()),
+                "Session source scene order/layout mismatch")
+        digest(scene["sha256"], "Session scene sha256")
+        if name == "H0" or name == "H1":
+            legacy = next((item for item in corpus.get("scenes", []) if
+                           item.get("width") == width and item.get("height") == height
+                           and item.get("format") == ("Rgba8" if fmt == "rgba8" else "Bgra8")
+                           and item.get("variant") == int(name == "H1")), None)
+            if legacy is not None:
+                require(scene["sha256"] == legacy.get("sha256"), "historical Session scene input changed")
+    require(len({scene["sha256"] for scene in scenes}) == 10, "Session source scenes must be distinct")
+    rows = sessions["workloads"]
+    require(isinstance(rows, list) and len(rows) == 36, "Session fixture workload declarations missing")
+    for row, definition in zip(rows, SESSION_DEFINITIONS.values()):
+        require(isinstance(row, dict) and all(exact_value(row.get(key), value)
+                for key, value in definition.items()), "Session fixture workload order mismatch")
+        require(exact_value(row.get("warmups"), 20 if definition["statistical"] else 1)
+                and exact_value(row.get("sample_count"), 200 if definition["statistical"] else 3),
+                "Session fixture sampling plan mismatch")
+        validate_session_manifest(row)
+
+    def semantic_only(value):
+        if isinstance(value, dict):
+            for key, item in value.items():
+                require(key not in ("source_files", "accounting_contract")
+                        and not key.endswith("_source_sha256"), "apparatus hash in common semantic fixture")
+                semantic_only(item)
+        elif isinstance(value, list):
+            for item in value:
+                semantic_only(item)
+    semantic_only(corpus)
+
+
+def session_contract(workload):
+    require(workload in SESSION_DEFINITIONS, "unknown Session row")
+    fmt = "bgra8" if "-bgra-" in workload else "rgba8"
+    if workload.startswith("session-retained-"):
+        case = "retained-miss" if workload.endswith("-miss") else "retained-hit"
+    elif workload.startswith("session-group8-"):
+        case = "distinct-group" if workload.endswith("-distinct-roi") else "group"
+    else:
+        case = next(case for prefix, case in (
+            ("session-owner8-", "owner-group"), ("session-patch64-", "patch64"),
+            ("session-turnover-", "turnover"), ("query-match-", "query-match"),
+            ("query-deadline-", "query-deadline"), ("lifecycle-session-", "lifecycle-session"),
+            ("lifecycle-independent-", "lifecycle-independent")) if workload.startswith(prefix))
+    group = case in ("group", "distinct-group", "owner-group")
+    sequence = (["M", "H0", "M", "H1"] if case == "turnover" else
+                ["M", "H0", "H1"] if case == "query-match" else
+                ["M"] if case in ("retained-miss", "query-deadline") else
+                ["H64"] if case == "patch64" else ["H0"])
+    unit = ("group8" if group else "turnover-cycle" if case == "turnover" else
+            case if case.startswith("query-") else "lifecycle" if case.startswith("lifecycle-")
+            else "single-search")
+    searches = (8 if group else 4 if case in ("turnover", "lifecycle-independent")
+                else 3 if case == "query-match" else 1)
+    return {"version": 1, "case": case, "source_format": fmt,
+            "patch_extent": [64, 48] if case == "patch64" else [12, 10],
+            "frame_sequence": sequence, "template_order": list(range(8)) if group else [0],
+            "unit": unit, "searches_per_unit": searches,
+            "sample_strata": {"hit": 2, "miss": 2} if case == "turnover" else {},
+            "max_independent_backends": 2 if case == "lifecycle-independent" else 1}
+
+
+def session_regions(workload):
+    if workload.endswith("-distinct-roi"):
+        return [[64 + i % 4 * 72, 48 + i // 4 * 72,
+                 384 + i % 4 * 72, 228 + i // 4 * 72] for i in range(8)]
+    roi = "-roi" in workload
+    region = [64, 48, 384, 228] if roi else [
+        0, 0, 3840 if workload.startswith("lifecycle-independent-") else 1920,
+        2160 if workload.startswith("lifecycle-independent-") else 1080]
+    return [region] * len(session_contract(workload)["template_order"])
+
+
+def validate_session_manifest(row):
+    contract = session_contract(row["id"])
+    require(set(row) == {"id", "category", "improvement", "statistical", "cache_state", "width", "height",
+                         "result_limit", "suppression", "warmups", "sample_count", "min_score",
+                         "effective_regions", "change_policy", "format_contract", "timing_boundary",
+                         "session_contract"}, "Session manifest key set mismatch")
+    require(exact_value(row.get("session_contract"), contract), "Session semantic unit/sequence/options mismatch")
+    width, height = ((3840, 2160) if contract["case"] == "lifecycle-independent" else (1920, 1080))
+    require(row.get("width") == width and row.get("height") == height
+            and row.get("result_limit") == 8 and row.get("min_score") == 0.9
+            and type(row.get("min_score")) is float and row.get("suppression") == "DropOverlapping"
+            and exact_value(row.get("effective_regions"), session_regions(row["id"])),
+            "Session frame/region/request options mismatch")
+    case = contract["case"]
+    cache = ("persistent-frame-and-backend" if case in ("retained-hit", "retained-miss", "patch64") else
+             "cold-engine-backend-and-frame" if case in ("group", "distinct-group") else
+             "cold-with-live-compatible-roi-owner" if case == "owner-group" else
+             "persistent-backend-new-frames" if case == "turnover" else
+             "persistent-backend-fresh-query-session" if case.startswith("query-") else
+             "fresh-owner-lifecycle" if case == "lifecycle-session" else "two-independent-backends-one-frame")
+    timing = (
+        "public Session search through bounded scalar projection and outcome release; setup and teardown separate"
+        if case in ("retained-hit", "retained-miss", "patch64") else
+        "eight public Session searches, bounded projections and outcome releases; setup, compatible mapping owner and teardown separate"
+        if case in ("group", "distinct-group", "owner-group") else
+        "publication/acquisition through four searches and final release per cycle; overlapping hit/miss search intervals retained separately"
+        if case == "turnover" else
+        "producer release through actual query wait, terminal projection and producer join; session close, retained-terminal checks and query/outcome release separate"
+        if case.startswith("query-") else
+        "complete public Session owner script including retained outcome after close and final backend release; contract only"
+        if case == "lifecycle-session" else
+        "complete real Matcher owner script over one retained frame and two independent backends; contract only")
+    require(row.get("cache_state") == cache and row.get("timing_boundary") == timing
+            and row.get("change_policy") == ("AnalysisAlways" if case.startswith("query-") else None)
+            and "format_contract" in row and row["format_contract"] is None,
+            "Session owner/timing/change-policy contract mismatch")
+
+
+def timing_metrics(workload, version):
+    primary = (("p95_ns", "timer_resolution_ns"), ("cpu_ns", "cpu_timer_resolution_ns"))
+    if version == 3 and workload.startswith("session-turnover-"):
+        return primary + tuple((f"strata.{name}.{metric}", clock)
+                               for name in ("hit", "miss") for metric, clock in primary)
+    return primary
+
+
+def validate_stamp(value):
+    require(isinstance(value, list) and len(value) == 5, "complete frame stamp required")
+    require(isinstance(value[0], str) and re.fullmatch(r"engine#[0-9]{1,20}", value[0]),
+            "opaque engine stamp missing")
+    integer(int(value[0][7:]), "engine identity", 1)
+    integer(value[1], "frame stream", 1)
+    for item in value[2:]:
+        integer(item, "frame stamp")
+    return value
+
+
+def same_stream(first, last):
+    return all(first[index] == last[index] for index in (0, 1, 2, 4))
+
+
+def validate_interval(value, metrics, unavailable, label):
+    require(isinstance(value, dict) and "cpu_ns" in value, f"{label} interval missing")
+    integer(value.get("elapsed_ns"), f"{label}.elapsed_ns")
+    if value["cpu_ns"] is None:
+        nonempty(metrics.get("cpu_reason"), "cpu_reason")
+        unavailable.append(f"{label}.cpu_ns")
+    else:
+        integer(value["cpu_ns"], f"{label}.cpu_ns")
+
+
+def validate_checkpoints(points, order, normal, backends, metrics, unavailable, label):
+    require(isinstance(points, list) and len(points) == len(order)
+            and all(isinstance(point, dict) for point in points)
+            and [point.get("name") for point in points] == list(order),
+            f"{label} checkpoint order/count mismatch")
+    for point in points:
+        require(set(point) == {"name", "owner_correct", *CHECKPOINT_METRICS},
+                f"{label} checkpoint fields missing")
+        for key in CHECKPOINT_METRICS:
+            value = point[key]
+            if normal and key in ("heap_bytes", "bgr_retained_bytes", "bgr_evicted_bytes"):
+                require(value is None, "normal checkpoint counters must be explicit null")
+            elif value is not None:
+                integer(value, f"{label}.{key}")
+            elif key in ("bgr_retained_bytes", "bgr_evicted_bytes"):
+                integer(value, f"{label}.{key}")
+            elif key in ("rss_bytes", "peak_rss_bytes", "heap_bytes"):
+                nonempty(metrics.get("native_resource_reason"), "native_resource_reason")
+                unavailable.append(f"{label}.{point['name']}.{key}")
+        require(point["owner_correct"] is (None if normal else True), "checkpoint logical owner oracle failed")
+        if not normal:
+            require(point["bgr_retained_bytes"] <= backends * POLICY["live_cache_bytes"]
+                    and point["bgr_evicted_bytes"] == 0, "checkpoint BGR owner bound")
+        if point["rss_bytes"] is not None and point["peak_rss_bytes"] is not None:
+            require(point["peak_rss_bytes"] >= point["rss_bytes"], "checkpoint RSS peak below endpoint")
+    if not normal:
+        require(points[0]["bgr_retained_bytes"] == 0 and points[-1]["bgr_retained_bytes"] == 0,
+                "checkpoint BGR survives real entry/final owner")
+
+
+def validate_projection(value, bounds):
+    require(isinstance(value, dict) and set(value) == {
+        "stamp", "envelope_correct", "best_consistent", "matches"}, "complete bounded projection required")
+    stamp = validate_stamp(value["stamp"])
+    require(value["envelope_correct"] is True and value["best_consistent"] is True,
+            "public result envelope/best oracle failed")
+    matches = value["matches"]
+    require(isinstance(matches, list) and len(matches) <= 8
+            and len(matches) == int(bounds is not None), "public match count mismatch")
+    for match in matches:
+        require(isinstance(match, dict) and set(match) == {"bounds", "score", "template_matches"},
+                "complete public match projection required")
+        score = match["score"]
+        require(type(score) in (int, float) and 0.9 <= score <= 1 and math.isfinite(score)
+                and abs(score - 1) <= 1e-5, "public score outside finite canonical tolerance")
+        require(isinstance(match["bounds"], list) and len(match["bounds"]) == 4,
+                "public match bounds missing")
+        for coordinate in match["bounds"]:
+            integer(coordinate, "match bounds")
+        require(match["bounds"] == bounds and match["template_matches"] is True,
+                "public template/bounds/order mismatch")
+    return stamp
+
+
+def validate_query(value, case, projections):
+    require(isinstance(value, dict) and set(value) == {
+        "terminal", "completed", "terminal_stamp", "confirmed", "after_close_same"},
+        "complete real query receipt required")
+    matched = case == "query-match"
+    require(value["terminal"] == ("matched" if matched else "deadline-exceeded")
+            and type(value["confirmed"]) is int and value["confirmed"] == (2 if matched else 0)
+            and value["after_close_same"] is True, "query terminal/retained-close oracle failed")
+    completed = value["completed"]
+    require(isinstance(completed, list) and len(completed) == (2 if matched else 1),
+            "query completed receipt count mismatch")
+    stamps = []
+    for index, receipt in enumerate(completed):
+        require(isinstance(receipt, dict) and set(receipt) == {
+            "stamp", "admitted", "completed", "confirmed", "pending", "in_flight", "exceptional"},
+            "query progress receipt fields missing")
+        stamps.append(validate_stamp(receipt["stamp"]))
+        for key, expected in (("admitted", index + 1), ("completed", index + 1), ("confirmed", index),
+                              ("pending", 0), ("in_flight", 0), ("exceptional", 0)):
+            require(integer(receipt[key], key) == expected, "query completion barrier mismatch")
+    if matched:
+        terminal = validate_stamp(value["terminal_stamp"])
+        require(terminal == projections[0], "query terminal frame does not match public result")
+        stamps.append(terminal)
+    else:
+        require(value["terminal_stamp"] is None, "deadline query fabricated a terminal frame")
+    require(all(same_stream(stamps[0], stamp) and previous[3] < stamp[3]
+                for previous, stamp in zip(stamps, stamps[1:])), "query frame sequence/order mismatch")
+    return stamps
+
+
+def expected_session_work(row, index):
+    contract = row["session_contract"]
+    case, searches = contract["case"], contract["searches_per_unit"]
+    conversions = (int(index == 0) if case in ("retained-hit", "retained-miss", "patch64") else
+                   8 if case == "distinct-group" else 2 if case == "lifecycle-independent" else
+                   searches if case in ("turnover", "query-match", "query-deadline") else 1)
+    roi = "-roi" in row["id"]
+    copies = (1 if case in ("owner-group", "lifecycle-session") else searches if roi else 0)
+    pixels = 320 * 180 if roi else row["width"] * row["height"]
+    return {"accounting_contract": ACCOUNTING_CONTRACT, "backend_find_calls": searches,
+            "backend_find_completions": searches, "backend_find_failures": 0,
+            "bgr_conversions": conversions, "bgr_converted_bytes": conversions * pixels * 3,
+            "mapping_copies": copies, "mapping_copied_bytes": copies * pixels * 4, "correct": True}
+
+
+def validate_session_observations(row, build_mode, warmups, count, timer, cpu_resolution, unavailable):
+    normal = build_mode == "normal"
+    contract, metrics = row["session_contract"], row["metrics"]
+    case = contract["case"]
+    units = row.get("unit_observations")
+    require(isinstance(units, list) and len(units) == warmups + count,
+            "all ordered warmup/retained Session units required")
+    owners = row.get("owner_observations")
+    validate_checkpoints(owners, OWNER_ORDER, normal, contract["max_independent_backends"],
+                         metrics, unavailable, "final owners")
+    previous = None
+    engines = set()
+    strata = {name: [] for name in contract["sample_strata"]}
+    for index, unit in enumerate(units):
+        require(isinstance(unit, dict) and set(unit) == {
+            "correct", "error", "projections", "strata", "checkpoints", "query", "setup", "teardown", "lifecycle", "work"}
+            and unit["correct"] is True and unit["error"] is None, "complete successful Session unit required")
+        for phase in ("setup", "teardown"):
+            interval = unit[phase]
+            validate_interval(interval, metrics, unavailable, f"unit[{index}].{phase}")
+            flags = (("mapping_created" if phase == "setup" else "mapping_released",)
+                     if case == "owner-group" else
+                     ("session_opened", "query_started", "producer_ready") if case.startswith("query-") and phase == "setup" else
+                     ("session_closed", "retained_terminal_checked", "query_and_outcome_released",
+                      "runtime_and_source_released") if case.startswith("query-") else ())
+            require(set(interval) == {"elapsed_ns", "cpu_ns", "included_in_primary", *flags}
+                    and interval["included_in_primary"] is case.startswith("lifecycle-")
+                    and all(interval[flag] is True for flag in flags), "Session setup/teardown boundary mismatch")
+        projections = unit["projections"]
+        projection_count = 1 if case == "query-match" else 0 if case == "query-deadline" else contract["searches_per_unit"]
+        require(isinstance(projections, list) and len(projections) == projection_count,
+                "Session projection count mismatch")
+        stamps = []
+        for position, projection in enumerate(projections):
+            absent = case == "retained-miss" or case == "turnover" and position in (0, 2)
+            template = position if case in ("group", "distinct-group", "owner-group") else 0
+            left, top = 80 + template % 4 * 72, 64 + template // 4 * 72
+            if case == "query-match" or case == "turnover" and position == 3:
+                left, top = left + 3, top + 2
+            width, height = contract["patch_extent"]
+            bounds = None if absent else [left, top, left + width, top + height]
+            stamps.append(validate_projection(projection, bounds))
+        if case == "turnover":
+            require(all(same_stream(stamps[0], stamp) and before[3] < stamp[3]
+                        for before, stamp in zip(stamps, stamps[1:])), "turnover frame sequence/order mismatch")
+        elif len(stamps) > 1:
+            require(all(stamp == stamps[0] for stamp in stamps), "retained group frame identity changed")
+        if case.startswith("query-"):
+            stamps = validate_query(unit["query"], case, stamps)
+        else:
+            require(unit["query"] is None, "unexpected query evidence")
+        first = stamps[0]
+        if case in ("retained-hit", "retained-miss", "patch64"):
+            require(previous is None or first == previous, "retained frame changed between units")
+        elif case == "turnover":
+            require(previous is None or same_stream(previous, first) and previous[3] < first[3],
+                    "turnover stream did not persist/progress between units")
+        else:
+            require(first[0] not in engines, "fresh Engine/Session required for each unit")
+            engines.add(first[0])
+        previous = stamps[-1]
+        require(isinstance(unit["strata"], dict) and set(unit["strata"]) == set(strata),
+                "declared Session strata missing or unexpected")
+        for name, expected_count in contract["sample_strata"].items():
+            observations = unit["strata"][name]
+            require(isinstance(observations, list) and len(observations) == expected_count,
+                    "Session stratum observation count mismatch")
+            for observation in observations:
+                require(isinstance(observation, dict) and set(observation) == {"elapsed_ns", "cpu_ns"},
+                        "Session stratum interval fields missing")
+                validate_interval(observation, metrics, unavailable, f"unit[{index}].strata.{name}")
+            if index >= warmups:
+                strata[name].extend(observations)
+        lifecycle = unit["lifecycle"]
+        if case.startswith("lifecycle-"):
+            flags = (("retained_after_close", "closed_search_refused", "mapping_valid_after_close", "source_released")
+                     if case == "lifecycle-session" else
+                     ("a_clone_reused", "b_independent", "b_reused", "source_released"))
+            require(isinstance(lifecycle, dict) and set(lifecycle) == set(flags)
+                    and all(lifecycle[flag] is (None if normal and flag in
+                            ("a_clone_reused", "b_independent", "b_reused") else True) for flag in flags),
+                    "public lifecycle/closed owner oracle failed")
+            order = SESSION_OWNER_ORDER if case == "lifecycle-session" else INDEPENDENT_OWNER_ORDER
+            validate_checkpoints(unit["checkpoints"], order, normal, contract["max_independent_backends"],
+                                 metrics, unavailable, f"unit[{index}]")
+            if not normal:
+                held = ([0, 172800, 172800, 172800, 172800, 172800, 172800, 0]
+                        if case == "lifecycle-session" else
+                        [0, 49_766_400, 24_883_200, 24_883_200, 24_883_200, 0])
+                require([point["bgr_retained_bytes"] for point in unit["checkpoints"]] == held,
+                        "independent caches staged payload mismatch" if case == "lifecycle-independent"
+                        else "Session lifecycle staged payload mismatch")
+        else:
+            require(lifecycle is None and unit["checkpoints"] == [], "unexpected lifecycle observations")
+        if normal:
+            require(unit["work"] is None, "normal work must be explicitly unavailable")
+        else:
+            expected = expected_session_work(row, index)
+            require(isinstance(unit["work"], dict) and set(unit["work"]) == set(expected),
+                    "Session work evidence missing")
+            for key, value in expected.items():
+                if type(value) is int:
+                    integer(unit["work"][key], key)
+                require(type(unit["work"][key]) is type(value) and unit["work"][key] == value,
+                        f"Session role work mismatch: {key}")
+    if not normal:
+        points = owners + [point for unit in units for point in unit["checkpoints"]]
+        for state in ("retained", "evicted"):
+            require(metrics[f"bgr_{state}_peak_bytes"] >= max(point[f"bgr_{state}_bytes"] for point in points),
+                    f"Session BGR {state} peak below lifecycle checkpoint")
+        for name in ("backend_find_calls", "backend_find_failures", "bgr_conversions", "bgr_converted_bytes",
+                     "mapping_copies", "mapping_copied_bytes"):
+            total = sum(unit["work"][name] for unit in units)
+            require(integer(total, f"Session aggregate {name}") == metrics[name],
+                    f"Session unit/aggregate work disagrees: {name}")
+    result = {"unit_observations": units, "owner_observations": owners, "strata": {}}
+    for name, observations in strata.items():
+        elapsed = sorted(observation["elapsed_ns"] for observation in observations)
+        cpu = (None if any(observation["cpu_ns"] is None for observation in observations)
+               else sum(observation["cpu_ns"] for observation in observations))
+        if cpu is not None:
+            integer(cpu, f"strata.{name}.cpu_ns")
+        summary = {"p50_ns": elapsed[(len(elapsed) - 1) // 2],
+                   "p95_ns": elapsed[math.ceil(0.95 * len(elapsed)) - 1], "max_ns": elapsed[-1],
+                   "cpu_ns": cpu, "timer_resolution_ns": timer, "cpu_timer_resolution_ns": cpu_resolution,
+                   "observation_count": len(observations)}
+        result["strata"][name] = summary
+        result.update({f"strata.{name}.{metric}": summary[metric] for metric in ("p50_ns", "p95_ns", "max_ns", "cpu_ns")})
+    return result
+
+
 def manifest_identity(value, target, opencv_version, protocol_version=1, build_mode=None):
     require(isinstance(value, dict) and value.get("format_version") == protocol_version, "invalid protocol version")
-    mode_fields = mode_identity(value, build_mode) if protocol_version == 2 else {}
-    if protocol_version == 2:
+    mode_fields = mode_identity(value, build_mode, protocol_version) if protocol_version >= 2 else {}
+    if protocol_version >= 2:
         effective_threads(value)
     require(value.get("kind") == "manifest", "expected manifest")
     require(value.get("target") == target, "manifest target mismatch")
     require(value.get("opencv_version") == opencv_version, "manifest OpenCV identity mismatch")
     loaded_runtime(value)
     fixture = digest(value.get("fixture_sha256"), "fixture_sha256")
-    if protocol_version == 2:
+    if protocol_version >= 2:
         corpus = value.get("fixture")
         require(isinstance(corpus, dict) and corpus.get("license") == "repository-first-party",
                 "source-bound synthetic fixture declaration required")
-        for section, keys in (("direct_formats", ("helper_source_sha256", "fixture_source_sha256")),
-                              ("watcher", ("helper_source_sha256", "generator_source_sha256"))):
-            for key in keys:
-                digest(corpus.get(section, {}).get(key), f"fixture.{section}.{key}")
+        if protocol_version == 2:
+            for section, keys in (("direct_formats", ("helper_source_sha256", "fixture_source_sha256")),
+                                  ("watcher", ("helper_source_sha256", "generator_source_sha256"))):
+                for key in keys:
+                    digest(corpus.get(section, {}).get(key), f"fixture.{section}.{key}")
+        else:
+            validate_session_fixture(corpus)
+            mode_fields["apparatus"] = apparatus_identity(value.get("apparatus"))
         mode_fields["fixture"] = corpus
     rows = value.get("workloads")
-    definitions = definitions_for(build_mode) if protocol_version == 2 else DEFINITIONS
+    definitions = definitions_for(build_mode, protocol_version) if protocol_version >= 2 else DEFINITIONS
     require(isinstance(rows, list) and len(rows) == len(definitions), "incomplete workload manifest")
     frozen = []
     for row, expected in zip(rows, definitions.values()):
@@ -625,6 +1188,10 @@ def manifest_identity(value, target, opencv_version, protocol_version=1, build_m
         if expected["id"] == DIRECT_FORMAT_WORKLOAD:
             require(row.get("format_contract") == direct_format_contract(),
                     "direct-format declaration/order/work mismatch")
+        if protocol_version == 3 and expected["id"] in SESSION_DEFINITIONS:
+            require(exact_value(row, value["fixture"]["sessions"]["workloads"][
+                list(SESSION_DEFINITIONS).index(expected["id"])]), "Session fixture/manifest row mismatch")
+            validate_session_manifest(row)
         frozen.append(dict(row))
     return {"fixture_sha256": fixture, "target": target, "opencv_version": opencv_version,
             "workloads": frozen, **mode_fields}
@@ -632,10 +1199,10 @@ def manifest_identity(value, target, opencv_version, protocol_version=1, build_m
 
 def observations(value, manifest, workload, smoke):
     version = manifest.get("format_version", 1)
-    normal = version == 2 and manifest["build_mode"] == "normal"
+    normal = version >= 2 and manifest["build_mode"] == "normal"
     require(isinstance(value, dict), "invalid observation protocol")
-    if version == 2:
-        require(mode_identity(value, manifest["build_mode"]) == {
+    if version >= 2:
+        require(mode_identity(value, manifest["build_mode"], version) == {
             key: manifest[key] for key in ("format_version", "build_mode", "global_allocator", "unavailable")},
             "observation mode mismatch")
         effective_threads(value)
@@ -643,8 +1210,11 @@ def observations(value, manifest, workload, smoke):
             and value.get("kind") == "observations", "invalid observation protocol")
     for key in ("target", "opencv_version", "fixture_sha256"):
         require(value.get(key) == manifest[key], f"observation {key} mismatch")
-    if version == 2:
+    if version >= 2:
         require(value.get("fixture") == manifest["fixture"], "observation source/fixture declaration changed")
+    if version == 3:
+        require(apparatus_identity(value.get("apparatus")) == manifest["apparatus"],
+                "observation role apparatus changed")
     loaded_runtime(value)
     rows = value.get("workloads")
     require(isinstance(rows, list) and len(rows) == 1, "one fresh process must report exactly one workload")
@@ -653,6 +1223,9 @@ def observations(value, manifest, workload, smoke):
     require(isinstance(row, dict) and all(type(row.get(key)) is type(want) and row.get(key) == want
                                         for key, want in expected.items()
                                         if key not in ("warmups", "sample_count")), "observation workload mismatch")
+    if version == 3:
+        require(all(exact_value(row.get(key), want) for key, want in expected.items()
+                    if key not in ("warmups", "sample_count")), "observation semantic row changed")
     short = smoke or not expected["statistical"]
     warmups, count = (1, 3) if short else (20, 200)
     require(row.get("warmups") == warmups and row.get("sample_count") == count,
@@ -661,10 +1234,14 @@ def observations(value, manifest, workload, smoke):
     require(value.get("warmups") == (1 if smoke else 20)
             and value.get("sample_count") == (3 if smoke else 200),
             "process sampling plan mismatch")
+    if version == 3:
+        for container in (row, value):
+            integer(container.get("warmups"), "warmups")
+            integer(container.get("sample_count"), "sample_count", 1)
     metrics = row.get("metrics")
     require(isinstance(metrics, dict), "missing metrics")
     unavailable = []
-    if version == 2:
+    if version >= 2:
         require(set(metrics) == set(V2_COMMON_METRICS) | set(NORMAL_UNAVAILABLE_METRICS),
                 "v2 observed/unavailable metric key set mismatch")
         require(type(metrics["mapping_owner_live_before_drop"]) is bool, "mapping owner observation missing")
@@ -686,7 +1263,7 @@ def observations(value, manifest, workload, smoke):
     else:
         for name in COUNTERS:
             integer(metrics.get(name), name)
-        if version == 2:
+        if version >= 2:
             for name in ("logical_mapped_bytes", "backend_find_calls", "backend_find_failures", "peak_active_finds"):
                 integer(metrics.get(name), name)
             require(metrics["backend_find_failures"] == 0, "backend find failures")
@@ -710,6 +1287,8 @@ def observations(value, manifest, workload, smoke):
         for index, sample in enumerate(samples):
             require(isinstance(sample, dict), f"invalid {name}[{index}]")
             require(sample.get("correct") is True, f"incorrect {name}[{index}]")
+            if version == 3:
+                require(sample.get("error") is None, f"failed {name}[{index}]")
             integer(sample.get("elapsed_ns"), "elapsed_ns")
             if sample.get("cpu_ns") is None:
                 nonempty(metrics.get("cpu_reason"), "cpu_reason")
@@ -728,9 +1307,14 @@ def observations(value, manifest, workload, smoke):
     nonempty(value.get("cpu_resolution_method"), "cpu_resolution_method")
     cpu = None if any(sample["cpu_ns"] is None for sample in retained) else sum(sample["cpu_ns"] for sample in retained)
     require(metrics.get("cpu_ns") == cpu, "aggregate CPU disagrees with retained samples")
+    if version == 3 and cpu is not None:
+        integer(metrics.get("cpu_ns"), "aggregate CPU")
     if not normal:
-        require(metrics["bgr_retained_bytes"] <= POLICY["live_cache_bytes"]
-                and metrics["bgr_retained_peak_bytes"] <= POLICY["live_cache_bytes"], "live BGR retention bound")
+        backends = (expected["session_contract"]["max_independent_backends"]
+                    if version == 3 and workload in SESSION_DEFINITIONS else 1)
+        require(metrics["bgr_retained_bytes"] <= POLICY["live_cache_bytes"] * backends
+                and metrics["bgr_retained_peak_bytes"] <= POLICY["live_cache_bytes"] * backends,
+                "live BGR retention bound")
         require(metrics["bgr_retained_after_drop_bytes"] == 0, "BGR payload survives final owner")
         require(metrics["bgr_evicted_after_drop_bytes"] == 0, "evicted BGR payload survives final owner")
         for state in ("retained", "evicted"):
@@ -754,19 +1338,22 @@ def observations(value, manifest, workload, smoke):
                                   ("residual", "before", "after_drop")):
             a, b = metrics[f"{prefix}_{first}_bytes"], metrics[f"{prefix}_{last}_bytes"]
             summary[f"{prefix}_{kind}_bytes"] = None if a is None or b is None else max(0, b - a)
+    if version == 3 and workload in SESSION_DEFINITIONS:
+        summary.update(validate_session_observations(row, manifest["build_mode"], warmups, count,
+                                                     timer, cpu_resolution, unavailable))
     return summary
 
 
 def schedule(mode, selected, protocol_version=1):
     roles = ("baseline", "candidate") if mode == "comparison" else (
-        ("baseline", "control") if protocol_version == 2 and mode == "control" else ("baseline",))
+        ("baseline", "control") if protocol_version >= 2 and mode == "control" else ("baseline",))
     result = [{"role": role, "workload": None, "process": None} for role in roles]
     for workload in selected:
-        for process in range(1 if mode == "smoke" else 6 if protocol_version == 2 else 5):
-            positions = tuple(reversed(roles)) if protocol_version == 2 and process % 2 else roles
+        for process in range(1 if mode == "smoke" else 6 if protocol_version >= 2 else 5):
+            positions = tuple(reversed(roles)) if protocol_version >= 2 and process % 2 else roles
             for position, role in enumerate(positions):
                 task = {"role": role, "workload": workload, "process": process}
-                if protocol_version == 2:
+                if protocol_version >= 2:
                     task["position"] = position
                 result.append(task)
     for index, item in enumerate(result):
@@ -839,12 +1426,14 @@ def validate_direct_formats(row, iterations):
 
 def validate_plan(plan):
     version = plan.get("format_version")
-    require(version in (1, 2) and plan.get("kind") == "campaign", "invalid campaign")
-    modes = ("calibration", "comparison", "smoke", "control") if version == 2 else ("calibration", "comparison", "smoke")
+    require(version in (1, 2, 3) and plan.get("kind") == "campaign", "invalid campaign")
+    if version == 3:
+        integer(version, "campaign format_version")
+    modes = ("calibration", "comparison", "smoke", "control") if version >= 2 else ("calibration", "comparison", "smoke")
     require(plan.get("mode") in modes, "invalid cohort")
-    require(plan.get("policy") == (V2_POLICY if version == 2 else POLICY),
+    require(plan.get("policy") == policy_for(version),
             "policy differs from predeclared collector policy")
-    if version == 2:
+    if version >= 2:
         require(plan.get("execution_limits") == execution_limits(plan["mode"], len(plan.get("schedule", []))),
                 "bounded v2 execution policy mismatch")
     elif plan["mode"] == "smoke":
@@ -854,7 +1443,7 @@ def validate_plan(plan):
     require(plan.get("collector") == collector_identity(), "collector source differs; use the retained collector revision")
     selected = plan.get("workloads")
     require(isinstance(selected, list) and selected, "missing workload selection")
-    definitions = definitions_for(plan.get("build_mode")) if version == 2 else DEFINITIONS
+    definitions = definitions_for(plan.get("build_mode"), version) if version >= 2 else DEFINITIONS
     require(selected == list(definitions) if plan["mode"] != "smoke" else
             len(selected) == len(set(selected)) and all(row in definitions for row in selected),
             "qualification workload coverage mismatch")
@@ -868,13 +1457,13 @@ def validate_plan(plan):
         require(identity.get("sha256") == identity["build"]["binary_sha256"], "binary/source binding mismatch")
         digest(identity.get("metadata_sha256"), "metadata_sha256")
         native_path(identity.get("path"), target)
-        if version == 2:
-            validate_v2_build(identity, target, plan["build_mode"])
+        if version >= 2:
+            validate_v2_build(identity, target, plan["build_mode"], version)
     require(isinstance(plan.get("environment"), dict), "environment missing")
-    if version == 2 and plan["mode"] == "control":
+    if version >= 2 and plan["mode"] == "control":
         require(plan["binaries"]["baseline"] == plan["binaries"]["control"],
                 "A/A control must use the unchanged identical baseline executable/source")
-    if version == 2 and plan["mode"] != "smoke":
+    if version >= 2 and plan["mode"] != "smoke":
         review = plan.get("method_review", {})
         require(reviewed_method(review.get("path"), review.get("sha256"), plan) == review,
                 "source/host/cost review binding mismatch")
@@ -887,7 +1476,7 @@ def evaluate(directory):
     version = plan["format_version"]
     manifests, observations_by_role, attempts, issues = {}, {}, [], []
     runtimes, prerequisite_issues = {}, []
-    if version == 2 and plan["mode"] != "smoke":
+    if version >= 2 and plan["mode"] != "smoke":
         for role, binary in plan["binaries"].items():
             try:
                 runtime = runtime_closure_admission(binary, plan["target"], plan["build_mode"],
@@ -899,7 +1488,7 @@ def evaluate(directory):
             except (OSError, ValueError, KeyError, TypeError) as error:
                 prerequisite_issues.append({"attempt": role, "status": "incomplete", "reason": str(error)})
     native_threads = {role: runtime["threads"] for role, runtime in runtimes.items()}
-    if version == 2 and plan["mode"] != "smoke":
+    if version >= 2 and plan["mode"] != "smoke":
         issues.extend(native_thread_issues(native_threads, plan["binaries"]))
     expected_files = {f"{task['id']}.json" for task in plan["schedule"]}
     files = {}
@@ -937,7 +1526,7 @@ def evaluate(directory):
             binary = plan["binaries"][task["role"]]
             argv = command(binary, task, plan["mode"], version)
             require(attempt.get("argv") == argv, "attempt argv mismatch")
-            if version == 2:
+            if version >= 2:
                 started_path = directory / "started" / filename
                 receipt = load(started_path)
                 retained["started_sha256"] = sha256(started_path)
@@ -950,7 +1539,7 @@ def evaluate(directory):
                 continue
             category = "interruption"
             require(attempt.get("interruption") is None, f"attempt interrupted: {attempt.get('interruption')}")
-            if version == 2:
+            if version >= 2:
                 if attempt.get("identity_before") != binary or attempt.get("identity_after") != binary:
                     fail("identity", "binary/dependency identity changed or unavailable")
                 for stage in ("identity", "execution", "provenance", "semantic"):
@@ -973,13 +1562,13 @@ def evaluate(directory):
                 record = attempt.get("record")
                 require(isinstance(record, dict) and successful(record), "process failed, timed out, truncated, or cleanup failed")
             category = "bounds"
-            if version == 2 or plan["mode"] == "smoke":
+            if version >= 2 or plan["mode"] == "smoke":
                 limits = plan["execution_limits"]
                 timeout = attempt.get("timeout_seconds")
                 require(type(timeout) in (int, float) and math.isfinite(timeout)
                         and 0 < timeout <= limits["child_timeout_seconds"],
                         "child deadline missing or relaxed")
-                if version == 2:
+                if version >= 2:
                     require(attempt.get("output_limit_bytes") == limits["output_limit_bytes"]
                             and attempt.get("cleanup_seconds") == limits["cleanup_seconds"]
                             and attempt.get("runtime_binding_seconds") == limits["runtime_binding_seconds"],
@@ -1006,13 +1595,13 @@ def evaluate(directory):
             try:
                 loaded_runtime(value, binary)
             except (OSError, ValueError, TypeError, KeyError) as error:
-                if version != 2:
+                if version == 1:
                     raise
                 fail("provenance", str(error))
             if task["workload"] is None:
                 manifest = manifest_identity(value, plan["target"], binary["build"]["opencv_version"],
                                              version, plan.get("build_mode"))
-                if version == 2:
+                if version >= 2:
                     require(manifest == binary["build"]["benchmark_manifest"],
                             "observed manifest differs from source/mode attestation")
                 if successful(record) and not seen_categories:
@@ -1021,7 +1610,7 @@ def evaluate(directory):
                 require(task["role"] in manifests, "role has no valid manifest")
                 summary = observations(value, manifests[task["role"]], task["workload"], plan["mode"] == "smoke")
                 summary["process"] = task["process"]
-                if version == 2:
+                if version >= 2:
                     summary["position"] = task["position"]
                 if successful(record) and not seen_categories:
                     observations_by_role.setdefault(task["role"], {}).setdefault(task["workload"], []).append(summary)
@@ -1029,26 +1618,26 @@ def evaluate(directory):
                     issues.append({"attempt": label, "file": relative, "status": "incomplete",
                                    "reason": "unavailable observations: " + ", ".join(summary["unavailable"])})
         except (OSError, ValueError, TypeError, KeyError, StopIteration) as error:
-            if version == 2:
+            if version >= 2:
                 fail(category, f"{relative}: {type(error).__name__}: {error}")
             else:
                 issues.append({"attempt": label, "file": relative, "status": "failed",
                                "reason": f"{relative}: {type(error).__name__}: {error}"})
     for role in ("candidate", "control"):
-        if role in manifests and manifests.get("baseline") != manifests[role]:
+        if role in manifests and common_manifest(manifests.get("baseline")) != common_manifest(manifests[role]):
             issues.append({"attempt": "manifests", "status": "failed",
                            "reason": "role fixture/workload/dependency identity mismatch"})
     return {"plan": plan, "plan_sha256": plan_hash, "attempts": attempts,
             "manifest": manifests.get("baseline"), "observations": observations_by_role, "issues": issues,
-            **({"prerequisite_issues": prerequisite_issues, "native_threads": native_threads} if version == 2 else {})}
+            **({"prerequisite_issues": prerequisite_issues, "native_threads": native_threads} if version >= 2 else {})}
 
 
 def derive_envelopes(evidence):
     require(evidence["plan"]["mode"] == "calibration", "not a baseline-only calibration")
     require(not evidence["issues"], "calibration has failed, unavailable, or unrun attempts")
     version = evidence["plan"]["format_version"]
-    count = 6 if version == 2 else 5
-    definitions = definitions_for(evidence["plan"]["build_mode"]) if version == 2 else DEFINITIONS
+    count = 6 if version >= 2 else 5
+    definitions = definitions_for(evidence["plan"]["build_mode"], version) if version >= 2 else DEFINITIONS
     result = {}
     for workload, definition in definitions.items():
         rows = evidence["observations"]["baseline"][workload]
@@ -1057,13 +1646,13 @@ def derive_envelopes(evidence):
                 "calibration requires five fresh processes" if version == 1 else "calibration requires 6 fresh processes")
         limits, allowances = {}, {}
         if definition["statistical"]:
-            for metric, clock in (("p95_ns", "timer_resolution_ns"), ("cpu_ns", "cpu_timer_resolution_ns")):
-                values = [row[metric] for row in rows]
+            for metric, clock in timing_metrics(workload, version):
+                values = [row.get(metric) for row in rows]
                 require(all(value is not None for value in values)
                         and all(row[clock] is not None for row in rows), f"unavailable calibration {workload}/{metric}")
                 median = statistics.median(values)
                 resolution = max(row[clock] for row in rows)
-                if metric == "cpu_ns":
+                if metric.endswith("cpu_ns"):
                     resolution = max(resolution, POLICY["cpu_accounting_floor_ns"][evidence["plan"]["target"]])
                 spread = max(values) - min(values)
                 allowance = max(spread, 2 * resolution)
@@ -1071,7 +1660,7 @@ def derive_envelopes(evidence):
                         f"noisy calibration: {workload}/{metric}; retain the whole campaign")
                 limits[metric] = math.ceil(max(values) + allowance)
                 allowances[metric] = allowance
-        prefixes = ("rss",) if version == 2 and evidence["plan"]["build_mode"] == "normal" else ("rss", "heap")
+        prefixes = ("rss",) if version >= 2 and evidence["plan"]["build_mode"] == "normal" else ("rss", "heap")
         for prefix in prefixes:
             for metric in (f"peak_{prefix}_bytes", f"{prefix}_growth_bytes", f"{prefix}_residual_bytes"):
                 values = [row[metric] for row in rows]
@@ -1079,6 +1668,8 @@ def derive_envelopes(evidence):
                 slack = max(max(values) - min(values), POLICY[f"{prefix}_slack_bytes"])
                 # OpenCV payload is native: no allowance for Rust heap, growth or residual.
                 live = POLICY["live_cache_bytes"] if metric == "peak_rss_bytes" and definition["category"] != "selection" else 0
+                if version == 3 and workload.startswith("lifecycle-independent-"):
+                    live *= 2
                 limits[metric] = max(values) + slack + live
         result[workload] = {"limits": limits, "benefit_allowances": allowances}
     return result
@@ -1090,7 +1681,8 @@ def cohort_binding(evidence):
 
 def same_v2_context(evidence, calibration):
     plan, base = evidence["plan"], calibration["plan"]
-    require(plan.get("format_version") == base.get("format_version") == 2, "mixed protocol cohorts")
+    require(plan.get("format_version") == base.get("format_version") and plan.get("format_version") in (2, 3),
+            "mixed protocol cohorts")
     for key in ("target", "build_mode", "collector", "host", "environment", "policy", "workloads", "method_review"):
         require(plan.get(key) == base.get(key), f"cohort {key} differs from calibration")
     require(plan["binaries"]["baseline"] == base["binaries"]["baseline"], "cohort baseline/source changed")
@@ -1119,22 +1711,23 @@ def control_evidence(calibration, control):
             complete = (len(rows) == 6 and sorted(row["process"] for row in rows) == list(range(6))
                         and all(row.get("position") == (row["process"] % 2 if role == "baseline"
                                                        else 1 - row["process"] % 2) for row in rows))
-            if not complete or any(row["unavailable"] for row in rows):
+            missing = any(row.get(metric) is None for row in rows for metric in envelope["limits"])
+            if not complete or missing or any(row["unavailable"] for row in rows):
                 issues.append({"attempt": f"{role}:{workload}", "status": "incomplete",
                                "reason": "six independent complete A/A processes per role required"})
             for row in rows:
                 for metric, limit in envelope["limits"].items():
-                    value = row[metric]
+                    value = row.get(metric)
                     if value is not None and value > limit:
                         issues.append({"attempt": f"{role}:{workload}:{row['process']}", "status": "failed",
                                        "reason": f"{metric}={value} exceeds {limit}"})
             for metric, allowance in envelope["benefit_allowances"].items():
-                clock = "timer_resolution_ns" if metric == "p95_ns" else "cpu_timer_resolution_ns"
-                if not complete or any(row[metric] is None or row[clock] is None for row in rows):
+                clock = "timer_resolution_ns" if metric.endswith("p95_ns") else "cpu_timer_resolution_ns"
+                if not complete or any(row.get(metric) is None or row[clock] is None for row in rows):
                     continue
                 values = [row[metric] for row in rows]
                 resolution = max(row[clock] for row in rows)
-                if metric == "cpu_ns":
+                if metric.endswith("cpu_ns"):
                     resolution = max(resolution, POLICY["cpu_accounting_floor_ns"][control["plan"]["target"]])
                 checks = {
                     "noise": (max(values) - min(values)) / max(statistics.median(values), 2 * resolution)
@@ -1160,7 +1753,7 @@ def profile_from_v2(evidence, calibration, control, control_path, reviewer, rati
     digest(profile_review_sha256, "profile_review_sha256")
     require(profile_review is not None and sha256(profile_review) == profile_review_sha256, "profile review hash mismatch")
     review = load(profile_review)
-    expected_review = {"format_version": 2, "kind": "component-profile-review", "decision": "accepted",
+    expected_review = {"format_version": plan["format_version"], "kind": "component-profile-review", "decision": "accepted",
                        "target": plan["target"], "build_mode": plan["build_mode"],
                        "method_review": plan["method_review"], "calibration": cohort_binding(evidence),
                        "control": cohort_binding(control), "envelopes": envelopes}
@@ -1171,7 +1764,7 @@ def profile_from_v2(evidence, calibration, control, control_path, reviewer, rati
     for role, binary in plan["binaries"].items():
         runtime_closure_admission(binary, plan["target"], plan["build_mode"],
                                   Path(calibration) / f"runtime-{role}.json")
-    return {"format_version": 2, "kind": "frozen-profile",
+    return {"format_version": plan["format_version"], "kind": "frozen-profile",
             **{key: plan[key] for key in ("target", "build_mode", "policy", "collector", "host", "environment", "method_review")},
             "baseline": plan["binaries"]["baseline"], "manifest": evidence["manifest"], "envelopes": envelopes,
             "calibration": {"path": str(Path(calibration).resolve()), **cohort_binding(evidence)},
@@ -1192,10 +1785,12 @@ def profile_from(evidence, calibration, reviewer, rationale):
 
 
 def validate_profile(profile):
-    require(profile.get("format_version") in (1, 2) and profile.get("kind") == "frozen-profile", "invalid profile")
+    require(profile.get("format_version") in (1, 2, 3) and profile.get("kind") == "frozen-profile", "invalid profile")
+    if profile.get("format_version") == 3:
+        integer(profile["format_version"], "profile format_version")
     calibration = profile.get("calibration", {})
     evidence = evaluate(calibration["path"])
-    if profile["format_version"] == 2:
+    if profile["format_version"] >= 2:
         control = profile.get("control", {})
         review = profile.get("profile_review", {})
         expected = profile_from_v2(evidence, calibration["path"], evaluate(control["path"]), control["path"],
@@ -1212,9 +1807,9 @@ def compare_evidence(evidence, profile):
     require(plan["mode"] == "comparison", "not a comparison cohort")
     version = plan["format_version"]
     require(version == profile["format_version"], "mixed profile protocol")
-    count = 6 if version == 2 else 5
-    normal = version == 2 and plan["build_mode"] == "normal"
-    if version == 2:
+    count = 6 if version >= 2 else 5
+    normal = version >= 2 and plan["build_mode"] == "normal"
+    if version >= 2:
         for name in ("build_mode", "policy", "method_review"):
             require(plan.get(name) == profile.get(name), f"comparison {name} differs from calibration")
         require(plan["profile_sha256"] is not None, "comparison requires pinned control-accepted profile")
@@ -1224,12 +1819,12 @@ def compare_evidence(evidence, profile):
     if evidence["manifest"] is not None:
         require(evidence["manifest"] == profile["manifest"], "comparison fixture/manifest changed")
     issues = list(evidence["issues"]) + evidence.get("prerequisite_issues", [])
-    if version == 2:
+    if version >= 2:
         for issue in native_thread_issues(evidence.get("native_threads", {}), plan["binaries"]):
             if issue not in issues:
                 issues.append(issue)
     benefits = {}
-    definitions = definitions_for(plan["build_mode"]) if version == 2 else DEFINITIONS
+    definitions = definitions_for(plan["build_mode"], version) if version >= 2 else DEFINITIONS
     for workload, definition in definitions.items():
         cohorts = {role: evidence["observations"].get(role, {}).get(workload, [])
                    for role in ("baseline", "candidate")}
@@ -1237,13 +1832,16 @@ def compare_evidence(evidence, profile):
                        and (version == 1 or sorted(row["process"] for row in rows) == list(range(count)))
                        for rows in cohorts.values())
         envelope = profile["envelopes"][workload]
+        complete = complete and all(row.get(metric) is not None for rows in cohorts.values()
+                                    for row in rows for metric in envelope["limits"])
         for role, rows in cohorts.items():
             for row in rows:
                 process = row["process"]
                 for metric, limit in envelope["limits"].items():
-                    if row[metric] is not None and row[metric] > limit:
+                    value = row.get(metric)
+                    if value is not None and value > limit:
                         issues.append({"attempt": f"{role}:{workload}:{process}", "status": "failed",
-                                       "reason": f"{metric}={row[metric]} exceeds {limit}"})
+                                       "reason": f"{metric}={value} exceeds {limit}"})
                 if role == "candidate" and not normal:
                     metrics = row["metrics"]
                     failures = []
@@ -1261,7 +1859,7 @@ def compare_evidence(evidence, profile):
                         issues.append({"attempt": f"{role}:{workload}:{process}", "status": "failed", "reason": reason})
         if not complete:
             issues.append({"attempt": workload, "status": "incomplete",
-                           "reason": f"{'six' if version == 2 else 'five'} complete processes per role required"})
+                           "reason": f"{'six' if version >= 2 else 'five'} complete processes per role required"})
         if definition["improvement"] and (version == 1 or normal) and all(len(rows) == count for rows in cohorts.values()):
             if complete:
                 benefits[workload] = {}
@@ -1285,7 +1883,7 @@ def report(directory):
     mode = evidence["plan"]["mode"]
     issues, benefits = list(evidence["issues"]) + evidence.get("prerequisite_issues", []), {}
     version = evidence["plan"]["format_version"]
-    if version == 2 and mode == "control":
+    if version >= 2 and mode == "control":
         try:
             binding = evidence["plan"]["calibration"]
             calibration = evaluate(binding["path"])
@@ -1321,12 +1919,12 @@ def report(directory):
                                           else status if mode == "comparison" else "not-qualified"),
                 "heap_and_work_verdict": ("unavailable" if evidence["plan"]["build_mode"] == "normal"
                                           else status if mode == "comparison" else "descriptive"),
-                "actual_consumer_coverage": "not-implemented"} if version == 2 else {}),
+                "actual_consumer_coverage": "not-implemented"} if version >= 2 else {}),
             "note": "smoke and calibration do not establish performance qualification; contract rows are non-statistical"}
 
 
 def command(binary, task, mode, protocol_version=1):
-    prefix = [binary["path"]] + (["--protocol-version", "2"] if protocol_version == 2 else [])
+    prefix = [binary["path"]] + (["--protocol-version", str(protocol_version)] if protocol_version >= 2 else [])
     if task["workload"] is None:
         return prefix + ["--list"]
     result = prefix + ["--workload", task["workload"]]
@@ -1352,14 +1950,15 @@ def exclusive_collector():
 
 def runtime_preflight(args):
     """Discover every selected component path without collecting acceptance samples."""
-    require(args.protocol_version == 2 and args.target == TARGETS[0]
+    version = args.protocol_version
+    require(version in (2, 3) and args.target == TARGETS[0]
             and host_identity()["target"] == args.target,
-            "runtime preflight requires protocol 2 on native Apple Silicon; Windows remains incomplete")
+            "runtime preflight requires protocol 2/3 on native Apple Silicon; Windows remains incomplete")
     identity = binary_identity(args.binary, args.build_metadata, args.target)
     require("runtime_image_preflight" not in identity["build"], "preflight requires the original build attestation")
-    manifest = validate_v2_build(identity, args.target, args.build_mode)
+    manifest = validate_v2_build(identity, args.target, args.build_mode, version)
     threads = effective_threads(strict_json(identity["build"]["provenance_commands"][0]["record"]["stdout"]))
-    tasks = schedule("smoke", list(definitions_for(args.build_mode)), 2)
+    tasks = schedule("smoke", list(definitions_for(args.build_mode, version)), version)
     limits = {**execution_limits("smoke", len(tasks)), "runtime_binding_seconds": 120}
     plan = {"target": args.target, "build_mode": args.build_mode, "binary": identity,
             "host": host_identity(), "environment": environment(), "collector": collector_identity(),
@@ -1379,7 +1978,7 @@ def runtime_preflight(args):
             if timeout <= 0:
                 issues.append("campaign deadline reached; remaining representative paths not-run")
                 break
-            argv = command(identity, task, "smoke", 2)
+            argv = command(identity, task, "smoke", version)
             attempt = {"task": task, "argv": argv, "identity_before": None, "identity_after": None,
                        "identity_error": None, "receipt": None, "campaign_elapsed_before": before,
                        "timeout_seconds": timeout}
@@ -1406,7 +2005,7 @@ def runtime_preflight(args):
                 require(effective_threads(value) == threads, "preflight native thread setting changed")
                 if task["workload"] is None:
                     require(manifest_identity(value, args.target, identity["build"]["opencv_version"],
-                                              2, args.build_mode) == manifest, "preflight manifest changed")
+                                              version, args.build_mode) == manifest, "preflight manifest changed")
                 else:
                     observations(value, manifest, task["workload"], True)
             except (OSError, ValueError, KeyError, TypeError) as error:
@@ -1428,7 +2027,7 @@ def runtime_preflight(args):
                 issues.append("runtime preflight bundle exceeds 64 MiB")
             if issues:
                 break
-        bundle = {"format_version": 2, "kind": "component-runtime-preflight", "plan": plan,
+        bundle = {"format_version": version, "kind": "component-runtime-preflight", "plan": plan,
                   "attempts": attempts, "threads": threads, "closure": None}
         if not issues:
             derived = macos_images.validate_closure([attempt["receipt"] for attempt in attempts])
@@ -1452,15 +2051,15 @@ def runtime_preflight(args):
 
 def collect(args, mode):
     version = args.protocol_version
-    definitions = definitions_for(args.build_mode) if version == 2 else DEFINITIONS
-    require(version == 2 or mode != "control", "control requires --protocol-version 2")
+    definitions = definitions_for(args.build_mode, version) if version >= 2 else DEFINITIONS
+    require(version >= 2 or mode != "control", "control requires --protocol-version 2/3")
     host = host_identity()
     require(host["target"] == args.target, "actual host cannot execute the selected qualification target")
     baseline = binary_identity(args.baseline, args.baseline_metadata, args.target)
     binaries = {"baseline": baseline}
     runtimes = {}
-    if version == 2:
-        validate_v2_build(baseline, args.target, args.build_mode)
+    if version >= 2:
+        validate_v2_build(baseline, args.target, args.build_mode, version)
     if mode == "control":
         binaries["control"] = baseline
     profile, profile_bytes = None, None
@@ -1477,13 +2076,13 @@ def collect(args, mode):
         binaries["candidate"] = binary_identity(args.candidate, args.candidate_metadata, args.target)
     selected = [args.workload] if mode == "smoke" and args.workload else list(definitions)
     require(all(workload in definitions for workload in selected), "workload unavailable in selected build mode")
-    preflight = {"target": args.target, "build_mode": args.build_mode, "host": host,
-                 "collector": collector_identity(), "environment": environment(), "policy": V2_POLICY,
+    preflight = {"format_version": version, "target": args.target, "build_mode": args.build_mode, "host": host,
+                 "collector": collector_identity(), "environment": environment(), "policy": policy_for(version),
                  "workloads": selected, "binaries": binaries}
     method, calibration_binding = None, None
-    if version == 2:
+    if version >= 2:
         for binary in binaries.values():
-            validate_v2_build(binary, args.target, args.build_mode)
+            validate_v2_build(binary, args.target, args.build_mode, version)
         if mode != "smoke":
             method = reviewed_method(args.method_review, args.method_review_sha256, preflight)
             preflight["method_review"] = method
@@ -1515,7 +2114,7 @@ def collect(args, mode):
         calibration = Path(profile["calibration"]["path"]).resolve()
         require(destination != calibration and calibration not in destination.parents,
                 "comparison must not write into calibration")
-        if version == 2:
+        if version >= 2:
             control_path = Path(profile["control"]["path"]).resolve()
             require(destination != control_path and control_path not in destination.parents,
                     "comparison must not write into control")
@@ -1532,11 +2131,11 @@ def collect(args, mode):
                 stream.write(profile_bytes)
         plan = {"format_version": version, "kind": "campaign", "mode": mode, "target": args.target,
                 "host": host, "collector": collector_identity(), "binaries": binaries,
-                "environment": environment(), "policy": V2_POLICY if version == 2 else POLICY, "workloads": selected,
+                "environment": environment(), "policy": policy_for(version), "workloads": selected,
                 "schedule": schedule(mode, selected, version), "exclusive_host": args.exclusive_host,
                 "cwd": str(ROOT), "created_unix_ns": time.time_ns(),
                 "profile_sha256": args.profile_sha256 if profile else None}
-        if version == 2:
+        if version >= 2:
             plan.update(build_mode=args.build_mode, method_review=method, calibration=calibration_binding,
                         execution_limits=execution_limits(mode, len(plan["schedule"])))
         elif mode == "smoke":
@@ -1559,7 +2158,7 @@ def collect(args, mode):
             attempt = {"task": task, "argv": argv, "plan_sha256": plan_hash,
                        "identity_before": None, "identity_after": None, "identity_error": None,
                        "record": None, "started_unix_ns": time.time_ns()}
-            if version == 2:
+            if version >= 2:
                 attempt["campaign_elapsed_before"] = limits["campaign_timeout_seconds"] - remaining - limits["cleanup_seconds"]
                 attempt.update(output_limit_bytes=limits["output_limit_bytes"], cleanup_seconds=limits["cleanup_seconds"],
                                runtime_binding_seconds=binding_seconds)
@@ -1592,25 +2191,25 @@ def collect(args, mode):
                 if task["role"] in runtimes:
                     stage = "provenance"
                     validate_runtime_attempt(attempt, runtimes[task["role"]])
-                if successful(attempt["record"]) or version == 2:
+                if successful(attempt["record"]) or version >= 2:
                     stage = "semantic"
                     value = strict_json(attempt["record"]["stdout"])
                     require(isinstance(value, dict), "process protocol must be an object")
                     stage = "provenance"
                     loaded_runtime(value, identity, verify_files=True)
                     stage = "semantic"
-                    if version == 2:
+                    if version >= 2:
                         if task["workload"] is None:
                             require(manifest_identity(value, args.target, identity["build"]["opencv_version"],
-                                                      2, args.build_mode) == identity["build"]["benchmark_manifest"],
+                                                      version, args.build_mode) == identity["build"]["benchmark_manifest"],
                                     "observed source/mode manifest changed")
                         else:
                             observations(value, identity["build"]["benchmark_manifest"], task["workload"], mode == "smoke")
             except (OSError, ValueError, KeyError, TypeError) as error:
-                attempt[f"{stage}_error" if version == 2 else "identity_error"] = str(error)
+                attempt[f"{stage}_error" if version >= 2 else "identity_error"] = str(error)
             except BaseException as error:
                 attempt["interruption"] = type(error).__name__
-                if version == 2:
+                if version >= 2:
                     attempt["campaign_elapsed_after"] = time.monotonic() - campaign_started
                 try:
                     save(destination / "attempts" / f"{task['id']}.json", attempt)
@@ -1618,7 +2217,7 @@ def collect(args, mode):
                     # Evidence persistence must not replace the original interruption.
                     pass
                 raise
-            if version == 2:
+            if version >= 2:
                 attempt["campaign_elapsed_after"] = time.monotonic() - campaign_started
             save(destination / "attempts" / f"{task['id']}.json", attempt)
             # Row failures remain scheduled; unsafe cleanup or provenance stops
@@ -1632,7 +2231,8 @@ def collect(args, mode):
                     manifest = manifest_identity(strict_json(attempt["record"]["stdout"]), args.target,
                                                  identity["build"]["opencv_version"], version, args.build_mode)
                     if profile:
-                        require(manifest == profile["manifest"], "manifest differs from frozen profile")
+                        require(common_manifest(manifest) == common_manifest(profile["manifest"]),
+                                "manifest differs from frozen profile")
                 except (ValueError, KeyError, TypeError):
                     # Invalid corpus/target discovery is not permission to measure a
                     # different matrix. The raw attempt and unrun schedule survive.
@@ -1645,8 +2245,8 @@ def collect(args, mode):
 def attest(args):
     """Bind an explicit prebuilt executable to its actual loaded OpenCV images."""
     version = args.protocol_version
-    if version == 2:
-        definitions_for(args.build_mode)
+    if version >= 2:
+        definitions_for(args.build_mode, version)
     require(not Path(args.output).exists() and not Path(str(args.output) + ".probe.json").exists(),
             "attestation destination already exists")
     require(host_identity()["target"] == args.target, "attestation must run on the actual native target")
@@ -1659,7 +2259,7 @@ def attest(args):
     probe_schedule = (command({"path": str(binary)}, {"workload": None}, "smoke", version),
                       [git, "rev-parse", "HEAD"], [git, "rev-parse", "HEAD^{tree}"],
                       [git, "status", "--porcelain"], [rustc, "-vV"])
-    deadline = time.monotonic() + SMOKE_LIMITS["campaign_timeout_seconds"] if version == 2 else None
+    deadline = time.monotonic() + SMOKE_LIMITS["campaign_timeout_seconds"] if version >= 2 else None
     value = runtime = manifest = None
     try:
         for argv in probe_schedule:
@@ -1668,7 +2268,7 @@ def attest(args):
                 timeout = min(timeout, deadline - time.monotonic() - SMOKE_LIMITS["cleanup_seconds"])
                 require(timeout > 0, "attestation campaign deadline reached; remaining probe slots not-run")
             attempt = {"argv": argv, "record": None}
-            if version == 2:
+            if version >= 2:
                 commands.append(attempt)
             record = run_process(argv, cwd=ROOT, env=environment(),
                                  timeout_seconds=timeout,
@@ -1678,15 +2278,18 @@ def attest(args):
             if version == 1:
                 commands.append(attempt)
             require(successful(record), f"attestation command failed: {argv}")
-            if version == 2 and len(commands) == 1:
+            if version >= 2 and len(commands) == 1:
                 value = strict_json(record["stdout"])
                 manifest = manifest_identity(value, args.target, value["opencv_version"], version, args.build_mode)
                 runtime = loaded_runtime(value, verify_files=True)
+                if version == 3:
+                    for path, checksum in manifest["apparatus"]["source_files"].items():
+                        require(sha256(ROOT / path) == checksum, f"attested apparatus source bytes differ: {path}")
                 require(sha256(binary) == binary_hash, "binary changed during runtime probe")
     finally:
         save(str(args.output) + ".probe.json", {"commands": commands, **({
-            "format_version": 2, "build_mode": args.build_mode, "schedule": list(probe_schedule),
-            "execution_limits": execution_limits("smoke", len(probe_schedule))} if version == 2 else {})})
+            "format_version": version, "build_mode": args.build_mode, "schedule": list(probe_schedule),
+            "execution_limits": execution_limits("smoke", len(probe_schedule))} if version >= 2 else {})})
     if version == 1:
         value = strict_json(commands[0]["record"]["stdout"])
         runtime = loaded_runtime(value, verify_files=True)
@@ -1700,18 +2303,20 @@ def attest(args):
              "opencv_version": value["opencv_version"], "dependencies": runtime["images"],
              "loaded_native_runtime": runtime, "provenance_commands": commands,
              "attestation_scope": "operator-supplied build command; source commit/tree and dirty status observed, not a reproducible build proof"}
-    if version == 2:
-        build.update(protocol_version=2, build_mode=args.build_mode, benchmark_manifest=manifest,
+    if version >= 2:
+        build.update(protocol_version=version, build_mode=args.build_mode, benchmark_manifest=manifest,
                      runtime_observation_scope="OpenCV endpoint only; not full transitive/short-lived closure; nonqualifying")
+    if version == 3:
+        build["apparatus"] = manifest["apparatus"]
     validate_build(build, args.target)
     save(args.output, build)
     return {"metadata": str(Path(args.output).resolve()), "sha256": sha256(args.output)}
 
 
 def protocol_arguments(sub):
-    sub.add_argument("--protocol-version", type=int, choices=(1, 2), default=1)
+    sub.add_argument("--protocol-version", type=int, choices=(1, 2, 3), default=3)
     sub.add_argument("--build-mode", choices=("normal", "instrumented"),
-                     help="required for protocol 2; verified from compiled executable manifest")
+                     help="required for protocol 2/3; verified from compiled executable manifest")
 
 
 def parser():
@@ -1726,20 +2331,20 @@ def parser():
     binding.add_argument("--binary", required=True)
     binding.add_argument("--build-argv-json", required=True, help="exact completed build command as a JSON array")
     binding.add_argument("--output", required=True, help="new build metadata JSON")
-    discovery = commands.add_parser("runtime-preflight", help="v2 macOS only: bind all representative image loads; non-acceptance")
+    discovery = commands.add_parser("runtime-preflight", help="protocol 2/3 macOS only: bind all representative image loads; non-acceptance")
     protocol_arguments(discovery)
     discovery.add_argument("--target", choices=TARGETS, required=True)
     discovery.add_argument("--binary", required=True)
     discovery.add_argument("--build-metadata", required=True)
     discovery.add_argument("--output", required=True, help="new evidence directory")
-    for name, description in (("calibrate", "baseline-only calibration: v1 five, v2 six processes per row"),
-                              ("control", "v2 only: six independent balanced unchanged A/A pairs per row"),
-                              ("compare", "profile-bound comparison; v2 uses six balanced pairs per row"),
+    for name, description in (("calibrate", "baseline-only calibration: v1 five, v2/v3 six processes per row"),
+                              ("control", "protocol 2/3: six independent balanced unchanged A/A pairs per row"),
+                              ("compare", "profile-bound comparison; v2/v3 use six balanced pairs per row"),
                               ("smoke", "one short process per row; never performance qualification")):
         sub = commands.add_parser(name, help=description)
         protocol_arguments(sub)
-        sub.add_argument("--method-review", help="external prospective source/host/cost review JSON (v2)")
-        sub.add_argument("--method-review-sha256", help="pinned method review bytes (v2)")
+        sub.add_argument("--method-review", help="external prospective source/host/cost review JSON (protocol 2/3)")
+        sub.add_argument("--method-review-sha256", help="pinned method review bytes (protocol 2/3)")
         sub.add_argument("--target", choices=TARGETS, required=True)
         sub.add_argument("--baseline", required=True, help="explicit prebuilt executable")
         sub.add_argument("--baseline-metadata", required=True, help="hash-bound build provenance JSON")
@@ -1755,12 +2360,12 @@ def parser():
             sub.add_argument("--calibration", required=True)
             sub.add_argument("--calibration-plan-sha256", required=True)
         if name == "smoke":
-            sub.add_argument("--workload", choices=list(DEFINITIONS))
+            sub.add_argument("--workload", choices=list(V3_DEFINITIONS))
     freeze = commands.add_parser("freeze", help="review calibration and exclusively write a numeric target profile")
     protocol_arguments(freeze)
-    freeze.add_argument("--control", help="separate unchanged control evidence directory (v2)")
-    freeze.add_argument("--profile-review", help="external review binding exact method/cohorts/envelopes (v2)")
-    freeze.add_argument("--profile-review-sha256", help="pinned external numerical profile review bytes (v2)")
+    freeze.add_argument("--control", help="separate unchanged control evidence directory (protocol 2/3)")
+    freeze.add_argument("--profile-review", help="external review binding exact method/cohorts/envelopes (protocol 2/3)")
+    freeze.add_argument("--profile-review-sha256", help="pinned external numerical profile review bytes (protocol 2/3)")
     freeze.add_argument("--calibration", required=True)
     freeze.add_argument("--reviewer", required=True)
     freeze.add_argument("--rationale", required=True)
@@ -1774,11 +2379,12 @@ def main(argv=None):
     args = parser().parse_args(argv)
     try:
         if args.command == "policy":
-            if args.protocol_version == 2:
-                definitions = definitions_for(args.build_mode)
-                result = {"format_version": 2, "build_mode": args.build_mode, "policy": V2_POLICY,
+            if args.protocol_version >= 2:
+                definitions = definitions_for(args.build_mode, args.protocol_version)
+                result = {"format_version": args.protocol_version, "build_mode": args.build_mode,
+                          "policy": policy_for(args.protocol_version),
                           "workloads": list(definitions.values()), "execution_limits": {
-                              mode: execution_limits(mode, len(schedule(mode, list(definitions), 2)))
+                              mode: execution_limits(mode, len(schedule(mode, list(definitions), args.protocol_version)))
                               for mode in ("smoke", "calibration", "control", "comparison")},
                           "qualification": "requires source-bound runtime closure, observer eligibility review, calibration, control, and paired comparison"}
             else:
@@ -1791,7 +2397,7 @@ def main(argv=None):
         elif args.command == "freeze":
             evidence = evaluate(args.calibration)
             require(evidence["plan"]["format_version"] == args.protocol_version, "freeze protocol mismatch")
-            if args.protocol_version == 2:
+            if args.protocol_version >= 2:
                 require(args.build_mode == evidence["plan"]["build_mode"], "freeze build mode mismatch")
                 require(args.control is not None, "v2 freeze requires independent unchanged control")
                 result = profile_from_v2(evidence, args.calibration, evaluate(args.control), args.control,
@@ -1801,7 +2407,7 @@ def main(argv=None):
             output = Path(args.output).resolve()
             require(Path(args.calibration).resolve() not in output.parents,
                     "profile must be separate from frozen calibration")
-            if args.protocol_version == 2:
+            if args.protocol_version >= 2:
                 require(Path(args.control).resolve() not in output.parents,
                         "profile must be separate from frozen control")
             save(output, result)

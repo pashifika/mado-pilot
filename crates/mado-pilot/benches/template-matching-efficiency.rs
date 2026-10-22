@@ -2,10 +2,9 @@
 //!
 //! `template-matching-timing` builds the normal mode: system allocator, no work
 //! counters. `template-matching-benchmark` builds the instrumented mode with
-//! counted Rust allocation and backend/mapping work. Protocol 1 is the historical
-//! instrumented format; protocol 2 adds the compiled `build_mode`, the effective
-//! OpenCV thread setting observed before and after the selected work, and
-//! reports metrics and rows without an observation source as unavailable.
+//! counted Rust allocation and backend/mapping work. Protocol3 adds public
+//! Session/query/lifecycle rows and separates logical corpus identity from
+//! apparatus source. Historical protocol1/2 artifacts retain their own readers.
 
 #[cfg(not(feature = "template-matching-benchmark"))]
 const _: () = assert!(
@@ -47,10 +46,16 @@ mod cpu;
 mod fixtures;
 #[path = "support/template_efficiency_formats.rs"]
 mod formats;
+#[path = "support/template_efficiency_queries.rs"]
+mod queries;
 #[path = "support/ocr_text_watch_resources.rs"]
 mod resources;
 #[path = "support/template_efficiency_runtime.rs"]
 mod runtime;
+#[path = "support/template_efficiency_session_fixtures.rs"]
+mod session_fixtures;
+#[path = "support/template_efficiency_sessions.rs"]
+mod sessions;
 #[cfg(feature = "template-matching-benchmark")]
 #[path = "support/template_efficiency_watch.rs"]
 mod watch;
@@ -687,8 +692,26 @@ fn observe(row: Workload, smoke: bool) -> Value {
     let mut setup_error = None;
     let mut selection = matches!(row.kind, Kind::Selection).then(|| SelectionFixture::new(row));
     let is_contract = counter_oracle(row);
-    let mut format_observations: Vec<Value> = Vec::with_capacity(warmups + count);
-    let mut search = if selection.is_none() && !is_contract {
+    let is_session = matches!(row.kind, Kind::Session(_));
+    let mut format_observations =
+        Vec::with_capacity(if matches!(row.kind, Kind::RoiFormatTransition) {
+            warmups + count
+        } else {
+            0
+        });
+    let mut unit_observations = Vec::with_capacity(if is_session { warmups + count } else { 0 });
+    let mut session = if is_session {
+        match sessions::Fixture::new(row) {
+            Ok(fixture) => Some(fixture),
+            Err(error) => {
+                setup_error = Some(error);
+                None
+            }
+        }
+    } else {
+        None
+    };
+    let mut search = if selection.is_none() && !is_contract && !is_session {
         match SearchFixture::new(row) {
             Ok(fixture) => Some(fixture),
             Err(error) => {
@@ -703,6 +726,23 @@ fn observe(row: Workload, smoke: bool) -> Value {
         for iteration in 0..warmups + count {
             let sample = if let Some(fixture) = &mut selection {
                 fixture.run()
+            } else if let Some(fixture) = &mut session {
+                match fixture.prepare_iteration() {
+                    Ok(()) => {
+                        let (sample, observation) = fixture.run();
+                        unit_observations.push(observation);
+                        sample
+                    }
+                    Err(error) => {
+                        unit_observations.push(json!({"correct": false, "error": error}));
+                        Sample {
+                            elapsed_ns: 0,
+                            cpu_ns: None,
+                            correct: false,
+                            error: Some(error),
+                        }
+                    }
+                }
             } else if is_contract {
                 let (sample, observation) = contract_sample(row);
                 format_observations.extend(observation);
@@ -725,9 +765,15 @@ fn observe(row: Workload, smoke: bool) -> Value {
                 samples.push(sample);
             }
             if iteration + 1 == warmups {
+                if let Some(fixture) = &mut session {
+                    fixture.checkpoint("after-warmups");
+                }
                 steady_before = Memory::observe();
             }
         }
+    }
+    if let Some(fixture) = &mut session {
+        fixture.checkpoint("after-samples");
     }
     let after = Memory::observe();
     #[cfg(feature = "template-matching-benchmark")]
@@ -737,9 +783,28 @@ fn observe(row: Workload, smoke: bool) -> Value {
     );
     let mapping_owner_live = search
         .as_ref()
-        .is_some_and(|fixture| fixture.mapping_owner.is_some());
+        .is_some_and(|fixture| fixture.mapping_owner.is_some())
+        || session
+            .as_ref()
+            .is_some_and(sessions::Fixture::mapping_owner_live);
+    let mut owner_error = None;
+    let owner_observations = match session.as_mut().map(sessions::Fixture::finish) {
+        Some(Ok(observations)) => observations,
+        Some(Err(error)) => {
+            owner_error = Some(error);
+            Value::Null
+        }
+        None => Value::Null,
+    };
+    let owner_failures = owner_observations.as_array().map_or(0, |points| {
+        points
+            .iter()
+            .filter(|point| !point["error"].is_null() || point["owner_correct"] == false)
+            .count()
+    });
     drop(selection.take());
     drop(search.take());
+    drop(session.take());
     let after_drop = Memory::observe();
     #[cfg(feature = "template-matching-benchmark")]
     let (heap_peak, allocations, final_work) = (
@@ -769,8 +834,15 @@ fn observe(row: Workload, smoke: bool) -> Value {
     .any(Option::is_none);
     #[cfg(feature = "template-matching-benchmark")]
     let (lifecycle_correct, counted) = {
+        let independent = matches!(
+            row.kind,
+            Kind::Session(session_fixtures::Case::LifecycleIndependent)
+        );
+        let cache_limit = 33_554_432 * if independent { 2 } else { 1 };
         let lifecycle_correct = final_work.bgr_retained_bytes == work_before.bgr_retained_bytes
-            && work_after.bgr_retained_bytes <= 33_554_432
+            && final_work.bgr_evicted_bytes == work_before.bgr_evicted_bytes
+            && work_after.bgr_retained_bytes <= cache_limit
+            && work_after.bgr_retained_peak_bytes <= cache_limit
             && activity.is_some_and(|value| {
                 value.active_finds == 0
                     && (!matches!(row.kind, Kind::Concurrent) || value.peak_active_finds >= 2)
@@ -828,7 +900,9 @@ fn observe(row: Workload, smoke: bool) -> Value {
         .filter(|sample| !sample.correct)
         .count()
         + usize::from(setup_error.is_some())
-        + usize::from(lifecycle_correct == Some(false));
+        + usize::from(lifecycle_correct == Some(false))
+        + usize::from(owner_error.is_some())
+        + owner_failures;
     let mut report = row.manifest(smoke);
     let object = report.as_object_mut().expect("manifest object");
     object.insert("samples".into(), json!(samples));
@@ -837,6 +911,11 @@ fn observe(row: Workload, smoke: bool) -> Value {
     object.insert("setup_error".into(), json!(setup_error));
     if matches!(row.kind, Kind::RoiFormatTransition) {
         object.insert("format_observations".into(), json!(format_observations));
+    }
+    if is_session {
+        object.insert("unit_observations".into(), json!(unit_observations));
+        object.insert("owner_observations".into(), owner_observations);
+        object.insert("owner_error".into(), json!(owner_error));
     }
     let mut metrics = json!({
         "iterations": warmups + count, "cpu_ns": cpu_ns,
@@ -863,87 +942,77 @@ fn observe(row: Workload, smoke: bool) -> Value {
     report
 }
 
+const PROTOCOL_VERSION: u8 = 3;
+
+fn workload_rows() -> impl Iterator<Item = Workload> {
+    WORKLOADS
+        .iter()
+        .chain(&session_fixtures::WORKLOADS)
+        .copied()
+}
+
 struct Arguments {
     list: bool,
     smoke: bool,
     workload: Option<String>,
-    protocol: u8,
 }
 
-/// Parses arguments; a failure carries the protocol version parsed so far.
-fn arguments() -> Result<Arguments, (u8, String)> {
+fn arguments() -> Result<Arguments, String> {
     let mut parsed = Arguments {
         list: false,
         smoke: false,
         workload: None,
-        protocol: 1,
     };
-    let result = (|| -> Result<(), String> {
-        let mut protocol_given = false;
-        let mut values = std::env::args().skip(1);
-        while let Some(value) = values.next() {
-            match value.as_str() {
-                "--list" => parsed.list = true,
-                "--smoke" => parsed.smoke = true,
-                "--bench" => {}
-                "--workload" => {
-                    if parsed.workload.is_some() {
-                        return Err("--workload supplied twice".into());
-                    }
-                    parsed.workload = Some(values.next().ok_or("--workload requires an ID")?);
+    let mut protocol_given = false;
+    let mut values = std::env::args().skip(1);
+    while let Some(value) = values.next() {
+        match value.as_str() {
+            "--list" => parsed.list = true,
+            "--smoke" => parsed.smoke = true,
+            "--bench" => {}
+            "--workload" => {
+                if parsed.workload.is_some() {
+                    return Err("--workload supplied twice".into());
                 }
-                "--protocol-version" => {
-                    if protocol_given {
-                        return Err("--protocol-version supplied twice".into());
-                    }
-                    protocol_given = true;
-                    parsed.protocol = match values.next().as_deref() {
-                        Some("1") => 1,
-                        Some("2") => 2,
-                        _ => return Err("--protocol-version requires 1 or 2".into()),
-                    };
+                parsed.workload = Some(values.next().ok_or("--workload requires an ID")?);
+            }
+            "--protocol-version" => {
+                if protocol_given {
+                    return Err("--protocol-version supplied twice".into());
                 }
-                _ => return Err(format!("unsupported argument: {value}")),
+                protocol_given = true;
+                if values.next().as_deref() != Some("3") {
+                    return Err("--protocol-version requires 3; historical artifacts retain their original protocol".into());
+                }
             }
+            _ => return Err(format!("unsupported argument: {value}")),
         }
-        if !INSTRUMENTED && parsed.protocol == 1 {
-            return Err(
-                "format version 1 requires the instrumented template-matching-benchmark build"
-                    .into(),
-            );
-        }
-        if let Some(id) = &parsed.workload {
-            let row = WORKLOADS
-                .iter()
-                .find(|row| row.id == id)
-                .ok_or_else(|| format!("unknown workload: {id}"))?;
-            if !INSTRUMENTED && counter_oracle(*row) {
-                return Err(format!("{id} requires the instrumented build"));
-            }
-        }
-        Ok(())
-    })();
-    match result {
-        Ok(()) => Ok(parsed),
-        Err(error) => Err((parsed.protocol, error)),
     }
+    if let Some(id) = &parsed.workload {
+        let row = workload_rows()
+            .find(|row| row.id == id)
+            .ok_or_else(|| format!("unknown workload: {id}"))?;
+        if !INSTRUMENTED && counter_oracle(row) {
+            return Err(format!("{id} requires the instrumented build"));
+        }
+    }
+    Ok(parsed)
 }
 
-/// Version-two declaration of the observations this build cannot make.
+/// Declares observations with no source in this compiled mode.
 fn unavailable() -> Value {
     if INSTRUMENTED {
         json!({"reason": null, "metrics": [], "workloads": []})
     } else {
-        let workloads: Vec<_> = WORKLOADS
-            .iter()
-            .filter(|row| counter_oracle(**row))
+        let workloads: Vec<_> = workload_rows()
+            .filter(|row| counter_oracle(*row))
             .map(|row| row.id)
             .collect();
         json!({"reason": UNAVAILABLE_REASON, "metrics": INSTRUMENTED_METRICS, "workloads": workloads})
     }
 }
 
-/// Protocol-two observation of the effective OpenCV thread setting; never tuned here.
+/// Observes the native OpenCV thread setting without changing it.
 fn thread_observation() -> Value {
     match parallel_threads() {
         Ok(observed) => {
@@ -999,17 +1068,75 @@ fn target() -> String {
     }
 }
 
+fn apparatus() -> Value {
+    let sources: [(&str, &[u8]); 11] = [
+        (
+            "crates/mado-pilot/benches/template-matching-efficiency.rs",
+            include_bytes!("template-matching-efficiency.rs"),
+        ),
+        (
+            "crates/mado-pilot/benches/support/template_efficiency_fixtures.rs",
+            include_bytes!("support/template_efficiency_fixtures.rs"),
+        ),
+        (
+            "crates/mado-pilot/benches/support/template_efficiency_session_fixtures.rs",
+            include_bytes!("support/template_efficiency_session_fixtures.rs"),
+        ),
+        (
+            "crates/mado-pilot/benches/support/template_efficiency_sessions.rs",
+            include_bytes!("support/template_efficiency_sessions.rs"),
+        ),
+        (
+            "crates/mado-pilot/benches/support/template_efficiency_queries.rs",
+            include_bytes!("support/template_efficiency_queries.rs"),
+        ),
+        (
+            "crates/mado-pilot/benches/support/template_efficiency_formats.rs",
+            include_bytes!("support/template_efficiency_formats.rs"),
+        ),
+        (
+            "crates/mado-pilot/benches/support/template_efficiency_watch.rs",
+            include_bytes!("support/template_efficiency_watch.rs"),
+        ),
+        (
+            "crates/mado-pilot/benches/support/template_efficiency_runtime.rs",
+            include_bytes!("support/template_efficiency_runtime.rs"),
+        ),
+        (
+            "crates/mado-pilot/benches/support/process_cpu.rs",
+            include_bytes!("support/process_cpu.rs"),
+        ),
+        (
+            "crates/mado-pilot/benches/support/ocr_text_watch_resources.rs",
+            include_bytes!("support/ocr_text_watch_resources.rs"),
+        ),
+        (
+            "crates/support/testkit/src/match_fixtures.rs",
+            include_bytes!("../../support/testkit/src/match_fixtures.rs"),
+        ),
+    ];
+    let source_files: serde_json::Map<_, _> = sources
+        .into_iter()
+        .map(|(path, bytes)| {
+            (
+                path.to_owned(),
+                mado_pilot::ContentDigest::of(bytes).to_string().into(),
+            )
+        })
+        .collect();
+    json!({"accounting_contract": "prepared-cache-row-winner-v1", "source_files": source_files})
+}
+
 fn run(arguments: Arguments) -> Result<Value, String> {
     let backend = OpenCvBackend::new().map_err(|error| error.to_string())?;
     let version = backend.descriptor().version().to_owned();
     drop(backend);
-    let threads_before = (arguments.protocol == 2).then(thread_observation);
+    let threads_before = thread_observation();
     let (timer_resolution_ns, cpu_timer_resolution_ns) = resolutions();
-    let workloads: Vec<_> = WORKLOADS
-        .iter()
-        .filter(|row| INSTRUMENTED || !counter_oracle(**row))
+    let workloads: Vec<_> = workload_rows()
+        .filter(|row| INSTRUMENTED || !counter_oracle(*row))
         .filter(|row| arguments.workload.as_deref().is_none_or(|id| row.id == id))
-        .map(|&row| {
+        .map(|row| {
             if arguments.list {
                 row.manifest(arguments.smoke)
             } else {
@@ -1017,14 +1144,14 @@ fn run(arguments: Arguments) -> Result<Value, String> {
             }
         })
         .collect();
-    let threads_after = (arguments.protocol == 2).then(thread_observation);
-    // Corpus identity generation is outside every measured resource interval.
+    let threads_after = thread_observation();
+    // Corpus and source hashing are outside every measured resource interval.
     let (fixture_sha256, fixture) = fixtures::manifest();
-    let mut report = json!({
-        "format_version": arguments.protocol, "kind": if arguments.list { "manifest" } else { "observations" },
+    Ok(json!({
+        "format_version": PROTOCOL_VERSION, "kind": if arguments.list { "manifest" } else { "observations" },
         "target": target(), "opencv_version": version, "fixture_sha256": fixture_sha256,
         "loaded_native_runtime": runtime::observe()?,
-        "fixture": fixture, "warmups": if arguments.smoke { 1 } else { 20 },
+        "fixture": fixture, "apparatus": apparatus(), "warmups": if arguments.smoke { 1 } else { 20 },
         "sample_count": if arguments.smoke { 3 } else { 200 },
         "timer_resolution_ns": timer_resolution_ns, "cpu_timer_resolution_ns": cpu_timer_resolution_ns,
         "timer_resolution_method": "minimum-observed-positive-Instant-delta",
@@ -1032,32 +1159,19 @@ fn run(arguments: Arguments) -> Result<Value, String> {
         "cpu_clock_unit_ns": if cfg!(windows) { Some(100) } else if cfg!(target_os = "macos") { Some(1000) } else { None },
         "cpu_timer_resolution_source": "bounded self-process CPU probe; observed deltas are not guaranteed accounting accuracy",
         "timer_resolution_source": "minimum positive Instant delta probe",
-        "workloads": workloads,
-    });
-    if arguments.protocol == 2 {
-        report["build_mode"] = BUILD_MODE.into();
-        report["global_allocator"] = if INSTRUMENTED {
-            "accounting-over-system"
-        } else {
-            "system"
-        }
-        .into();
-        report["unavailable"] = unavailable();
-        report["opencv_parallel_threads"] = json!({
+        "workloads": workloads, "build_mode": BUILD_MODE,
+        "global_allocator": if INSTRUMENTED { "accounting-over-system" } else { "system" },
+        "unavailable": unavailable(),
+        "opencv_parallel_threads": {
             "method": "opencv-runtime-backend-and-thread-setting-v1",
             "before": threads_before, "after": threads_after,
             "changed": threads_before != threads_after,
-        });
-    }
-    Ok(report)
+        },
+    }))
 }
 
 fn main() {
-    let (protocol, outcome) = match arguments() {
-        Ok(arguments) => (arguments.protocol, run(arguments)),
-        Err((protocol, error)) => (protocol, Err(error)),
-    };
-    let (report, failed) = match outcome {
+    let (report, failed) = match arguments().and_then(run) {
         Ok(report) => {
             let failed = report["workloads"].as_array().is_some_and(|rows| {
                 rows.iter().any(|row| {
@@ -1067,22 +1181,18 @@ fn main() {
                 })
             });
             let threads = &report["opencv_parallel_threads"];
-            let thread_failure = protocol == 2
-                && (threads["changed"].as_bool() != Some(false)
-                    || ["before", "after"].iter().any(|point| {
-                        let observed = &threads[*point];
-                        !observed["reason"].is_null()
-                            || observed["threads"].as_i64().is_none_or(|count| count <= 0)
-                            || observed["framework"].as_str().is_none_or(str::is_empty)
-                    }));
+            let thread_failure = threads["changed"].as_bool() != Some(false)
+                || ["before", "after"].iter().any(|point| {
+                    let observed = &threads[*point];
+                    !observed["reason"].is_null()
+                        || observed["threads"].as_i64().is_none_or(|count| count <= 0)
+                        || observed["framework"].as_str().is_none_or(str::is_empty)
+                });
             (report, failed || thread_failure)
         }
         Err(error) => {
-            let mut report = json!({"format_version": protocol, "kind": "observations",
-                "target": target(), "error": error, "workloads": []});
-            if protocol == 2 {
-                report["build_mode"] = BUILD_MODE.into();
-            }
+            let report = json!({"format_version": PROTOCOL_VERSION, "kind": "observations",
+                "target": target(), "build_mode": BUILD_MODE, "error": error, "workloads": []});
             (report, true)
         }
     };

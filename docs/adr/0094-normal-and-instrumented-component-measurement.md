@@ -26,11 +26,11 @@ observation.
 1. Build normal and instrumented component executables separately. Normal uses
    the system allocator without matching/mapping accounting. Instrumented code
    retains allocation/work/ownership evidence. Both use the same first-party
-   fixtures and public-result oracles. Protocol 2 records compiled mode and
-   unavailable fields explicitly; feature-unified instrumentation rejects a
-   normal build at compile time. Protocol 1 keeps its historical interpretation.
+   fixtures and public-result oracles. Component protocols record compiled mode
+   and unavailable fields explicitly; feature-unified instrumentation rejects a
+   normal build at compile time. Historical protocols retain their interpretation.
 2. Observe the runtime backend and OpenCV parallel-region thread setting before
-   and after protocol-2 work. An optional, benchmark-only C++17 scalar boundary
+   and after component work. An optional, benchmark-only C++17 scalar boundary
    contains C++ exceptions and copies a bounded backend name into caller-owned
    storage. It neither sets thread limits nor exposes a new SDK API or C ABI.
    Missing, unsupported, invalid or changed observations make the executable and
@@ -68,6 +68,15 @@ observation.
    The SDK owns its documented parameter contracts and its own resources and
    workers; applications need not adopt these recorders. Component evidence is
    not consumer-startup, UI, capture, input or arbitrary-application evidence.
+7. Use protocol 3 for the successor Session corpus. Keep logical input, request,
+   ordering and timing/owner contracts separate from each role's helper-source
+   hashes and implemented physical accounting. Validate all declared turnover
+   strata as well as their overlapping cycle, without adding them. Query close
+   and retained-terminal verification are outside its primary wait interval;
+   lifecycle contracts include their entire owner script. Normal unavailable
+   fields remain unavailable, and two independent caches do not widen a
+   per-backend bound or the final-owner residual allowance. The collector retains
+   protocol-1/2 readers; current binaries emit only protocol 3.
 
 ## Alternatives
 

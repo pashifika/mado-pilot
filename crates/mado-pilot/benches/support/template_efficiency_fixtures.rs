@@ -30,6 +30,7 @@ pub(super) enum Kind {
     RoiFormatTransition,
     WatchAnalysisAlways,
     WatchExactRgba,
+    Session(super::session_fixtures::Case),
 }
 
 #[derive(Debug, Clone, Copy)]
@@ -45,10 +46,14 @@ pub(super) struct Workload {
     pub roi: bool,
     pub k: usize,
     pub suppression: Suppression,
+    pub format: PixelFormat,
 }
 
 impl Workload {
     pub(super) fn manifest(self, smoke: bool) -> Value {
+        if matches!(self.kind, Kind::Session(_)) {
+            return super::session_fixtures::manifest(self, smoke);
+        }
         let (warmups, samples) = self.plan(smoke);
         let full = [
             0,
@@ -152,6 +157,7 @@ const fn row(
         roi,
         k,
         suppression,
+        format: PixelFormat::Rgba8,
     }
 }
 
@@ -454,6 +460,16 @@ pub(super) fn origin(extent: PixelExtent, template: usize, variant: u32) -> (i32
 }
 
 pub(super) fn scene(extent: PixelExtent, variant: u32, format: PixelFormat) -> Vec<u8> {
+    scene_with_patch(extent, variant, format, PATCH, true)
+}
+
+pub(super) fn scene_with_patch(
+    extent: PixelExtent,
+    variant: u32,
+    format: PixelFormat,
+    patch: PixelExtent,
+    planted: bool,
+) -> Vec<u8> {
     let mut pixels = Vec::with_capacity(extent.width() as usize * extent.height() as usize * 4);
     for y in 0..extent.height() {
         for x in 0..extent.width() {
@@ -461,13 +477,20 @@ pub(super) fn scene(extent: PixelExtent, variant: u32, format: PixelFormat) -> V
             pixels.extend_from_slice(&[r, g, b, 255]);
         }
     }
-    for template in 0..if extent.width() == 96 { 1 } else { 8 } {
+    let count = if !planted {
+        0
+    } else if extent.width() == 96 {
+        1
+    } else {
+        8
+    };
+    for template in 0..count {
         let (left, top) = origin(extent, template, variant);
         let left = u32::try_from(left).expect("nonnegative planted column");
         let top = u32::try_from(top).expect("nonnegative planted row");
         let seed = 0xabc0_0000 + u32::try_from(template).expect("eight templates");
-        for y in 0..PATCH.height() {
-            for x in 0..PATCH.width() {
+        for y in 0..patch.height() {
+            for x in 0..patch.width() {
                 let offset = (((top + y) * extent.width() + left + x) * 4) as usize;
                 pixels[offset..offset + 3].copy_from_slice(&color(seed, x, y));
             }
@@ -484,21 +507,46 @@ pub(super) fn scene(extent: PixelExtent, variant: u32, format: PixelFormat) -> V
 }
 
 pub(super) fn templates() -> Vec<TemplateSource> {
-    (0..8)
+    templates_with_options(
+        PATCH,
+        MatchDefaults::new(0.99, 1).expect("fixed options"),
+        8,
+    )
+}
+
+pub(super) fn templates_with_options(
+    patch: PixelExtent,
+    defaults: MatchDefaults,
+    count: usize,
+) -> Vec<TemplateSource> {
+    (0..count)
         .map(|index| {
-            let mut rgb = Vec::with_capacity((PATCH.width() * PATCH.height() * 3) as usize);
-            for y in 0..PATCH.height() {
-                for x in 0..PATCH.width() {
-                    rgb.extend_from_slice(&color(0xabc0_0000 + index, x, y));
+            let mut rgb = Vec::with_capacity((patch.width() * patch.height() * 3) as usize);
+            for y in 0..patch.height() {
+                for x in 0..patch.width() {
+                    rgb.extend_from_slice(&color(
+                        0xabc0_0000 + u32::try_from(index).expect("eight templates"),
+                        x,
+                        y,
+                    ));
                 }
             }
             TemplateSource::new(TemplateSourceRequest {
-                id: TemplateId::new(format!("efficiency.patch{index}")).expect("fixed template ID"),
+                id: TemplateId::new(if patch == PATCH {
+                    format!("efficiency.patch{index}")
+                } else {
+                    format!(
+                        "efficiency.patch{}x{}.{index}",
+                        patch.width(),
+                        patch.height()
+                    )
+                })
+                .expect("fixed template ID"),
                 encoding: TemplateEncoding::Png,
-                extent: PATCH,
+                extent: patch,
                 space: CoordinateSpace::CapturePixels,
-                defaults: MatchDefaults::new(0.99, 1).expect("fixed matching options"),
-                content: Arc::from(png::encode_rgb(PATCH.width(), PATCH.height(), &rgb)),
+                defaults,
+                content: Arc::from(png::encode_rgb(patch.width(), patch.height(), &rgb)),
             })
             .expect("generated PNG source")
         })
@@ -609,21 +657,56 @@ pub(super) fn manifest() -> (String, Value) {
             json!({"id": row.id, "sha256": ContentDigest::of(&encoded).to_string()})
         })
         .collect();
+    let mut direct_inputs = super::formats::manifest();
+    let direct = direct_inputs.as_object_mut().expect("format declaration");
+    direct.retain(|key, _| {
+        matches!(
+            key.as_str(),
+            "cases"
+                | "transition_cases"
+                | "operation_timeout_seconds"
+                | "prepared_reader_pause_timeout_seconds"
+        )
+    });
+    for case in direct["cases"].as_array_mut().expect("format cases") {
+        case.as_object_mut().expect("format case").retain(|key, _| {
+            matches!(
+                key.as_str(),
+                "id" | "source_format"
+                    | "row_padding_bytes"
+                    | "nonzero_roi"
+                    | "forced_bgra_public_mapping"
+                    | "expected_matches"
+                    | "expected_bounds"
+            )
+        });
+    }
+    for (index, case) in direct["transition_cases"]
+        .as_array_mut()
+        .expect("transitions")
+        .iter_mut()
+        .enumerate()
+    {
+        let case = case.as_object_mut().expect("transition");
+        case.retain(|key, _| matches!(key.as_str(), "id" | "region" | "expected_bounds"));
+        case.insert(
+            "source_format".into(),
+            if index == 2 { "bgra8" } else { "rgba8" }.into(),
+        );
+    }
+    direct.insert("padded_row_bytes".into(), 16.into());
+    direct.insert("padding_value".into(), 0xA5.into());
+    let sessions = super::session_fixtures::corpus(&template_digests, &scenes);
     let fixture = json!({
-        "generator": "template-efficiency-integer-v2-direct-formats", "license": "repository-first-party",
+        "generator": "template-efficiency-integer-v3-session", "license": "repository-first-party",
+        "historical_component_generator": "template-efficiency-integer-v2-direct-formats",
         "background_seed": 0x3141_5926_u32, "patch_seed_base": 0xabc0_0000_u32,
         "patch_width": PATCH.width(), "patch_height": PATCH.height(),
         "roi": [ROI.0, ROI.1, ROI.2, ROI.3], "score_tolerance": SCORE_TOLERANCE,
         "templates": template_digests, "scenes": scenes, "score_maps": scores,
-        "direct_formats": {
-            "helper_source_sha256": ContentDigest::of(include_bytes!("template_efficiency_formats.rs")).to_string(),
-            "fixture_source_sha256": ContentDigest::of(include_bytes!("template_efficiency_fixtures.rs")).to_string(),
-            "protocol": super::formats::manifest(),
-            "padded_row_bytes": 16, "padding_value": 0xA5,
-        },
+        "direct_formats": direct_inputs,
+        "sessions": sessions,
         "watcher": {
-            "helper_source_sha256": ContentDigest::of(include_bytes!("template_efficiency_watch.rs")).to_string(),
-            "generator_source_sha256": ContentDigest::of(include_bytes!("../../../support/testkit/src/match_fixtures.rs")).to_string(),
             "scene_rgba_sha256": ContentDigest::of(&match_fixtures::scene_pixels(PixelFormat::Rgba8)).to_string(),
             "background_rgba_sha256": ContentDigest::of(&match_fixtures::background_pixels(PixelFormat::Rgba8)).to_string(),
             "patch_png_sha256": ContentDigest::of(match_fixtures::planted_template("watch-present").content()).to_string(),

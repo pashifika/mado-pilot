@@ -799,7 +799,7 @@ class EvidenceTests(unittest.TestCase):
             with self.subTest(stage=stage, exception=exception_type.__name__):
                 destination = self.root / f"interrupted-{index}"
                 args = collector.parser().parse_args([
-                    "smoke", "--target", TARGET, "--baseline", "baseline", "--baseline-metadata", "build.json",
+                    "smoke", "--protocol-version", "1", "--target", TARGET, "--baseline", "baseline", "--baseline-metadata", "build.json",
                     "--output", str(destination), "--workload", "single-small96x64"])
                 interruption = exception_type("collection stopped")
                 record = {"exit_code": 0, "timed_out": False, "output_limited": False, "cleanup_ok": False,
@@ -844,7 +844,7 @@ class EvidenceTests(unittest.TestCase):
     def test_interruption_survives_real_evidence_write_failure(self):
         destination = self.root / "interrupted"
         args = collector.parser().parse_args([
-            "smoke", "--target", TARGET, "--baseline", "baseline", "--baseline-metadata", "build.json",
+            "smoke", "--protocol-version", "1", "--target", TARGET, "--baseline", "baseline", "--baseline-metadata", "build.json",
             "--output", str(destination), "--workload", "single-small96x64"])
         interruption = KeyboardInterrupt("collection stopped")
 
@@ -959,7 +959,7 @@ class EvidenceTests(unittest.TestCase):
         binary, metadata = self.root / "binary", self.root / "failed-build.json"
         binary.write_bytes(b"explicit executable bytes")
         args = collector.parser().parse_args([
-            "attest", "--target", TARGET, "--binary", str(binary), "--build-argv-json", '["cargo","bench"]',
+            "attest", "--protocol-version", "1", "--target", TARGET, "--binary", str(binary), "--build-argv-json", '["cargo","bench"]',
             "--output", str(metadata)])
         record = {"exit_code": 1, "timed_out": False, "output_limited": False, "cleanup_ok": True,
                   "launch_error": None, "duration_seconds": 0.1, "stdout": "partial observation", "stderr": "failure"}
@@ -975,7 +975,7 @@ class EvidenceTests(unittest.TestCase):
         binary, metadata = self.root / "binary", self.root / "interrupted-build.json"
         binary.write_bytes(b"explicit executable bytes")
         args = collector.parser().parse_args([
-            "attest", "--target", TARGET, "--binary", str(binary), "--build-argv-json", '["cargo","bench"]',
+            "attest", "--protocol-version", "1", "--target", TARGET, "--binary", str(binary), "--build-argv-json", '["cargo","bench"]',
             "--output", str(metadata)])
         record = {"exit_code": 0, "timed_out": False, "output_limited": False, "cleanup_ok": True,
                   "launch_error": None, "duration_seconds": 0.1, "stdout": "completed probe", "stderr": ""}
@@ -1003,7 +1003,7 @@ class EvidenceTests(unittest.TestCase):
     def test_invalid_manifest_stops_measurement_but_preserves_attempt_and_unrun_rows(self):
         destination = self.root / "collection"
         args = collector.parser().parse_args([
-            "smoke", "--target", TARGET, "--baseline", "baseline", "--baseline-metadata", "build.json",
+            "smoke", "--protocol-version", "1", "--target", TARGET, "--baseline", "baseline", "--baseline-metadata", "build.json",
             "--output", str(destination), "--workload", "single-small96x64"])
         wrong = manifest()
         wrong["workloads"].pop()
@@ -1030,7 +1030,7 @@ class EvidenceTests(unittest.TestCase):
         collector.save(profile_path, profile)
         destination = calibration / "candidate-results"
         args = collector.parser().parse_args([
-            "compare", "--target", TARGET, "--baseline", "baseline", "--baseline-metadata", "base.json",
+            "compare", "--protocol-version", "1", "--target", TARGET, "--baseline", "baseline", "--baseline-metadata", "base.json",
             "--candidate", "candidate", "--candidate-metadata", "candidate.json", "--exclusive-host",
             "--profile", str(profile_path), "--profile-sha256", collector.sha256(profile_path),
             "--output", str(destination)])
@@ -1078,7 +1078,7 @@ class BoundedExecutionTests(unittest.TestCase):
             root = Path(directory)
             output = root / "smoke"
             args = collector.parser().parse_args([
-                "smoke", "--target", TARGET, "--baseline", "binary", "--baseline-metadata", "build.json",
+                "smoke", "--protocol-version", "1", "--target", TARGET, "--baseline", "binary", "--baseline-metadata", "build.json",
                 "--output", str(output), "--workload", "single-small96x64"])
             binding = identity(root, "baseline")
             record = {"exit_code": 0, "timed_out": False, "output_limited": False, "cleanup_ok": True,
@@ -2270,6 +2270,889 @@ class RuntimePreflightTests(unittest.TestCase):
               mock.patch.object(collector, "save", side_effect=save),
               self.assertRaisesRegex(KeyboardInterrupt, "primary")):
             collector.runtime_preflight(args)
+
+
+# Independent protocol3 input/oracle data; do not derive it from collector validators.
+V3_ROWS = (
+    ("session-retained-rgba-full-hit", "retained-hit", "rgba8", "full"),
+    ("session-retained-rgba-full-miss", "retained-miss", "rgba8", "full"),
+    ("session-retained-rgba-roi-hit", "retained-hit", "rgba8", "roi"),
+    ("session-retained-rgba-roi-miss", "retained-miss", "rgba8", "roi"),
+    ("session-retained-bgra-full-hit", "retained-hit", "bgra8", "full"),
+    ("session-retained-bgra-full-miss", "retained-miss", "bgra8", "full"),
+    ("session-retained-bgra-roi-hit", "retained-hit", "bgra8", "roi"),
+    ("session-retained-bgra-roi-miss", "retained-miss", "bgra8", "roi"),
+    ("session-group8-rgba-full", "group", "rgba8", "full"),
+    ("session-group8-rgba-same-roi", "group", "rgba8", "roi"),
+    ("session-group8-rgba-distinct-roi", "distinct-group", "rgba8", "distinct"),
+    ("session-group8-bgra-full", "group", "bgra8", "full"),
+    ("session-group8-bgra-same-roi", "group", "bgra8", "roi"),
+    ("session-group8-bgra-distinct-roi", "distinct-group", "bgra8", "distinct"),
+    ("session-owner8-rgba-roi", "owner-group", "rgba8", "roi"),
+    ("session-owner8-bgra-roi", "owner-group", "bgra8", "roi"),
+    ("session-patch64-rgba-full", "patch64", "rgba8", "full"),
+    ("session-patch64-rgba-roi", "patch64", "rgba8", "roi"),
+    ("session-patch64-bgra-full", "patch64", "bgra8", "full"),
+    ("session-patch64-bgra-roi", "patch64", "bgra8", "roi"),
+    ("session-turnover-rgba-full", "turnover", "rgba8", "full"),
+    ("session-turnover-rgba-roi", "turnover", "rgba8", "roi"),
+    ("session-turnover-bgra-full", "turnover", "bgra8", "full"),
+    ("session-turnover-bgra-roi", "turnover", "bgra8", "roi"),
+    ("query-match-rgba-full", "query-match", "rgba8", "full"),
+    ("query-match-rgba-roi", "query-match", "rgba8", "roi"),
+    ("query-match-bgra-full", "query-match", "bgra8", "full"),
+    ("query-match-bgra-roi", "query-match", "bgra8", "roi"),
+    ("query-deadline-rgba-full", "query-deadline", "rgba8", "full"),
+    ("query-deadline-rgba-roi", "query-deadline", "rgba8", "roi"),
+    ("query-deadline-bgra-full", "query-deadline", "bgra8", "full"),
+    ("query-deadline-bgra-roi", "query-deadline", "bgra8", "roi"),
+    ("lifecycle-session-rgba-roi", "lifecycle-session", "rgba8", "roi"),
+    ("lifecycle-session-bgra-roi", "lifecycle-session", "bgra8", "roi"),
+    ("lifecycle-independent-rgba-4k", "lifecycle-independent", "rgba8", "4k"),
+    ("lifecycle-independent-bgra-4k", "lifecycle-independent", "bgra8", "4k"),
+)
+V3_DISTINCT_REGIONS = (
+    (64, 48, 384, 228), (136, 48, 456, 228), (208, 48, 528, 228), (280, 48, 600, 228),
+    (64, 120, 384, 300), (136, 120, 456, 300), (208, 120, 528, 300), (280, 120, 600, 300),
+)
+V3_CASES = {
+    # Sequence, unit, successful backend calls.
+    "retained-hit": (["H0"], "single-search", 1),
+    "retained-miss": (["M"], "single-search", 1),
+    "group": (["H0"], "group8", 8),
+    "distinct-group": (["H0"], "group8", 8),
+    "owner-group": (["H0"], "group8", 8),
+    "patch64": (["H64"], "single-search", 1),
+    "turnover": (["M", "H0", "M", "H1"], "turnover-cycle", 4),
+    "query-match": (["M", "H0", "H1"], "query-match", 3),
+    "query-deadline": (["M"], "query-deadline", 1),
+    "lifecycle-session": (["H0"], "lifecycle", 1),
+    "lifecycle-independent": (["H0"], "lifecycle", 4),
+}
+V3_APPARATUS_SOURCES = (
+    "crates/mado-pilot/benches/template-matching-efficiency.rs",
+    "crates/mado-pilot/benches/support/template_efficiency_fixtures.rs",
+    "crates/mado-pilot/benches/support/template_efficiency_session_fixtures.rs",
+    "crates/mado-pilot/benches/support/template_efficiency_sessions.rs",
+    "crates/mado-pilot/benches/support/template_efficiency_queries.rs",
+    "crates/mado-pilot/benches/support/template_efficiency_formats.rs",
+    "crates/mado-pilot/benches/support/template_efficiency_watch.rs",
+    "crates/mado-pilot/benches/support/template_efficiency_runtime.rs",
+    "crates/mado-pilot/benches/support/process_cpu.rs",
+    "crates/mado-pilot/benches/support/ocr_text_watch_resources.rs",
+    "crates/support/testkit/src/match_fixtures.rs",
+)
+V3_OWNER_ORDER = ("before-setup", "after-warmups", "after-samples", "frame-and-result-released",
+                  "session-closed", "runtime-and-source-released", "final-backend-released")
+V3_SESSION_OWNER_ORDER = ("before-setup", "live-outcome", "caller-frame-released", "session-closed",
+                          "mapping-released", "outcome-released", "runtime-and-source-released",
+                          "final-backend-released")
+V3_INDEPENDENT_OWNER_ORDER = ("before-setup", "two-backends-live", "a-released", "b-reused",
+                              "frame-and-result-released", "final-backend-released")
+
+
+def v3_fixture_contract(case, fmt):
+    sequence, unit, calls = V3_CASES[case]
+    group = case in ("group", "distinct-group", "owner-group")
+    return {"version": 1, "case": case, "source_format": fmt,
+            "patch_extent": [64, 48] if case == "patch64" else [12, 10],
+            "frame_sequence": list(sequence), "template_order": list(range(8)) if group else [0],
+            "unit": unit, "searches_per_unit": calls,
+            "sample_strata": {"hit": 2, "miss": 2} if case == "turnover" else {},
+            "max_independent_backends": 2 if case == "lifecycle-independent" else 1}
+
+
+def v3_fixture_regions(case, region):
+    if region == "distinct":
+        return [list(bounds) for bounds in V3_DISTINCT_REGIONS]
+    bounds = {"full": [0, 0, 1920, 1080], "roi": [64, 48, 384, 228], "4k": [0, 0, 3840, 2160]}[region]
+    return [list(bounds) for _ in range(8 if case in ("group", "owner-group") else 1)]
+
+
+def v3_fixture_work(row, index):
+    case = row["session_contract"]["case"]
+    left, top, right, bottom = row["effective_regions"][0]
+    roi = right - left == 320
+    calls, conversions, copies = {
+        "retained-hit": (1, int(index == 0), int(roi)),
+        "retained-miss": (1, int(index == 0), int(roi)),
+        "patch64": (1, int(index == 0), int(roi)),
+        "group": (8, 1, 8 if roi else 0),
+        "distinct-group": (8, 8, 8),
+        "owner-group": (8, 1, 1),
+        "turnover": (4, 4, 4 if roi else 0),
+        "query-match": (3, 3, 3 if roi else 0),
+        "query-deadline": (1, 1, int(roi)),
+        "lifecycle-session": (1, 1, 1),
+        "lifecycle-independent": (4, 2, 0),
+    }[case]
+    pixels = (right - left) * (bottom - top)
+    return {"accounting_contract": "prepared-cache-row-winner-v1",
+            "backend_find_calls": calls, "backend_find_completions": calls, "backend_find_failures": 0,
+            "bgr_conversions": conversions, "bgr_converted_bytes": conversions * pixels * 3,
+            "mapping_copies": copies, "mapping_copied_bytes": copies * pixels * 4, "correct": True}
+
+
+def v3_manifest(build_mode="normal", role="baseline"):
+    value = v2_manifest(build_mode)
+    value["format_version"] = 3
+    small = [{"id": f"efficiency.patch{i}", "sha256": f"{100 + i:064x}"} for i in range(8)]
+    large = [{"id": f"efficiency.patch64x48.{i}", "sha256": f"{200 + i:064x}"} for i in range(8)]
+    scenes = [
+        {"name": name, "width": width, "height": height, "format": fmt, "stride": width * 4,
+         "patch_extent": extent, "sha256": f"{300 + index:064x}"}
+        for index, (name, width, height, extent, fmt) in enumerate(
+            (name, width, height, extent, fmt) for fmt in ("rgba8", "bgra8")
+            for name, width, height, extent in (
+                ("H0", 1920, 1080, [12, 10]), ("H1", 1920, 1080, [12, 10]),
+                ("M", 1920, 1080, [12, 10]), ("H64", 1920, 1080, [64, 48]),
+                ("H0", 3840, 2160, [12, 10])))]
+    legacy_scenes = [
+        {"width": width, "height": height, "variant": variant, "format": fmt, "sha256": f"{checksum:064x}"}
+        for width, height, variant, fmt, checksum in (
+            (96, 64, 0, "Rgba8", 400), (1920, 1080, 0, "Rgba8", 300),
+            (3840, 2160, 0, "Rgba8", 304), (1920, 1080, 1, "Rgba8", 301),
+            (1920, 1080, 2, "Rgba8", 401), (4096, 2732, 0, "Rgba8", 402),
+            (1920, 1080, 0, "Bgra8", 305))]
+    value["fixture"] = {
+        "license": "repository-first-party", "generator": "template-efficiency-integer-v3-session",
+        "historical_component_generator": "template-efficiency-integer-v2-direct-formats",
+        "background_seed": 0x31415926, "patch_seed_base": 0xABC00000, "patch_width": 12, "patch_height": 10,
+        "roi": [64, 48, 384, 228], "score_tolerance": 1e-5,
+        "templates": small, "scenes": legacy_scenes,
+        "score_maps": [{"id": row["id"], "sha256": f"{500 + i:064x}"}
+                       for i, row in enumerate(collector.DEFINITIONS.values()) if row["category"] == "selection"],
+        "direct_formats": collector.direct_format_inputs(),
+        "watcher": {**{key: f"{600 + i:064x}" for i, key in enumerate((
+            "scene_rgba_sha256", "background_rgba_sha256", "patch_png_sha256", "absent_png_sha256"))},
+            "roi": [16, 8, 48, 32], "min_score": 0.95, "consecutive_frames": 2},
+    }
+    value["apparatus"] = {
+        "accounting_contract": "prepared-cache-row-winner-v1",
+        "source_files": {path: ("3" if role == "baseline" else "4") * 64
+                         for path in V3_APPARATUS_SOURCES}}
+    cache = {
+        "retained-hit": "persistent-frame-and-backend", "retained-miss": "persistent-frame-and-backend",
+        "patch64": "persistent-frame-and-backend", "group": "cold-engine-backend-and-frame",
+        "distinct-group": "cold-engine-backend-and-frame", "owner-group": "cold-with-live-compatible-roi-owner",
+        "turnover": "persistent-backend-new-frames", "query-match": "persistent-backend-fresh-query-session",
+        "query-deadline": "persistent-backend-fresh-query-session", "lifecycle-session": "fresh-owner-lifecycle",
+        "lifecycle-independent": "two-independent-backends-one-frame"}
+    timing = {
+        "single-search": "public Session search through bounded scalar projection and outcome release; setup and teardown separate",
+        "group8": "eight public Session searches, bounded projections and outcome releases; setup, compatible mapping owner and teardown separate",
+        "turnover-cycle": "publication/acquisition through four searches and final release per cycle; overlapping hit/miss search intervals retained separately",
+        "query": "producer release through actual query wait, terminal projection and producer join; session close, retained-terminal checks and query/outcome release separate",
+        "lifecycle-session": "complete public Session owner script including retained outcome after close and final backend release; contract only",
+        "lifecycle-independent": "complete real Matcher owner script over one retained frame and two independent backends; contract only"}
+    rows = []
+    for workload, case, fmt, region in V3_ROWS:
+        statistical = case not in ("query-deadline", "lifecycle-session", "lifecycle-independent")
+        definition = {"id": workload, "category": "session" if statistical else "contract",
+                      "improvement": False, "statistical": statistical}
+        contract = v3_fixture_contract(case, fmt)
+        independent = contract["case"] == "lifecycle-independent"
+        boundary = ("query" if contract["case"].startswith("query-") else
+                    contract["case"] if contract["case"].startswith("lifecycle-") else contract["unit"])
+        rows.append({
+            **definition, "cache_state": cache[contract["case"]], "timing_boundary": timing[boundary],
+            "width": 3840 if independent else 1920, "height": 2160 if independent else 1080,
+            "result_limit": 8, "suppression": "DropOverlapping", "min_score": 0.9,
+            "warmups": 20 if definition["statistical"] else 1,
+            "sample_count": 200 if definition["statistical"] else 3,
+            "effective_regions": v3_fixture_regions(case, region),
+            "change_policy": "AnalysisAlways" if contract["case"].startswith("query-") else None,
+            "format_contract": None, "session_contract": contract})
+    value["workloads"].extend(rows)
+    value["fixture"]["sessions"] = {
+        "generator": "template-efficiency-session-v1", "license": "repository-first-party",
+        "min_score": 0.9, "result_limit": 8, "suppression": "DropOverlapping", "score_tolerance": 1e-5,
+        "small_templates": small, "large_templates": large, "scenes": scenes,
+        "origins": [[80 + i % 4 * 72, 64 + i // 4 * 72] for i in range(8)],
+        "distinct_regions": [list(bounds) for bounds in V3_DISTINCT_REGIONS],
+        "workloads": copy.deepcopy(rows)}
+    return value
+
+
+def v3_checkpoints(order, build_mode, held=None):
+    normal = build_mode == "normal"
+    held = held if held is not None else [0] * len(order)
+    return [{"name": name, "rss_bytes": 12 * collector.MIB, "peak_rss_bytes": 16 * collector.MIB,
+             "private_bytes": None, "footprint_bytes": 12 * collector.MIB,
+             "heap_bytes": None if normal else 6 * collector.MIB,
+             "bgr_retained_bytes": None if normal else retained,
+             "bgr_evicted_bytes": None if normal else 0, "owner_correct": None if normal else True}
+            for name, retained in zip(order, held)]
+
+
+def v3_unit(row, index, build_mode):
+    contract = row["session_contract"]
+    case = contract["case"]
+    normal = build_mode == "normal"
+    engine = 1 if case in ("retained-hit", "retained-miss", "patch64", "turnover") else index + 1
+
+    def stamp(sequence):
+        return [f"engine#{engine}", 1, 0, sequence, 0]
+
+    count = 1 if case == "query-match" else 0 if case == "query-deadline" else contract["searches_per_unit"]
+    projections = []
+    for position in range(count):
+        template = position if case in ("group", "distinct-group", "owner-group") else 0
+        left, top = 80 + template % 4 * 72, 64 + template // 4 * 72
+        if case == "query-match" or case == "turnover" and position == 3:
+            left, top = left + 3, top + 2
+        width, height = contract["patch_extent"]
+        absent = case == "retained-miss" or case == "turnover" and position in (0, 2)
+        sequence = index * 4 + position if case == "turnover" else 2 if case == "query-match" else 0
+        projections.append({
+            "stamp": stamp(sequence), "envelope_correct": True, "best_consistent": True,
+            "matches": [] if absent else [{"bounds": [left, top, left + width, top + height],
+                                          "score": 1.0, "template_matches": True}]})
+    query = None
+    if case.startswith("query-"):
+        matched = case == "query-match"
+        query = {"terminal": "matched" if matched else "deadline-exceeded",
+                 "completed": [{"stamp": stamp(position), "admitted": position + 1,
+                                "completed": position + 1, "confirmed": position,
+                                "pending": 0, "in_flight": 0, "exceptional": 0}
+                               for position in range(2 if matched else 1)],
+                 "terminal_stamp": stamp(2) if matched else None,
+                 "confirmed": 2 if matched else 0, "after_close_same": True}
+    setup = {"elapsed_ns": 50, "cpu_ns": 20, "included_in_primary": case.startswith("lifecycle-")}
+    teardown = dict(setup)
+    if case == "owner-group":
+        setup["mapping_created"] = True
+        teardown["mapping_released"] = True
+    if case.startswith("query-"):
+        setup.update(session_opened=True, query_started=True, producer_ready=True)
+        teardown.update(session_closed=True, retained_terminal_checked=True,
+                        query_and_outcome_released=True, runtime_and_source_released=True)
+    lifecycle, checkpoints = None, []
+    if case == "lifecycle-session":
+        lifecycle = {"retained_after_close": True, "closed_search_refused": True,
+                     "mapping_valid_after_close": True, "source_released": True}
+        checkpoints = v3_checkpoints(V3_SESSION_OWNER_ORDER, build_mode,
+                                     [0, 172800, 172800, 172800, 172800, 172800, 172800, 0])
+    if case == "lifecycle-independent":
+        lifecycle = {key: None if normal else True for key in ("a_clone_reused", "b_independent", "b_reused")}
+        lifecycle["source_released"] = True
+        checkpoints = v3_checkpoints(V3_INDEPENDENT_OWNER_ORDER, build_mode,
+                                     [0, 49_766_400, 24_883_200, 24_883_200, 24_883_200, 0])
+    return {"correct": True, "error": None, "projections": projections, "query": query,
+            "strata": {name: [{"elapsed_ns": 100 + position, "cpu_ns": 40 + position} for position in range(2)]
+                       for name in contract["sample_strata"]},
+            "setup": setup, "teardown": teardown, "lifecycle": lifecycle, "checkpoints": checkpoints,
+            "work": None if normal else v3_fixture_work(row, index)}
+
+
+def v3_payload(workload, build_mode="normal", *, role="baseline", candidate=False, smoke=False):
+    declaration = v3_manifest(build_mode, role)
+    value = v2_payload(workload if workload in collector.DEFINITIONS else "single-small96x64",
+                       build_mode, candidate=candidate, smoke=smoke)
+    value.update(format_version=3, fixture=declaration["fixture"], apparatus=declaration["apparatus"])
+    if workload not in collector.SESSION_DEFINITIONS:
+        return value
+    row = copy.deepcopy(next(row for row in declaration["workloads"] if row["id"] == workload))
+    if smoke:
+        row.update(warmups=1, sample_count=3)
+    warmups, count = row["warmups"], row["sample_count"]
+    base = value["workloads"][0]
+    elapsed, cpu = (500_000, 250_000) if candidate else (1_000_000, 500_000)
+    row.update(warmup_samples=[{"elapsed_ns": elapsed, "cpu_ns": cpu, "correct": True} for _ in range(warmups)],
+               samples=[{"elapsed_ns": elapsed, "cpu_ns": cpu, "correct": True} for _ in range(count)],
+               metrics=base["metrics"], oracle_failures=0)
+    row["metrics"].update(iterations=warmups + count, cpu_ns=count * cpu)
+    row["unit_observations"] = [v3_unit(row, index, build_mode) for index in range(warmups + count)]
+    row["owner_observations"] = v3_checkpoints(V3_OWNER_ORDER, build_mode)
+    if build_mode == "instrumented":
+        for name in ("backend_find_calls", "backend_find_failures", "bgr_conversions", "bgr_converted_bytes",
+                     "mapping_copies", "mapping_copied_bytes"):
+            row["metrics"][name] = sum(unit["work"][name] for unit in row["unit_observations"])
+        row["metrics"].update(score_copied_bytes=0, bgr_retained_bytes=0, bgr_evicted_bytes=0,
+                              bgr_evicted_peak_bytes=0, bgr_retained_peak_bytes=(
+                                  49_766_400 if row["session_contract"]["case"] == "lifecycle-independent" else 172800))
+    value["workloads"] = [row]
+    return value
+
+
+def v3_identity(root, build_mode="normal", role="baseline"):
+    binding = v2_identity(root, build_mode, role)
+    declaration = v3_manifest(build_mode, role)
+    build = binding["build"]
+    build.update(protocol_version=3, apparatus=copy.deepcopy(declaration["apparatus"]),
+                 benchmark_manifest=collector.manifest_identity(declaration, TARGET, "4.12.0", 3, build_mode))
+    build["provenance_commands"][0] = {
+        "argv": [binding["path"], "--protocol-version", "3", "--list"], "record": process_record(declaration)}
+    return binding
+
+
+def v3_plan(root, mode, build_mode="normal"):
+    value = v2_plan(root, mode, build_mode)
+    rows = list(collector.definitions_for(build_mode, 3))
+    binaries = {"baseline": v3_identity(root, build_mode)}
+    if mode == "control":
+        binaries["control"] = copy.deepcopy(binaries["baseline"])
+    if mode == "comparison":
+        binaries["candidate"] = v3_identity(root, build_mode, "candidate")
+    jobs = collector.schedule(mode, rows, 3)
+    value.update(format_version=3, binaries=binaries, workloads=rows, schedule=jobs,
+                 policy=copy.deepcopy(collector.V3_POLICY),
+                 execution_limits=collector.execution_limits(mode, len(jobs)))
+    return value
+
+
+def v3_parsed_evidence(root, mode, build_mode="normal"):
+    specification = v3_plan(root, mode, build_mode)
+    frozen = collector.manifest_identity(v3_manifest(build_mode), TARGET, "4.12.0", 3, build_mode)
+    cohorts = {}
+    for role in specification["binaries"]:
+        cohorts[role] = {}
+        for workload in specification["workloads"]:
+            summary = collector.observations(
+                v3_payload(workload, build_mode, role="candidate" if role == "candidate" else "baseline",
+                           candidate=role == "candidate"), frozen if role != "candidate" else
+                specification["binaries"]["candidate"]["build"]["benchmark_manifest"], workload, False)
+            cohorts[role][workload] = [
+                {**summary, "process": process,
+                 "position": (process % 2 if role == "baseline" else 1 - process % 2)
+                             if mode in ("control", "comparison") else 0} for process in range(6)]
+    token = {"calibration": "1", "control": "2", "comparison": "3"}[mode]
+    if mode == "control":
+        specification["calibration"] = {
+            "path": str(root / "calibration"), "plan_sha256": "1" * 64,
+            "attempts": [{"file": "0000.json", "sha256": "1" * 64}]}
+    return {"plan": specification, "plan_sha256": token * 64,
+            "attempts": [{"file": "0000.json", "sha256": token * 64}],
+            "manifest": frozen, "observations": cohorts, "issues": [],
+            "native_threads": {role: collector.effective_threads(v3_manifest(build_mode))
+                               for role in specification["binaries"]}}
+
+
+def persist_v3_smoke(root, workload, build_mode="normal"):
+    root.mkdir()
+    (root / "started").mkdir()
+    (root / "attempts").mkdir()
+    specification = v3_plan(root.parent, "smoke", build_mode)
+    specification.update(workloads=[workload], schedule=collector.schedule("smoke", [workload], 3),
+                         method_review=None)
+    specification["execution_limits"] = collector.execution_limits("smoke", len(specification["schedule"]))
+    collector.save(root / "plan.json", specification)
+    for index, task in enumerate(specification["schedule"]):
+        binary = specification["binaries"][task["role"]]
+        attempt = {"task": task, "argv": collector.command(binary, task, "smoke", 3),
+                   "plan_sha256": collector.sha256(root / "plan.json"), "started_unix_ns": index + 1,
+                   "campaign_elapsed_before": index, "output_limit_bytes": 8 * collector.MIB,
+                   "cleanup_seconds": 5, "runtime_binding_seconds": 0}
+        collector.save(root / "started" / f"{task['id']}.json", attempt)
+        value = v3_manifest(build_mode) if task["workload"] is None else v3_payload(workload, build_mode, smoke=True)
+        attempt.update(identity_before=binary, identity_after=binary, identity_error=None,
+                       campaign_elapsed_after=index + 0.1, record=process_record(value), timeout_seconds=90)
+        collector.save(root / "attempts" / f"{task['id']}.json", attempt)
+    return specification
+
+
+class ProtocolThreeTests(unittest.TestCase):
+    def setUp(self):
+        temporary = tempfile.TemporaryDirectory()
+        self.addCleanup(temporary.cleanup)
+        self.root = Path(temporary.name).resolve()
+
+    def parse(self, value, workload, build_mode="normal", smoke=True):
+        frozen = collector.manifest_identity(v3_manifest(build_mode), TARGET, "4.12.0", 3, build_mode)
+        return collector.observations(value, frozen, workload, smoke)
+
+    def test_current_cli_and_exact_rows_preserve_historical_corpora(self):
+        self.assertEqual(collector.parser().parse_args(["policy", "--build-mode", "normal"]).protocol_version, 3)
+        for build_mode, count in (("normal", 54), ("instrumented", 57)):
+            frozen = collector.manifest_identity(v3_manifest(build_mode), TARGET, "4.12.0", 3, build_mode)
+            self.assertEqual(len(frozen["workloads"]), count)
+            self.assertEqual([row["id"] for row in frozen["workloads"]][-36:],
+                             [row[0] for row in V3_ROWS])
+            self.assertEqual(sum(row["statistical"] for row in frozen["workloads"]), 41)
+            self.assertTrue(all(not row["improvement"] for row in frozen["workloads"][-36:]))
+        self.assertEqual(len(collector.manifest_identity(manifest(), TARGET, "4.12.0")["workloads"]), 21)
+        self.assertEqual(len(collector.manifest_identity(v2_manifest(), TARGET, "4.12.0", 2, "normal")["workloads"]), 18)
+        self.assertNotEqual(collector.V3_POLICY["id"], collector.V2_POLICY["id"])
+
+    def test_every_new_row_validates_in_both_modes(self):
+        for mode in ("normal", "instrumented"):
+            for workload, _, _, _ in V3_ROWS:
+                with self.subTest(mode=mode, workload=workload):
+                    summary = self.parse(v3_payload(workload, mode, smoke=True), workload, mode)
+                    self.assertEqual(summary["unavailable"], [])
+                    self.assertEqual(len(summary["unit_observations"]), 4)
+                    self.assertEqual(len(summary["owner_observations"]), 7)
+
+    def test_row_order_options_sequence_and_region_are_fixed(self):
+        for change in ("order", "sequence", "searches", "strata", "options", "regions"):
+            value = v3_manifest()
+            row = next(row for row in value["workloads"] if row["id"] == "session-turnover-rgba-roi")
+            if change == "order":
+                value["workloads"][-1], value["workloads"][-2] = value["workloads"][-2], value["workloads"][-1]
+            elif change == "sequence":
+                row["session_contract"]["frame_sequence"] = ["H0", "M", "M", "H1"]
+            elif change == "searches":
+                row["session_contract"]["searches_per_unit"] = True
+            elif change == "strata":
+                row["session_contract"]["sample_strata"] = {}
+            elif change == "options":
+                row["min_score"] = 0.99
+            else:
+                row["effective_regions"] = [[0, 0, 1920, 1080]]
+            with self.subTest(change=change), self.assertRaises(ValueError):
+                collector.manifest_identity(value, TARGET, "4.12.0", 3, "normal")
+
+    def test_role_apparatus_is_separate_but_mandatory_and_unchanged(self):
+        base = collector.manifest_identity(v3_manifest(), TARGET, "4.12.0", 3, "normal")
+        candidate = collector.manifest_identity(v3_manifest(role="candidate"), TARGET, "4.12.0", 3, "normal")
+        self.assertNotEqual(base, candidate)
+        self.assertEqual(collector.common_manifest(base), collector.common_manifest(candidate))
+        workload = "session-retained-rgba-roi-hit"
+        changed = v3_payload(workload, smoke=True)
+        changed["apparatus"] = candidate["apparatus"]
+        with self.assertRaises(ValueError):
+            self.parse(changed, workload)
+        for change in ("missing", "source", "accounting", "semantic-hash", "common-input"):
+            value = v3_manifest()
+            if change == "missing":
+                del value["apparatus"]
+            elif change == "source":
+                value["apparatus"]["source_files"].pop(next(iter(value["apparatus"]["source_files"])))
+            elif change == "accounting":
+                value["apparatus"]["accounting_contract"] = "unreviewed-historical-port"
+            elif change == "semantic-hash":
+                value["fixture"]["sessions"]["helper_source_sha256"] = "5" * 64
+            else:
+                value["fixture"]["sessions"]["scenes"][2]["sha256"] = "5" * 64
+                other = collector.manifest_identity(value, TARGET, "4.12.0", 3, "normal")
+                self.assertNotEqual(collector.common_manifest(base), collector.common_manifest(other))
+                continue
+            with self.subTest(change=change), self.assertRaises(ValueError):
+                collector.manifest_identity(value, TARGET, "4.12.0", 3, "normal")
+
+    def test_attestation_rejects_mixed_role_source_or_missing_apparatus(self):
+        for change in ("metadata", "manifest", "missing"):
+            binding = v3_identity(self.root)
+            if change == "metadata":
+                binding["build"]["apparatus"]["source_files"][collector.APPARATUS_SOURCES[0]] = "6" * 64
+            elif change == "manifest":
+                binding["build"]["benchmark_manifest"]["apparatus"]["source_files"][collector.APPARATUS_SOURCES[0]] = "6" * 64
+            else:
+                del binding["build"]["apparatus"]
+            with self.subTest(change=change), self.assertRaises(ValueError):
+                collector.validate_v2_build(binding, TARGET, "normal", 3)
+
+    def test_current_attest_binds_all_apparatus_bytes_and_retains_failures(self):
+        for drift in (False, True):
+            with self.subTest(drift=drift):
+                root = self.root / ("drift" if drift else "bound")
+                root.mkdir()
+                binary = root / "binary"
+                native = root / "libopencv_core.fixture"
+                metadata = root / "build.json"
+                binary.write_bytes(b"explicit prebuilt executable")
+                native.write_bytes(b"native fixture")
+                (root / "Cargo.lock").write_bytes(b"fixture lock")
+                declaration = v3_manifest()
+                declaration["target"] = NATIVE_TARGET
+                declaration["loaded_native_runtime"] = {
+                    "method": "K32EnumProcessModules-GetModuleFileNameW" if os.name == "nt" else RUNTIME["method"],
+                    "images": [{"path": str(native), "sha256": collector.sha256(native)}]}
+                for index, path in enumerate(collector.APPARATUS_SOURCES):
+                    source = root / path
+                    source.parent.mkdir(parents=True, exist_ok=True)
+                    source.write_bytes(f"authored apparatus fixture {index}\n".encode())
+                    declaration["apparatus"]["source_files"][path] = collector.sha256(source)
+                if drift:
+                    declaration["apparatus"]["source_files"][collector.APPARATUS_SOURCES[-1]] = "0" * 64
+                records = [process_record(declaration), process_record("a" * 40 + "\n"),
+                           process_record("c" * 40 + "\n"), process_record(""), process_record("rustc fixture\n")]
+                args = collector.parser().parse_args([
+                    "attest", "--build-mode", "normal", "--target", NATIVE_TARGET, "--binary", str(binary),
+                    "--build-argv-json", '["cargo","bench","--no-run","--locked"]', "--output", str(metadata)])
+                with (mock.patch.object(collector, "ROOT", root),
+                      mock.patch.object(collector, "host_identity", return_value={"target": NATIVE_TARGET}),
+                      mock.patch.object(collector.shutil, "which", return_value=sys.executable),
+                      mock.patch.object(collector, "run_process", side_effect=records) as launch):
+                    if drift:
+                        with self.assertRaises(ValueError):
+                            collector.attest(args)
+                    else:
+                        collector.attest(args)
+                self.assertEqual(launch.call_count, 1 if drift else 5)
+                probe = collector.load(str(metadata) + ".probe.json")
+                self.assertEqual(probe["format_version"], 3)
+                self.assertEqual(len(probe["commands"]), launch.call_count)
+                self.assertEqual(metadata.exists(), not drift)
+                if not drift:
+                    build = collector.load(metadata)
+                    self.assertEqual(build["apparatus"], declaration["apparatus"])
+                    binding = {"path": str(binary), "build": build}
+                    collector.validate_v2_build(binding, NATIVE_TARGET, "normal", 3)
+                    with self.assertRaises(ValueError):
+                        collector.runtime_closure_admission(binding, NATIVE_TARGET, "normal")
+
+    def test_error_bearing_units_and_partial_checkpoints_remain_failed(self):
+        workload = "lifecycle-session-rgba-roi"
+        for mode in ("normal", "instrumented"):
+            for location in ("unit", "unit-checkpoint", "final-checkpoint"):
+                value = v3_payload(workload, mode, smoke=True)
+                row = value["workloads"][0]
+                if location == "unit":
+                    row["unit_observations"][0]["error"] = "fixture teardown failure"
+                elif location == "unit-checkpoint":
+                    row["unit_observations"][0]["checkpoints"][3]["error"] = "fixture close failure"
+                else:
+                    row["owner_observations"][-1]["error"] = "fixture release failure"
+                with self.subTest(mode=mode, location=location), self.assertRaises(ValueError):
+                    self.parse(value, workload, mode)
+
+    def test_missing_scene_template_or_fixture_rows_cannot_be_attested(self):
+        for key in ("small_templates", "large_templates", "scenes", "workloads"):
+            declaration = v3_manifest()
+            declaration["fixture"]["sessions"][key].pop()
+            with self.subTest(key=key), self.assertRaises(ValueError):
+                collector.manifest_identity(declaration, TARGET, "4.12.0", 3, "normal")
+
+    def test_missing_failed_or_reordered_units_and_final_owners_are_rejected(self):
+        workload = "session-retained-rgba-roi-hit"
+        for change in ("units", "owner", "failed", "owner-order", "owner-null", "final-payload", "normal-zero"):
+            mode = "instrumented" if change in ("owner-null", "final-payload") else "normal"
+            value = v3_payload(workload, mode, smoke=True)
+            row = value["workloads"][0]
+            if change == "units":
+                row["unit_observations"].pop()
+            elif change == "owner":
+                del row["owner_observations"]
+            elif change == "failed":
+                row["unit_observations"][-1]["correct"] = False
+            elif change == "owner-order":
+                row["owner_observations"].reverse()
+            elif change == "owner-null":
+                row["owner_observations"][-1]["owner_correct"] = None
+            elif change == "final-payload":
+                row["owner_observations"][-1]["bgr_retained_bytes"] = 1
+            else:
+                row["owner_observations"][0]["heap_bytes"] = 0
+            with self.subTest(change=change), self.assertRaises(ValueError):
+                self.parse(value, workload, mode)
+
+    def test_public_match_count_bounds_identity_finiteness_and_best_are_checked(self):
+        workload = "session-group8-bgra-distinct-roi"
+        for change in ("count", "bounds", "template", "nan", "infinite", "negative", "boolean",
+                       "huge-integer", "huge-negative-integer", "best", "stamp"):
+            value = v3_payload(workload, smoke=True)
+            projection = value["workloads"][0]["unit_observations"][0]["projections"][0]
+            if change == "count":
+                projection["matches"] *= 9
+            elif change == "bounds":
+                projection["matches"][0]["bounds"][0] += 1
+            elif change == "template":
+                projection["matches"][0]["template_matches"] = False
+            elif change in ("nan", "infinite", "negative", "boolean", "huge-integer", "huge-negative-integer"):
+                projection["matches"][0]["score"] = {"nan": float("nan"), "infinite": float("inf"),
+                                                    "negative": -1, "boolean": True,
+                                                    "huge-integer": 10**400, "huge-negative-integer": -(10**400)}[change]
+            elif change == "best":
+                projection["best_consistent"] = False
+            else:
+                projection["stamp"][3] = True
+            with self.subTest(change=change), self.assertRaises(ValueError):
+                self.parse(value, workload)
+        miss = "session-retained-rgba-full-miss"
+        value = v3_payload(miss, smoke=True)
+        self.assertEqual(self.parse(value, miss)["unit_observations"][0]["projections"][0]["matches"], [])
+        value["workloads"][0]["unit_observations"][0]["projections"][0]["score"] = 0.1
+        with self.assertRaises(ValueError):
+            self.parse(value, miss)
+
+    def test_retained_group_turnover_and_query_frame_lifetimes_remain_distinct(self):
+        for workload in ("session-retained-rgba-full-hit", "session-group8-rgba-full",
+                         "session-turnover-rgba-full", "query-match-rgba-full"):
+            value = v3_payload(workload, smoke=True)
+            units = value["workloads"][0]["unit_observations"]
+            if workload.startswith("session-retained"):
+                units[1]["projections"][0]["stamp"][3] += 1
+            elif workload.startswith("session-group"):
+                units[0]["projections"][1]["stamp"][3] += 1
+            elif workload.startswith("session-turnover"):
+                units[0]["projections"][1]["stamp"][3] = units[0]["projections"][0]["stamp"][3]
+            else:
+                for projection in units[1]["projections"]:
+                    projection["stamp"][0] = "engine#1"
+                for receipt in units[1]["query"]["completed"]:
+                    receipt["stamp"][0] = "engine#1"
+                units[1]["query"]["terminal_stamp"][0] = "engine#1"
+            with self.subTest(workload=workload), self.assertRaises(ValueError):
+                self.parse(value, workload)
+
+    def test_query_receipts_terminal_close_and_excluded_teardown_are_required(self):
+        for case in ("match", "deadline"):
+            workload = f"query-{case}-bgra-roi"
+            for change in ("receipt", "work", "sequence", "terminal", "closed", "boundary", "released", "setup"):
+                value = v3_payload(workload, smoke=True)
+                unit = value["workloads"][0]["unit_observations"][0]
+                query = unit["query"]
+                if change == "receipt":
+                    query["completed"].pop()
+                elif change == "work":
+                    query["completed"][0]["completed"] = 0
+                elif change == "sequence":
+                    query["completed"][0]["stamp"][4] += 1
+                    if case == "deadline":
+                        query["terminal_stamp"] = ["engine#1", 1, 1, 1, 1]
+                elif change == "terminal":
+                    query["terminal"] = "caller-timeout"
+                elif change == "closed":
+                    query["after_close_same"] = False
+                elif change == "boundary":
+                    unit["teardown"]["included_in_primary"] = True
+                elif change == "released":
+                    unit["teardown"]["query_and_outcome_released"] = False
+                else:
+                    unit["setup"]["producer_ready"] = False
+                with self.subTest(case=case, change=change), self.assertRaises(ValueError):
+                    self.parse(value, workload)
+
+    def test_declared_strata_keep_cycle_membership_and_process_local_cpu(self):
+        workload = "session-turnover-rgba-roi"
+        summary = self.parse(v3_payload(workload, smoke=True), workload)
+        self.assertEqual(summary["strata"]["hit"]["observation_count"], 6)
+        self.assertEqual(summary["strata"]["hit"]["cpu_ns"], 243)
+        self.assertEqual(summary["strata"]["hit"]["p50_ns"], 100)
+        self.assertEqual(summary["strata"]["hit"]["p95_ns"], 101)
+        self.assertEqual(summary["cpu_ns"], 1_500_000)
+        for change in ("missing", "empty", "wrong-name", "extra", "negative", "boolean", "missing-cpu"):
+            value = v3_payload(workload, smoke=True)
+            strata = value["workloads"][0]["unit_observations"][2]["strata"]
+            if change == "missing":
+                del strata["hit"]
+            elif change == "empty":
+                strata["hit"] = []
+            elif change == "wrong-name":
+                strata["hits"] = strata.pop("hit")
+            elif change == "extra":
+                strata["hit"].append(dict(strata["hit"][0]))
+            elif change == "negative":
+                strata["miss"][0]["elapsed_ns"] = -1
+            elif change == "boolean":
+                strata["miss"][0]["cpu_ns"] = True
+            else:
+                del strata["miss"][0]["cpu_ns"]
+            with self.subTest(change=change), self.assertRaises(ValueError):
+                self.parse(value, workload)
+
+    def test_missing_stratum_cpu_is_explicit_and_cannot_be_summarized_as_zero(self):
+        workload = "session-turnover-bgra-full"
+        value = v3_payload(workload, smoke=True)
+        value["workloads"][0]["unit_observations"][-1]["strata"]["hit"][0]["cpu_ns"] = None
+        value["workloads"][0]["metrics"]["cpu_reason"] = "fixture CPU unavailable"
+        summary = self.parse(value, workload)
+        self.assertIsNone(summary["strata.hit.cpu_ns"])
+        self.assertTrue(summary["unavailable"])
+        self.assertEqual(summary["strata.miss.cpu_ns"], 243)
+
+    def test_independent_backends_have_exact_stages_and_only_row_scoped_aggregate_bound(self):
+        workload = "lifecycle-independent-rgba-4k"
+        value = v3_payload(workload, "instrumented", smoke=True)
+        self.assertEqual(self.parse(value, workload, "instrumented")["metrics"]["bgr_retained_peak_bytes"], 49_766_400)
+        for change in ("stage", "bound", "peak-below-live", "release", "reuse"):
+            changed = copy.deepcopy(value)
+            row = changed["workloads"][0]
+            if change == "stage":
+                row["unit_observations"][0]["checkpoints"][1]["bgr_retained_bytes"] = 24_883_200
+            elif change == "bound":
+                row["metrics"]["bgr_retained_peak_bytes"] = 64 * collector.MIB + 1
+            elif change == "peak-below-live":
+                row["metrics"]["bgr_retained_peak_bytes"] = 1024
+            elif change == "release":
+                row["unit_observations"][0]["checkpoints"][-1]["bgr_retained_bytes"] = 1
+            else:
+                row["unit_observations"][0]["lifecycle"]["b_reused"] = False
+            with self.subTest(change=change), self.assertRaises(ValueError):
+                self.parse(changed, workload, "instrumented")
+        other = "session-retained-rgba-full-hit"
+        changed = v3_payload(other, "instrumented", smoke=True)
+        changed["workloads"][0]["metrics"]["bgr_retained_peak_bytes"] = 32 * collector.MIB + 1
+        with self.assertRaises(ValueError):
+            self.parse(changed, other, "instrumented")
+
+    def test_session_close_refusal_and_mapping_owner_actions_are_public_oracles(self):
+        for workload, key, field in (("lifecycle-session-bgra-roi", "lifecycle", "closed_search_refused"),
+                                     ("lifecycle-session-rgba-roi", "lifecycle", "retained_after_close"),
+                                     ("session-owner8-bgra-roi", "setup", "mapping_created"),
+                                     ("session-owner8-rgba-roi", "teardown", "mapping_released")):
+            value = v3_payload(workload, smoke=True)
+            value["workloads"][0]["unit_observations"][0][key][field] = False
+            with self.subTest(workload=workload, field=field), self.assertRaises(ValueError):
+                self.parse(value, workload)
+
+    def test_role_work_counts_are_not_an_arbitrary_correct_flag(self):
+        workload = "session-group8-rgba-distinct-roi"
+        for key in ("backend_find_calls", "backend_find_completions", "bgr_conversions", "bgr_converted_bytes",
+                    "mapping_copies", "mapping_copied_bytes"):
+            value = v3_payload(workload, "instrumented", smoke=True)
+            value["workloads"][0]["unit_observations"][0]["work"][key] -= 1
+            with self.subTest(key=key), self.assertRaises(ValueError):
+                self.parse(value, workload, "instrumented")
+
+    def test_retained_report_revalidates_units_and_apparatus_without_live_source_reads(self):
+        workload = "query-match-rgba-roi"
+        directory = self.root / "retained"
+        persist_v3_smoke(directory, workload)
+        original = collector.report(directory)
+        self.assertEqual(original["status"], "passed")
+        self.assertFalse(original["performance_qualified"])
+        path = directory / "attempts/0001.json"
+        raw = path.read_bytes()
+        for change in ("query", "apparatus"):
+            attempt = collector.strict_json(raw.decode())
+            value = collector.strict_json(attempt["record"]["stdout"])
+            if change == "query":
+                value["workloads"][0]["unit_observations"][0]["query"]["after_close_same"] = False
+            else:
+                value["apparatus"]["source_files"][collector.APPARATUS_SOURCES[-1]] = "9" * 64
+            attempt["record"]["stdout"] = json.dumps(value)
+            path.write_bytes(collector.document(attempt))
+            report = collector.report(directory)
+            self.assertEqual(report["status"], "failed")
+            self.assertIn("semantic", {issue.get("category") for issue in report["issues"]})
+        path.write_bytes(raw)
+        self.assertEqual(collector.report(directory)["status"], "passed")
+
+    def test_current_smoke_uses_real_collection_and_preserves_independent_failure_classes(self):
+        workloads = ["session-retained-rgba-roi-hit", "query-deadline-rgba-roi"]
+        args = collector.parser().parse_args([
+            "smoke", "--build-mode", "normal", "--target", TARGET,
+            "--baseline", "baseline", "--baseline-metadata", "build.json",
+            "--output", str(self.root / "smoke")])
+        records = [process_record(v3_manifest())]
+        for workload in collector.definitions_for("normal", 3):
+            value = v3_payload(workload, smoke=True)
+            record = process_record(value)
+            if workload == workloads[0]:
+                value["workloads"][0]["unit_observations"][0]["projections"] = []
+                record = process_record(value)
+                record["exit_code"] = 23
+            elif workload == "session-retained-bgra-roi-hit":
+                value["workloads"][0]["unit_observations"][0]["projections"][0]["matches"][0]["score"] = 10**400
+                record = process_record(value)
+            records.append(record)
+        original_runtime = collector.loaded_runtime
+        with (mock.patch.object(collector, "host_identity", return_value={"target": TARGET}),
+              mock.patch.object(collector, "binary_identity", return_value=v3_identity(self.root)),
+              mock.patch.object(collector, "check_files"),
+              mock.patch.object(collector, "exclusive_collector", return_value=contextlib.nullcontext()),
+              mock.patch.object(collector, "loaded_runtime",
+                                side_effect=lambda value, identity=None, **kwargs: original_runtime(value, identity)),
+              mock.patch.object(collector, "run_process", side_effect=records) as launch):
+            result = collector.collect(args, "smoke")
+        self.assertEqual(launch.call_count, 55)
+        self.assertEqual(result["status"], "failed")
+        self.assertEqual(launch.call_args_list[0].args[0][1:], ["--protocol-version", "3", "--list"])
+        self.assertTrue({"exit", "semantic"} <= {issue.get("category") for issue in result["issues"]})
+        self.assertEqual(sum(issue.get("category") == "semantic" for issue in result["issues"]), 2)
+        self.assertFalse(any(issue["status"] == "not-run" for issue in result["issues"]))
+        self.assertIn(workloads[1], result["process_observations"]["baseline"])
+
+
+class ProtocolThreeGradingTests(unittest.TestCase):
+    @classmethod
+    def setUpClass(cls):
+        cls.temporary = tempfile.TemporaryDirectory()
+        cls.root = Path(cls.temporary.name).resolve()
+        cls.calibration = v3_parsed_evidence(cls.root, "calibration")
+        cls.control = v3_parsed_evidence(cls.root, "control")
+        cls.comparison = v3_parsed_evidence(cls.root, "comparison")
+        cls.profile = v2_numeric_profile(cls.calibration)
+        cls.profile["format_version"] = 3
+
+    @classmethod
+    def tearDownClass(cls):
+        cls.temporary.cleanup()
+
+    def test_all_declared_strata_enter_calibration_controls_and_process_ceilings(self):
+        workload = "session-turnover-rgba-roi"
+        envelope = self.profile["envelopes"][workload]
+        for name in ("hit", "miss"):
+            for metric in ("p95_ns", "cpu_ns"):
+                self.assertIn(f"strata.{name}.{metric}", envelope["limits"])
+                self.assertIn(f"strata.{name}.{metric}", envelope["benefit_allowances"])
+        self.assertEqual(collector.control_evidence(self.calibration, self.control), [])
+        issues, benefits = collector.compare_evidence(self.comparison, self.profile)
+        self.assertEqual(issues, [])
+        self.assertNotIn(workload, benefits)
+        for role in ("baseline", "candidate"):
+            changed = copy.deepcopy(self.comparison)
+            metric = "strata.hit.p95_ns"
+            changed["observations"][role][workload][-1][metric] = envelope["limits"][metric] + 1
+            issues, _ = collector.compare_evidence(changed, self.profile)
+            self.assertTrue(any(issue["attempt"] == f"{role}:{workload}:5" and metric in issue["reason"]
+                                for issue in issues))
+
+    def test_missing_stratum_is_never_ignored_at_any_future_gated_stage(self):
+        workload = "session-turnover-bgra-full"
+        for metric in ("strata.hit.p95_ns", "strata.miss.cpu_ns"):
+            calibration = copy.deepcopy(self.calibration)
+            del calibration["observations"]["baseline"][workload][-1][metric]
+            with self.subTest(metric=metric), self.assertRaises(ValueError):
+                collector.derive_envelopes(calibration)
+            control = copy.deepcopy(self.control)
+            del control["observations"]["control"][workload][-1][metric]
+            self.assertTrue(any(issue["status"] == "incomplete" for issue in
+                                collector.control_evidence(self.calibration, control)))
+            comparison = copy.deepcopy(self.comparison)
+            del comparison["observations"]["candidate"][workload][-1][metric]
+            self.assertTrue(any(issue["status"] == "incomplete" for issue in
+                                collector.compare_evidence(comparison, self.profile)[0]))
+
+    def test_each_stratum_has_independent_control_noise_order_drift_and_ceiling_checks(self):
+        workload = "session-turnover-rgba-full"
+        for metric in ("strata.hit.p95_ns", "strata.miss.cpu_ns"):
+            for kind in ("noise", "order", "drift", "ceiling"):
+                control = copy.deepcopy(self.control)
+                rows = control["observations"]["control"][workload]
+                if kind == "noise":
+                    rows[-1][metric] *= 4
+                elif kind == "ceiling":
+                    rows[-1][metric] = self.profile["envelopes"][workload]["limits"][metric] + 1
+                else:
+                    allowance = self.profile["envelopes"][workload]["benefit_allowances"][metric]
+                    for row in rows:
+                        if (row["position"] == 0 if kind == "order" else row["process"] >= 3):
+                            row[metric] += allowance + 1
+                issues = collector.control_evidence(self.calibration, control)
+                with self.subTest(metric=metric, kind=kind):
+                    self.assertTrue(any(metric in issue["reason"] and
+                                        (kind in issue["reason"] or kind == "ceiling" and "exceeds" in issue["reason"])
+                                        for issue in issues))
+
+    def test_independent_cache_allowance_changes_only_its_rss_peak(self):
+        independent = self.profile["envelopes"]["lifecycle-independent-rgba-4k"]["limits"]
+        session = self.profile["envelopes"]["lifecycle-session-rgba-roi"]["limits"]
+        self.assertEqual(independent["peak_rss_bytes"] - session["peak_rss_bytes"], 32 * collector.MIB)
+        for metric in ("rss_growth_bytes", "rss_residual_bytes"):
+            self.assertEqual(independent[metric], session[metric])
+            self.assertEqual(independent[metric], collector.MIB)
+
+    def test_unchanged_baseline_and_control_apparatus_remain_mandatory(self):
+        for field in ("baseline", "control"):
+            control = copy.deepcopy(self.control)
+            control["plan"]["binaries"][field]["build"]["apparatus"]["source_files"][collector.APPARATUS_SOURCES[0]] = "9" * 64
+            with self.subTest(field=field), self.assertRaises(ValueError):
+                collector.control_evidence(self.calibration, control)
+
+    def test_missing_method_review_blocks_current_calibration_before_output_or_launch(self):
+        args = collector.parser().parse_args([
+            "calibrate", "--build-mode", "normal", "--target", TARGET,
+            "--baseline", "baseline", "--baseline-metadata", "build.json", "--exclusive-host",
+            "--output", str(self.root / "denied")])
+        with (mock.patch.object(collector, "host_identity", return_value=self.calibration["plan"]["host"]),
+              mock.patch.object(collector, "binary_identity", return_value=v3_identity(self.root)),
+              mock.patch.object(collector, "run_process") as launch, self.assertRaises(ValueError)):
+            collector.collect(args, "calibration")
+        launch.assert_not_called()
+        self.assertFalse(Path(args.output).exists())
 
 
 if __name__ == "__main__":
