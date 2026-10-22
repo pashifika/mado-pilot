@@ -51,6 +51,7 @@
 @property(nonatomic) pid_t originalFrontmost;
 @property(nonatomic) NSInteger ownedWindowNumber;
 @property(nonatomic) CGFloat renderedScale;
+@property(nonatomic) NSSize renderedSize;
 @property(nonatomic, strong) NSTimer *timer;
 - (BOOL)acknowledge:(NSString *)kind;
 @end
@@ -61,7 +62,7 @@
     if (NSApp.active || frontmost != self.originalFrontmost) return NO;
     NSString *row = [NSString stringWithFormat:@"%@ %u %@ %d %ld %.0f %.0f %.1f\n",
         self.nonce, self.sequence, kind, getpid(), (long)self.ownedWindowNumber,
-        self.view.bounds.size.width, self.view.bounds.size.height,
+        self.renderedSize.width, self.renderedSize.height,
         self.renderedScale];
     return [row writeToURL:[self.root URLByAppendingPathComponent:@"ack"]
                atomically:YES encoding:NSUTF8StringEncoding error:NULL];
@@ -70,6 +71,7 @@
     if (self.window.backingScaleFactor != 2.0) return NO;
     self.ownedWindowNumber = self.window.windowNumber;
     self.renderedScale = self.window.backingScaleFactor;
+    self.renderedSize = self.view.bounds.size;
     self.view.state = self.sequence;
     self.view.needsDisplay = YES;
     [self.view displayIfNeeded];
@@ -124,6 +126,9 @@
         if (next == 10) {
             [owner.window orderOut:nil];
             [owner.window close];
+            // Both owners must go: a retained view keeps the WindowServer target alive.
+            owner.window = nil;
+            owner.view = nil;
             if (![owner acknowledge:@"close-window"]) [owner fail];
             return;
         }
