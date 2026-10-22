@@ -187,6 +187,15 @@ not proof against arbitrary concurrent replacement or same-UUID mutation.
 The Windows held-file debugger observer is preflight-only: it is not admitted
 for normal timing. Windows protocol-2 qualification therefore remains closed.
 
+The macOS native observer suite uses owned loader/dylib fixtures for transient
+reloads, vanished-image refusal and foreign-process rejection. CI enables these
+fixtures; run them locally with a C compiler available:
+
+```sh
+MADO_MACOS_IMAGE_OBSERVER_SMOKE=1 python3 -B -m unittest discover \
+  -s tools/tests -p test_macos_image_observer.py -v
+```
+
 Native discovery, semantic smoke and CI are not observer-cost or performance
 qualification. The external method review must explicitly accept the selected
 observer's coverage and perturbation assumptions; getters may initialize native

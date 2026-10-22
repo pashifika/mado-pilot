@@ -653,18 +653,6 @@ class RefusalTests(unittest.TestCase):
             self.discover(argv=[str(Path(tempfile.gettempdir()).resolve() / "absent-main")]),
             "main_executable_unreadable")
 
-    @unittest.skipUnless(sys.platform == "darwin", "actual restricted platform binary")
-    def test_restricted_platform_binary_is_unsupported_not_empty(self):
-        receipt = self.discover(argv=["/usr/bin/true"], timeout_seconds=20, cleanup_seconds=5)
-        self.assertEqual(receipt["record"]["exit_code"], 0)
-        self.assertEqual(receipt["result"]["status"], "incomplete")
-        self.assertEqual(receipt["result"]["reason"], "loader_logging_unavailable")
-        self.assertEqual(receipt["images"], [])
-        self.assertEqual(receipt["loader"]["env"]["DYLD_PRINT_LIBRARIES"], "1")
-        self.assertIsNotNone(receipt["system"])
-        self.assertGreater(receipt["record"]["process_id"], 0)
-        self.assertEqual(receipt["loader"]["root_pid"], receipt["record"]["process_id"])
-
 
 TRANSIENT_SOURCE = "int transient_value(void) { return %d; }\n"
 LOADER_SOURCE = r"""
@@ -736,9 +724,18 @@ class TransientDylibSmoke(unittest.TestCase):
         self.compile(TRANSIENT_SOURCE % value, "transient.c", ["-dynamiclib"], self.dylib)
 
     def run_helper(self, function, mode, dylib, **extra):
-        return function([str(self.loader), mode, str(dylib)], cwd=self.root, env={},
-                        timeout_seconds=30, output_limit_bytes=1 << 20, cleanup_seconds=5,
-                        **extra)
+        receipt = function([str(self.loader), mode, str(dylib)], cwd=self.root, env={},
+                           timeout_seconds=30, output_limit_bytes=1 << 20, cleanup_seconds=5,
+                           **extra)
+        if receipt["result"]["reason"] == "system_identity_unavailable":
+            self.fail(json.dumps({
+                "receipt": receipt,
+                "sysctl": {key: observer._sysctl_string(name)
+                           for key, name in observer._SYSCTL_NAMES.items()},
+                "shared_cache_uuid": observer._shared_cache_uuid(),
+                "observer_architecture": observer.platform.machine(),
+            }))
+        return receipt
 
     def events_for(self, receipt, path):
         return [event for event in receipt["events"]

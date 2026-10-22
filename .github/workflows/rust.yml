@@ -876,6 +876,8 @@ jobs:
 
       - name: Test native macOS image-observer contracts
         shell: bash
+        env:
+          MADO_MACOS_IMAGE_OBSERVER_SMOKE: "1"
         run: python3 -B -m unittest discover -s tools/tests -p test_macos_image_observer.py -v
 
       - name: Compile the native template-watch Lane B and Lane C runners
