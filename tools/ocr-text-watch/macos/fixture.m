@@ -159,7 +159,10 @@ int main(int argc, const char *argv[]) {
         NSImage *image = [[NSImage alloc] initWithSize:NSMakeSize(480, 270)];
         [image addRepresentation:rep];
         [NSApplication sharedApplication];
-        if (![NSApp setActivationPolicy:NSApplicationActivationPolicyAccessory]) return 2;
+        if (NSApp.activationPolicy != NSApplicationActivationPolicyAccessory) {
+            [NSApp setActivationPolicy:NSApplicationActivationPolicyAccessory];
+        }
+        if (NSApp.activationPolicy != NSApplicationActivationPolicyAccessory) return 2;
         NSScreen *screen = NSScreen.mainScreen;
         if (!screen || screen.backingScaleFactor != 2.0 || screen.visibleFrame.size.width < 600 || screen.visibleFrame.size.height < 380) return 2;
         Fixture *owner = [Fixture new];

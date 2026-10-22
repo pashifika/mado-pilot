@@ -130,8 +130,8 @@
 //! `examples/ocr-default.rs`, `examples/ocr-profile-zones.rs`,
 //! `examples/template-watch.rs`, and `examples/native-template-watch.rs`.
 //!
-//! [`Session::start_ocr_text_watch`] adds Rust-only maintained text presence for
-//! the explicit CPU bounded-v2 profile, with an exact retained source result.
+//! [`Session::start_ocr_text_watch`] uses the caller's initialized BGRA OCR backend
+//! and provider metadata for Rust-only text presence with exact retained source results.
 //! Neither watcher adds callbacks, Tokio/futures, C/C++, automatic input,
 //! arbitrary scheduler capacity, or platform-native public types.
 //!
@@ -294,6 +294,7 @@ pub struct OcrProfileConfig {
     profile: OcrProfile,
     model_root: PathBuf,
     runtime_path: PathBuf,
+    cpu_options: OcrCpuOptions,
 }
 
 impl OcrProfileConfig {
@@ -311,6 +312,7 @@ impl OcrProfileConfig {
             },
             model_root: model_root.into(),
             runtime_path: runtime_path.into(),
+            cpu_options: OcrCpuOptions::default(),
         }
     }
 
@@ -330,6 +332,19 @@ impl OcrProfileConfig {
             model_root,
             runtime_path,
         ))
+    }
+
+    /// Selects bounded CPU session settings without changing the model profile.
+    #[must_use]
+    pub fn with_cpu_options(mut self, cpu_options: OcrCpuOptions) -> Self {
+        self.cpu_options = cpu_options;
+        self
+    }
+
+    /// Returns the caller-selected CPU options; defaults to one thread with spinning.
+    #[must_use]
+    pub const fn cpu_options(&self) -> OcrCpuOptions {
+        self.cpu_options
     }
 
     /// Returns the selected closed product profile.
@@ -487,10 +502,11 @@ fn configured_ocr(
             Ok(Some(OcrRecognizer::new(Arc::new(backend))))
         }
         (None, Some(IntegratedOcr::Profile(config, operation))) => {
-            let backend = OnnxOcrBackend::open_profile(
+            let backend = OnnxOcrBackend::open_profile_with_cpu_options(
                 config.profile_id(),
                 config.model_root(),
                 config.runtime_path(),
+                config.cpu_options(),
                 operation,
             )
             .map_err(Error::from)?;
@@ -1120,7 +1136,7 @@ pub use mado_pilot_runtime::{
     MatchOptions, MatchResult, MemoryEntry, MemoryPackage, ModelComponentIdentity, ModelId,
     ModelVersion, Modifier, MonotonicInstant, NativeDesktopUnit, NativeWindowDescription,
     NativeWindowId, NormalizationId, OcrBackend, OcrBackendDescriptor, OcrBackendId,
-    OcrBackendIdentity, OcrBackendRequest, OcrBackendVersion, OcrCandidateSink,
+    OcrBackendIdentity, OcrBackendRequest, OcrBackendVersion, OcrCandidateSink, OcrCpuOptions,
     OcrDetectorDescriptor, OcrDetectorResize, OcrDiagnostic, OcrDiagnosticOutcome,
     OcrDiagnosticProfile, OcrEvaluationEvidence, OcrEvaluationOutcome, OcrEvaluationSummary,
     OcrExecutionProvider, OcrExecutionProviderPolicy, OcrFault, OcrGraphDescriptor,

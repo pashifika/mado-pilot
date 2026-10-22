@@ -616,11 +616,11 @@ impl Session {
         watcher.start_query(request)
     }
 
-    /// Starts one CPU bounded-v2 text-presence query over maintained frames.
+    /// Starts text presence with the caller's initialized BGRA OCR backend.
     ///
-    /// No capture or OCR call runs on this caller. Missing OCR, unsupported
-    /// initialized identity, known geometry, interruption or shared capacity
-    /// can refuse publication. An unknown initial transform waits for a frame.
+    /// No capture or OCR call runs on this caller. Missing OCR/provider metadata,
+    /// non-BGRA format, known geometry, interruption or shared capacity can refuse
+    /// publication. An unknown initial transform waits for a frame.
     pub fn start_ocr_text_watch(&self, request: OcrTextWatchRequest) -> Result<OcrTextQuery> {
         if !self.accepts_work() {
             return Err(CaptureFault::SessionClosed.into());

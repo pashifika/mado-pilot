@@ -44,7 +44,7 @@ use mado_pilot_core::{OperationContext, Result as CoreResult};
 use mado_pilot_ocr::{
     ACCEPTED_BOUNDED_PROFILE_ID, ACCEPTED_G004_PROFILE_ID, BackendCandidate, BackendId,
     BackendRequest, BackendVersion, OcrBackend, OcrBackendDescriptor, OcrBackendIdentity,
-    OcrCandidateSink, OcrExecutionProvider as PublicExecutionProvider,
+    OcrCandidateSink, OcrCpuOptions, OcrExecutionProvider as PublicExecutionProvider,
     OcrExecutionProviderPolicy as PublicExecutionProviderPolicy, OcrModelIdentity, OcrModelSource,
     OcrProviderDescriptor, OcrProviderFallbackReason as PublicProviderFallbackReason,
     ProviderProfileId, candidate_interest_membership,
@@ -432,7 +432,6 @@ pub mod benchmark_instrumentation {
         };
 
         static TEST_LOCK: Mutex<()> = Mutex::new(());
-
         #[test]
         fn open_stage_observer_is_exclusive_and_disabled_by_its_guard() {
             let _test = TEST_LOCK
@@ -544,7 +543,8 @@ pub const CUDA_BACKEND_ID: &str = "onnxruntime-cuda";
 pub const COREML_BACKEND_ID: &str = "onnxruntime-coreml";
 /// Exact backend implementation identity, including the controlled runtime profile.
 pub const BACKEND_VERSION: &str = concat!(env!("CARGO_PKG_VERSION"), "+ort-1.29.0-api17");
-/// Closed identity of the controlled CPU runtime/provider boundary.
+/// CPU runtime identity with default options; initialized options use
+/// [`OnnxBackendFacts::runtime_profile_id`].
 pub const RUNTIME_PROFILE_ID: &str = "onnxruntime-1.29.0-api17-cpu";
 /// Closed identity of the controlled CUDA runtime/provider boundary.
 pub const CUDA_RUNTIME_PROFILE_ID: &str = "onnxruntime-1.29.0-api17-cuda13-cudnn9";
@@ -843,13 +843,39 @@ impl OnnxOcrBackend {
         runtime_path: &Path,
         operation: &OperationContext,
     ) -> Result<Self, OnnxBackendFault> {
-        Self::open_profile_with_provider_config(
+        Self::open_profile_with_cpu_options(
             profile_id,
             model_root,
             runtime_path,
+            OcrCpuOptions::default(),
+            operation,
+        )
+    }
+
+    /// Opens one catalog profile on CPU with explicit bounded session options.
+    ///
+    /// Thread and spinning settings change the runtime-profile identity, not
+    /// the model, preprocessing, or decoder. No setting guarantees performance.
+    pub fn open_profile_with_cpu_options(
+        profile_id: &str,
+        model_root: &Path,
+        runtime_path: &Path,
+        cpu_options: OcrCpuOptions,
+        operation: &OperationContext,
+    ) -> Result<Self, OnnxBackendFault> {
+        checkpoint(operation)?;
+        let (profile, identity) = ExecutionProfile::from_id(profile_id)?;
+        initialize_runtime(runtime_path)?;
+        checkpoint(operation)?;
+        let source = model::profile_source(model_root, profile, identity, operation)?;
+        Self::open_initialized_with_provider_policy(
+            source,
+            profile,
             OnnxExecutionProviderPolicy::Cpu,
             None,
+            runtime_path,
             operation,
+            cpu_options,
         )
         .map_err(OnnxBackendOpenFault::fault)
     }
@@ -898,6 +924,7 @@ impl OnnxOcrBackend {
             provider_root,
             runtime_path,
             operation,
+            OcrCpuOptions::default(),
         )
     }
 
@@ -947,6 +974,7 @@ impl OnnxOcrBackend {
             provider_root,
             runtime_path,
             operation,
+            OcrCpuOptions::default(),
         )
     }
 
@@ -957,6 +985,7 @@ impl OnnxOcrBackend {
         provider_root: Option<&Path>,
         runtime_path: &Path,
         operation: &OperationContext,
+        cpu_options: OcrCpuOptions,
     ) -> Result<Self, OnnxBackendOpenFault> {
         let model_identity = source.identity().clone();
         let reservation = SessionPair::reserve()?;
@@ -992,10 +1021,18 @@ impl OnnxOcrBackend {
                     operation,
                     candidate,
                     candidate_reservation,
+                    cpu_options,
                 )
             },
             move |cpu| {
-                SessionPair::open_with_provider(source, profile, operation, cpu, cpu_reservation)
+                SessionPair::open_with_provider(
+                    source,
+                    profile,
+                    operation,
+                    cpu,
+                    cpu_reservation,
+                    cpu_options,
+                )
             },
         )?;
         let backend_identity = OcrBackendIdentity::new(
@@ -1009,6 +1046,7 @@ impl OnnxOcrBackend {
         );
         let descriptor =
             OcrBackendDescriptor::new(backend_identity, model_identity, PixelFormat::Bgra8);
+        let runtime_profile_id = session::runtime_profile_id(provider, cpu_options);
         let facts = OnnxBackendFacts::accepted_with_provider(
             profile,
             u64::try_from(image::MAX_TENSOR_BYTES).map_err(|_| OnnxBackendFault::ResourceLimit)?,
@@ -1019,12 +1057,14 @@ impl OnnxOcrBackend {
             provider_policy,
             provider,
             fallback_reason,
+            cpu_options,
+            runtime_profile_id,
         );
         let provider_descriptor = OcrProviderDescriptor::new(
             public_provider_policy(provider_policy),
             public_provider(provider),
             fallback_reason.map(public_fallback_reason),
-            ProviderProfileId::new(provider.runtime_profile_id())
+            ProviderProfileId::new(runtime_profile_id)
                 .map_err(|_| OnnxBackendFault::GraphMismatch)?,
         );
         checkpoint(operation)?;
@@ -1748,6 +1788,19 @@ mod tests {
                 Err(OnnxBackendFault::ProfileMismatch)
             );
             assert_eq!(
+                OnnxOcrBackend::open_profile_with_cpu_options(
+                    id,
+                    relative,
+                    relative,
+                    mado_pilot_ocr::OcrCpuOptions::new(7)
+                        .unwrap()
+                        .with_spinning(false),
+                    &operation,
+                )
+                .map(|_| ()),
+                Err(OnnxBackendFault::ProfileMismatch)
+            );
+            assert_eq!(
                 OnnxOcrBackend::open_profile_with_provider_config(
                     id,
                     relative,
@@ -1767,6 +1820,19 @@ mod tests {
                     .map(|_| ()),
                 Err(OnnxBackendFault::InvalidRuntimePath)
             );
+            assert_eq!(
+                OnnxOcrBackend::open_profile_with_cpu_options(
+                    profile.profile_id,
+                    relative,
+                    relative,
+                    mado_pilot_ocr::OcrCpuOptions::new(7)
+                        .unwrap()
+                        .with_spinning(false),
+                    &operation,
+                )
+                .map(|_| ()),
+                Err(OnnxBackendFault::InvalidRuntimePath)
+            );
         }
 
         let cancellation = CancellationToken::new();
@@ -1775,6 +1841,19 @@ mod tests {
         assert_eq!(
             OnnxOcrBackend::open_profile("unknown-profile", relative, relative, &cancelled)
                 .map(|_| ()),
+            Err(OnnxBackendFault::Cancelled)
+        );
+        assert_eq!(
+            OnnxOcrBackend::open_profile_with_cpu_options(
+                ACCEPTED_BOUNDED_PROFILE_ID,
+                relative,
+                relative,
+                mado_pilot_ocr::OcrCpuOptions::new(8)
+                    .unwrap()
+                    .with_spinning(false),
+                &cancelled,
+            )
+            .map(|_| ()),
             Err(OnnxBackendFault::Cancelled)
         );
     }

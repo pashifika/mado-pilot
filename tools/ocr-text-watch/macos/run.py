@@ -363,10 +363,9 @@ class NativeCapture:
                         or len(data) >= BOUNDS["each_native_image_file_bytes"] or not data.endswith(b"\n")):
                     raise ValueError("native-image-incomplete-or-saturated")
                 for line in data.decode("utf-8", errors="strict").split("\n")[:-1]:
-                    # dyld also reports a loaded-to-delayed state transition.
-                    # It names no path/UUID and is not an image identity row.
+                    # State transitions name no path/UUID and are not identities.
                     delayed = re.fullmatch(
-                        r"dyld\[([1-9][0-9]*)\]: move loaded to delayed: [^/\x00-\x1f\x7f]+",
+                        r"dyld\[([1-9][0-9]*)\]: move (?:loaded to delayed|delayed to loaded): [^/\x00-\x1f\x7f]+",
                         line,
                     )
                     if delayed is not None and int(delayed[1]) == child.pid:

@@ -72,6 +72,13 @@ initialization, inference or acquisition. The SDK does not fetch report URLs.
 the bounded catalog ID, keeping legacy pattern matching and configuration
 equality consistent.
 
+Explicit Rust profile callers may attach `OcrCpuOptions` before initialization.
+The default remains one intra-op thread with spinning enabled; the selected
+options apply to both native sessions and have a distinct runtime identity.
+See the [CPU options and measured trade-offs](ocr-text-watch.md#cpu-execution-options).
+Use `OnnxBackendFacts::runtime_profile_id()` for the initialized configuration,
+not the provider enum's default-options identity.
+
 Direct users of `mado-pilot-backend-onnx` must handle the new
 `OnnxOcrProfile::Catalog` variant in exhaustive matches and use
 `OnnxBackendFacts::profile_id()` for exact identity. The facade's existing
@@ -192,6 +199,11 @@ python3 tools/ocr-models/run.py evaluate "$NEW_REPORT_DIRECTORY/report.json" \
 python3 tools/ocr-models/run.py evaluate "$APPLE_REPORT" "$WINDOWS_REPORT" \
   --evidence-roots "$APPLE_EVIDENCE_ROOT" "$WINDOWS_EVIDENCE_ROOT"
 ```
+
+The fixed evaluation cohort below remains one intra-op thread with spinning
+enabled. Explicit CPU-option comparisons are separate source-bound measurements,
+not replacements for that cohort or its historical results. The benchmark
+refuses CPU options that disagree with a supplied thread/spinning cohort binding.
 
 All referenced inputs are explicit. Output directories are new and never
 overwritten. Reference and candidate run serially, three fresh processes each;

@@ -264,52 +264,97 @@ fn invalid_options_and_interrupted_construction_publish_no_query() {
     );
 }
 
+fn assert_initialized_choice(descriptor: OcrBackendDescriptor, provider: OcrProviderDescriptor) {
+    let ocr = Arc::new(
+        backend()
+            .with_descriptor(descriptor.clone())
+            .with_provider_descriptor(provider.clone())
+            .with_calls(vec![call(b"missing"), call(b"ready")]),
+    );
+    let harness = Harness::new(ocr.clone());
+    let session = harness.open();
+    let query = session
+        .start_ocr_text_watch(request("ready", OperationContext::new()))
+        .expect("the initialized BGRA selection remains the caller's choice");
+    harness.publish(1);
+    assert_eq!(completed(&query, 1).confirmed_observations(), 0);
+    harness.publish(2);
+    let outcome = query.wait(&bounded()).unwrap();
+    let result = matched(&outcome);
+    assert_eq!(result.result().backend(), &descriptor);
+    assert_eq!(result.provider(), &provider);
+    assert_eq!(result.matching_regions().next().unwrap().text(), "ready");
+    assert_eq!(ocr.recognition_count(), 2);
+    session.close(&bounded()).unwrap();
+}
+
 #[test]
-fn complete_initialized_identity_and_known_coordinates_are_required() {
-    let mut selections: Vec<Option<Arc<dyn OcrBackend>>> = vec![None];
-    selections.push(Some(Arc::new(
-        ControlledOcr::new(PixelFormat::Bgra8).with_descriptor(cpu_descriptor()),
-    )));
-    let native = OcrBackendDescriptor::new(
-        cpu_descriptor().backend_identity().clone(),
-        OcrModelIdentity::accepted_g004(),
-        PixelFormat::Bgra8,
-    );
-    selections.push(Some(Arc::new(backend().with_descriptor(native))));
-    let max_side = OcrBackendDescriptor::new(
-        cpu_descriptor().backend_identity().clone(),
-        ocr_profile("ppocrv6-tiny-det-small-rec-max736-v1")
-            .unwrap()
-            .identity()
-            .unwrap(),
-        PixelFormat::Bgra8,
-    );
-    selections.push(Some(Arc::new(backend().with_descriptor(max_side))));
-    selections.push(Some(Arc::new(backend().with_provider_descriptor(
-        OcrProviderDescriptor::new(
-            OcrExecutionProviderPolicy::RequireCuda,
-            OcrExecutionProvider::Cuda,
-            None,
-            ProviderProfileId::new("onnxruntime-1.29.0-api17-cuda13-cudnn9").unwrap(),
-        ),
-    ))));
-    selections.push(Some(Arc::new(backend().with_provider_descriptor(
-        OcrProviderDescriptor::new(
+fn all_catalog_profiles_can_watch_text_regardless_of_evaluation() {
+    for profile in ocr_profiles() {
+        assert_initialized_choice(
+            OcrBackendDescriptor::new(
+                cpu_descriptor().backend_identity().clone(),
+                profile.identity().unwrap(),
+                PixelFormat::Bgra8,
+            ),
+            cpu_provider(),
+        );
+    }
+}
+
+#[test]
+fn configured_backend_version_model_and_provider_choices_are_preserved() {
+    // Controlled descriptors exercise selection, not native or GPU execution.
+    let descriptor = ControlledOcr::new(PixelFormat::Bgra8).descriptor();
+    for (policy, active, fallback) in [
+        (
             OcrExecutionProviderPolicy::Cpu,
             OcrExecutionProvider::Cpu,
             None,
-            ProviderProfileId::new("unknown-runtime").unwrap(),
         ),
-    ))));
-    let wrong_backend = OcrBackendDescriptor::new(
-        OcrBackendIdentity::new(
-            OcrBackendId::new("unspecified").unwrap(),
-            OcrBackendVersion::new("1").unwrap(),
+        (
+            OcrExecutionProviderPolicy::RequireCuda,
+            OcrExecutionProvider::Cuda,
+            None,
         ),
-        OcrModelIdentity::accepted_bounded_detector(),
-        PixelFormat::Bgra8,
-    );
-    selections.push(Some(Arc::new(backend().with_descriptor(wrong_backend))));
+        (
+            OcrExecutionProviderPolicy::RequireCoreMl,
+            OcrExecutionProvider::CoreMl,
+            None,
+        ),
+        (
+            OcrExecutionProviderPolicy::AutoPreferAccelerator,
+            OcrExecutionProvider::Cpu,
+            Some(OcrProviderFallbackReason::DependencyUnavailable),
+        ),
+    ] {
+        assert_initialized_choice(
+            descriptor.clone(),
+            OcrProviderDescriptor::new(
+                policy,
+                active,
+                fallback,
+                ProviderProfileId::new("configured-runtime").unwrap(),
+            ),
+        );
+    }
+}
+
+#[test]
+fn initialized_provider_bgra_and_known_coordinates_are_required() {
+    let selections: [Option<Arc<dyn OcrBackend>>; 3] = [
+        None,
+        Some(Arc::new(
+            ControlledOcr::new(PixelFormat::Bgra8).with_descriptor(cpu_descriptor()),
+        )),
+        Some(Arc::new(backend().with_descriptor(
+            OcrBackendDescriptor::new(
+                cpu_descriptor().backend_identity().clone(),
+                cpu_descriptor().model_identity().clone(),
+                PixelFormat::Rgba8,
+            ),
+        ))),
+    ];
     for (index, ocr) in selections.into_iter().enumerate() {
         let harness = Harness::with_options(
             ocr,
@@ -353,6 +398,201 @@ fn complete_initialized_identity_and_known_coordinates_are_required() {
             .status(),
         Status::Unsupported
     );
+}
+
+#[derive(Debug)]
+struct MutableOcr {
+    backend: ControlledOcr,
+    descriptor: Mutex<OcrBackendDescriptor>,
+    provider: Mutex<Option<OcrProviderDescriptor>>,
+}
+impl MutableOcr {
+    fn new(backend: ControlledOcr) -> Self {
+        Self {
+            descriptor: Mutex::new(backend.descriptor()),
+            provider: Mutex::new(backend.provider_descriptor()),
+            backend,
+        }
+    }
+}
+impl OcrBackend for MutableOcr {
+    fn descriptor(&self) -> OcrBackendDescriptor {
+        self.descriptor.lock().unwrap().clone()
+    }
+    fn provider_descriptor(&self) -> Option<OcrProviderDescriptor> {
+        self.provider.lock().unwrap().clone()
+    }
+    fn recognize(
+        &self,
+        request: &OcrBackendRequest<'_>,
+        output: &mut dyn OcrCandidateSink,
+        operation: &OperationContext,
+    ) -> Result<()> {
+        self.backend.recognize(request, output, operation)
+    }
+    fn close(&self, operation: &OperationContext) -> Result<()> {
+        self.backend.close(operation)
+    }
+}
+
+#[test]
+fn provider_metadata_is_rechecked_before_each_analysis_or_change_skip() {
+    let provider = OcrProviderDescriptor::new(
+        OcrExecutionProviderPolicy::AutoPreferAccelerator,
+        OcrExecutionProvider::Cpu,
+        None,
+        ProviderProfileId::new("configured-runtime").unwrap(),
+    );
+    let mutations = [
+        None,
+        Some(OcrProviderDescriptor::new(
+            OcrExecutionProviderPolicy::Cpu,
+            provider.active_provider(),
+            provider.fallback_reason(),
+            provider.runtime_profile().clone(),
+        )),
+        Some(OcrProviderDescriptor::new(
+            provider.requested_policy(),
+            OcrExecutionProvider::Cuda,
+            provider.fallback_reason(),
+            provider.runtime_profile().clone(),
+        )),
+        Some(OcrProviderDescriptor::new(
+            provider.requested_policy(),
+            provider.active_provider(),
+            Some(OcrProviderFallbackReason::DependencyUnavailable),
+            provider.runtime_profile().clone(),
+        )),
+        Some(OcrProviderDescriptor::new(
+            provider.requested_policy(),
+            provider.active_provider(),
+            provider.fallback_reason(),
+            ProviderProfileId::new("changed-runtime").unwrap(),
+        )),
+    ];
+    for mutation in mutations {
+        for completed_before_drift in [0, 1] {
+            let ocr = Arc::new(MutableOcr::new(
+                backend().with_provider_descriptor(provider.clone()),
+            ));
+            let harness = Harness::new(ocr.clone());
+            let session = harness.open();
+            let query = session
+                .start_ocr_text_watch(configured(
+                    "ready",
+                    0.8,
+                    OcrTextStability::immediate(),
+                    ChangeDetectionPolicy::ExactRgba,
+                    OperationContext::new(),
+                ))
+                .unwrap();
+            if completed_before_drift != 0 {
+                harness.publish(1);
+                completed(&query, 1);
+            }
+            *ocr.provider.lock().unwrap() = mutation.clone();
+            harness.publish(1);
+            assert_eq!(
+                query.wait(&bounded()).unwrap().status(),
+                Some(Status::Unsupported)
+            );
+            assert_eq!(ocr.backend.recognition_count(), completed_before_drift);
+            assert_eq!(
+                query
+                    .progress()
+                    .work()
+                    .get(OcrTextWorkDisposition::SkippedChange),
+                0
+            );
+        }
+    }
+}
+
+#[test]
+fn backend_descriptor_drift_is_rejected_before_inference_or_change_skip() {
+    let descriptor = cpu_descriptor();
+    let mutations = [
+        (
+            OcrBackendDescriptor::new(
+                OcrBackendIdentity::new(
+                    OcrBackendId::new("changed-backend").unwrap(),
+                    descriptor.version().clone(),
+                ),
+                descriptor.model_identity().clone(),
+                PixelFormat::Bgra8,
+            ),
+            Status::InvalidArgument,
+        ),
+        (
+            OcrBackendDescriptor::new(
+                OcrBackendIdentity::new(
+                    descriptor.id().clone(),
+                    OcrBackendVersion::new("changed-version").unwrap(),
+                ),
+                descriptor.model_identity().clone(),
+                PixelFormat::Bgra8,
+            ),
+            Status::InvalidArgument,
+        ),
+        (
+            OcrBackendDescriptor::new(
+                descriptor.backend_identity().clone(),
+                ControlledOcr::new(PixelFormat::Bgra8)
+                    .descriptor()
+                    .model_identity()
+                    .clone(),
+                PixelFormat::Bgra8,
+            ),
+            Status::InvalidArgument,
+        ),
+        (
+            OcrBackendDescriptor::new(
+                descriptor.backend_identity().clone(),
+                OcrModelIdentity::accepted_g004(),
+                PixelFormat::Bgra8,
+            ),
+            Status::InvalidArgument,
+        ),
+        (
+            OcrBackendDescriptor::new(
+                descriptor.backend_identity().clone(),
+                descriptor.model_identity().clone(),
+                PixelFormat::Rgba8,
+            ),
+            Status::Unsupported,
+        ),
+    ];
+    for (mutation, status) in mutations {
+        for completed_before_drift in [0, 1] {
+            let ocr = Arc::new(MutableOcr::new(backend()));
+            let harness = Harness::new(ocr.clone());
+            let session = harness.open();
+            let query = session
+                .start_ocr_text_watch(configured(
+                    "ready",
+                    0.8,
+                    OcrTextStability::immediate(),
+                    ChangeDetectionPolicy::ExactRgba,
+                    OperationContext::new(),
+                ))
+                .unwrap();
+            if completed_before_drift != 0 {
+                harness.publish(1);
+                completed(&query, 1);
+            }
+            *ocr.descriptor.lock().unwrap() = mutation.clone();
+            harness.publish(1);
+            assert_eq!(query.wait(&bounded()).unwrap().status(), Some(status));
+            assert_eq!(ocr.backend.recognition_count(), completed_before_drift);
+            assert_eq!(
+                query
+                    .progress()
+                    .work()
+                    .get(OcrTextWorkDisposition::SkippedChange),
+                0
+            );
+        }
+    }
 }
 
 #[test]

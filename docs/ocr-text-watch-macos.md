@@ -1,5 +1,37 @@
 # Private Apple Silicon OCR text-watch procedure
 
+## Current apparatus readiness — 2026-10-22
+
+The current-worktree observations on Apple Silicon macOS 27.0.1 reported
+`ScreenCapture: Granted`. The private fixture accepts an already-Accessory
+application by checking the effective policy, and the image parser retains both
+owned-PID dyld delayed-state transitions without treating either as an identity.
+
+A fixture-only startup smoke observed the owned 480x278 logical window at 2x
+and an unforced, reaped exit with complete output channels. It performed no
+capture or OCR. The model-free procedure suite passed 117 tests with four
+platform-specific skips. Replaying the first attempt's complete loader bytes
+also exposed the dynamically loaded TBB allocator outside its static manifest;
+that attempt remains failed and its manifest is unchanged.
+
+The operator separately authorized one repaired-candidate attempt, prospectively
+binding the TBB allocator with the other 29 non-system images. That exact set
+and all source/artifact hashes matched. The owned fixture acknowledged
+`arm-blank`, but the first source checkpoint failed with
+`producer-progress-absent-frame`; the remaining five rows were not run.
+Resource and cleanup checks passed, including zero logical/physical OCR work
+after close and unforced exit/reaping of both children.
+
+The checkpoint error covers both an acquisition deadline and a deadline after
+rejecting a marker. The retained record does not distinguish them; it is not
+proof that capture delivered no frames. Source geometry/marker correlation
+needs further diagnosis before another separately authorized capture.
+No permission setting or input action was performed. These observations do not
+qualify ScreenCaptureKit OCR, macOS support, recognition quality or numerical
+workload budgets.
+
+## Historical qualification preparation
+
 **Task 7.3 is compiled/reviewed. Task 7.4 reached the permission gate; capture remains not-run.**
 The strict Apple fixture build and Rust example passed CI and scoped verification
 on the delivered `fd5468f` tree. Earlier compile failures remain recorded with
@@ -196,8 +228,9 @@ replacing the existing semantic/resource/cleanup/status fields.
 Only complete `consumer.native-images` and `fixture.native-images` supply
 dependency-image records. Strict decoding and row parsing reject malformed
 records or an incomplete final row; ordinary stderr is never an image fallback.
-The exact owned-PID `move loaded to delayed: <basename>` diagnostic is retained
-but supplies no image identity; other non-image syntax is rejected.
+The exact owned-PID `move loaded to delayed: <basename>` and
+`move delayed to loaded: <basename>` diagnostics are retained but supply no
+image identity; other non-image syntax is rejected.
 The bounded approved canonical non-system manifest is checked before launch,
 against the exact observed union after both channels finish, and against disk
 hashes again after exit. System shared-cache libraries bind to OS build, but

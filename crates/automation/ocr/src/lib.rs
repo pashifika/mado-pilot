@@ -66,7 +66,7 @@ pub use model::{
     ProfileId, ProviderProfileId,
 };
 pub use provider::{
-    OcrExecutionProvider, OcrExecutionProviderPolicy, OcrProviderDescriptor,
+    OcrCpuOptions, OcrExecutionProvider, OcrExecutionProviderPolicy, OcrProviderDescriptor,
     OcrProviderFallbackReason,
 };
 pub use recognizer::{MAX_BACKEND_TEXT_BYTES, MAX_CANDIDATES, MAX_TEXT_BYTES, OcrRecognizer};

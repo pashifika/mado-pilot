@@ -299,6 +299,42 @@ class NativeMacosRunner(unittest.TestCase):
                 else:
                     self.assertIsNone(capture.failure)
 
+    def test_owned_delayed_promotion_does_not_supply_an_image_identity(self):
+        child = self.launch(r"""
+            write_all(image_fd, image_line("/usr/lib/owned-promoted-probe.dylib"))
+            write_all(image_fd, (f"dyld[{os.getpid()}]: move delayed to loaded: unobserved.dylib\n").encode())
+        """)
+        self.capture.cleanup()
+        self.assertEqual(child.returncode, 0)
+        paths = self.capture.image_paths()
+        self.assertIn("/usr/lib/owned-inert-probe.dylib", paths)
+        self.assertIn("/usr/lib/owned-promoted-probe.dylib", paths)
+        self.assertFalse(any(Path(path).name == "unobserved.dylib" for path in paths))
+        self.assertTrue(all(row["complete"] for row in self.capture.facts().values()))
+        self.assertIsNone(self.capture.failure)
+
+    def test_state_diagnostics_still_require_owned_pid_known_transition_and_basename(self):
+        cases = (
+            ("foreign-pid", "1", "delayed to loaded", "owned.dylib"),
+            ("unknown-transition", "self", "queued to loaded", "owned.dylib"),
+            ("absolute-path", "self", "delayed to loaded", "/tmp/owned.dylib"),
+            ("control-character", "self", "delayed to loaded", "owned\x00.dylib"),
+        )
+        for name, pid, transition, basename in cases:
+            with self.subTest(case=name):
+                capture = self.new_capture(name)
+                child = self.launch(r"""
+                    pid, transition, basename = json.loads(sys.argv[1])
+                    pid = os.getpid() if pid == "self" else pid
+                    write_all(image_fd, (f"dyld[{pid}]: move {transition}: {basename}\n").encode())
+                """, json.dumps([pid, transition, basename]), capture=capture)
+                capture.cleanup()
+                self.assertEqual(child.returncode, 0)
+                with self.assertRaisesRegex(ValueError, "native-image-malformed-record"):
+                    capture.image_paths()
+                self.assertEqual(capture.failure["reason"], "native-image-observation-failed")
+                self.assertFalse(capture.facts()["consumer.native-images"]["complete"])
+
     def test_malformed_or_unterminated_image_records_are_never_dependency_proof(self):
         for name, suffix in (("utf8", b"\xff\n"), ("syntax", b"not-a-dyld-record\n"),
                              ("partial", b"dyld[1]: <00000000-0000-0000-0000-000000000001> /incomplete")):
