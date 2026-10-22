@@ -1273,6 +1273,8 @@ impl SessionCore {
                     CaptureFault::SourceInvalid
                 }
             })?;
+            #[cfg(feature = "benchmark-instrumentation")]
+            observe_resize_frame_surface(frame.frame(), (content_size.Width, content_size.Height));
             // The transition frame and its producer surface are released before
             // pool recreation. The first frame from the recreated pool receives
             // the discontinuity.
@@ -1456,6 +1458,32 @@ const fn target_fault(kind: TargetKind) -> CaptureFault {
         TargetKind::Display => CaptureFault::DisplayDisconnected,
         _ => CaptureFault::TargetLost,
     }
+}
+
+#[cfg(feature = "benchmark-instrumentation")]
+fn observe_resize_frame_surface(frame: &Direct3D11CaptureFrame, content_size: (i32, i32)) {
+    use crate::benchmark_metrics::{ResizeSurfaceProbeFailure, record_resize_surface_probe};
+
+    let observation = (|| {
+        let surface = frame
+            .Surface()
+            .map_err(|error| ResizeSurfaceProbeFailure::Surface(error.code().0))?;
+        let access: IDirect3DDxgiInterfaceAccess = surface
+            .cast()
+            .map_err(|error| ResizeSurfaceProbeFailure::Access(error.code().0))?;
+        // SAFETY: the borrowed live WGC frame owns this surface; the requested
+        // interface is its documented D3D11 texture owner.
+        let texture: ID3D11Texture2D = unsafe { access.GetInterface() }
+            .map_err(|error| ResizeSurfaceProbeFailure::Texture(error.code().0))?;
+        let mut descriptor = D3D11_TEXTURE2D_DESC::default();
+        // SAFETY: output is valid for the complete descriptor; no pixel access.
+        unsafe { texture.GetDesc(&raw mut descriptor) };
+        Ok((descriptor.Width, descriptor.Height, descriptor.Format.0))
+    })();
+    // All temporary COM owners above have dropped on either result path before
+    // the caller closes its frame and recreates the pool. Probe errors remain
+    // diagnostic scalars, never the capture operation's error or control flow.
+    record_resize_surface_probe(content_size, observation);
 }
 
 struct WgcFrameGuard(Option<Direct3D11CaptureFrame>);

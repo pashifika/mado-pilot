@@ -10,7 +10,7 @@ use mado_pilot_core::FrameStamp;
 #[cfg(feature = "benchmark-instrumentation")]
 use std::sync::{
     LazyLock,
-    atomic::{AtomicU64, Ordering},
+    atomic::{AtomicI32, AtomicU32, AtomicU64, Ordering},
 };
 #[cfg(feature = "benchmark-instrumentation")]
 use std::time::{Duration, Instant};
@@ -65,6 +65,24 @@ static PUBLISH_SUCCESSES: AtomicU64 = AtomicU64::new(0);
 static PUBLISH_REFUSALS: AtomicU64 = AtomicU64::new(0);
 #[cfg(feature = "benchmark-instrumentation")]
 static CALLBACK_FAULTS: AtomicU64 = AtomicU64::new(0);
+#[cfg(feature = "benchmark-instrumentation")]
+static RESIZE_SURFACE_SUCCESSES: AtomicU64 = AtomicU64::new(0);
+#[cfg(feature = "benchmark-instrumentation")]
+static RESIZE_SURFACE_FAILURES: AtomicU64 = AtomicU64::new(0);
+#[cfg(feature = "benchmark-instrumentation")]
+static RESIZE_CONTENT_WIDTH: AtomicI32 = AtomicI32::new(0);
+#[cfg(feature = "benchmark-instrumentation")]
+static RESIZE_CONTENT_HEIGHT: AtomicI32 = AtomicI32::new(0);
+#[cfg(feature = "benchmark-instrumentation")]
+static RESIZE_TEXTURE_WIDTH: AtomicU32 = AtomicU32::new(0);
+#[cfg(feature = "benchmark-instrumentation")]
+static RESIZE_TEXTURE_HEIGHT: AtomicU32 = AtomicU32::new(0);
+#[cfg(feature = "benchmark-instrumentation")]
+static RESIZE_TEXTURE_FORMAT: AtomicI32 = AtomicI32::new(0);
+#[cfg(feature = "benchmark-instrumentation")]
+static RESIZE_SURFACE_STATUS: AtomicU64 = AtomicU64::new(0);
+#[cfg(feature = "benchmark-instrumentation")]
+static RESIZE_SURFACE_HRESULT: AtomicI32 = AtomicI32::new(0);
 
 /// One process-wide resource and callback-progress observation.
 ///
@@ -109,6 +127,24 @@ pub struct CaptureMetricsSnapshot {
     pub publish_refusals: u64,
     /// Frame-processing errors, including ignored late close errors.
     pub callback_faults: u64,
+    /// Completed resize texture descriptor probes, not pixel/oracle successes.
+    pub resize_surface_successes: u64,
+    /// Resize metadata probe failures, independent of capture faults.
+    pub resize_surface_failures: u64,
+    /// Last probed native ContentSize width; independent, nontransactional load.
+    pub resize_content_width: i32,
+    /// Last probed native ContentSize height.
+    pub resize_content_height: i32,
+    /// Last probed texture width, or zero on probe failure/reset.
+    pub resize_texture_width: u32,
+    /// Last probed texture height, or zero on probe failure/reset.
+    pub resize_texture_height: u32,
+    /// Last probed raw DXGI format, or zero on probe failure/reset.
+    pub resize_texture_format: i32,
+    /// 0 unmeasured, 1 descriptor read, 2 Surface, 3 access cast, 4 texture failure.
+    pub resize_surface_status: u64,
+    /// Raw failing HRESULT, or zero on probe success/reset.
+    pub resize_surface_hresult: i32,
     /// Detached private textures alive at the instant of the snapshot.
     pub detached_textures_live: u64,
     /// Maximum simultaneously live detached private textures since reset.
@@ -702,6 +738,15 @@ pub fn reset_capture_metrics() {
     PUBLISH_SUCCESSES.store(0, Ordering::Relaxed);
     PUBLISH_REFUSALS.store(0, Ordering::Relaxed);
     CALLBACK_FAULTS.store(0, Ordering::Relaxed);
+    RESIZE_SURFACE_SUCCESSES.store(0, Ordering::Relaxed);
+    RESIZE_SURFACE_FAILURES.store(0, Ordering::Relaxed);
+    RESIZE_CONTENT_WIDTH.store(0, Ordering::Relaxed);
+    RESIZE_CONTENT_HEIGHT.store(0, Ordering::Relaxed);
+    RESIZE_TEXTURE_WIDTH.store(0, Ordering::Relaxed);
+    RESIZE_TEXTURE_HEIGHT.store(0, Ordering::Relaxed);
+    RESIZE_TEXTURE_FORMAT.store(0, Ordering::Relaxed);
+    RESIZE_SURFACE_STATUS.store(0, Ordering::Relaxed);
+    RESIZE_SURFACE_HRESULT.store(0, Ordering::Relaxed);
     DETACHED_PEAK.store(detached, Ordering::Release);
     STAGING_PEAK.store(staging, Ordering::Release);
 }
@@ -729,11 +774,55 @@ pub fn capture_metrics() -> CaptureMetricsSnapshot {
         publish_successes: PUBLISH_SUCCESSES.load(Ordering::Relaxed),
         publish_refusals: PUBLISH_REFUSALS.load(Ordering::Relaxed),
         callback_faults: CALLBACK_FAULTS.load(Ordering::Relaxed),
+        resize_surface_successes: RESIZE_SURFACE_SUCCESSES.load(Ordering::Relaxed),
+        resize_surface_failures: RESIZE_SURFACE_FAILURES.load(Ordering::Relaxed),
+        resize_content_width: RESIZE_CONTENT_WIDTH.load(Ordering::Relaxed),
+        resize_content_height: RESIZE_CONTENT_HEIGHT.load(Ordering::Relaxed),
+        resize_texture_width: RESIZE_TEXTURE_WIDTH.load(Ordering::Relaxed),
+        resize_texture_height: RESIZE_TEXTURE_HEIGHT.load(Ordering::Relaxed),
+        resize_texture_format: RESIZE_TEXTURE_FORMAT.load(Ordering::Relaxed),
+        resize_surface_status: RESIZE_SURFACE_STATUS.load(Ordering::Relaxed),
+        resize_surface_hresult: RESIZE_SURFACE_HRESULT.load(Ordering::Relaxed),
         detached_textures_live: DETACHED_LIVE.load(Ordering::Acquire),
         detached_textures_peak: DETACHED_PEAK.load(Ordering::Acquire),
         staging_textures_live: STAGING_LIVE.load(Ordering::Acquire),
         staging_textures_peak: STAGING_PEAK.load(Ordering::Acquire),
     }
+}
+
+#[cfg(feature = "benchmark-instrumentation")]
+pub(crate) enum ResizeSurfaceProbeFailure {
+    Surface(i32),
+    Access(i32),
+    Texture(i32),
+}
+
+#[cfg(feature = "benchmark-instrumentation")]
+pub(crate) fn record_resize_surface_probe(
+    content_size: (i32, i32),
+    result: Result<(u32, u32, i32), ResizeSurfaceProbeFailure>,
+) {
+    let (texture, status, hresult, counter) = match result {
+        Ok(texture) => (texture, 1, 0, &RESIZE_SURFACE_SUCCESSES),
+        Err(failure) => {
+            let (status, hresult) = match failure {
+                ResizeSurfaceProbeFailure::Surface(code) => (2, code),
+                ResizeSurfaceProbeFailure::Access(code) => (3, code),
+                ResizeSurfaceProbeFailure::Texture(code) => (4, code),
+            };
+            ((0, 0, 0), status, hresult, &RESIZE_SURFACE_FAILURES)
+        }
+    };
+    // These observations are deliberately independent: no callback lock or
+    // retry is added to manufacture a coherent process-wide sample.
+    RESIZE_CONTENT_WIDTH.store(content_size.0, Ordering::Relaxed);
+    RESIZE_CONTENT_HEIGHT.store(content_size.1, Ordering::Relaxed);
+    RESIZE_TEXTURE_WIDTH.store(texture.0, Ordering::Relaxed);
+    RESIZE_TEXTURE_HEIGHT.store(texture.1, Ordering::Relaxed);
+    RESIZE_TEXTURE_FORMAT.store(texture.2, Ordering::Relaxed);
+    RESIZE_SURFACE_STATUS.store(status, Ordering::Relaxed);
+    RESIZE_SURFACE_HRESULT.store(hresult, Ordering::Relaxed);
+    counter.fetch_add(1, Ordering::Relaxed);
 }
 
 /// Captures a callback observation baseline before requesting a frame.

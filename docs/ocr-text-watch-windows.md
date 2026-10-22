@@ -173,7 +173,7 @@ completion counts the API's success before owner/transition bookkeeping. A
 callback fault includes an existing late `SessionClosed` error ignored during
 teardown; it is not necessarily a newly terminal session failure.
 
-New callback hooks perform only one relaxed atomic increment when enabled and
+Callback progress increment hooks perform only one relaxed atomic increment when enabled and
 are no-ops with the feature off. They add no allocation, I/O, clock read, lock or
 retry and do not change callback admission, pool recreation, frame refusal,
 resource ownership or publication decisions. Existing timing instrumentation is
@@ -192,6 +192,40 @@ transition-lock contention; H3 predicts later progress ending at an existing
 geometry, descriptor, resource/copy or publication refusal. These counters can
 narrow those boundaries but do not alone prove which callback caused the missing
 public successor. No images, raw pixel values or recognized text are added.
+
+A separate feature-gated resize metadata probe runs after the existing producer
+reservation succeeds and before the original transition frame is closed. It
+records that frame's native `ContentSize` width/height and, through
+`Surface` → `IDirect3DDxgiInterfaceAccess` → `ID3D11Texture2D::GetDesc`, the
+texture width/height and raw DXGI format. All temporary COM references are
+released before the original frame drop and `Recreate`, on success or failure.
+The feature-off build contains neither this probe nor its call. The enabled
+probe has a fixed number of metadata calls and scalar atomic writes: no pixel
+copy/map/read, new frame acquisition, clock, callback I/O, wait, retry or repaint.
+Native metadata calls can still perturb scheduling; no new latency guarantee is
+claimed.
+
+`resize_surface_successes` counts completed descriptor reads, not usable images
+or oracle passes; `resize_surface_failures` counts diagnostic failures separately
+from capture faults. The latest scalar fields are `resize_content_width/height`,
+`resize_texture_width/height/format`, `resize_surface_status` and
+`resize_surface_hresult`. Status values are 0 unmeasured/reset, 1 descriptor read,
+2 `Surface` failure, 3 interface-access cast failure and 4 texture-interface
+failure. On failure, texture fields are zeroed and the original failing HRESULT
+is recorded; no diagnostic error is propagated into the capture operation.
+Success/reset records HRESULT zero. Fields remain process-wide and
+nontransactional, so concurrent probes can mix observations; neither status nor
+counter equality proves a coherent tuple. Existing checkpoint/close summaries
+print these fields without a consumer change.
+
+The distinction matters because [Microsoft's frame-pool guidance](https://learn.microsoft.com/en-us/windows/apps/develop/media-authoring-processing/screen-capture)
+states that surfaces have the pool allocation size, larger content is clipped,
+and `Recreate` discards queued frames. `ContentSize` alone therefore does not
+prove that a growth-transition frame contains the full new geometry. A complete
+descriptor is only a necessary sizing/format observation, not pixel validity,
+freshness or a marker/OCR result. This probe neither preserves/publishes that
+frame nor restarts a producer, and changes no existing capture/error/resource
+ordering or qualification oracle.
 
 ## Prospective endpoints and accounting
 
