@@ -52,9 +52,9 @@ invalidate completed work. Publication/storage failure remains a failure.
 
 Parse images only from complete separate image channels with strict text and row
 validation, including the final row. Retain dyld's exact owned-PID
-`move loaded to delayed: <basename>` state diagnostic without treating it as an
-image identity; reject unknown syntax and foreign PIDs. Require the independently
-approved canonical
+`move loaded to delayed: <basename>` and `move delayed to loaded: <basename>`
+state diagnostics without treating them as image identities; reject unknown
+syntax and foreign PIDs. Require the independently approved canonical
 non-system image union and hashes exactly, with prelaunch and post-exit disk
 rehashing. Missing, additional, noncanonical or changed images fail admission;
 system shared-cache identities remain bound to the approved OS build. Interpret
@@ -123,3 +123,18 @@ permission. Every native oracle/resource/cleanup verdict remains separate; no
 permission request, settings change, input/focus action, foreign campaign reuse
 or automatic native retry is allowed. This ADR accepts the apparatus repair,
 not an OCR or ScreenCaptureKit qualification result.
+
+### Current apparatus verification — 2026-10-22
+
+The macOS 27.0.1 ordinary observation contains both delayed-state directions.
+The parser accepts only those two exact owned-PID forms, still excluding paths
+and control characters from the basename and granting neither form an image
+identity. The current model-free suite passes 117 tests with four platform
+skips, including promotion-only identity exclusion and foreign-PID, unknown-state,
+path and control-character refusal.
+
+The owned fixture verifies its effective Accessory policy rather than requiring
+a redundant setter to report a change. Its separate non-capturing startup smoke
+acknowledges the 2x window and exits without force. These apparatus checks do not
+replace the six native OCR scenarios, approve the additional dynamically loaded
+TBB allocator retroactively, or change the retained first-attempt failure.

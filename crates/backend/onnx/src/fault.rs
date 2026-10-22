@@ -3,6 +3,7 @@
 use std::fmt;
 
 use mado_pilot_core::{Error, Interruption, Status};
+use mado_pilot_ocr::OcrCpuOptions;
 
 use crate::profile::ExecutionProfile;
 use crate::stage::RunNanos;
@@ -215,7 +216,8 @@ pub enum OnnxExecutionProvider {
 }
 
 impl OnnxExecutionProvider {
-    /// Returns the closed runtime/provider profile identity.
+    /// Returns this provider's identity with default CPU options.
+    /// Use [`crate::OnnxBackendFacts::runtime_profile_id`] for initialized options.
     #[must_use]
     pub const fn runtime_profile_id(self) -> &'static str {
         match self {
@@ -427,6 +429,8 @@ pub struct OnnxBackendFacts {
     provider: OnnxExecutionProvider,
     fallback_reason: Option<OnnxProviderFallbackReason>,
     runtime: OnnxRuntimeCompatibility,
+    runtime_profile_id: &'static str,
+    cpu_options: OcrCpuOptions,
     max_concurrent_inferences: u32,
     profile: OnnxOcrProfile,
     profile_id: &'static str,
@@ -457,6 +461,8 @@ impl OnnxBackendFacts {
             OnnxExecutionProviderPolicy::Cpu,
             OnnxExecutionProvider::Cpu,
             None,
+            OcrCpuOptions::default(),
+            OnnxExecutionProvider::Cpu.runtime_profile_id(),
         )
     }
 
@@ -470,6 +476,8 @@ impl OnnxBackendFacts {
         requested_provider_policy: OnnxExecutionProviderPolicy,
         provider: OnnxExecutionProvider,
         fallback_reason: Option<OnnxProviderFallbackReason>,
+        cpu_options: OcrCpuOptions,
+        runtime_profile_id: &'static str,
     ) -> Self {
         let preprocessing = profile.preprocessing();
         Self {
@@ -477,6 +485,8 @@ impl OnnxBackendFacts {
             provider,
             fallback_reason,
             runtime: OnnxRuntimeCompatibility::Version1_29Api17,
+            runtime_profile_id,
+            cpu_options,
             profile: profile.public(),
             profile_id: profile.id(),
             max_concurrent_inferences: 1,
@@ -519,10 +529,16 @@ impl OnnxBackendFacts {
         self.fallback_reason
     }
 
-    /// Returns the active runtime/provider profile identity.
+    /// Returns the active runtime/provider identity, including CPU session options.
     #[must_use]
     pub const fn runtime_profile_id(self) -> &'static str {
-        self.provider.runtime_profile_id()
+        self.runtime_profile_id
+    }
+
+    /// Returns the intra-op settings used for both detector and recognizer sessions.
+    #[must_use]
+    pub const fn cpu_options(self) -> OcrCpuOptions {
+        self.cpu_options
     }
 
     /// Returns the reviewed runtime compatibility boundary.

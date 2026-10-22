@@ -209,6 +209,57 @@ struct TransitionState {
     published: bool,
 }
 
+impl TransitionState {
+    fn pool_recreated(&mut self, extent: PixelExtent) {
+        self.extent = extent;
+        self.pending_discontinuity = self.published;
+        // Recreation does not prove that an already observed movement is in
+        // the pixels. Keep its capture-time fence until a fresh frame arrives.
+    }
+
+    fn accepts_frame_geometry(
+        &mut self,
+        placement: TargetPlacement,
+        native_time: i64,
+        observed_now: impl FnOnce() -> Option<i64>,
+    ) -> bool {
+        // Pool extent correlates size changes. Origin and scales instead need
+        // pixels captured after their observation, including during a resize.
+        if self.published
+            && (placement.desktop_origin() != self.placement.desktop_origin()
+                || placement.scale() != self.placement.scale()
+                || placement.desktop_scale() != self.placement.desktop_scale())
+        {
+            self.placement = placement;
+            self.pending_geometry_change = true;
+            let not_before = observed_now().unwrap_or_else(|| native_time.saturating_add(1));
+            self.movement_not_before = Some(
+                self.movement_not_before
+                    .map_or(not_before, |previous| previous.max(not_before)),
+            );
+            return false;
+        }
+        if self
+            .movement_not_before
+            .is_some_and(|not_before| native_time < not_before)
+        {
+            return false;
+        }
+        self.movement_not_before = None;
+        true
+    }
+
+    fn continuity(&self) -> Continuity {
+        if self.pending_discontinuity {
+            Continuity::Discontinuous
+        } else if self.pending_geometry_change {
+            Continuity::GeometryChanged
+        } else {
+            Continuity::Continuous
+        }
+    }
+}
+
 struct TeardownJob {
     resources: NativeResources,
     remove_frame_handler: bool,
@@ -366,14 +417,19 @@ impl NativeSession {
         let frame_callbacks = Arc::clone(&callbacks);
         let frame_handler =
             TypedEventHandler::<Direct3D11CaptureFramePool, IInspectable>::new(move |sender, _| {
+                crate::benchmark_metrics::record_callback_entry();
                 let Some(_lease) = frame_callbacks.admit() else {
+                    crate::benchmark_metrics::record_callback_admission_refusal();
                     return Ok(());
                 };
                 let Some(core) = frame_weak.upgrade() else {
+                    crate::benchmark_metrics::record_callback_owner_unavailable();
                     return Ok(());
                 };
                 if let Some(sender) = sender.as_ref() {
                     core.on_frame(sender);
+                } else {
+                    crate::benchmark_metrics::record_callback_sender_unavailable();
                 }
                 Ok(())
             });
@@ -1156,6 +1212,7 @@ impl SessionCore {
     fn on_frame(&self, sender: &Direct3D11CaptureFramePool) {
         let result = self.process_frame(sender);
         if let Err(fault) = result {
+            crate::benchmark_metrics::record_callback_fault();
             if fault == CaptureFault::SessionClosed && self.state.lifecycle() != Lifecycle::Open {
                 return;
             }
@@ -1176,11 +1233,15 @@ impl SessionCore {
     ) -> std::result::Result<(), CaptureFault> {
         let mut transition = match self.transition.try_lock() {
             Ok(transition) => transition,
-            Err(TryLockError::WouldBlock) => return Ok(()),
+            Err(TryLockError::WouldBlock) => {
+                crate::benchmark_metrics::record_transition_lock_contention();
+                return Ok(());
+            }
             Err(TryLockError::Poisoned(poisoned)) => poisoned.into_inner(),
         };
         let frame = sender.TryGetNextFrame().map_err(native_fault)?;
         let frame = WgcFrameGuard(Some(frame));
+        crate::benchmark_metrics::record_native_frame_acquired();
         let content_size = frame.frame().ContentSize().map_err(native_fault)?;
         let native_time = frame
             .frame()
@@ -1193,6 +1254,7 @@ impl SessionCore {
         let required_geometry = self.check_required_geometry(extent);
 
         if extent != transition.extent {
+            crate::benchmark_metrics::record_resize_detected();
             required_geometry?;
             let layout = self
                 .memory
@@ -1211,6 +1273,8 @@ impl SessionCore {
                     CaptureFault::SourceInvalid
                 }
             })?;
+            #[cfg(feature = "benchmark-instrumentation")]
+            observe_resize_frame_surface(frame.frame(), (content_size.Width, content_size.Height));
             // The transition frame and its producer surface are released before
             // pool recreation. The first frame from the recreated pool receives
             // the discontinuity.
@@ -1226,6 +1290,7 @@ impl SessionCore {
                 .and_then(Weak::upgrade)
                 .ok_or(CaptureFault::SessionClosed)?;
             native.replace_producer_after_recreate(producer_bytes, || {
+                crate::benchmark_metrics::record_recreate_begun();
                 sender
                     .Recreate(
                         &device,
@@ -1233,32 +1298,22 @@ impl SessionCore {
                         WGC_PRODUCER_POOL_SIZE,
                         content_size,
                     )
-                    .map_err(native_fault)
+                    .map_err(native_fault)?;
+                crate::benchmark_metrics::record_recreate_completed();
+                Ok(())
             })?;
             let _retired = self.textures.try_retire_for_resize();
-            transition.extent = extent;
-            transition.pending_discontinuity = transition.published;
-            transition.movement_not_before = None;
+            transition.pool_recreated(extent);
             return Ok(());
         }
 
         let placement = publication_placement(required_geometry, || {
             current_placement(self.key, extent).ok_or_else(|| target_fault(self.target_kind))
         })?;
-        if transition.published && placement != transition.placement {
-            transition.placement = placement;
-            transition.pending_geometry_change = true;
-            transition.movement_not_before =
-                Some(native_monotonic_now().unwrap_or_else(|| native_time.saturating_add(1)));
+        if !transition.accepts_frame_geometry(placement, native_time, native_monotonic_now) {
+            crate::benchmark_metrics::record_geometry_fence_refusal();
             let _drop = self.state.try_record_drop();
             return Ok(());
-        }
-        if let Some(not_before) = transition.movement_not_before {
-            if native_time < not_before {
-                let _drop = self.state.try_record_drop();
-                return Ok(());
-            }
-            transition.movement_not_before = None;
         }
 
         let surface = frame.frame().Surface().map_err(native_fault)?;
@@ -1269,7 +1324,10 @@ impl SessionCore {
         let mut native_descriptor = D3D11_TEXTURE2D_DESC::default();
         // SAFETY: output is valid for the complete descriptor.
         unsafe { source.GetDesc(&raw mut native_descriptor) };
-        let Some(descriptor) = descriptor_from_native(&native_descriptor, extent)? else {
+        let Some(descriptor) = descriptor_from_native(&native_descriptor, extent)
+            .inspect_err(|_| crate::benchmark_metrics::record_texture_descriptor_refusal())?
+        else {
+            crate::benchmark_metrics::record_texture_descriptor_refusal();
             let _drop = self.state.try_record_drop();
             return Ok(());
         };
@@ -1279,6 +1337,7 @@ impl SessionCore {
             .textures
             .try_acquire(native_descriptor)
             .map_err(|error| {
+                crate::benchmark_metrics::record_detached_lease_refusal();
                 if error.status() == mado_pilot_core::Status::LimitExceeded {
                     CaptureFault::ResourceLimitExceeded
                 } else {
@@ -1288,16 +1347,21 @@ impl SessionCore {
                 }
             })?;
         let Some(lease) = lease else {
+            crate::benchmark_metrics::record_detached_lease_refusal();
             let _drop = self.state.try_record_drop();
             return Ok(());
         };
-        let Some(callback_copy) = self.domain.try_copy(
-            lease.texture(),
-            &source,
-            u64::try_from(descriptor.byte_len()).expect("validated frame byte length fits u64"),
-            self.stream.get(),
-        )?
+        let Some(callback_copy) = self
+            .domain
+            .try_copy(
+                lease.texture(),
+                &source,
+                u64::try_from(descriptor.byte_len()).expect("validated frame byte length fits u64"),
+                self.stream.get(),
+            )
+            .inspect_err(|_| crate::benchmark_metrics::record_detached_copy_refusal())?
         else {
+            crate::benchmark_metrics::record_detached_copy_refusal();
             let _drop = self.state.try_record_drop();
             return Ok(());
         };
@@ -1309,13 +1373,7 @@ impl SessionCore {
         drop(surface);
         drop(frame);
 
-        let continuity = if transition.pending_discontinuity {
-            Continuity::Discontinuous
-        } else if transition.pending_geometry_change {
-            Continuity::GeometryChanged
-        } else {
-            Continuity::Continuous
-        };
+        let continuity = transition.continuity();
         let storage = WindowsFrameStorage::new(
             descriptor,
             Arc::clone(&self.domain),
@@ -1330,6 +1388,7 @@ impl SessionCore {
         // The detach copy may overlap a window transition. Revalidate the same
         // retained record immediately before stream publication, not by HWND.
         self.check_required_geometry(extent)?;
+        crate::benchmark_metrics::record_publish_attempt();
         self.state
             .publish_storage_with(
                 StoragePublication {
@@ -1344,12 +1403,14 @@ impl SessionCore {
                 },
             )
             .map_err(|refused| {
+                crate::benchmark_metrics::record_publish_refusal();
                 if refused.error().status() == mado_pilot_core::Status::Closed {
                     CaptureFault::SessionClosed
                 } else {
                     CaptureFault::SourceInvalid
                 }
             })?;
+        crate::benchmark_metrics::record_publish_success();
         transition.placement = placement;
         transition.pending_discontinuity = false;
         transition.pending_geometry_change = false;
@@ -1397,6 +1458,32 @@ const fn target_fault(kind: TargetKind) -> CaptureFault {
         TargetKind::Display => CaptureFault::DisplayDisconnected,
         _ => CaptureFault::TargetLost,
     }
+}
+
+#[cfg(feature = "benchmark-instrumentation")]
+fn observe_resize_frame_surface(frame: &Direct3D11CaptureFrame, content_size: (i32, i32)) {
+    use crate::benchmark_metrics::{ResizeSurfaceProbeFailure, record_resize_surface_probe};
+
+    let observation = (|| {
+        let surface = frame
+            .Surface()
+            .map_err(|error| ResizeSurfaceProbeFailure::Surface(error.code().0))?;
+        let access: IDirect3DDxgiInterfaceAccess = surface
+            .cast()
+            .map_err(|error| ResizeSurfaceProbeFailure::Access(error.code().0))?;
+        // SAFETY: the borrowed live WGC frame owns this surface; the requested
+        // interface is its documented D3D11 texture owner.
+        let texture: ID3D11Texture2D = unsafe { access.GetInterface() }
+            .map_err(|error| ResizeSurfaceProbeFailure::Texture(error.code().0))?;
+        let mut descriptor = D3D11_TEXTURE2D_DESC::default();
+        // SAFETY: output is valid for the complete descriptor; no pixel access.
+        unsafe { texture.GetDesc(&raw mut descriptor) };
+        Ok((descriptor.Width, descriptor.Height, descriptor.Format.0))
+    })();
+    // All temporary COM owners above have dropped on either result path before
+    // the caller closes its frame and recreates the pool. Probe errors remain
+    // diagnostic scalars, never the capture operation's error or control flow.
+    record_resize_surface_probe(content_size, observation);
 }
 
 struct WgcFrameGuard(Option<Direct3D11CaptureFrame>);
@@ -2880,6 +2967,105 @@ mod tests {
         assert!(permits.try_reserve().is_none());
         held.pop();
         assert!(permits.try_reserve().is_some());
+    }
+
+    fn published_transition() -> TransitionState {
+        TransitionState {
+            extent: PixelExtent::new(4, 4),
+            placement: TargetPlacement::new(
+                (0.0, 0.0),
+                (4.0, 4.0),
+                Scale::new(1.0, 1.0).expect("scale"),
+            )
+            .expect("placement"),
+            pending_discontinuity: false,
+            pending_geometry_change: false,
+            movement_not_before: None,
+            clock_anchor: (100, MonotonicInstant::from_origin(Duration::from_secs(10))),
+            published: true,
+        }
+    }
+
+    #[test]
+    fn geometry_transition_accepts_one_resized_frame_without_a_future_tick() {
+        for sizes in [&[8][..], &[8, 16][..], &[8, 4][..]] {
+            let mut transition = published_transition();
+            for &size in sizes {
+                transition.pool_recreated(PixelExtent::new(size, size));
+            }
+            let final_size = f64::from(*sizes.last().expect("at least one resize"));
+            let placement = TargetPlacement::new(
+                (0.0, 0.0),
+                (final_size, final_size),
+                Scale::new(1.0, 1.0).expect("scale"),
+            )
+            .expect("resized placement");
+
+            assert!(transition.accepts_frame_geometry(placement, 90, || {
+                panic!("extent-only changes must not wait for a later capture time")
+            }));
+            assert_eq!(transition.continuity(), Continuity::Discontinuous);
+        }
+    }
+
+    #[test]
+    fn geometry_transition_fences_move_and_both_scales_during_resize() {
+        let unit = Scale::new(1.0, 1.0).expect("unit scale");
+        let double = Scale::new(2.0, 2.0).expect("double scale");
+        let placements = [
+            TargetPlacement::new((20.0, 10.0), (8.0, 8.0), unit).expect("moved"),
+            TargetPlacement::new((0.0, 0.0), (4.0, 4.0), double).expect("target scale"),
+            TargetPlacement::new((0.0, 0.0), (8.0, 8.0), unit)
+                .expect("placement")
+                .with_desktop_scale(double),
+        ];
+        for placement in placements {
+            let mut transition = published_transition();
+            transition.pool_recreated(PixelExtent::new(8, 8));
+            assert!(!transition.accepts_frame_geometry(placement, 90, || Some(100)));
+            assert!(!transition.accepts_frame_geometry(placement, 99, || {
+                panic!("unchanged geometry must not rearm the fence")
+            }));
+            assert!(transition.accepts_frame_geometry(placement, 100, || {
+                panic!("the first fresh candidate must satisfy the existing fence")
+            }));
+            assert_eq!(transition.continuity(), Continuity::Discontinuous);
+        }
+    }
+
+    #[test]
+    fn geometry_transition_preserves_unfulfilled_movement_across_recreation() {
+        let unit = Scale::new(1.0, 1.0).expect("scale");
+        let moved = TargetPlacement::new((20.0, 10.0), (4.0, 4.0), unit).expect("moved");
+        let resized = TargetPlacement::new((20.0, 10.0), (16.0, 16.0), unit).expect("resized");
+        let mut transition = published_transition();
+        assert!(!transition.accepts_frame_geometry(moved, 90, || Some(100)));
+        transition.pool_recreated(PixelExtent::new(8, 8));
+        transition.pool_recreated(PixelExtent::new(16, 16));
+        assert!(!transition.accepts_frame_geometry(resized, 99, || {
+            panic!("only size changed after the movement observation")
+        }));
+        assert!(transition.accepts_frame_geometry(resized, 100, || {
+            panic!("recreation must preserve the original capture-time boundary")
+        }));
+        assert_eq!(transition.continuity(), Continuity::Discontinuous);
+    }
+
+    #[test]
+    fn geometry_transition_clock_fallback_does_not_lower_an_active_fence() {
+        let unit = Scale::new(1.0, 1.0).expect("scale");
+        let first = TargetPlacement::new((20.0, 10.0), (4.0, 4.0), unit).expect("first");
+        let second = TargetPlacement::new((40.0, 10.0), (4.0, 4.0), unit).expect("second");
+        let mut transition = published_transition();
+        assert!(!transition.accepts_frame_geometry(first, 90, || Some(100)));
+        assert!(!transition.accepts_frame_geometry(second, 95, || None));
+        assert!(!transition.accepts_frame_geometry(second, 99, || {
+            panic!("the clock fallback must retain the stronger pending fence")
+        }));
+        assert!(transition.accepts_frame_geometry(second, 100, || {
+            panic!("the first fresh candidate must be accepted without another observation")
+        }));
+        assert_eq!(transition.continuity(), Continuity::GeometryChanged);
     }
 
     #[test]

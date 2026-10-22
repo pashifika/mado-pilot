@@ -262,7 +262,7 @@ impl Engine {
         self.watcher.descriptor()
     }
 
-    /// Returns fixed OCR watch safety policy, shared with template scheduling.
+    /// Returns fixed OCR watch limits, excluding backend-specific resource bounds.
     #[must_use]
     pub const fn ocr_text_scheduler(&self) -> OcrTextSchedulerDescriptor {
         OcrTextSchedulerDescriptor

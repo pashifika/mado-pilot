@@ -6,7 +6,7 @@ use std::sync::{
 };
 
 use mado_pilot_core::OperationContext;
-use mado_pilot_ocr::{GraphDescriptor, OcrModelSource, VocabularySource};
+use mado_pilot_ocr::{GraphDescriptor, OcrCpuOptions, OcrModelSource, VocabularySource};
 use ort::session::Session;
 use ort::session::builder::GraphOptimizationLevel;
 use ort::value::{TensorElementType, ValueType};
@@ -65,6 +65,7 @@ impl SessionPair {
         operation: &OperationContext,
         prepared_provider: PreparedProvider,
         lease: Arc<PairLease>,
+        cpu_options: OcrCpuOptions,
     ) -> Result<Self, OnnxBackendOpenFault> {
         let provider = prepared_provider.candidate();
         checkpoint(operation).map_err(OnnxBackendOpenFault::terminal)?;
@@ -97,7 +98,7 @@ impl SessionPair {
             Arc::strong_count(&lease) >= 2,
             "the initialization transaction retains its reservation"
         );
-        let detector = build_session(source.detector(), provider, "detector")?;
+        let detector = build_session(source.detector(), provider, "detector", cpu_options)?;
         checkpoint(operation).map_err(OnnxBackendOpenFault::terminal)?;
         validate_graph(&detector, profile.detector_graph()).map_err(|fault| {
             OnnxBackendOpenFault::provider(
@@ -111,7 +112,7 @@ impl SessionPair {
             crate::benchmark_instrumentation::OpenStage::DetectorSessionReady,
         );
 
-        let recognizer = build_session(source.recognizer(), provider, "recognizer")?;
+        let recognizer = build_session(source.recognizer(), provider, "recognizer", cpu_options)?;
         checkpoint(operation).map_err(OnnxBackendOpenFault::terminal)?;
         validate_graph(&recognizer, profile.recognizer_graph()).map_err(|fault| {
             OnnxBackendOpenFault::provider(
@@ -218,10 +219,57 @@ impl Drop for SessionPair {
 #[cfg(feature = "benchmark-instrumentation")]
 static PROFILE_SEQUENCE: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(1);
 
+pub(crate) fn runtime_profile_id(
+    provider: OnnxExecutionProvider,
+    cpu_options: OcrCpuOptions,
+) -> &'static str {
+    const CPU_PROFILES: [[&str; 2]; 8] = [
+        [
+            crate::RUNTIME_PROFILE_ID,
+            "onnxruntime-1.29.0-api17-cpu-intra1-nospin",
+        ],
+        [
+            "onnxruntime-1.29.0-api17-cpu-intra2",
+            "onnxruntime-1.29.0-api17-cpu-intra2-nospin",
+        ],
+        [
+            "onnxruntime-1.29.0-api17-cpu-intra3",
+            "onnxruntime-1.29.0-api17-cpu-intra3-nospin",
+        ],
+        [
+            "onnxruntime-1.29.0-api17-cpu-intra4",
+            "onnxruntime-1.29.0-api17-cpu-intra4-nospin",
+        ],
+        [
+            "onnxruntime-1.29.0-api17-cpu-intra5",
+            "onnxruntime-1.29.0-api17-cpu-intra5-nospin",
+        ],
+        [
+            "onnxruntime-1.29.0-api17-cpu-intra6",
+            "onnxruntime-1.29.0-api17-cpu-intra6-nospin",
+        ],
+        [
+            "onnxruntime-1.29.0-api17-cpu-intra7",
+            "onnxruntime-1.29.0-api17-cpu-intra7-nospin",
+        ],
+        [
+            "onnxruntime-1.29.0-api17-cpu-intra8",
+            "onnxruntime-1.29.0-api17-cpu-intra8-nospin",
+        ],
+    ];
+    if provider != OnnxExecutionProvider::Cpu {
+        return provider.runtime_profile_id();
+    }
+    let index =
+        usize::try_from(cpu_options.intra_threads() - 1).expect("bounded thread count fits usize");
+    CPU_PROFILES[index][usize::from(!cpu_options.allow_spinning())]
+}
+
 fn build_session(
     model: &[u8],
     provider_kind: OnnxExecutionProvider,
     role: &str,
+    cpu_options: OcrCpuOptions,
 ) -> Result<Session, OnnxBackendOpenFault> {
     #[cfg(not(feature = "benchmark-instrumentation"))]
     let _ = role;
@@ -246,7 +294,12 @@ fn build_session(
             )
         })?;
     let builder = builder
-        .with_intra_threads(1)
+        .with_intra_threads(
+            usize::try_from(cpu_options.intra_threads()).expect("bounded thread count fits usize"),
+        )
+        .map_err(|_| initialization_fault())?;
+    let builder = builder
+        .with_intra_op_spinning(cpu_options.allow_spinning())
         .map_err(|_| initialization_fault())?;
     let builder = builder
         .with_inter_threads(1)
@@ -352,6 +405,22 @@ mod tests {
 
     use super::{SESSION_PAIR_ACTIVE, SessionPair, validate_outlet};
     use crate::fault::OnnxBackendFault;
+
+    #[test]
+    fn cpu_runtime_profiles_do_not_alias_distinct_execution_options() {
+        let mut profiles = std::collections::HashSet::new();
+        for threads in 1..=8 {
+            for spinning in [true, false] {
+                let options = mado_pilot_ocr::OcrCpuOptions::new(threads)
+                    .expect("bounded thread count")
+                    .with_spinning(spinning);
+                assert!(profiles.insert(super::runtime_profile_id(
+                    crate::OnnxExecutionProvider::Cpu,
+                    options,
+                )));
+            }
+        }
+    }
 
     #[test]
     fn session_pair_reservation_is_shared_across_fallback_candidates() {

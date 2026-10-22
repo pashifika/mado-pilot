@@ -2,30 +2,121 @@
 
 `Session::start_ocr_text_watch` waits for a literal in one explicit region of a
 maintained session. This is an additive Rust implementation. The controlled
-public-API smoke, model-free normalization proof, and real CPU replay on both
-release targets have run. Windows WGC, Apple ScreenCaptureKit and new
-workload-budget qualification remain separate open acceptance gates. No new C/C++
-surface is provided.
+public-API smoke, model-free normalization proof, and historical source-bound
+CPU replay on both release targets have run. Current CPU-option checks use
+Apple Silicon/macOS 27.0.1; they do not inherit earlier target qualification.
+Windows WGC and Apple ScreenCaptureKit qualification remain open. Numerical
+workload outcomes inform optimization and caller choice; they do not block model
+availability or continued implementation. No new C/C++ surface is provided.
 
-The current Windows 11 and Apple Silicon macOS 26.6.2 hosts are
-[supported OS baselines](architecture.md#os-support-policy). These feature gates
-and earlier-run failures do not classify those hosts as unsupported. macOS 27.0
-verification belongs to a separate Change and is not inherited from macOS 26.
+Earlier Windows 11 and macOS 26.6.2 host records remain bound to their original
+sources and runs. Missing native coverage does not itself classify a host as
+unsupported; see the [OS support policy](architecture.md#os-support-policy).
 
 ## Selection and request
 
-Initialize the engine once through `replay_engine_with_ocr_profile`,
-`windows_engine_with_ocr_profile` or `macos_engine_with_ocr_profile`, using
-`OcrProfileConfig` with `OcrProfile::BoundedDetector`. Supply the existing
-controlled model root and ONNX Runtime 1.29.0/API 17 path. No dependency is
-acquired, bundled or searched for implicitly.
+Initialize OCR once using the existing constructors:
 
-Start binds the complete initialized backend/model/profile/provider descriptor,
-not a constructor name or just a profile string. The active provider must be
-CPU and the profile must be
-`phase-3-1-rapidocr-ppocrv4-det-v6-rec-small-bounded-v2`. Missing OCR is unavailable;
-native G-004, an accelerator or incomplete identity is unsupported. Existing
-one-shot constructors and defaults do not change or fall back for a query.
+- `replay_engine_with_ocr_profile`, `windows_engine_with_ocr_profile` or
+  `macos_engine_with_ocr_profile` accepts `OcrProfileConfig::from_id` with a choice
+  from `ocr_profiles()` / `ocr_profile(id)`. `OcrProfile::BoundedDetector` remains
+  an explicit bounded-v2 selection; native G-004 and the other implemented
+  catalog profiles are not excluded from watching.
+- `replay_engine_with_ocr_provider`, `windows_engine_with_ocr_provider` or
+  `macos_engine_with_ocr_provider` accepts `OcrProviderConfig::new` with the
+  existing `OcrProviderProfile` and `OcrExecutionProviderPolicy`. These constructors,
+  not the watcher, determine which model/provider combinations initialize on
+  the target. This change adds no provider or accelerator support.
+
+Supply the selected constructor's controlled model/runtime prerequisites.
+Nothing is acquired, bundled or searched for implicitly. Existing defaults,
+initialization-time preferred-provider fallback and required-provider failures
+remain unchanged; a query never changes selection or falls back.
+
+Start binds the complete initialized backend/model/profile/provider descriptors
+and requires a BGRA OCR backend with provider metadata. Missing OCR is
+unavailable; missing provider metadata or non-BGRA input is unsupported. There
+is no watcher whitelist for model, CPU, backend/version or runtime name. Before
+each analysis or change skip, the selected provider and prepared backend
+descriptors are rechecked against the captured identities; drift fails instead
+of substituting another selection.
+
+[ADR 0091](adr/0091-ocr-watch-caller-selection.md) extends
+[ADR 0084](adr/0084-ocr-model-choices-and-test-results.md)'s caller-choice policy
+to watching. Model-quality and timing results inform the caller, independently
+of enforced runtime safety. Earlier native failures and qualification gates
+remain source-bound evidence, not selection filters or accelerator qualification.
+
+### CPU execution options
+
+Rust explicit-profile constructors accept `OcrProfileConfig::with_cpu_options`.
+`OcrCpuOptions::new(intra_threads)` accepts every count in `1..=8` and returns
+an error outside that range; `with_spinning(bool)` controls native CPU worker
+spinning. The getters are `intra_threads()` and `allow_spinning()`;
+`OcrProfileConfig::cpu_options()` returns the selected options.
+The default remains one intra-op thread with spinning enabled.
+
+This is an explicit measured-host example, not a default recommendation:
+
+```rust
+use mado_pilot::{OcrCpuOptions, OcrProfileConfig};
+
+fn selection() -> Result<OcrProfileConfig, mado_pilot::Error> {
+    Ok(OcrProfileConfig::from_id(
+        "ppocrv6-tiny-det-small-rec-max736-v1",
+        "/controlled/models",
+        "/controlled/runtime/libonnxruntime.1.29.0.dylib",
+    )?
+    .with_cpu_options(OcrCpuOptions::new(8)?.with_spinning(false)))
+}
+```
+
+Pass the configuration to `replay_engine_with_ocr_profile`,
+`windows_engine_with_ocr_profile` or `macos_engine_with_ocr_profile`.
+The options apply at initialization to both detector and recognizer; each
+thread-count/spinning pair has a distinct runtime profile identity.
+`DefaultOcrConfig` and provider-policy constructors retain one thread and
+spinning enabled. The backend also offers `open_profile_with_cpu_options`.
+No environment/global override, query-time tuning or C ABI option is added.
+
+The [Apple Silicon comparison](benchmarks/ocr-models/cpu-options-aarch64-apple-darwin-20261022.md)
+records the same final executable at default and eight-thread/nonspinning
+settings across11 images and both call modes. It includes stage timings,
+whole-process memory, startup and recognition findings—not a universal optimum
+or native qualification. Counts three, five, six and seven remain available but
+unmeasured. The cap of eight is a finite native-worker bound, not a performance
+gate. More workers can change contention and memory; spinning can trade idle
+CPU for wake-up latency.
+
+One inter-op thread, sequential native execution, disabled memory patterns and
+one physical OCR analysis remain unchanged. See
+[ADR 0092](adr/0092-ocr-cpu-execution-options.md).
+
+### Model-specific trade-offs
+
+Choose a profile for the application's recognition needs and resource envelope,
+not from a blanket fastest-model recommendation. Each model may have a different
+best measured configuration. Tune only where measurements support the change;
+successful initialization or a replay smoke does not establish a latency,
+memory or recognition advantage.
+
+Comparisons must name the exact model/profile/provider, configuration, target,
+source/runtime identities, input/ROI and workload. Report observed latency
+(including startup separately), memory with its measurement scope, recognition
+outcomes against a fixed oracle, and each numerical/quality rule outcome.
+Compare like workloads or state why they differ. Missing platform or
+configuration rows remain unmeasured, not zero, pass or an inherited result.
+The comparison reports per-model differences separately from the public watcher
+smoke; neither establishes native capture-to-notification performance.
+
+Failed empirical quality or performance rules remain visible without hiding the
+initialized choice. Safety is separate: hashes and descriptor consistency,
+source identity, output validity, finite memory/process bounds, cancellation,
+permissions and physical cleanup remain required. Contract or lifecycle failures
+are defects, not acceptable latency/quality trade-offs. Watching never sends
+input or requests permissions implicitly.
+
+### Request options
 
 `OcrTextWatchRequest::new` explicitly names:
 
@@ -116,6 +207,11 @@ counters sum live result-owned source/text/index extents. They are not
 unique native allocation/RSS counts and do not include arbitrary separately
 retained frame clones. Native retention must be measured independently.
 
+Detector tensor limits depend on the selected profile. The unreleased
+`OcrTextSchedulerDescriptor::max_detector_input_tensor_bytes` accessor is removed:
+its bounded-v2 constant was not a watcher-wide limit. ONNX callers can read
+`OnnxOcrBackend::facts().max_detector_tensor_bytes()` from the initialized adapter.
+
 ## Logical close is not physical quiescence
 
 Cancellation and logical close seal OCR admission, cancel generation authority
@@ -133,6 +229,10 @@ process exit. Logical success or close alone does not prove native allocations
 were freed; native evidence must establish physical return and cleanup.
 
 ## Fixed real-replay procedure
+
+This qualification procedure deliberately keeps its CPU bounded-v2 profile,
+fixed inputs and source/artifact bindings. Caller choice does not generalize
+this procedure or the native qualification procedures below.
 
 The [complete example](../crates/mado-pilot/examples/ocr-text-watch.rs) constructs
 one real CPU engine, starts/polls a query, demonstrates an independently cancelled
@@ -324,7 +424,7 @@ authorized three-process controlled cohort. Diagnostic rows are not precursor
 samples, and a failed or interrupted cohort is not resumed under the new policy.
 Every prior `NONPASS` and sealed artifact remains bound to its original run.
 
-## Native and workload gates
+## Native qualification and numerical outcomes
 
 The independent [Windows procedure](ocr-text-watch-windows.md) and
 [Apple procedure](ocr-text-watch-macos.md) use new owned fixtures and acknowledged
@@ -335,11 +435,25 @@ refusal and absence of an acknowledged matching frame are distinct non-passes.
 Compilation in hosted CI is not evidence that either capture path ran.
 
 The [Apple workload](benchmarks/ocr-text-watch-aarch64-apple-darwin.toml) and
-[Windows workload](benchmarks/ocr-text-watch-x86_64-pc-windows-msvc.toml) now have
+[Windows workload](benchmarks/ocr-text-watch-x86_64-pc-windows-msvc.toml) have
 complete controlled3 and real-startup5 precursors. The
 [G-013 budget decision](adr/0075-ocr-text-watch-workload-profiles.md) accepts
-target-specific ceilings before the still-unexecuted final enforcement. All eight
+target-specific ceilings for these fixed CPU bounded-v2 workloads. All eight
 workload blocks use process-local observations, not pooled samples or substituted
-diagnostic rows. Earlier OCR/template budgets
-and historical passes or failures remain revision-bound and do not qualify this
-capability.
+diagnostic rows.
+
+Historical final enforcement recorded Apple controlled3/real5 and Windows
+controlled3 passes, but Windows real process1 measured 1.4887 ms against the
+1.0 ms logical-close-to-physical-zero interval ceiling. That cohort remains
+`NONPASS`; real2–5 remain unexecuted. These are source-bound qualification
+verdicts, not current-source measurements or reasons to stop development.
+The fixed runner's first-numerical-failure stop rule remains part of that
+procedure; it is not a watcher admission rule. Earlier OCR/template budgets and
+historical passes or failures are not regraded.
+
+Current development separates implemented behavior, exercised safety contracts,
+pending native coverage and per-model measurement/tuning. Numerical nonpass is
+reported for optimization and user choice, without requiring every model to meet
+one universal threshold. New observations need their own exact configuration and
+artifact bindings; native permission or cleanup coverage cannot be waived by a
+favorable timing result.

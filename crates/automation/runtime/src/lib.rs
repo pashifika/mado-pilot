@@ -59,9 +59,9 @@
 //! The watcher consumes ADR 0050's closed exact-RGBA default through one owning
 //! poll/wait/cancel handle, fixed latest-wins queues, confirmed-only stability,
 //! exact coalescing, fair two-worker progress, and stale-generation rejection.
-//! OCR text presence adds explicit CPU bounded-v2 identity admission and exact
-//! retained source ownership. Neither watcher adds callbacks, Tokio/futures,
-//! C/C++ entry points, automatic input, or arbitrary capacity.
+//! OCR text presence uses the caller's initialized BGRA OCR backend with complete
+//! provider metadata and exact retained source ownership. Neither watcher adds
+//! callbacks, Tokio/futures, C/C++ entry points, automatic input, or arbitrary capacity.
 //!
 //! **The public names here are reviewed, not yet stable.**
 //! `docs/adr/0006-public-rust-names-and-compatibility-policy.md` records the
@@ -215,7 +215,7 @@ pub use mado_pilot_ocr::{
     LanguageProfileId, MAX_BACKEND_TEXT_BYTES, MAX_CANDIDATES as MAX_OCR_CANDIDATES,
     MAX_MODEL_COMPONENT_BYTES, MAX_OCR_ZONES, MAX_TEXT_BYTES, ModelComponentIdentity, ModelId,
     ModelVersion, NormalizationId, OcrBackend, OcrBackendDescriptor, OcrBackendIdentity,
-    OcrCandidateSink, OcrExecutionProvider, OcrExecutionProviderPolicy, OcrFault,
+    OcrCandidateSink, OcrCpuOptions, OcrExecutionProvider, OcrExecutionProviderPolicy, OcrFault,
     OcrModelComponent, OcrModelIdentity, OcrModelSource, OcrModelSourceRequest,
     OcrProfileDescriptor, OcrProfileMetadata, OcrProviderDescriptor, OcrProviderFallbackReason,
     OcrQuadrilateral, OcrRecognizer, OcrRegion, OcrRequest, OcrResult, OcrZone, OcrZoneGroup,

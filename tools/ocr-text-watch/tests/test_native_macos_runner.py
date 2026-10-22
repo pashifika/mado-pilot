@@ -32,6 +32,7 @@ def image_line(path):
 write_all(image_fd, image_line("/usr/lib/owned-inert-probe.dylib"))
 write_all(image_fd, (f"dyld[{os.getpid()}]: move loaded to delayed: owned-inert-probe.dylib\n").encode())
 """
+NONCES = ("0123456789abcdef", "fedcba9876543210")
 
 
 @unittest.skipUnless(os.name == "posix", "anonymous inherited descriptors and POSIX child limits")
@@ -59,10 +60,65 @@ class NativeMacosRunner(unittest.TestCase):
                              cwd=self.root, env=self.environment)
 
     def record(self):
-        return {"procedure": "ocr-text-watch-apple-v2", "task": "7.4", "bounds": runner.BOUNDS,
+        return {"procedure": runner.PROCEDURE, "task": "7.4", "bounds": runner.BOUNDS,
                 "semantic": "not-run", "resource": "not-run", "cleanup": "not-run",
                 "reason": "consumer-exited", "rows": {name: "not-run" for name in runner.ROWS},
                 "commands": [], "children": []}
+
+    def until(self, predicate, capture=None):
+        capture = self.capture if capture is None else capture
+        deadline = time.monotonic() + 5
+        while not predicate() and time.monotonic() < deadline:
+            capture.pump()
+        self.assertTrue(predicate(), "owned inert child did not reach its bounded checkpoint")
+
+    def live_consumer(self, capture=None):
+        capture = self.capture if capture is None else capture
+        gate = capture.evidence / "consumer-release"
+        self.addCleanup(gate.touch)
+        child = self.launch("""
+            deadline = time.monotonic() + 10
+            while not Path(sys.argv[1]).exists() and time.monotonic() < deadline:
+                time.sleep(0.001)
+        """, gate, capture=capture)
+        return child, gate
+
+    def generation(self, lineage, generation=1, operation="exit", *, ack=None, exit_code=0):
+        def spawn(root, nonce, number, role):
+            sequence = 10 if operation == "close-window" else runner.EXIT_SEQUENCE[number]
+            runner.publish(root, "command", f"{nonce} {sequence} {operation}\n")
+            child = self.launch("""
+                root, nonce, number, sequence, operation, override, exit_code = sys.argv[1:]
+                root = Path(root)
+                size = "240 140" if operation == "close-window" else "480 278"
+                row = f"{nonce} {sequence} {operation} {os.getpid()} 77 {size} 2.0\\n"
+                if override:
+                    row = override.replace("{pid}", str(os.getpid()))
+                temporary = root / "ack.tmp"
+                temporary.write_text(row)
+                temporary.replace(root / "ack")
+                deadline = time.monotonic() + 10
+                while not (root / "release").exists() and not (root / "stop").exists():
+                    if time.monotonic() >= deadline:
+                        raise SystemExit(9)
+                    time.sleep(0.001)
+                raise SystemExit(int(exit_code))
+            """, root, nonce, number, sequence, operation, ack or "", exit_code,
+                role=role, capture=lineage.capture)
+            self.addCleanup((root / "release").touch)
+            return child
+        child = lineage.launch(generation, spawn)
+        self.until(lambda: (lineage.root(generation) / "ack").exists(), lineage.capture)
+        return child
+
+    def reap_generation(self, lineage, generation=1):
+        (lineage.root(generation) / "release").touch()
+        self.until(lambda: lineage.children[generation].poll() is not None, lineage.capture)
+        lineage.observe()
+
+    def request_successor(self, lineage):
+        runner.publish(lineage.capture.evidence, "successor-request",
+                       f"{NONCES[0]} 1 {lineage.children[1].pid} {NONCES[1]} 2 successor-after-close\n")
 
     def test_84029_image_bytes_reach_main_without_spending_ordinary_quota(self):
         child = self.launch(r"""
@@ -179,12 +235,16 @@ class NativeMacosRunner(unittest.TestCase):
         self.assertEqual(unrelated.read_bytes(), b"u" * size)
         self.assertEqual(resource.getrlimit(resource.RLIMIT_FSIZE), inherited)
 
-    def test_cleanup_drains_all_six_channels_without_serial_wait_deadlock(self):
+    def test_cleanup_drains_all_nine_channels_without_serial_wait_deadlock(self):
         children = []
-        for role in ("consumer", "fixture"):
+        for role in runner.ROLES:
+            if role == "fixture-2":
+                # Exercise all nine channels while respecting two sequential
+                # fixture generations and the unchanged aggregate byte budget.
+                self.until(lambda: self.capture.children["fixture-1"].poll() is not None)
             children.append(self.launch(r"""
-                write_all(1, b"o" * 48000 + b"stdout-tail\n")
-                write_all(2, b"e" * 48000 + b"stderr-tail\n")
+                write_all(1, b"o" * 32000 + b"stdout-tail\n")
+                write_all(2, b"e" * 32000 + b"stderr-tail\n")
                 write_all(image_fd, image_line("/usr/lib/owned-cleanup-probe.dylib") * 5000)
             """, role=role))
         cleanup = self.capture.cleanup()
@@ -195,11 +255,276 @@ class NativeMacosRunner(unittest.TestCase):
             self.assertFalse(row["forced"], row)
             self.assertEqual(row["exit_code"], 0, row)
             evidence = self.capture.evidence
-            self.assertEqual((evidence / f"{row['role']}.stdout").read_bytes(), b"o" * 48000 + b"stdout-tail\n")
-            self.assertEqual((evidence / f"{row['role']}.stderr").read_bytes(), b"e" * 48000 + b"stderr-tail\n")
+            self.assertEqual((evidence / f"{row['role']}.stdout").read_bytes(), b"o" * 32000 + b"stdout-tail\n")
+            self.assertEqual((evidence / f"{row['role']}.stderr").read_bytes(), b"e" * 32000 + b"stderr-tail\n")
         self.assertTrue(all(row["complete"] for row in self.capture.facts().values()))
         self.assertIn("/usr/lib/owned-cleanup-probe.dylib", self.capture.image_paths())
-        self.assertEqual(self.capture.ordinary_bytes(), 2 * (96000 + len(b"stdout-tail\nstderr-tail\n")))
+        self.assertEqual(self.capture.ordinary_bytes(), 3 * (64000 + len(b"stdout-tail\nstderr-tail\n")))
+        self.assertEqual(set(self.capture.channels), {f"{role}.{kind}" for role in runner.ROLES
+                                                       for kind in ("stdout", "stderr", "native-images")})
+
+    def test_only_declared_generation_roles_are_launchable(self):
+        for role in ("fixture", "fixture-0", "fixture-3", "collector"):
+            with self.subTest(role=role), \
+                    self.assertRaisesRegex(ValueError, "native-child-role-already-owned-or-invalid"):
+                self.launch("raise SystemExit(0)", role=role)
+        with self.assertRaisesRegex(ValueError, "successor-before-predecessor-reaped"):
+            self.launch("raise SystemExit(0)", role="fixture-2")
+        child = self.launch("raise SystemExit(0)", role="fixture-1")
+        with self.assertRaisesRegex(ValueError, "native-child-role-already-owned-or-invalid"):
+            self.launch("raise SystemExit(0)", role="fixture-1")
+        cleanup = self.capture.cleanup()
+        self.assertEqual([row["pid"] for row in cleanup], [child.pid])
+        self.assertIsNone(self.capture.failure)
+
+    def test_capture_refuses_a_third_live_native_child(self):
+        self.live_consumer()
+        lineage = runner.FixtureLineage(self.capture, NONCES)
+        self.generation(lineage)
+        with self.assertRaisesRegex(ValueError, "concurrent-native-child-limit"):
+            self.launch("raise SystemExit(0)", role="fixture-2")
+        self.assertEqual(set(self.capture.children), {"consumer", "fixture-1"})
+
+    def test_v3_authority_binds_procedure_roles_and_independent_bounds(self):
+        host = {"machine_uuid": "owned-test-machine", "uname": ["owned-test-host"],
+                "product_version": "test", "build": "test", "cpu": "test", "sdk": "test"}
+        authority = {"approved": True, "task": "7.4", "target": "aarch64-apple-darwin",
+                     "host": host, "bounds": dict(runner.BOUNDS),
+                     "procedure": runner.PROCEDURE, "roles": list(runner.ROLES)}
+        runner.validate_host_authority(authority, host)
+        for key, value in (
+            ("procedure", "ocr-text-watch-apple-v2"),
+            ("roles", ["consumer", "fixture"]),
+            ("roles", ["consumer", "fixture-2", "fixture-1"]),
+            ("bounds", dict(runner.BOUNDS, fixture_processes=1)),
+            ("bounds", dict(runner.BOUNDS, concurrent_native_children=3)),
+        ):
+            with self.subTest(key=key, value=value), self.assertRaises(ValueError):
+                runner.validate_host_authority(dict(authority, **{key: value}), host)
+        for key in ("procedure", "roles"):
+            incomplete = dict(authority)
+            del incomplete[key]
+            with self.subTest(missing=key), self.assertRaises(ValueError):
+                runner.validate_host_authority(incomplete, host)
+
+    def test_two_generation_lineage_requires_reap_and_live_consumer_request(self):
+        lineage = runner.FixtureLineage(self.capture, NONCES)
+        consumer, release_consumer = self.live_consumer()
+        first = self.generation(lineage)
+        self.assertEqual((lineage.root(1) / "fixture-owner").read_text(),
+                         f"{NONCES[0]} 1 {first.pid}\n")
+        lineage.observe()
+        self.assertEqual(lineage.reaped, {}, "an exit ACK is not supervisor reaping")
+        self.assertFalse((lineage.root(1) / "reaped").exists())
+        self.reap_generation(lineage)
+        self.assertEqual((lineage.root(1) / "reaped").read_text(),
+                         f"{NONCES[0]} 1 {first.pid} 0\n")
+        with self.assertRaises(ChildProcessError):
+            os.waitpid(first.pid, os.WNOHANG)
+        self.request_successor(lineage)
+        self.assertTrue(lineage.successor_requested())
+        second = self.generation(lineage, 2)
+        self.assertIsNot(first, second)
+        self.assertIsNone(consumer.poll())
+        self.assertLessEqual(sum(child.poll() is None for child in self.capture.children.values()), 2)
+        with self.assertRaisesRegex(ValueError, "fixture-generation-already-owned-or-invalid"):
+            lineage.launch(2, lambda *_: self.fail("duplicate launch reached spawn"))
+        self.reap_generation(lineage, 2)
+        release_consumer.touch()
+        self.until(lambda: consumer.poll() is not None)
+        # A completed consumer may exit between the supervisor's initial poll
+        # and a later pass. A consumed request is not a new launch authority.
+        lineage.observe()
+        cleanup = self.capture.cleanup()
+        self.assertEqual(set(lineage.reaped), {1, 2})
+        self.assertEqual({row["role"] for row in cleanup}, set(runner.ROLES))
+        self.assertTrue(all(row["reaped"] and not row["forced"] for row in cleanup))
+        self.assertIsNone(self.capture.failure)
+        self.assertTrue(all(row["complete"] for row in self.capture.facts().values()))
+
+    def test_early_successor_request_is_not_promoted_by_same_pass_reap(self):
+        lineage = runner.FixtureLineage(self.capture, NONCES)
+        self.live_consumer()
+        child = self.generation(lineage)
+        self.request_successor(lineage)
+        (lineage.root(1) / "release").touch()
+        self.until(lambda: child.poll() is not None)
+        with self.assertRaisesRegex(ValueError, "successor-before-predecessor-reaped"):
+            lineage.observe()
+        self.assertEqual(lineage.reaped, {})
+        self.assertFalse((lineage.root(1) / "reaped").exists())
+        self.assertFalse(lineage.root(2).exists())
+
+    def test_owner_receipt_storage_failure_still_stops_and_reaps_registered_child(self):
+        lineage = runner.FixtureLineage(self.capture, NONCES)
+        publish = runner.publish
+
+        def exhausted_owner(root, name, text):
+            if name == "fixture-owner":
+                raise OSError(errno.ENOSPC, "injected owner receipt storage failure")
+            publish(root, name, text)
+
+        with patch.object(runner, "publish", side_effect=exhausted_owner):
+            with self.assertRaises(OSError):
+                self.generation(lineage)
+        lineage.stop_live()
+        cleanup = self.capture.cleanup()
+        self.assertEqual(len(cleanup), 1)
+        self.assertEqual(cleanup[0]["role"], "fixture-1")
+        self.assertTrue(cleanup[0]["reaped"])
+        self.assertFalse(cleanup[0]["forced"])
+        self.assertTrue(all(row["complete"] for row in self.capture.facts().values()))
+
+    def test_generation_nonces_have_one_canonical_grammar(self):
+        for nonces in ((NONCES[0], NONCES[0]), ("A" * 16, NONCES[1]),
+                       ("g" * 16, NONCES[1]), ("0" * 15, NONCES[1]),
+                       ("0" * 15 + "\n", NONCES[1])):
+            with self.subTest(nonces=nonces), self.assertRaises(ValueError):
+                runner.FixtureLineage(self.capture, nonces)
+        self.assertEqual(self.capture.children, {})
+
+    def test_successor_cannot_launch_before_reap_or_without_post_close_request(self):
+        for state in ("live", "reaped-without-request", "reaped-without-consumer"):
+            with self.subTest(state=state):
+                capture = self.new_capture(state)
+                lineage = runner.FixtureLineage(capture, NONCES)
+                self.generation(lineage)
+                if state != "live":
+                    self.reap_generation(lineage)
+                if state != "reaped-without-request":
+                    self.request_successor(lineage)
+                expected = {"live": "successor-before-predecessor-reaped",
+                            "reaped-without-request": "successor-request-required",
+                            "reaped-without-consumer": "successor-without-live-consumer"}[state]
+                with self.assertRaisesRegex(ValueError, expected):
+                    lineage.launch(2, lambda *_: self.fail("unauthorized successor spawn"))
+                self.assertNotIn("fixture-2", capture.children)
+                self.assertFalse(lineage.root(2).exists())
+
+    def test_ack_and_receipt_cannot_supply_unowned_or_stale_generation_authority(self):
+        for case in ("foreign-owner", "forged-reap", "foreign-ack-pid", "stale-ack-nonce",
+                     "noncanonical-pid", "extra-ack-field", "wrong-window", "wrong-size",
+                     "wrong-command", "stop", "nonzero"):
+            with self.subTest(case=case):
+                capture = self.new_capture(case)
+                lineage = runner.FixtureLineage(capture, NONCES)
+                valid = f"{NONCES[0]} 15 exit {{pid}} 77 480 278 2.0\n"
+                ack = {
+                    "foreign-ack-pid": valid.replace("{pid}", "1"),
+                    "stale-ack-nonce": valid.replace(NONCES[0], NONCES[1]),
+                    "noncanonical-pid": valid.replace("{pid}", "+{pid}"),
+                    "extra-ack-field": valid.replace("\n", " extra\n"),
+                    "wrong-window": valid.replace(" 77 ", " 0 "),
+                    "wrong-size": valid.replace("480 278", "240 140"),
+                }.get(case)
+                child = self.generation(lineage, ack=ack, exit_code=7 if case == "nonzero" else 0)
+                root = lineage.root(1)
+                if case == "foreign-owner":
+                    runner.publish(root, "fixture-owner", f"{NONCES[1]} 1 {child.pid}\n")
+                elif case == "forged-reap":
+                    runner.publish(root, "reaped", f"{NONCES[0]} 1 {child.pid} 0\n")
+                elif case == "wrong-command":
+                    runner.publish(root, "command", f"{NONCES[0]} 14 blank\n")
+                elif case == "stop":
+                    (root / "stop").write_text("stop\n")
+                if case in ("foreign-owner", "forged-reap"):
+                    with self.assertRaises(ValueError):
+                        lineage.observe()
+                elif case in ("stop", "nonzero"):
+                    self.reap_generation(lineage)
+                else:
+                    with self.assertRaises(ValueError):
+                        self.reap_generation(lineage)
+                self.assertEqual(lineage.reaped, {})
+                if case != "forged-reap":
+                    self.assertFalse((root / "reaped").exists())
+
+    def test_lineage_rejects_registered_child_in_wrong_role(self):
+        child, gate = self.live_consumer()
+        lineage = runner.FixtureLineage(self.capture, NONCES)
+        with self.assertRaisesRegex(ValueError, "fixture-child-not-owned"):
+            lineage.launch(1, lambda *_: child)
+        self.assertFalse((lineage.root(1) / "fixture-owner").exists())
+        gate.touch()
+
+    def test_window_liveness_is_positive_owned_child_receipt_not_absent_reap(self):
+        lineage = runner.FixtureLineage(self.capture, NONCES)
+        child = self.generation(lineage, operation="close-window")
+        lineage.observe()
+        self.assertFalse((lineage.root(1) / "alive").exists())
+        request = f"{NONCES[0]} 1 {child.pid} window-absent\n"
+        runner.publish(self.capture.evidence, "alive-request", request)
+        lineage.observe()
+        self.assertEqual((lineage.root(1) / "alive").read_text(), request)
+        self.assertIsNone(child.poll())
+        # The sampled receipt remains immutable after later fixture transitions.
+        runner.publish(lineage.root(1), "command", f"{NONCES[0]} 11 open-window\n")
+        lineage.observe_liveness()
+        self.assertEqual((lineage.root(1) / "alive").read_text(), request)
+
+    def test_liveness_fails_closed_on_stale_receipt_wrong_phase_or_exit_race(self):
+        for case in ("stale-receipt", "wrong-request", "wrong-phase", "exited"):
+            with self.subTest(case=case):
+                capture = self.new_capture(case)
+                lineage = runner.FixtureLineage(capture, NONCES)
+                child = self.generation(lineage, operation="close-window")
+                request = f"{NONCES[0]} 1 {child.pid} window-absent\n"
+                runner.publish(capture.evidence, "alive-request",
+                               request.replace(NONCES[0], NONCES[1]) if case == "wrong-request" else request)
+                if case == "stale-receipt":
+                    runner.publish(lineage.root(1), "alive", request)
+                elif case == "wrong-phase":
+                    runner.publish(lineage.root(1), "command", f"{NONCES[0]} 11 open-window\n")
+                elif case == "exited":
+                    (lineage.root(1) / "release").touch()
+                    self.until(lambda: child.poll() is not None, capture)
+                with self.assertRaises(ValueError):
+                    lineage.observe_liveness()
+                self.assertFalse(lineage.alive)
+
+    def test_successor_request_and_reap_receipt_remain_exact_after_reap(self):
+        for case in ("foreign-nonce", "foreign-pid", "wrong-phase", "stale-reap",
+                     "extra-field", "missing-newline"):
+            with self.subTest(case=case):
+                capture = self.new_capture(case)
+                lineage = runner.FixtureLineage(capture, NONCES)
+                self.live_consumer(capture)
+                child = self.generation(lineage)
+                self.reap_generation(lineage)
+                self.request_successor(lineage)
+                request_path = capture.evidence / "successor-request"
+                text = request_path.read_text()
+                text = {
+                    "foreign-nonce": text.replace(NONCES[1], "0" * 16),
+                    "foreign-pid": text.replace(f" 1 {child.pid} ", " 1 1 "),
+                    "wrong-phase": text.replace("successor-after-close", "successor"),
+                    "extra-field": text.replace("\n", " extra\n"),
+                    "missing-newline": text.rstrip("\n"),
+                }.get(case, text)
+                request_path.write_text(text)
+                if case == "stale-reap":
+                    runner.publish(lineage.root(1), "reaped", f"{NONCES[1]} 1 {child.pid} 0\n")
+                with self.assertRaises(ValueError):
+                    lineage.launch(2, lambda *_: self.fail("invalid receipt launched successor"))
+                self.assertNotIn(2, lineage.children)
+
+    def test_control_read_is_bounded_and_ascii(self):
+        path = self.capture.evidence / "control"
+        self.assertIsNone(runner.read_control(path))
+        path.write_bytes(b"x" * 513)
+        with self.assertRaisesRegex(ValueError, "control-message-limit"):
+            runner.read_control(path)
+        path.write_bytes(b"\xff\n")
+        with self.assertRaises(UnicodeError):
+            runner.read_control(path)
+
+    def test_nested_generation_files_spend_the_shared_ordinary_budget(self):
+        nested = self.capture.evidence / "fixture-1"
+        nested.mkdir()
+        (nested / "ack").write_bytes(b"x" * 200000)
+        (self.capture.evidence / "successor-request").write_bytes(b"x" * 70000)
+        self.assertEqual(self.capture.check_output(), 270000)
+        self.assertEqual(self.capture.failure["reason"], "output-limit")
 
     def test_exit_after_empty_select_still_drains_every_tail(self):
         gate = self.root / "exit-gate"
@@ -299,6 +624,42 @@ class NativeMacosRunner(unittest.TestCase):
                 else:
                     self.assertIsNone(capture.failure)
 
+    def test_owned_delayed_promotion_does_not_supply_an_image_identity(self):
+        child = self.launch(r"""
+            write_all(image_fd, image_line("/usr/lib/owned-promoted-probe.dylib"))
+            write_all(image_fd, (f"dyld[{os.getpid()}]: move delayed to loaded: unobserved.dylib\n").encode())
+        """)
+        self.capture.cleanup()
+        self.assertEqual(child.returncode, 0)
+        paths = self.capture.image_paths()
+        self.assertIn("/usr/lib/owned-inert-probe.dylib", paths)
+        self.assertIn("/usr/lib/owned-promoted-probe.dylib", paths)
+        self.assertFalse(any(Path(path).name == "unobserved.dylib" for path in paths))
+        self.assertTrue(all(row["complete"] for row in self.capture.facts().values()))
+        self.assertIsNone(self.capture.failure)
+
+    def test_state_diagnostics_still_require_owned_pid_known_transition_and_basename(self):
+        cases = (
+            ("foreign-pid", "1", "delayed to loaded", "owned.dylib"),
+            ("unknown-transition", "self", "queued to loaded", "owned.dylib"),
+            ("absolute-path", "self", "delayed to loaded", "/tmp/owned.dylib"),
+            ("control-character", "self", "delayed to loaded", "owned\x00.dylib"),
+        )
+        for name, pid, transition, basename in cases:
+            with self.subTest(case=name):
+                capture = self.new_capture(name)
+                child = self.launch(r"""
+                    pid, transition, basename = json.loads(sys.argv[1])
+                    pid = os.getpid() if pid == "self" else pid
+                    write_all(image_fd, (f"dyld[{pid}]: move {transition}: {basename}\n").encode())
+                """, json.dumps([pid, transition, basename]), capture=capture)
+                capture.cleanup()
+                self.assertEqual(child.returncode, 0)
+                with self.assertRaisesRegex(ValueError, "native-image-malformed-record"):
+                    capture.image_paths()
+                self.assertEqual(capture.failure["reason"], "native-image-observation-failed")
+                self.assertFalse(capture.facts()["consumer.native-images"]["complete"])
+
     def test_malformed_or_unterminated_image_records_are_never_dependency_proof(self):
         for name, suffix in (("utf8", b"\xff\n"), ("syntax", b"not-a-dyld-record\n"),
                              ("partial", b"dyld[1]: <00000000-0000-0000-0000-000000000001> /incomplete")):
@@ -395,7 +756,7 @@ class NativeMacosRunner(unittest.TestCase):
 
     def test_pump_exception_cannot_skip_either_owned_child_reap(self):
         gate = self.root / "pump-failure-gate"
-        ready = [self.root / f"{role}-ready" for role in ("consumer", "fixture")]
+        ready = [self.root / f"{role}-ready" for role in ("consumer", "fixture-1")]
         children = [self.launch(r"""
             signal.signal(signal.SIGTERM, signal.SIG_IGN)
             Path(sys.argv[1]).write_text("ready")
@@ -404,7 +765,7 @@ class NativeMacosRunner(unittest.TestCase):
             while True:
                 write_all(1, b"x" * 65536)
                 write_all(image_fd, b"i" * 65536)
-        """, path, gate, role=role) for role, path in zip(("consumer", "fixture"), ready)]
+        """, path, gate, role=role) for role, path in zip(("consumer", "fixture-1"), ready)]
         deadline = time.monotonic() + 5
         while not all(path.exists() for path in ready) and time.monotonic() < deadline:
             self.capture.pump()

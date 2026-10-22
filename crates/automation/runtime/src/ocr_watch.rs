@@ -6,19 +6,12 @@ use mado_pilot_capture::{FrameDescriptor, PixelFormat};
 use mado_pilot_core::{CancellationToken, ClipPolicy, CoordinateSpace, GeometryFault, Rect};
 use mado_pilot_ocr::watch_support::{PreparedOcr, normalize_literal, prepare};
 use mado_pilot_ocr::{
-    MAX_CANDIDATES, MAX_TEXT_BYTES, OcrBackendDescriptor, OcrExecutionProvider, OcrFault,
-    OcrModelIdentity, OcrProviderDescriptor, OcrRecognizer, OcrRegion, OcrRequest, OcrResult,
-    RecognizedRegion,
+    MAX_CANDIDATES, MAX_TEXT_BYTES, OcrBackendDescriptor, OcrFault, OcrProviderDescriptor,
+    OcrRecognizer, OcrRegion, OcrRequest, OcrResult, RecognizedRegion,
 };
 use std::mem::size_of;
 
 const MAX_SOURCE_BYTES: usize = 256 * 1024 * 1024;
-const CPU_BACKEND: &str = "onnxruntime-cpu";
-const CPU_BACKEND_VERSION: &str = concat!(env!("CARGO_PKG_VERSION"), "+ort-1.29.0-api17");
-const CPU_RUNTIME_PROFILE: &str = "onnxruntime-1.29.0-api17-cpu";
-
-static ACCEPTED_MODEL: std::sync::LazyLock<OcrModelIdentity> =
-    std::sync::LazyLock::new(OcrModelIdentity::accepted_bounded_detector);
 
 /// A positive minimum interval between OCR backend admissions.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
@@ -345,7 +338,7 @@ impl OcrTextWatchResult {
     pub fn result(&self) -> &OcrResult {
         &self.result
     }
-    /// Returns the bound CPU runtime/provider initialization facts.
+    /// Returns the bound runtime/provider initialization facts.
     #[must_use]
     pub const fn provider(&self) -> &OcrProviderDescriptor {
         &self.provider
@@ -621,7 +614,7 @@ impl Drop for OcrTextQuery {
     }
 }
 
-/// Immutable engine OCR watcher safety policies, not measured workload budgets.
+/// Fixed engine OCR watcher limits, excluding backend-specific resource bounds.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub struct OcrTextSchedulerDescriptor;
 
@@ -690,11 +683,6 @@ impl OcrTextSchedulerDescriptor {
     #[must_use]
     pub const fn max_region_text_bytes(self) -> u32 {
         4096
-    }
-    /// Absolute bounded-v2 detector input ceiling, including small-source upscaling.
-    #[must_use]
-    pub const fn max_detector_input_tensor_bytes(self) -> u64 {
-        1312 * 736 * 3 * 4
     }
     /// Aggregate normalized output plus predicate UTF-8 extent.
     #[must_use]
@@ -1624,10 +1612,18 @@ impl WatchSession {
         let publication = Operation::admit(&context)?;
         let recognizer = recognizer.ok_or_else(|| Error::from(OcrFault::BackendUnavailable))?;
         let descriptor = recognizer.descriptor();
-        let provider = recognizer
-            .provider_descriptor()
-            .ok_or_else(unsupported_selection)?;
-        validate_selection(&descriptor, &provider)?;
+        let provider = recognizer.provider_descriptor().ok_or_else(|| {
+            Error::new(
+                Status::Unsupported,
+                "OCR text watch requires initialized provider metadata",
+            )
+        })?;
+        if descriptor.format() != PixelFormat::Bgra8 {
+            return Err(Error::new(
+                Status::Unsupported,
+                "OCR text watch requires a BGRA OCR backend",
+            ));
+        }
         validate_request_geometry(&request, &self.description)?;
         if self.closed.load(Ordering::Acquire)
             || self.source_ended.load(Ordering::Acquire)
@@ -1744,29 +1740,6 @@ impl WatchSession {
             .ocr_queries
             .retain(|query| query.upgrade().is_some_and(|query| query.id != id));
     }
-}
-
-fn unsupported_selection() -> Error {
-    Error::new(
-        Status::Unsupported,
-        "OCR text watch requires the complete initialized CPU bounded-v2 identity",
-    )
-}
-
-fn validate_selection(
-    descriptor: &OcrBackendDescriptor,
-    provider: &OcrProviderDescriptor,
-) -> Result<()> {
-    if descriptor.model_identity() != &*ACCEPTED_MODEL
-        || descriptor.id().as_str() != CPU_BACKEND
-        || descriptor.version().as_str() != CPU_BACKEND_VERSION
-        || descriptor.format() != PixelFormat::Bgra8
-        || provider.active_provider() != OcrExecutionProvider::Cpu
-        || provider.runtime_profile().as_str() != CPU_RUNTIME_PROFILE
-    {
-        return Err(unsupported_selection());
-    }
-    Ok(())
 }
 
 fn validate_request_geometry(
@@ -2025,9 +1998,12 @@ impl WatchScheduler {
         let mapping_result = (|| {
             query.resolve_frame(&work.frame)?;
             if query.recognizer.provider_descriptor().as_ref() != Some(&query.provider) {
-                return Err(unsupported_selection());
+                return Err(Error::new(
+                    Status::Unsupported,
+                    "OCR text watch provider descriptor changed after query publication",
+                ));
             }
-            prepare(
+            let prepared = prepare(
                 &query.recognizer,
                 OcrRequest::new(
                     &work.frame,
@@ -2040,7 +2016,14 @@ impl WatchScheduler {
                     query.request.output_space,
                     &work.operation,
                 ),
-            )
+            )?;
+            if prepared.descriptor() != &query.descriptor {
+                return Err(Error::new(
+                    Status::Unsupported,
+                    "OCR text watch backend descriptor changed after query publication",
+                ));
+            }
+            Ok(prepared)
         })();
         // No following template mapper enters native storage before preparation
         // actually returns, including its error paths.
@@ -2128,10 +2111,7 @@ mod tests {
     use super::*;
     use mado_pilot_capture::{CaptureProvider, OpenRequest};
     use mado_pilot_core::{IdentityIssuer, PixelExtent};
-    use mado_pilot_ocr::{
-        BackendId, BackendVersion, OcrBackendIdentity, OcrExecutionProviderPolicy,
-        ProviderProfileId,
-    };
+    use mado_pilot_ocr::{OcrExecutionProvider, OcrExecutionProviderPolicy, ProviderProfileId};
     use mado_pilot_testkit::{
         ControlledCapture, ControlledMatcher, ControlledOcr, ControlledProducer,
         ScriptedOcrCandidate, match_fixtures,
@@ -2192,29 +2172,15 @@ mod tests {
             claimed.is_some()
         });
         let claimed = claimed.unwrap();
-        let recognizer = OcrRecognizer::new(Arc::new(
-            ControlledOcr::new(PixelFormat::Bgra8)
-                .with_descriptor(OcrBackendDescriptor::new(
-                    OcrBackendIdentity::new(
-                        BackendId::new(CPU_BACKEND).unwrap(),
-                        BackendVersion::new(CPU_BACKEND_VERSION).unwrap(),
-                    ),
-                    OcrModelIdentity::accepted_bounded_detector(),
-                    PixelFormat::Bgra8,
-                ))
-                .with_provider_descriptor(OcrProviderDescriptor::new(
-                    OcrExecutionProviderPolicy::Cpu,
-                    OcrExecutionProvider::Cpu,
-                    None,
-                    ProviderProfileId::new(CPU_RUNTIME_PROFILE).unwrap(),
-                ))
-                .with_candidates(vec![ScriptedOcrCandidate::new(
+        let recognizer =
+            selected_recognizer(ControlledOcr::new(PixelFormat::Bgra8).with_candidates(vec![
+                ScriptedOcrCandidate::new(
                     b"ready".as_slice(),
                     [(1.0, 1.0), (8.0, 1.0), (8.0, 5.0), (1.0, 5.0)],
                     0.8,
                     0,
-                )]),
-        ));
+                ),
+            ]));
         let request = OcrTextWatchRequest::new(
             Rect::new(CoordinateSpace::CapturePixels, 0.0, 0.0, 32.0, 24.0).unwrap(),
             ClipPolicy::Reject,
@@ -2261,23 +2227,14 @@ mod tests {
     }
 
     fn selected_recognizer(backend: ControlledOcr) -> OcrRecognizer {
-        OcrRecognizer::new(Arc::new(
-            backend
-                .with_descriptor(OcrBackendDescriptor::new(
-                    OcrBackendIdentity::new(
-                        BackendId::new(CPU_BACKEND).unwrap(),
-                        BackendVersion::new(CPU_BACKEND_VERSION).unwrap(),
-                    ),
-                    OcrModelIdentity::accepted_bounded_detector(),
-                    PixelFormat::Bgra8,
-                ))
-                .with_provider_descriptor(OcrProviderDescriptor::new(
-                    OcrExecutionProviderPolicy::Cpu,
-                    OcrExecutionProvider::Cpu,
-                    None,
-                    ProviderProfileId::new(CPU_RUNTIME_PROFILE).unwrap(),
-                )),
-        ))
+        OcrRecognizer::new(Arc::new(backend.with_provider_descriptor(
+            OcrProviderDescriptor::new(
+                OcrExecutionProviderPolicy::Cpu,
+                OcrExecutionProvider::Cpu,
+                None,
+                ProviderProfileId::new("controlled-cpu").unwrap(),
+            ),
+        )))
     }
 
     fn text_request(operation: OperationContext) -> OcrTextWatchRequest {

@@ -19,10 +19,15 @@ deterministic replay, asset loading, OpenCV matching, bounded ONNX OCR with
 explicit initialization-time provider policy, finite template watcher
 scheduling, runtime orchestration, engine-scoped diagnostics, the Rust facade,
 C ABI 1.5, and direct C/C++ consumption are implemented.
-Rust OCR text-presence queries are also implemented through the explicit CPU
-bounded-v2 profile, with controlled API and both-target real CPU replay verified.
-ADR0075 accepts workload ceilings; native capture and final numeric enforcement remain open;
-[OCR text queries](ocr-text-watch.md) separates those acceptance lanes.
+Rust OCR text-presence queries reuse the caller's initialized BGRA OCR
+model/profile/provider under [ADR 0091](adr/0091-ocr-watch-caller-selection.md),
+without a watcher-specific model or provider whitelist. Controlled API and
+both-target CPU bounded-v2 replay evidence retain their original scope.
+ADR0075 ceilings and historical numerical verdicts remain source-bound; native
+capture qualification remains open. [ADR 0092](adr/0092-ocr-cpu-execution-options.md)
+adds explicit bounded CPU options without changing defaults.
+[OCR text queries](ocr-text-watch.md) separates implementation progress,
+model-specific measurements and native qualification.
 The picker-free Windows Adapter implements window/display discovery, WGC/D3D11 capture, system input,
 and explicit exact-window `WindowMessage` submission. The macOS Adapter
 implements discovery, ScreenCaptureKit capture, `CGEvent` system input, and
@@ -1066,7 +1071,7 @@ responsibilities a later phase takes on.
 | Deep search orchestration, result envelope, final operation commit | Implemented in `mado-pilot-runtime` |
 | Input composition: same-provider adapter pairing, required-versus-optional input admission with bounded release of committed capture, per-controller sequence serialization, the one-terminal-receipt rule, and two-sided close | Implemented in `mado-pilot-runtime`. Selecting a permitted route, arbitrating focus, resolving a coordinate against live geometry, revalidating before each irreversible event, and releasing what a stopped sequence pressed stay in `mado-pilot-input` and the Adapter implementing it |
 | Bounded template-presence query and scheduling | Implemented in `mado-pilot-runtime` for Rust replay/OpenCV and maintained native WGC/ScreenCaptureKit sessions: current-once then strictly newer frame acquisition, finite latest-wins work, exact change/rate admission, confirmed-only stability, exact coalescing, two-worker fair progress, stale-generation rejection, and idempotent query/session/engine-scheduler close. ADRs 0051 and 0052 retain deterministic replay/OpenCV authority; ADR 0053 retains historical target-specific native regression budgets. ADR 0064 adds the token-driven V2 split: Lane A owns deterministic behavior, each target has one compact Lane B integration job, and Lane C statistics are optional. Both exact Lane B host contracts pass, and reviewed target-isolated applicability carries the Apple result through the final Windows evidence source |
-| Rust OCR text-presence queries | Implemented through explicit CPU bounded-v2 with immutable source/result retention, finite mixed scheduling and selective OCR shutdown. Both-target real CPU replay passes; ADR0075 accepts fixed-workload ceilings. Native capture and final numerical enforcement remain open |
+| Rust OCR text-presence queries | Implemented with the caller's initialized BGRA OCR model/profile/provider under [ADR 0091](adr/0091-ocr-watch-caller-selection.md), exact identity rechecks, immutable source/result retention, finite mixed scheduling and selective OCR shutdown. ADR 0092 adds explicit bounded CPU options with distinct runtime identities. Both-target CPU bounded-v2 replay evidence and ADR0075 verdicts retain their original scope. Native capture qualification remains open; numerical nonpass informs model-specific tuning without blocking implementation or choice |
 | OCR work coalescing | Not implemented; OCR query work remains distinct |
 | Public Rust operations for the deterministic replay workflow | Implemented in `mado-pilot`, including the blocking replay template watcher example with separate query/wait operation contexts |
 | Public Rust operations for native and replay workflows | Implemented in `mado-pilot`, including explicit optional backend wiring, accepted CPU default/profile constructors, owning provider-policy constructors, immutable provider descriptors, borrowed one-to-sixteen-zone scans, and Rust template query types over replay, WGC, and ScreenCaptureKit sessions. Replay/OpenCV and native WGC/ScreenCaptureKit watcher support is qualified on the named release targets under ADR 0064. No platform-native, `ort`, worker, channel, Tokio, or callback type crosses the facade; C ABI/C++ watcher APIs remain absent |
@@ -1980,6 +1985,13 @@ the surface has the pool size and content larger than it is clipped. The
 replacement producer reservation is acquired before `Recreate`; native failure
 keeps the old reservation, while success swaps and releases it only after native
 ownership changes.
+An acquire request waits for actual native publication under its operation
+context; `Recreate` does not promise a successor notification within a fixed
+interval for unchanged content. The private OCR procedure at `fd98dba` passed
+all five semantic endpoints and resource/cleanup on one instrumentation-enabled
+Windows26300.9711/DELL-WCG cohort. Its clipped960×576 transition texture was
+discarded before a real1024×640 successor passed exact source validation.
+This is not feature-off native verification or a general resize-recovery promise.
 The producer reservation and frame pool live in one native-owner allocation. The
 core holds only a weak link,
 so queued teardown and process-lifetime quarantine remain charged, while native
@@ -2392,6 +2404,24 @@ the one a caller can act on, so the Adapter establishes it by reading the
 authorization again with the same non-prompting probe discovery uses, and reports
 an authorization outcome only when that read shows the authorization gone. Any other
 system stop is reported as the stream having ended, which is what is known.
+
+SDK/query termination and independently established target disappearance are
+separate facts. A caller deadline, absent frames or a stream error-stop does not
+prove window or process loss; a failed permission/discovery observation remains
+unresolved. Windows retains its explicit native closed/target-loss contract,
+without attributing that signal to a process exit. ScreenCaptureKit need not
+report immediate loss for every destroyed window. After independently
+establishing loss, caller code closes the old session before fresh discovery/open;
+replacement targets use new sessions and streams, never old-session rebinding.
+[ADR 0093](adr/0093-ocr-native-target-rediscovery.md) defines the owned OCR
+qualification of window loss with a live original process generation and process
+loss with that exact generation reaped. Its source-bound `86a482d` Apple
+Silicon/Retina CPU cohort passes all nine semantic rows, both explicit
+rediscovery paths, retained-byte checks and resource/cleanup endpoints. Optional
+SDK metadata is not absence evidence: the private consumer independently
+observes the acknowledged WindowServer ID and owner. This adds no public API,
+background polling, automatic recovery or platform fallback; it does not extend
+the result to process crashes, other cohorts or Windows.
 
 This is an implementation claim, not release acceptance. Its enforceability is
 uneven and the tables above say which cases run where: the scenarios that drive a
@@ -2817,7 +2847,10 @@ target/provider, criteria and evaluator revision.
 tiny/small execution tuple and mandatory pinned YAML vocabulary. It is an ordinary
 CPU profile with known quality failures. Package manifest v1/v2 still cannot
 express its required auxiliary source and therefore refuse that declaration.
-The C/C++ ABI, provider capabilities and bounded-v2 watch scope are unchanged.
+The C/C++ ABI and provider capabilities are unchanged. ADR 0084 left the
+bounded-v2 watch scope unchanged at that decision;
+[ADR 0091](adr/0091-ocr-watch-caller-selection.md) now extends caller selection
+to watching without changing initialization support or historical results.
 
 [ADR 0083](adr/0083-platform-aware-ocr-calibration-and-percent-equivalence.md)
 limits benchmark text equivalence to U+0025 `%` and U+FF05 `％` after NFC and
@@ -3020,15 +3053,31 @@ released native G-004 meaning through `DefaultOcrConfig`.
 `replay_engine_with_ocr_profile`, `windows_engine_with_ocr_profile`, and
 `macos_engine_with_ocr_profile` accept `OcrProfileConfig`. The existing
 `OcrProfile::BoundedDetector` selection is unchanged; `OcrProfileConfig::from_id`
-selects an accepted static catalog ID. Construction revalidates selection, so
-manually constructing `OcrProfile::Catalog` cannot admit an unknown or unqualified
-profile. Both paths carry caller-selected controlled model-root/runtime paths;
+selects a declared static catalog ID. Construction revalidates selection, so
+manually constructing `OcrProfile::Catalog` cannot admit an unknown ID or invalid
+execution/resource contract. Quality results do not filter selection. Both paths
+carry caller-selected controlled model-root/runtime paths;
 ordinary constructors continue to omit OCR unless a caller supplies a backend.
 No constructor performs ambient search, download, retry, fallback, or
 support-table inference.
 
+Under [ADR 0092](adr/0092-ocr-cpu-execution-options.md), explicit Rust profile
+configuration also carries `OcrCpuOptions`: every intra-op thread count in
+`1..=8` and selectable spinning. `new` rejects counts outside that finite bound;
+the default is one thread with spinning enabled. `with_cpu_options` applies the
+choice to both ONNX detector and recognizer sessions through the existing
+`*_engine_with_ocr_profile` paths; the adapter exposes
+`open_profile_with_cpu_options`. Each count/spinning pair has a distinct runtime
+profile identity, captured and rechecked by watching. `DefaultOcrConfig` and
+provider-policy constructors retain one thread with spinning enabled.
+There is no environment/global override, query-time reconfiguration or C ABI
+option. One inter-op thread, sequential execution, disabled memory patterns,
+one session pair and one physical OCR analysis remain fixed. The worker cap is
+a safety bound, not a numerical admission gate; measurements inform each
+model's latency, memory and recognition trade-offs rather than a new default.
+
 For troubleshooting, `ProfileMismatch` means the source is not one complete
-accepted tuple; changing only a profile or preprocessing string is never
+declared execution tuple; changing only a profile or preprocessing string is never
 accepted. `DetectorMismatch`/`RecognizerMismatch` means the fixed relative file
 failed exact length or digest validation. `RuntimeIncompatible` means the
 canonical target library did not report exact 1.29.0/API 17. Callers must repair
@@ -3074,8 +3123,20 @@ over the same maintained `WatchRuntime`, sessions and two-worker scheduler.
 The request names one coordinate-qualified region, normalized literal, inclusive
 confidence threshold, positive analysis interval, immediate/consecutive
 confirmation, change policy and optional deadline/cancellation. Start requires
-complete initialized CPU bounded-v2 identities; it does not switch an existing
-profile/provider or manufacture an initial frame transform.
+an initialized BGRA OCR backend and provider metadata, and captures the complete
+backend/model/profile/provider identities. Under
+[ADR 0091](adr/0091-ocr-watch-caller-selection.md), it adds no model, CPU,
+backend/version or runtime-name whitelist beyond adapter-owned initialization.
+Missing metadata or non-BGRA input refuses; before each analysis or change skip,
+the provider and prepared backend descriptors must still match the captured
+selection exactly. Start never switches profile/provider, adds fallback or
+manufactures an initial frame transform. Quality and timing findings remain
+distinct from enforced runtime safety and do not filter initialized choices.
+Numerical and recognition-quality rules guide per-model optimization and inform
+the caller; nonpass does not stop implementation. Reports bind latency, memory
+and recognition results to the measured configuration and workload. Fixed
+scheduler limits exclude profile-specific detector tensor bounds, which belong
+to the initialized adapter's resource facts.
 
 The OCR contract's hidden workspace support seam prepares one exact mapped
 request and executes that owned value through the same validation used by

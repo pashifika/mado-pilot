@@ -15,7 +15,8 @@ use mado_pilot_core::{
 };
 use mado_pilot_ocr::catalog::{OcrProfileDescriptor, ResourceDescriptor, ocr_profile};
 use mado_pilot_ocr::{
-    OcrBackend, OcrRecognizer, OcrRegion, OcrRequest, OcrZone, OcrZoneScanRequest, RecognizedRegion,
+    OcrBackend, OcrCpuOptions, OcrRecognizer, OcrRegion, OcrRequest, OcrZone, OcrZoneScanRequest,
+    RecognizedRegion,
 };
 use mado_pilot_testkit::ManualClock;
 use mado_pilot_testkit::bench_harness::{self, Plan, Sample};
@@ -59,9 +60,9 @@ impl Write for BoundedOutput {
 }
 
 const HELP: &str = "onnx-cpu --model-evaluation --profile ID --model-root DIR --runtime FILE \
-  --fixtures PREPARED_JSON --binding JSON --report NEW_JSONL --process-index N --output-limit-bytes N --lifecycle-bound-ms N\n\n\
+  --fixtures PREPARED_JSON --binding JSON --report NEW_JSONL --process-index N --output-limit-bytes N --lifecycle-bound-ms N [--cpu-intra-threads 1..8] [--cpu-spinning true|false]\n\n\
 Runs actual Rust singular and grouped OCR on every frozen licensed image.\n\
-Each workload always has two warmups and twenty measured samples, CPU threads one.\n\
+Each workload always has two warmups and twenty measured samples; CPU options do not change library defaults.\n\
 The report records all outcomes, including below-threshold regions and failures.\n\
 Evaluate the observations with tools/ocr-models/run.py.\n\
 Metadata only (no initialization/inference): --model-evaluation --describe-profile --profile ID\n";
@@ -198,7 +199,9 @@ pub(super) fn run() -> Fallible<()> {
             | "--report"
             | "--process-index"
             | "--output-limit-bytes"
-            | "--lifecycle-bound-ms" => {
+            | "--lifecycle-bound-ms"
+            | "--cpu-intra-threads"
+            | "--cpu-spinning" => {
                 let value = arguments.next().ok_or("option requires a value")?;
                 if options.insert(argument, value).is_some() {
                     return Err("duplicate option".into());
@@ -209,15 +212,30 @@ pub(super) fn run() -> Fallible<()> {
     }
     let profile_id = options.get("--profile").ok_or("missing --profile")?;
     let profile = ocr_profile(profile_id).ok_or("undeclared profile")?;
+    let intra_threads = options
+        .get("--cpu-intra-threads")
+        .map_or(Ok(1), |value| value.parse::<u32>())?;
+    let allow_spinning = options
+        .get("--cpu-spinning")
+        .map_or(Ok(true), |value| value.parse::<bool>())?;
+    let cpu_options = OcrCpuOptions::new(intra_threads)?.with_spinning(allow_spinning);
     let build = build_facts()?;
     if describe {
-        println!("{}", json!({"identity":identity(profile), "build":build}));
+        println!(
+            "{}",
+            json!({"identity":identity(profile), "build":build, "cpu_intra_threads":intra_threads, "cpu_spinning":allow_spinning})
+        );
         return Ok(());
     }
     let runtime = path(&options, "--runtime")?;
     let model_root = path(&options, "--model-root")?;
     let fixture_path = path(&options, "--fixtures")?;
     let binding = read_json(&path(&options, "--binding")?)?;
+    if let Some(bound_threads) = binding.get("intra_op")
+        && (bound_threads.as_u64() != Some(u64::from(intra_threads)) || !allow_spinning)
+    {
+        return Err("CPU options differ from the bound thread/spinning cohort".into());
+    }
     for name in [
         "executable_sha256",
         "catalog_sha256",
@@ -286,7 +304,13 @@ pub(super) fn run() -> Fallible<()> {
     )?;
     let operation = OperationContext::new();
     let started = Instant::now();
-    let opened = OnnxOcrBackend::open_profile(profile_id, &model_root, &runtime, &operation);
+    let opened = OnnxOcrBackend::open_profile_with_cpu_options(
+        profile_id,
+        &model_root,
+        &runtime,
+        cpu_options,
+        &operation,
+    );
     let cold_open_ms = started.elapsed().as_secs_f64() * 1_000.0;
     let backend = match opened {
         Ok(backend) => Arc::new(backend),
@@ -413,14 +437,19 @@ pub(super) fn run() -> Fallible<()> {
         lifecycle_bound,
         true,
     )?;
-    let initialization_cancelled =
-        match OnnxOcrBackend::open_profile(profile_id, &model_root, &runtime, &cancelled) {
-            Ok(unexpected) => {
-                unexpected.close(&operation)?;
-                "Ok".to_owned()
-            }
-            Err(error) => format!("{:?}", error.status()),
-        };
+    let initialization_cancelled = match OnnxOcrBackend::open_profile_with_cpu_options(
+        profile_id,
+        &model_root,
+        &runtime,
+        cpu_options,
+        &cancelled,
+    ) {
+        Ok(unexpected) => {
+            unexpected.close(&operation)?;
+            "Ok".to_owned()
+        }
+        Err(error) => format!("{:?}", error.status()),
+    };
     let close_started = Instant::now();
     let close = backend.close(&operation);
     let close_ms = close_started.elapsed().as_secs_f64() * 1_000.0;
@@ -436,6 +465,7 @@ pub(super) fn run() -> Fallible<()> {
         "deadline":deadline_status, "closed":closed, "close_idempotent":close_idempotent,
         "initialization_cancelled":initialization_cancelled}, "close_fault":close_fault,
         "lifecycle_detail":{"cancelled":cancellation_detail, "deadline":deadline_detail},
+        "runtime_profile_id":backend.facts().runtime_profile_id(),
         "metrics":{"cold_open_ms":cold_open_ms, "close_ms":close_ms,
         "peak_resident_bytes":super::peak_resident_bytes(),
         "model_bytes":profile.detector.byte_len + profile.recognizer.byte_len,
