@@ -320,17 +320,23 @@ mod windows_procedure {
         before.order(&after) == Ok(FrameOrder::Before)
     }
 
+    #[derive(Debug, PartialEq, Eq)]
+    enum PixelCheck {
+        Matched,
+        SizeMismatch,
+        ExpectedPixelMismatch,
+        MarkerMismatch,
+    }
+
     fn pixel_state(
-        frame: &Frame,
+        mapping: &mado_pilot::CpuMapping,
         ack: Ack,
         nonce: &[u8; 16],
         image: &[u8],
-        operation: &OperationContext,
-    ) -> Checked<bool> {
-        let mapping = frame.map(PixelFormat::Bgra8, operation)?;
+    ) -> PixelCheck {
         let descriptor = mapping.descriptor();
         if descriptor.extent().width() != ack.width || descriptor.extent().height() != ack.height {
-            return Ok(false);
+            return PixelCheck::SizeMismatch;
         }
         let bytes = mapping.bytes();
         for y in 0..540 {
@@ -342,7 +348,7 @@ mod windows_procedure {
                     &image[(y * 960 + x) * 4..(y * 960 + x) * 4 + 3]
                 };
                 if &bytes[at..at + 3] != expected {
-                    return Ok(false);
+                    return PixelCheck::ExpectedPixelMismatch;
                 }
             }
         }
@@ -354,10 +360,10 @@ mod windows_procedure {
         {
             let at = 548 * descriptor.stride() + (cell * 8 + 4) * 4;
             if bytes[at..at + 3] != [expected; 3] {
-                return Ok(false);
+                return PixelCheck::MarkerMismatch;
             }
         }
-        Ok(true)
+        PixelCheck::Matched
     }
 
     fn checkpoint(
@@ -368,38 +374,129 @@ mod windows_procedure {
         image: &[u8],
         evidence: &mut File,
     ) -> Checked<FrameStamp> {
-        let operation = context(STEP)?;
-        let mut cursor = before;
-        for _ in 0..128 {
-            let request = cursor.map_or_else(FrameRequest::latest, FrameRequest::newer_than);
-            let frame = session.acquire_frame(&request, &operation)?;
-            if let Some(previous) = cursor {
-                require(newer(previous, frame.stamp()), "source-not-newer")?;
-            }
-            cursor = Some(frame.stamp());
-            // Transitional frames are observed, never retried as replacement semantic samples.
-            if pixel_state(&frame, ack, nonce, image, &operation)? {
+        let started = Instant::now();
+        let mut phase = "context";
+        let mut acquire_attempts = 0_u32;
+        let mut acquired = 0_u32;
+        let mut acquire_errors = 0_u32;
+        let mut mapped = 0_u32;
+        let mut map_errors = 0_u32;
+        let mut rejected_size = 0_u32;
+        let mut rejected_expected_pixel = 0_u32;
+        let mut rejected_marker = 0_u32;
+        let mut last_frame = None;
+        let mut last_frame_extent = None;
+        let mut last_mapping = None;
+        let mut last_pixel_check = None;
+        let result: Checked<FrameStamp> = (|| {
+            let operation = context(STEP)?;
+            let mut cursor = before;
+            for _ in 0..128 {
+                let request = cursor.map_or_else(FrameRequest::latest, FrameRequest::newer_than);
+                phase = "acquire";
+                acquire_attempts += 1;
+                let frame = match session.acquire_frame(&request, &operation) {
+                    Ok(frame) => frame,
+                    Err(error) => {
+                        acquire_errors += 1;
+                        return Err(error.into());
+                    }
+                };
+                acquired += 1;
+                last_frame = Some(frame.stamp());
+                let extent = frame.descriptor().extent();
+                last_frame_extent = Some((extent.width(), extent.height()));
+                // These observations belong only to last_frame, never its predecessor.
+                last_mapping = None;
+                last_pixel_check = None;
+                phase = "order";
+                if let Some(previous) = cursor {
+                    require(newer(previous, frame.stamp()), "source-not-newer")?;
+                }
+                cursor = Some(frame.stamp());
+                phase = "map";
+                let check = {
+                    let mapping = match frame.map(PixelFormat::Bgra8, &operation) {
+                        Ok(mapping) => mapping,
+                        Err(error) => {
+                            map_errors += 1;
+                            return Err(error.into());
+                        }
+                    };
+                    mapped += 1;
+                    let descriptor = mapping.descriptor();
+                    last_mapping = Some((
+                        descriptor.extent().width(),
+                        descriptor.extent().height(),
+                        descriptor.stride(),
+                    ));
+                    pixel_state(&mapping, ack, nonce, image)
+                };
+                match check {
+                    PixelCheck::Matched => {}
+                    PixelCheck::SizeMismatch => rejected_size += 1,
+                    PixelCheck::ExpectedPixelMismatch => rejected_expected_pixel += 1,
+                    PixelCheck::MarkerMismatch => rejected_marker += 1,
+                }
+                last_pixel_check = Some(check);
+                // Transitional frames are observed, never replacement semantic samples.
+                if last_pixel_check == Some(PixelCheck::Matched) {
+                    phase = "checkpoint-record";
+                    writeln!(
+                        evidence,
+                        "checkpoint={} ack={} transform={:?}",
+                        frame.stamp(),
+                        ack.sequence,
+                        frame.transform()
+                    )?;
+                    return Ok(frame.stamp());
+                }
+                phase = "transitional-record";
                 writeln!(
                     evidence,
-                    "checkpoint={} ack={} transform={:?}",
+                    "transitional_source={} awaiting_ack={}",
                     frame.stamp(),
-                    ack.sequence,
-                    frame.transform()
+                    ack.sequence
                 )?;
-                return Ok(frame.stamp());
+                phase = "remaining";
+                require(
+                    operation.remaining().is_none_or(|left| !left.is_zero()),
+                    "checkpoint-deadline",
+                )?;
             }
-            writeln!(
-                evidence,
-                "transitional_source={} awaiting_ack={}",
-                frame.stamp(),
-                ack.sequence
-            )?;
-            require(
-                operation.remaining().is_none_or(|left| !left.is_zero()),
-                "checkpoint-deadline",
-            )?;
+            phase = "frame-bound";
+            Err("checkpoint-frame-bound".into())
+        })();
+        // One scalar summary per checkpoint, including API-error/deadline exits.
+        // No extra acquisition, mapping, deadline, or retained frame for diagnostics.
+        let recorded = writeln!(
+            evidence,
+            "source_checkpoint={} state={} expected_extent=({}, {}) before={before:?} \
+             phase={phase} acquire_attempts={acquire_attempts} acquired={acquired} \
+             acquire_errors={acquire_errors} mapped={mapped} map_errors={map_errors} \
+             rejected_size={rejected_size} rejected_expected_pixel={rejected_expected_pixel} \
+             rejected_marker={rejected_marker} last_frame={last_frame:?} \
+             last_frame_extent={last_frame_extent:?} last_mapping={last_mapping:?} \
+             last_pixel_check={last_pixel_check:?} elapsed_ms={} outcome={}",
+            ack.sequence,
+            ack.state,
+            ack.width,
+            ack.height,
+            started.elapsed().as_millis(),
+            if result.is_ok() { "matched" } else { "failed" }
+        );
+        let flushed = evidence.flush();
+        if let Err(error) = recorded.and(flushed) {
+            if result.is_ok() {
+                return Err(error.into());
+            }
+            // Preserve the original failure; expose only a closed I/O category.
+            eprintln!(
+                "ocr-text-watch-windows: checkpoint-diagnostic-io-error kind={:?}",
+                error.kind()
+            );
         }
-        Err("checkpoint-frame-bound".into())
+        result
     }
 
     fn accepted(
@@ -596,7 +693,12 @@ mod windows_procedure {
             "fixed-source-box-oracle",
         )?;
         require(
-            pixel_state(frame, saved.ack, nonce, image, &context(STEP)?)?,
+            pixel_state(
+                &frame.map(PixelFormat::Bgra8, &context(STEP)?)?,
+                saved.ack,
+                nonce,
+                image,
+            ) == PixelCheck::Matched,
             "retained-frame-not-acknowledged-state",
         )?;
         writeln!(

@@ -129,6 +129,28 @@ unsupported resize, mismatched output, deadline, overload, and unexpected
 terminals remain mandatory failures of this **fixed** procedure. It does not
 quietly accept a smaller scenario subset or switch to a different resize oracle.
 
+Each checkpoint also writes and flushes one bounded `source_checkpoint` scalar
+summary after its acquisition loop returns, including on an API deadline/error.
+It records the requested ACK/state/extent and prior stamp; the last phase;
+acquisition attempts, successes and errors; successful maps and map errors;
+size, expected-image-pixel and marker rejection counts; the last acquired stamp
+and extent; the last mapping `(width,height,stride)`; the last pixel-check category;
+elapsed milliseconds and matched/failed outcome. Mapping/check observations are
+cleared for each newly acquired frame so they never describe a predecessor.
+The existing semantic error remains authoritative; a diagnostic write/flush
+failure cannot replace it and emits only a closed I/O-error category to stderr.
+A diagnostic I/O failure after a successful checkpoint still fails the procedure.
+
+Rejection counts describe the original first-failing check order: extent, exact
+960×540 RGB image/blank region, then exact nonce/ACK/state marker. A zero marker
+count does not clear the marker if image comparison failed first. No raw pixels,
+captured images or recognized text are added to these summaries or ordinary logs.
+There is no extra capture/map call, repaint, tick, retry or deadline extension.
+An acquisition deadline with zero acquired frames distinguishes absent public
+successor delivery from a mapping failure, but cannot by itself identify which
+native publication/recreation branch ran. These are private diagnostic facts,
+not a resize fix, a relaxed oracle or a Windows qualification claim.
+
 ## Prospective endpoints and accounting
 
 | Endpoint | Fixed bound |
