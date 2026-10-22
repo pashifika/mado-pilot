@@ -27,8 +27,10 @@ deadline after rejecting a marker. Its retained record does not distinguish
 them; it is not proof that capture delivered no frames. The current consumer
 records one bounded summary per checkpoint: acquisition/mapping counts, color,
 ownership-token and state rejection counts, the final phase, and the last exact
-frame stamp, mapped extent/stride and marker verdict. No pixels, decoded token
-or OCR text are recorded. Each mapping/marker observation belongs to the last
+frame stamp, mapped extent/stride and marker verdict. Color rejection identifies
+the first rejected cell and a closed color/opacity category, not channel values.
+No pixels, decoded token or OCR text are recorded. Each mapping/marker
+observation belongs to the last
 acquired frame; a later mapping failure cannot inherit an earlier frame's facts.
 The marker's acceptance thresholds and five-second operation deadline are
 unchanged. Capture-free replay rejects each mismatch class and accepts only its

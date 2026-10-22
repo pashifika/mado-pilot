@@ -105,7 +105,7 @@ mod native {
     #[derive(Clone, Copy, Debug, Eq, PartialEq)]
     enum MarkerCheck {
         Matched,
-        ColorMismatch,
+        ColorMismatch { cell: usize, category: &'static str },
         TokenMismatch,
         StateMismatch,
     }
@@ -206,7 +206,27 @@ mod native {
                 } else if pixel[0] > 215 && pixel[1] < 40 && pixel[2] < 40 {
                     false
                 } else {
-                    return Ok(MarkerCheck::ColorMismatch);
+                    let category = if pixel[3] != 255 {
+                        "nonopaque"
+                    } else if pixel[..3].iter().all(|channel| *channel > 215) {
+                        "light-neutral"
+                    } else if pixel[..3].iter().all(|channel| *channel < 40) {
+                        "dark-neutral"
+                    } else if pixel[0] > pixel[1] && pixel[0] > pixel[2] {
+                        "blue-dominant"
+                    } else if pixel[0] < pixel[1] && pixel[0] < pixel[2] {
+                        "yellow-dominant"
+                    } else if pixel[2] > pixel[0] && pixel[2] > pixel[1] {
+                        "red-dominant"
+                    } else if pixel[2] < pixel[0] && pixel[2] < pixel[1] {
+                        "cyan-dominant"
+                    } else {
+                        "other"
+                    };
+                    return Ok(MarkerCheck::ColorMismatch {
+                        cell: bit,
+                        category,
+                    });
                 };
                 if one != observed {
                     return Ok(if bit < 64 {
@@ -267,7 +287,7 @@ mod native {
                 last_marker = Some(marker);
                 match marker {
                     MarkerCheck::Matched => return Ok(frame),
-                    MarkerCheck::ColorMismatch => rejected[0] += 1,
+                    MarkerCheck::ColorMismatch { .. } => rejected[0] += 1,
                     MarkerCheck::TokenMismatch => rejected[1] += 1,
                     MarkerCheck::StateMismatch => rejected[2] += 1,
                 }
@@ -916,7 +936,7 @@ mod native {
                         [255, 0, 0, 255]
                     };
                     let color = match (marker, bit) {
-                        (MarkerCheck::ColorMismatch, 0) => [255; 4],
+                        (MarkerCheck::ColorMismatch { .. }, 0) => [255; 4],
                         (MarkerCheck::StateMismatch, 95) => [255, 0, 0, 255],
                         _ => color,
                     };
@@ -958,7 +978,10 @@ mod native {
         #[test]
         fn checkpoint_replay_rejects_unowned_or_unacknowledged_pixels() {
             for rejected in [
-                MarkerCheck::ColorMismatch,
+                MarkerCheck::ColorMismatch {
+                    cell: 0,
+                    category: "light-neutral",
+                },
                 MarkerCheck::TokenMismatch,
                 MarkerCheck::StateMismatch,
             ] {
