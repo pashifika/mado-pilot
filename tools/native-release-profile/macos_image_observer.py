@@ -1055,15 +1055,12 @@ def _complete_observation(receipt, record, *, parsed, frozen, main_identity, loa
 
 
 def validate_observation(receipt, closure):
-    """Re-derives one retained observation receipt against ``closure`` from data only.
+    """Re-derive loader provenance, child outcome and cleanup independently.
 
-    No launch, host or file reads: the raw stderr is re-parsed, every observed
-    image reconciled against the closure rows, and the retained pre-launch and
-    post-exit binding records compared with the closure, so a stored
-    ``complete`` status is never trusted. ``ok`` means the child ran to exit 0
-    under the closure's loader environment and identities with every actual
-    load bound; ``cleanup_ok`` is reported, not required.
+    ``ok`` still requires exit 0. Complete provenance can accompany a nonzero
+    exit; neither verdict implies successful cleanup. No live reads occur.
     """
+    cleanup_ok = None
     try:
         frozen = _check_closure(closure)
         _require(isinstance(receipt, dict) and receipt.get("format_version") == FORMAT_VERSION
@@ -1086,6 +1083,7 @@ def validate_observation(receipt, closure):
                  and type(record.get("cleanup_ok")) is bool
                  and (record.get("exit_code") is None or type(record.get("exit_code")) is int),
                  "record_invalid")
+        cleanup_ok = record["cleanup_ok"]
         parsed = _parse_log(record["stderr"])
         _require(parsed["pid"] == loader.get("pid")
                  and parsed["main_executable"] == loader.get("main_executable"),
@@ -1105,8 +1103,11 @@ def validate_observation(receipt, closure):
                          for image in images if image["bound"]]
         _check_bindings(provenance["post"].get("bindings"), observed_rows, "post")
         reason = _outcome_reason(record, parsed["reason"], "image_unbound" if unbound else None)
-        _require(reason is None, reason)
+        complete = (record["launch_error"] is None and record["exit_code"] is not None
+                    and not record["timed_out"] and not record["output_limited"]
+                    and parsed["reason"] is None and not unbound)
     except _Refusal as exc:
-        return {"ok": False, "reason": str(exc), "cleanup_ok": None}
-    return {"ok": True, "reason": None, "cleanup_ok": record["cleanup_ok"],
-            "observed_images": len(images), "observed_events": len(parsed["events"])}
+        return {"ok": False, "reason": str(exc), "provenance_complete": False, "cleanup_ok": cleanup_ok}
+    return {"ok": reason is None, "reason": reason, "provenance_complete": complete,
+            "cleanup_ok": cleanup_ok, "observed_images": len(images),
+            "observed_events": len(parsed["events"])}

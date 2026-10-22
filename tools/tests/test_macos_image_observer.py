@@ -494,6 +494,20 @@ class ObservationTests(unittest.TestCase):
         self.assertFalse(receipt["cleanup_ok"])
         verdict = observer.validate_observation(receipt, self.closure)
         self.assertTrue(verdict["reason"].startswith("post_binding_mismatch"))
+        self.assertIs(verdict["cleanup_ok"], False)
+
+    def test_failed_execution_keeps_independent_provenance_and_cleanup(self):
+        for overrides, complete in (
+                ({"exit_code": 23}, True),
+                ({"exit_code": 23, "cleanup_ok": False}, True),
+                ({"exit_code": -15, "timed_out": True}, False),
+                ({"exit_code": -15, "output_limited": True}, False)):
+            with self.subTest(overrides=overrides):
+                receipt = self.run.observation(self.closure, **overrides)
+                verdict = observer.validate_observation(receipt, self.closure)
+                self.assertEqual(verdict["cleanup_ok"], receipt["record"]["cleanup_ok"])
+                self.assertFalse(verdict["ok"])
+                self.assertEqual(verdict["provenance_complete"], complete)
 
     def test_retained_observation_is_independent_of_current_loader(self):
         receipt = self.run.observation(self.closure, self.run.log())

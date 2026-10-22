@@ -1209,7 +1209,9 @@ def v2_parsed_evidence(root, mode, build_mode="normal"):
             "attempts": [{"file": "0000.json", "sha256": "1" * 64}]}
     return {"plan": specification, "plan_sha256": token * 64,
             "attempts": [{"file": "0000.json", "sha256": token * 64}],
-            "manifest": frozen, "observations": cohorts, "issues": []}
+            "manifest": frozen, "observations": cohorts, "issues": [],
+            "native_threads": {role: collector.effective_threads(v2_manifest(build_mode))
+                               for role in specification["binaries"]}}
 
 
 def v2_numeric_profile(evidence):
@@ -1401,7 +1403,31 @@ class ProtocolTwoTests(unittest.TestCase):
         self.assertTrue(any(issue["status"] == "not-run" for issue in result["issues"]))
         attempt = collector.load(Path(args.output) / "attempts/0000.json")
         self.assertEqual(attempt["record"], wrong)
-        self.assertIn("compiled build mode", attempt["identity_error"])
+        self.assertIsNone(attempt["identity_error"])
+        self.assertEqual(attempt["identity_before"], attempt["identity_after"])
+        self.assertIn("semantic", {issue.get("category") for issue in result["issues"]})
+
+    def test_oracle_failure_keeps_identity_and_runs_later_rows(self):
+        args = self.arguments()
+        args.workload = None
+        rows = list(collector.definitions_for("normal"))
+        records = [process_record(v2_manifest())]
+        for workload in rows:
+            value = v2_payload(workload, smoke=True)
+            if workload == "single-small96x64":
+                value["workloads"][0]["oracle_failures"] = 1
+                value["workloads"][0]["samples"][0]["correct"] = False
+            records.append(process_record(value))
+        result, launch = self.launch_smoke(args, records)
+        self.assertEqual(launch.call_count, len(rows) + 1)
+        self.assertEqual(result["status"], "failed")
+        self.assertFalse(result["performance_qualified"])
+        self.assertIn("semantic", {issue.get("category") for issue in result["issues"]})
+        self.assertNotIn("identity", {issue.get("category") for issue in result["issues"]})
+        self.assertFalse(any(issue["status"] == "not-run" for issue in result["issues"]))
+        failed = collector.load(Path(args.output) / "attempts" / f"{rows.index('single-small96x64') + 1:04}.json")
+        self.assertIsNone(failed["identity_error"])
+        self.assertEqual(failed["identity_before"], failed["identity_after"])
 
     def test_campaign_deadline_is_independent_of_child_limit(self):
         args = self.arguments()
@@ -1574,7 +1600,8 @@ def save_method_review(root, specification):
               **{key: specification[key] for key in
                  ("target", "build_mode", "host", "environment", "collector", "policy", "workloads")},
               "baseline": specification["binaries"]["baseline"],
-              "candidate": v2_identity(root, specification["build_mode"], "candidate"),
+              "candidate": specification["binaries"].get("candidate")
+                           or v2_identity(root, specification["build_mode"], "candidate"),
               "reviewer": "fixture reviewer", "rationale": "deterministic apparatus decision only",
               "source_host_cost_review": "synthetic finite component plan; no runtime clearance",
               "runtime_observer_eligibility_review": "synthetic receipt validation only; no native eligibility claim",
@@ -1959,6 +1986,67 @@ class NativeThreadObservationTests(unittest.TestCase):
                     self.assertNotEqual(result["status"], "passed")
                     self.assertFalse(result["performance_qualified"])
 
+    def test_comparison_rejects_different_runtime_settings_between_roles(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            calibration = v2_parsed_evidence(root, "calibration")
+            profile = v2_numeric_profile(calibration)
+            for field, value in (("threads", 8), ("framework", "another-runtime")):
+                with self.subTest(field=field):
+                    comparison = v2_parsed_evidence(root, "comparison")
+                    comparison["native_threads"]["candidate"][field] = value
+                    issues, _ = collector.compare_evidence(comparison, profile)
+                    self.assertTrue(any(issue.get("category") == "native-threads"
+                                        and issue["status"] == "failed" for issue in issues))
+
+    def test_role_setting_mismatch_stops_before_any_process_or_output(self):
+        class ReachedLaunch(Exception):
+            pass
+
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary).resolve()
+            for name, change in (("equal", {}), ("threads", {"threads": 8}),
+                                 ("framework", {"framework": "another-runtime"})):
+                with self.subTest(name=name):
+                    specification = v2_plan(root, "comparison")
+                    probe = specification["binaries"]["candidate"]["build"]["provenance_commands"][0]["record"]
+                    value = collector.strict_json(probe["stdout"])
+                    for point in ("before", "after"):
+                        value["opencv_parallel_threads"][point].update(change)
+                    probe["stdout"] = json.dumps(value)
+                    inputs = root / f"inputs-{name}"
+                    inputs.mkdir()
+                    method = save_method_review(inputs, specification)
+                    profile = v2_numeric_profile(v2_parsed_evidence(root, "calibration"))
+                    profile.update(method_review=method, calibration={"path": str(root / "calibration")},
+                                   control={"path": str(root / "control")})
+                    profile_path = inputs / "profile.json"
+                    collector.save(profile_path, profile)
+                    args = collector.parser().parse_args([
+                        "compare", "--protocol-version", "2", "--build-mode", "normal", "--target", TARGET,
+                        "--baseline", "baseline", "--baseline-metadata", "base.json",
+                        "--candidate", "candidate", "--candidate-metadata", "candidate.json",
+                        "--profile", str(profile_path), "--profile-sha256", collector.sha256(profile_path),
+                        "--method-review", method["path"], "--method-review-sha256", method["sha256"],
+                        "--exclusive-host", "--output", str(root / name)])
+                    base = {"plan": {key: specification[key] for key in ("host", "environment")},
+                            "threads": collector.effective_threads(v2_manifest()), "closure": {}, "raw": b"{}"}
+                    candidate = copy.deepcopy(base)
+                    candidate["threads"] = collector.effective_threads(value)
+                    with (mock.patch.object(collector, "host_identity", return_value=specification["host"]),
+                          mock.patch.object(collector, "environment", return_value=specification["environment"]),
+                          mock.patch.object(collector, "binary_identity",
+                                            side_effect=list(specification["binaries"].values())),
+                          mock.patch.object(collector, "validate_profile", return_value=profile),
+                          mock.patch.object(collector, "runtime_closure_admission", side_effect=[base, candidate]),
+                          mock.patch.object(collector, "check_files"),
+                          mock.patch.object(collector, "exclusive_collector", return_value=contextlib.nullcontext()),
+                          mock.patch.object(collector.macos_images, "observe", side_effect=ReachedLaunch) as launch):
+                        with self.assertRaises(ValueError if change else ReachedLaunch):
+                            collector.collect(args, "comparison")
+                    self.assertEqual(launch.call_count, 0 if change else 1)
+                    self.assertEqual(Path(args.output).exists(), not bool(change))
+
     def test_missing_unsupported_or_changed_runtime_setting_is_unavailable(self):
         for change in ("method", "zero", "boolean", "reason", "missing_reason", "gcd", "drift", "changed"):
             with self.subTest(change=change):
@@ -2034,6 +2122,55 @@ class RuntimePreflightTests(unittest.TestCase):
 
     def validate(self, bundle=None):
         return collector.validate_runtime_bundle(bundle or self.bundle, self.identity, TARGET, "normal")
+
+    def test_observed_nonzero_exit_keeps_post_identity_and_later_rows(self):
+        bundle_path = self.root / "runtime.json"
+        collector.save(bundle_path, self.bundle)
+        binding = copy.deepcopy(self.identity)
+        binding["build"]["runtime_image_preflight"] = {
+            "path": str(bundle_path), "sha256": collector.sha256(bundle_path)}
+        metadata = self.root / "build.json"
+        collector.save(metadata, binding["build"])
+        binding.update(metadata_path=str(metadata), metadata_sha256=collector.sha256(metadata))
+        specification = v2_plan(self.root, "calibration")
+        specification.update(binaries={"baseline": binding}, host=self.bundle["plan"]["host"],
+                             environment=self.bundle["plan"]["environment"])
+        method = save_method_review(self.root, specification)
+        args = collector.parser().parse_args([
+            "calibrate", "--protocol-version", "2", "--build-mode", "normal", "--target", TARGET,
+            "--baseline", binding["path"], "--baseline-metadata", str(metadata), "--exclusive-host",
+            "--method-review", method["path"], "--method-review-sha256", method["sha256"],
+            "--output", str(self.root / "campaign")])
+        launched = []
+
+        def observe(argv, **options):
+            task = specification["schedule"][len(launched)]
+            launched.append(task)
+            if task["workload"] is None:
+                value = collector.strict_json(binding["build"]["provenance_commands"][0]["record"]["stdout"])
+            else:
+                value = v2_payload(task["workload"])
+                value["loaded_native_runtime"] = self.runtime
+            receipt = self.run.observation(options["closure"], stdout=json.dumps(value),
+                                           exit_code=23 if task["id"] == "0001" else 0)
+            receipt["duration_seconds"] = 0.2
+            return receipt
+
+        with (mock.patch.object(collector, "host_identity", return_value=specification["host"]),
+              mock.patch.object(collector, "environment", return_value=specification["environment"]),
+              mock.patch.object(collector, "binary_identity", return_value=binding),
+              mock.patch.object(collector, "exclusive_collector", return_value=contextlib.nullcontext()),
+              mock.patch.object(collector.macos_images, "observe", side_effect=observe)):
+            result = collector.collect(args, "calibration")
+        failed = collector.load(Path(args.output) / "attempts/0001.json")
+        self.assertEqual(failed["identity_after"], binding)
+        self.assertIsNone(failed["identity_error"])
+        self.assertEqual(launched, specification["schedule"])
+        self.assertEqual(result["status"], "failed")
+        self.assertFalse(result["performance_qualified"])
+        self.assertIn("exit", {issue.get("category") for issue in result["issues"]})
+        self.assertNotIn("identity", {issue.get("category") for issue in result["issues"]})
+        self.assertFalse(any(issue["status"] == "not-run" for issue in result["issues"]))
 
     def test_retained_preflight_admission_needs_no_original_target_files(self):
         path = self.root / "bundle.json"

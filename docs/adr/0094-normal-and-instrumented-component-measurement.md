@@ -35,7 +35,9 @@ observation.
    storage. It neither sets thread limits nor exposes a new SDK API or C ABI.
    Missing, unsupported, invalid or changed observations make the executable and
    collector refuse success while preserving available JSON. This is the
-   library-reported setting, not a count of workers actually executing.
+   library-reported setting, not a count of workers actually executing. Roles
+   must use equal effective backend/thread settings before launch and on retained
+   evidence revalidation.
 3. Treat runtime discovery as a prerequisite, not acceptance timing. The macOS
    component helper uses child-only `DYLD_PRINT_LIBRARIES`, the runner's actual
    root PID, raw loader records, Mach-O UUIDs and file identities/hashes. Shared
@@ -48,10 +50,11 @@ observation.
    dependencies. Retain preflight bundles and observation receipts with source,
    mode, host, environment and finite execution bounds. Compare each measured
    run's load records and pre/post file bindings with its frozen closure.
-   Cleanup and provenance remain independent verdicts. File/OS immutability,
-   loader coverage, observer cost and initialization/cache effects require an
-   explicit source-bound eligibility review; successful discovery alone does
-   not establish these assumptions or observational equivalence.
+   Execution, cleanup, provenance and semantic outcomes remain independent;
+   a nonzero exit does not erase verified post-run file bindings. File/OS
+   immutability, loader coverage, observer cost and initialization/cache effects
+   require an explicit source-bound eligibility review; successful discovery
+   alone does not establish these assumptions or observational equivalence.
 5. Require an explicitly accepted, externally hash-bound method review before
    calibration. Collect six independent baseline processes, then a separate
    balanced six-pair unchanged A/A control. Missing calibration prerequisites

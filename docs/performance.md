@@ -148,6 +148,8 @@ does not set limits. The value is the library-reported parallel-region setting,
 not actual worker utilization. Unavailable, unsupported GCD, invalid or changed
 observations refuse success while retaining their reasons and workload JSON.
 Build information is not substituted for the active backend.
+Roles must share the same backend identifier and thread setting; collection and
+retained comparison validation refuse differences between roles.
 
 ### Protocol-2 collection
 
@@ -167,6 +169,12 @@ compiled mode, host/environment, helper/collector sources and effective native
 thread setting. Each observed run reserves its pre/post binding time separately
 from the child deadline. Raw output, failed outcomes and unrun schedule entries
 remain evidence; successful cleanup does not repair missing provenance.
+
+Attempt reports distinguish execution, cleanup, file identity, runtime provenance
+and semantic failures. Post-run file identity is retained before receipt validation.
+A fully bound row failure preserves later scheduled work but never enters accepted
+scalar cohorts. Unsafe cleanup, identity or runtime-provenance failure stops later
+launches; failed manifest discovery also stops sampling.
 
 For macOS preflight, use the same absolute native Python path on both sides of
 setup so child `PATH` staging cannot select another interpreter:
@@ -239,8 +247,9 @@ observations, with original process indices; missing values cannot qualify a
 benefit. Started attempts without a result remain `incomplete`, distinct from
 `not-run` work. Recorded interruptions and unreadable attempt records are `failed`.
 
-Hosted CI executes the short semantic plan on both targets and retains its JSON
-artifact. Smoke, missing resource observations, a missing target, or a failed
+Current hosted CI executes the protocol-2 normal and instrumented semantic plans
+on both targets. The format-1 commands below remain historical compatibility
+recipes. Smoke, missing resource observations, a missing target, or a failed
 envelope cannot establish performance acceptance. Existing historical profiles
 and their source/binary identities are unchanged.
 Revalidation uses the campaign's recorded collector revision. A collector change
@@ -312,8 +321,8 @@ complete transitive native-library closure or prove reproducible builds.
 Recorded executable and dependency paths use the producer target's path syntax,
 independent of the host reviewing the packet. Windows path aliases are compared
 case-insensitively; raw observed paths remain in the evidence.
-Both native CI jobs retain this packet independently. Work reduction establishes
-neither elapsed benefit nor release-host statistical qualification.
+Work reduction establishes neither elapsed benefit nor release-host statistical
+qualification.
 
 The 2026-10-21 local Apple Silicon smoke of source `e788b59` passed all 21 rows
 with one warmup and three retained iterations. Full-frame RGBA/BGRA mapped

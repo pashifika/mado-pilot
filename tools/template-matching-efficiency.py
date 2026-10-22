@@ -201,6 +201,18 @@ def effective_threads(value):
     return before
 
 
+def native_thread_issues(settings, roles):
+    missing = sorted(set(roles) - settings.keys())
+    issues = ([{"attempt": "native-threads", "category": "native-threads", "status": "incomplete",
+                "reason": "runtime thread settings unavailable for roles: " + ", ".join(missing)}]
+              if missing else [])
+    values = [settings[role] for role in roles if role in settings]
+    if values and any(value != values[0] for value in values[1:]):
+        issues.append({"attempt": "native-threads", "category": "native-threads", "status": "failed",
+                       "reason": "effective OpenCV runtime thread settings differ between roles"})
+    return issues
+
+
 def validate_runtime_bundle(bundle, identity, target, build_mode):
     """Revalidate retained representative runs; no live target or dependency reads."""
     require(isinstance(bundle, dict) and bundle.get("kind") == "component-runtime-preflight"
@@ -289,7 +301,7 @@ def validate_runtime_attempt(attempt, runtime):
             and receipt.get("method_identity") == runtime["plan"]["observer"],
             "measurement-time runtime observation missing or changed")
     verdict = macos_images.validate_observation({**receipt, "record": attempt["record"]}, runtime["closure"])
-    require(verdict["ok"] and verdict["cleanup_ok"],
+    require(verdict["provenance_complete"],
             "measurement-time runtime observation incomplete: " + str(verdict["reason"]))
     expected_paths = {row["path"] for row in runtime["plan"]["binary"]["build"]["dependencies"]}
     expected_paths.add(runtime["plan"]["binary"]["path"])
@@ -299,7 +311,9 @@ def validate_runtime_attempt(attempt, runtime):
     require(type(duration) in (int, float) and math.isfinite(duration) and 0 <= duration
             <= attempt["timeout_seconds"] + attempt["cleanup_seconds"] + 2 * attempt["runtime_binding_seconds"],
             "runtime observer exceeded its reserved execution budget")
-    require(effective_threads(strict_json(attempt["record"]["stdout"])) == runtime["threads"],
+    value = strict_json(attempt["record"]["stdout"])
+    require(isinstance(value, dict), "process protocol must be an object")
+    require(effective_threads(value) == runtime["threads"],
             "measurement-time native thread setting changed")
 
 
@@ -558,6 +572,19 @@ def successful(record):
             and record["launch_error"] is None
             and isinstance(record.get("stdout"), str) and isinstance(record.get("stderr"), str)
             and type(duration) in (int, float) and math.isfinite(duration) and duration >= 0)
+
+
+def execution_failures(record):
+    checks = (
+        ("exit", type(record.get("exit_code")) is int and record["exit_code"] == 0,
+         f"process exit_code={record.get('exit_code')!r}"),
+        ("timeout", record.get("timed_out") is False, "process timed out or timeout outcome is unavailable"),
+        ("output", record.get("output_limited") is False, "process output overflow or outcome is unavailable"),
+        ("cleanup", record.get("cleanup_ok") is True, "owned cleanup failed or is unavailable"),
+        ("launch", "launch_error" in record and record["launch_error"] is None,
+         f"process launch failed or outcome is unavailable: {record.get('launch_error')!r}"),
+    )
+    return [(category, reason) for category, passed, reason in checks if not passed]
 
 
 def manifest_identity(value, target, opencv_version, protocol_version=1, build_mode=None):
@@ -871,6 +898,9 @@ def evaluate(directory):
                 runtimes[role] = runtime
             except (OSError, ValueError, KeyError, TypeError) as error:
                 prerequisite_issues.append({"attempt": role, "status": "incomplete", "reason": str(error)})
+    native_threads = {role: runtime["threads"] for role, runtime in runtimes.items()}
+    if version == 2 and plan["mode"] != "smoke":
+        issues.extend(native_thread_issues(native_threads, plan["binaries"]))
     expected_files = {f"{task['id']}.json" for task in plan["schedule"]}
     files = {}
     for folder in ("attempts", "started"):
@@ -888,6 +918,15 @@ def evaluate(directory):
         relative = path.relative_to(directory).as_posix()
         retained = {"file": filename if completed else relative, "sha256": None}
         attempts.append(retained)
+        seen_categories = set()
+
+        def fail(category, reason):
+            if category not in seen_categories:
+                seen_categories.add(category)
+                issues.append({"attempt": label, "file": relative, "status": "failed",
+                               "category": category, "reason": reason})
+
+        category = "protocol"
         try:
             raw = path.read_bytes()
             retained["sha256"] = hashlib.sha256(raw).hexdigest()
@@ -909,12 +948,31 @@ def evaluate(directory):
                 issues.append({"attempt": label, "file": relative, "status": "incomplete",
                                "reason": "attempt started without a completed record"})
                 continue
+            category = "interruption"
             require(attempt.get("interruption") is None, f"attempt interrupted: {attempt.get('interruption')}")
-            require(attempt.get("identity_before") == binary and attempt.get("identity_after") == binary,
-                    "binary/dependency identity changed or unavailable")
-            require(attempt.get("identity_error") is None, "binary/dependency identity check failed")
-            record = attempt.get("record")
-            require(isinstance(record, dict) and successful(record), "process failed, timed out, truncated, or cleanup failed")
+            if version == 2:
+                if attempt.get("identity_before") != binary or attempt.get("identity_after") != binary:
+                    fail("identity", "binary/dependency identity changed or unavailable")
+                for stage in ("identity", "execution", "provenance", "semantic"):
+                    if attempt.get(f"{stage}_error") is not None:
+                        fail(stage, str(attempt[f"{stage}_error"]))
+                category = "execution"
+                record = attempt.get("record")
+                require(isinstance(record, dict), "process record unavailable")
+                for category, reason in execution_failures(record):
+                    fail(category, reason)
+                category = "protocol"
+                duration = record.get("duration_seconds")
+                require(isinstance(record.get("stdout"), str) and isinstance(record.get("stderr"), str)
+                        and type(duration) in (int, float) and math.isfinite(duration) and duration >= 0,
+                        "malformed process streams or duration")
+            else:
+                require(attempt.get("identity_before") == binary and attempt.get("identity_after") == binary,
+                        "binary/dependency identity changed or unavailable")
+                require(attempt.get("identity_error") is None, "binary/dependency identity check failed")
+                record = attempt.get("record")
+                require(isinstance(record, dict) and successful(record), "process failed, timed out, truncated, or cleanup failed")
+            category = "bounds"
             if version == 2 or plan["mode"] == "smoke":
                 limits = plan["execution_limits"]
                 timeout = attempt.get("timeout_seconds")
@@ -937,36 +995,52 @@ def evaluate(directory):
                     require(timeout + limits["cleanup_seconds"] + 2 * limits["runtime_binding_seconds"]
                             <= limits["campaign_timeout_seconds"] - before,
                             "child and runtime binding exceed remaining independent campaign deadline")
-            value = strict_json(record["stdout"])
-            loaded_runtime(value, binary)
             if task["role"] in runtimes:
-                validate_runtime_attempt(attempt, runtimes[task["role"]])
+                try:
+                    validate_runtime_attempt(attempt, runtimes[task["role"]])
+                except (OSError, ValueError, TypeError, KeyError) as error:
+                    fail("provenance", str(error))
+            category = "semantic"
+            value = strict_json(record["stdout"])
+            require(isinstance(value, dict), "process protocol must be an object")
+            try:
+                loaded_runtime(value, binary)
+            except (OSError, ValueError, TypeError, KeyError) as error:
+                if version != 2:
+                    raise
+                fail("provenance", str(error))
             if task["workload"] is None:
-                manifests[task["role"]] = manifest_identity(value, plan["target"], binary["build"]["opencv_version"],
-                                                           version, plan.get("build_mode"))
+                manifest = manifest_identity(value, plan["target"], binary["build"]["opencv_version"],
+                                             version, plan.get("build_mode"))
                 if version == 2:
-                    require(manifests[task["role"]] == binary["build"]["benchmark_manifest"],
+                    require(manifest == binary["build"]["benchmark_manifest"],
                             "observed manifest differs from source/mode attestation")
+                if successful(record) and not seen_categories:
+                    manifests[task["role"]] = manifest
             else:
                 require(task["role"] in manifests, "role has no valid manifest")
                 summary = observations(value, manifests[task["role"]], task["workload"], plan["mode"] == "smoke")
                 summary["process"] = task["process"]
                 if version == 2:
                     summary["position"] = task["position"]
-                observations_by_role.setdefault(task["role"], {}).setdefault(task["workload"], []).append(summary)
+                if successful(record) and not seen_categories:
+                    observations_by_role.setdefault(task["role"], {}).setdefault(task["workload"], []).append(summary)
                 if plan["mode"] != "smoke" and summary["unavailable"]:
                     issues.append({"attempt": label, "file": relative, "status": "incomplete",
                                    "reason": "unavailable observations: " + ", ".join(summary["unavailable"])})
         except (OSError, ValueError, TypeError, KeyError, StopIteration) as error:
-            issues.append({"attempt": label, "file": relative, "status": "failed",
-                           "reason": f"{relative}: {type(error).__name__}: {error}"})
+            if version == 2:
+                fail(category, f"{relative}: {type(error).__name__}: {error}")
+            else:
+                issues.append({"attempt": label, "file": relative, "status": "failed",
+                               "reason": f"{relative}: {type(error).__name__}: {error}"})
     for role in ("candidate", "control"):
         if role in manifests and manifests.get("baseline") != manifests[role]:
             issues.append({"attempt": "manifests", "status": "failed",
                            "reason": "role fixture/workload/dependency identity mismatch"})
     return {"plan": plan, "plan_sha256": plan_hash, "attempts": attempts,
             "manifest": manifests.get("baseline"), "observations": observations_by_role, "issues": issues,
-            **({"prerequisite_issues": prerequisite_issues} if version == 2 else {})}
+            **({"prerequisite_issues": prerequisite_issues, "native_threads": native_threads} if version == 2 else {})}
 
 
 def derive_envelopes(evidence):
@@ -1150,6 +1224,10 @@ def compare_evidence(evidence, profile):
     if evidence["manifest"] is not None:
         require(evidence["manifest"] == profile["manifest"], "comparison fixture/manifest changed")
     issues = list(evidence["issues"]) + evidence.get("prerequisite_issues", [])
+    if version == 2:
+        for issue in native_thread_issues(evidence.get("native_threads", {}), plan["binaries"]):
+            if issue not in issues:
+                issues.append(issue)
     benefits = {}
     definitions = definitions_for(plan["build_mode"]) if version == 2 else DEFINITIONS
     for workload, definition in definitions.items():
@@ -1429,6 +1507,9 @@ def collect(args, mode):
                 require(runtime["plan"]["host"] == host and runtime["plan"]["environment"] == environment(),
                         "runtime preflight host/environment changed")
                 runtimes[role] = runtime
+            thread_issues = native_thread_issues(
+                {role: runtime["threads"] for role, runtime in runtimes.items()}, binaries)
+            require(not thread_issues, "; ".join(issue["reason"] for issue in thread_issues))
     destination = Path(args.output).resolve()
     if profile:
         calibration = Path(profile["calibration"]["path"]).resolve()
@@ -1483,9 +1564,11 @@ def collect(args, mode):
                 attempt.update(output_limit_bytes=limits["output_limit_bytes"], cleanup_seconds=limits["cleanup_seconds"],
                                runtime_binding_seconds=binding_seconds)
             save(destination / "started" / f"{task['id']}.json", attempt)
+            stage = "identity"
             try:
                 check_files(identity)
                 attempt["identity_before"] = identity
+                stage = "execution"
                 if deadline is not None:
                     remaining = deadline - time.monotonic() - limits["cleanup_seconds"] - 2 * binding_seconds
                     require(remaining > 0, "campaign deadline reached before child launch or runtime binding")
@@ -1498,26 +1581,33 @@ def collect(args, mode):
                         cleanup_seconds=limits["cleanup_seconds"], binding_seconds=binding_seconds)
                     attempt["record"] = receipt["record"]
                     attempt["runtime_observation"] = {key: value for key, value in receipt.items() if key != "record"}
-                    validate_runtime_attempt(attempt, runtimes[task["role"]])
                 else:
                     attempt["record"] = run_process(argv, cwd=ROOT, env=plan["environment"],
                                                      timeout_seconds=timeout,
                                                      output_limit_bytes=POLICY["output_limit_bytes"],
                                                      cleanup_seconds=POLICY["cleanup_seconds"])
+                stage = "identity"
                 check_files(identity)
                 attempt["identity_after"] = identity
-                if successful(attempt["record"]):
-                    loaded_runtime(strict_json(attempt["record"]["stdout"]), identity, verify_files=True)
+                if task["role"] in runtimes:
+                    stage = "provenance"
+                    validate_runtime_attempt(attempt, runtimes[task["role"]])
+                if successful(attempt["record"]) or version == 2:
+                    stage = "semantic"
+                    value = strict_json(attempt["record"]["stdout"])
+                    require(isinstance(value, dict), "process protocol must be an object")
+                    stage = "provenance"
+                    loaded_runtime(value, identity, verify_files=True)
+                    stage = "semantic"
                     if version == 2:
-                        value = strict_json(attempt["record"]["stdout"])
                         if task["workload"] is None:
                             require(manifest_identity(value, args.target, identity["build"]["opencv_version"],
                                                       2, args.build_mode) == identity["build"]["benchmark_manifest"],
                                     "observed source/mode manifest changed")
                         else:
                             observations(value, identity["build"]["benchmark_manifest"], task["workload"], mode == "smoke")
-            except (OSError, ValueError) as error:
-                attempt["identity_error"] = str(error)
+            except (OSError, ValueError, KeyError, TypeError) as error:
+                attempt[f"{stage}_error" if version == 2 else "identity_error"] = str(error)
             except BaseException as error:
                 attempt["interruption"] = type(error).__name__
                 if version == 2:
@@ -1531,9 +1621,10 @@ def collect(args, mode):
             if version == 2:
                 attempt["campaign_elapsed_after"] = time.monotonic() - campaign_started
             save(destination / "attempts" / f"{task['id']}.json", attempt)
-            # A failed row is never retried or omitted. Unsafe cleanup stops remaining
-            # processes, which stay visibly not-run in the immutable schedule.
-            if attempt["record"] is None or not attempt["record"]["cleanup_ok"] or attempt["identity_error"]:
+            # Row failures remain scheduled; unsafe cleanup or provenance stops
+            # later launches without replacing any retained attempt.
+            if (attempt["record"] is None or not attempt["record"]["cleanup_ok"]
+                    or attempt["identity_error"] or attempt.get("provenance_error")):
                 break
             if task["workload"] is None:
                 try:
