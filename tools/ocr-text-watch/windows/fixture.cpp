@@ -6,6 +6,7 @@
 #include <dwmapi.h>
 #include <array>
 #include <cstdio>
+#include <cwchar>
 #include <filesystem>
 #include <fstream>
 #include <string>
@@ -15,6 +16,37 @@ namespace {
 constexpr wchar_t ClassName[] = L"MadoPilot.Private.OcrTextWatch.Windows.1";
 constexpr DWORD RunMilliseconds = 300000;
 constexpr size_t ImageBytes = 960 * 540 * 4;
+
+struct DisplaySelection {
+    const wchar_t* device = nullptr;
+    RECT work{};
+    unsigned matches = 0;
+};
+
+BOOL CALLBACK select_display(HMONITOR monitor, HDC, LPRECT, LPARAM context) {
+    auto& selection = *reinterpret_cast<DisplaySelection*>(context);
+    MONITORINFOEXW info{};
+    info.cbSize = sizeof(info);
+    if (!GetMonitorInfoW(monitor, &info)) return FALSE;
+    if (std::wcscmp(info.szDevice, selection.device) == 0) {
+        selection.work = info.rcWork;
+        if (++selection.matches != 1) return FALSE;
+    }
+    return TRUE;
+}
+
+bool selected_display_work_area(RECT& work) {
+    wchar_t device[CCHDEVICENAME]{};
+    const DWORD length = GetEnvironmentVariableW(
+        L"MADO_PILOT_OCR_WGC_DISPLAY_DEVICE", device, CCHDEVICENAME);
+    if (length == 0 || length >= CCHDEVICENAME) return false;
+    DisplaySelection selection;
+    selection.device = device;
+    if (!EnumDisplayMonitors(nullptr, nullptr, select_display,
+            reinterpret_cast<LPARAM>(&selection)) || selection.matches != 1) return false;
+    work = selection.work;
+    return true;
+}
 
 struct Fixture {
     HWND window = nullptr;
@@ -118,11 +150,10 @@ int fixture_main(int argc, wchar_t** argv) {
     if (!SetProcessDpiAwarenessContext(DPI_AWARENESS_CONTEXT_PER_MONITOR_AWARE_V2)) return 2;
     fixture.foreground = GetForegroundWindow();
     if (!fixture.foreground) return 2;
-    MONITORINFO monitor{sizeof(MONITORINFO)};
-    const POINT origin{0, 0};
-    if (!GetMonitorInfoW(MonitorFromPoint(origin, MONITOR_DEFAULTTOPRIMARY), &monitor) ||
-        monitor.rcWork.right - monitor.rcWork.left < 1088 ||
-        monitor.rcWork.bottom - monitor.rcWork.top < 704) return 2;
+    RECT work{};
+    if (!selected_display_work_area(work) ||
+        work.right - work.left < 1088 ||
+        work.bottom - work.top < 704) return 2;
     WNDCLASSW type{};
     type.lpfnWndProc = window_proc;
     type.hInstance = GetModuleHandleW(nullptr);
@@ -130,7 +161,7 @@ int fixture_main(int argc, wchar_t** argv) {
     if (!RegisterClassW(&type)) return 2;
     const std::wstring title = L"MadoPilot OCR private [" + token + L"]";
     fixture.window = CreateWindowExW(WS_EX_NOACTIVATE | WS_EX_TOOLWINDOW, ClassName,
-        title.c_str(), WS_POPUP, monitor.rcWork.left + 32, monitor.rcWork.top + 32,
+        title.c_str(), WS_POPUP, work.left + 32, work.top + 32,
         fixture.width, fixture.height, nullptr, nullptr, type.hInstance, &fixture);
     if (!fixture.window) { UnregisterClassW(ClassName, type.hInstance); return 2; }
     const DWM_WINDOW_CORNER_PREFERENCE corners = DWMWCP_DONOTROUND;

@@ -1,12 +1,13 @@
 # Windows owned WGC OCR procedure
 
-**Task 7.1 preparation is compiled and reviewed. Task 7.2 is not run.**
-Strict SDK `/W4 /WX` compilation, Rust clippy and controlled contracts passed on
-Windows; the integrated `fd5468f` tree also passed hosted CI. Initial failures
-remain recorded at their original revisions. No new watcher model inference,
-fixture launch, capture, permission, focus or input operation is claimed.
-The commands below require fresh candidate and execution authority; existing
-Rust template and historical C/C++ results do not qualify this OCR procedure.
+**Task 7.2 is not run. Explicit display selection requires a fresh build and authority.**
+The earlier implicit-primary preparation passed strict SDK `/W4 /WX` compilation,
+Rust clippy and controlled contracts; the integrated `fd5468f` tree also passed
+hosted CI. Those revision-bound results do not qualify the selected-display
+procedure below. Initial failures and pinned artifacts remain unchanged.
+No new watcher model inference, fixture launch, capture, permission, focus or
+input operation is claimed. Existing Rust template and historical C/C++ results
+do not qualify this OCR procedure.
 
 ## Fixed scope and oracle
 
@@ -28,13 +29,32 @@ The pre-launch foreground HWND must remain unchanged at every protocol gate
 and throughout the fixture message loop. No API restores or forces foreground.
 
 Name one approved x64 Windows desktop in the authority file, with the actual
-build/UBR, machine identity, compiler/SDK, and **primary SDR display** description.
-The display's physical work area must fit 1088×704. The PMv2-aware fixture starts
-at work-area origin + (32,32), 960×576 physical pixels, and resizes to 1024×640
-without moving or scaling the image. The operator must not interact during the
-run; focus changes or unexpected publications are retained failures, not retries.
-No display-topology, mixed-DPI, HDR, application compatibility, or support-floor
-promotion is claimed.
+build/UBR, machine identity, compiler/SDK, and an explicitly selected display.
+Both preparation and execution require `--display-device` with the exact GDI
+device name, such as `\\.\DISPLAY1`. The runner binds that name in
+`identities.display_device`; an authority for a different device is refused.
+The runner overrides `MADO_PILOT_OCR_WGC_DISPLAY_DEVICE` in the consumer's child
+environment. The unchanged Rust consumer inherits it into the fixture.
+The PMv2-aware fixture requires exactly one matching `MONITORINFOEXW.szDevice`
+from `EnumDisplayMonitors`. Missing, ambiguous, or failed enumeration is a refusal:
+there is no primary-monitor or other-display fallback.
+
+The selected display's authoritative physical work area must fit 1088×704.
+The fixture starts at that work-area origin + (32,32), 960×576 physical pixels,
+and resizes to 1024×640 without moving or scaling the image. Negative desktop
+origins are valid. The operator must not interact during the run; focus changes
+or unexpected publications are retained failures, not retries.
+
+The new prospective cohort is **DELL U2725QE / `\\.\DISPLAY1` / HDR user-off /
+active WCG / 150% / 3840×2160**, with observed physical work area 3840×2088.
+It is not the historical primary-SDR cohort, and WCG is not relabeled SDR.
+Record current monitor identity, physical work rectangle, scaling, active color
+mode and HDR user state in the approved `display_scope`, using separately retained
+readiness metadata. The device selector does not certify those properties.
+WCG may change captured pixels: the exact RGB, marker, output and geometry
+oracles below remain mandatory, with no conversion workaround or threshold
+relaxation. No display-topology, mixed-DPI, HDR/WCG, application compatibility,
+or support-floor promotion is claimed.
 
 | Fixed input | Identity / expectation |
 |---|---|
@@ -153,6 +173,7 @@ New-Item -ItemType Directory -Path $work | Out-Null
 $env:CARGO_TARGET_DIR = Join-Path $work 'cargo-native-example'
 $fixture = Join-Path $work 'ocr-text-watch-fixture.exe'
 $corpus = Join-Path $work 'corpus'
+$displayDevice = '\\.\DISPLAY1' # Explicit operator-selected device; never inferred from primary.
 $env:MADO_PILOT_G004_MODEL_ROOT = 'C:\reviewed\g004-model'
 $env:MADO_PILOT_ONNX_RUNTIME = 'C:\reviewed\onnxruntime.dll'
 $opencv = 'C:\native\opencv'
@@ -166,7 +187,7 @@ if ($LASTEXITCODE -ne 0) { throw 'fixture compilation failed' }
 python tools/setup-native.py --opencv-root $opencv --libclang-path $clang -- cargo build --locked --target x86_64-pc-windows-msvc --package mado-pilot --example ocr-text-watch-native-windows
 if ($LASTEXITCODE -ne 0) { throw 'consumer compilation failed' }
 $consumer = Join-Path $env:CARGO_TARGET_DIR 'x86_64-pc-windows-msvc\debug\examples\ocr-text-watch-native-windows.exe'
-python tools/setup-native.py --opencv-root $opencv --libclang-path $clang -- python tools/ocr-text-watch/windows/run.py --consumer $consumer --fixture $fixture --corpus $corpus --prepare "$work\prospective.json"
+python tools/setup-native.py --opencv-root $opencv --libclang-path $clang -- python tools/ocr-text-watch/windows/run.py --consumer $consumer --fixture $fixture --corpus $corpus --display-device $displayDevice --prepare "$work\prospective.json"
 if ($LASTEXITCODE -ne 0) { throw 'identity preparation failed' }
 ```
 
@@ -175,11 +196,14 @@ not load OCR or launch a fixture/capture session. Review its immutable identitie
 and complete a **separate** approved file with `authorization` exactly
 `owned-fixture-wgc-real-cpu-ocr`, a fresh `authority_id`, the named `host_id`, the
 actual `planning_revision`, verbatim successful `build_commands`, and the
-approved `display_scope`. Preserve all generated identities/limits and the
-original prospective file. Missing authority remains `not-run`; a preparation
-file with null authority is intentionally not executable. Record controlled
-OpenCV/libclang installation and DLL identities with the build evidence, in
-addition to the model/runtime hashes the runner captures automatically.
+approved `display_scope` describing the same selected device and current cohort.
+Preserve `identities.display_device`, all other generated identities/limits, and
+the original prospective file. A missing selector, a different selector at
+execution, or an old authority lacking the selected-device binding is not
+compatible with this procedure. Missing authority remains `not-run`; a
+preparation file with null authority is intentionally not executable. Record
+controlled OpenCV/libclang installation and DLL identities with the build
+evidence, in addition to the model/runtime hashes the runner captures automatically.
 The child receives the same canonical absolute model/runtime paths that were
 hashed; changing its working directory cannot select different prerequisites.
 
@@ -188,7 +212,7 @@ hashed; changing its working directory cannot select different prerequisites.
 Only after separate real-CPU OCR and owned Windows fixture/WGC authority:
 
 ```powershell
-python tools/setup-native.py --opencv-root $opencv --libclang-path $clang -- python tools/ocr-text-watch/windows/run.py --consumer $consumer --fixture $fixture --corpus $corpus --authority "$work\approved.json" --evidence "$work\execution-1"
+python tools/setup-native.py --opencv-root $opencv --libclang-path $clang -- python tools/ocr-text-watch/windows/run.py --consumer $consumer --fixture $fixture --corpus $corpus --display-device $displayDevice --authority "$work\approved.json" --evidence "$work\execution-1"
 if ($LASTEXITCODE -ne 0) { throw 'native procedure failed or was refused; retain this attempt without retry' }
 ```
 

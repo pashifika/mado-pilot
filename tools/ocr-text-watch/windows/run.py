@@ -44,6 +44,15 @@ def digest(path: Path) -> str:
     return value.hexdigest()
 
 
+def display_device(value: str) -> str:
+    prefix = r"\\.\DISPLAY"
+    suffix = value[len(prefix):]
+    if (not value.startswith(prefix) or not suffix or len(value) >= 32
+            or any(character < "0" or character > "9" for character in suffix)):
+        raise argparse.ArgumentTypeError(r"expected an exact GDI device name such as \\.\DISPLAY1")
+    return value
+
+
 def bounded_text(path: Path, maximum: int = 1024 * 1024) -> str:
     with path.open("rb") as stream:
         data = stream.read(maximum + 1)
@@ -128,6 +137,7 @@ def identities(args, run_process) -> dict:
                  "sdk": os.environ.get("WindowsSDKVersion"),
                  "msvc": os.environ.get("VCToolsVersion")},
         "consumer": str(consumer), "fixture": str(fixture), "corpus": str(corpus),
+        "display_device": args.display_device,
         "model_root": str(model), "runtime": str(runtime), "sha256": files,
     }
 
@@ -137,6 +147,8 @@ def main() -> int:
     parser.add_argument("--consumer", type=Path, required=True)
     parser.add_argument("--fixture", type=Path, required=True)
     parser.add_argument("--corpus", type=Path, required=True)
+    parser.add_argument("--display-device", type=display_device, required=True,
+                        help=r"exact GDI display device, e.g. \\.\DISPLAY1; no primary fallback")
     mode = parser.add_mutually_exclusive_group(required=True)
     mode.add_argument("--prepare", type=Path, help="new prospective identity file; launches no fixture/model")
     mode.add_argument("--authority", type=Path, help="separately reviewed explicit execution authority")
@@ -189,6 +201,7 @@ def main() -> int:
         nonce = secrets.token_hex(16)
         env = dict(os.environ)
         env["MADO_PILOT_OCR_WGC_RUN_NONCE"] = nonce
+        env["MADO_PILOT_OCR_WGC_DISPLAY_DEVICE"] = current["display_device"]
         env["MADO_PILOT_G004_MODEL_ROOT"] = current["model_root"]
         env["MADO_PILOT_ONNX_RUNTIME"] = current["runtime"]
         command = [current["consumer"], "--owned-wgc", current["fixture"],
