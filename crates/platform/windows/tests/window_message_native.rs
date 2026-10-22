@@ -618,10 +618,7 @@ impl OwnedForeground {
             0,
             "owned foreground monitor observed no transient mutation"
         );
-        assert!(
-            self.fixture.terminate(),
-            "bounded foreground fixture teardown"
-        );
+        self.fixture.shutdown_input();
         println!("teardown foreground-monitor=complete foreground-fixture=complete");
     }
 }
@@ -2709,7 +2706,7 @@ fn dpi_arrival_matrix(route: InputDelivery) {
             if let Some(foreground) = foreground {
                 foreground.finish();
             }
-            assert!(fixture.terminate(), "fixture teardown blocks acceptance");
+            fixture.shutdown_input();
             println!("dpi-teardown fixture=complete");
         }
     }

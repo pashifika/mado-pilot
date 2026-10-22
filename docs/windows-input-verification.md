@@ -365,8 +365,10 @@ Fresh System button/wheel sequences exercise the physical current-cursor path;
 ordinary WindowMessage retains its prior-sequence-position requirement.
 
 Operations and arrival waits are bounded at five seconds. Input/capture close
-use two seconds each, desktop restoration 500 ms, and fixture termination must
-complete. Failed primary or teardown outcomes block acceptance. Missing topology
+use two seconds each; desktop restoration uses 500 ms. Successful fixture teardown
+closes its owned windows and observes successful process exit and reader completion
+within five seconds. Forced termination is failure containment, not a passing
+teardown. Failed primary or teardown outcomes block acceptance; missing topology
 or authority leaves the row unexecuted.
 
 ### Focused ordinary input
