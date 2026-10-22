@@ -301,9 +301,9 @@ bytes and typed text.
 
 ## Audit 2, 6 and 16 acceptance
 
-The repairs have deterministic coverage; current-source physical arrival and
-real non-ASCII package/OCR acceptance remain separate, unexecuted gates.
-Historical rows below retain their original source and artifact bindings.
+Deterministic coverage does not replace revision-bound physical arrival and real
+non-ASCII package/OCR acceptance. Bind source and artifacts for each execution;
+historical rows below retain their original bindings.
 
 ### Non-input checks
 
@@ -368,6 +368,25 @@ Operations and arrival waits are bounded at five seconds. Input/capture close
 use two seconds each, desktop restoration 500 ms, and fixture termination must
 complete. Failed primary or teardown outcomes block acceptance. Missing topology
 or authority leaves the row unexecuted.
+
+### Focused ordinary input
+
+Set `MADO_PILOT_WINDOWS_ORDINARY_INPUT=1` only for explicitly authorized owned-fixture
+runs. Execute one exact ignored selector at a time under the same bounded
+provenance/restoration controller requirements as the DPI rows.
+
+| Selector | Required observation |
+|---|---|
+| `ordinary_window_message_input_acceptance` | Exact paired modifier/function-key and supplementary text delivery; preserved foreground, cursor and physical keys; no System fallback |
+| `ordinary_system_input_acceptance` | Exact delivery to the owned focused target; modifiers/function key released before and after |
+| `ordinary_focus_fallback_acceptance` | Unfocused System and ordered System/WindowMessage requests refuse before submission; target remains unchanged |
+| `ordinary_uipi_acceptance` | Lower-integrity owned sender refuses the higher-integrity owned target before submission; fallback cannot bypass the boundary |
+
+The opt-in fixture oracle compares ordered key events and UTF-16 units without
+printing payloads. Completion requires explicit session close, graceful fixture
+shutdown and checked desktop restoration. Missing token privileges/integrity
+prerequisites are unavailable evidence, not passes; no elevation is attempted.
+Do not use the broader lifecycle/queue-pressure matrix as a substitute.
 
 ### Actual non-ASCII C consumers
 

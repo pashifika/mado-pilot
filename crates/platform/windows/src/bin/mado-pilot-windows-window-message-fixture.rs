@@ -1,7 +1,7 @@
 //! Ordinary-window native fixture for `WindowMessage` evidence.
 //!
-//! Payload-free observations are the default. The opt-in coordinate oracle
-//! reports only owned fixture positions, never input text or native handles.
+//! Payload-free observations are the default. Opt-in coordinate and input oracles
+//! report only owned fixture positions and scalar counts, never text or handles.
 
 #[cfg(not(windows))]
 fn main() {
@@ -70,22 +70,32 @@ mod fixture {
         GetAwarenessFromDpiAwarenessContext, GetThreadDpiAwarenessContext,
         LogicalToPhysicalPointForPerMonitorDPI, SetProcessDpiAwarenessContext,
     };
-    use windows::Win32::UI::Input::KeyboardAndMouse::{GetAsyncKeyState, VK_F6};
+    use windows::Win32::UI::Input::KeyboardAndMouse::{
+        GetAsyncKeyState, VK_F6, VK_LSHIFT, VK_PACKET, VK_RSHIFT, VK_SHIFT,
+    };
     use windows::Win32::UI::Input::{RAWINPUTDEVICE, RegisterRawInputDevices};
     use windows::Win32::UI::WindowsAndMessaging::{
         CreateWindowExW, DefWindowProcW, DestroyWindow, DispatchMessageW, GetClientRect,
         GetForegroundWindow, GetMessageW, GetWindowThreadProcessId, KillTimer, MSG,
         PostQuitMessage, RegisterClassExW, SW_SHOW, SW_SHOWNOACTIVATE, SWP_NOACTIVATE,
         SWP_NOZORDER, SetForegroundWindow, SetParent, SetTimer, SetWindowPos, SetWindowTextW,
-        ShowWindow, WINDOW_STYLE, WM_CHAR, WM_CLOSE, WM_DESTROY, WM_INPUT, WM_KEYDOWN, WM_KEYUP,
-        WM_LBUTTONDOWN, WM_LBUTTONUP, WM_MBUTTONDOWN, WM_MBUTTONUP, WM_MOUSEHWHEEL, WM_MOUSEMOVE,
-        WM_MOUSEWHEEL, WM_NCDESTROY, WM_PAINT, WM_RBUTTONDOWN, WM_RBUTTONUP, WM_TIMER,
+        ShowWindow, TranslateMessage, WINDOW_STYLE, WM_CHAR, WM_CLOSE, WM_DESTROY, WM_INPUT,
+        WM_KEYDOWN, WM_KEYFIRST, WM_KEYLAST, WM_KEYUP, WM_LBUTTONDOWN, WM_LBUTTONUP,
+        WM_MBUTTONDOWN, WM_MBUTTONUP, WM_MOUSEHWHEEL, WM_MOUSEMOVE, WM_MOUSEWHEEL, WM_NCDESTROY,
+        WM_PAINT, WM_RBUTTONDOWN, WM_RBUTTONUP, WM_SYSKEYDOWN, WM_SYSKEYUP, WM_TIMER,
         WM_XBUTTONDOWN, WM_XBUTTONUP, WNDCLASSEXW, WS_CHILD, WS_OVERLAPPEDWINDOW, WS_VISIBLE,
     };
     use windows::core::{Error, PCWSTR, Result as WindowsResult};
 
     const STATE_TIMER: usize = 1;
     const STATE_POLL_INTERVAL_MS: u32 = 5;
+    const INPUT_ORACLE_KEYS: [(u32, u16); 4] = [
+        (WM_KEYDOWN, VK_SHIFT.0),
+        (WM_KEYDOWN, VK_F6.0),
+        (WM_KEYUP, VK_F6.0),
+        (WM_KEYUP, VK_SHIFT.0),
+    ];
+    const INPUT_ORACLE_TEXT: [u16; 3] = [0x0041, 0xd83d, 0xde42];
 
     static TITLE_TOKEN: OnceLock<String> = OnceLock::new();
     static TARGET: AtomicUsize = AtomicUsize::new(0);
@@ -101,6 +111,7 @@ mod fixture {
     static GEOMETRY_REPAINTS: AtomicU32 = AtomicU32::new(0);
     static WATCH_VISUAL_STATE: AtomicU64 = AtomicU64::new(0);
     static COORDINATE_ORACLE: AtomicBool = AtomicBool::new(false);
+    static INPUT_ORACLE: OnceLock<InputOracle> = OnceLock::new();
 
     static TARGET_EVENTS: AtomicU32 = AtomicU32::new(0);
     static REPLACEMENT_EVENTS: AtomicU32 = AtomicU32::new(0);
@@ -112,6 +123,154 @@ mod fixture {
     static STATE_LEGACY_EVENTS: AtomicU32 = AtomicU32::new(0);
     static RAW_EVENTS: AtomicU32 = AtomicU32::new(0);
     static STATE_CHANGES: AtomicU32 = AtomicU32::new(0);
+
+    #[derive(Clone, Copy, PartialEq, Eq)]
+    enum InputOracleMode {
+        WindowMessage,
+        System,
+    }
+
+    struct InputOracle {
+        mode: InputOracleMode,
+        target: usize,
+        keys: AtomicU32,
+        packet_down: AtomicU32,
+        packet_up: AtomicU32,
+        text_units: AtomicU32,
+        unexpected: AtomicU32,
+        overflow: AtomicBool,
+    }
+
+    impl InputOracle {
+        fn new(mode: InputOracleMode, target: HWND) -> Self {
+            Self {
+                mode,
+                target: handle_value(target),
+                keys: AtomicU32::new(0),
+                packet_down: AtomicU32::new(0),
+                packet_up: AtomicU32::new(0),
+                text_units: AtomicU32::new(0),
+                unexpected: AtomicU32::new(0),
+                overflow: AtomicBool::new(false),
+            }
+        }
+
+        fn owns(&self, hwnd: HWND) -> bool {
+            handle_value(hwnd) == self.target
+                && TARGET.load(Ordering::Acquire) == self.target
+                && !REPLACEMENT_ACTIVE.load(Ordering::Acquire)
+        }
+
+        fn increment(&self, counter: &AtomicU32) -> u32 {
+            let ceiling = u32::try_from(MAX_RECORDED_EVENTS).unwrap_or(u32::MAX);
+            match counter.fetch_update(Ordering::AcqRel, Ordering::Acquire, |value| {
+                (value < ceiling).then(|| value + 1)
+            }) {
+                Ok(previous) => previous,
+                Err(previous) => {
+                    self.overflow.store(true, Ordering::Release);
+                    previous
+                }
+            }
+        }
+
+        fn observe(&self, message: u32, wparam: WPARAM, lparam: LPARAM) {
+            let single = lparam.0.cast_unsigned() & 0xffff == 1;
+            let expected = match message {
+                WM_KEYDOWN | WM_KEYUP | WM_SYSKEYDOWN | WM_SYSKEYUP => {
+                    if wparam.0 == usize::from(VK_PACKET.0) {
+                        let down = matches!(message, WM_KEYDOWN | WM_SYSKEYDOWN);
+                        let index = self.increment(if down {
+                            &self.packet_down
+                        } else {
+                            &self.packet_up
+                        });
+                        let paired = if down {
+                            index == self.packet_up.load(Ordering::Acquire)
+                        } else {
+                            self.packet_down.load(Ordering::Acquire) == index.saturating_add(1)
+                        };
+                        self.mode == InputOracleMode::System
+                            && self.keys.load(Ordering::Acquire) == 4
+                            && matches!(message, WM_KEYDOWN | WM_KEYUP)
+                            && index < 3
+                            && paired
+                            && single
+                    } else {
+                        let index = self.increment(&self.keys);
+                        let mut key = u16::try_from(wparam.0).ok();
+                        // Only the generic Shift modifier admits native side-specific forms.
+                        if self.mode == InputOracleMode::System
+                            && (key == Some(VK_LSHIFT.0) || key == Some(VK_RSHIFT.0))
+                        {
+                            key = Some(VK_SHIFT.0);
+                        }
+                        INPUT_ORACLE_KEYS
+                            .get(usize::try_from(index).expect("bounded oracle index"))
+                            .is_some_and(|&(expected_message, expected_key)| {
+                                message == expected_message && key == Some(expected_key)
+                            })
+                            && self.packet_down.load(Ordering::Acquire) == 0
+                            && self.packet_up.load(Ordering::Acquire) == 0
+                            && self.text_units.load(Ordering::Acquire) == 0
+                            && single
+                    }
+                }
+                WM_CHAR => {
+                    let index = self.increment(&self.text_units);
+                    INPUT_ORACLE_TEXT
+                        .get(usize::try_from(index).expect("bounded oracle index"))
+                        .is_some_and(|&unit| wparam.0 == usize::from(unit))
+                        && self.keys.load(Ordering::Acquire) == 4
+                        && (self.mode == InputOracleMode::WindowMessage
+                            || self.packet_down.load(Ordering::Acquire) > index)
+                        && single
+                }
+                WM_KEYFIRST..=WM_KEYLAST
+                | WM_INPUT
+                | WM_LBUTTONDOWN
+                | WM_LBUTTONUP
+                | WM_RBUTTONDOWN
+                | WM_RBUTTONUP
+                | WM_MBUTTONDOWN
+                | WM_MBUTTONUP
+                | WM_XBUTTONDOWN
+                | WM_XBUTTONUP
+                | WM_MOUSEWHEEL
+                | WM_MOUSEHWHEEL => false,
+                _ => return,
+            };
+            if !expected {
+                self.increment(&self.unexpected);
+            }
+        }
+
+        fn print_report(&self) {
+            let keys = self.keys.load(Ordering::Acquire);
+            let packet_down = self.packet_down.load(Ordering::Acquire);
+            let packet_up = self.packet_up.load(Ordering::Acquire);
+            let text_units = self.text_units.load(Ordering::Acquire);
+            let unexpected = self.unexpected.load(Ordering::Acquire);
+            let overflow = self.overflow.load(Ordering::Acquire);
+            let key_match =
+                keys == 4 && unexpected == 0 && !overflow && self.owns(load_handle(&TARGET));
+            let expected_packets = if self.mode == InputOracleMode::System {
+                3
+            } else {
+                0
+            };
+            let text_match = key_match
+                && text_units == 3
+                && packet_down == expected_packets
+                && packet_up == expected_packets;
+            print_line(&format!(
+                "input-oracle keys={keys} key-match={} packet-down={packet_down} packet-up={packet_up} text-units={text_units} text-match={} unexpected={unexpected} overflow={}",
+                u8::from(key_match),
+                u8::from(text_match),
+                u8::from(overflow),
+            ));
+        }
+    }
 
     #[derive(Debug)]
     pub(super) enum RunError {
@@ -149,6 +308,7 @@ mod fixture {
         fail_request: bool,
         dpi: DpiMode,
         coordinate_oracle: bool,
+        input_oracle: Option<InputOracleMode>,
     }
 
     pub(super) fn options() -> Result<Options, String> {
@@ -157,7 +317,31 @@ mod fixture {
         let mut fail_request = false;
         let mut dpi = None;
         let mut coordinate_oracle = false;
-        for argument in std::env::args().skip(1) {
+        let mut input_oracle = None;
+        let mut arguments = std::env::args().skip(1);
+        while let Some(argument) = arguments.next() {
+            if argument == "--input-oracle" || argument.starts_with("--input-oracle=") {
+                if input_oracle.is_some() {
+                    return Err("--input-oracle may be supplied only once".to_owned());
+                }
+                let separate;
+                let value = if let Some(value) = argument.strip_prefix("--input-oracle=") {
+                    value
+                } else {
+                    separate = arguments.next().ok_or_else(|| {
+                        "--input-oracle requires window-message or system".to_owned()
+                    })?;
+                    &separate
+                };
+                input_oracle = Some(match value {
+                    "window-message" => InputOracleMode::WindowMessage,
+                    "system" => InputOracleMode::System,
+                    _ => {
+                        return Err("--input-oracle requires window-message or system".to_owned());
+                    }
+                });
+                continue;
+            }
             if argument == "--coordinate-oracle" {
                 if coordinate_oracle {
                     return Err("--coordinate-oracle may be supplied only once".to_owned());
@@ -187,7 +371,7 @@ mod fixture {
             }
             let Some(value) = argument.strip_prefix("--title-token=") else {
                 return Err(format!(
-                    "unknown argument `{argument}`; expected --title-token, --dpi, --coordinate-oracle, --activate, or --fail-stage=foreground-request"
+                    "unknown argument `{argument}`; expected --title-token, --dpi, --coordinate-oracle, --input-oracle, --activate, or --fail-stage=foreground-request"
                 ));
             };
             if value.is_empty() || value.chars().count() > 64 {
@@ -206,6 +390,7 @@ mod fixture {
             fail_request,
             dpi: dpi.unwrap_or(DpiMode::PerMonitorV2),
             coordinate_oracle,
+            input_oracle,
         })
     }
 
@@ -261,6 +446,7 @@ mod fixture {
     }
 
     pub(super) fn run(options: Options) -> Result<(), RunError> {
+        let translate = options.input_oracle == Some(InputOracleMode::System);
         let activation = prepare(options)?;
         print_line(&ready_record(
             ORDINARY_CLASS_NAME,
@@ -279,10 +465,12 @@ mod fixture {
             if status.0 == 0 {
                 break;
             }
-            // Deliberately do not call TranslateMessage: the production route
-            // posts every key and text unit explicitly and does not synthesize WM_CHAR.
+            // Only System input needs VK_PACKET translated; WM posts text explicitly.
             // SAFETY: GetMessageW initialized the scalar message structure.
             unsafe {
+                if translate {
+                    let _translated = TranslateMessage(&raw const message);
+                }
                 DispatchMessageW(&raw const message);
             }
         }
@@ -319,6 +507,7 @@ mod fixture {
             fail_request,
             dpi,
             coordinate_oracle,
+            input_oracle,
         } = options;
         let mut context = Context::new();
         // SAFETY: this is the fixture's first DPI-dependent call.
@@ -375,6 +564,12 @@ mod fixture {
         FOREGROUND.store(handle_value(foreground), Ordering::Release);
         RAW.store(handle_value(raw), Ordering::Release);
         STATE.store(handle_value(state), Ordering::Release);
+        if let Some(mode) = input_oracle {
+            assert!(
+                INPUT_ORACLE.set(InputOracle::new(mode, target)).is_ok(),
+                "input oracle set once"
+            );
+        }
 
         for window in [target, game, sibling, foreground, raw, state] {
             // SAFETY: each handle is a live top-level window owned by this thread.
@@ -429,8 +624,19 @@ mod fixture {
         wparam: WPARAM,
         lparam: LPARAM,
     ) -> LRESULT {
+        if let Some(oracle) = INPUT_ORACLE.get()
+            && oracle.owns(hwnd)
+        {
+            oracle.observe(message, wparam, lparam);
+        }
         match message {
             CONTROL_REPORT => {
+                if wparam.0 == 2
+                    && let Some(oracle) = INPUT_ORACLE.get()
+                {
+                    oracle.print_report();
+                    return LRESULT(0);
+                }
                 if wparam.0 == 1 && COORDINATE_ORACLE.load(Ordering::Acquire) {
                     print_coordinate_oracle(hwnd);
                 }

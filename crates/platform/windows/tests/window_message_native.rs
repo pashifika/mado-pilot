@@ -131,11 +131,11 @@ impl FixtureProcess {
     }
 
     fn spawn_with_options(token: String, activate: bool, inject_failure: bool) -> Self {
-        Self::spawn_configured(token, activate, inject_failure, None)
+        Self::spawn_configured(token, activate, inject_failure, None, None)
     }
 
     fn spawn_coordinates(token: String, dpi: DpiMode, activate: bool) -> Self {
-        Self::spawn_configured(token, activate, false, Some(dpi))
+        Self::spawn_configured(token, activate, false, Some(dpi), None)
     }
 
     fn spawn_configured(
@@ -143,6 +143,7 @@ impl FixtureProcess {
         activate: bool,
         inject_failure: bool,
         dpi: Option<DpiMode>,
+        input_oracle: Option<&str>,
     ) -> Self {
         let mut command = Command::new(env!(
             "CARGO_BIN_EXE_mado-pilot-windows-window-message-fixture"
@@ -152,6 +153,13 @@ impl FixtureProcess {
             command
                 .arg(format!("--dpi={}", dpi.label()))
                 .arg("--coordinate-oracle");
+        }
+        if let Some(mode) = input_oracle {
+            require_ordinary_input();
+            command
+                .arg("--input-oracle")
+                .arg(mode)
+                .env("MADO_PILOT_WINDOWS_ORDINARY_INPUT", "1");
         }
         if activate {
             command.arg("--activate");
@@ -2742,4 +2750,1043 @@ fn desktop_snapshots_preserve_physical_coordinates_and_caller_dpi() {
             AreDpiAwarenessContextsEqual(incoming, GetThreadDpiAwarenessContext()).as_bool()
         });
     }
+}
+
+// Focused, opt-in ordinary input rows. Never call the broad native matrix here.
+fn require_ordinary_input() {
+    assert_eq!(
+        std::env::var("MADO_PILOT_WINDOWS_ORDINARY_INPUT").as_deref(),
+        Ok("1"),
+        "ordinary input requires explicit controller authority"
+    );
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+struct OrdinaryInputReport([u32; 8]);
+
+impl OrdinaryInputReport {
+    const EMPTY: Self = Self([0; 8]);
+
+    fn complete(route: InputDelivery) -> Self {
+        match route {
+            InputDelivery::WindowMessage => Self([4, 1, 0, 0, 3, 1, 0, 0]),
+            InputDelivery::System => Self([4, 1, 3, 3, 3, 1, 0, 0]),
+            _ => panic!("unsupported ordinary oracle route"),
+        }
+    }
+
+    fn parse(line: &str) -> Self {
+        let mut fields = line.split_ascii_whitespace();
+        assert_eq!(fields.next(), Some("input-oracle"));
+        let mut values = [0; 8];
+        for (value, prefix) in values.iter_mut().zip([
+            "keys=",
+            "key-match=",
+            "packet-down=",
+            "packet-up=",
+            "text-units=",
+            "text-match=",
+            "unexpected=",
+            "overflow=",
+        ]) {
+            *value = fields
+                .next()
+                .and_then(|field| field.strip_prefix(prefix))
+                .and_then(|field| field.parse().ok())
+                .expect("ordered scalar input oracle field");
+        }
+        assert!(fields.next().is_none(), "input oracle has no extra fields");
+        Self(values)
+    }
+}
+
+impl FixtureProcess {
+    fn spawn_input(label: &str, route: InputDelivery, activate: bool) -> Self {
+        require_ordinary_input();
+        let mode = match route {
+            InputDelivery::WindowMessage => "window-message",
+            InputDelivery::System => "system",
+            _ => panic!("unsupported ordinary fixture route"),
+        };
+        let token = format!("ordinary-{label}-{}", std::process::id());
+        let fixture = Self::spawn_configured(token, activate, false, None, Some(mode));
+        fixture.assert_input_owner();
+        fixture
+    }
+
+    fn assert_input_owner(&self) {
+        ordinary_assert_window_owner(
+            self.target(),
+            self.child.as_ref().expect("owned fixture child").id(),
+        );
+    }
+
+    fn input_report(&mut self) -> OrdinaryInputReport {
+        self.assert_input_owner();
+        self.control(self.target(), CONTROL_REPORT, 2);
+        OrdinaryInputReport::parse(&self.wait_for("input-oracle ", Duration::from_secs(5)))
+    }
+
+    fn wait_input_arrivals(&mut self, route: InputDelivery) {
+        // Posted reports can overtake System input. Wait for every legacy unit,
+        // including packet key-ups and translated characters, before requesting it.
+        let expected = match route {
+            InputDelivery::WindowMessage => [2, 2, 3],
+            InputDelivery::System => [5, 5, 3],
+            _ => panic!("unsupported ordinary arrival route"),
+        };
+        let deadline = Instant::now() + Duration::from_secs(5);
+        let mut arrived = [0; 3];
+        while arrived != expected {
+            assert!(
+                Instant::now() < deadline,
+                "ordinary input arrival timed out"
+            );
+            let line = self.wait_for(
+                "observation role=target ",
+                deadline.saturating_duration_since(Instant::now()),
+            );
+            let index = match line.as_str() {
+                "observation role=target family=key-down units=1" => 0,
+                "observation role=target family=key-up units=1" => 1,
+                "observation role=target family=text-unit units=1" => 2,
+                // Showing a window can synthesize passive hover without input.
+                "observation role=target family=pointer-move units=1" => continue,
+                _ => panic!("ordinary target received an unexpected event family"),
+            };
+            arrived[index] += 1;
+            assert!(
+                arrived[index] <= expected[index],
+                "extra ordinary input unit"
+            );
+        }
+        assert_eq!(arrived, expected);
+        assert_eq!(self.input_report(), OrdinaryInputReport::complete(route));
+    }
+
+    fn shutdown_input(&mut self) {
+        use windows::Win32::UI::WindowsAndMessaging::WM_CLOSE;
+
+        self.assert_input_owner();
+        let process = self.child.as_ref().expect("owned fixture child").id();
+        let windows = [
+            self.target(),
+            self.role_window("Game"),
+            self.role_window("Sibling"),
+            self.role_window("Foreground"),
+            self.role_window("Raw"),
+            self.role_window("State"),
+        ];
+        for window in windows {
+            ordinary_assert_window_owner(window, process);
+            self.control(window, WM_CLOSE, 0);
+        }
+        // Closing Sibling also destroys its child. All top-level windows must
+        // close naturally; Drop's bounded kill is failure containment only.
+        let deadline = Instant::now() + Duration::from_secs(5);
+        loop {
+            if let Some(status) = self
+                .child
+                .as_mut()
+                .expect("owned fixture child")
+                .try_wait()
+                .expect("observed owned fixture exit")
+            {
+                assert!(status.success(), "ordinary fixture exited successfully");
+                break;
+            }
+            assert!(
+                Instant::now() < deadline,
+                "ordinary fixture shutdown timed out"
+            );
+            thread::sleep(Duration::from_millis(2));
+        }
+        while !self.reader.as_ref().expect("fixture reader").is_finished() {
+            assert!(
+                Instant::now() < deadline,
+                "ordinary fixture reader timed out"
+            );
+            thread::sleep(Duration::from_millis(2));
+        }
+        assert!(self.reader.take().expect("fixture reader").join().is_ok());
+        drop(self.child.take());
+    }
+}
+
+fn ordinary_assert_window_owner(window: HWND, process: u32) {
+    use windows::Win32::UI::WindowsAndMessaging::GetWindowThreadProcessId;
+
+    let mut observed = 0;
+    // SAFETY: observed is writable; Windows validates the opaque window.
+    let thread = unsafe { GetWindowThreadProcessId(window, Some(&raw mut observed)) };
+    assert_ne!(thread, 0, "ordinary window remains live");
+    assert_eq!(
+        observed, process,
+        "ordinary window belongs to the retained child"
+    );
+}
+
+fn ordinary_assert_focused(window: HWND) {
+    use windows::Win32::UI::WindowsAndMessaging::{
+        GUITHREADINFO, GetGUIThreadInfo, GetWindowThreadProcessId,
+    };
+
+    // SAFETY: these are read-only queries of the owned opaque window.
+    assert_eq!(unsafe { GetForegroundWindow() }, window);
+    // SAFETY: no optional process output is requested.
+    let thread = unsafe { GetWindowThreadProcessId(window, None) };
+    assert_ne!(thread, 0);
+    let mut info = GUITHREADINFO {
+        cbSize: u32::try_from(size_of::<GUITHREADINFO>()).expect("GUI info size"),
+        ..GUITHREADINFO::default()
+    };
+    // SAFETY: info has the documented size and is writable for this query.
+    unsafe { GetGUIThreadInfo(thread, &raw mut info) }.expect("owned target focus query");
+    assert_eq!(
+        info.hwndFocus, window,
+        "only the exact owned target has keyboard focus"
+    );
+}
+
+fn ordinary_key_state() -> [bool; 12] {
+    use windows::Win32::UI::Input::KeyboardAndMouse::{
+        GetAsyncKeyState, VK_CONTROL, VK_F6, VK_LCONTROL, VK_LMENU, VK_LSHIFT, VK_LWIN, VK_MENU,
+        VK_RCONTROL, VK_RMENU, VK_RSHIFT, VK_RWIN, VK_SHIFT,
+    };
+
+    [
+        VK_SHIFT,
+        VK_CONTROL,
+        VK_MENU,
+        VK_LSHIFT,
+        VK_RSHIFT,
+        VK_LCONTROL,
+        VK_RCONTROL,
+        VK_LMENU,
+        VK_RMENU,
+        VK_LWIN,
+        VK_RWIN,
+        VK_F6,
+    ]
+    .map(|key| {
+        // SAFETY: fixed modifier/F6 virtual keys; only the current down bit is used.
+        (unsafe { GetAsyncKeyState(i32::from(key.0)) }) < 0
+    })
+}
+
+fn ordinary_sequence() -> InputSequence {
+    InputSequence::new(vec![
+        InputEvent::KeyPress(Key::Modifier(Modifier::Shift)),
+        InputEvent::KeyPress(Key::Function(6)),
+        InputEvent::KeyRelease(Key::Function(6)),
+        InputEvent::KeyRelease(Key::Modifier(Modifier::Shift)),
+        InputEvent::Text("A\u{1f642}".to_owned()),
+    ])
+    .expect("bounded, fully paired ordinary input")
+}
+
+struct OrdinaryInputSession {
+    target: TargetId,
+    input: Arc<dyn InputController>,
+    close_attempted: bool,
+}
+
+impl OrdinaryInputSession {
+    fn open(title: &str, window: HWND, process: u32) -> Self {
+        ordinary_assert_window_owner(window, process);
+        assert_eq!(find_window(title), window, "exact owned fixture title");
+        let provider = WindowsCaptureProvider::new(Arc::new(IdentityIssuer::new()));
+        let found = provider
+            .discover_matching(
+                &DiscoveryRequest::new()
+                    .with_kind(TargetKind::Window)
+                    .with_name_containing(title),
+                &timed(Duration::from_secs(5)),
+            )
+            .expect("ordinary input discovery");
+        let mut matches = found.iter().filter(|candidate| candidate.name() == title);
+        let target = matches.next().expect("exact ordinary input target").id();
+        assert!(matches.next().is_none(), "ordinary input target is unique");
+        let request = InputOpenRequest::new()
+            .requiring(InputOperationKind::Keyboard, InputDelivery::WindowMessage)
+            .requiring(InputOperationKind::Text, InputDelivery::WindowMessage)
+            .requiring(InputOperationKind::Keyboard, InputDelivery::System)
+            .requiring(InputOperationKind::Text, InputDelivery::System);
+        let input =
+            InputProvider::open(&provider, target, &request, &timed(Duration::from_secs(5)))
+                .expect("opened ordinary keyboard/text controller");
+        let session = Self {
+            target,
+            input,
+            close_attempted: false,
+        };
+        ordinary_assert_window_owner(window, process);
+        assert_eq!(find_window(title), window);
+        session
+    }
+
+    fn for_fixture(fixture: &FixtureProcess) -> Self {
+        Self::open(
+            &fixture.title(),
+            fixture.target(),
+            fixture.child.as_ref().expect("owned fixture child").id(),
+        )
+    }
+
+    fn execute(
+        &self,
+        delivery: DeliveryPlan,
+        focus: FocusPolicy,
+    ) -> mado_pilot_input::InputReceipt {
+        self.input
+            .execute(
+                &InputRequest::new(self.target, ordinary_sequence(), delivery).with_focus(focus),
+                &timed(Duration::from_secs(5)),
+            )
+            .expect("ordinary input receipt")
+    }
+
+    fn close(&mut self) -> bool {
+        if std::mem::replace(&mut self.close_attempted, true) {
+            return true;
+        }
+        self.input.close(&timed(Duration::from_secs(2))).is_ok()
+    }
+}
+
+impl Drop for OrdinaryInputSession {
+    fn drop(&mut self) {
+        if !self.close() {
+            eprintln!("ordinary-teardown input=0");
+        }
+    }
+}
+
+fn assert_ordinary_complete(receipt: &mado_pilot_input::InputReceipt, route: InputDelivery) {
+    assert_eq!(receipt.outcome(), SequenceOutcome::Complete);
+    assert_eq!(receipt.selected_route(), Some(route));
+    assert_eq!(receipt.submitted(), 5);
+    assert_eq!(receipt.last_submitted(), Some(4));
+    assert_eq!(receipt.fault(), None);
+    assert!(!receipt.partial_native_effect());
+    assert!(!receipt.used_fallback());
+    assert_eq!(receipt.attempts().len(), 1);
+    assert_eq!(receipt.attempts()[0].route(), route);
+    assert_eq!(receipt.cleanup(), CleanupState::NotNeeded);
+    assert_eq!((receipt.cleanup_released(), receipt.cleanup_owed()), (0, 0));
+    assert_eq!(
+        receipt.evidence(),
+        Some(match route {
+            InputDelivery::WindowMessage => SubmissionEvidence::TargetQueueAdmission,
+            InputDelivery::System => SubmissionEvidence::SystemInputAdmission,
+            _ => panic!("unsupported ordinary receipt route"),
+        })
+    );
+}
+
+fn assert_ordinary_refusal(
+    receipt: &mado_pilot_input::InputReceipt,
+    routes: &[InputDelivery],
+    fault: InputFault,
+) {
+    assert_eq!(receipt.outcome(), SequenceOutcome::Unexecuted);
+    assert_eq!(receipt.selected_route(), None);
+    assert_eq!(receipt.submitted(), 0);
+    assert_eq!(receipt.last_submitted(), None);
+    assert_eq!(receipt.evidence(), None);
+    assert_eq!(receipt.fault(), Some(fault));
+    assert!(!receipt.possible_native_effect());
+    assert!(!receipt.used_fallback());
+    assert_eq!(receipt.cleanup(), CleanupState::NotNeeded);
+    assert_eq!((receipt.cleanup_released(), receipt.cleanup_owed()), (0, 0));
+    assert_eq!(receipt.attempts().len(), routes.len());
+    for (attempt, route) in receipt.attempts().iter().zip(routes) {
+        assert_eq!(attempt.route(), *route);
+        assert_eq!(attempt.outcome(), SequenceOutcome::Unexecuted);
+        assert_eq!(attempt.submitted(), 0);
+        assert_eq!(attempt.fault(), Some(fault));
+        assert!(!attempt.possible_native_effect());
+    }
+}
+
+#[test]
+#[ignore = "requires explicit ordinary-input authority and an unlocked controlled desktop"]
+fn ordinary_window_message_input_acceptance() {
+    require_ordinary_input();
+    let _serial = NATIVE_MATRIX.lock().expect("ordinary input serialized");
+    let dpi = DpiScope::enter(DpiMode::PerMonitorV2).expect("ordinary caller DPI scope");
+    let mut restore = DpiDesktopRestore(Some(DesktopState::capture()));
+    let keys = ordinary_key_state();
+    assert_eq!(keys, [false; 12], "modifiers and F6 must start released");
+    let mut foreground =
+        FixtureProcess::spawn_input("wm-foreground", InputDelivery::WindowMessage, true);
+    ordinary_assert_focused(foreground.target());
+    let mut fixture = FixtureProcess::spawn_input("wm-target", InputDelivery::WindowMessage, false);
+    let desktop = DesktopState::capture();
+    assert_eq!(desktop.foreground, foreground.target());
+    assert_ne!(desktop.foreground, fixture.target());
+    assert_eq!(fixture.input_report(), OrdinaryInputReport::EMPTY);
+    assert_eq!(foreground.input_report(), OrdinaryInputReport::EMPTY);
+    let before = fixture.report(fixture.target());
+    let foreground_before = foreground.report(foreground.target());
+    let mut session = OrdinaryInputSession::for_fixture(&fixture);
+    desktop.assert_unchanged();
+    assert_eq!(ordinary_key_state(), keys);
+    let receipt = session.execute(
+        DeliveryPlan::ordered(vec![InputDelivery::WindowMessage, InputDelivery::System])
+            .expect("explicit WM-first plan"),
+        FocusPolicy::Preserve,
+    );
+    assert_ordinary_complete(&receipt, InputDelivery::WindowMessage);
+    fixture.wait_input_arrivals(InputDelivery::WindowMessage);
+    assert!(
+        session.close(),
+        "ordinary controller close blocks acceptance"
+    );
+    assert_eq!(
+        fixture.input_report(),
+        OrdinaryInputReport::complete(InputDelivery::WindowMessage)
+    );
+    let after = fixture.report(fixture.target());
+    assert_wrong_window_delta(before, after);
+    assert_eq!((after.raw, after.state), (before.raw, before.state));
+    assert_eq!(foreground.input_report(), OrdinaryInputReport::EMPTY);
+    assert_ordinary_observers_unchanged(foreground_before, foreground.report(foreground.target()));
+    desktop.assert_unchanged();
+    assert_eq!(ordinary_key_state(), keys);
+    fixture.shutdown_input();
+    foreground.shutdown_input();
+    assert!(
+        restore.restore(),
+        "ordinary desktop restoration blocks acceptance"
+    );
+    assert_eq!(ordinary_key_state(), [false; 12]);
+    drop(dpi);
+    println!("ordinary-acceptance route=window-message complete=1");
+}
+
+#[test]
+#[ignore = "requires explicit ordinary-input authority and an unlocked controlled desktop"]
+fn ordinary_system_input_acceptance() {
+    require_ordinary_input();
+    let _serial = NATIVE_MATRIX.lock().expect("ordinary input serialized");
+    let dpi = DpiScope::enter(DpiMode::PerMonitorV2).expect("ordinary caller DPI scope");
+    let mut restore = DpiDesktopRestore(Some(DesktopState::capture()));
+    assert_eq!(
+        ordinary_key_state(),
+        [false; 12],
+        "modifiers and F6 must start released"
+    );
+    let mut fixture = FixtureProcess::spawn_input("system-target", InputDelivery::System, true);
+    ordinary_assert_focused(fixture.target());
+    assert_eq!(fixture.input_report(), OrdinaryInputReport::EMPTY);
+    let before = fixture.report(fixture.target());
+    let desktop = DesktopState::capture();
+    let mut session = OrdinaryInputSession::for_fixture(&fixture);
+    ordinary_assert_focused(fixture.target());
+    assert_eq!(ordinary_key_state(), [false; 12]);
+    let receipt = session.execute(
+        DeliveryPlan::require(InputDelivery::System),
+        FocusPolicy::RequireFocused,
+    );
+    assert_ordinary_complete(&receipt, InputDelivery::System);
+    fixture.wait_input_arrivals(InputDelivery::System);
+    assert!(
+        session.close(),
+        "ordinary controller close blocks acceptance"
+    );
+    assert_eq!(
+        fixture.input_report(),
+        OrdinaryInputReport::complete(InputDelivery::System)
+    );
+    let after = fixture.report(fixture.target());
+    // Raw and asynchronous-state observers in this fixture may see System input.
+    // They must not receive legacy-window delivery intended for the target.
+    assert_wrong_window_delta(before, after);
+    ordinary_assert_focused(fixture.target());
+    desktop.assert_unchanged();
+    assert_eq!(
+        ordinary_key_state(),
+        [false; 12],
+        "paired System input leaves no held keys"
+    );
+    fixture.shutdown_input();
+    assert!(
+        restore.restore(),
+        "ordinary desktop restoration blocks acceptance"
+    );
+    assert_eq!(ordinary_key_state(), [false; 12]);
+    drop(dpi);
+    println!("ordinary-acceptance route=system complete=1");
+}
+
+#[test]
+#[ignore = "requires explicit ordinary-input authority and an unlocked controlled desktop"]
+fn ordinary_focus_fallback_acceptance() {
+    require_ordinary_input();
+    let _serial = NATIVE_MATRIX.lock().expect("ordinary input serialized");
+    let dpi = DpiScope::enter(DpiMode::PerMonitorV2).expect("ordinary caller DPI scope");
+    let mut restore = DpiDesktopRestore(Some(DesktopState::capture()));
+    let keys = ordinary_key_state();
+    assert_eq!(keys, [false; 12], "modifiers and F6 must start released");
+    let mut foreground =
+        FixtureProcess::spawn_input("focus-foreground", InputDelivery::WindowMessage, true);
+    let mut fixture =
+        FixtureProcess::spawn_input("focus-target", InputDelivery::WindowMessage, false);
+    ordinary_assert_focused(foreground.target());
+    let desktop = DesktopState::capture();
+    assert_ne!(desktop.foreground, fixture.target());
+    assert_eq!(fixture.input_report(), OrdinaryInputReport::EMPTY);
+    assert_eq!(foreground.input_report(), OrdinaryInputReport::EMPTY);
+    let before = fixture.report(fixture.target());
+    let foreground_before = foreground.report(foreground.target());
+    let mut session = OrdinaryInputSession::for_fixture(&fixture);
+    for routes in [
+        &[InputDelivery::System][..],
+        &[InputDelivery::System, InputDelivery::WindowMessage][..],
+    ] {
+        desktop.assert_unchanged();
+        let receipt = session.execute(
+            DeliveryPlan::ordered(routes.to_vec()).expect("explicit focus-bound plan"),
+            FocusPolicy::RequireFocused,
+        );
+        // Native preflight may visit both routes. RequireFocused applies to
+        // both, so fallback cannot turn the refusal into background delivery.
+        assert_ordinary_refusal(&receipt, routes, InputFault::FocusRequired);
+        assert_eq!(fixture.input_report(), OrdinaryInputReport::EMPTY);
+        assert_ordinary_observers_unchanged(before, fixture.report(fixture.target()));
+        assert_eq!(foreground.input_report(), OrdinaryInputReport::EMPTY);
+        assert_ordinary_observers_unchanged(
+            foreground_before,
+            foreground.report(foreground.target()),
+        );
+        desktop.assert_unchanged();
+        assert_eq!(ordinary_key_state(), keys);
+    }
+    assert!(
+        session.close(),
+        "ordinary controller close blocks acceptance"
+    );
+    thread::sleep(Duration::from_millis(100));
+    assert_eq!(fixture.input_report(), OrdinaryInputReport::EMPTY);
+    assert_ordinary_observers_unchanged(before, fixture.report(fixture.target()));
+    assert_eq!(foreground.input_report(), OrdinaryInputReport::EMPTY);
+    assert_ordinary_observers_unchanged(foreground_before, foreground.report(foreground.target()));
+    desktop.assert_unchanged();
+    assert_eq!(ordinary_key_state(), keys);
+    fixture.shutdown_input();
+    foreground.shutdown_input();
+    assert!(
+        restore.restore(),
+        "ordinary desktop restoration blocks acceptance"
+    );
+    assert_eq!(ordinary_key_state(), [false; 12]);
+    drop(dpi);
+    println!("ordinary-acceptance route=focus complete=1");
+}
+
+// The helper never creates a window or accepts a target from ambient discovery.
+// Its private stdin grant pins this child, its parent, and the parent's live fixture.
+mod ordinary_uipi {
+    use super::*;
+    use std::ffi::OsString;
+    use std::io::{Read, Write};
+    use std::mem::size_of_val;
+    use std::os::windows::ffi::OsStringExt;
+    use std::os::windows::io::AsRawHandle;
+    use std::path::Path;
+    use windows::Win32::Foundation::{CloseHandle, FILETIME, HANDLE, WAIT_TIMEOUT};
+    use windows::Win32::Security::{
+        CreateWellKnownSid, GetSidSubAuthority, GetSidSubAuthorityCount, GetTokenInformation,
+        IsValidSid, PSID, SID_AND_ATTRIBUTES, SetTokenInformation, TOKEN_ADJUST_DEFAULT,
+        TOKEN_MANDATORY_LABEL, TOKEN_QUERY, TokenIntegrityLevel, TokenUIAccess, WinLowLabelSid,
+    };
+    use windows::Win32::System::Threading::{
+        GetCurrentProcess, GetProcessTimes, OpenProcess, OpenProcessToken, PROCESS_NAME_WIN32,
+        PROCESS_QUERY_LIMITED_INFORMATION, PROCESS_SYNCHRONIZE, QueryFullProcessImageNameW,
+        WaitForSingleObject,
+    };
+    use windows::core::PWSTR;
+
+    const HELPER_AUTHORITY: &str = "MADO_PILOT_WINDOWS_UIPI_HELPER";
+    const GRANT_MAGIC: u64 = u64::from_le_bytes(*b"MPUIPI01");
+    const HELPER_COMPLETE: &str = "ordinary-uipi-helper refused=1 closed=1";
+
+    fn unavailable() -> ! {
+        eprintln!("ordinary-prerequisite-unavailable");
+        panic!("ordinary UIPI prerequisite is unavailable");
+    }
+
+    struct Handle(HANDLE);
+
+    impl Drop for Handle {
+        fn drop(&mut self) {
+            // SAFETY: only successfully opened real handles enter this owner.
+            let _closed = unsafe { CloseHandle(self.0) };
+        }
+    }
+
+    fn process(pid: u32) -> Option<Handle> {
+        // SAFETY: pid is from the parent's private grant or retained child.
+        unsafe {
+            OpenProcess(
+                PROCESS_QUERY_LIMITED_INFORMATION | PROCESS_SYNCHRONIZE,
+                false,
+                pid,
+            )
+        }
+        .ok()
+        .map(Handle)
+    }
+
+    fn birth(process: HANDLE) -> Option<u64> {
+        let mut creation = FILETIME::default();
+        let mut exit = FILETIME::default();
+        let mut kernel = FILETIME::default();
+        let mut user = FILETIME::default();
+        // SAFETY: the retained process handle and all four complete outputs are valid.
+        unsafe {
+            GetProcessTimes(
+                process,
+                &raw mut creation,
+                &raw mut exit,
+                &raw mut kernel,
+                &raw mut user,
+            )
+        }
+        .ok()?;
+        Some((u64::from(creation.dwHighDateTime) << 32) | u64::from(creation.dwLowDateTime))
+    }
+
+    fn assert_live(process: &Handle, expected_birth: u64) {
+        assert_eq!(
+            birth(process.0),
+            Some(expected_birth),
+            "owned process identity changed"
+        );
+        // SAFETY: process was opened with SYNCHRONIZE and remains retained.
+        assert_eq!(unsafe { WaitForSingleObject(process.0, 0) }, WAIT_TIMEOUT);
+    }
+
+    fn image_matches(process: HANDLE, expected: &Path) -> bool {
+        let mut image = [0u16; 32_768];
+        let mut length = u32::try_from(image.len()).expect("bounded process image");
+        // SAFETY: image is writable for length UTF-16 units; the process is retained.
+        if unsafe {
+            QueryFullProcessImageNameW(
+                process,
+                PROCESS_NAME_WIN32,
+                PWSTR(image.as_mut_ptr()),
+                &raw mut length,
+            )
+        }
+        .is_err()
+        {
+            return false;
+        }
+        let Ok(length) = usize::try_from(length) else {
+            return false;
+        };
+        let Some(image) = image.get(..length) else {
+            return false;
+        };
+        let actual = std::path::PathBuf::from(OsString::from_wide(image)).canonicalize();
+        let expected = expected.canonicalize();
+        matches!((actual, expected), (Ok(actual), Ok(expected)) if actual == expected)
+    }
+
+    fn token(process: HANDLE, adjust: bool) -> Option<Handle> {
+        let mut token = HANDLE::default();
+        let access = if adjust {
+            TOKEN_QUERY | TOKEN_ADJUST_DEFAULT
+        } else {
+            TOKEN_QUERY
+        };
+        // SAFETY: process is retained or the current-process pseudo handle; output is writable.
+        unsafe { OpenProcessToken(process, access, &raw mut token) }.ok()?;
+        Some(Handle(token))
+    }
+
+    fn integrity(token: &Handle) -> Option<(u32, u32)> {
+        // An integrity SID has a small fixed representation. Refuse an oversized
+        // result rather than allocating from an unchecked native length.
+        let mut storage = [0usize; 128];
+        let mut length = 0;
+        // SAFETY: storage is aligned for TOKEN_MANDATORY_LABEL and writable for its full size.
+        unsafe {
+            GetTokenInformation(
+                token.0,
+                TokenIntegrityLevel,
+                Some(storage.as_mut_ptr().cast()),
+                u32::try_from(size_of_val(&storage)).ok()?,
+                &raw mut length,
+            )
+        }
+        .ok()?;
+        if usize::try_from(length).ok()? < size_of::<TOKEN_MANDATORY_LABEL>()
+            || usize::try_from(length).ok()? > size_of_val(&storage)
+        {
+            return None;
+        }
+        // SAFETY: the successful query initialized an aligned mandatory label and its SID.
+        let label = unsafe { &*storage.as_ptr().cast::<TOKEN_MANDATORY_LABEL>() };
+        // SAFETY: this SID is owned by the live, initialized token-information buffer.
+        if !unsafe { IsValidSid(label.Label.Sid) }.as_bool() {
+            return None;
+        }
+        // SAFETY: the validated SID contains its sub-authority count.
+        let count = unsafe { *GetSidSubAuthorityCount(label.Label.Sid) };
+        if count == 0 {
+            return None;
+        }
+        // SAFETY: count - 1 is inside the validated SID and storage is still live.
+        let level = unsafe { *GetSidSubAuthority(label.Label.Sid, u32::from(count - 1)) };
+        Some((level, label.Label.Attributes))
+    }
+
+    fn lower_sender() -> Option<u32> {
+        // SAFETY: this pseudo handle refers only to the independently gated helper.
+        let current = unsafe { GetCurrentProcess() };
+        let token = token(current, true)?;
+        let (original, attributes) = integrity(&token)?;
+        let mut ui_access = 0u32;
+        let mut length = 0;
+        // SAFETY: TokenUIAccess returns one DWORD into the complete writable output.
+        unsafe {
+            GetTokenInformation(
+                token.0,
+                TokenUIAccess,
+                Some((&raw mut ui_access).cast()),
+                u32::try_from(size_of::<u32>()).ok()?,
+                &raw mut length,
+            )
+        }
+        .ok()?;
+        if ui_access != 0 || length != u32::try_from(size_of::<u32>()).ok()? {
+            return None;
+        }
+        // Keep the label and SID in one aligned live allocation for SetTokenInformation.
+        let mut storage = [0usize; 32];
+        let label_bytes = size_of::<TOKEN_MANDATORY_LABEL>();
+        // SAFETY: the label prefix is smaller than storage; the remaining bytes hold the SID.
+        let sid = PSID(unsafe { storage.as_mut_ptr().cast::<u8>().add(label_bytes) }.cast());
+        let mut sid_bytes = u32::try_from(size_of_val(&storage) - label_bytes).ok()?;
+        // SAFETY: sid points to sid_bytes writable bytes in aligned storage.
+        unsafe { CreateWellKnownSid(WinLowLabelSid, None, Some(sid), &raw mut sid_bytes) }.ok()?;
+        // SAFETY: CreateWellKnownSid initialized the low-integrity SID, with one sub-authority.
+        let low = unsafe { *GetSidSubAuthority(sid, 0) };
+        if original <= low {
+            return None;
+        }
+        let label = TOKEN_MANDATORY_LABEL {
+            Label: SID_AND_ATTRIBUTES {
+                Sid: sid,
+                Attributes: attributes,
+            },
+        };
+        // SAFETY: the aligned prefix is large enough; its SID points into the retained suffix.
+        unsafe {
+            storage
+                .as_mut_ptr()
+                .cast::<TOKEN_MANDATORY_LABEL>()
+                .write(label)
+        };
+        let bytes = u32::try_from(label_bytes).ok()?.checked_add(sid_bytes)?;
+        // SAFETY: only this helper's own primary token is lowered; storage covers bytes.
+        unsafe {
+            SetTokenInformation(token.0, TokenIntegrityLevel, storage.as_ptr().cast(), bytes)
+        }
+        .ok()?;
+        if integrity(&token)?.0 != low {
+            return None;
+        }
+        Some(low)
+    }
+
+    struct SenderProcess {
+        child: Child,
+        output: Option<thread::JoinHandle<std::io::Result<Vec<u8>>>>,
+        exited: bool,
+    }
+
+    impl Drop for SenderProcess {
+        fn drop(&mut self) {
+            let deadline = Instant::now() + Duration::from_secs(2);
+            if !self.exited {
+                let _killed = self.child.kill();
+                loop {
+                    match self.child.try_wait() {
+                        Ok(Some(_)) => {
+                            self.exited = true;
+                            break;
+                        }
+                        Ok(None) if Instant::now() < deadline => {
+                            thread::sleep(Duration::from_millis(2))
+                        }
+                        _ => break,
+                    }
+                }
+            }
+            if let Some(reader) = self.output.take() {
+                while !reader.is_finished() && Instant::now() < deadline {
+                    thread::sleep(Duration::from_millis(2));
+                }
+                if reader.is_finished() {
+                    let _joined = reader.join();
+                } else {
+                    eprintln!("ordinary-teardown helper-reader=0");
+                }
+            }
+            if !self.exited {
+                eprintln!("ordinary-teardown helper=0");
+            }
+        }
+    }
+
+    pub(super) fn run_sender(fixture: &FixtureProcess) {
+        assert!(
+            std::env::var_os(HELPER_AUTHORITY).is_none(),
+            "parent is not a sender helper"
+        );
+        fixture.assert_input_owner();
+        let target = fixture.child.as_ref().expect("owned UIPI target child");
+        let target_birth = birth(HANDLE(target.as_raw_handle())).unwrap_or_else(|| unavailable());
+        // SAFETY: the parent's pseudo handle is queried, never owned or closed.
+        let parent_birth = birth(unsafe { GetCurrentProcess() }).unwrap_or_else(|| unavailable());
+        let executable = std::env::current_exe().expect("current test executable");
+        let child = Command::new(&executable)
+            .args([
+                "--exact",
+                "ordinary_uipi_sender_helper",
+                "--ignored",
+                "--nocapture",
+                "--test-threads=1",
+            ])
+            .env("MADO_PILOT_WINDOWS_ORDINARY_INPUT", "1")
+            .env(HELPER_AUTHORITY, "1")
+            .env("RUST_BACKTRACE", "0")
+            .stdin(Stdio::piped())
+            .stdout(Stdio::piped())
+            .spawn()
+            .unwrap_or_else(|_| unavailable());
+        let mut sender = SenderProcess {
+            child,
+            output: None,
+            exited: false,
+        };
+        let output = sender.child.stdout.take().expect("private sender output");
+        sender.output = Some(thread::spawn(move || {
+            let mut bytes = Vec::with_capacity(4097);
+            output.take(4097).read_to_end(&mut bytes)?;
+            Ok(bytes)
+        }));
+        let grant = [
+            GRANT_MAGIC,
+            u64::from(sender.child.id()),
+            u64::from(std::process::id()),
+            parent_birth,
+            u64::from(target.id()),
+            target_birth,
+            u64::try_from(fixture.target().0.addr()).expect("64-bit target handle"),
+        ];
+        {
+            let mut input = sender
+                .child
+                .stdin
+                .take()
+                .expect("private sender authority pipe");
+            for field in grant {
+                input
+                    .write_all(&field.to_le_bytes())
+                    .expect("bounded sender authority handoff");
+            }
+        }
+        let deadline = Instant::now() + Duration::from_secs(30);
+        let status = loop {
+            if let Some(status) = sender.child.try_wait().expect("observed sender process") {
+                sender.exited = true;
+                break status;
+            }
+            assert!(Instant::now() < deadline, "ordinary UIPI sender timed out");
+            thread::sleep(Duration::from_millis(2));
+        };
+        while !sender.output.as_ref().expect("sender reader").is_finished() {
+            assert!(Instant::now() < deadline, "ordinary UIPI output timed out");
+            thread::sleep(Duration::from_millis(2));
+        }
+        let bytes = sender
+            .output
+            .take()
+            .expect("sender reader")
+            .join()
+            .expect("sender reader joined")
+            .expect("sender output read");
+        assert!(bytes.len() <= 4096, "bounded UIPI sender output");
+        let output = std::str::from_utf8(&bytes).expect("scalar sender output");
+        assert!(
+            status.success(),
+            "ordinary UIPI helper must pass, never skip"
+        );
+        // libtest may prefix a nocapture line with the selector. Match the one
+        // fixed suffix, not any payload or a partial success token.
+        assert_eq!(
+            output
+                .lines()
+                .filter(|line| line.ends_with(HELPER_COMPLETE))
+                .count(),
+            1
+        );
+        fixture.assert_input_owner();
+    }
+
+    pub(super) fn sender() {
+        require_ordinary_input();
+        assert_eq!(
+            std::env::var(HELPER_AUTHORITY).as_deref(),
+            Ok("1"),
+            "explicit helper authority"
+        );
+        let (send, receive) = mpsc::sync_channel(1);
+        let reader = thread::spawn(move || {
+            let mut bytes = [0u8; 56];
+            let mut input = std::io::stdin().lock();
+            let result = input.read_exact(&mut bytes).and_then(|()| {
+                let mut extra = [0u8; 1];
+                if input.read(&mut extra)? != 0 {
+                    return Err(std::io::Error::other("extra sender authority bytes"));
+                }
+                Ok(bytes)
+            });
+            let _sent = send.send(result);
+        });
+        let bytes = receive
+            .recv_timeout(Duration::from_secs(5))
+            .expect("bounded private parent authority")
+            .expect("complete parent authority");
+        reader.join().expect("authority reader joined");
+        let mut grant = [0u64; 7];
+        for (field, bytes) in grant.iter_mut().zip(bytes.chunks_exact(8)) {
+            *field = u64::from_le_bytes(bytes.try_into().expect("fixed grant field"));
+        }
+        let [
+            magic,
+            child,
+            parent,
+            parent_birth,
+            target,
+            target_birth,
+            window,
+        ] = grant;
+        assert_eq!(magic, GRANT_MAGIC, "parent authority version");
+        assert_eq!(
+            child,
+            u64::from(std::process::id()),
+            "grant belongs to this helper"
+        );
+        let parent_id = u32::try_from(parent).expect("parent PID");
+        let target_id = u32::try_from(target).expect("target PID");
+        assert_ne!(parent_id, target_id);
+        assert_ne!(parent_id, std::process::id());
+        assert_ne!(target_id, std::process::id());
+        let parent = process(parent_id).unwrap_or_else(|| unavailable());
+        let target = process(target_id).unwrap_or_else(|| unavailable());
+        assert_live(&parent, parent_birth);
+        assert_live(&target, target_birth);
+        let executable = std::env::current_exe().expect("current helper image");
+        assert!(
+            image_matches(parent.0, &executable),
+            "parent is this test executable"
+        );
+        assert!(
+            image_matches(
+                target.0,
+                Path::new(env!(
+                    "CARGO_BIN_EXE_mado-pilot-windows-window-message-fixture"
+                ))
+            ),
+            "target is the exact fixture executable"
+        );
+        let window = HWND(std::ptr::with_exposed_provenance_mut(
+            usize::try_from(window).expect("target handle fits pointer"),
+        ));
+        let title = ordinary_fixture_title(&format!("ordinary-uipi-target-{parent_id}"));
+        ordinary_assert_window_owner(window, target_id);
+        assert_eq!(find_window(&title), window);
+        ordinary_assert_focused(window);
+        let dpi = DpiScope::enter(DpiMode::PerMonitorV2).expect("sender thread DPI scope");
+        let desktop = DesktopState::capture();
+        let keys = ordinary_key_state();
+        let mut session = OrdinaryInputSession::open(&title, window, target_id);
+        let low = lower_sender().unwrap_or_else(|| unavailable());
+        // Reopen only the exact owned target after lowering, just as the
+        // production preflight does. Unavailable inspection must not admit input.
+        let lower_target = process(target_id).unwrap_or_else(|| unavailable());
+        assert_live(&lower_target, target_birth);
+        let target_token = token(lower_target.0, false).unwrap_or_else(|| unavailable());
+        let target_level = integrity(&target_token).unwrap_or_else(|| unavailable()).0;
+        if target_level <= low {
+            unavailable();
+        }
+        assert_live(&parent, parent_birth);
+        assert_live(&target, target_birth);
+        ordinary_assert_window_owner(window, target_id);
+        assert_eq!(find_window(&title), window);
+        ordinary_assert_focused(window);
+        let routes = [InputDelivery::WindowMessage, InputDelivery::System];
+        let receipt = session.execute(
+            DeliveryPlan::ordered(routes.to_vec()).expect("explicit privilege-bound plan"),
+            FocusPolicy::RequireFocused,
+        );
+        assert_ordinary_refusal(&receipt, &routes, InputFault::PolicyRefused);
+        assert!(session.close(), "sender controller close blocks acceptance");
+        desktop.assert_unchanged();
+        assert_eq!(ordinary_key_state(), keys);
+        drop(dpi);
+        println!("{HELPER_COMPLETE}");
+    }
+}
+
+#[test]
+#[ignore = "requires explicit ordinary-input authority and a private parent-owned UIPI grant"]
+fn ordinary_uipi_sender_helper() {
+    ordinary_uipi::sender();
+}
+
+#[test]
+#[ignore = "requires explicit ordinary-input authority and an unlocked controlled desktop"]
+fn ordinary_uipi_acceptance() {
+    require_ordinary_input();
+    let _serial = NATIVE_MATRIX.lock().expect("ordinary input serialized");
+    let dpi = DpiScope::enter(DpiMode::PerMonitorV2).expect("ordinary caller DPI scope");
+    let mut restore = DpiDesktopRestore(Some(DesktopState::capture()));
+    let keys = ordinary_key_state();
+    assert_eq!(keys, [false; 12], "modifiers and F6 must start released");
+    let mut fixture =
+        FixtureProcess::spawn_input("uipi-target", InputDelivery::WindowMessage, true);
+    ordinary_assert_focused(fixture.target());
+    let desktop = DesktopState::capture();
+    assert_eq!(fixture.input_report(), OrdinaryInputReport::EMPTY);
+    let before = fixture.report(fixture.target());
+    ordinary_uipi::run_sender(&fixture);
+    thread::sleep(Duration::from_millis(100));
+    assert_eq!(fixture.input_report(), OrdinaryInputReport::EMPTY);
+    assert_ordinary_observers_unchanged(before, fixture.report(fixture.target()));
+    ordinary_assert_focused(fixture.target());
+    desktop.assert_unchanged();
+    assert_eq!(ordinary_key_state(), keys);
+    fixture.shutdown_input();
+    assert!(
+        restore.restore(),
+        "ordinary desktop restoration blocks acceptance"
+    );
+    assert_eq!(ordinary_key_state(), [false; 12]);
+    drop(dpi);
+    println!("ordinary-acceptance route=uipi complete=1");
+}
+
+fn assert_ordinary_observers_unchanged(before: ObservationReport, after: ObservationReport) {
+    // The exact keyboard/text oracle, not the target's aggregate legacy count,
+    // distinguishes input from passive WM_MOUSEMOVE generated by window setup.
+    assert_wrong_window_delta(before, after);
+    assert_eq!((after.raw, after.state), (before.raw, before.state));
 }
