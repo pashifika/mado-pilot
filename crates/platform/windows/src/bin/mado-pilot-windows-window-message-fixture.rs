@@ -71,7 +71,7 @@ mod fixture {
         LogicalToPhysicalPointForPerMonitorDPI, SetProcessDpiAwarenessContext,
     };
     use windows::Win32::UI::Input::KeyboardAndMouse::{
-        GetAsyncKeyState, VK_F6, VK_LSHIFT, VK_PACKET, VK_RSHIFT, VK_SHIFT,
+        GetAsyncKeyState, VK_F6, VK_LSHIFT, VK_PACKET, VK_PROCESSKEY, VK_RSHIFT, VK_SHIFT,
     };
     use windows::Win32::UI::Input::{RAWINPUTDEVICE, RegisterRawInputDevices};
     use windows::Win32::UI::WindowsAndMessaging::{
@@ -86,6 +86,11 @@ mod fixture {
         WM_XBUTTONDOWN, WM_XBUTTONUP, WNDCLASSEXW, WS_CHILD, WS_OVERLAPPEDWINDOW, WS_VISIBLE,
     };
     use windows::core::{Error, PCWSTR, Result as WindowsResult};
+
+    #[link(name = "imm32")]
+    unsafe extern "system" {
+        fn ImmGetVirtualKey(window: HWND) -> u32;
+    }
 
     const STATE_TIMER: usize = 1;
     const STATE_POLL_INTERVAL_MS: u32 = 5;
@@ -136,6 +141,9 @@ mod fixture {
         keys: AtomicU32,
         packet_down: AtomicU32,
         packet_up: AtomicU32,
+        ime_packet: AtomicBool,
+        ime_key_down: AtomicU32,
+        ime_packet_down: AtomicU32,
         text_units: AtomicU32,
         unexpected: AtomicU32,
         overflow: AtomicBool,
@@ -149,9 +157,31 @@ mod fixture {
                 keys: AtomicU32::new(0),
                 packet_down: AtomicU32::new(0),
                 packet_up: AtomicU32::new(0),
+                ime_packet: AtomicBool::new(false),
+                ime_key_down: AtomicU32::new(0),
+                ime_packet_down: AtomicU32::new(0),
                 text_units: AtomicU32::new(0),
                 unexpected: AtomicU32::new(0),
                 overflow: AtomicBool::new(false),
+            }
+        }
+
+        fn prepare_dispatch(&self, message: &MSG) {
+            self.ime_packet.store(false, Ordering::Release);
+            if self.mode == InputOracleMode::System
+                && self.owns(message.hwnd)
+                && message.message == WM_KEYDOWN
+            {
+                let original = if message.wParam.0 & 0xffff == usize::from(VK_PROCESSKEY.0) {
+                    // SAFETY: query this thread's owned message before TranslateMessage.
+                    unsafe { ImmGetVirtualKey(message.hwnd) as usize }
+                } else {
+                    message.wParam.0
+                };
+                self.ime_packet.store(
+                    original & 0xffff == usize::from(VK_PACKET.0),
+                    Ordering::Release,
+                );
             }
         }
 
@@ -178,8 +208,17 @@ mod fixture {
             let single = lparam.0.cast_unsigned() & 0xffff == 1;
             let expected = match message {
                 WM_KEYDOWN | WM_KEYUP | WM_SYSKEYDOWN | WM_SYSKEYUP => {
-                    // VK_PACKET occupies LOWORD; the high word can carry UTF-16.
-                    if wparam.0 & 0xffff == usize::from(VK_PACKET.0) {
+                    let ime =
+                        message == WM_KEYDOWN && wparam.0 & 0xffff == usize::from(VK_PROCESSKEY.0);
+                    let ime_packet = ime && self.ime_packet.load(Ordering::Acquire);
+                    if ime {
+                        self.increment(&self.ime_key_down);
+                    }
+                    if ime_packet {
+                        self.increment(&self.ime_packet_down);
+                    }
+                    // VK_PACKET occupies LOWORD; IME keys need their original value.
+                    if wparam.0 & 0xffff == usize::from(VK_PACKET.0) || ime_packet {
                         let down = matches!(message, WM_KEYDOWN | WM_SYSKEYDOWN);
                         let index = self.increment(if down {
                             &self.packet_down
@@ -269,6 +308,14 @@ mod fixture {
                 u8::from(key_match),
                 u8::from(text_match),
                 u8::from(overflow),
+            ));
+        }
+
+        fn print_ime_report(&self) {
+            print_line(&format!(
+                "input-oracle-ime processed={} packets={}",
+                self.ime_key_down.load(Ordering::Acquire),
+                self.ime_packet_down.load(Ordering::Acquire),
             ));
         }
     }
@@ -466,6 +513,9 @@ mod fixture {
             if status.0 == 0 {
                 break;
             }
+            if let Some(oracle) = INPUT_ORACLE.get() {
+                oracle.prepare_dispatch(&message);
+            }
             // Only System input needs VK_PACKET translated; WM posts text explicitly.
             // SAFETY: GetMessageW initialized the scalar message structure.
             unsafe {
@@ -473,6 +523,9 @@ mod fixture {
                     let _translated = TranslateMessage(&raw const message);
                 }
                 DispatchMessageW(&raw const message);
+            }
+            if let Some(oracle) = INPUT_ORACLE.get() {
+                oracle.ime_packet.store(false, Ordering::Release);
             }
         }
         Ok(())
@@ -636,6 +689,12 @@ mod fixture {
                     && let Some(oracle) = INPUT_ORACLE.get()
                 {
                     oracle.print_report();
+                    return LRESULT(0);
+                }
+                if wparam.0 == 3
+                    && let Some(oracle) = INPUT_ORACLE.get()
+                {
+                    oracle.print_ime_report();
                     return LRESULT(0);
                 }
                 if wparam.0 == 1 && COORDINATE_ORACLE.load(Ordering::Acquire) {
@@ -1236,6 +1295,31 @@ mod fixture {
         assert_eq!(oracle.text_units.load(Ordering::Acquire), 3);
         assert_eq!(oracle.unexpected.load(Ordering::Acquire), 0);
         assert!(!oracle.overflow.load(Ordering::Acquire));
+    }
+
+    #[test]
+    fn ime_keys_require_pretranslation_packet_identity() {
+        let oracle = InputOracle::new(InputOracleMode::System, HWND::default());
+        for (message, key) in INPUT_ORACLE_KEYS {
+            oracle.observe(message, WPARAM(usize::from(key)), LPARAM(1));
+        }
+        for unit in [0x0041_u16, 0xd83d, 0xde42] {
+            oracle.ime_packet.store(true, Ordering::Release);
+            oracle.observe(WM_KEYDOWN, WPARAM(usize::from(VK_PROCESSKEY.0)), LPARAM(1));
+            oracle.prepare_dispatch(&MSG::default());
+            oracle.observe(WM_KEYUP, WPARAM(usize::from(VK_PACKET.0)), LPARAM(1));
+            oracle.observe(WM_CHAR, WPARAM(usize::from(unit)), LPARAM(1));
+        }
+        assert_eq!(oracle.keys.load(Ordering::Acquire), 4);
+        assert_eq!(oracle.packet_down.load(Ordering::Acquire), 3);
+        assert_eq!(oracle.packet_up.load(Ordering::Acquire), 3);
+        assert_eq!(oracle.text_units.load(Ordering::Acquire), 3);
+        assert_eq!(oracle.ime_key_down.load(Ordering::Acquire), 3);
+        assert_eq!(oracle.ime_packet_down.load(Ordering::Acquire), 3);
+        assert_eq!(oracle.unexpected.load(Ordering::Acquire), 0);
+        oracle.observe(WM_KEYDOWN, WPARAM(usize::from(VK_PROCESSKEY.0)), LPARAM(1));
+        assert_eq!(oracle.packet_down.load(Ordering::Acquire), 3);
+        assert_eq!(oracle.unexpected.load(Ordering::Acquire), 1);
     }
 
     fn wide(value: &str) -> Vec<u16> {

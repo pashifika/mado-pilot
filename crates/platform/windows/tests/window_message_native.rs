@@ -2823,8 +2823,26 @@ impl FixtureProcess {
 
     fn input_report(&mut self) -> OrdinaryInputReport {
         self.assert_input_owner();
+        let deadline = Instant::now() + Duration::from_secs(5);
         self.control(self.target(), CONTROL_REPORT, 2);
-        OrdinaryInputReport::parse(&self.wait_for("input-oracle ", Duration::from_secs(5)))
+        let report = OrdinaryInputReport::parse(&self.wait_for(
+            "input-oracle ",
+            deadline.saturating_duration_since(Instant::now()),
+        ));
+        self.control(self.target(), CONTROL_REPORT, 3);
+        let ime = self.wait_for(
+            "input-oracle-ime ",
+            deadline.saturating_duration_since(Instant::now()),
+        );
+        let (processed, packets) = ime
+            .strip_prefix("input-oracle-ime processed=")
+            .and_then(|value| value.split_once(" packets="))
+            .expect("bounded IME observation");
+        let processed = processed.parse::<u32>().expect("IME key count");
+        let packets = packets.parse::<u32>().expect("IME packet count");
+        assert!(packets <= processed && processed <= 3);
+        println!("ordinary-ime processed={processed} packets={packets}");
+        report
     }
 
     fn wait_input_arrivals(&mut self, route: InputDelivery) {
