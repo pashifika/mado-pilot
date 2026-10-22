@@ -201,17 +201,14 @@ mod native {
                 };
                 let offset = (height - 8) * stride + (bit * 4 + 2) * 4;
                 let pixel = &mapping.bytes()[offset..offset + 4]; // BGRA mapping.
-                let observed = if pixel[0] < 40 && pixel[1] > 215 && pixel[2] > 215 {
+                let opaque = pixel[3] == 255;
+                let observed = if opaque && pixel[..3].iter().all(|channel| *channel > 215) {
                     true
-                } else if pixel[0] > 215 && pixel[1] < 40 && pixel[2] < 40 {
+                } else if opaque && pixel[..3].iter().all(|channel| *channel < 40) {
                     false
                 } else {
                     let category = if pixel[3] != 255 {
                         "nonopaque"
-                    } else if pixel[..3].iter().all(|channel| *channel > 215) {
-                        "light-neutral"
-                    } else if pixel[..3].iter().all(|channel| *channel < 40) {
-                        "dark-neutral"
                     } else if pixel[0] > pixel[1] && pixel[0] > pixel[2] {
                         "blue-dominant"
                     } else if pixel[0] < pixel[1] && pixel[0] < pixel[2] {
@@ -931,13 +928,20 @@ mod native {
                 for bit in 0..96 {
                     let color = if bit == 95 || (marker == MarkerCheck::TokenMismatch && bit == 63)
                     {
-                        [0, 255, 255, 255]
+                        [255; 4]
                     } else {
-                        [255, 0, 0, 255]
+                        [0, 0, 0, 255]
                     };
                     let color = match (marker, bit) {
-                        (MarkerCheck::ColorMismatch { .. }, 0) => [255; 4],
-                        (MarkerCheck::StateMismatch, 95) => [255, 0, 0, 255],
+                        (
+                            MarkerCheck::ColorMismatch {
+                                category: "nonopaque",
+                                ..
+                            },
+                            0,
+                        ) => [0; 4],
+                        (MarkerCheck::ColorMismatch { .. }, 0) => [128, 128, 128, 255],
+                        (MarkerCheck::StateMismatch, 95) => [0, 0, 0, 255],
                         _ => color,
                     };
                     for x in bit * 4..(bit + 1) * 4 {
@@ -980,7 +984,11 @@ mod native {
             for rejected in [
                 MarkerCheck::ColorMismatch {
                     cell: 0,
-                    category: "light-neutral",
+                    category: "other",
+                },
+                MarkerCheck::ColorMismatch {
+                    cell: 0,
+                    category: "nonopaque",
                 },
                 MarkerCheck::TokenMismatch,
                 MarkerCheck::StateMismatch,

@@ -22,20 +22,24 @@ and all source/artifact hashes matched. The owned fixture acknowledged
 Resource and cleanup checks passed, including zero logical/physical OCR work
 after close and unforced exit/reaping of both children.
 
-The historical checkpoint error covers both an acquisition deadline and a
-deadline after rejecting a marker. Its retained record does not distinguish
-them; it is not proof that capture delivered no frames. The current consumer
-records one bounded summary per checkpoint: acquisition/mapping counts, color,
-ownership-token and state rejection counts, the final phase, and the last exact
-frame stamp, mapped extent/stride and marker verdict. Color rejection identifies
-the first rejected cell and a closed color/opacity category, not channel values.
-No pixels, decoded token or OCR text are recorded. Each mapping/marker
-observation belongs to the last
-acquired frame; a later mapping failure cannot inherit an earlier frame's facts.
-The marker's acceptance thresholds and five-second operation deadline are
-unchanged. Capture-free replay rejects each mismatch class and accepts only its
-acknowledged successor; it also exercises acquisition refusal after close.
-Native source correlation remains unresolved pending a freshly authorized run.
+Bounded checkpoint diagnostics distinguish acquisition, mapping and the first
+color/token/state rejection. The diagnostic attempts acquired correctly sized
+960x556 BGRA frames, then rejected the first yellow marker cell. ScreenCaptureKit
+uses the display's color space when `colorSpaceName` is unset; capture-free
+AppKit conversion confirmed that this display's conversion moves sRGB yellow
+outside the original byte thresholds, while black and white retain their
+neutral endpoint classification.
+
+The marker now uses opaque black/white cells without changing the 96-bit
+ownership/state challenge, source order or five-second operation deadline.
+Every RGB channel must remain strictly below40 or above215, with alpha255.
+The image and OCR ROI are unchanged; no runtime color conversion is introduced.
+The private summary retains only counts, the last exact frame stamp and mapped
+extent/stride, the first rejected cell and a closed color/opacity category.
+Mapping/marker facts always belong to that last acquired frame; no pixels,
+decoded token or OCR text are recorded. Capture-free replay rejects ambiguous
+colors and wrong token/state, accepts only the acknowledged successor, and
+preserves closed acquisition. Native scenario success requires its own run.
 No permission setting or input action was performed. These observations do not
 qualify ScreenCaptureKit OCR, macOS support, recognition quality or numerical
 workload budgets.
@@ -142,10 +146,12 @@ A single atomic command file carries `<nonce> <sequence> <operation>`; the fixtu
 accepts each sequence once. Acknowledgements carry nonce, sequence, operation,
 owned PID/window number, logical size and rendered scale, at most 512 bytes.
 Commands are at most 256 bytes. Stale acknowledgements are observed, not resent.
-The 64-bit per-run nonce and 32-bit state are drawn as blue/yellow cells; capture
-must contain those exact marker bits. Unique title selection only locates a
-candidate: the retained public target/stream plus the pixel challenge establish
-the owned source. No later discovery retargets the session.
+The 64-bit per-run nonce and 32-bit state are drawn as opaque black/white cells;
+capture must contain those exact marker bits. Neutral endpoints avoid assuming
+that a display-dependent capture buffer preserves an sRGB chromatic palette.
+Unique title selection only locates a candidate: the retained public target/stream
+plus the pixel challenge establish the owned source. No later discovery retargets
+the session.
 
 | Sequence | Operation / mandatory observation |
 |---|---|

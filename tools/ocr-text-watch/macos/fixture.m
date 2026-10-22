@@ -35,8 +35,8 @@
     for (unsigned bit = 0; bit < 96; ++bit) {
         BOOL one = bit < 64 ? ((self.token >> (63 - bit)) & 1)
                             : ((self.state >> (95 - bit)) & 1);
-        [(one ? [NSColor colorWithSRGBRed:1 green:1 blue:0 alpha:1]
-              : [NSColor colorWithSRGBRed:0 green:0 blue:1 alpha:1]) setFill];
+        // Neutral endpoints remain neutral in ScreenCaptureKit's display color space.
+        [(one ? NSColor.whiteColor : NSColor.blackColor) setFill];
         NSRectFill(NSMakeRect(bit * 2, self.bounds.size.height - 8, 2, 8));
     }
 }
