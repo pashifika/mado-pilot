@@ -27,8 +27,8 @@ mod windows_procedure {
     use std::time::{Duration, Instant};
 
     use mado_pilot::{
-        ChangeDetectionPolicy, ClipPolicy, ContentDigest, CoordinateSpace, Engine, Frame,
-        FrameOrder, FrameRequest, FrameStamp, NativeEngineRequest, OcrExecutionProvider,
+        ChangeDetectionPolicy, ClipPolicy, ContentDigest, CoordinateSpace, Engine, FrameOrder,
+        FrameRequest, FrameStamp, NativeEngineRequest, OcrExecutionProvider,
         OcrExecutionProviderPolicy, OcrProfile, OcrProfileConfig, OcrTextAnalysisRate,
         OcrTextQuery, OcrTextQueryOutcome, OcrTextStability, OcrTextTerminalOutcome,
         OcrTextWatchRequest, OpenRequest, OperationContext, PixelFormat, Rect, Session,
