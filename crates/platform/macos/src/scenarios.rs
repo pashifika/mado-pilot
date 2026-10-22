@@ -1275,19 +1275,18 @@ fn caller_cancellation_during_accepted_start_still_reaps_the_session() {
     let submissions =
         shim::testing_capture_lifecycle_counts().expect("read lifecycle submission baseline");
     let cancellation = CancellationToken::new();
-    let canceller = cancellation.clone();
     let context = OperationContext::new()
-        .with_timeout(Duration::from_secs(1))
+        .with_timeout(Duration::from_secs(10))
         .expect("positive timeout")
-        .with_cancellation(cancellation);
-    let cancel_thread = thread::spawn(move || {
-        thread::sleep(Duration::from_millis(20));
-        canceller.cancel();
+        .with_cancellation(cancellation.clone());
+    let outcome = shim::testing_cancel_after_start(cancellation.clone(), || {
+        harness.open_with_delays_in(Duration::from_millis(150), Duration::ZERO, &context)
     });
-    let error = harness
-        .open_with_delays_in(Duration::from_millis(150), Duration::ZERO, &context)
-        .expect_err("caller cancellation wins after native start was accepted");
-    cancel_thread.join().expect("canceller");
+    assert!(
+        cancellation.is_cancelled(),
+        "native start reached the cancellation boundary"
+    );
+    let error = outcome.expect_err("caller cancellation wins after native start was accepted");
     assert_eq!(error.status(), Status::Cancelled);
     assert!(settles_to(baseline), "cancellation left native ownership");
     let settled =
