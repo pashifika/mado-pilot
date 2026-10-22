@@ -383,7 +383,8 @@ provenance/restoration controller requirements as the DPI rows.
 | `ordinary_uipi_acceptance` | Lower-integrity owned sender refuses the higher-integrity owned target before submission; fallback cannot bypass the boundary |
 
 The opt-in fixture oracle compares ordered key events and UTF-16 units without
-printing payloads. Completion requires explicit session close, graceful fixture
+printing payloads. System `VK_PACKET` classification uses the virtual-key low
+word. Completion requires explicit session close, graceful fixture
 shutdown and checked desktop restoration. Missing token privileges/integrity
 prerequisites are unavailable evidence, not passes; no elevation is attempted.
 Do not use the broader lifecycle/queue-pressure matrix as a substitute.

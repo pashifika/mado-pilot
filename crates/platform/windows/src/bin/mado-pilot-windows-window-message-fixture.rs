@@ -178,7 +178,8 @@ mod fixture {
             let single = lparam.0.cast_unsigned() & 0xffff == 1;
             let expected = match message {
                 WM_KEYDOWN | WM_KEYUP | WM_SYSKEYDOWN | WM_SYSKEYUP => {
-                    if wparam.0 == usize::from(VK_PACKET.0) {
+                    // VK_PACKET occupies LOWORD; the high word can carry UTF-16.
+                    if wparam.0 & 0xffff == usize::from(VK_PACKET.0) {
                         let down = matches!(message, WM_KEYDOWN | WM_SYSKEYDOWN);
                         let index = self.increment(if down {
                             &self.packet_down
@@ -1215,6 +1216,26 @@ mod fixture {
             // SAFETY: all top-level fixture windows are gone on this GUI thread.
             unsafe { PostQuitMessage(0) };
         }
+    }
+
+    #[test]
+    fn packed_unicode_keys_remain_packet_events() {
+        let oracle = InputOracle::new(InputOracleMode::System, HWND::default());
+        for (message, key) in INPUT_ORACLE_KEYS {
+            oracle.observe(message, WPARAM(usize::from(key)), LPARAM(1));
+        }
+        for unit in [0x0041_u16, 0xd83d, 0xde42] {
+            let packet = (usize::from(unit) << 16) | usize::from(VK_PACKET.0);
+            oracle.observe(WM_KEYDOWN, WPARAM(packet), LPARAM(1));
+            oracle.observe(WM_KEYUP, WPARAM(usize::from(VK_PACKET.0)), LPARAM(1));
+            oracle.observe(WM_CHAR, WPARAM(usize::from(unit)), LPARAM(1));
+        }
+        assert_eq!(oracle.keys.load(Ordering::Acquire), 4);
+        assert_eq!(oracle.packet_down.load(Ordering::Acquire), 3);
+        assert_eq!(oracle.packet_up.load(Ordering::Acquire), 3);
+        assert_eq!(oracle.text_units.load(Ordering::Acquire), 3);
+        assert_eq!(oracle.unexpected.load(Ordering::Acquire), 0);
+        assert!(!oracle.overflow.load(Ordering::Acquire));
     }
 
     fn wide(value: &str) -> Vec<u16> {
