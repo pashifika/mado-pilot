@@ -1,5 +1,6 @@
 """Explicitly authorized, one-shot private task 7.4 execution of the 7.3 procedure.
 
+Procedure v3: one consumer and at most two sequential owned fixture generations.
 Preparation/inspection alone does not authorize invoking this file. No build,
 permission request, focus, input, signing, download, retry, or process-name kill.
 """
@@ -25,17 +26,28 @@ ROOT = Path(__file__).resolve().parents[3]
 _GIT_PROGRAM = shutil.which("git")
 GIT_EXECUTABLE = str(Path(_GIT_PROGRAM).resolve()) if _GIT_PROGRAM else None
 HUD_SHA256 = "10f0163cf298453e55922cc6104ee3066f59a328a55e9bac6c04f24d36c9e288"
+PROCEDURE = "ocr-text-watch-apple-v3"
 ROWS = ("acknowledged-transition", "retained-producer-progress", "resize-reset",
-        "resize-invalidity", "exact-window-loss", "parent-close-retention")
+        "resize-invalidity", "window-loss-classification", "same-process-rediscovery",
+        "process-loss-classification", "new-process-rediscovery", "parent-close-retention")
+# Exact owned child roles; each fixture generation is a separate direct child
+# with its own control directory `<evidence>/<role>/`, nonce and receipts.
+FIXTURE_ROLES = ("fixture-1", "fixture-2")
+ROLES = ("consumer", *FIXTURE_ROLES)
+# Final acknowledged sequence of each generation; the fixture exits normally
+# after acknowledging it. Any other exit without a stop file is premature.
+EXIT_SEQUENCE = {1: 15, 2: 4}
 BOUNDS = {"construction_seconds": 45, "permission_and_launch_seconds": 65,
           "fixture_launch_seconds": 10, "control_seconds": 5,
-          "semantic_wait_seconds": 15, "query_lifetime_seconds": 100,
+          "semantic_wait_seconds": 15, "loss_observation_seconds": 10,
+          "query_lifetime_seconds": 100,
           "session_close_seconds": 5, "physical_drain_seconds": 5,
           "consumer_seconds": 200, "fixture_self_fuse_seconds": 210,
           "graceful_exit_seconds": 5, "terminate_seconds": 2, "kill_reap_seconds": 2,
           "each_output_file_bytes": 65536, "total_output_bytes": 262144,
           "each_native_image_file_bytes": 1048576, "total_native_image_bytes": 2097152,
-          "consumer_processes": 1, "fixture_processes": 1, "warmups": 0, "samples": 1}
+          "consumer_processes": 1, "fixture_processes": 2, "concurrent_native_children": 2,
+          "warmups": 0, "samples": 1}
 
 
 def digest(path: Path) -> dict:
@@ -64,6 +76,18 @@ def validate_native_images(value) -> dict[str, str]:
             raise ValueError("native-image-authority-mismatch")
         approved[name] = expected
     return approved
+
+
+def validate_host_authority(authority, host: dict):
+    if not isinstance(authority, dict):
+        raise ValueError("authority-not-object")
+    required_host = {name: host[name] for name in
+                     ("machine_uuid", "uname", "product_version", "build", "cpu", "sdk")}
+    if (authority.get("approved") is not True or authority.get("task") != "7.4"
+            or authority.get("target") != "aarch64-apple-darwin"
+            or authority.get("host") != required_host or authority.get("bounds") != BOUNDS
+            or authority.get("procedure") != PROCEDURE or authority.get("roles") != list(ROLES)):
+        raise ValueError("fresh-host-authority-mismatch")
 
 
 def bounded_reader():
@@ -117,8 +141,14 @@ class NativeCapture:
               cwd: Path, env: dict[str, str]) -> subprocess.Popen:
         if self._closed or self.failure is not None:
             raise ValueError("native-capture-not-launchable")
-        if name not in ("consumer", "fixture") or name in self.children:
+        if name not in ROLES or name in self.children:
             raise ValueError("native-child-role-already-owned-or-invalid")
+        if sum(child.poll() is None for child in self.children.values()) >= 2:
+            raise ValueError("concurrent-native-child-limit")
+        if name == "fixture-2":
+            predecessor = self.children.get("fixture-1")
+            if predecessor is None or predecessor.poll() is None:
+                raise ValueError("successor-before-predecessor-reaped")
         if any(key.startswith("DYLD_PRINT_") and value for key, value in env.items()):
             raise ValueError("ambient-dyld-diagnostics-refused")
         prepared = []
@@ -160,9 +190,11 @@ class NativeCapture:
             raise
 
     def ordinary_bytes(self) -> int:
-        excluded = {self.evidence / f"{name}.native-images" for name in ("consumer", "fixture")}
+        excluded = {self.evidence / f"{name}.native-images" for name in ROLES}
         total = 0
-        for path in self.evidence.iterdir():
+        # Generation control directories hold command/ack/receipt files; they
+        # share the ordinary aggregate rather than receiving their own budget.
+        for path in self.evidence.rglob("*"):
             if path not in excluded:
                 try:
                     if path.is_file():
@@ -388,10 +420,196 @@ class NativeCapture:
         return paths
 
 
+def publish(root: Path, name: str, text: str):
+    """Atomically publish one small control/receipt file inside `root`."""
+    temporary = root / f"{name}.tmp"
+    temporary.write_text(text)
+    temporary.replace(root / name)
+
+
+def read_control(path: Path, limit: int = 512) -> str | None:
+    """Read one bounded ASCII protocol message, without a stat/read race."""
+    try:
+        with path.open("rb") as stream:
+            data = stream.read(limit + 1)
+    except FileNotFoundError:
+        return None
+    if len(data) > limit:
+        raise ValueError("control-message-limit")
+    return data.decode("ascii", errors="strict")
+
+
+def fixture_ack(root: Path, nonce: str, pid: int, sequence: int, operation: str) -> str:
+    text = read_control(root / "ack")
+    match = re.fullmatch(
+        rf"{nonce} {sequence} {operation} {pid} ([1-9][0-9]*) "
+        r"([1-9][0-9]*) ([1-9][0-9]*) 2\.0\n", text or "",
+    )
+    expected_size = ("240", "140") if operation == "close-window" else ("480", "278")
+    if (match is None or int(match[1]) > 0xffffffff
+            or (match[2], match[3]) != expected_size):
+        raise ValueError("fixture-ack-provenance")
+    if read_control(root / "command") != f"{nonce} {sequence} {operation}\n":
+        raise ValueError("fixture-command-provenance")
+    return match[1]
+
+
+class FixtureLineage:
+    """At most two sequential owned fixture generations under one supervisor.
+
+    Each generation is a direct `Popen` child with its own control directory,
+    nonce and owner receipt. The successor launches only after the exact
+    predecessor child was reaped following its expected exit acknowledgement
+    and the consumer explicitly requested the phase. A numeric PID, a stale
+    acknowledgement or a foreign nonce authorizes nothing.
+    """
+
+    def __init__(self, capture: NativeCapture, nonces: tuple[str, str]):
+        if (len(nonces) != 2 or len(set(nonces)) != 2
+                or any(re.fullmatch(r"[0-9a-f]{16}", nonce) is None for nonce in nonces)):
+            raise ValueError("two-distinct-generation-nonces-required")
+        self.capture = capture
+        self.nonces = nonces
+        self.children: dict[int, subprocess.Popen] = {}
+        self.reaped: dict[int, int] = {}
+        self.alive = False
+
+    def reject(self, reason: str):
+        self.capture.fail(reason)
+        raise ValueError(reason)
+
+    def owned(self, generation: int) -> subprocess.Popen:
+        child = self.children[generation]
+        if self.capture.children.get(self.role(generation)) is not child:
+            self.reject("fixture-child-not-owned")
+        expected = f"{self.nonce(generation)} {generation} {child.pid}\n"
+        if read_control(self.root(generation) / "fixture-owner") != expected:
+            self.reject("fixture-owner-receipt")
+        return child
+
+    @staticmethod
+    def role(generation: int) -> str:
+        return f"fixture-{generation}"
+
+    def root(self, generation: int) -> Path:
+        return self.capture.evidence / self.role(generation)
+
+    def nonce(self, generation: int) -> str:
+        return self.nonces[generation - 1]
+
+    def launch(self, generation: int, spawn) -> subprocess.Popen:
+        """Launch one generation through `spawn(root, nonce, generation, role)`."""
+        if generation not in EXIT_SEQUENCE or generation in self.children:
+            raise ValueError("fixture-generation-already-owned-or-invalid")
+        if generation == 2 and not self.successor_requested():
+            self.reject("successor-request-required")
+        if any(child.poll() is None for child in self.children.values()):
+            self.capture.fail("concurrent-fixture-generations")
+            raise ValueError("concurrent-fixture-generations")
+        root = self.root(generation)
+        root.mkdir(mode=0o700)
+        child = spawn(root, self.nonce(generation), generation, self.role(generation))
+        if self.capture.children.get(self.role(generation)) is not child:
+            self.reject("fixture-child-not-owned")
+        if (root / "fixture-owner").exists():
+            self.reject("fixture-owner-already-present")
+        self.children[generation] = child
+        # The owner receipt follows Popen registration: `<nonce> <generation> <pid>`.
+        publish(root, "fixture-owner", f"{self.nonce(generation)} {generation} {child.pid}\n")
+        return child
+
+    def observe(self):
+        """Publish authority only from the registered Popen generation."""
+        # A request preceding the reap receipt is never made valid by a later
+        # poll in this pass. The consumer must have received that receipt first.
+        self.successor_requested()
+        for generation in self.children:
+            child = self.owned(generation)
+            root = self.root(generation)
+            role = self.role(generation)
+            if (root / "fixture-failure").exists():
+                self.capture.fail("fixture-failed", role)
+                continue
+            code = self.capture.poll(role)
+            if generation in self.reaped:
+                expected = f"{self.nonce(generation)} {generation} {child.pid} 0\n"
+                if read_control(root / "reaped") != expected:
+                    self.reject("fixture-reap-receipt")
+                continue
+            if (root / "reaped").exists():
+                self.reject("fixture-reap-before-supervisor")
+            if code is None:
+                continue
+            if (root / "stop").exists():
+                continue  # Failure cleanup is never process-loss certification.
+            if code != 0:
+                continue  # poll already recorded the nonzero exit.
+            fixture_ack(root, self.nonce(generation), child.pid, EXIT_SEQUENCE[generation], "exit")
+            self.reaped[generation] = code
+            publish(root, "reaped", f"{self.nonce(generation)} {generation} {child.pid} 0\n")
+        self.observe_liveness()
+
+    def observe_liveness(self):
+        request = read_control(self.capture.evidence / "alive-request", 128)
+        if request is None:
+            return
+        if 1 not in self.children:
+            self.reject("liveness-before-generation")
+        child = self.owned(1)
+        expected = f"{self.nonce(1)} 1 {child.pid} window-absent\n"
+        if request != expected:
+            self.reject("invalid-liveness-request")
+        receipt = self.root(1) / "alive"
+        if self.alive:
+            if read_control(receipt) != expected:
+                self.reject("fixture-liveness-receipt")
+            return
+        if receipt.exists():
+            self.reject("fixture-liveness-before-supervisor")
+        if (self.root(1) / "stop").exists() or (self.root(1) / "fixture-failure").exists():
+            self.reject("fixture-liveness-unavailable")
+        fixture_ack(self.root(1), self.nonce(1), child.pid, 10, "close-window")
+        # Popen.poll is waitpid on this exact unreaped child, not a PID lookup.
+        # Check after the protocol read: a completed process cannot certify life.
+        if self.capture.poll("fixture-1") is not None:
+            self.reject("fixture-liveness-unavailable")
+        publish(self.root(1), "alive", expected)
+        self.alive = True
+
+    def successor_requested(self) -> bool:
+        request = read_control(self.capture.evidence / "successor-request", 128)
+        if request is None:
+            if 2 in self.children:
+                self.reject("successor-request-removed")
+            return False
+        if 1 not in self.reaped:
+            self.reject("successor-before-predecessor-reaped")
+        child = self.owned(1)
+        if (self.capture.poll("fixture-1") != 0
+                or read_control(self.root(1) / "reaped") != f"{self.nonce(1)} 1 {child.pid} 0\n"):
+            self.reject("fixture-reap-receipt")
+        expected = f"{self.nonce(1)} 1 {child.pid} {self.nonce(2)} 2 successor-after-close\n"
+        if request != expected:
+            self.reject("invalid-successor-request")
+        consumer = self.capture.children.get("consumer")
+        if 2 not in self.children and (consumer is None or consumer.poll() is not None):
+            self.reject("successor-without-live-consumer")
+        return True
+
+    def stop_live(self):
+        """Failure cleanup: ask every still-running generation to exit."""
+        for generation in EXIT_SEQUENCE:
+            child = self.capture.children.get(self.role(generation))
+            if child is not None and child.poll() is None:
+                (self.root(generation) / "stop").write_text("stop\n")
+
+
+
 def finalize_record(record: dict, capture: NativeCapture, started: float):
     """Interpret only fully drained evidence; a report cannot clear a prior failure."""
     evidence = capture.evidence
-    consumer, fixture = (capture.children.get(name) for name in ("consumer", "fixture"))
+    consumer = capture.children.get("consumer")
+    fixtures = [capture.children[role] for role in FIXTURE_ROLES if role in capture.children]
     record["children"] = capture.cleanup_results or []
     if capture.failure is not None:
         record["reason"] = capture.failure["reason"]
@@ -431,7 +649,7 @@ def finalize_record(record: dict, capture: NativeCapture, started: float):
     clean_exits = all_reaped and all(not child["forced"] and not child["errors"] and
         (child["exit_code"] in (0, 1) if child["role"] == "consumer" else child["exit_code"] == 0)
         for child in record["children"])
-    if fixture is not None:
+    if fixtures:
         record["cleanup"] = "passed" if (clean_exits and
             all(row["complete"] for row in capture.facts().values()) and
             record.get("consumer_cleanup") == "consumer-endpoints-passed") else "failed"
@@ -471,7 +689,7 @@ def finalize_record(record: dict, capture: NativeCapture, started: float):
         except (OSError, ValueError):
             image_binding_matches = False
     record["native_image_binding_matches"] = image_binding_matches
-    if fixture is not None and (not record["runtime_image_observed"] or not image_binding_matches):
+    if fixtures and (not record["runtime_image_observed"] or not image_binding_matches):
         record["resource"] = "failed"
         capture.fail("native-image-binding-failed")
     if any(row["failure"] is not None for row in capture.channels.values()):
@@ -479,8 +697,14 @@ def finalize_record(record: dict, capture: NativeCapture, started: float):
     capture.check_output()
     record["duration_seconds"] = time.monotonic() - started
     update_capture_record(record, capture)
+    # Both fixture generations must have been launched and reaped: the new-process
+    # row cannot pass without the successor, and the record says so explicitly.
+    record["fixture_generations_reaped"] = len(fixtures) == len(FIXTURE_ROLES) and all(
+        child["reaped"] and child["exit_code"] == 0
+        for child in record["children"] if child["role"] in FIXTURE_ROLES)
     record["passed"] = (record["semantic"] == record["resource"] == record["cleanup"] == "passed"
                         and all(value == "passed" for value in record["rows"].values())
+                        and record["fixture_generations_reaped"]
                         and record["reason"] == "consumer-exited"
                         and consumer is not None and consumer.returncode == 0
                         and capture.failure is None)
@@ -537,12 +761,15 @@ def main() -> int:
         print("semantic=not-run resource=not-run cleanup=not-run reason=new-private-directory-required")
         return 2
     evidence = args.evidence.resolve()
-    record = {"procedure": "ocr-text-watch-apple-v2", "task": "7.4",
+    record = {"procedure": PROCEDURE, "task": "7.4",
               "bounds": BOUNDS, "semantic": "not-run", "resource": "not-run",
               "cleanup": "not-run", "reason": "prerequisites",
               "rows": {name: "not-run" for name in ROWS}, "commands": [], "children": []}
-    consumer = fixture = None
+    consumer = None
     capture = NativeCapture(evidence)
+    # Both generation nonces exist before any child: the consumer receives them
+    # as arguments and verifies every receipt against values it already holds.
+    lineage = FixtureLineage(capture, (secrets.token_hex(8), secrets.token_hex(8)))
     handlers = {number: signal.getsignal(number) for number in (signal.SIGTERM, signal.SIGINT)}
     started = time.monotonic()
     try:
@@ -585,13 +812,7 @@ def main() -> int:
         if not 0 < record["authority"]["bytes"] <= 65536 or not record["build_record"]["bytes"]:
             raise ValueError("invalid-authority-or-build-record")
         authority = json.loads(args.authority_file.read_text())
-        if not isinstance(authority, dict):
-            raise ValueError("authority-not-object")
-        required_host = {name: host[name] for name in ("machine_uuid", "uname", "product_version", "build", "cpu", "sdk")}
-        if (authority.get("approved") is not True or authority.get("task") != "7.4"
-                or authority.get("target") != "aarch64-apple-darwin"
-                or authority.get("host") != required_host or authority.get("bounds") != BOUNDS):
-            raise ValueError("fresh-host-authority-mismatch")
+        validate_host_authority(authority, host)
         if GIT_EXECUTABLE is None:
             raise ValueError("git-unavailable")
         record["git_executable"] = digest(Path(GIT_EXECUTABLE))
@@ -622,6 +843,7 @@ def main() -> int:
                        ROOT / "crates/mado-pilot/examples/ocr-text-watch-native-macos.rs",
                        ROOT / "tools/ocr-text-watch/macos/fixture.m", Path(__file__),
                        ROOT / "docs/ocr-text-watch-macos.md",
+                       ROOT / "docs/adr/0093-ocr-native-target-rediscovery.md",
                        ROOT / "tools/native-release-profile/process_runner.py"]
         record["files"] = [digest(path) for path in bound_files]
         if digest(hud)["sha256"] != HUD_SHA256:
@@ -646,8 +868,7 @@ def main() -> int:
             command(["/usr/bin/codesign", "--verify", "--strict", str(executable)])
             command(["/usr/bin/codesign", "-d", "--verbose=4", str(executable)])
             command(["/usr/bin/otool", "-L", str(executable)])
-        nonce = secrets.token_hex(8)
-        record["fixture_nonce"] = nonce
+        record["fixture_nonces"] = list(lineage.nonces)
         environment["MADO_PILOT_OCR_PRIVATE_SUPERVISED"] = "1"
         record["loader_environment"] = {name: environment.get(name) for name in (
             "DYLD_LIBRARY_PATH", "DYLD_FALLBACK_LIBRARY_PATH", "MADO_PILOT_ONNX_RUNTIME",
@@ -660,8 +881,11 @@ def main() -> int:
             record["commands"].append({"argv": row, "role": name})
             return capture.spawn(executable, argv, name, cwd=ROOT, env=environment)
 
+        def spawn_fixture(root: Path, nonce: str, generation: int, role: str) -> subprocess.Popen:
+            return spawn(fixture_path, [str(root), nonce, str(hud), str(generation)], role)
+
         launch_start = time.monotonic()
-        consumer = spawn(consumer_path, [str(evidence), nonce], "consumer")
+        consumer = spawn(consumer_path, [str(evidence), *lineage.nonces], "consumer")
         record["reason"] = "running"
         deadline = launch_start + BOUNDS["consumer_seconds"]
         while True:
@@ -673,7 +897,7 @@ def main() -> int:
                 capture.fail("consumer-timeout")
                 break
             permission = evidence / "permission"
-            if fixture is None and permission.exists():
+            if not lineage.children and permission.exists():
                 if permission.stat().st_size > 128:
                     raise ValueError("permission-output-limit")
                 decision = permission.read_text().strip()
@@ -683,24 +907,18 @@ def main() -> int:
                 if decision != "granted":
                     capture.fail("permission-" + decision)
                     break
-                fixture = spawn(fixture_path, [str(evidence), nonce, str(hud)], "fixture")
-                owner_path = evidence / "fixture-owner.tmp"
-                owner_path.write_text(str(fixture.pid) + "\n")
-                owner_path.replace(evidence / "fixture-owner")
-            if fixture is None and now - launch_start >= BOUNDS["permission_and_launch_seconds"]:
+                lineage.launch(1, spawn_fixture)
+            if not lineage.children and now - launch_start >= BOUNDS["permission_and_launch_seconds"]:
                 capture.fail("permission-or-launch-timeout")
                 break
-            if (evidence / "fixture-failure").exists():
-                capture.fail("fixture-failed")
+            lineage.observe()
+            if capture.failure is not None:
                 break
-            # Success exits after state 11; an explicit out-of-band stop is the
-            # consumer's failure cleanup, not a second semantic experiment.
-            if fixture is not None and capture.poll("fixture") is not None:
-                ack = evidence / "ack"
-                words = ack.read_text().split() if ack.exists() and ack.stat().st_size <= 512 else []
-                if (len(words) != 8 or words[:3] != [nonce, "11", "exit"]) and not (evidence / "stop").exists():
-                    capture.fail("fixture-premature-exit")
-                    break
+            # The successor starts only on the consumer's explicit request, which
+            # follows its old-session close, and only after the exact predecessor
+            # child was reaped; launch refuses anything earlier or concurrent.
+            if 2 not in lineage.children and lineage.successor_requested():
+                lineage.launch(2, spawn_fixture)
         if capture.poll("consumer") is not None and capture.failure is None:
             record["reason"] = "consumer-exited"
     except (Exception, KeyboardInterrupt) as error:
@@ -709,10 +927,8 @@ def main() -> int:
     finally:
         try:
             # Even a launch that fails after Popen registration is still owned.
-            fixture = capture.children.get("fixture")
             try:
-                if fixture is not None and fixture.poll() is None:
-                    (evidence / "stop").write_text("stop\n")
+                lineage.stop_live()
             except (Exception, KeyboardInterrupt) as error:
                 capture.fail("fixture-stop-write-failed", str(error))
             finally:

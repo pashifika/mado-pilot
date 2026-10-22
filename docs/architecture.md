@@ -2398,6 +2398,20 @@ authorization again with the same non-prompting probe discovery uses, and report
 an authorization outcome only when that read shows the authorization gone. Any other
 system stop is reported as the stream having ended, which is what is known.
 
+SDK/query termination and independently established target disappearance are
+separate facts. A caller deadline, absent frames or a stream error-stop does not
+prove window or process loss; a failed permission/discovery observation remains
+unresolved. Windows retains its explicit native closed/target-loss contract,
+without attributing that signal to a process exit. ScreenCaptureKit need not
+report immediate loss for every destroyed window. After independently
+establishing loss, caller code closes the old session before fresh discovery/open;
+replacement targets use new sessions and streams, never old-session rebinding.
+[ADR 0093](adr/0093-ocr-native-target-rediscovery.md) defines the planned owned
+OCR qualification of window loss with a live original process generation and
+process loss with that exact generation reaped. It adds no public API,
+background polling, automatic recovery or platform fallback and claims no new
+native acceptance.
+
 This is an implementation claim, not release acceptance. Its enforceability is
 uneven and the tables above say which cases run where: the scenarios that drive a
 real stream need a host that has granted Screen Recording, and they report a skip

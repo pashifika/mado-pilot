@@ -22,6 +22,7 @@ fn main() {
 mod native {
     use std::fs::{self, File, OpenOptions};
     use std::io::{Read, Write};
+    use std::num::NonZeroU32;
     use std::path::{Path, PathBuf};
     use std::sync::Arc;
     use std::thread;
@@ -29,19 +30,25 @@ mod native {
 
     use mado_pilot::{
         ChangeDetectionPolicy, ClipPolicy, CoordinateSpace, CpuMapping, Engine, Frame, FrameOrder,
-        FrameRequest, FrameStamp, NativeEngineRequest, OcrExecutionProvider, OcrProfile,
-        OcrProfileConfig, OcrTextAnalysisRate, OcrTextQuery, OcrTextQueryOutcome,
-        OcrTextQueryProgress, OcrTextStability, OcrTextTerminalOutcome, OcrTextWatchRequest,
-        OcrTextWatchResult, OpenRequest, OperationContext, PermissionKind, PermissionState,
-        PixelExtent, PixelFormat, PixelRect, Rect, Session, Status, TargetKind,
+        FrameRequest, FrameStamp, NativeEngineRequest, NativeWindowId, OcrBackendDescriptor,
+        OcrExecutionProvider, OcrProfile, OcrProfileConfig, OcrTextAnalysisRate, OcrTextQuery,
+        OcrTextQueryOutcome, OcrTextQueryProgress, OcrTextStability, OcrTextTerminalOutcome,
+        OcrTextWatchRequest, OcrTextWatchResult, OpenRequest, OperationContext, PermissionKind,
+        PermissionState, PixelExtent, PixelFormat, PixelRect, Rect, Session, Status, StreamId,
+        TargetDescription, TargetId, TargetKind,
     };
 
     const LITERAL: &str = "魔導士";
     const TICK: Duration = Duration::from_millis(20);
     const SEMANTIC: Duration = Duration::from_secs(15);
     const CONTROL: Duration = Duration::from_secs(5);
+    /// Bounded observation of the public query after an owned disappearance.
+    /// Expiry records that no SDK signal arrived; it is never itself a loss.
+    const LOSS_OBSERVATION: Duration = Duration::from_secs(10);
+    const FIXTURE_LAUNCH: Duration = Duration::from_secs(10);
     type Check<T> = Result<T, Failure>;
 
+    #[derive(Debug)]
     pub(super) enum Failure {
         Rule(&'static str),
         Api(Status),
@@ -95,6 +102,61 @@ mod native {
         fs::write(&temporary, value).map_err(|_| Failure::Rule("control-write"))?;
         fs::rename(temporary, root.join(name)).map_err(|_| Failure::Rule("control-publish"))
     }
+    fn fields<'a, const N: usize>(text: &'a str, rule: &'static str) -> Check<[&'a str; N]> {
+        let line = text.strip_suffix('\n').ok_or(Failure::Rule(rule))?;
+        require(
+            line.bytes()
+                .all(|byte| byte == b' ' || byte.is_ascii_graphic()),
+            rule,
+        )?;
+        let mut words = line.split(' ');
+        let mut result = [""; N];
+        for field in &mut result {
+            *field = words
+                .next()
+                .filter(|word| !word.is_empty())
+                .ok_or(Failure::Rule(rule))?;
+        }
+        require(words.next().is_none(), rule)?;
+        Ok(result)
+    }
+    fn positive_id(text: &str, rule: &'static str) -> Check<u32> {
+        require(
+            !text.starts_with('0') && text.bytes().all(|byte| byte.is_ascii_digit()),
+            rule,
+        )?;
+        text.parse::<u32>().map_err(|_| Failure::Rule(rule))
+    }
+    /// Supervisor receipts: `<nonce> <generation> <pid>` for the owner of a
+    /// launched generation, `<nonce> <generation> <pid> <exit_code>` once the
+    /// supervisor reaped that exact child. Every field must equal the generation
+    /// this consumer already holds from its arguments; a stale or foreign receipt
+    /// never authorizes another generation, and a bare PID authorizes nothing.
+    fn receipt(
+        text: &str,
+        nonce: &str,
+        generation: u32,
+        reaped: bool,
+        rule: &'static str,
+    ) -> Check<(u32, i32)> {
+        let (owner, number, process, exit) = if reaped {
+            let [owner, number, process, exit] = fields::<4>(text, rule)?;
+            (owner, number, process, Some(exit))
+        } else {
+            let [owner, number, process] = fields::<3>(text, rule)?;
+            (owner, number, process, None)
+        };
+        require(owner == nonce && number == generation.to_string(), rule)?;
+        let pid = positive_id(process, rule)?;
+        let exit_code = if let Some(exit) = exit {
+            let code = exit.parse::<i32>().map_err(|_| Failure::Rule(rule))?;
+            require(exit == code.to_string(), rule)?;
+            code
+        } else {
+            0
+        };
+        Ok((pid, exit_code))
+    }
     struct Evidence(File);
     impl Evidence {
         fn line(&mut self, text: impl AsRef<str>) -> Check<()> {
@@ -109,7 +171,23 @@ mod native {
         TokenMismatch,
         StateMismatch,
     }
+    /// What the public query itself reported after an owned disappearance.
+    /// Independent loss classification and cleanup are recorded separately.
+    #[derive(Clone, Copy, Debug, Eq, PartialEq)]
+    enum SdkSignal {
+        TargetLost,
+        NoneWithinBound,
+    }
+    impl SdkSignal {
+        fn label(self) -> &'static str {
+            match self {
+                Self::TargetLost => "target-lost",
+                Self::NoneWithinBound => "none-within-bound",
+            }
+        }
+    }
     struct Fixture {
+        generation: u32,
         root: PathBuf,
         nonce: String,
         token: u64,
@@ -117,6 +195,42 @@ mod native {
         window: i64,
     }
     impl Fixture {
+        fn new(evidence: &Path, generation: u32, nonce: String) -> Check<Self> {
+            require(
+                (1..=2).contains(&generation)
+                    && nonce.len() == 16
+                    && nonce
+                        .bytes()
+                        .all(|byte| byte.is_ascii_digit() || (b'a'..=b'f').contains(&byte)),
+                "fixture-token",
+            )?;
+            let token =
+                u64::from_str_radix(&nonce, 16).map_err(|_| Failure::Rule("fixture-token"))?;
+            Ok(Self {
+                generation,
+                root: evidence.join(format!("fixture-{generation}")),
+                nonce,
+                token,
+                pid: 0,
+                window: 0,
+            })
+        }
+        fn title(&self) -> String {
+            format!("MadoPilot OCR private {}", self.nonce)
+        }
+        fn geometry(&self, sequence: u32) -> (&'static str, &'static str) {
+            match (self.generation, sequence) {
+                (1, 9 | 10) => ("240", "140"),
+                (1, 6..=8) => ("520", "300"),
+                _ => ("480", "278"),
+            }
+        }
+        fn native_window(&self) -> Check<NonZeroU32> {
+            u32::try_from(self.window)
+                .ok()
+                .and_then(NonZeroU32::new)
+                .ok_or(Failure::Rule("fixture-window"))
+        }
         fn ack(&mut self, sequence: u32, state: &str, wait: Duration) -> Check<()> {
             let deadline = Instant::now() + wait;
             loop {
@@ -125,53 +239,50 @@ mod native {
                     "fixture-failed",
                 )?;
                 if let Some(row) = read_small(&self.root.join("ack"))? {
-                    let words: Vec<_> = row.split_whitespace().collect();
-                    require(
-                        words.len() == 8 && words[0] == self.nonce,
-                        "fixture-ack-identity",
-                    )?;
+                    let words = fields::<8>(&row, "fixture-ack-identity")?;
+                    require(words[0] == self.nonce, "fixture-ack-identity")?;
                     let seq = words[1]
                         .parse::<u32>()
                         .map_err(|_| Failure::Rule("fixture-sequence"))?;
+                    require(words[1] == seq.to_string(), "fixture-sequence")?;
                     require(seq <= sequence, "fixture-sequence-ahead")?;
                     if seq == sequence {
                         require(words[2] == state, "fixture-state")?;
-                        let pid = words[3]
-                            .parse::<u32>()
-                            .map_err(|_| Failure::Rule("fixture-pid"))?;
-                        let window = words[4]
-                            .parse::<i64>()
-                            .map_err(|_| Failure::Rule("fixture-window"))?;
+                        let pid = positive_id(words[3], "fixture-pid")?;
+                        let window = i64::from(positive_id(words[4], "fixture-window")?);
                         let Some(owner) = read_small(&self.root.join("fixture-owner"))? else {
                             require(Instant::now() < deadline, "fixture-owner-timeout")?;
                             thread::sleep(TICK);
                             continue;
                         };
-                        require(
-                            owner.trim().parse::<u32>().ok() == Some(pid),
-                            "fixture-child-ownership",
+                        let (owned, _) = receipt(
+                            &owner,
+                            &self.nonce,
+                            self.generation,
+                            false,
+                            "fixture-owner-receipt",
                         )?;
+                        require(owned == pid, "fixture-child-ownership")?;
                         require(self.pid == 0 || self.pid == pid, "fixture-pid-changed")?;
-                        require(
-                            self.window == 0 || self.window == window,
-                            "fixture-window-changed",
-                        )?;
-                        let expected = if sequence >= 9 {
-                            ("240", "140")
-                        } else if sequence >= 6 {
-                            ("520", "300")
+                        // `open-window` must produce a fresh WindowServer identity in
+                        // the same process; every other acknowledgement keeps it.
+                        if self.generation == 1 && sequence == 11 {
+                            require(
+                                window > 0 && window != self.window,
+                                "fixture-window-not-replaced",
+                            )?;
                         } else {
-                            ("480", "278")
-                        };
+                            require(
+                                window > 0 && (self.window == 0 || self.window == window),
+                                "fixture-window-changed",
+                            )?;
+                        }
                         require(
-                            (words[5], words[6]) == expected && words[7] == "2.0",
+                            (words[5], words[6]) == self.geometry(sequence) && words[7] == "2.0",
                             "fixture-retina-geometry",
                         )?;
                         self.pid = pid;
-                        if sequence < 10 {
-                            require(window > 0, "fixture-window")?;
-                            self.window = window;
-                        }
+                        self.window = window;
                         return Ok(());
                     }
                 }
@@ -186,6 +297,54 @@ mod native {
                 &format!("{} {sequence} {command}\n", self.nonce),
             )?;
             self.ack(sequence, command, CONTROL)
+        }
+        /// Waits for the supervisor's reap receipt of this exact generation. The
+        /// fixture's own exit acknowledgement is not process-loss evidence.
+        fn reaped(&self, wait: Duration) -> Check<i32> {
+            let deadline = Instant::now() + wait;
+            loop {
+                if let Some(row) = read_small(&self.root.join("reaped"))? {
+                    let (pid, exit_code) = receipt(
+                        &row,
+                        &self.nonce,
+                        self.generation,
+                        true,
+                        "fixture-reap-receipt",
+                    )?;
+                    require(
+                        self.pid != 0 && pid == self.pid,
+                        "fixture-reap-receipt-identity",
+                    )?;
+                    return Ok(exit_code);
+                }
+                require(Instant::now() < deadline, "fixture-reap-timeout")?;
+                thread::sleep(TICK);
+            }
+        }
+        /// The supervisor samples its unreaped Popen child only after this
+        /// consumer's successful absent-window inventory. No PID lookup or
+        /// missing reap receipt is affirmative process-generation liveness.
+        fn alive_after_inventory(&self, evidence_root: &Path) -> Check<()> {
+            let request = format!(
+                "{} {} {} window-absent\n",
+                self.nonce, self.generation, self.pid
+            );
+            require(!self.root.join("alive").exists(), "fixture-stale-liveness")?;
+            atomic_write(evidence_root, "alive-request", &request)?;
+            let deadline = Instant::now() + CONTROL;
+            loop {
+                if let Some(row) = read_small(&self.root.join("alive"))? {
+                    require(row == request, "fixture-liveness-receipt")?;
+                    return Ok(());
+                }
+                require(
+                    !self.root.join("reaped").exists()
+                        && !self.root.join("fixture-failure").exists(),
+                    "fixture-liveness-unavailable",
+                )?;
+                require(Instant::now() < deadline, "fixture-liveness-timeout")?;
+                thread::sleep(TICK);
+            }
         }
         fn marker(&self, mapping: &CpuMapping, state: u32) -> Check<MarkerCheck> {
             let descriptor = mapping.descriptor();
@@ -295,16 +454,32 @@ mod native {
         // One bounded summary per checkpoint, never per-frame output or pixels.
         // Mapping/marker metadata always belongs to last_frame, not a prior frame.
         evidence.line(format!(
-            "source_checkpoint={state} phase={phase} acquired={acquired} mapped={mapped} \
-             rejected_color={} rejected_token={} rejected_state={} \
+            "source_checkpoint={state} generation={} phase={phase} acquired={acquired} \
+             mapped={mapped} rejected_color={} rejected_token={} rejected_state={} \
              last_frame={last_frame:?} last_mapping={last_mapping:?} \
              last_marker={last_marker:?} outcome={}",
+            fixture.generation,
             rejected[0],
             rejected[1],
             rejected[2],
             result.as_ref().map_or_else(Failure::label, |_| "matched"),
         ))?;
         result
+    }
+    fn blank_roi(mapping: &CpuMapping) -> Check<()> {
+        require(
+            mapping.descriptor().extent() == PixelExtent::new(960, 556),
+            "initial-retina-extent",
+        )?;
+        for y in 0..540 {
+            let row = &mapping.bytes()[y * mapping.descriptor().stride()..][..960 * 4];
+            require(
+                row.chunks_exact(4)
+                    .all(|pixel| pixel.iter().all(|channel| *channel >= 250)),
+                "initial-not-blank",
+            )?;
+        }
+        Ok(())
     }
     fn start(session: &Session, roi: Rect, confirmations: u32) -> Check<OcrTextQuery> {
         api(session.start_ocr_text_watch(api(OcrTextWatchRequest::new(
@@ -364,6 +539,241 @@ mod native {
             OcrTextTerminalOutcome::Failed(error) => Err(Failure::Api(error.status())),
             _ => Err(Failure::Rule("expected-match")),
         }
+    }
+    fn no_text_frame(failure: Failure) -> Failure {
+        match failure {
+            Failure::Api(Status::DeadlineExceeded) => {
+                Failure::Rule("producer-progress-no-text-frame")
+            }
+            other => other,
+        }
+    }
+    /// The only terminal the query may report for an owned disappearance is
+    /// `TargetLost`. A typed failure keeps its category; any other terminal is an
+    /// unexpected outcome, never relabelled as loss.
+    fn classify(outcome: &OcrTextTerminalOutcome) -> Check<SdkSignal> {
+        match outcome {
+            OcrTextTerminalOutcome::TargetLost => Ok(SdkSignal::TargetLost),
+            OcrTextTerminalOutcome::Failed(error) => Err(Failure::Api(error.status())),
+            _ => Err(Failure::Rule("unexpected-terminal")),
+        }
+    }
+    /// Records what the public query reported within `LOSS_OBSERVATION`. The
+    /// caller's bounded wait is an observation boundary: its expiry with the
+    /// query still pending is `none-within-bound`, not a fabricated loss.
+    fn observe_loss(
+        query: &OcrTextQuery,
+        label: &str,
+        evidence: &mut Evidence,
+    ) -> Check<SdkSignal> {
+        let started = Instant::now();
+        let observed = match query.wait(&context(LOSS_OBSERVATION)?) {
+            Ok(outcome) => classify(outcome.as_ref()),
+            Err(error) if error.status() == Status::DeadlineExceeded => match query.poll() {
+                OcrTextQueryOutcome::Pending(_) => Ok(SdkSignal::NoneWithinBound),
+                OcrTextQueryOutcome::Terminal(outcome) => classify(outcome.as_ref()),
+            },
+            Err(error) => Err(Failure::Api(error.status())),
+        };
+        evidence.line(format!(
+            "sdk_observation={label} signal={} elapsed_ms={} bound_ms={}",
+            observed.as_ref().map_or("failed", |signal| signal.label()),
+            started.elapsed().as_millis(),
+            LOSS_OBSERVATION.as_millis(),
+        ))?;
+        if let Err(failure) = &observed {
+            match failure {
+                Failure::Api(status) => evidence.line(format!("sdk_failure_status={status:?}"))?,
+                Failure::Rule(rule) => evidence.line(format!("sdk_failure_rule={rule}"))?,
+            }
+        }
+        observed
+    }
+    /// Ends one session through the public API: cancel its query, close within
+    /// the control bound, require physical quiescence, and require the terminal
+    /// outcome recorded before the close to remain the immutable winner.
+    fn end_session(
+        label: &str,
+        session: &Session,
+        query: OcrTextQuery,
+        engine: &Engine,
+        close_result: &mut Option<bool>,
+        evidence: &mut Evidence,
+    ) -> Check<()> {
+        let winner = query.cancel();
+        let terminal = match winner.as_ref() {
+            OcrTextTerminalOutcome::Cancelled => Ok("cancelled"),
+            outcome => classify(outcome).map(SdkSignal::label),
+        };
+        let started = Instant::now();
+        let close = context(CONTROL).and_then(|operation| api(session.close(&operation)));
+        let close_ms = started.elapsed().as_millis();
+        let closed = close.is_ok() && session.is_closed() && started.elapsed() <= CONTROL;
+        *close_result = Some(closed);
+        let quiescence = quiescent(engine);
+        let immutable = match query.poll() {
+            OcrTextQueryOutcome::Terminal(after) => Arc::ptr_eq(&winner, &after),
+            OcrTextQueryOutcome::Pending(_) => false,
+        };
+        evidence.line(format!(
+            "{label}_session_close={} close_ms={close_ms} terminal={} \
+             immutable={immutable} quiescent={}",
+            if closed { "passed" } else { "failed" },
+            terminal.as_ref().map_or("unexpected", |label| *label),
+            if quiescence.is_ok() {
+                "passed"
+            } else {
+                "failed"
+            },
+        ))?;
+        close?;
+        terminal?;
+        require(closed, "old-session-close")?;
+        quiescence?;
+        require(immutable, "terminal-not-immutable")?;
+        drop(query);
+        Ok(())
+    }
+    fn windows(targets: &[TargetDescription]) -> impl Iterator<Item = &TargetDescription> {
+        targets
+            .iter()
+            .filter(|target| target.capability().kind() == Some(TargetKind::Window))
+    }
+    fn owns(target: &TargetDescription, pid: u32, window: NonZeroU32) -> bool {
+        target.window().map(|value| value.id()) == Some(NativeWindowId::Macos(window))
+            && target
+                .process_identity()
+                .map(|identity| identity.process_id().get())
+                == Some(pid)
+    }
+    /// Fresh inventory facts about one owned window. Public target identities
+    /// are reissued by every discovery, so their absence proves nothing; only the
+    /// owned title and the acknowledged native window/process pair are counted.
+    fn inventory_matches(engine: &Engine, fixture: &Fixture) -> Check<(usize, usize)> {
+        let targets = api(engine.discover(&context(CONTROL)?))?;
+        let title = fixture.title();
+        let native = fixture.native_window()?;
+        let by_title = windows(&targets)
+            .filter(|target| target.name() == title)
+            .count();
+        let by_native = windows(&targets)
+            .filter(|target| owns(target, fixture.pid, native))
+            .count();
+        Ok((by_title, by_native))
+    }
+    /// Fresh discovery and open of the acknowledged owned window. Unique title
+    /// selection only locates the candidate; the native window number and owning
+    /// process must match the acknowledgement, and the new session must not reuse
+    /// any prior target or stream identity.
+    fn fresh_session(
+        engine: &Engine,
+        fixture: &Fixture,
+        prior: &[(TargetId, StreamId)],
+        evidence: &mut Evidence,
+    ) -> Check<Session> {
+        let targets = api(engine.discover(&context(CONTROL)?))?;
+        let title = fixture.title();
+        let mut selected = windows(&targets).filter(|target| target.name() == title);
+        let target = selected
+            .next()
+            .ok_or(Failure::Rule("owned-window-absent"))?;
+        require(selected.next().is_none(), "owned-window-ambiguous")?;
+        require(
+            owns(target, fixture.pid, fixture.native_window()?),
+            "owned-window-provenance",
+        )?;
+        require(
+            prior
+                .iter()
+                .all(|(prior_target, _)| *prior_target != target.id()),
+            "stale-target-provenance",
+        )?;
+        let session = api(engine.open(target.id(), &OpenRequest::new(), &context(CONTROL)?))?;
+        let admitted = (|| {
+            require(
+                prior
+                    .iter()
+                    .all(|(_, prior_stream)| *prior_stream != session.stream()),
+                "stale-session-provenance",
+            )?;
+            evidence.line(format!(
+                "session generation={} fixture_pid={} fixture_window={} target={} stream={}",
+                fixture.generation,
+                fixture.pid,
+                fixture.window,
+                session.target(),
+                session.stream()
+            ))?;
+            Ok(())
+        })();
+        if let Err(failure) = admitted {
+            // A failed provenance/report admission still owns a native session.
+            let _ = context(CONTROL).and_then(|operation| api(session.close(&operation)));
+            return Err(failure);
+        }
+        Ok(session)
+    }
+    /// Fresh-session proof: a blank checkpoint carrying the acknowledged state on
+    /// this session's own stream, then a new two-confirmation query whose match
+    /// comes only from this session's target and stream. No old query continues.
+    fn fresh_match(
+        session: &Session,
+        fixture: &mut Fixture,
+        checkpoint_state: u32,
+        show: u32,
+        pulse: u32,
+        backend: &OcrBackendDescriptor,
+        evidence: &mut Evidence,
+    ) -> Check<FrameStamp> {
+        let initial = source(session, fixture, checkpoint_state, None, evidence)?;
+        let checkpoint = initial.stamp();
+        require(
+            checkpoint.stream() == session.stream(),
+            "checkpoint-stream-provenance",
+        )?;
+        blank_roi(&map(&initial)?)?;
+        drop(initial);
+        let query = start(session, rect(480.0, 270.0)?, 2)?;
+        fixture.command(show, "show")?;
+        first_positive(&query)?;
+        fixture.command(pulse, "pulse")?;
+        let outcome = api(query.wait(&context(SEMANTIC)?)).map_err(no_text_frame)?;
+        let result = matched(outcome.as_ref())?;
+        oracle(result, checkpoint, 960, 556)?;
+        require(
+            result.result().backend() == backend,
+            "initialized-result-identity",
+        )?;
+        require(
+            result.confirmed_observations() == 2
+                && newer(result.first_confirmed_frame(), checkpoint)
+                && newer(result.frame().stamp(), result.first_confirmed_frame()),
+            "distinct-positive-observations",
+        )?;
+        require(
+            result.target() == session.target()
+                && result.frame().stamp().stream() == session.stream(),
+            "result-session-provenance",
+        )?;
+        let mapping = map(result.frame())?;
+        require(
+            fixture.marker(&mapping, show)? == MarkerCheck::Matched
+                || fixture.marker(&mapping, pulse)? == MarkerCheck::Matched,
+            "match-not-acknowledged-state",
+        )?;
+        evidence.line(format!(
+            "fresh_match generation={} target={} stream={} checkpoint={checkpoint} frame={} first={}",
+            fixture.generation,
+            session.target(),
+            session.stream(),
+            result.frame().stamp(),
+            result.first_confirmed_frame()
+        ))?;
+        let stamp = result.frame().stamp();
+        drop(mapping);
+        drop(outcome);
+        drop(query);
+        Ok(stamp)
     }
     fn oracle(
         result: &OcrTextWatchResult,
@@ -490,6 +900,11 @@ mod native {
             thread::sleep(TICK);
         }
     }
+    /// Failure cleanup for one launched generation; a generation whose control
+    /// directory never appeared was never launched and needs no stop.
+    fn stop(fixture: &Fixture) -> bool {
+        !fixture.root.is_dir() || atomic_write(&fixture.root, "stop", "stop\n").is_ok()
+    }
     pub(super) fn run() -> Check<()> {
         require(
             std::env::var("MADO_PILOT_OCR_PRIVATE_SUPERVISED").as_deref() == Ok("1"),
@@ -498,11 +913,19 @@ mod native {
         let mut args = std::env::args().skip(1);
         let root = PathBuf::from(args.next().ok_or(Failure::Rule("missing-control-root"))?);
         let nonce = args.next().ok_or(Failure::Rule("missing-fixture-token"))?;
-        let token = u64::from_str_radix(&nonce, 16).map_err(|_| Failure::Rule("fixture-token"))?;
+        // The successor generation's nonce is shared before launch, so its
+        // receipts are verified against a value this consumer already holds.
+        let successor_nonce = args
+            .next()
+            .ok_or(Failure::Rule("missing-successor-token"))?;
         require(
-            nonce.len() == 16 && args.next().is_none(),
+            args.next().is_none() && nonce != successor_nonce,
             "consumer-arguments",
         )?;
+        let mut fixture = Fixture::new(&root, 1, nonce)?;
+        // Validate both nonces before starting any native work.
+        let next_fixture = Fixture::new(&root, 2, successor_nonce)?;
+        let mut successor_fixture: Option<Fixture> = None;
         let file = OpenOptions::new()
             .write(true)
             .create_new(true)
@@ -548,31 +971,14 @@ mod native {
             "initialized-cpu-profile",
         )?;
         evidence.line(format!("backend={backend:?} provider={provider:?}"))?;
-        let mut fixture = Fixture {
-            root,
-            nonce,
-            token,
-            pid: 0,
-            window: 0,
-        };
-        fixture.ack(0, "blank", Duration::from_secs(10))?;
-        let title = format!("MadoPilot OCR private {}", fixture.nonce);
-        let targets = api(engine.discover(&context(CONTROL)?))?;
-        let mut selected = targets.iter().filter(|target| {
-            target.name() == title && target.capability().kind() == Some(TargetKind::Window)
-        });
-        let target = selected
-            .next()
-            .ok_or(Failure::Rule("owned-window-absent"))?;
-        require(selected.next().is_none(), "owned-window-ambiguous")?;
-        let session = api(engine.open(target.id(), &OpenRequest::new(), &context(CONTROL)?))?;
-        evidence.line(format!(
-            "fixture_pid={} fixture_window={} target={} stream={}",
-            fixture.pid,
-            fixture.window,
-            session.target(),
-            session.stream()
-        ))?;
+        fixture.ack(0, "blank", FIXTURE_LAUNCH)?;
+        let session = fresh_session(&engine, &fixture, &[], &mut evidence)?;
+        // Later sessions are opened by the scenario and closed explicitly inside
+        // it; the final endpoint pass still closes every session once.
+        let mut replacement: Option<Session> = None;
+        let mut successor: Option<Session> = None;
+        let mut close_results = [None; 3];
+        let mut first_generation_reaped = false;
         let mut retained: Option<Arc<OcrTextTerminalOutcome>> = None;
         let mut retained_mapping: Option<CpuMapping> = None;
         let mut retained_frame: Option<Frame> = None;
@@ -583,20 +989,7 @@ mod native {
             fixture.command(1, "arm-blank")?;
             let initial = source(&session, &fixture, 1, None, &mut evidence)?;
             let checkpoint = initial.stamp();
-            let blank = map(&initial)?;
-            require(
-                blank.descriptor().extent() == PixelExtent::new(960, 556),
-                "initial-retina-extent",
-            )?;
-            for y in 0..540 {
-                let row = &blank.bytes()[y * blank.descriptor().stride()..][..960 * 4];
-                require(
-                    row.chunks_exact(4)
-                        .all(|pixel| pixel.iter().all(|channel| *channel >= 250)),
-                    "initial-not-blank",
-                )?;
-            }
-            drop(blank);
+            blank_roi(&map(&initial)?)?;
             drop(initial);
             evidence.line(format!("checkpoint={checkpoint} acknowledged_state=1"))?;
             match query.wait(&context(Duration::from_millis(100))?) {
@@ -612,13 +1005,7 @@ mod native {
             // A separate acknowledged marker pulse supplies a distinct source even
             // if ScreenCaptureKit coalesces repeated presentations of the image.
             fixture.command(3, "pulse")?;
-            let outcome =
-                api(query.wait(&context(SEMANTIC)?)).map_err(|failure| match failure {
-                    Failure::Api(Status::DeadlineExceeded) => {
-                        Failure::Rule("producer-progress-no-text-frame")
-                    }
-                    other => other,
-                })?;
+            let outcome = api(query.wait(&context(SEMANTIC)?)).map_err(no_text_frame)?;
             let result = matched(outcome.as_ref())?;
             oracle(result, checkpoint, 960, 556)?;
             require(
@@ -792,48 +1179,191 @@ mod native {
             drop(before_shrink);
             drop(shrunk);
 
-            stage = "exact-window-loss";
+            // Window loss: the fixture process stays alive and destroys only its
+            // exact window. The query's own report, the independent inventory
+            // classification and the old-session close are three separate facts.
+            stage = "window-loss-classification";
             let lost = start(&session, rect(100.0, 100.0)?, 1)?;
             require(
                 matches!(lost.poll(), OcrTextQueryOutcome::Pending(_)),
                 "loss-query-not-pending",
             )?;
+            let original_pid = fixture.pid;
+            let original_window = fixture.window;
             fixture.command(10, "close-window")?;
-            let loss = api(lost.wait(&context(SEMANTIC)?))?;
+            let window_signal = observe_loss(&lost, "window-close", &mut evidence)?;
+            let (title_windows, native_matches) = inventory_matches(&engine, &fixture)?;
             require(
-                matches!(loss.as_ref(), OcrTextTerminalOutcome::TargetLost),
-                "expected-exact-target-loss",
+                title_windows == 0 && native_matches == 0,
+                "owned-window-still-listed",
             )?;
-            evidence.line("row=exact-window-loss status=passed")?;
-            drop(lost);
-            drop(loss);
+            fixture.alive_after_inventory(&root)?;
+            end_session(
+                "original",
+                &session,
+                lost,
+                &engine,
+                &mut close_results[0],
+                &mut evidence,
+            )?;
+            evidence.line(format!(
+                "row=window-loss-classification status=passed sdk_signal={} \
+                 title_windows={title_windows} native_window_matches={native_matches} \
+                 process_alive=supervisor-owned-generation fixture_pid={original_pid} \
+                 original_window={original_window}",
+                window_signal.label(),
+            ))?;
+
+            stage = "same-process-rediscovery";
+            fixture.command(11, "open-window")?;
+            let second = replacement.insert(fresh_session(
+                &engine,
+                &fixture,
+                &[(session.target(), session.stream())],
+                &mut evidence,
+            )?);
+            let second: &Session = second;
+            let replacement_stamp =
+                fresh_match(second, &mut fixture, 11, 12, 13, &backend, &mut evidence)?;
+            evidence.line(format!(
+                "row=same-process-rediscovery status=passed target={} stream={} frame={replacement_stamp}",
+                second.target(),
+                second.stream()
+            ))?;
+
+            // Process loss: normal owned termination of the exact first-generation
+            // fixture while the replacement session and a pending query exist.
+            // The proof is the supervisor's reap receipt, not the exit command.
+            stage = "process-loss-classification";
+            fixture.command(14, "blank")?;
+            let blank = source(second, &fixture, 14, Some(replacement_stamp), &mut evidence)?;
+            drop(blank);
+            let lost = start(second, rect(100.0, 100.0)?, 1)?;
+            require(
+                matches!(lost.poll(), OcrTextQueryOutcome::Pending(_)),
+                "loss-query-not-pending",
+            )?;
+            fixture.command(15, "exit")?;
+            let process_signal = observe_loss(&lost, "process-exit", &mut evidence)?;
+            let exit_code = fixture.reaped(CONTROL)?;
+            first_generation_reaped = true;
+            require(exit_code == 0, "fixture-exit-code")?;
+            let (title_windows, native_matches) = inventory_matches(&engine, &fixture)?;
+            require(
+                title_windows == 0 && native_matches == 0,
+                "owned-window-still-listed",
+            )?;
+            end_session(
+                "replacement",
+                second,
+                lost,
+                &engine,
+                &mut close_results[1],
+                &mut evidence,
+            )?;
+            evidence.line(format!(
+                "row=process-loss-classification status=passed sdk_signal={} \
+                 reaped_generation=1 reaped_pid={} exit_code={exit_code} \
+                 title_windows={title_windows} native_window_matches={native_matches}",
+                process_signal.label(),
+                fixture.pid
+            ))?;
+
+            // Successor process: requested only after the old session is closed;
+            // the supervisor launches it only after reaping the predecessor.
+            stage = "new-process-rediscovery";
+            atomic_write(
+                &root,
+                "successor-request",
+                &format!(
+                    "{} 1 {} {} 2 successor-after-close\n",
+                    fixture.nonce, fixture.pid, next_fixture.nonce,
+                ),
+            )?;
+            let next = successor_fixture.insert(next_fixture);
+            next.ack(0, "blank", FIXTURE_LAUNCH)?;
+            let third = successor.insert(fresh_session(
+                &engine,
+                next,
+                &[
+                    (session.target(), session.stream()),
+                    (second.target(), second.stream()),
+                ],
+                &mut evidence,
+            )?);
+            let third: &Session = third;
+            next.command(1, "arm-blank")?;
+            let successor_stamp = fresh_match(third, next, 1, 2, 3, &backend, &mut evidence)?;
+            evidence.line(format!(
+                "row=new-process-rediscovery status=passed generation=2 fixture_pid={} \
+                 target={} stream={} frame={successor_stamp}",
+                next.pid,
+                third.target(),
+                third.stream()
+            ))?;
             Ok(())
         })();
+        let mut evidence_ok = true;
         if let Err(failure) = &semantic {
-            evidence.line(format!(
-                "row={stage} status=failed reason={}",
-                failure.label()
-            ))?;
+            evidence_ok &= evidence
+                .line(format!(
+                    "row={stage} status=failed reason={}",
+                    failure.label()
+                ))
+                .is_ok();
             if let Failure::Api(status) = failure {
-                evidence.line(format!("failure_status={status:?}"))?;
+                evidence_ok &= evidence.line(format!("failure_status={status:?}")).is_ok();
             }
         }
-        // Always attempt each endpoint once; a semantic failure cannot hide a
-        // resource or cleanup failure, and a successful match cannot erase one.
+        // Every opened session gets one explicit close attempt. Earlier failures
+        // are sticky; neither evidence I/O failure nor a second close hides them.
         let close_started = Instant::now();
-        let close = api(session.close(&context(CONTROL)?));
-        let closed = close.is_ok() && session.is_closed() && close_started.elapsed() <= CONTROL;
-        evidence.line(format!(
-            "close={} close_ms={}",
-            if closed { "passed" } else { "failed" },
-            close_started.elapsed().as_millis()
-        ))?;
+        let mut closed = true;
+        let mut sessions = 0_u32;
+        for ((label, live), result) in [
+            ("original", Some(&session)),
+            ("replacement", replacement.as_ref()),
+            ("successor", successor.as_ref()),
+        ]
+        .into_iter()
+        .zip(&mut close_results)
+        {
+            let Some(live) = live else { continue };
+            sessions += 1;
+            if let Some(ok) = result {
+                closed &= *ok;
+                continue;
+            }
+            let started = Instant::now();
+            let close = context(CONTROL).and_then(|operation| api(live.close(&operation)));
+            let ok = close.is_ok() && live.is_closed() && started.elapsed() <= CONTROL;
+            *result = Some(ok);
+            closed &= ok;
+            evidence_ok &= evidence
+                .line(format!(
+                    "close_{label}={} close_ms={}",
+                    if ok { "passed" } else { "failed" },
+                    started.elapsed().as_millis()
+                ))
+                .is_ok();
+        }
+        evidence_ok &= evidence
+            .line(format!(
+                "close={} sessions={sessions} close_ms={}",
+                if closed { "passed" } else { "failed" },
+                close_started.elapsed().as_millis()
+            ))
+            .is_ok();
         let resource = quiescent(&engine).is_ok();
-        evidence.line(format!(
-            "resource={} observations={:?}",
-            if resource { "passed" } else { "failed" },
-            engine.ocr_text_observation()
-        ))?;
+        evidence_ok &= evidence
+            .line(format!(
+                "resource={} observations={:?}",
+                if resource { "passed" } else { "failed" },
+                engine.ocr_text_observation()
+            ))
+            .is_ok();
+        drop(successor);
+        drop(replacement);
         drop(session);
         drop(engine);
         let retention = (|| -> Check<()> {
@@ -865,26 +1395,37 @@ mod native {
             Ok(())
         })();
         if let Err(failure) = &retention {
-            evidence.line(format!(
-                "row=parent-close-retention status={} reason={}",
-                if retained.is_some() {
-                    "failed"
-                } else {
-                    "not-run"
-                },
-                failure.label()
-            ))?;
+            evidence_ok &= evidence
+                .line(format!(
+                    "row=parent-close-retention status={} reason={}",
+                    if retained.is_some() {
+                        "failed"
+                    } else {
+                        "not-run"
+                    },
+                    failure.label()
+                ))
+                .is_ok();
         }
         drop(retained_mapping);
         drop(retained_frame);
         drop(retained_ocr);
         drop(retained);
+        // Success ends the successor normally; the first generation already
+        // exited and was reaped. Failure stops every launched, unreaped generation.
         let fixture_exit = if semantic.is_ok() {
-            fixture.command(11, "exit").is_ok()
+            successor_fixture.as_mut().is_some_and(|next| {
+                matches!(
+                    next.command(4, "exit").and_then(|()| next.reaped(CONTROL)),
+                    Ok(0)
+                )
+            })
         } else {
-            atomic_write(&fixture.root, "stop", "stop\n").is_ok()
+            let first_stopped = first_generation_reaped || stop(&fixture);
+            let successor_stopped = successor_fixture.as_ref().is_none_or(stop);
+            first_stopped && successor_stopped
         };
-        let passed = semantic.is_ok() && retention.is_ok();
+        let passed = semantic.is_ok() && retention.is_ok() && evidence_ok;
         evidence.line(format!(
             "semantic={} resource={} cleanup={}",
             if passed { "passed" } else { "failed" },
@@ -913,9 +1454,14 @@ mod native {
         use std::sync::atomic::{AtomicU64, Ordering};
 
         use mado_pilot::replay::{ReplayFrame, ReplaySource, ReplayTarget};
-        use mado_pilot::{Continuity, FrameDescriptor, MonotonicInstant, ReplayEngineRequest};
+        use mado_pilot::{
+            Continuity, Error, FrameDescriptor, MonotonicInstant, ReplayEngineRequest,
+        };
 
         use super::*;
+
+        const NONCE: &str = "0123456789abcdef";
+        const OTHER: &str = "fedcba9876543210";
 
         fn replay_frame(marker: MarkerCheck) -> ReplayFrame {
             let descriptor =
@@ -960,13 +1506,17 @@ mod native {
             .expect("synthetic frame")
         }
 
-        fn evidence() -> Evidence {
+        fn unique(label: &str) -> PathBuf {
             static NEXT: AtomicU64 = AtomicU64::new(0);
-            let path = std::env::temp_dir().join(format!(
-                "madopilot-checkpoint-{}-{}.report",
+            std::env::temp_dir().join(format!(
+                "madopilot-{label}-{}-{}",
                 std::process::id(),
                 NEXT.fetch_add(1, Ordering::Relaxed)
-            ));
+            ))
+        }
+
+        fn evidence() -> Evidence {
+            let path = unique("checkpoint").with_extension("report");
             let file = OpenOptions::new()
                 .read(true)
                 .write(true)
@@ -977,6 +1527,271 @@ mod native {
             // unwinding, without leaving shared test filesystem state.
             fs::remove_file(path).expect("unlink owned evidence");
             Evidence(file)
+        }
+
+        fn label<T>(result: Check<T>) -> Result<T, &'static str> {
+            result.map_err(|failure| failure.label())
+        }
+
+        #[test]
+        fn receipts_bind_generation_nonce_and_owned_pid() {
+            assert_eq!(
+                label(receipt(
+                    &format!("{NONCE} 1 4242\n"),
+                    NONCE,
+                    1,
+                    false,
+                    "owner"
+                )),
+                Ok((4242, 0))
+            );
+            assert_eq!(
+                label(receipt(
+                    &format!("{NONCE} 2 4243 0\n"),
+                    NONCE,
+                    2,
+                    true,
+                    "reaped"
+                )),
+                Ok((4243, 0))
+            );
+            assert_eq!(
+                label(receipt(
+                    &format!("{NONCE} 1 4242 -15\n"),
+                    NONCE,
+                    1,
+                    true,
+                    "reaped"
+                )),
+                Ok((4242, -15))
+            );
+            for stale in [
+                format!("{OTHER} 1 4242\n"),  // foreign nonce
+                format!("{NONCE} 2 4242\n"),  // other generation
+                format!("{NONCE} 01 4242\n"), // non-canonical generation
+                format!("{NONCE} 1 0\n"),     // no owned process
+                format!("{NONCE} 1 +4242\n"),
+                format!("{NONCE} 1 04242\n"),
+                format!("{NONCE} 1 4294967296\n"),
+                format!("{NONCE}\t1 4242\n"),
+                format!("{NONCE}  1 4242\n"),
+                format!("{NONCE} 1 4242\r\n"),
+                format!("{NONCE} 1 4242"),
+                format!("{NONCE} 1 4242 0\n"), // reap receipt offered as owner
+                "4242\n".to_owned(),           // bare PID
+                String::new(),
+            ] {
+                assert_eq!(
+                    label(receipt(&stale, NONCE, 1, false, "owner")),
+                    Err("owner"),
+                    "{stale:?}"
+                );
+            }
+            for stale in [
+                format!("{NONCE} 1 4242\n"),      // owner receipt offered as reap
+                format!("{OTHER} 1 4242 0\n"),    // foreign nonce
+                format!("{NONCE} 2 4242 0\n"),    // other generation
+                format!("{NONCE} 1 4242 exit\n"), // malformed exit code
+                format!("{NONCE} 1 4242 +0\n"),
+                format!("{NONCE} 1 4242 -0\n"),
+                format!("{NONCE} 1 4242 00\n"),
+                format!("{NONCE} 1 4242 0\n\n"),
+            ] {
+                assert_eq!(
+                    label(receipt(&stale, NONCE, 1, true, "reaped")),
+                    Err("reaped"),
+                    "{stale:?}"
+                );
+            }
+        }
+
+        #[test]
+        fn sdk_terminal_classification_never_relabels_other_outcomes_as_loss() {
+            assert_eq!(
+                label(classify(&OcrTextTerminalOutcome::TargetLost)),
+                Ok(SdkSignal::TargetLost)
+            );
+            assert_eq!(
+                label(classify(&OcrTextTerminalOutcome::Failed(Error::new(
+                    Status::CaptureFailed,
+                    "injected"
+                )))),
+                Err("typed-api-failure")
+            );
+            for status in [Status::TargetLost, Status::DeadlineExceeded] {
+                assert!(matches!(
+                    classify(&OcrTextTerminalOutcome::Failed(Error::new(status, "injected"))),
+                    Err(Failure::Api(actual)) if actual == status
+                ));
+            }
+            for other in [
+                OcrTextTerminalOutcome::SessionClosed,
+                OcrTextTerminalOutcome::Cancelled,
+                OcrTextTerminalOutcome::DeadlineExceeded,
+                OcrTextTerminalOutcome::SchedulerClosed,
+            ] {
+                assert_eq!(label(classify(&other)), Err("unexpected-terminal"));
+            }
+        }
+
+        #[test]
+        fn generation_tokens_and_liveness_receipts_fail_closed() {
+            let root = unique("liveness");
+            fs::create_dir(&root).expect("private control root");
+            for (generation, nonce) in [
+                (0, NONCE),
+                (3, NONCE),
+                (1, "0123456789abcdeF"),
+                (1, "0123456789abcdeg"),
+                (1, "0123456789abcde\n"),
+            ] {
+                assert!(Fixture::new(&root, generation, nonce.to_owned()).is_err());
+            }
+            let mut fixture = Fixture::new(&root, 1, NONCE.to_owned()).expect("fixture");
+            fixture.pid = 4242;
+            fs::create_dir(&fixture.root).expect("generation root");
+            // A pre-existing receipt cannot answer a later inventory request.
+            fs::write(
+                fixture.root.join("alive"),
+                format!("{NONCE} 1 4242 window-absent\n"),
+            )
+            .expect("stale receipt");
+            assert_eq!(
+                label(fixture.alive_after_inventory(&root)),
+                Err("fixture-stale-liveness")
+            );
+            fs::remove_file(fixture.root.join("alive")).expect("remove stale receipt");
+            fs::write(fixture.root.join("reaped"), format!("{NONCE} 1 4242 0\n"))
+                .expect("reap receipt");
+            assert_eq!(
+                label(fixture.alive_after_inventory(&root)),
+                Err("fixture-liveness-unavailable")
+            );
+            fs::remove_dir_all(root).expect("remove owned controls");
+        }
+
+        #[test]
+        fn acknowledgements_require_matching_receipts_and_window_replacement() {
+            let root = unique("control");
+            fs::create_dir(&root).expect("private control root");
+            let mut fixture = Fixture::new(&root, 1, NONCE.to_owned()).expect("fixture");
+            assert_eq!(fixture.root, root.join("fixture-1"));
+            fs::create_dir(&fixture.root).expect("generation directory");
+            let wait = Duration::from_millis(60);
+            let generation_root = fixture.root.clone();
+            let ack = |sequence: u32, state: &str, pid: u32, window: i64, size: (&str, &str)| {
+                fs::write(
+                    generation_root.join("ack"),
+                    format!(
+                        "{NONCE} {sequence} {state} {pid} {window} {} {} 2.0\n",
+                        size.0, size.1
+                    ),
+                )
+                .expect("ack row");
+            };
+            ack(0, "blank", 4242, 77, ("480", "278"));
+            // Without an owner receipt the acknowledgement is never accepted.
+            assert_eq!(
+                label(fixture.ack(0, "blank", wait)),
+                Err("fixture-owner-timeout")
+            );
+            fs::write(
+                fixture.root.join("fixture-owner"),
+                format!("{NONCE} 2 4242\n"),
+            )
+            .expect("stale");
+            assert_eq!(
+                label(fixture.ack(0, "blank", wait)),
+                Err("fixture-owner-receipt")
+            );
+            fs::write(
+                fixture.root.join("fixture-owner"),
+                format!("{NONCE} 1 4243\n"),
+            )
+            .expect("other");
+            assert_eq!(
+                label(fixture.ack(0, "blank", wait)),
+                Err("fixture-child-ownership")
+            );
+            fs::write(
+                fixture.root.join("fixture-owner"),
+                format!("{NONCE} 1 4242\n"),
+            )
+            .expect("owner");
+            assert_eq!(label(fixture.ack(0, "blank", wait)), Ok(()));
+            assert_eq!((fixture.pid, fixture.window), (4242, 77));
+            // A later acknowledgement from another PID or window is a protocol break.
+            ack(10, "close-window", 4242, 77, ("240", "140"));
+            assert_eq!(label(fixture.ack(10, "close-window", wait)), Ok(()));
+            ack(11, "open-window", 4242, 77, ("480", "278"));
+            assert_eq!(
+                label(fixture.ack(11, "open-window", wait)),
+                Err("fixture-window-not-replaced")
+            );
+            // A relaunched process under the same generation, even with a matching
+            // owner receipt, is not the original generation.
+            fs::write(
+                fixture.root.join("fixture-owner"),
+                format!("{NONCE} 1 4243\n"),
+            )
+            .expect("relaunch");
+            ack(11, "open-window", 4243, 78, ("480", "278"));
+            assert_eq!(
+                label(fixture.ack(11, "open-window", wait)),
+                Err("fixture-pid-changed")
+            );
+            fs::write(
+                fixture.root.join("fixture-owner"),
+                format!("{NONCE} 1 4242\n"),
+            )
+            .expect("owner");
+            ack(11, "open-window", 4242, 78, ("480", "278"));
+            assert_eq!(label(fixture.ack(11, "open-window", wait)), Ok(()));
+            assert_eq!(fixture.window, 78);
+            ack(12, "show", 4242, 77, ("480", "278"));
+            assert_eq!(
+                label(fixture.ack(12, "show", wait)),
+                Err("fixture-window-changed")
+            );
+            // The reap receipt must name this generation, nonce and acknowledged PID.
+            assert_eq!(label(fixture.reaped(wait)), Err("fixture-reap-timeout"));
+            fs::write(fixture.root.join("reaped"), format!("{NONCE} 1 4243 0\n")).expect("foreign");
+            assert_eq!(
+                label(fixture.reaped(wait)),
+                Err("fixture-reap-receipt-identity")
+            );
+            fs::write(fixture.root.join("reaped"), format!("{NONCE} 1 4242\n"))
+                .expect("owner shape");
+            assert_eq!(label(fixture.reaped(wait)), Err("fixture-reap-receipt"));
+            fs::write(fixture.root.join("reaped"), format!("{NONCE} 1 4242 0\n")).expect("reaped");
+            assert_eq!(label(fixture.reaped(wait)), Ok(0));
+            // The successor generation reads only its own directory and nonce.
+            let mut next = Fixture::new(&root, 2, OTHER.to_owned()).expect("successor");
+            assert_eq!(next.root, root.join("fixture-2"));
+            assert!(stop(&next), "an unlaunched generation needs no stop file");
+            fs::create_dir(&next.root).expect("successor directory");
+            fs::write(
+                next.root.join("ack"),
+                format!("{NONCE} 0 blank 4242 77 480 278 2.0\n"),
+            )
+            .expect("stale ack");
+            fs::write(next.root.join("fixture-owner"), format!("{OTHER} 2 5151\n")).expect("owner");
+            assert_eq!(
+                label(next.ack(0, "blank", wait)),
+                Err("fixture-ack-identity")
+            );
+            fs::write(
+                next.root.join("ack"),
+                format!("{OTHER} 0 blank 5151 91 480 278 2.0\n"),
+            )
+            .expect("ack");
+            assert_eq!(label(next.ack(0, "blank", wait)), Ok(()));
+            assert!(stop(&next));
+            assert_eq!(
+                fs::read_to_string(next.root.join("stop")).expect("stop"),
+                "stop\n"
+            );
+            fs::remove_dir_all(root).expect("remove owned control root");
         }
 
         #[test]
@@ -1006,6 +1821,7 @@ mod native {
                     .open(target, &OpenRequest::new(), &operation)
                     .expect("replay session");
                 let fixture = Fixture {
+                    generation: 1,
                     root: PathBuf::new(),
                     nonce: String::new(),
                     token: 0,
