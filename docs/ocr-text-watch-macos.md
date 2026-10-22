@@ -195,17 +195,24 @@ cleanup `stop` files cannot certify process loss. Premature, duplicate or
 unowned successor launches fail; the original generation cannot be resurrected.
 
 The nonce and 32-bit state are drawn as opaque black/white cells, outside the
-OCR ROI. Unique title selection only locates a candidate: fresh discovery must
-also match the acknowledged native window number and process provenance, then
-capture must contain the exact marker bits on the new session's stream. A public
-`TargetId` is reissued at each discovery and its absence is not disappearance.
-No discovery retargets an existing session.
+OCR ROI. Unique SDK title selection locates a candidate. An independent
+WindowServer query for only the acknowledged native window number must return
+the PID bound to the supervisor-owned process generation. Optional SDK window
+and process metadata must agree when present; their absence proves neither
+ownership nor disappearance. Capture must then contain the exact marker bits
+on the new session's stream. A public `TargetId` is reissued at each discovery
+and its absence is not disappearance. No discovery retargets an existing session.
 
-Before opening a session, `target_admission` records the owned generation's
-expected PID/window number and the uniquely selected SDK candidate's optional
-native-window and process-PID metadata. This scalar-only private record
-distinguishes unavailable metadata from a conflicting identity. Missing or
-conflicting metadata still refuses admission; it is not a disappearance result.
+`target_admission` records these scalar identity observations before open.
+The private consumer uses `CGWindowListCopyWindowInfo` with only
+`kCGWindowListOptionIncludingWindow`, without an on-screen-only filter, and
+reads only window-number and owner-PID fields. Null results, unexpected
+container/types/counts, contradictory identities and late observations fail;
+they are never empty-window evidence. The result is rejected after5s; a
+nonreturning OS call is covered by the unchanged owned-consumer watchdog.
+No image, unrelated window title, activation or permission operation is added.
+Loss requires both successful fresh SDK title absence and independent original
+window/owner absence, plus the separate owned-generation liveness or reap proof.
 
 | Generation / sequence | Operation / mandatory observation |
 |---|---|

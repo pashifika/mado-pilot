@@ -66,8 +66,9 @@ unchanged after all parent closes. Logical close is not physical OCR quiescence.
 The private qualification must establish causes independently:
 
 - Window loss requires controlled exact-window destruction, successful fresh
-  discovery showing the original target absent, and affirmative original
-  process-generation liveness through owned-child/nonce authority.
+  SDK title inventory and independent WindowServer observation showing the
+  original window/owner absent, plus affirmative original process-generation
+  liveness through owned-child/nonce authority.
 - Process loss requires supervisor reaping of the exact owned generation while
   its session exists, not a fixture exit acknowledgement or PID lookup. Normal
   owned termination is not crash or forced-kill qualification.
@@ -75,6 +76,15 @@ The private qualification must establish causes independently:
   discovery failures cannot prove disappearance. Record actual SDK/query
   outcomes and caller observation deadlines separately; unexpected terminal or
   backend errors remain failures, not substitutes for loss or fresh OCR.
+
+SDK native-window and process provenance are optional metadata, not liveness
+signals. The private consumer independently observes only the acknowledged
+WindowServer ID, including offscreen windows, and checks its owner against the
+supervisor-owned process generation. Fresh admission also requires the unique
+nonce title; any supplied SDK identity must agree, and the new stream must
+subsequently prove the exact nonce/state pixels. A missing or failed native
+observation cannot authorize capture or certify disappearance. This adds no
+public SDK API or automatic recovery path.
 
 Launch a successor only after the exact predecessor is reaped and the consumer
 requests the predefined phase after old-session close. Use separate private

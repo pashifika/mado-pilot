@@ -1,5 +1,5 @@
 //! Private, supervised task 7.3 consumer. See docs/ocr-text-watch-macos.md.
-//! No fixture launch, input, activation, permission request, or fallback here.
+//! No fixture launch, input, activation, permission request, or automatic recovery.
 
 #[cfg(not(all(target_os = "macos", target_arch = "aarch64")))]
 fn main() {
@@ -634,21 +634,124 @@ mod native {
         drop(query);
         Ok(())
     }
+    /// Read only the acknowledged WindowServer ID, including offscreen windows.
+    /// SDK process/window metadata is optional and cannot establish absence.
+    mod window_server {
+        use std::ffi::{c_long, c_ulong, c_void};
+        use std::ptr::NonNull;
+
+        use super::{CONTROL, Check, Failure, Instant, NonZeroU32, require};
+
+        #[link(name = "CoreGraphics", kind = "framework")]
+        unsafe extern "C" {
+            fn CGWindowListCopyWindowInfo(options: u32, window: u32) -> *const c_void;
+            static kCGWindowNumber: *const c_void;
+            static kCGWindowOwnerPID: *const c_void;
+        }
+        #[link(name = "CoreFoundation", kind = "framework")]
+        unsafe extern "C" {
+            fn CFGetTypeID(value: *const c_void) -> c_ulong;
+            fn CFArrayGetTypeID() -> c_ulong;
+            fn CFDictionaryGetTypeID() -> c_ulong;
+            fn CFNumberGetTypeID() -> c_ulong;
+            fn CFArrayGetCount(array: *const c_void) -> c_long;
+            fn CFArrayGetValueAtIndex(array: *const c_void, index: c_long) -> *const c_void;
+            fn CFDictionaryGetValue(dictionary: *const c_void, key: *const c_void)
+            -> *const c_void;
+            fn CFNumberGetValue(number: *const c_void, kind: c_long, output: *mut c_void) -> u8;
+            fn CFRelease(value: *const c_void);
+        }
+
+        struct WindowList(NonNull<c_void>);
+        impl Drop for WindowList {
+            fn drop(&mut self) {
+                // SAFETY: this owns the nonnull +1 Copy result, released exactly
+                // once after every borrowed dictionary/number has been read.
+                unsafe { CFRelease(self.0.as_ptr()) };
+            }
+        }
+
+        /// # Safety
+        /// `dictionary` is a live CFDictionary; `key` is a live CFString.
+        unsafe fn number(dictionary: *const c_void, key: *const c_void) -> Check<i64> {
+            require(!key.is_null(), "window-server-key")?;
+            // SAFETY: the caller retains the dictionary and framework key. A
+            // nonnull borrowed value's type is checked before number conversion.
+            let value = unsafe { CFDictionaryGetValue(dictionary, key) };
+            require(
+                // SAFETY: the retained dictionary owns this CF value; short
+                // circuit evaluation excludes null before querying its type.
+                !value.is_null() && unsafe { CFGetTypeID(value) == CFNumberGetTypeID() },
+                "window-server-number",
+            )?;
+            let mut result = 0_i64;
+            // SAFETY: kCFNumberSInt64Type=4 writes one aligned writable i64.
+            let converted = unsafe { CFNumberGetValue(value, 4, (&raw mut result).cast()) };
+            require(converted != 0, "window-server-number-range")?;
+            Ok(result)
+        }
+
+        pub(super) fn owner(window: NonZeroU32) -> Check<Option<u32>> {
+            let started = Instant::now();
+            // SAFETY: kCGWindowListOptionIncludingWindow=8 selects only this
+            // acknowledged ID, with no on-screen-only filter and no image read.
+            let raw = unsafe { CGWindowListCopyWindowInfo(8, window.get()) };
+            let list = WindowList(
+                NonNull::new(raw.cast_mut()).ok_or(Failure::Rule("window-server-unavailable"))?,
+            );
+            // SAFETY: the owned Copy result remains live throughout. Every
+            // container type and array bound is checked before typed access.
+            let observed = unsafe {
+                require(
+                    CFGetTypeID(raw) == CFArrayGetTypeID(),
+                    "window-server-array",
+                )?;
+                match CFArrayGetCount(raw) {
+                    0 => None,
+                    1 => {
+                        let entry = CFArrayGetValueAtIndex(raw, 0);
+                        require(
+                            !entry.is_null() && CFGetTypeID(entry) == CFDictionaryGetTypeID(),
+                            "window-server-entry",
+                        )?;
+                        require(
+                            number(entry, kCGWindowNumber)? == i64::from(window.get()),
+                            "window-server-window",
+                        )?;
+                        let pid = number(entry, kCGWindowOwnerPID)?;
+                        require(pid > 0 && pid <= i64::from(i32::MAX), "window-server-pid")?;
+                        Some(u32::try_from(pid).map_err(|_| Failure::Rule("window-server-pid"))?)
+                    }
+                    _ => return Err(Failure::Rule("window-server-scope")),
+                }
+            };
+            drop(list);
+            // The OS call itself is synchronous. Reject a late result; a
+            // nonreturning call remains covered by the owned-consumer watchdog.
+            require(started.elapsed() <= CONTROL, "window-server-deadline")?;
+            Ok(observed)
+        }
+    }
+
     fn windows(targets: &[TargetDescription]) -> impl Iterator<Item = &TargetDescription> {
         targets
             .iter()
             .filter(|target| target.capability().kind() == Some(TargetKind::Window))
     }
-    fn owns(target: &TargetDescription, pid: u32, window: NonZeroU32) -> bool {
-        target.window().map(|value| value.id()) == Some(NativeWindowId::Macos(window))
-            && target
-                .process_identity()
-                .map(|identity| identity.process_id().get())
-                == Some(pid)
+    fn owns(
+        pid: u32,
+        window: NonZeroU32,
+        observed_owner: Option<u32>,
+        described_window: Option<NativeWindowId>,
+        described_process: Option<u32>,
+    ) -> bool {
+        observed_owner == Some(pid)
+            && described_window.is_none_or(|value| value == NativeWindowId::Macos(window))
+            && described_process.is_none_or(|value| value == pid)
     }
-    /// Fresh inventory facts about one owned window. Public target identities
-    /// are reissued by every discovery, so their absence proves nothing; only the
-    /// owned title and the acknowledged native window/process pair are counted.
+    /// Fresh SDK title inventory and an independent exact-window owner lookup.
+    /// Neither a reissued public TargetId nor missing optional SDK metadata
+    /// proves disappearance. A failed WindowServer lookup remains an error.
     fn inventory_matches(engine: &Engine, fixture: &Fixture) -> Check<(usize, usize)> {
         let targets = api(engine.discover(&context(CONTROL)?))?;
         let title = fixture.title();
@@ -656,9 +759,7 @@ mod native {
         let by_title = windows(&targets)
             .filter(|target| target.name() == title)
             .count();
-        let by_native = windows(&targets)
-            .filter(|target| owns(target, fixture.pid, native))
-            .count();
+        let by_native = usize::from(window_server::owner(native)? == Some(fixture.pid));
         Ok((by_title, by_native))
     }
     /// Fresh discovery and open of the acknowledged owned window. Unique title
@@ -678,9 +779,11 @@ mod native {
             .next()
             .ok_or(Failure::Rule("owned-window-absent"))?;
         require(selected.next().is_none(), "owned-window-ambiguous")?;
+        let native = fixture.native_window()?;
+        let observed_owner = window_server::owner(native)?;
         evidence.line(format!(
             "target_admission generation={} fixture_pid={} fixture_window={} target={} \
-             native_window={:?} process_pid={:?}",
+             native_window={:?} process_pid={:?} window_server_owner={observed_owner:?}",
             fixture.generation,
             fixture.pid,
             fixture.window,
@@ -691,7 +794,15 @@ mod native {
                 .map(|identity| identity.process_id().get()),
         ))?;
         require(
-            owns(target, fixture.pid, fixture.native_window()?),
+            owns(
+                fixture.pid,
+                native,
+                observed_owner,
+                target.window().map(|window| window.id()),
+                target
+                    .process_identity()
+                    .map(|identity| identity.process_id().get()),
+            ),
             "owned-window-provenance",
         )?;
         require(
@@ -1543,6 +1654,51 @@ mod native {
 
         fn label<T>(result: Check<T>) -> Result<T, &'static str> {
             result.map_err(|failure| failure.label())
+        }
+
+        #[test]
+        fn optional_sdk_metadata_requires_independent_owned_window_proof() {
+            let window = NonZeroU32::new(7).expect("owned window");
+            let other = NonZeroU32::new(8).expect("another window");
+            let native = NativeWindowId::Macos(window);
+            let pid = 4242;
+            for (described_window, described_process) in [
+                (None, None),
+                (Some(native), None),
+                (None, Some(pid)),
+                (Some(native), Some(pid)),
+            ] {
+                assert!(owns(
+                    pid,
+                    window,
+                    Some(pid),
+                    described_window,
+                    described_process
+                ));
+                for absent_or_foreign in [None, Some(pid + 1)] {
+                    assert!(!owns(
+                        pid,
+                        window,
+                        absent_or_foreign,
+                        described_window,
+                        described_process,
+                    ));
+                }
+            }
+            for (described_window, described_process) in [
+                (Some(NativeWindowId::Macos(other)), None),
+                (None, Some(pid + 1)),
+                (Some(native), Some(pid + 1)),
+                (Some(NativeWindowId::Macos(other)), Some(pid)),
+            ] {
+                assert!(!owns(
+                    pid,
+                    window,
+                    Some(pid),
+                    described_window,
+                    described_process
+                ));
+            }
         }
 
         #[test]
