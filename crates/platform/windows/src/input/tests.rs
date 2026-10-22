@@ -21,7 +21,7 @@ use mado_pilot_input::{
 };
 
 use super::{
-    DriverState, GeometryLedger, InputDriver, SubmissionContexts, SubmissionFailure,
+    DriverState, GeometryLedger, InputDriver, PendingRelease, SubmissionFailure,
     WindowsInputController, input_capability, wait_delay,
 };
 
@@ -123,7 +123,7 @@ impl InputDriver for ScriptedDriver {
         event: &InputEvent,
         _geometry: PointerGeometry,
         _state: &mut DriverState,
-        _contexts: SubmissionContexts<'_>,
+        _operation: &OperationContext,
     ) -> Result<(), SubmissionFailure> {
         let index = self.attempts.fetch_add(1, Ordering::AcqRel);
         if let Some((failure_index, fault, during_event, may_leave_pressed_state)) =
@@ -163,10 +163,13 @@ impl InputDriver for ScriptedDriver {
     fn release(
         &self,
         delivery: InputDelivery,
-        pressed: PressedState,
+        pressed: PendingRelease,
         _state: &mut DriverState,
         _operation: &OperationContext,
     ) -> Result<(), InputFault> {
+        let PendingRelease::Logical(pressed) = pressed else {
+            panic!("scripted logical driver received native Unicode state");
+        };
         self.released
             .lock()
             .expect("uncontended")
@@ -873,4 +876,579 @@ fn delay_observes_deadline_with_a_deterministic_clock() {
         wait_delay(Duration::from_millis(10), &operation),
         Err(InputFault::DeadlineExceeded)
     );
+}
+
+mod unicode_cleanup {
+    use super::*;
+    use crate::input::{GeometryFingerprint, SystemButtonState, SystemKeyState};
+    use crate::native_input::{
+        SystemCommitSource, SystemReleaseSource, send_system_release, send_system_text,
+    };
+    use mado_pilot_core::ActivityTag;
+    use mado_pilot_input::CleanupBudget;
+    use windows::Win32::UI::Input::KeyboardAndMouse::{
+        INPUT, INPUT_0, INPUT_KEYBOARD, INPUT_MOUSE, KEYBDINPUT, KEYEVENTF_KEYUP,
+        KEYEVENTF_UNICODE, MOUSEEVENTF_LEFTDOWN, MOUSEEVENTF_LEFTUP, MOUSEINPUT, VIRTUAL_KEY,
+    };
+
+    #[derive(Debug, Clone, Copy, PartialEq, Eq)]
+    enum NativeUnit {
+        Key(u16, u16, u32),
+        Mouse(u32),
+    }
+
+    type ReleaseRecord = (
+        PendingRelease,
+        Option<MonotonicInstant>,
+        Option<ActivityTag>,
+    );
+
+    #[derive(Debug, Default)]
+    struct NativeLedgerDriver {
+        text_prefix: Mutex<Option<usize>>,
+        fail_release: AtomicUsize,
+        calls: Mutex<Vec<Vec<NativeUnit>>>,
+        routes: Mutex<Vec<InputDelivery>>,
+        releases: Mutex<Vec<ReleaseRecord>>,
+        cancel_after_text: Mutex<Option<CancellationToken>>,
+        advance_after_text: Mutex<Option<(Arc<ManualClock>, Duration)>>,
+        advance_before_release: Mutex<Option<(Arc<ManualClock>, Duration)>>,
+        advance_after_release: Mutex<Option<(Arc<ManualClock>, Duration)>>,
+    }
+
+    impl NativeLedgerDriver {
+        fn with_prefix(prefix: usize) -> Self {
+            Self {
+                text_prefix: Mutex::new(Some(prefix)),
+                ..Self::default()
+            }
+        }
+
+        fn calls(&self) -> Vec<Vec<NativeUnit>> {
+            self.calls.lock().expect("uncontended").clone()
+        }
+    }
+
+    impl SystemCommitSource for NativeLedgerDriver {
+        fn revalidate_system_commit(
+            &self,
+            _focus: FocusPolicy,
+            _geometry: Option<GeometryFingerprint>,
+        ) -> Result<(), InputFault> {
+            Ok(())
+        }
+
+        fn send_input(&self, inputs: &[INPUT]) -> usize {
+            let units: Vec<_> = inputs
+                .iter()
+                .map(|input| {
+                    if input.r#type == INPUT_KEYBOARD {
+                        // SAFETY: all test and production constructors set INPUT_KEYBOARD.
+                        let key = unsafe { input.Anonymous.ki };
+                        NativeUnit::Key(key.wVk.0, key.wScan, key.dwFlags.0)
+                    } else {
+                        assert_eq!(input.r#type, INPUT_MOUSE);
+                        // SAFETY: the tag identifies the initialized MOUSEINPUT.
+                        NativeUnit::Mouse(unsafe { input.Anonymous.mi.dwFlags.0 })
+                    }
+                })
+                .collect();
+            let text = matches!(units.first(), Some(NativeUnit::Key(0, _, flags))
+                if *flags == KEYEVENTF_UNICODE.0);
+            let release = units.len() == 1
+                && matches!(units[0],
+                NativeUnit::Key(_, _, flags) if flags & KEYEVENTF_KEYUP.0 != 0)
+                || units == [NativeUnit::Mouse(MOUSEEVENTF_LEFTUP.0)];
+            self.calls.lock().expect("uncontended").push(units);
+            if text {
+                if let Some(token) = self.cancel_after_text.lock().expect("uncontended").take() {
+                    token.cancel();
+                }
+                if let Some((clock, step)) =
+                    self.advance_after_text.lock().expect("uncontended").take()
+                {
+                    clock.advance(step);
+                }
+                return self
+                    .text_prefix
+                    .lock()
+                    .expect("uncontended")
+                    .take()
+                    .unwrap_or(inputs.len());
+            }
+            if release
+                && self.fail_release.fetch_update(
+                    Ordering::AcqRel,
+                    Ordering::Acquire,
+                    |remaining| remaining.checked_sub(1),
+                ) == Ok(1)
+            {
+                return 0;
+            }
+            inputs.len()
+        }
+
+        fn submission_failure(&self, inserted: usize) -> SubmissionFailure {
+            if inserted == 0 {
+                SubmissionFailure::before_event(InputFault::SubmissionFailed)
+            } else {
+                SubmissionFailure::during_event(InputFault::SubmissionFailed)
+            }
+        }
+    }
+
+    impl SystemReleaseSource for NativeLedgerDriver {
+        fn release_key(&self, _key: Key) -> Result<(VIRTUAL_KEY, u8, bool), InputFault> {
+            panic!("successful presses must retain their native key representation");
+        }
+
+        fn release_button(&self, _button: PointerButton) -> Result<u8, InputFault> {
+            panic!("successful presses must retain their native button representation");
+        }
+    }
+
+    impl InputDriver for NativeLedgerDriver {
+        fn preflight(
+            &self,
+            route: InputDelivery,
+            _focus: FocusPolicy,
+            _operation: &OperationContext,
+        ) -> Result<(), InputFault> {
+            self.routes.lock().expect("uncontended").push(route);
+            assert_eq!(route, InputDelivery::System);
+            Ok(())
+        }
+
+        fn submit(
+            &self,
+            route: InputDelivery,
+            focus: FocusPolicy,
+            event: &InputEvent,
+            _geometry: PointerGeometry,
+            state: &mut DriverState,
+            operation: &OperationContext,
+        ) -> Result<(), SubmissionFailure> {
+            assert_eq!(route, InputDelivery::System);
+            assert!(
+                state.pending_unicode.is_none(),
+                "new submission has no pending native state"
+            );
+            match event {
+                InputEvent::Text(text) => send_system_text(text, self, focus, operation, state),
+                InputEvent::KeyPress(key) => {
+                    let input = INPUT {
+                        r#type: INPUT_KEYBOARD,
+                        Anonymous: INPUT_0 {
+                            ki: KEYBDINPUT {
+                                wVk: VIRTUAL_KEY(0x11),
+                                wScan: 0x1d,
+                                ..KEYBDINPUT::default()
+                            },
+                        },
+                    };
+                    assert_eq!(self.send_input(&[input]), 1);
+                    state.keys.push(SystemKeyState {
+                        logical: *key,
+                        virtual_key: 0x11,
+                        scan_code: 0x1d,
+                        extended: false,
+                    });
+                    Ok(())
+                }
+                InputEvent::PointerPress(button) => {
+                    let input = INPUT {
+                        r#type: INPUT_MOUSE,
+                        Anonymous: INPUT_0 {
+                            mi: MOUSEINPUT {
+                                dwFlags: MOUSEEVENTF_LEFTDOWN,
+                                ..MOUSEINPUT::default()
+                            },
+                        },
+                    };
+                    assert_eq!(self.send_input(&[input]), 1);
+                    state.buttons.push(SystemButtonState {
+                        logical: *button,
+                        physical: 1,
+                    });
+                    Ok(())
+                }
+                _ => panic!("unexpected ordinary event after text: {event:?}"),
+            }
+        }
+
+        fn release(
+            &self,
+            route: InputDelivery,
+            pressed: PendingRelease,
+            state: &mut DriverState,
+            operation: &OperationContext,
+        ) -> Result<(), InputFault> {
+            assert_eq!(route, InputDelivery::System);
+            assert!(operation.cancellation().is_none());
+            self.releases.lock().expect("uncontended").push((
+                pressed,
+                operation.deadline(),
+                operation.activity_tag(),
+            ));
+            if let Some((clock, step)) = self
+                .advance_before_release
+                .lock()
+                .expect("uncontended")
+                .take()
+            {
+                clock.advance(step);
+            }
+            let result = send_system_release(pressed, state, self, operation);
+            if let Some((clock, step)) = self
+                .advance_after_release
+                .lock()
+                .expect("uncontended")
+                .take()
+            {
+                clock.advance(step);
+            }
+            result
+        }
+    }
+
+    fn setup(
+        driver: Arc<NativeLedgerDriver>,
+        text: &str,
+        held: bool,
+        budget: CleanupBudget,
+    ) -> (WindowsInputController, InputRequest) {
+        let target = target();
+        let controller =
+            WindowsInputController::with_driver(InputDescriptor::new(target, capability()), driver);
+        let mut events = Vec::new();
+        if held {
+            events.push(InputEvent::KeyPress(Key::Modifier(Modifier::Control)));
+            events.push(InputEvent::PointerPress(PointerButton::Primary));
+        }
+        events.push(InputEvent::Text(text.to_owned()));
+        events.push(InputEvent::Delay(Duration::ZERO));
+        let request = InputRequest::new(
+            target,
+            InputSequence::new(events).expect("bounded"),
+            DeliveryPlan::ordered(vec![InputDelivery::System, InputDelivery::WindowMessage])
+                .expect("ordered"),
+        )
+        .with_focus(FocusPolicy::RequireFocused)
+        .with_cleanup_budget(budget);
+        (controller, request)
+    }
+
+    fn budget(events: usize) -> CleanupBudget {
+        CleanupBudget::at_most(events, Duration::from_millis(10))
+    }
+
+    fn unicode_units(text: &str) -> Vec<NativeUnit> {
+        text.encode_utf16()
+            .flat_map(|unit| {
+                [
+                    NativeUnit::Key(0, unit, KEYEVENTF_UNICODE.0),
+                    NativeUnit::Key(0, unit, (KEYEVENTF_UNICODE | KEYEVENTF_KEYUP).0),
+                ]
+            })
+            .collect()
+    }
+
+    #[test]
+    fn unicode_odd_prefix_spends_one_shared_event_allowance_newest_first() {
+        for allowance in [0, 1, 2, 3, 8] {
+            let driver = Arc::new(NativeLedgerDriver::with_prefix(3));
+            let (controller, request) =
+                setup(driver.clone(), "A\u{1f642}", true, budget(allowance));
+            let receipt = controller
+                .execute(&request, &OperationContext::new())
+                .expect("receipt");
+            let released = allowance.min(3);
+            assert_eq!(receipt.submitted(), 2);
+            assert_eq!(receipt.fault(), Some(InputFault::SubmissionFailed));
+            assert!(receipt.partial_native_effect());
+            assert_eq!(receipt.cleanup_owed(), 3);
+            assert_eq!(receipt.cleanup_released(), released);
+            assert_eq!(
+                receipt.cleanup(),
+                if released == 3 {
+                    CleanupState::Complete
+                } else {
+                    CleanupState::Exhausted
+                }
+            );
+            assert_eq!(attempted_routes(&receipt), [InputDelivery::System]);
+            let mut expected = vec![
+                vec![NativeUnit::Key(0x11, 0x1d, 0)],
+                vec![NativeUnit::Mouse(MOUSEEVENTF_LEFTDOWN.0)],
+                unicode_units("A\u{1f642}"),
+            ];
+            let releases = [
+                vec![NativeUnit::Key(
+                    0,
+                    0xd83d,
+                    (KEYEVENTF_UNICODE | KEYEVENTF_KEYUP).0,
+                )],
+                vec![NativeUnit::Mouse(MOUSEEVENTF_LEFTUP.0)],
+                vec![NativeUnit::Key(0x11, 0x1d, KEYEVENTF_KEYUP.0)],
+            ];
+            expected.extend_from_slice(&releases[..released]);
+            assert_eq!(
+                driver.calls(),
+                expected,
+                "no inline release, retry, or text completion"
+            );
+        }
+    }
+
+    #[test]
+    fn unicode_zero_even_odd_and_full_prefixes_preserve_logical_text_accounting() {
+        for text in ["AB", "\u{1f642}"] {
+            for prefix in 0..=4 {
+                let driver = Arc::new(NativeLedgerDriver::with_prefix(prefix));
+                let (controller, request) = setup(driver.clone(), text, false, budget(4));
+                let receipt = controller
+                    .execute(&request, &OperationContext::new())
+                    .expect("receipt");
+                let owed = usize::from(prefix % 2 == 1);
+                assert_eq!(receipt.submitted(), if prefix == 4 { 2 } else { 0 });
+                assert_eq!(receipt.partial_native_effect(), prefix > 0 && prefix < 4);
+                assert_eq!(receipt.cleanup_owed(), owed);
+                assert_eq!(receipt.cleanup_released(), owed);
+                assert_eq!(
+                    receipt.cleanup(),
+                    if owed == 0 {
+                        CleanupState::NotNeeded
+                    } else {
+                        CleanupState::Complete
+                    }
+                );
+                assert_eq!(
+                    receipt.fault(),
+                    (prefix < 4).then_some(InputFault::SubmissionFailed)
+                );
+                assert_eq!(
+                    receipt.outcome(),
+                    match prefix {
+                        0 => SequenceOutcome::Unexecuted,
+                        4 => SequenceOutcome::Complete,
+                        _ => SequenceOutcome::Partial,
+                    }
+                );
+                let mut expected = vec![unicode_units(text)];
+                if owed != 0 {
+                    let unit = text.encode_utf16().nth(prefix / 2).expect("unmatched unit");
+                    expected.push(vec![NativeUnit::Key(
+                        0,
+                        unit,
+                        (KEYEVENTF_UNICODE | KEYEVENTF_KEYUP).0,
+                    )]);
+                }
+                assert_eq!(driver.calls(), expected);
+                assert_eq!(
+                    driver.routes.lock().expect("uncontended").as_slice(),
+                    [InputDelivery::System]
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn unicode_failed_release_stops_without_credit_or_modifier_retry() {
+        for failed_release in 1..=3 {
+            let driver = Arc::new(NativeLedgerDriver::with_prefix(1));
+            driver.fail_release.store(failed_release, Ordering::Release);
+            let (controller, request) = setup(driver.clone(), "AB", true, budget(8));
+            let receipt = controller
+                .execute(&request, &OperationContext::new())
+                .expect("receipt");
+            assert_eq!(receipt.fault(), Some(InputFault::SubmissionFailed));
+            assert_eq!(receipt.submitted(), 2);
+            assert!(receipt.partial_native_effect());
+            assert_eq!(receipt.cleanup(), CleanupState::Incomplete);
+            assert_eq!(
+                (receipt.cleanup_owed(), receipt.cleanup_released()),
+                (3, failed_release - 1)
+            );
+            let releases = [
+                vec![NativeUnit::Key(
+                    0,
+                    65,
+                    (KEYEVENTF_UNICODE | KEYEVENTF_KEYUP).0,
+                )],
+                vec![NativeUnit::Mouse(MOUSEEVENTF_LEFTUP.0)],
+                vec![NativeUnit::Key(0x11, 0x1d, KEYEVENTF_KEYUP.0)],
+            ];
+            assert_eq!(&driver.calls()[3..], &releases[..failed_release]);
+            assert_eq!(
+                driver.releases.lock().expect("uncontended").len(),
+                failed_release
+            );
+        }
+    }
+
+    #[test]
+    fn unicode_zero_and_even_prefixes_still_release_prior_logical_state() {
+        for prefix in [0, 2] {
+            let driver = Arc::new(NativeLedgerDriver::with_prefix(prefix));
+            let (controller, request) = setup(driver.clone(), "AB", true, budget(8));
+            let receipt = controller
+                .execute(&request, &OperationContext::new())
+                .expect("receipt");
+            assert_eq!(receipt.submitted(), 2);
+            assert_eq!(receipt.fault(), Some(InputFault::SubmissionFailed));
+            assert_eq!(receipt.partial_native_effect(), prefix != 0);
+            assert_eq!((receipt.cleanup_owed(), receipt.cleanup_released()), (2, 2));
+            assert_eq!(receipt.cleanup(), CleanupState::Complete);
+            assert_eq!(
+                &driver.calls()[3..],
+                [
+                    vec![NativeUnit::Mouse(MOUSEEVENTF_LEFTUP.0)],
+                    vec![NativeUnit::Key(0x11, 0x1d, KEYEVENTF_KEYUP.0)],
+                ]
+            );
+        }
+    }
+
+    #[test]
+    fn unicode_cleanup_uses_one_fresh_context_after_cancellation_or_deadline() {
+        for cancel in [true, false] {
+            for expire_cleanup in [true, false] {
+                let clock = Arc::new(ManualClock::default());
+                let token = CancellationToken::new();
+                let driver = Arc::new(NativeLedgerDriver::with_prefix(3));
+                if cancel {
+                    *driver.cancel_after_text.lock().expect("uncontended") = Some(token.clone());
+                }
+                *driver.advance_after_text.lock().expect("uncontended") =
+                    Some((clock.clone(), Duration::from_millis(5)));
+                if expire_cleanup {
+                    *driver.advance_after_release.lock().expect("uncontended") =
+                        Some((clock.clone(), Duration::from_millis(10)));
+                }
+                let tag = ActivityTag::new(7).expect("tag");
+                let operation = OperationContext::new()
+                    .with_clock(clock)
+                    .with_cancellation(token)
+                    .with_activity_tag(tag)
+                    .with_deadline(MonotonicInstant::from_origin(Duration::from_millis(5)));
+                let (controller, request) = setup(driver.clone(), "\u{1f642}", true, budget(8));
+                let receipt = controller.execute(&request, &operation).expect("receipt");
+                assert_eq!(receipt.fault(), Some(InputFault::SubmissionFailed));
+                assert_eq!(receipt.submitted(), 2);
+                assert!(receipt.partial_native_effect());
+                let released = if expire_cleanup { 1 } else { 3 };
+                assert_eq!(
+                    (receipt.cleanup_owed(), receipt.cleanup_released()),
+                    (3, released)
+                );
+                assert_eq!(
+                    receipt.cleanup(),
+                    if expire_cleanup {
+                        CleanupState::Exhausted
+                    } else {
+                        CleanupState::Complete
+                    }
+                );
+                let contexts = driver.releases.lock().expect("uncontended");
+                assert_eq!(contexts.len(), released);
+                for (_, deadline, activity) in contexts.iter() {
+                    assert_eq!(
+                        *deadline,
+                        Some(MonotonicInstant::from_origin(Duration::from_millis(15)))
+                    );
+                    assert_eq!(*activity, Some(tag));
+                }
+                assert_eq!(driver.calls().len(), 3 + released);
+            }
+        }
+    }
+
+    #[test]
+    fn unicode_full_acceptance_then_interruption_counts_text_once() {
+        for cancel in [true, false] {
+            let clock = Arc::new(ManualClock::default());
+            let token = CancellationToken::new();
+            let driver = Arc::new(NativeLedgerDriver::default());
+            if cancel {
+                *driver.cancel_after_text.lock().expect("uncontended") = Some(token.clone());
+            } else {
+                *driver.advance_after_text.lock().expect("uncontended") =
+                    Some((clock.clone(), Duration::from_millis(5)));
+            }
+            let operation = OperationContext::new()
+                .with_clock(clock)
+                .with_cancellation(token)
+                .with_deadline(MonotonicInstant::from_origin(Duration::from_millis(5)));
+            let (controller, request) = setup(driver.clone(), "\u{1f642}", true, budget(8));
+            let receipt = controller.execute(&request, &operation).expect("receipt");
+            assert_eq!(receipt.submitted(), 3);
+            assert_eq!(
+                receipt.fault(),
+                Some(if cancel {
+                    InputFault::Cancelled
+                } else {
+                    InputFault::DeadlineExceeded
+                })
+            );
+            assert!(!receipt.partial_native_effect());
+            assert_eq!((receipt.cleanup_owed(), receipt.cleanup_released()), (2, 2));
+            assert_eq!(receipt.cleanup(), CleanupState::Complete);
+            assert_eq!(driver.calls().len(), 5);
+        }
+    }
+
+    #[test]
+    fn unicode_exhaustion_does_not_leak_pending_state_into_next_execution() {
+        let driver = Arc::new(NativeLedgerDriver::with_prefix(1));
+        let (controller, request) = setup(driver.clone(), "AB", false, budget(0));
+        let first = controller
+            .execute(&request, &OperationContext::new())
+            .expect("first");
+        assert_eq!(first.cleanup(), CleanupState::Exhausted);
+        assert_eq!((first.cleanup_owed(), first.cleanup_released()), (1, 0));
+        let second = controller
+            .execute(&request, &OperationContext::new())
+            .expect("second");
+        assert_eq!(second.outcome(), SequenceOutcome::Complete);
+        assert_eq!(second.cleanup(), CleanupState::NotNeeded);
+        assert_eq!(second.cleanup_owed(), 0);
+        assert_eq!(driver.calls(), [unicode_units("AB"), unicode_units("AB")]);
+    }
+
+    #[test]
+    fn unicode_zero_cleanup_duration_starts_no_release() {
+        let driver = Arc::new(NativeLedgerDriver::with_prefix(1));
+        let (controller, request) = setup(
+            driver.clone(),
+            "AB",
+            true,
+            CleanupBudget::at_most(8, Duration::ZERO),
+        );
+        let receipt = controller
+            .execute(&request, &OperationContext::new())
+            .expect("receipt");
+        assert_eq!(receipt.cleanup(), CleanupState::Exhausted);
+        assert_eq!((receipt.cleanup_owed(), receipt.cleanup_released()), (3, 0));
+        assert_eq!(driver.calls().len(), 3);
+    }
+
+    #[test]
+    fn unicode_cleanup_deadline_at_native_boundary_is_exhausted_without_a_send() {
+        let clock = Arc::new(ManualClock::default());
+        let driver = Arc::new(NativeLedgerDriver::with_prefix(1));
+        *driver.advance_before_release.lock().expect("uncontended") =
+            Some((clock.clone(), Duration::from_millis(10)));
+        let (controller, request) = setup(driver.clone(), "AB", true, budget(8));
+        let operation = OperationContext::new().with_clock(clock);
+        let receipt = controller.execute(&request, &operation).expect("receipt");
+        assert_eq!(receipt.fault(), Some(InputFault::SubmissionFailed));
+        assert_eq!(receipt.submitted(), 2);
+        assert_eq!(receipt.cleanup(), CleanupState::Exhausted);
+        assert_eq!((receipt.cleanup_owed(), receipt.cleanup_released()), (3, 0));
+        assert_eq!(
+            driver.calls().len(),
+            3,
+            "no native release after its deadline"
+        );
+    }
 }

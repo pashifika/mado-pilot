@@ -1624,6 +1624,21 @@ injection. A proven higher-integrity target is `PolicyRefused`; a zero
 `SendInput` return without that proof remains `DeliveryFailed`, because the API
 does not identify UIPI through its return or last-error value.
 
+Physical desktop queries use a checked calling-thread PMv2 scope, and current
+cursor reads are physical. System absolute moves also scope their native
+`SendInput` call to PMv2, excluding authority checks and host callbacks.
+Ordinary messages convert physical points into the retained target's logical
+screen/client convention and post under that target's DPI context. Temporary
+scopes restore the caller; context/conversion failures refuse before submission.
+Process DPI, signed coordinate bounds and existing authority fences are unchanged.
+
+An odd System UTF-16 prefix records one private pending key-up. The controller
+releases it before prior sequence-owned keys/buttons under one cleanup context
+and allowance. Receipts preserve the original fault and complete logical prefix
+while reporting exact aggregate cleanup counts. No public type or ABI changes.
+The audit repairs have deterministic coverage; current-source mixed-DPI arrival
+and real non-ASCII consumer acceptance remain open.
+
 Every published WGC frame records its stamp and authoritative transform in the
 target's bounded live-stream geometry ledger. `ReprojectCurrent` reads live
 placement, `RequireUnchanged` compares the source transform with current

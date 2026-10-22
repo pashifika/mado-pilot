@@ -7,6 +7,80 @@ pub(crate) const PREFIX: &str = "fixture-startup-error ";
 pub(crate) const MAX_RECORD_BYTES: usize = 384;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum DpiMode {
+    Unaware,
+    System,
+    PerMonitorV2,
+}
+
+impl DpiMode {
+    pub(crate) const fn label(self) -> &'static str {
+        match self {
+            Self::Unaware => "unaware",
+            Self::System => "system",
+            Self::PerMonitorV2 => "per-monitor-v2",
+        }
+    }
+
+    #[cfg(windows)]
+    pub(crate) fn context(self) -> windows::Win32::UI::HiDpi::DPI_AWARENESS_CONTEXT {
+        use windows::Win32::UI::HiDpi::{
+            DPI_AWARENESS_CONTEXT_PER_MONITOR_AWARE_V2, DPI_AWARENESS_CONTEXT_SYSTEM_AWARE,
+            DPI_AWARENESS_CONTEXT_UNAWARE,
+        };
+        match self {
+            Self::Unaware => DPI_AWARENESS_CONTEXT_UNAWARE,
+            Self::System => DPI_AWARENESS_CONTEXT_SYSTEM_AWARE,
+            Self::PerMonitorV2 => DPI_AWARENESS_CONTEXT_PER_MONITOR_AWARE_V2,
+        }
+    }
+}
+
+impl FromStr for DpiMode {
+    type Err = &'static str;
+
+    fn from_str(value: &str) -> Result<Self, Self::Err> {
+        match value {
+            "unaware" => Ok(Self::Unaware),
+            "system" => Ok(Self::System),
+            "per-monitor-v2" => Ok(Self::PerMonitorV2),
+            _ => Err("DPI mode must be unaware, system, or per-monitor-v2"),
+        }
+    }
+}
+
+#[cfg(windows)]
+pub(crate) struct DpiScope {
+    previous: windows::Win32::UI::HiDpi::DPI_AWARENESS_CONTEXT,
+    _thread_only: std::marker::PhantomData<*mut ()>,
+}
+
+#[cfg(windows)]
+impl DpiScope {
+    pub(crate) fn enter(mode: DpiMode) -> Option<Self> {
+        // SAFETY: this changes only the calling fixture/test thread.
+        let previous =
+            unsafe { windows::Win32::UI::HiDpi::SetThreadDpiAwarenessContext(mode.context()) };
+        if previous.0.is_null() {
+            return None;
+        }
+        Some(Self {
+            previous,
+            _thread_only: std::marker::PhantomData,
+        })
+    }
+}
+
+#[cfg(windows)]
+impl Drop for DpiScope {
+    fn drop(&mut self) {
+        // SAFETY: the non-null prior context belongs to this same thread.
+        let _restored =
+            unsafe { windows::Win32::UI::HiDpi::SetThreadDpiAwarenessContext(self.previous) };
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) enum Stage {
     DpiAwareness,
     ModuleHandle,
@@ -904,5 +978,13 @@ mod tests {
             .parse::<Failure>(),
             Err(ParseError("record is not ASCII"))
         );
+    }
+
+    #[test]
+    fn dpi_selectors_accept_only_declared_modes() {
+        for mode in [DpiMode::Unaware, DpiMode::System, DpiMode::PerMonitorV2] {
+            assert_eq!(mode.label().parse(), Ok(mode));
+        }
+        assert!("auto".parse::<DpiMode>().is_err());
     }
 }

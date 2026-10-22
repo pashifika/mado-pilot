@@ -43,6 +43,8 @@ pub(crate) struct ResolvedWindowKey {
 pub(crate) trait WindowMessageSource {
     fn client_point(&self, screen: (i32, i32)) -> Result<(i16, i16), InputFault>;
 
+    fn screen_point(&self, screen: (i32, i32)) -> Result<(i16, i16), InputFault>;
+
     fn resolve_button(&self, button: PointerButton) -> Result<u8, InputFault>;
 
     fn resolve_key(&self, key: Key) -> Result<ResolvedWindowKey, InputFault>;
@@ -221,7 +223,7 @@ fn submit_scroll<S: WindowMessageSource + ?Sized>(
     operation: &OperationContext,
 ) -> SubmissionResult {
     let pointer = pointer.ok_or(InputFault::UnsupportedCoordinate)?;
-    let screen = checked_point(pointer.screen)?;
+    let screen = source.screen_point(pointer.screen)?;
     let mouse_state = mouse_state(state);
     let mut units = [MessageUnit {
         message: 0,
@@ -466,6 +468,7 @@ fn wheel_delta(notches: i16, vertical: bool) -> Result<i16, InputFault> {
     i16::try_from(delta).map_err(|_| InputFault::UnsupportedCombination)
 }
 
+#[cfg(test)]
 fn checked_point(point: (i32, i32)) -> Result<(i16, i16), InputFault> {
     Ok((
         i16::try_from(point.0).map_err(|_| InputFault::UnsupportedCoordinate)?,
@@ -568,6 +571,10 @@ mod tests {
     impl WindowMessageSource for FakeSource {
         fn client_point(&self, _screen: (i32, i32)) -> Result<(i16, i16), InputFault> {
             Ok(*self.client.lock().expect("uncontended"))
+        }
+
+        fn screen_point(&self, screen: (i32, i32)) -> Result<(i16, i16), InputFault> {
+            checked_point(screen)
         }
 
         fn resolve_button(&self, button: PointerButton) -> Result<u8, InputFault> {

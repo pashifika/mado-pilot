@@ -6,6 +6,10 @@ cmake_minimum_required(VERSION 3.22)
 project(MadoPilotCMakeConsumer LANGUAGES C)
 
 option(MADOPILOT_C_ONLY "Enable only C and omit the C++ consumer" OFF)
+option(MADOPILOT_WINDOWS_PATH_ACCEPTANCE "Require controlled Windows OCR instead of skipping" OFF)
+if(MADOPILOT_WINDOWS_PATH_ACCEPTANCE AND NOT WIN32)
+  message(FATAL_ERROR "Windows path acceptance requires Windows")
+endif()
 if(NOT MADOPILOT_C_ONLY)
   enable_language(CXX)
 endif()
@@ -60,12 +64,40 @@ set_target_properties(
 )
 list(APPEND _madopilot_consumer_tests consumer-ocr-profile-c)
 
+if(WIN32)
+  foreach(_sample RANGE 0 5)
+    add_executable(windows-ingress-${_sample} windows-ingress.c)
+    target_compile_definitions(windows-ingress-${_sample} PRIVATE TEST_SAMPLE=${_sample})
+    target_include_directories(
+      windows-ingress-${_sample} PRIVATE
+      "${MADOPILOT_SOURCE_DIR}/include"
+      "${MADOPILOT_SOURCE_DIR}/examples"
+    )
+    set_target_properties(
+      windows-ingress-${_sample} PROPERTIES C_STANDARD 11 C_STANDARD_REQUIRED ON
+    )
+    list(APPEND _madopilot_consumer_tests windows-ingress-${_sample})
+  endforeach()
+endif()
+
 enable_testing()
 
 foreach(_madopilot_test IN LISTS _madopilot_consumer_tests)
   add_test(NAME ${_madopilot_test} COMMAND ${_madopilot_test})
 endforeach()
-set_tests_properties(consumer-ocr-profile-c PROPERTIES SKIP_RETURN_CODE 77)
+set_tests_properties(${_madopilot_consumer_tests} PROPERTIES TIMEOUT 60)
+if(MADOPILOT_WINDOWS_PATH_ACCEPTANCE)
+  if(NOT IS_DIRECTORY "${MADOPILOT_ACCEPTANCE_MODEL_ROOT}" OR
+     NOT EXISTS "${MADOPILOT_ACCEPTANCE_RUNTIME}")
+    message(FATAL_ERROR "Windows path acceptance requires controlled model/runtime paths")
+  endif()
+  set_tests_properties(
+    consumer-ocr-profile-c PROPERTIES ENVIRONMENT
+    "MADO_PILOT_G004_MODEL_ROOT=${MADOPILOT_ACCEPTANCE_MODEL_ROOT};MADO_PILOT_ONNX_RUNTIME=${MADOPILOT_ACCEPTANCE_RUNTIME}"
+  )
+else()
+  set_tests_properties(consumer-ocr-profile-c PROPERTIES SKIP_RETURN_CODE 77)
+endif()
 
 if(WIN32)
   # Windows has no run path: the loader searches the executable's directory and

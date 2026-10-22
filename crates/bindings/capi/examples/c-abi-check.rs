@@ -12,6 +12,12 @@
 //!   --bin mado-pilot-windows-window-message-fixture
 //! cargo run --locked --package mado-pilot-capi --example c-abi-check -- \
 //!   --label "<host>" --windows-native-fixture
+//! # Conversion seams only (no native engine or controlled OCR execution):
+//! cargo run --locked --package mado-pilot-capi --example c-abi-check -- \
+//!   --windows-ingress-only
+//! # Separately authorized non-UTF-8-ACP consumers, with controlled OCR paths:
+//! # build both library and verifier with --features private-fixture, then use
+//! # --windows-path-acceptance; this mode never runs native input.
 //! ```
 
 #[cfg(all(windows, feature = "qualification-unsupported-api"))]
@@ -19,6 +25,8 @@ use mado_pilot::{NativeEngineRequest, OperationContext, Status};
 
 use std::collections::HashSet;
 use std::env;
+#[cfg(windows)]
+use std::ffi::OsStr;
 use std::ffi::OsString;
 use std::path::{Path, PathBuf};
 use std::process::{Command, Output};
@@ -32,6 +40,21 @@ const UNSUPPORTED_RUST_CHILD: &str = "--windows-unsupported-rust-child";
 const SUPPORTED_RUST_CHILD: &str = "--windows-supported-rust-child";
 
 fn main() -> Result<(), Box<dyn std::error::Error>> {
+    let ingress_only = env::args().any(|argument| argument == "--windows-ingress-only");
+    let path_acceptance = env::args().any(|argument| argument == "--windows-path-acceptance");
+    if (ingress_only || path_acceptance)
+        && (windows_native_fixture_requested()
+            || windows_unsupported_qualification_requested()
+            || env::args().any(|argument| {
+                argument == "--windows-unsupported-rust-child"
+                    || argument == "--windows-supported-rust-child"
+            }))
+    {
+        return Err("Windows ingress modes cannot be combined with native qualification".into());
+    }
+    if ingress_only && path_acceptance {
+        return Err("select conversion seams or controlled path acceptance, not both".into());
+    }
     #[cfg(all(windows, feature = "qualification-unsupported-api"))]
     if let Some(mode) = env::args()
         .find(|argument| argument == UNSUPPORTED_RUST_CHILD || argument == SUPPORTED_RUST_CHILD)
@@ -51,6 +74,24 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     }
     let label = label();
     let paths = Paths::discover()?;
+    #[cfg(not(windows))]
+    if ingress_only || path_acceptance {
+        return Err("Windows ingress modes require Windows".into());
+    }
+    #[cfg(windows)]
+    {
+        check_windows_ingress(&paths)?;
+        if ingress_only {
+            println!("Windows ingress conversion seams complete; no real-consumer acceptance");
+            return Ok(());
+        }
+        if path_acceptance {
+            #[cfg(feature = "private-fixture")]
+            return check_windows_paths(&paths);
+            #[cfg(not(feature = "private-fixture"))]
+            return Err("Windows path acceptance requires --features private-fixture".into());
+        }
+    }
 
     println!("host: {label}");
     println!("c compiler: {}", described(&paths.cc));
@@ -68,8 +109,8 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     run_default_ocr_examples(&paths)?;
     check_frozen_layout(&paths)?;
     check_frozen_headers(&paths)?;
-    check_cmake_consumer(&paths, false)?;
-    check_cmake_consumer(&paths, true)?;
+    check_cmake_consumer(&paths, false, None)?;
+    check_cmake_consumer(&paths, true, None)?;
 
     println!("c-abi-check complete");
 
@@ -268,6 +309,7 @@ impl Paths {
 #[derive(Debug)]
 struct TemporaryCmakeBuild {
     path: PathBuf,
+    cleanup_attempted: bool,
 }
 
 impl TemporaryCmakeBuild {
@@ -279,17 +321,27 @@ impl TemporaryCmakeBuild {
             Err(error) => return Err(error),
         }
         std::fs::create_dir_all(&path)?;
-        Ok(Self { path })
+        Ok(Self {
+            path,
+            cleanup_attempted: false,
+        })
     }
 
     fn path(&self) -> &Path {
         &self.path
     }
+
+    fn cleanup(&mut self) -> std::io::Result<()> {
+        self.cleanup_attempted = true;
+        std::fs::remove_dir_all(&self.path)
+    }
 }
 
 impl Drop for TemporaryCmakeBuild {
     fn drop(&mut self) {
-        let _ = std::fs::remove_dir_all(&self.path);
+        if !self.cleanup_attempted {
+            let _ = self.cleanup();
+        }
     }
 }
 
@@ -659,7 +711,7 @@ fn compile_with(
     let mut command = Command::new(compiler);
 
     if is_msvc(compiler) {
-        command.arg("/nologo");
+        command.arg("/nologo").arg("/utf-8");
         match language {
             Language::C => command.arg("/std:c11"),
             Language::Cpp => command.arg("/std:c++17").arg("/EHsc"),
@@ -1288,24 +1340,65 @@ fn check_frozen_headers(paths: &Paths) -> Result<(), Box<dyn std::error::Error>>
 }
 
 /// Runs an independent consumer build, optionally with CXX unavailable.
-fn check_cmake_consumer(paths: &Paths, c_only: bool) -> Result<(), Box<dyn std::error::Error>> {
-    let source = paths.root.join("crates/bindings/capi/tests/cmake");
+fn check_cmake_consumer(
+    paths: &Paths,
+    c_only: bool,
+    acceptance_paths: Option<(&Path, &Path)>,
+) -> Result<(), Box<dyn std::error::Error>> {
     // A short, fresh cache also keeps generated paths within MSVC's limits.
-    let build = TemporaryCmakeBuild::new(if c_only { "c-only" } else { "c-cpp" })?;
+    let mut build = TemporaryCmakeBuild::new(if c_only { "c-only" } else { "c-cpp" })?;
+    let result = run_cmake_consumer(paths, c_only, acceptance_paths, build.path());
+    if let Err(error) = build.cleanup() {
+        return Err(format!("CMake result: {result:?}; build-tree cleanup failed: {error}").into());
+    }
+    result?;
+    println!(
+        "cmake: {}",
+        if c_only {
+            "C-only consumers ran with unavailable CXX; controlled OCR coverage is reported by CTest"
+        } else {
+            "C/C++ consumers ran; controlled OCR coverage is reported by CTest"
+        }
+    );
+    Ok(())
+}
+
+fn run_cmake_consumer(
+    paths: &Paths,
+    c_only: bool,
+    acceptance_paths: Option<(&Path, &Path)>,
+    build: &Path,
+) -> Result<(), Box<dyn std::error::Error>> {
+    let source = paths.root.join("crates/bindings/capi/tests/cmake");
     let package = paths.root.join("crates/bindings/capi");
     let package = package.to_string_lossy().replace('\\', "/");
     let artifacts = paths.artifacts.to_string_lossy().replace('\\', "/");
-    let unavailable_cxx = c_only.then(|| build.path().join("unavailable-cxx"));
+    let unavailable_cxx = c_only.then(|| build.join("unavailable-cxx"));
     let mut arguments = vec![
         OsString::from("-S"),
         source.into_os_string(),
         OsString::from("-B"),
-        build.path().as_os_str().to_os_string(),
+        build.as_os_str().to_os_string(),
         OsString::from(format!("-DMADOPILOT_SOURCE_DIR={package}")),
         OsString::from(format!("-DMADOPILOT_ARTIFACT_DIR={artifacts}")),
         OsString::from("-DCMAKE_BUILD_TYPE=Release"),
         OsString::from("-DCMAKE_OBJECT_PATH_MAX=200"),
     ];
+    if let Some((model_root, runtime)) = acceptance_paths {
+        let model_root = plain(model_root.to_path_buf());
+        let runtime = plain(runtime.to_path_buf());
+        arguments.extend([
+            OsString::from("-DMADOPILOT_WINDOWS_PATH_ACCEPTANCE=ON"),
+            OsString::from(format!(
+                "-DMADOPILOT_ACCEPTANCE_MODEL_ROOT={}",
+                model_root.to_string_lossy().replace('\\', "/")
+            )),
+            OsString::from(format!(
+                "-DMADOPILOT_ACCEPTANCE_RUNTIME={}",
+                runtime.to_string_lossy().replace('\\', "/")
+            )),
+        ]);
+    }
     if c_only && cfg!(windows) {
         // Use compiler-driven discovery for the unavailable-CXX probe.
         arguments.extend([OsString::from("-G"), OsString::from("NMake Makefiles")]);
@@ -1329,15 +1422,12 @@ fn check_cmake_consumer(paths: &Paths, c_only: bool) -> Result<(), Box<dyn std::
         return Err("configuring the CMake consumer project failed".into());
     }
 
-    let mut arguments = vec![
+    let arguments = vec![
         OsString::from("--build"),
-        build.path().as_os_str().to_os_string(),
+        build.as_os_str().to_os_string(),
         OsString::from("--config"),
         OsString::from("Release"),
     ];
-    if c_only {
-        arguments.extend([OsString::from("--target"), OsString::from("consumer-c")]);
-    }
     let built = cmake_step(
         paths,
         &paths.cmake,
@@ -1349,18 +1439,27 @@ fn check_cmake_consumer(paths: &Paths, c_only: bool) -> Result<(), Box<dyn std::
         return Err("building the CMake consumer project failed".into());
     }
 
-    let consumers: &[&str] = if c_only {
-        &["consumer-c"]
-    } else {
-        &["consumer-c", "consumer-cpp", "consumer-ocr-profile-c"]
-    };
+    let mut consumers = vec!["consumer-c", "consumer-ocr-profile-c"];
+    if !c_only {
+        consumers.push("consumer-cpp");
+    }
+    if cfg!(windows) {
+        consumers.extend([
+            "windows-ingress-0",
+            "windows-ingress-1",
+            "windows-ingress-2",
+            "windows-ingress-3",
+            "windows-ingress-4",
+            "windows-ingress-5",
+        ]);
+    }
     for consumer in consumers {
         let tested = cmake_step(
             paths,
             &ctest(&paths.cmake),
             &[
                 OsString::from("--test-dir"),
-                build.path().as_os_str().to_os_string(),
+                build.as_os_str().to_os_string(),
                 OsString::from("--build-config"),
                 OsString::from("Release"),
                 OsString::from("--verbose"),
@@ -1376,15 +1475,6 @@ fn check_cmake_consumer(paths: &Paths, c_only: bool) -> Result<(), Box<dyn std::
             return Err(format!("the CMake {consumer} test failed").into());
         }
     }
-
-    println!(
-        "cmake: {}",
-        if c_only {
-            "C-only consumer ran with unavailable CXX"
-        } else {
-            "C/C++ consumers ran; controlled OCR coverage is reported by CTest"
-        }
-    );
     Ok(())
 }
 
@@ -1408,4 +1498,366 @@ fn cmake_step(
     report_output(what, &output);
 
     Ok(output)
+}
+
+/// Executes real conversion code and each sample entry behind private failure seams.
+#[cfg(windows)]
+fn check_windows_ingress(paths: &Paths) -> Result<(), Box<dyn std::error::Error>> {
+    let test = paths
+        .root
+        .join("crates/bindings/capi/tests/cmake/windows-ingress.c");
+    for sample in 0..=5 {
+        let name = format!("windows-ingress-{sample}");
+        let source = paths.scratch.join(format!("{name}.c"));
+        std::fs::write(
+            &source,
+            format!(
+                "#define TEST_SAMPLE {sample}\n#include \"{}\"\n",
+                test.to_string_lossy().replace('\\', "/")
+            ),
+        )?;
+        let program = compile(paths, Language::C, &name, &source, false)?;
+        std::fs::remove_file(source)?;
+        let output = run_windows_bounded(paths, &program, &[], &[])?;
+        report_output(&name, &output);
+        let stdout = String::from_utf8(output.stdout)?.replace("\r\n", "\n");
+        if !output.status.success() || !stdout.ends_with(&format!("{name} complete\n")) {
+            return Err(format!("{name} conversion/ownership regression failed").into());
+        }
+        println!("{name}: conversion, failure cleanup, and retained ownership verified");
+    }
+    Ok(())
+}
+
+/// File-backed output avoids pipe deadlocks; consumers never launch child processes.
+#[cfg(windows)]
+fn run_windows_bounded(
+    paths: &Paths,
+    program: &Path,
+    arguments: &[&OsStr],
+    environment: &[(&str, &OsStr)],
+) -> Result<Output, Box<dyn std::error::Error>> {
+    use std::time::{Duration, Instant};
+
+    if !program.is_absolute() || !program.is_file() {
+        return Err("the Windows consumer must be an existing absolute executable".into());
+    }
+    let name = program
+        .file_stem()
+        .ok_or("consumer executable has no name")?;
+    let stdout_path = paths.scratch.join(name).with_extension("stdout");
+    let stderr_path = paths.scratch.join(name).with_extension("stderr");
+    let mut command = Command::new(program);
+    command
+        .args(arguments)
+        .envs(environment.iter().copied())
+        .stdin(std::process::Stdio::null())
+        .stdout(std::fs::File::create(&stdout_path)?)
+        .stderr(std::fs::File::create(&stderr_path)?);
+    reachable(paths, &mut command)?;
+    let mut child = command.spawn()?;
+    let deadline = Instant::now() + Duration::from_secs(90);
+    let status = loop {
+        match child.try_wait() {
+            Ok(Some(status)) => break status,
+            Ok(None) if Instant::now() < deadline => {
+                std::thread::sleep(Duration::from_millis(10));
+            }
+            observation => {
+                let reason = match observation {
+                    Err(error) => format!("child wait failed: {error}"),
+                    _ => "consumer timed out".to_owned(),
+                };
+                let killed = child.kill();
+                let cleanup_deadline = Instant::now() + Duration::from_secs(5);
+                loop {
+                    match child.try_wait() {
+                        Ok(Some(_)) => {
+                            return Err(format!("{reason}; child reaped ({killed:?})").into());
+                        }
+                        Ok(None) if Instant::now() < cleanup_deadline => {
+                            std::thread::sleep(Duration::from_millis(10));
+                        }
+                        cleanup => {
+                            return Err(format!(
+                                "{reason}; child teardown incomplete ({killed:?}, {cleanup:?})"
+                            )
+                            .into());
+                        }
+                    }
+                }
+            }
+        }
+    };
+    for path in [&stdout_path, &stderr_path] {
+        if std::fs::metadata(path)?.len() > 1024 * 1024 {
+            return Err("Windows consumer output exceeded the 1 MiB bound".into());
+        }
+    }
+    Ok(Output {
+        status,
+        stdout: std::fs::read(stdout_path)?,
+        stderr: std::fs::read(stderr_path)?,
+    })
+}
+
+/// Separate from ordinary CI: requires approved, immutable local OCR prerequisites.
+#[cfg(all(windows, feature = "private-fixture"))]
+fn check_windows_paths(paths: &Paths) -> Result<(), Box<dyn std::error::Error>> {
+    let model_root = PathBuf::from(
+        env::var_os("MADO_PILOT_G004_MODEL_ROOT").ok_or("controlled model root is required")?,
+    )
+    .canonicalize()?;
+    let runtime = PathBuf::from(
+        env::var_os("MADO_PILOT_ONNX_RUNTIME").ok_or("controlled runtime is required")?,
+    )
+    .canonicalize()?;
+    if !model_root.is_dir() || !runtime.is_file() {
+        return Err("controlled OCR model/runtime prerequisites are unavailable".into());
+    }
+    let acp = run_windows_bounded(
+        paths,
+        &paths.program("windows-ingress-0"),
+        &[OsStr::new("--require-legacy-acp")],
+        &[],
+    )?;
+    report_output("Windows ACP prerequisite", &acp);
+    if !acp.status.success() {
+        return Err("non-UTF-8-ACP path acceptance is unexecuted; prerequisite not met".into());
+    }
+    print!("{}", String::from_utf8(acp.stdout)?);
+
+    let unique = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)?
+        .as_nanos();
+    let tree = env::temp_dir().join(format!(
+        "mpc-{}-{unique}-日本-\u{1f680}",
+        std::process::id()
+    ));
+    std::fs::create_dir(&tree)?;
+    let result = (|| {
+        let mut remaining = (512, 2 * 1024 * 1024 * 1024);
+        let package = tree.join("package-日本-\u{1f680}");
+        let ocr_package = tree.join("ocr-日本-\u{1f680}");
+        let models = tree.join("models-日本-\u{1f680}");
+        let runtime_dir = tree.join("runtime-日本-\u{1f680}");
+        copy_windows_path_tree(
+            &paths.root.join("fixtures/assets/phase1-slice"),
+            &package,
+            0,
+            &mut remaining,
+        )?;
+        copy_windows_path_tree(
+            &paths.root.join("fixtures/assets/ocr-public-surface"),
+            &ocr_package,
+            0,
+            &mut remaining,
+        )?;
+        copy_windows_path_tree(&model_root, &models, 0, &mut remaining)?;
+        copy_windows_path_tree(
+            runtime.parent().ok_or("runtime has no parent directory")?,
+            &runtime_dir,
+            0,
+            &mut remaining,
+        )?;
+        let models = models.canonicalize()?;
+        let runtime = runtime_dir
+            .join(runtime.file_name().ok_or("runtime has no file name")?)
+            .canonicalize()?;
+        let mut programs = Vec::with_capacity(4);
+        for sample in [
+            "deterministic-slice",
+            "ocr-fixture",
+            "ocr-default",
+            "ocr-profile-zones",
+        ] {
+            let source = paths
+                .root
+                .join("crates/bindings/capi/examples/c")
+                .join(format!("{sample}.c"));
+            programs.push(compile(
+                paths,
+                Language::C,
+                &format!("windows-path-{sample}"),
+                &source,
+                true,
+            )?);
+        }
+        let output = run_windows_bounded(
+            paths,
+            &programs[0],
+            &[
+                OsStr::new("--package"),
+                package.as_os_str(),
+                OsStr::new("--label"),
+                OsStr::new("日本-\u{1f680}"),
+            ],
+            &[],
+        )?;
+        check_example("Windows non-ASCII C", &output)?;
+        let output = run_windows_bounded(
+            paths,
+            &programs[1],
+            &[OsStr::new("--package"), ocr_package.as_os_str()],
+            &[],
+        )?;
+        report_output("Windows non-ASCII OCR fixture", &output);
+        let expected = format!(
+            "ocr: sequence=0 text=魔導士 A-7 confidence=0.91000\n\
+             ocr-zones: groups=16 unique=1 memberships=16 last-index=15 \
+             last-memberships=1 sequence=0 refused17={}\n",
+            madopilot::MADOPILOT_STATUS_INVALID_ARGUMENT,
+        );
+        if !output.status.success()
+            || String::from_utf8(output.stdout)?.replace("\r\n", "\n") != expected
+        {
+            return Err("non-ASCII private OCR package observations differ".into());
+        }
+        let arguments = [
+            OsStr::new("--model-root"),
+            models.as_os_str(),
+            OsStr::new("--runtime"),
+            runtime.as_os_str(),
+        ];
+        let ignored = tree.join("missing-日本-\u{1f680}");
+        let overridden_environment = [
+            ("MADO_PILOT_G004_MODEL_ROOT", ignored.as_os_str()),
+            ("MADO_PILOT_ONNX_RUNTIME", ignored.as_os_str()),
+        ];
+        for (index, program) in programs[2..].iter().enumerate() {
+            let output = run_windows_bounded(paths, program, &arguments, &overridden_environment)?;
+            report_output("Windows non-ASCII OCR arguments", &output);
+            let expected = if index == 0 {
+                format!(
+                    "default-ocr: backend={} model={} full=0 region=0\n",
+                    mado_pilot::DEFAULT_OCR_BACKEND_ID,
+                    mado_pilot::ACCEPTED_G004_MODEL_ID,
+                )
+            } else {
+                String::new()
+            };
+            if !output.status.success()
+                || String::from_utf8(output.stdout)?.replace("\r\n", "\n") != expected
+            {
+                return Err("non-ASCII OCR argument observations differ".into());
+            }
+        }
+        let output = run_windows_bounded(
+            paths,
+            &programs[3],
+            &[],
+            &[
+                ("MADO_PILOT_G004_MODEL_ROOT", models.as_os_str()),
+                ("MADO_PILOT_ONNX_RUNTIME", runtime.as_os_str()),
+            ],
+        )?;
+        report_output("Windows non-ASCII OCR environment", &output);
+        if !output.status.success() || !output.stdout.is_empty() {
+            return Err("non-ASCII environment-only OCR failed or skipped".into());
+        }
+        check_cmake_consumer(paths, true, Some((&models, &runtime)))?;
+        Ok::<(), Box<dyn std::error::Error>>(())
+    })();
+    let cleanup = std::fs::remove_dir_all(&tree);
+    if let Err(error) = cleanup {
+        return Err(format!(
+            "Windows path result: {result:?}; temporary-tree cleanup failed: {error}"
+        )
+        .into());
+    }
+    result?;
+    println!("Windows non-ASCII package/OCR consumers complete; temporary tree removed");
+    Ok(())
+}
+
+#[cfg(all(windows, feature = "private-fixture"))]
+fn copy_windows_path_tree(
+    source: &Path,
+    destination: &Path,
+    depth: usize,
+    remaining: &mut (usize, u64),
+) -> Result<(), Box<dyn std::error::Error>> {
+    use std::os::windows::fs::MetadataExt;
+
+    let metadata = std::fs::symlink_metadata(source)?;
+    if depth > 16 || remaining.0 == 0 || metadata.file_attributes() & 0x400 != 0 {
+        return Err("controlled path tree exceeds bounds or contains a reparse point".into());
+    }
+    remaining.0 -= 1;
+    if metadata.is_dir() {
+        std::fs::create_dir(destination)?;
+        for entry in std::fs::read_dir(source)? {
+            let entry = entry?;
+            copy_windows_path_tree(
+                &entry.path(),
+                &destination.join(entry.file_name()),
+                depth + 1,
+                remaining,
+            )?;
+        }
+    } else if metadata.is_file() {
+        remaining.1 = remaining
+            .1
+            .checked_sub(metadata.len())
+            .ok_or("controlled path tree exceeds 2 GiB")?;
+        if std::fs::copy(source, destination)? != metadata.len() {
+            return Err("controlled prerequisite changed while copying".into());
+        }
+    } else {
+        return Err("controlled path tree contains a non-regular file".into());
+    }
+    Ok(())
+}
+
+#[cfg(all(test, windows))]
+mod tests {
+    use super::{Paths, TemporaryCmakeBuild, check_cmake_consumer};
+    use std::{env, fs};
+
+    #[test]
+    fn failed_cmake_configuration_reports_its_cleanup_outcome() {
+        let scratch = TemporaryCmakeBuild::new("cleanup-test").unwrap();
+        let script = scratch.path().join("cmake.cmd");
+        let paths = Paths {
+            root: scratch.path().to_path_buf(),
+            artifacts: scratch.path().to_path_buf(),
+            library: scratch.path().join("unused.dll"),
+            link: scratch.path().join("unused.lib"),
+            scratch: scratch.path().to_path_buf(),
+            cc: "unused".into(),
+            cxx: "unused".into(),
+            cmake: script.as_os_str().to_owned(),
+        };
+        let build = env::temp_dir().join(format!("mpc-{}-c-cpp", std::process::id()));
+
+        fs::write(&script, "@exit /b 23\r\n").unwrap();
+        let primary = check_cmake_consumer(&paths, false, None)
+            .unwrap_err()
+            .to_string();
+        assert!(
+            !build.exists(),
+            "failed configuration must remove its build tree"
+        );
+
+        // Replace the owned build directory with a file so directory removal fails.
+        fs::write(
+            &script,
+            "@echo off\r\nrmdir \"%~4\"\r\n> \"%~4\" echo cleanup-probe\r\nexit /b 23\r\n",
+        )
+        .unwrap();
+        let combined = check_cmake_consumer(&paths, false, None)
+            .unwrap_err()
+            .to_string();
+        let cleanup = fs::remove_dir_all(&build).unwrap_err().to_string();
+        fs::remove_file(&build).unwrap();
+
+        assert!(
+            combined.contains(&primary),
+            "original CMake failure was lost"
+        );
+        assert!(
+            combined.contains(&cleanup),
+            "cleanup failure was lost: {combined}"
+        );
+    }
 }

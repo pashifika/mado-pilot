@@ -13,9 +13,8 @@ use mado_pilot_core::{
     TargetKind, TargetPlacement, TransformSnapshot,
 };
 use mado_pilot_input::{
-    Admission, CleanupBudget, FocusPolicy, InputAttempt, InputController, InputDescriptor,
-    InputEvent, InputFault, InputReceipt, InputRequest, Key, PointerButton, PointerGeometry,
-    PressedState,
+    Admission, FocusPolicy, InputAttempt, InputController, InputDescriptor, InputEvent, InputFault,
+    InputReceipt, InputRequest, Key, PointerButton, PointerGeometry, PressedState,
 };
 
 use crate::fixture_protocol::CLASS_NAME;
@@ -181,6 +180,7 @@ pub(crate) struct DriverState {
     pub(crate) pointer: Option<PointerState>,
     pub(crate) keys: Vec<SystemKeyState>,
     pub(crate) buttons: Vec<SystemButtonState>,
+    pub(crate) pending_unicode: Option<u16>,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -204,10 +204,10 @@ pub(crate) struct SubmissionFailure {
     pub(crate) current_event_may_leave_pressed_state: bool,
 }
 
-#[derive(Debug, Clone, Copy)]
-pub(crate) struct SubmissionContexts<'operation> {
-    pub(crate) operation: &'operation OperationContext,
-    pub(crate) cleanup_budget: CleanupBudget,
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum PendingRelease {
+    Unicode(u16),
+    Logical(PressedState),
 }
 
 impl SubmissionFailure {
@@ -262,13 +262,13 @@ pub(crate) trait InputDriver: fmt::Debug + Send + Sync {
         event: &InputEvent,
         geometry: PointerGeometry,
         state: &mut DriverState,
-        contexts: SubmissionContexts<'_>,
+        operation: &OperationContext,
     ) -> Result<(), SubmissionFailure>;
 
     fn release(
         &self,
         route: InputDelivery,
-        pressed: PressedState,
+        pressed: PendingRelease,
         state: &mut DriverState,
         operation: &OperationContext,
     ) -> Result<(), InputFault>;
@@ -378,31 +378,37 @@ impl WindowsInputController {
             stopped.submitted,
             stopped.failure.current_event_may_leave_pressed_state,
         );
-        if held.is_empty() {
+        let owed = held.len() + usize::from(state.pending_unicode.is_some());
+        if owed == 0 {
             return receipt.with_cleanup(0, 0);
         }
         let budget = request.cleanup_budget();
         let cleanup = budget.context(operation);
         let mut released = 0usize;
         let mut exhausted = false;
-        for pressed in &held {
-            if released >= budget.max_events() || cleanup.interruption().is_some() {
+        let releases = state
+            .pending_unicode
+            .map(PendingRelease::Unicode)
+            .into_iter()
+            .chain(held.iter().copied().map(PendingRelease::Logical));
+        for (attempted, pressed) in releases.enumerate() {
+            if attempted >= budget.max_events() || cleanup.interruption().is_some() {
                 exhausted = true;
                 break;
             }
-            if self
-                .driver
-                .release(stopped.route, *pressed, state, &cleanup)
-                .is_err()
-            {
-                break;
+            match self.driver.release(stopped.route, pressed, state, &cleanup) {
+                Ok(()) => released += 1,
+                Err(InputFault::DeadlineExceeded) => {
+                    exhausted = true;
+                    break;
+                }
+                Err(_) => break,
             }
-            released += 1;
         }
         if exhausted {
-            receipt.with_exhausted_cleanup(released, held.len())
+            receipt.with_exhausted_cleanup(released, owed)
         } else {
-            receipt.with_cleanup(released, held.len())
+            receipt.with_cleanup(released, owed)
         }
     }
 }
@@ -450,10 +456,7 @@ impl InputController for WindowsInputController {
                         event,
                         request.pointer_geometry(),
                         &mut state,
-                        SubmissionContexts {
-                            operation,
-                            cleanup_budget: request.cleanup_budget(),
-                        },
+                        operation,
                     ),
                 }
             };

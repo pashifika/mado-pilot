@@ -31,6 +31,7 @@
 
 #include "deterministic-scene.h"
 #include "madopilot/madopilot.h"
+#include "windows-utf8-entry.h"
 
 /* --------------------------------------------------------------------------
  * Small helpers

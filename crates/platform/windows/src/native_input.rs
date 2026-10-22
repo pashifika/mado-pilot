@@ -10,8 +10,8 @@ use mado_pilot_core::{
     TransformSnapshot,
 };
 use mado_pilot_input::{
-    CleanupBudget, FocusPolicy, GeometryPolicy, InputEvent, InputFault, Key, PointerButton,
-    PointerGeometry, PressedState,
+    FocusPolicy, GeometryPolicy, InputEvent, InputFault, Key, PointerButton, PointerGeometry,
+    PressedState,
 };
 use windows::Win32::Foundation::{
     CloseHandle, ERROR_ACCESS_DENIED, ERROR_INVALID_WINDOW_HANDLE, ERROR_NOT_ENOUGH_QUOTA,
@@ -25,6 +25,9 @@ use windows::Win32::Security::{
 use windows::Win32::System::Threading::{
     GetCurrentProcess, OpenProcess, OpenProcessToken, PROCESS_QUERY_LIMITED_INFORMATION,
 };
+use windows::Win32::UI::HiDpi::{
+    DPI_AWARENESS_CONTEXT, DPI_AWARENESS_CONTEXT_PER_MONITOR_AWARE_V2,
+};
 use windows::Win32::UI::Input::KeyboardAndMouse::{
     GetKeyboardLayout, INPUT, INPUT_0, INPUT_KEYBOARD, INPUT_MOUSE, KEYBD_EVENT_FLAGS, KEYBDINPUT,
     KEYEVENTF_EXTENDEDKEY, KEYEVENTF_KEYUP, KEYEVENTF_UNICODE, MAPVK_VK_TO_VSC_EX,
@@ -36,16 +39,20 @@ use windows::Win32::UI::Input::KeyboardAndMouse::{
     VK_RIGHT, VK_SHIFT, VK_SPACE, VK_TAB, VK_UP, VkKeyScanExW,
 };
 use windows::Win32::UI::WindowsAndMessaging::{
-    GetCursorPos, GetForegroundWindow, GetSystemMetrics, GetWindowThreadProcessId, PostMessageW,
-    SM_CXVIRTUALSCREEN, SM_CYVIRTUALSCREEN, SM_SWAPBUTTON, SM_XVIRTUALSCREEN, SM_YVIRTUALSCREEN,
-    SMTO_ABORTIFHUNG, SMTO_BLOCK, SendMessageTimeoutW, SetForegroundWindow, WM_COPYDATA,
+    GetForegroundWindow, GetPhysicalCursorPos, GetSystemMetrics, GetWindowThreadProcessId,
+    PostMessageW, SM_CXVIRTUALSCREEN, SM_CYVIRTUALSCREEN, SM_SWAPBUTTON, SM_XVIRTUALSCREEN,
+    SM_YVIRTUALSCREEN, SMTO_ABORTIFHUNG, SMTO_BLOCK, SendMessageTimeoutW, SetForegroundWindow,
+    WM_COPYDATA, WM_MOUSEHWHEEL, WM_MOUSEMOVE,
 };
 
 use crate::discovery::{NativeKey, current_placement};
 use crate::fixture_protocol::{ACKNOWLEDGED, CLASS_NAME, COPYDATA_TAG, encode_event, query_packet};
 use crate::input::{
-    DriverState, GeometryFingerprint, InputDriver, PointerState, SubmissionContexts,
-    SubmissionFailure, SystemButtonState, SystemKeyState,
+    DriverState, GeometryFingerprint, InputDriver, PendingRelease, PointerState, SubmissionFailure,
+    SystemButtonState, SystemKeyState,
+};
+use crate::optional_api::{
+    NativeThreadDpi, ThreadDpiContext, ThreadDpiSource, physical_to_logical, window_dpi_context,
 };
 use crate::provider::TargetRecord;
 use crate::window_authority::WindowAuthorityStatus;
@@ -59,7 +66,7 @@ type SubmissionResult = Result<(), SubmissionFailure>;
 /// Keeping the guard and insertion behind one source lets deterministic tests
 /// move operation, target, focus, and geometry state after preparation without
 /// ever calling the process-global `SendInput` API.
-trait SystemCommitSource {
+pub(crate) trait SystemCommitSource {
     fn revalidate_system_commit(
         &self,
         focus: FocusPolicy,
@@ -67,6 +74,13 @@ trait SystemCommitSource {
     ) -> Result<(), InputFault>;
 
     fn send_input(&self, inputs: &[INPUT]) -> usize;
+
+    fn submission_failure(&self, inserted: usize) -> SubmissionFailure;
+}
+
+pub(crate) trait SystemReleaseSource: SystemCommitSource {
+    fn release_key(&self, key: Key) -> Result<(VIRTUAL_KEY, u8, bool), InputFault>;
+    fn release_button(&self, button: PointerButton) -> Result<u8, InputFault>;
 }
 
 trait WindowMessageCommitSource {
@@ -77,6 +91,109 @@ trait WindowMessageCommitSource {
     ) -> Result<(), InputFault>;
 
     fn post_message(&self, unit: MessageUnit) -> Result<(), InputFault>;
+}
+
+trait CoordinateSource: ThreadDpiSource {
+    fn desktop_metrics(&self) -> (i32, i32, i32, i32);
+    fn physical_cursor(&self) -> Result<(i32, i32), InputFault>;
+    fn target_context(&self, hwnd: HWND) -> Option<DPI_AWARENESS_CONTEXT>;
+    fn target_logical(&self, hwnd: HWND, point: &mut POINT) -> bool;
+    fn client_point(&self, hwnd: HWND, point: &mut POINT) -> bool;
+}
+
+struct NativeCoordinates;
+
+impl ThreadDpiSource for NativeCoordinates {
+    fn set_context(&self, context: DPI_AWARENESS_CONTEXT) -> DPI_AWARENESS_CONTEXT {
+        NativeThreadDpi.set_context(context)
+    }
+}
+
+impl CoordinateSource for NativeCoordinates {
+    fn desktop_metrics(&self) -> (i32, i32, i32, i32) {
+        // SAFETY: every metric index is a documented scalar desktop query.
+        unsafe {
+            (
+                GetSystemMetrics(SM_XVIRTUALSCREEN),
+                GetSystemMetrics(SM_YVIRTUALSCREEN),
+                GetSystemMetrics(SM_CXVIRTUALSCREEN),
+                GetSystemMetrics(SM_CYVIRTUALSCREEN),
+            )
+        }
+    }
+
+    fn physical_cursor(&self) -> Result<(i32, i32), InputFault> {
+        let mut cursor = POINT::default();
+        // SAFETY: cursor is a complete writable POINT.
+        unsafe { GetPhysicalCursorPos(&raw mut cursor) }
+            .map_err(|_| InputFault::SubmissionFailed)?;
+        Ok((cursor.x, cursor.y))
+    }
+
+    fn target_context(&self, hwnd: HWND) -> Option<DPI_AWARENESS_CONTEXT> {
+        window_dpi_context(hwnd)
+    }
+
+    fn target_logical(&self, hwnd: HWND, point: &mut POINT) -> bool {
+        physical_to_logical(hwnd, point)
+    }
+
+    fn client_point(&self, hwnd: HWND, point: &mut POINT) -> bool {
+        // SAFETY: point is writable and hwnd is a retained opaque window handle.
+        unsafe { ScreenToClient(hwnd, point).as_bool() }
+    }
+}
+
+fn message_point<S: CoordinateSource + ?Sized>(
+    source: &S,
+    hwnd: HWND,
+    screen: (i32, i32),
+    client: bool,
+) -> Result<(i16, i16), InputFault> {
+    let context = source
+        .target_context(hwnd)
+        .ok_or(InputFault::UnsupportedCoordinate)?;
+    let _dpi = ThreadDpiContext::enter(source, context).ok_or(InputFault::UnsupportedCoordinate)?;
+    let mut point = POINT {
+        x: screen.0,
+        y: screen.1,
+    };
+    if !source.target_logical(hwnd, &mut point)
+        || (client && !source.client_point(hwnd, &mut point))
+    {
+        return Err(InputFault::SubmissionFailed);
+    }
+    Ok((
+        i16::try_from(point.x).map_err(|_| InputFault::UnsupportedCoordinate)?,
+        i16::try_from(point.y).map_err(|_| InputFault::UnsupportedCoordinate)?,
+    ))
+}
+
+fn non_move_pointer<S: CoordinateSource + ?Sized>(
+    source: &S,
+    current: GeometryFingerprint,
+    policy: GeometryPolicy,
+    state: &mut DriverState,
+) -> Result<PointerState, InputFault> {
+    if let Some(pointer) = state.pointer {
+        if pointer.geometry != current {
+            return Err(InputFault::GeometryChanged);
+        }
+        return Ok(pointer);
+    }
+    let _dpi = ThreadDpiContext::enter(source, DPI_AWARENESS_CONTEXT_PER_MONITOR_AWARE_V2)
+        .ok_or(InputFault::UnsupportedCoordinate)?;
+    let screen = source.physical_cursor()?;
+    if !contains_screen_point(current, screen) {
+        return Err(InputFault::UnsupportedCoordinate);
+    }
+    let pointer = PointerState {
+        screen,
+        geometry: current,
+        expected_geometry: expected_commit_geometry(policy, current),
+    };
+    state.pointer = Some(pointer);
+    Ok(pointer)
 }
 
 pub(crate) struct NativeInputDriver {
@@ -193,29 +310,30 @@ impl NativeInputDriver {
         Ok(pointer)
     }
 
-    fn message_client_point(&self, screen: (i32, i32)) -> Result<(i16, i16), InputFault> {
+    fn message_point(&self, screen: (i32, i32), client: bool) -> Result<(i16, i16), InputFault> {
         self.record.ensure_live()?;
         self.ensure_window_authority()?;
-        let hwnd = self.hwnd()?;
-        let mut point = POINT {
-            x: screen.0,
-            y: screen.1,
-        };
-        // SAFETY: `point` is a complete writable POINT and `hwnd` is the retained
-        // target. Final authority and geometry are checked again before posting.
-        if !unsafe { ScreenToClient(hwnd, &raw mut point) }.as_bool() {
-            return self
-                .ensure_window_authority()
-                .and(Err(InputFault::SubmissionFailed));
+        let result = message_point(&NativeCoordinates, self.hwnd()?, screen, client);
+        if result.is_err() {
+            self.ensure_window_authority()?;
         }
-        Ok((
-            i16::try_from(point.x).map_err(|_| InputFault::UnsupportedCoordinate)?,
-            i16::try_from(point.y).map_err(|_| InputFault::UnsupportedCoordinate)?,
-        ))
+        result
     }
 
     fn raw_post_window_message(&self, unit: MessageUnit) -> Result<(), InputFault> {
         let hwnd = self.hwnd()?;
+        // USER32 scales queued pointer coordinates from the posting thread's context.
+        let _dpi = if (WM_MOUSEMOVE..=WM_MOUSEHWHEEL).contains(&unit.message) {
+            let scope = window_dpi_context(hwnd)
+                .and_then(|context| ThreadDpiContext::enter(&NativeThreadDpi, context));
+            if scope.is_none() {
+                self.ensure_window_authority()?;
+                return Err(InputFault::UnsupportedCoordinate);
+            }
+            scope
+        } else {
+            None
+        };
         // SAFETY: the caller immediately revalidated `hwnd`. The scalar
         // system-message parameters contain no borrowed pointer, and the
         // generated wrapper captures the thread's last error before returning.
@@ -293,27 +411,7 @@ impl NativeInputDriver {
         state: &mut DriverState,
     ) -> Result<PointerState, InputFault> {
         let (_, current) = self.policy_geometry(geometry)?;
-        if let Some(pointer) = state.pointer {
-            if pointer.geometry != current {
-                return Err(InputFault::GeometryChanged);
-            }
-            return Ok(pointer);
-        }
-
-        let mut cursor = POINT::default();
-        // SAFETY: cursor is a complete writable POINT.
-        unsafe { GetCursorPos(&raw mut cursor) }.map_err(|_| InputFault::SubmissionFailed)?;
-        let screen = (cursor.x, cursor.y);
-        if !contains_screen_point(current, screen) {
-            return Err(InputFault::UnsupportedCoordinate);
-        }
-        let pointer = PointerState {
-            screen,
-            geometry: current,
-            expected_geometry: expected_commit_geometry(geometry.policy(), current),
-        };
-        state.pointer = Some(pointer);
-        Ok(pointer)
+        non_move_pointer(&NativeCoordinates, current, geometry.policy(), state)
     }
 
     fn submit_system(
@@ -323,7 +421,6 @@ impl NativeInputDriver {
         geometry: PointerGeometry,
         state: &mut DriverState,
         operation: &OperationContext,
-        cleanup_budget: CleanupBudget,
     ) -> SubmissionResult {
         self.record.ensure_live()?;
         self.ensure_system_focus(focus)?;
@@ -438,9 +535,7 @@ impl NativeInputDriver {
                 }
                 Ok(())
             }
-            InputEvent::Text(text) => {
-                send_system_text(text, self, focus, operation, cleanup_budget)
-            }
+            InputEvent::Text(text) => send_system_text(text, self, focus, operation, state),
             InputEvent::Delay(_) => Err(InputFault::UnsupportedCombination.into()),
             _ => Err(InputFault::UnsupportedCombination.into()),
         }
@@ -528,6 +623,20 @@ impl SystemCommitSource for NativeInputDriver {
     fn send_input(&self, inputs: &[INPUT]) -> usize {
         raw_send(inputs)
     }
+
+    fn submission_failure(&self, inserted: usize) -> SubmissionFailure {
+        send_failure(&self.record, inserted)
+    }
+}
+
+impl SystemReleaseSource for NativeInputDriver {
+    fn release_key(&self, key: Key) -> Result<(VIRTUAL_KEY, u8, bool), InputFault> {
+        resolve_virtual_key(key, &self.record)
+    }
+
+    fn release_button(&self, button: PointerButton) -> Result<u8, InputFault> {
+        physical_button(button)
+    }
 }
 impl WindowMessageCommitSource for NativeInputDriver {
     fn revalidate_window_message_commit(
@@ -550,7 +659,11 @@ struct NativeWindowMessageSource<'driver> {
 
 impl WindowMessageSource for NativeWindowMessageSource<'_> {
     fn client_point(&self, screen: (i32, i32)) -> Result<(i16, i16), InputFault> {
-        self.driver.message_client_point(screen)
+        self.driver.message_point(screen, true)
+    }
+
+    fn screen_point(&self, screen: (i32, i32)) -> Result<(i16, i16), InputFault> {
+        self.driver.message_point(screen, false)
     }
 
     fn resolve_button(&self, button: PointerButton) -> Result<u8, InputFault> {
@@ -633,17 +746,11 @@ impl InputDriver for NativeInputDriver {
         event: &InputEvent,
         geometry: PointerGeometry,
         state: &mut DriverState,
-        contexts: SubmissionContexts<'_>,
+        operation: &OperationContext,
     ) -> SubmissionResult {
-        let SubmissionContexts {
-            operation,
-            cleanup_budget,
-        } = contexts;
         operation_fault(operation)?;
         match route {
-            InputDelivery::System => {
-                self.submit_system(focus, event, geometry, state, operation, cleanup_budget)
-            }
+            InputDelivery::System => self.submit_system(focus, event, geometry, state, operation),
             InputDelivery::WindowMessage => {
                 self.submit_window_message(focus, event, geometry, state, operation)
             }
@@ -654,7 +761,7 @@ impl InputDriver for NativeInputDriver {
     fn release(
         &self,
         route: InputDelivery,
-        pressed: PressedState,
+        pressed: PendingRelease,
         state: &mut DriverState,
         operation: &OperationContext,
     ) -> Result<(), InputFault> {
@@ -662,6 +769,9 @@ impl InputDriver for NativeInputDriver {
         match route {
             InputDelivery::System => send_system_release(pressed, state, self, operation),
             InputDelivery::WindowMessage => {
+                let PendingRelease::Logical(pressed) = pressed else {
+                    return Err(InputFault::UnsupportedCombination);
+                };
                 if self.record.class_name() == Some(CLASS_NAME) {
                     let event = match pressed {
                         PressedState::Button(button) => InputEvent::PointerRelease(button),
@@ -744,6 +854,19 @@ fn commit_window_message<S: WindowMessageCommitSource + ?Sized>(
     }
 }
 
+fn check_system_commit<S: SystemCommitSource + ?Sized>(
+    source: &S,
+    focus: FocusPolicy,
+    expected_geometry: Option<GeometryFingerprint>,
+    operation: &OperationContext,
+) -> Result<(), SubmissionFailure> {
+    operation_fault(operation)?;
+    source.revalidate_system_commit(focus, expected_geometry)?;
+    // Authority queries precede the final operation check and native DPI scope.
+    operation_fault(operation)?;
+    Ok(())
+}
+
 fn commit_prepared_system_input<S: SystemCommitSource + ?Sized>(
     source: &S,
     focus: FocusPolicy,
@@ -751,12 +874,7 @@ fn commit_prepared_system_input<S: SystemCommitSource + ?Sized>(
     operation: &OperationContext,
     inputs: &[INPUT],
 ) -> Result<usize, SubmissionFailure> {
-    operation_fault(operation)?;
-    source.revalidate_system_commit(focus, expected_geometry)?;
-    // Native revalidation can perform target, foreground, integrity, and geometry
-    // queries. Arbitration is therefore checked once more as the final operation
-    // immediately adjacent to the irreversible global insertion.
-    operation_fault(operation)?;
+    check_system_commit(source, focus, expected_geometry, operation)?;
     Ok(source.send_input(inputs))
 }
 
@@ -821,7 +939,7 @@ fn send_system_pointer_move(
     focus: FocusPolicy,
     operation: &OperationContext,
 ) -> SubmissionResult {
-    let desktop = virtual_desktop()?;
+    let desktop = virtual_desktop(&NativeCoordinates)?;
     let dx = normalize_absolute(pointer.screen.0, desktop.0, desktop.2)?;
     let dy = normalize_absolute(pointer.screen.1, desktop.1, desktop.3)?;
     let input = mouse_input(
@@ -830,13 +948,16 @@ fn send_system_pointer_move(
         0,
         MOUSEEVENTF_MOVE | MOUSEEVENTF_ABSOLUTE | MOUSEEVENTF_VIRTUALDESK,
     );
-    send_exact(
-        std::slice::from_ref(&input),
-        driver,
-        focus,
-        pointer.expected_geometry,
-        operation,
-    )
+    check_system_commit(driver, focus, pointer.expected_geometry, operation)?;
+    let inserted = {
+        let _dpi = ThreadDpiContext::per_monitor().ok_or(InputFault::UnsupportedCoordinate)?;
+        driver.send_input(std::slice::from_ref(&input))
+    };
+    if inserted == 1 {
+        Ok(())
+    } else {
+        Err(send_failure(&driver.record, inserted))
+    }
 }
 
 fn physical_button(button: PointerButton) -> Result<u8, InputFault> {
@@ -922,20 +1043,19 @@ fn send_resolved_key(
     send_exact(std::slice::from_ref(&input), driver, focus, None, operation)
 }
 
-fn send_system_text(
+pub(crate) fn send_system_text<S: SystemCommitSource + ?Sized>(
     text: &str,
-    driver: &NativeInputDriver,
+    driver: &S,
     focus: FocusPolicy,
     operation: &OperationContext,
-    cleanup_budget: CleanupBudget,
+    state: &mut DriverState,
 ) -> SubmissionResult {
-    let units = text.encode_utf16().collect::<Vec<_>>();
-    let mut inputs = Vec::with_capacity(units.len().saturating_mul(2));
-    for unit in &units {
-        inputs.push(keyboard_input(VIRTUAL_KEY(0), *unit, KEYEVENTF_UNICODE));
+    let mut inputs = Vec::with_capacity(text.encode_utf16().count() * 2);
+    for unit in text.encode_utf16() {
+        inputs.push(keyboard_input(VIRTUAL_KEY(0), unit, KEYEVENTF_UNICODE));
         inputs.push(keyboard_input(
             VIRTUAL_KEY(0),
-            *unit,
+            unit,
             KEYEVENTF_UNICODE | KEYEVENTF_KEYUP,
         ));
     }
@@ -944,34 +1064,34 @@ fn send_system_text(
     if inserted == inputs.len() {
         return Ok(());
     }
-    // If Windows accepted only the down half of one UTF-16 unit, perform one
-    // bounded release before reporting that the Text event did not complete.
-    if inserted % 2 == 1
-        && let Some(unit) = units.get(inserted / 2)
-    {
-        let release = keyboard_input(VIRTUAL_KEY(0), *unit, KEYEVENTF_UNICODE | KEYEVENTF_KEYUP);
-        let cleanup = cleanup_budget.context(operation);
-        let _released =
-            commit_cleanup_system_input(driver, &cleanup, std::slice::from_ref(&release));
+    if inserted % 2 == 1 && inserted < inputs.len() {
+        // SAFETY: every entry above is an initialized KEYBDINPUT.
+        state.pending_unicode = Some(unsafe { inputs[inserted - 1].Anonymous.ki.wScan });
     }
-    Err(send_failure(&driver.record, inserted))
+    Err(driver.submission_failure(inserted))
 }
 
-fn send_system_release(
-    pressed: PressedState,
+pub(crate) fn send_system_release<S: SystemReleaseSource + ?Sized>(
+    pressed: PendingRelease,
     state: &mut DriverState,
-    driver: &NativeInputDriver,
+    driver: &S,
     cleanup: &OperationContext,
 ) -> Result<(), InputFault> {
     match pressed {
-        PressedState::Button(button) => {
+        PendingRelease::Unicode(unit) => {
+            let input = keyboard_input(VIRTUAL_KEY(0), unit, KEYEVENTF_UNICODE | KEYEVENTF_KEYUP);
+            send_cleanup_exact(std::slice::from_ref(&input), driver, cleanup)?;
+            state.pending_unicode = None;
+            Ok(())
+        }
+        PendingRelease::Logical(PressedState::Button(button)) => {
             let index = state
                 .buttons
                 .iter()
                 .rposition(|pressed| pressed.logical == button);
             let physical = index
                 .map(|index| state.buttons[index].physical)
-                .map_or_else(|| physical_button(button), Ok)?;
+                .map_or_else(|| driver.release_button(button), Ok)?;
             let flags = match physical {
                 1 => MOUSEEVENTF_LEFTUP,
                 2 => MOUSEEVENTF_RIGHTUP,
@@ -985,7 +1105,7 @@ fn send_system_release(
             }
             Ok(())
         }
-        PressedState::Key(key) => {
+        PendingRelease::Logical(PressedState::Key(key)) => {
             let index = state
                 .keys
                 .iter()
@@ -998,7 +1118,7 @@ fn send_system_release(
                         state.keys[index].extended,
                     )
                 })
-                .map_or_else(|| resolve_virtual_key(key, &driver.record), Ok)?;
+                .map_or_else(|| driver.release_key(key), Ok)?;
             let mut flags = KEYEVENTF_KEYUP;
             if extended {
                 flags |= KEYEVENTF_EXTENDEDKEY;
@@ -1061,16 +1181,16 @@ fn send_exact(
     }
 }
 
-fn send_cleanup_exact(
+fn send_cleanup_exact<S: SystemCommitSource + ?Sized>(
     inputs: &[INPUT],
-    driver: &NativeInputDriver,
+    driver: &S,
     cleanup: &OperationContext,
 ) -> Result<(), InputFault> {
     let inserted = commit_cleanup_system_input(driver, cleanup, inputs)?;
     if inserted == inputs.len() {
         Ok(())
     } else {
-        Err(send_failure(&driver.record, inserted).fault)
+        Err(driver.submission_failure(inserted).fault)
     }
 }
 
@@ -1180,15 +1300,12 @@ fn resolve_virtual_key(
     Ok((value, scan_code, extended))
 }
 
-fn virtual_desktop() -> Result<(i32, i32, i32, i32), InputFault> {
-    // SAFETY: the call uses a fixed documented metric index.
-    let left = unsafe { GetSystemMetrics(SM_XVIRTUALSCREEN) };
-    // SAFETY: the call uses a fixed documented metric index.
-    let top = unsafe { GetSystemMetrics(SM_YVIRTUALSCREEN) };
-    // SAFETY: the call uses a fixed documented metric index.
-    let width = unsafe { GetSystemMetrics(SM_CXVIRTUALSCREEN) };
-    // SAFETY: the call uses a fixed documented metric index.
-    let height = unsafe { GetSystemMetrics(SM_CYVIRTUALSCREEN) };
+fn virtual_desktop<S: CoordinateSource + ?Sized>(
+    source: &S,
+) -> Result<(i32, i32, i32, i32), InputFault> {
+    let _dpi = ThreadDpiContext::enter(source, DPI_AWARENESS_CONTEXT_PER_MONITOR_AWARE_V2)
+        .ok_or(InputFault::UnsupportedCoordinate)?;
+    let (left, top, width, height) = source.desktop_metrics();
     if width <= 0 || height <= 0 {
         return Err(InputFault::UnsupportedCoordinate);
     }
@@ -1543,6 +1660,14 @@ mod tests {
         fn send_input(&self, inputs: &[INPUT]) -> usize {
             self.sends.fetch_add(1, Ordering::AcqRel);
             inputs.len()
+        }
+
+        fn submission_failure(&self, inserted: usize) -> crate::input::SubmissionFailure {
+            if inserted == 0 {
+                crate::input::SubmissionFailure::before_event(InputFault::SubmissionFailed)
+            } else {
+                crate::input::SubmissionFailure::during_event(InputFault::SubmissionFailed)
+            }
         }
     }
 
@@ -1948,5 +2073,424 @@ mod tests {
             point_to_screen(edge, geometry),
             Err(InputFault::UnsupportedCoordinate)
         );
+    }
+
+    mod coordinates {
+        use std::cell::{Cell, RefCell};
+
+        use super::super::{CoordinateSource, message_point, non_move_pointer, virtual_desktop};
+        use super::*;
+        use crate::input::{DriverState, PointerState, SubmissionFailure};
+        use crate::optional_api::{ThreadDpiContext, ThreadDpiSource};
+        use crate::window_message::{self, ResolvedWindowKey, WindowMessageSource};
+        use mado_pilot_input::{InputEvent, Key, PointerButton};
+        use windows::Win32::Foundation::{HWND, POINT};
+        use windows::Win32::UI::HiDpi::{
+            DPI_AWARENESS_CONTEXT, DPI_AWARENESS_CONTEXT_PER_MONITOR_AWARE_V2,
+            DPI_AWARENESS_CONTEXT_SYSTEM_AWARE, DPI_AWARENESS_CONTEXT_UNAWARE,
+        };
+
+        struct FakeCoordinates {
+            context: Cell<DPI_AWARENESS_CONTEXT>,
+            target: DPI_AWARENESS_CONTEXT,
+            fail: Cell<&'static str>,
+            calls: RefCell<Vec<&'static str>>,
+            contexts: RefCell<Vec<DPI_AWARENESS_CONTEXT>>,
+            posts: RefCell<Vec<MessageUnit>>,
+        }
+
+        impl FakeCoordinates {
+            fn new(caller: DPI_AWARENESS_CONTEXT, target: DPI_AWARENESS_CONTEXT) -> Self {
+                Self {
+                    context: Cell::new(caller),
+                    target,
+                    fail: Cell::new(""),
+                    calls: RefCell::new(Vec::new()),
+                    contexts: RefCell::new(Vec::new()),
+                    posts: RefCell::new(Vec::new()),
+                }
+            }
+
+            fn factor(&self) -> i32 {
+                if self.target == DPI_AWARENESS_CONTEXT_PER_MONITOR_AWARE_V2 {
+                    1
+                } else {
+                    2
+                }
+            }
+        }
+
+        impl ThreadDpiSource for FakeCoordinates {
+            fn set_context(&self, context: DPI_AWARENESS_CONTEXT) -> DPI_AWARENESS_CONTEXT {
+                self.contexts.borrow_mut().push(context);
+                if self.fail.get() == "entry" {
+                    return DPI_AWARENESS_CONTEXT::default();
+                }
+                self.context.replace(context)
+            }
+        }
+
+        impl CoordinateSource for FakeCoordinates {
+            fn desktop_metrics(&self) -> (i32, i32, i32, i32) {
+                self.calls.borrow_mut().push("metrics");
+                assert_eq!(
+                    self.context.get(),
+                    DPI_AWARENESS_CONTEXT_PER_MONITOR_AWARE_V2
+                );
+                (
+                    -3840,
+                    -240,
+                    if self.fail.get() == "metrics" {
+                        0
+                    } else {
+                        5760
+                    },
+                    2160,
+                )
+            }
+
+            fn physical_cursor(&self) -> Result<(i32, i32), InputFault> {
+                self.calls.borrow_mut().push("physical-cursor");
+                if self.fail.get() == "cursor" {
+                    Err(InputFault::SubmissionFailed)
+                } else if self.context.get() == DPI_AWARENESS_CONTEXT_PER_MONITOR_AWARE_V2 {
+                    Ok((-1800, -100))
+                } else {
+                    Ok((-900, -50))
+                }
+            }
+
+            fn target_context(&self, _hwnd: HWND) -> Option<DPI_AWARENESS_CONTEXT> {
+                self.calls.borrow_mut().push("target-context");
+                (self.fail.get() != "context").then_some(self.target)
+            }
+
+            fn target_logical(&self, _hwnd: HWND, point: &mut POINT) -> bool {
+                self.calls.borrow_mut().push("target-logical");
+                assert_eq!(self.context.get(), self.target);
+                point.x /= self.factor();
+                point.y /= self.factor();
+                self.fail.get() != "logical"
+            }
+
+            fn client_point(&self, _hwnd: HWND, point: &mut POINT) -> bool {
+                self.calls.borrow_mut().push("client");
+                assert_eq!(self.context.get(), self.target);
+                point.x -= -1920 / self.factor();
+                point.y -= -120 / self.factor();
+                self.fail.get() != "client"
+            }
+        }
+
+        impl WindowMessageSource for FakeCoordinates {
+            fn client_point(&self, screen: (i32, i32)) -> Result<(i16, i16), InputFault> {
+                message_point(self, HWND::default(), screen, true)
+            }
+
+            fn screen_point(&self, screen: (i32, i32)) -> Result<(i16, i16), InputFault> {
+                message_point(self, HWND::default(), screen, false)
+            }
+
+            fn resolve_button(&self, button: PointerButton) -> Result<u8, InputFault> {
+                assert_eq!(button, PointerButton::Primary);
+                Ok(1)
+            }
+
+            fn resolve_key(&self, _key: Key) -> Result<ResolvedWindowKey, InputFault> {
+                panic!("coordinate tests submit no keys");
+            }
+
+            fn post(
+                &self,
+                unit: MessageUnit,
+                expected: Option<GeometryFingerprint>,
+                _operation: &OperationContext,
+            ) -> Result<(), SubmissionFailure> {
+                assert_eq!(expected, Some(geometry()));
+                self.posts.borrow_mut().push(unit);
+                Ok(())
+            }
+        }
+
+        fn geometry() -> GeometryFingerprint {
+            GeometryFingerprint {
+                extent: PixelExtent::new(1920, 1080),
+                placement: TargetPlacement::new(
+                    (-1920.0, -120.0),
+                    (1280.0, 720.0),
+                    Scale::new(1.5, 1.5).expect("scale"),
+                )
+                .expect("placement")
+                .with_desktop_scale(Scale::new(1.0, 1.0).expect("desktop scale")),
+            }
+        }
+
+        fn pointer() -> PointerState {
+            PointerState {
+                screen: (-1800, -100),
+                geometry: geometry(),
+                expected_geometry: Some(geometry()),
+            }
+        }
+
+        fn unpack(unit: MessageUnit) -> (i16, i16) {
+            let bits = i32::try_from(unit.lparam)
+                .expect("signed message")
+                .cast_unsigned();
+            (
+                u16::try_from(bits & 0xffff).expect("low").cast_signed(),
+                u16::try_from(bits >> 16).expect("high").cast_signed(),
+            )
+        }
+
+        #[test]
+        fn caller_dpi_modes_preserve_physical_queries_and_target_client_wheel_units() {
+            let modes = [
+                DPI_AWARENESS_CONTEXT_UNAWARE,
+                DPI_AWARENESS_CONTEXT_SYSTEM_AWARE,
+                DPI_AWARENESS_CONTEXT_PER_MONITOR_AWARE_V2,
+            ];
+            for caller in modes {
+                for target in modes {
+                    let source = FakeCoordinates::new(caller, target);
+                    let desktop = virtual_desktop(&source).expect("physical desktop");
+                    assert_eq!(desktop, (-3840, -240, 5760, 2160));
+                    assert_eq!(source.context.get(), caller);
+                    assert_eq!(normalize_absolute(-3840, desktop.0, desktop.2), Ok(0));
+                    assert_eq!(normalize_absolute(1919, desktop.0, desktop.2), Ok(65535));
+                    let mut state = DriverState::default();
+                    let events = [
+                        InputEvent::PointerMove(
+                            Point::new(CoordinateSpace::DesktopLogical, -1800.0, -100.0)
+                                .expect("point"),
+                        ),
+                        InputEvent::PointerPress(PointerButton::Primary),
+                        InputEvent::PointerScroll {
+                            horizontal: 1,
+                            vertical: 1,
+                        },
+                    ];
+                    for event in &events {
+                        window_message::submit(
+                            &source,
+                            event,
+                            Some(pointer()),
+                            &mut state,
+                            &OperationContext::new(),
+                        )
+                        .expect("fake post");
+                        assert_eq!(source.context.get(), caller);
+                    }
+                    let posts = source.posts.borrow();
+                    assert_eq!(posts.len(), 5);
+                    let factor = i16::try_from(source.factor()).expect("small scale");
+                    for unit in &posts[..3] {
+                        assert_eq!(unpack(*unit), (120 / factor, 20 / factor));
+                    }
+                    for unit in &posts[3..] {
+                        assert_eq!(unpack(*unit), (-1800 / factor, -100 / factor));
+                    }
+                }
+            }
+        }
+
+        #[test]
+        fn physical_non_move_cursor_is_reused_without_caller_virtualization() {
+            for caller in [
+                DPI_AWARENESS_CONTEXT_UNAWARE,
+                DPI_AWARENESS_CONTEXT_SYSTEM_AWARE,
+                DPI_AWARENESS_CONTEXT_PER_MONITOR_AWARE_V2,
+            ] {
+                let source = FakeCoordinates::new(caller, DPI_AWARENESS_CONTEXT_UNAWARE);
+                let mut state = DriverState::default();
+                let first = non_move_pointer(
+                    &source,
+                    geometry(),
+                    GeometryPolicy::ReprojectCurrent,
+                    &mut state,
+                )
+                .expect("physical cursor inside signed bounds");
+                assert_eq!(first, pointer());
+                source.fail.set("cursor");
+                assert_eq!(
+                    non_move_pointer(
+                        &source,
+                        geometry(),
+                        GeometryPolicy::ReprojectCurrent,
+                        &mut state,
+                    ),
+                    Ok(first)
+                );
+                let mut moved = geometry();
+                moved.extent = PixelExtent::new(100, 50);
+                assert_eq!(
+                    non_move_pointer(&source, moved, GeometryPolicy::ReprojectCurrent, &mut state,),
+                    Err(InputFault::GeometryChanged)
+                );
+                assert_eq!(source.context.get(), caller);
+                assert_eq!(
+                    non_move_pointer(
+                        &source,
+                        geometry(),
+                        GeometryPolicy::ReprojectCurrent,
+                        &mut DriverState::default(),
+                    ),
+                    Err(InputFault::SubmissionFailed)
+                );
+                assert_eq!(source.context.get(), caller);
+                source.fail.set("entry");
+                let mut fresh = DriverState::default();
+                assert_eq!(
+                    non_move_pointer(
+                        &source,
+                        geometry(),
+                        GeometryPolicy::ReprojectCurrent,
+                        &mut fresh,
+                    ),
+                    Err(InputFault::UnsupportedCoordinate)
+                );
+                assert!(fresh.pointer.is_none());
+                assert_eq!(source.context.get(), caller);
+            }
+        }
+
+        #[test]
+        #[ignore = "requires a stationary cursor on a scaled interactive desktop; reads only"]
+        fn native_non_move_cursor_preserves_physical_coordinates_and_caller_dpi() {
+            let source = super::super::NativeCoordinates;
+            let (left, top, width, height) = virtual_desktop(&source).expect("physical desktop");
+            let current = GeometryFingerprint {
+                extent: PixelExtent::new(
+                    u32::try_from(width).expect("positive width"),
+                    u32::try_from(height).expect("positive height"),
+                ),
+                placement: TargetPlacement::new(
+                    (f64::from(left), f64::from(top)),
+                    (f64::from(width), f64::from(height)),
+                    Scale::new(1.0, 1.0).expect("physical scale"),
+                )
+                .expect("desktop placement")
+                .with_desktop_scale(Scale::new(1.0, 1.0).expect("physical scale")),
+            };
+            for caller in [
+                DPI_AWARENESS_CONTEXT_UNAWARE,
+                DPI_AWARENESS_CONTEXT_SYSTEM_AWARE,
+                DPI_AWARENESS_CONTEXT_PER_MONITOR_AWARE_V2,
+            ] {
+                let _caller = ThreadDpiContext::enter(&source, caller).expect("caller DPI");
+                let expected = {
+                    let _physical = ThreadDpiContext::enter(
+                        &source,
+                        DPI_AWARENESS_CONTEXT_PER_MONITOR_AWARE_V2,
+                    )
+                    .expect("physical DPI");
+                    source.physical_cursor().expect("physical reference")
+                };
+                let pointer = non_move_pointer(
+                    &source,
+                    current,
+                    GeometryPolicy::ReprojectCurrent,
+                    &mut DriverState::default(),
+                )
+                .expect("physical cursor inside desktop");
+                assert_eq!(
+                    pointer.screen, expected,
+                    "caller-independent physical cursor"
+                );
+                // SAFETY: both values are opaque DPI contexts on this thread.
+                assert!(unsafe {
+                    windows::Win32::UI::HiDpi::AreDpiAwarenessContextsEqual(
+                        caller,
+                        windows::Win32::UI::HiDpi::GetThreadDpiAwarenessContext(),
+                    )
+                    .as_bool()
+                });
+            }
+        }
+
+        #[test]
+        fn coordinate_entry_conversion_and_signed_range_failures_post_nothing() {
+            for failure in ["entry", "context", "logical", "client"] {
+                let source = FakeCoordinates::new(
+                    DPI_AWARENESS_CONTEXT_SYSTEM_AWARE,
+                    DPI_AWARENESS_CONTEXT_UNAWARE,
+                );
+                source.fail.set(failure);
+                let result = window_message::submit(
+                    &source,
+                    &InputEvent::PointerPress(PointerButton::Primary),
+                    Some(pointer()),
+                    &mut DriverState::default(),
+                    &OperationContext::new(),
+                );
+                assert!(result.is_err());
+                assert!(source.posts.borrow().is_empty());
+                assert_eq!(source.context.get(), DPI_AWARENESS_CONTEXT_SYSTEM_AWARE);
+                if failure == "entry" {
+                    assert_eq!(source.contexts.borrow().len(), 1, "no invalid restoration");
+                    assert_eq!(source.calls.borrow().as_slice(), ["target-context"]);
+                }
+            }
+            let source = FakeCoordinates::new(
+                DPI_AWARENESS_CONTEXT_UNAWARE,
+                DPI_AWARENESS_CONTEXT_PER_MONITOR_AWARE_V2,
+            );
+            assert_eq!(
+                message_point(&source, HWND::default(), (32768, 0), false),
+                Err(InputFault::UnsupportedCoordinate)
+            );
+            assert_eq!(source.context.get(), DPI_AWARENESS_CONTEXT_UNAWARE);
+            source.fail.set("metrics");
+            assert_eq!(
+                virtual_desktop(&source),
+                Err(InputFault::UnsupportedCoordinate)
+            );
+            assert_eq!(source.context.get(), DPI_AWARENESS_CONTEXT_UNAWARE);
+            source.fail.set("entry");
+            source.calls.borrow_mut().clear();
+            assert_eq!(
+                virtual_desktop(&source),
+                Err(InputFault::UnsupportedCoordinate)
+            );
+            assert!(source.calls.borrow().is_empty());
+            assert!(source.posts.borrow().is_empty());
+        }
+
+        #[test]
+        fn thread_dpi_scopes_restore_nested_contexts_and_early_returns() {
+            let source = FakeCoordinates::new(
+                DPI_AWARENESS_CONTEXT_UNAWARE,
+                DPI_AWARENESS_CONTEXT_SYSTEM_AWARE,
+            );
+            {
+                let _outer =
+                    ThreadDpiContext::enter(&source, DPI_AWARENESS_CONTEXT_PER_MONITOR_AWARE_V2)
+                        .expect("outer");
+                let early_exit = || -> Result<(), InputFault> {
+                    let _inner =
+                        ThreadDpiContext::enter(&source, DPI_AWARENESS_CONTEXT_SYSTEM_AWARE)
+                            .expect("inner");
+                    Err(InputFault::UnsupportedCoordinate)
+                };
+                let result = early_exit();
+                assert!(result.is_err());
+                assert_eq!(
+                    source.context.get(),
+                    DPI_AWARENESS_CONTEXT_PER_MONITOR_AWARE_V2
+                );
+            }
+            assert_eq!(source.context.get(), DPI_AWARENESS_CONTEXT_UNAWARE);
+            assert_eq!(
+                source.contexts.borrow().as_slice(),
+                [
+                    DPI_AWARENESS_CONTEXT_PER_MONITOR_AWARE_V2,
+                    DPI_AWARENESS_CONTEXT_SYSTEM_AWARE,
+                    DPI_AWARENESS_CONTEXT_PER_MONITOR_AWARE_V2,
+                    DPI_AWARENESS_CONTEXT_UNAWARE,
+                ]
+            );
+            assert!(ThreadDpiContext::enter(&source, DPI_AWARENESS_CONTEXT::default()).is_none());
+            assert_eq!(source.contexts.borrow().len(), 4);
+        }
     }
 }

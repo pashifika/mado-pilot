@@ -5,6 +5,7 @@
 #include <string.h>
 
 #include "ocr-private-fixture.h"
+#include "windows-utf8-entry.h"
 
 static int ok(madopilot_status_t status, const char* call)
 {
