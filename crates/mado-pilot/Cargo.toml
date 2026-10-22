@@ -13,7 +13,14 @@ qualification-unsupported-api = ["mado-pilot-platform-windows/qualification-unsu
 coreml-provider = ["mado-pilot-backend-onnx/coreml-provider"]
 cuda-provider = ["mado-pilot-backend-onnx/cuda-provider"]
 ocr-text-watch-qualification = ["mado-pilot-backend-onnx/benchmark-instrumentation"]
-template-matching-benchmark = ["mado-pilot-backend-opencv/benchmark-instrumentation"]
+# Normal-allocator timing build of `template-matching-efficiency`: production
+# selection entry only, no allocation or backend/mapping work counters.
+template-matching-timing = ["mado-pilot-backend-opencv/benchmark-selection"]
+# Historical instrumented build: timing plus counted allocation and work.
+template-matching-benchmark = [
+    "template-matching-timing",
+    "mado-pilot-backend-opencv/benchmark-instrumentation",
+]
 native-template-watch-qualification = [
     "mado-pilot-runtime/benchmark-instrumentation",
     "mado-pilot-backend-opencv/benchmark-instrumentation",
@@ -75,7 +82,7 @@ harness = false
 [[bench]]
 name = "template-matching-efficiency"
 harness = false
-required-features = ["template-matching-benchmark"]
+required-features = ["template-matching-timing"]
 
 [lints]
 workspace = true

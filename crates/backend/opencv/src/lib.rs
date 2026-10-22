@@ -83,6 +83,12 @@ mod backend;
 #[cfg(feature = "benchmark-instrumentation")]
 #[doc(hidden)]
 pub mod benchmark_instrumentation;
+/// Qualification-only production score selection without work counters.
+///
+/// Product composition does not enable this module.
+#[cfg(feature = "benchmark-selection")]
+#[doc(hidden)]
+pub mod benchmark_selection;
 mod candidates;
 mod image;
 mod prepared_images;

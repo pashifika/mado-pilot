@@ -1,7 +1,22 @@
 //! Capture-free, oracle-checked public matching and production score selection.
+//!
+//! `template-matching-timing` builds the normal mode: system allocator, no work
+//! counters. `template-matching-benchmark` builds the instrumented mode with
+//! counted Rust allocation and backend/mapping work. Protocol 1 is the historical
+//! instrumented format; protocol 2 adds the compiled `build_mode`, the effective
+//! OpenCV thread setting observed before and after the selected work, and
+//! reports metrics and rows without an observation source as unavailable.
 
+#[cfg(not(feature = "template-matching-benchmark"))]
+const _: () = assert!(
+    !mado_pilot_backend_opencv::benchmark_selection::INSTRUMENTATION_ENABLED,
+    "normal template-matching timing excludes matching and mapping instrumentation"
+);
+
+#[cfg(feature = "template-matching-benchmark")]
 use std::alloc::{GlobalAlloc, Layout};
 use std::sync::Barrier;
+#[cfg(feature = "template-matching-benchmark")]
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::time::{Duration, Instant};
 
@@ -11,8 +26,14 @@ use mado_pilot::{
     MatchResult, MonotonicInstant, OpenRequest, OperationContext, PixelFormat, PixelRect,
     PreparedTemplate, RegionSelection,
 };
-use mado_pilot_backend_opencv::{OpenCvBackend, benchmark_instrumentation as backend};
+use mado_pilot_backend_opencv::OpenCvBackend;
+#[cfg(feature = "template-matching-benchmark")]
+use mado_pilot_backend_opencv::benchmark_instrumentation as backend;
+use mado_pilot_backend_opencv::benchmark_selection::{
+    SelectionRequest, parallel_threads, select_scores,
+};
 use mado_pilot_runtime::Matcher;
+#[cfg(feature = "template-matching-benchmark")]
 use mado_pilot_testkit::bench_harness::{
     Accounting, live_allocated_bytes, peak_allocated_bytes, reset_allocation_peak,
 };
@@ -30,16 +51,70 @@ mod formats;
 mod resources;
 #[path = "support/template_efficiency_runtime.rs"]
 mod runtime;
+#[cfg(feature = "template-matching-benchmark")]
 #[path = "support/template_efficiency_watch.rs"]
 mod watch;
 use fixtures::{Kind, PATCH, ROI, SCORE_TOLERANCE, WORKLOADS, Workload};
 
+const INSTRUMENTED: bool = cfg!(feature = "template-matching-benchmark");
+const BUILD_MODE: &str = if INSTRUMENTED {
+    "instrumented"
+} else {
+    "normal"
+};
+
+/// Metric keys observed only by the instrumented build; null in normal mode.
+const INSTRUMENTED_METRICS: [&str; 26] = [
+    "allocations",
+    "heap_before_bytes",
+    "heap_after_bytes",
+    "heap_after_drop_bytes",
+    "heap_steady_before_bytes",
+    "heap_steady_after_bytes",
+    "peak_heap_bytes",
+    "peak_heap_scope",
+    "score_copied_bytes",
+    "score_offsets_scanned",
+    "bgr_conversions",
+    "bgr_converted_bytes",
+    "bgr_retained_bytes",
+    "bgr_retained_peak_bytes",
+    "bgr_retained_after_drop_bytes",
+    "bgr_evicted_bytes",
+    "bgr_evicted_peak_bytes",
+    "bgr_evicted_after_drop_bytes",
+    "mapping_copies",
+    "mapping_copied_bytes",
+    "logical_mapped_bytes",
+    "backend_find_calls",
+    "backend_find_failures",
+    "peak_active_finds",
+    "peak_active_finds_scope",
+    "final_owner_correct",
+];
+
+const UNAVAILABLE_REASON: &str = "normal build compiles no Rust allocation accounting or \
+    backend/mapping work counters: listed metrics, including the final_owner_correct \
+    owner/cache oracle, are unobserved; listed workloads' oracles are those counters";
+
+/// Rows whose oracle is backend/mapping work counters; instrumented builds only.
+fn counter_oracle(row: Workload) -> bool {
+    matches!(
+        row.kind,
+        Kind::RoiFormatTransition | Kind::WatchAnalysisAlways | Kind::WatchExactRgba
+    )
+}
+
+#[cfg(feature = "template-matching-benchmark")]
 #[global_allocator]
 static ALLOCATOR: ObservedAccounting = ObservedAccounting;
+#[cfg(feature = "template-matching-benchmark")]
 static ALLOCATIONS: AtomicU64 = AtomicU64::new(0);
 
+#[cfg(feature = "template-matching-benchmark")]
 struct ObservedAccounting;
 
+#[cfg(feature = "template-matching-benchmark")]
 // SAFETY: pointers, layouts and byte accounting pass through to Accounting.
 // The additional atomic counts successful allocation/reallocation calls only.
 unsafe impl GlobalAlloc for ObservedAccounting {
@@ -73,6 +148,7 @@ struct Memory {
     peak_rss: Option<u64>,
     private: Option<u64>,
     footprint: Option<u64>,
+    #[cfg(feature = "template-matching-benchmark")]
     heap: u64,
 }
 
@@ -84,6 +160,7 @@ impl Memory {
             peak_rss: resident.peak,
             private: resident.private,
             footprint: resident.footprint,
+            #[cfg(feature = "template-matching-benchmark")]
             heap: live_allocated_bytes() as u64,
         }
     }
@@ -497,7 +574,7 @@ impl SearchFixture {
 }
 
 struct SelectionFixture {
-    request: backend::SelectionRequest,
+    request: SelectionRequest,
     source: Vec<f32>,
     scratch: Vec<f32>,
     expected: Vec<(usize, usize, f64)>,
@@ -520,7 +597,7 @@ impl SelectionFixture {
         self.scratch.copy_from_slice(&self.source);
         let operation = operation();
         let started = ClockStart::now();
-        let result = backend::select_scores(&mut self.scratch, self.request, &operation);
+        let result = select_scores(&mut self.scratch, self.request, &operation);
         let (elapsed_ns, cpu_ns) = started.finish();
         let (correct, error) = match result {
             Ok(observed) => (
@@ -547,22 +624,71 @@ fn selected_format(matcher: &Matcher, frame: &Frame) -> PixelFormat {
         matcher.descriptor().format()
     }
 }
+
+/// One counter-oracle contract iteration and its optional format observation.
+#[cfg(feature = "template-matching-benchmark")]
+fn contract_sample(row: Workload) -> (Sample, Option<Value>) {
+    let started = ClockStart::now();
+    if matches!(row.kind, Kind::RoiFormatTransition) {
+        let result = formats::run(row);
+        let (elapsed_ns, cpu_ns) = started.finish();
+        let correct = result.as_ref().is_ok_and(|value| value["correct"] == true);
+        let (observation, error) = match result {
+            Ok(value) => (Some(value), None),
+            Err(error) => (None, Some(error)),
+        };
+        let sample = Sample {
+            elapsed_ns,
+            cpu_ns,
+            correct,
+            error,
+        };
+        (sample, observation)
+    } else {
+        let result = watch::run(matches!(row.kind, Kind::WatchAnalysisAlways));
+        let (elapsed_ns, cpu_ns) = started.finish();
+        let sample = Sample {
+            elapsed_ns,
+            cpu_ns,
+            correct: result.as_ref().is_ok_and(|correct| *correct),
+            error: result.err(),
+        };
+        (sample, None)
+    }
+}
+
+/// Normal builds refuse counter-oracle rows instead of weakening their oracle.
+#[cfg(not(feature = "template-matching-benchmark"))]
+fn contract_sample(row: Workload) -> (Sample, Option<Value>) {
+    let sample = Sample {
+        elapsed_ns: 0,
+        cpu_ns: None,
+        correct: false,
+        error: Some(format!("{} requires the instrumented build", row.id)),
+    };
+    (sample, None)
+}
+
 fn observe(row: Workload, smoke: bool) -> Value {
     let (warmups, count) = row.plan(smoke);
     let mut warmup_samples = Vec::with_capacity(warmups);
     let mut samples = Vec::with_capacity(count);
     let before = Memory::observe();
-    reset_allocation_peak();
-    let allocations_before = ALLOCATIONS.load(Ordering::Relaxed);
-    let work_before = backend::work_snapshot();
-    let backend_before = backend::snapshot();
+    #[cfg(feature = "template-matching-benchmark")]
+    let (allocations_before, work_before, backend_before) = {
+        reset_allocation_peak();
+        (
+            ALLOCATIONS.load(Ordering::Relaxed),
+            backend::work_snapshot(),
+            backend::snapshot(),
+        )
+    };
     let mut steady_before = before;
     let mut setup_error = None;
     let mut selection = matches!(row.kind, Kind::Selection).then(|| SelectionFixture::new(row));
-    let is_watch = matches!(row.kind, Kind::WatchAnalysisAlways | Kind::WatchExactRgba);
-    let is_formats = matches!(row.kind, Kind::RoiFormatTransition);
-    let mut format_observations = Vec::with_capacity(warmups + count);
-    let mut search = if selection.is_none() && !is_watch && !is_formats {
+    let is_contract = counter_oracle(row);
+    let mut format_observations: Vec<Value> = Vec::with_capacity(warmups + count);
+    let mut search = if selection.is_none() && !is_contract {
         match SearchFixture::new(row) {
             Ok(fixture) => Some(fixture),
             Err(error) => {
@@ -577,31 +703,10 @@ fn observe(row: Workload, smoke: bool) -> Value {
         for iteration in 0..warmups + count {
             let sample = if let Some(fixture) = &mut selection {
                 fixture.run()
-            } else if is_formats {
-                let started = ClockStart::now();
-                let result = formats::run(row);
-                let (elapsed_ns, cpu_ns) = started.finish();
-                let correct = result.as_ref().is_ok_and(|value| value["correct"] == true);
-                let error = result.as_ref().err().cloned();
-                if let Ok(value) = result {
-                    format_observations.push(value);
-                }
-                Sample {
-                    elapsed_ns,
-                    cpu_ns,
-                    correct,
-                    error,
-                }
-            } else if is_watch {
-                let started = ClockStart::now();
-                let result = watch::run(matches!(row.kind, Kind::WatchAnalysisAlways));
-                let (elapsed_ns, cpu_ns) = started.finish();
-                Sample {
-                    elapsed_ns,
-                    cpu_ns,
-                    correct: result.as_ref().is_ok_and(|correct| *correct),
-                    error: result.err(),
-                }
+            } else if is_contract {
+                let (sample, observation) = contract_sample(row);
+                format_observations.extend(observation);
+                sample
             } else {
                 let fixture = search.as_mut().expect("search fixture created");
                 match fixture.prepare_iteration() {
@@ -625,19 +730,25 @@ fn observe(row: Workload, smoke: bool) -> Value {
         }
     }
     let after = Memory::observe();
-    let work_after = backend::work_snapshot();
-    let activity = backend::snapshot().checked_delta(backend_before);
+    #[cfg(feature = "template-matching-benchmark")]
+    let (work_after, activity) = (
+        backend::work_snapshot(),
+        backend::snapshot().checked_delta(backend_before),
+    );
     let mapping_owner_live = search
         .as_ref()
         .is_some_and(|fixture| fixture.mapping_owner.is_some());
     drop(selection.take());
     drop(search.take());
     let after_drop = Memory::observe();
-    let heap_peak = peak_allocated_bytes() as u64;
-    let allocations = ALLOCATIONS
-        .load(Ordering::Relaxed)
-        .saturating_sub(allocations_before);
-    let final_work = backend::work_snapshot();
+    #[cfg(feature = "template-matching-benchmark")]
+    let (heap_peak, allocations, final_work) = (
+        peak_allocated_bytes() as u64,
+        ALLOCATIONS
+            .load(Ordering::Relaxed)
+            .saturating_sub(allocations_before),
+        backend::work_snapshot(),
+    );
     let cpu_ns = samples
         .iter()
         .try_fold(0_u64, |sum, sample| sum.checked_add(sample.cpu_ns?));
@@ -656,26 +767,75 @@ fn observe(row: Workload, smoke: bool) -> Value {
     ]
     .iter()
     .any(Option::is_none);
-    let lifecycle_correct = final_work.bgr_retained_bytes == work_before.bgr_retained_bytes
-        && work_after.bgr_retained_bytes <= 33_554_432
-        && activity.is_some_and(|value| {
-            value.active_finds == 0
-                && (!matches!(row.kind, Kind::Concurrent) || value.peak_active_finds >= 2)
+    #[cfg(feature = "template-matching-benchmark")]
+    let (lifecycle_correct, counted) = {
+        let lifecycle_correct = final_work.bgr_retained_bytes == work_before.bgr_retained_bytes
+            && work_after.bgr_retained_bytes <= 33_554_432
+            && activity.is_some_and(|value| {
+                value.active_finds == 0
+                    && (!matches!(row.kind, Kind::Concurrent) || value.peak_active_finds >= 2)
+            });
+        let counted = json!({
+            "allocations": allocations,
+            "heap_before_bytes": before.heap, "heap_after_bytes": after.heap,
+            "heap_after_drop_bytes": after_drop.heap, "peak_heap_bytes": heap_peak,
+            "heap_steady_before_bytes": steady_before.heap, "heap_steady_after_bytes": after.heap,
+            "peak_heap_scope": "row-including-setup-and-warmup",
+            "score_copied_bytes": work_after.score_copied_bytes.saturating_sub(work_before.score_copied_bytes),
+            "score_offsets_scanned": work_after.score_offsets_scanned.saturating_sub(work_before.score_offsets_scanned),
+            "bgr_conversions": work_after.bgr_conversions.saturating_sub(work_before.bgr_conversions),
+            "bgr_converted_bytes": work_after.bgr_converted_bytes.saturating_sub(work_before.bgr_converted_bytes),
+            "bgr_retained_bytes": work_after.bgr_retained_bytes,
+            "bgr_retained_peak_bytes": work_after.bgr_retained_peak_bytes,
+            "bgr_retained_after_drop_bytes": final_work.bgr_retained_bytes,
+            "bgr_evicted_bytes": work_after.bgr_evicted_bytes,
+            "bgr_evicted_peak_bytes": work_after.bgr_evicted_peak_bytes,
+            "bgr_evicted_after_drop_bytes": final_work.bgr_evicted_bytes,
+            "mapping_copies": work_after.mapping_copies.saturating_sub(work_before.mapping_copies),
+            "mapping_copied_bytes": work_after.mapping_copied_bytes.saturating_sub(work_before.mapping_copied_bytes),
+            "logical_mapped_bytes": activity.map(|value| value.mapped_bytes),
+            "backend_find_calls": activity.map(|value| value.find_calls),
+            "backend_find_failures": activity.map(|value| value.find_failures),
+            "peak_active_finds": activity.map(|value| value.peak_active_finds),
+            "peak_active_finds_scope": "process-high-water",
+            "final_owner_correct": lifecycle_correct,
         });
+        (Some(lifecycle_correct), counted)
+    };
+    // No counter source exists; the owner/cache oracle stays unevaluated.
+    #[cfg(not(feature = "template-matching-benchmark"))]
+    let (lifecycle_correct, counted) = (
+        None::<bool>,
+        Value::Object(
+            INSTRUMENTED_METRICS
+                .iter()
+                .map(|&key| (key.to_owned(), Value::Null))
+                .collect(),
+        ),
+    );
+    assert!(
+        counted.as_object().is_some_and(|object| {
+            object.len() == INSTRUMENTED_METRICS.len()
+                && INSTRUMENTED_METRICS
+                    .iter()
+                    .all(|&key| object.contains_key(key))
+        }),
+        "instrumented metric keys match the declared normal-mode null set"
+    );
     let oracle_failures = warmup_samples
         .iter()
         .chain(&samples)
         .filter(|sample| !sample.correct)
         .count()
         + usize::from(setup_error.is_some())
-        + usize::from(!lifecycle_correct);
+        + usize::from(lifecycle_correct == Some(false));
     let mut report = row.manifest(smoke);
     let object = report.as_object_mut().expect("manifest object");
     object.insert("samples".into(), json!(samples));
     object.insert("warmup_samples".into(), json!(warmup_samples));
     object.insert("oracle_failures".into(), json!(oracle_failures));
     object.insert("setup_error".into(), json!(setup_error));
-    if is_formats {
+    if matches!(row.kind, Kind::RoiFormatTransition) {
         object.insert("format_observations".into(), json!(format_observations));
     }
     let mut metrics = json!({
@@ -685,38 +845,19 @@ fn observe(row: Workload, smoke: bool) -> Value {
         "peak_rss_bytes": after_drop.peak_rss, "rss_before_bytes": before.rss,
         "rss_after_bytes": after.rss, "rss_after_drop_bytes": after_drop.rss,
         "rss_steady_before_bytes": steady_before.rss, "rss_steady_after_bytes": after.rss,
-        "heap_before_bytes": before.heap, "heap_after_bytes": after.heap,
-        "heap_after_drop_bytes": after_drop.heap, "peak_heap_bytes": heap_peak,
-        "heap_steady_before_bytes": steady_before.heap, "heap_steady_after_bytes": after.heap,
         "private_after_bytes": after.private, "footprint_after_bytes": after.footprint,
         "private_reason": if after.private.is_none() { Some("not exposed by this target resource helper") } else { None },
         "footprint_reason": if after.footprint.is_none() { Some("not exposed by this target resource helper") } else { None },
-        "native_allocation_scope": "cache-payload gauges and process RSS, not total native allocation tracking",
-        "peak_rss_scope": "process-high-water", "peak_heap_scope": "row-including-setup-and-warmup",
-        "allocations": allocations,
-        "score_copied_bytes": work_after.score_copied_bytes.saturating_sub(work_before.score_copied_bytes),
-        "score_offsets_scanned": work_after.score_offsets_scanned.saturating_sub(work_before.score_offsets_scanned),
-        "bgr_conversions": work_after.bgr_conversions.saturating_sub(work_before.bgr_conversions),
-        "bgr_converted_bytes": work_after.bgr_converted_bytes.saturating_sub(work_before.bgr_converted_bytes),
-        "bgr_retained_bytes": work_after.bgr_retained_bytes,
-        "bgr_retained_peak_bytes": work_after.bgr_retained_peak_bytes,
-        "bgr_retained_after_drop_bytes": final_work.bgr_retained_bytes,
-        "mapping_copies": work_after.mapping_copies.saturating_sub(work_before.mapping_copies),
-        "mapping_copied_bytes": work_after.mapping_copied_bytes.saturating_sub(work_before.mapping_copied_bytes),
-        "logical_mapped_bytes": activity.map(|value| value.mapped_bytes),
-        "backend_find_calls": activity.map(|value| value.find_calls),
-        "backend_find_failures": activity.map(|value| value.find_failures),
-        "peak_active_finds": activity.map(|value| value.peak_active_finds),
-        "peak_active_finds_scope": "process-high-water",
+        "native_allocation_scope": if INSTRUMENTED {
+            "cache-payload gauges and process RSS, not total native allocation tracking"
+        } else {
+            "process RSS only; no cache-payload gauges or native allocation tracking"
+        },
+        "peak_rss_scope": "process-high-water",
         "mapping_owner_live_before_drop": mapping_owner_live,
-        "final_owner_correct": lifecycle_correct,
     });
-    for (key, value) in [
-        ("bgr_evicted_bytes", work_after.bgr_evicted_bytes),
-        ("bgr_evicted_peak_bytes", work_after.bgr_evicted_peak_bytes),
-        ("bgr_evicted_after_drop_bytes", final_work.bgr_evicted_bytes),
-    ] {
-        metrics[key] = Value::from(value);
+    if let (Some(metrics), Value::Object(counted)) = (metrics.as_object_mut(), counted) {
+        metrics.extend(counted);
     }
     object.insert("metrics".into(), metrics);
     report
@@ -726,40 +867,90 @@ struct Arguments {
     list: bool,
     smoke: bool,
     workload: Option<String>,
+    protocol: u8,
 }
 
-fn arguments() -> Result<Arguments, String> {
+/// Parses arguments; a failure carries the protocol version parsed so far.
+fn arguments() -> Result<Arguments, (u8, String)> {
     let mut parsed = Arguments {
         list: false,
         smoke: false,
         workload: None,
+        protocol: 1,
     };
-    let mut values = std::env::args().skip(1);
-    while let Some(value) = values.next() {
-        match value.as_str() {
-            "--list" => parsed.list = true,
-            "--smoke" => parsed.smoke = true,
-            "--bench" => {}
-            "--workload" => {
-                if parsed.workload.is_some() {
-                    return Err("--workload supplied twice".into());
+    let result = (|| -> Result<(), String> {
+        let mut protocol_given = false;
+        let mut values = std::env::args().skip(1);
+        while let Some(value) = values.next() {
+            match value.as_str() {
+                "--list" => parsed.list = true,
+                "--smoke" => parsed.smoke = true,
+                "--bench" => {}
+                "--workload" => {
+                    if parsed.workload.is_some() {
+                        return Err("--workload supplied twice".into());
+                    }
+                    parsed.workload = Some(values.next().ok_or("--workload requires an ID")?);
                 }
-                parsed.workload = Some(values.next().ok_or("--workload requires an ID")?);
+                "--protocol-version" => {
+                    if protocol_given {
+                        return Err("--protocol-version supplied twice".into());
+                    }
+                    protocol_given = true;
+                    parsed.protocol = match values.next().as_deref() {
+                        Some("1") => 1,
+                        Some("2") => 2,
+                        _ => return Err("--protocol-version requires 1 or 2".into()),
+                    };
+                }
+                _ => return Err(format!("unsupported argument: {value}")),
             }
-            _ => return Err(format!("unsupported argument: {value}")),
         }
+        if !INSTRUMENTED && parsed.protocol == 1 {
+            return Err(
+                "format version 1 requires the instrumented template-matching-benchmark build"
+                    .into(),
+            );
+        }
+        if let Some(id) = &parsed.workload {
+            let row = WORKLOADS
+                .iter()
+                .find(|row| row.id == id)
+                .ok_or_else(|| format!("unknown workload: {id}"))?;
+            if !INSTRUMENTED && counter_oracle(*row) {
+                return Err(format!("{id} requires the instrumented build"));
+            }
+        }
+        Ok(())
+    })();
+    match result {
+        Ok(()) => Ok(parsed),
+        Err(error) => Err((parsed.protocol, error)),
     }
-    if parsed
-        .workload
-        .as_ref()
-        .is_some_and(|id| !WORKLOADS.iter().any(|row| row.id == id))
-    {
-        return Err(format!(
-            "unknown workload: {}",
-            parsed.workload.as_deref().unwrap_or_default()
-        ));
+}
+
+/// Version-two declaration of the observations this build cannot make.
+fn unavailable() -> Value {
+    if INSTRUMENTED {
+        json!({"reason": null, "metrics": [], "workloads": []})
+    } else {
+        let workloads: Vec<_> = WORKLOADS
+            .iter()
+            .filter(|row| counter_oracle(**row))
+            .map(|row| row.id)
+            .collect();
+        json!({"reason": UNAVAILABLE_REASON, "metrics": INSTRUMENTED_METRICS, "workloads": workloads})
     }
-    Ok(parsed)
+}
+
+/// Protocol-two observation of the effective OpenCV thread setting; never tuned here.
+fn thread_observation() -> Value {
+    match parallel_threads() {
+        Ok(observed) => {
+            json!({"threads": observed.threads, "framework": observed.framework, "reason": null})
+        }
+        Err(reason) => json!({"threads": null, "framework": null, "reason": reason}),
+    }
 }
 
 fn resolutions() -> (u64, Option<u64>) {
@@ -812,9 +1003,11 @@ fn run(arguments: Arguments) -> Result<Value, String> {
     let backend = OpenCvBackend::new().map_err(|error| error.to_string())?;
     let version = backend.descriptor().version().to_owned();
     drop(backend);
+    let threads_before = (arguments.protocol == 2).then(thread_observation);
     let (timer_resolution_ns, cpu_timer_resolution_ns) = resolutions();
     let workloads: Vec<_> = WORKLOADS
         .iter()
+        .filter(|row| INSTRUMENTED || !counter_oracle(**row))
         .filter(|row| arguments.workload.as_deref().is_none_or(|id| row.id == id))
         .map(|&row| {
             if arguments.list {
@@ -824,10 +1017,11 @@ fn run(arguments: Arguments) -> Result<Value, String> {
             }
         })
         .collect();
+    let threads_after = (arguments.protocol == 2).then(thread_observation);
     // Corpus identity generation is outside every measured resource interval.
     let (fixture_sha256, fixture) = fixtures::manifest();
-    Ok(json!({
-        "format_version": 1, "kind": if arguments.list { "manifest" } else { "observations" },
+    let mut report = json!({
+        "format_version": arguments.protocol, "kind": if arguments.list { "manifest" } else { "observations" },
         "target": target(), "opencv_version": version, "fixture_sha256": fixture_sha256,
         "loaded_native_runtime": runtime::observe()?,
         "fixture": fixture, "warmups": if arguments.smoke { 1 } else { 20 },
@@ -839,11 +1033,31 @@ fn run(arguments: Arguments) -> Result<Value, String> {
         "cpu_timer_resolution_source": "bounded self-process CPU probe; observed deltas are not guaranteed accounting accuracy",
         "timer_resolution_source": "minimum positive Instant delta probe",
         "workloads": workloads,
-    }))
+    });
+    if arguments.protocol == 2 {
+        report["build_mode"] = BUILD_MODE.into();
+        report["global_allocator"] = if INSTRUMENTED {
+            "accounting-over-system"
+        } else {
+            "system"
+        }
+        .into();
+        report["unavailable"] = unavailable();
+        report["opencv_parallel_threads"] = json!({
+            "method": "opencv-runtime-backend-and-thread-setting-v1",
+            "before": threads_before, "after": threads_after,
+            "changed": threads_before != threads_after,
+        });
+    }
+    Ok(report)
 }
 
 fn main() {
-    let (report, failed) = match arguments().and_then(run) {
+    let (protocol, outcome) = match arguments() {
+        Ok(arguments) => (arguments.protocol, run(arguments)),
+        Err((protocol, error)) => (protocol, Err(error)),
+    };
+    let (report, failed) = match outcome {
         Ok(report) => {
             let failed = report["workloads"].as_array().is_some_and(|rows| {
                 rows.iter().any(|row| {
@@ -852,13 +1066,25 @@ fn main() {
                         .is_some_and(|count| count != 0)
                 })
             });
-            (report, failed)
+            let threads = &report["opencv_parallel_threads"];
+            let thread_failure = protocol == 2
+                && (threads["changed"].as_bool() != Some(false)
+                    || ["before", "after"].iter().any(|point| {
+                        let observed = &threads[*point];
+                        !observed["reason"].is_null()
+                            || observed["threads"].as_i64().is_none_or(|count| count <= 0)
+                            || observed["framework"].as_str().is_none_or(str::is_empty)
+                    }));
+            (report, failed || thread_failure)
         }
-        Err(error) => (
-            json!({"format_version": 1, "kind": "observations", "target": target(),
-            "error": error, "workloads": []}),
-            true,
-        ),
+        Err(error) => {
+            let mut report = json!({"format_version": protocol, "kind": "observations",
+                "target": target(), "error": error, "workloads": []});
+            if protocol == 2 {
+                report["build_mode"] = BUILD_MODE.into();
+            }
+            (report, true)
+        }
     };
     println!(
         "{}",

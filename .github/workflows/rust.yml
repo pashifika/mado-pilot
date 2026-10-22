@@ -428,31 +428,36 @@ jobs:
           from pathlib import Path
           root = Path(os.environ["MATCHING_SMOKE_ROOT"])
           root.mkdir(parents=True, exist_ok=False)
-          common = ["--locked", "--package", "mado-pilot", "--features", "template-matching-benchmark", "--bench", "template-matching-efficiency"]
-          lint = ["cargo", "clippy", *common, "--", "-D", "warnings"]
-          build = ["cargo", "bench", "--config", 'profile.bench.build-override.strip="none"', *common, "--no-run", "--message-format=json"]
-          commands = [lint, build]
-          (root / "commands.json").write_text(json.dumps(commands, indent=2) + "\n")
-          for label, argv in (("lint", lint), ("build", build)):
-              with (root / f"{label}.stdout").open("wb") as out, (root / f"{label}.stderr").open("wb") as err:
-                  subprocess.run(argv, stdout=out, stderr=err, check=True, timeout=1200)
-          artifacts = [json.loads(line) for line in (root / "build.stdout").read_text().splitlines()]
-          binaries = {item["executable"] for item in artifacts if item.get("reason") == "compiler-artifact" and item.get("target", {}).get("name") == "template-matching-efficiency" and item.get("executable")}
-          if len(binaries) != 1:
-              raise SystemExit("expected exactly one Cargo-reported benchmark executable")
-          source = Path(binaries.pop())
-          binary = root / ("template-matching-efficiency" + source.suffix)
-          shutil.copy2(source, binary)
-          metadata = root / "build-metadata.json"
-          target = os.environ["MATCHING_SMOKE_TARGET"]
-          for label, argv, timeout in (
-              ("attest", [sys.executable, "tools/template-matching-efficiency.py", "attest", "--target", target, "--binary", str(binary), "--build-argv-json", json.dumps(build), "--output", str(metadata)], 500),
-              ("smoke", [sys.executable, "tools/template-matching-efficiency.py", "smoke", "--target", target, "--baseline", str(binary), "--baseline-metadata", str(metadata), "--output", str(root / "campaign")], 930),
-          ):
-              commands.append(argv)
-              (root / "commands.json").write_text(json.dumps(commands, indent=2) + "\n")
-              with (root / f"{label}.stdout").open("wb") as out, (root / f"{label}.stderr").open("wb") as err:
-                  subprocess.run(argv, stdout=out, stderr=err, check=True, timeout=timeout)
+          for mode, feature in (("normal", "template-matching-timing"), ("instrumented", "template-matching-benchmark")):
+              mode_root = root / mode
+              mode_root.mkdir()
+              common = ["--locked", "--package", "mado-pilot", "--features", feature, "--bench", "template-matching-efficiency",
+                        "--target-dir", str(Path(os.environ["CARGO_TARGET_DIR"]) / mode)]
+              lint = ["cargo", "clippy", *common, "--", "-D", "warnings"]
+              build = ["cargo", "bench", "--config", 'profile.bench.build-override.strip="none"', *common, "--no-run", "--message-format=json"]
+              commands = [lint, build]
+              (mode_root / "commands.json").write_text(json.dumps(commands, indent=2) + "\n")
+              for label, argv in (("lint", lint), ("build", build)):
+                  with (mode_root / f"{label}.stdout").open("wb") as out, (mode_root / f"{label}.stderr").open("wb") as err:
+                      subprocess.run(argv, stdout=out, stderr=err, check=True, timeout=1200)
+              artifacts = [json.loads(line) for line in (mode_root / "build.stdout").read_text().splitlines()]
+              binaries = {item["executable"] for item in artifacts if item.get("reason") == "compiler-artifact" and item.get("target", {}).get("name") == "template-matching-efficiency" and item.get("executable")}
+              if len(binaries) != 1:
+                  raise SystemExit("expected exactly one Cargo-reported benchmark executable")
+              source = Path(binaries.pop())
+              binary = mode_root / ("template-matching-efficiency" + source.suffix)
+              shutil.copy2(source, binary)
+              metadata = mode_root / "build-metadata.json"
+              target = os.environ["MATCHING_SMOKE_TARGET"]
+              protocol = ["--protocol-version", "2", "--build-mode", mode]
+              for label, argv, timeout in (
+                  ("attest", [sys.executable, "tools/template-matching-efficiency.py", "attest", *protocol, "--target", target, "--binary", str(binary), "--build-argv-json", json.dumps(build), "--output", str(metadata)], 500),
+                  ("smoke", [sys.executable, "tools/template-matching-efficiency.py", "smoke", *protocol, "--target", target, "--baseline", str(binary), "--baseline-metadata", str(metadata), "--output", str(mode_root / "campaign")], 930),
+              ):
+                  commands.append(argv)
+                  (mode_root / "commands.json").write_text(json.dumps(commands, indent=2) + "\n")
+                  with (mode_root / f"{label}.stdout").open("wb") as out, (mode_root / f"{label}.stderr").open("wb") as err:
+                      subprocess.run(argv, stdout=out, stderr=err, check=True, timeout=timeout)
           PY
 
       - name: Preserve matching efficiency smoke observations
@@ -464,6 +469,10 @@ jobs:
           include-hidden-files: true
           if-no-files-found: warn
           retention-days: 14
+
+      - name: Test native Windows image-preflight contracts
+        shell: bash
+        run: python -B -m unittest discover -s tools/tests -p test_windows_image_observer.py -v
 
       - name: Compile the native template-watch Lane B and Lane C runners
         shell: bash
@@ -823,31 +832,36 @@ jobs:
           from pathlib import Path
           root = Path(os.environ["MATCHING_SMOKE_ROOT"])
           root.mkdir(parents=True, exist_ok=False)
-          common = ["--locked", "--package", "mado-pilot", "--features", "template-matching-benchmark", "--bench", "template-matching-efficiency"]
-          lint = ["cargo", "clippy", *common, "--", "-D", "warnings"]
-          build = ["cargo", "bench", "--config", 'profile.bench.build-override.strip="none"', *common, "--no-run", "--message-format=json"]
-          commands = [lint, build]
-          (root / "commands.json").write_text(json.dumps(commands, indent=2) + "\n")
-          for label, argv in (("lint", lint), ("build", build)):
-              with (root / f"{label}.stdout").open("wb") as out, (root / f"{label}.stderr").open("wb") as err:
-                  subprocess.run(argv, stdout=out, stderr=err, check=True, timeout=1200)
-          artifacts = [json.loads(line) for line in (root / "build.stdout").read_text().splitlines()]
-          binaries = {item["executable"] for item in artifacts if item.get("reason") == "compiler-artifact" and item.get("target", {}).get("name") == "template-matching-efficiency" and item.get("executable")}
-          if len(binaries) != 1:
-              raise SystemExit("expected exactly one Cargo-reported benchmark executable")
-          source = Path(binaries.pop())
-          binary = root / ("template-matching-efficiency" + source.suffix)
-          shutil.copy2(source, binary)
-          metadata = root / "build-metadata.json"
-          target = os.environ["MATCHING_SMOKE_TARGET"]
-          for label, argv, timeout in (
-              ("attest", [sys.executable, "tools/template-matching-efficiency.py", "attest", "--target", target, "--binary", str(binary), "--build-argv-json", json.dumps(build), "--output", str(metadata)], 500),
-              ("smoke", [sys.executable, "tools/template-matching-efficiency.py", "smoke", "--target", target, "--baseline", str(binary), "--baseline-metadata", str(metadata), "--output", str(root / "campaign")], 930),
-          ):
-              commands.append(argv)
-              (root / "commands.json").write_text(json.dumps(commands, indent=2) + "\n")
-              with (root / f"{label}.stdout").open("wb") as out, (root / f"{label}.stderr").open("wb") as err:
-                  subprocess.run(argv, stdout=out, stderr=err, check=True, timeout=timeout)
+          for mode, feature in (("normal", "template-matching-timing"), ("instrumented", "template-matching-benchmark")):
+              mode_root = root / mode
+              mode_root.mkdir()
+              common = ["--locked", "--package", "mado-pilot", "--features", feature, "--bench", "template-matching-efficiency",
+                        "--target-dir", str(Path(os.environ["CARGO_TARGET_DIR"]) / mode)]
+              lint = ["cargo", "clippy", *common, "--", "-D", "warnings"]
+              build = ["cargo", "bench", "--config", 'profile.bench.build-override.strip="none"', *common, "--no-run", "--message-format=json"]
+              commands = [lint, build]
+              (mode_root / "commands.json").write_text(json.dumps(commands, indent=2) + "\n")
+              for label, argv in (("lint", lint), ("build", build)):
+                  with (mode_root / f"{label}.stdout").open("wb") as out, (mode_root / f"{label}.stderr").open("wb") as err:
+                      subprocess.run(argv, stdout=out, stderr=err, check=True, timeout=1200)
+              artifacts = [json.loads(line) for line in (mode_root / "build.stdout").read_text().splitlines()]
+              binaries = {item["executable"] for item in artifacts if item.get("reason") == "compiler-artifact" and item.get("target", {}).get("name") == "template-matching-efficiency" and item.get("executable")}
+              if len(binaries) != 1:
+                  raise SystemExit("expected exactly one Cargo-reported benchmark executable")
+              source = Path(binaries.pop())
+              binary = mode_root / ("template-matching-efficiency" + source.suffix)
+              shutil.copy2(source, binary)
+              metadata = mode_root / "build-metadata.json"
+              target = os.environ["MATCHING_SMOKE_TARGET"]
+              protocol = ["--protocol-version", "2", "--build-mode", mode]
+              for label, argv, timeout in (
+                  ("attest", [sys.executable, "tools/template-matching-efficiency.py", "attest", *protocol, "--target", target, "--binary", str(binary), "--build-argv-json", json.dumps(build), "--output", str(metadata)], 500),
+                  ("smoke", [sys.executable, "tools/template-matching-efficiency.py", "smoke", *protocol, "--target", target, "--baseline", str(binary), "--baseline-metadata", str(metadata), "--output", str(mode_root / "campaign")], 930),
+              ):
+                  commands.append(argv)
+                  (mode_root / "commands.json").write_text(json.dumps(commands, indent=2) + "\n")
+                  with (mode_root / f"{label}.stdout").open("wb") as out, (mode_root / f"{label}.stderr").open("wb") as err:
+                      subprocess.run(argv, stdout=out, stderr=err, check=True, timeout=timeout)
           PY
 
       - name: Preserve matching efficiency smoke observations
@@ -859,6 +873,12 @@ jobs:
           include-hidden-files: true
           if-no-files-found: warn
           retention-days: 14
+
+      - name: Test native macOS image-observer contracts
+        shell: bash
+        env:
+          MADO_MACOS_IMAGE_OBSERVER_SMOKE: "1"
+        run: python3 -B -m unittest discover -s tools/tests -p test_macos_image_observer.py -v
 
       - name: Compile the native template-watch Lane B and Lane C runners
         shell: bash

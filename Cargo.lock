@@ -319,6 +319,7 @@ dependencies = [
 name = "mado-pilot-backend-opencv"
 version = "0.5.0"
 dependencies = [
+ "cc",
  "mado-pilot-capture",
  "mado-pilot-core",
  "mado-pilot-testkit",
