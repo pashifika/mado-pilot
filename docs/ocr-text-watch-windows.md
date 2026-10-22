@@ -1,13 +1,16 @@
 # Windows owned WGC OCR procedure
 
-**Task 7.2 is not run. Explicit display selection requires a fresh build and authority.**
-The earlier implicit-primary preparation passed strict SDK `/W4 /WX` compilation,
-Rust clippy and controlled contracts; the integrated `fd5468f` tree also passed
-hosted CI. Those revision-bound results do not qualify the selected-display
-procedure below. Initial failures and pinned artifacts remain unchanged.
-No new watcher model inference, fixture launch, capture, permission, focus or
-input operation is claimed. Existing Rust template and historical C/C++ results
-do not qualify this OCR procedure.
+**Task 7.2 remains partially verified; the current resize fix needs native execution.**
+On the selected DELL/WCG cohort, the owned `3fdbcfe` diagnostic attempt passed
+the initial exact-source OCR transition, retained-result producer progress,
+resource accounting and cleanup. Its resize checkpoint delivered no successor
+through the first public acquire call within20 seconds; mapping and pixel checks
+were not reached. The exact-window-loss scenario remains unverified.
+The adapter keeps extent-only changes separate from movement/DPI freshness
+fences, including a previously unsatisfied fence across pool recreation.
+This implementation change is not yet native acceptance. Historical failures and
+their source/artifact bindings remain unchanged. Existing template and C/C++
+results do not qualify this OCR procedure; no input or permission change is used.
 
 ## Fixed scope and oracle
 

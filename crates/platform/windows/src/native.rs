@@ -209,6 +209,57 @@ struct TransitionState {
     published: bool,
 }
 
+impl TransitionState {
+    fn pool_recreated(&mut self, extent: PixelExtent) {
+        self.extent = extent;
+        self.pending_discontinuity = self.published;
+        // Recreation does not prove that an already observed movement is in
+        // the pixels. Keep its capture-time fence until a fresh frame arrives.
+    }
+
+    fn accepts_frame_geometry(
+        &mut self,
+        placement: TargetPlacement,
+        native_time: i64,
+        observed_now: impl FnOnce() -> Option<i64>,
+    ) -> bool {
+        // Pool extent correlates size changes. Origin and scales instead need
+        // pixels captured after their observation, including during a resize.
+        if self.published
+            && (placement.desktop_origin() != self.placement.desktop_origin()
+                || placement.scale() != self.placement.scale()
+                || placement.desktop_scale() != self.placement.desktop_scale())
+        {
+            self.placement = placement;
+            self.pending_geometry_change = true;
+            let not_before = observed_now().unwrap_or_else(|| native_time.saturating_add(1));
+            self.movement_not_before = Some(
+                self.movement_not_before
+                    .map_or(not_before, |previous| previous.max(not_before)),
+            );
+            return false;
+        }
+        if self
+            .movement_not_before
+            .is_some_and(|not_before| native_time < not_before)
+        {
+            return false;
+        }
+        self.movement_not_before = None;
+        true
+    }
+
+    fn continuity(&self) -> Continuity {
+        if self.pending_discontinuity {
+            Continuity::Discontinuous
+        } else if self.pending_geometry_change {
+            Continuity::GeometryChanged
+        } else {
+            Continuity::Continuous
+        }
+    }
+}
+
 struct TeardownJob {
     resources: NativeResources,
     remove_frame_handler: bool,
@@ -1236,29 +1287,16 @@ impl SessionCore {
                     .map_err(native_fault)
             })?;
             let _retired = self.textures.try_retire_for_resize();
-            transition.extent = extent;
-            transition.pending_discontinuity = transition.published;
-            transition.movement_not_before = None;
+            transition.pool_recreated(extent);
             return Ok(());
         }
 
         let placement = publication_placement(required_geometry, || {
             current_placement(self.key, extent).ok_or_else(|| target_fault(self.target_kind))
         })?;
-        if transition.published && placement != transition.placement {
-            transition.placement = placement;
-            transition.pending_geometry_change = true;
-            transition.movement_not_before =
-                Some(native_monotonic_now().unwrap_or_else(|| native_time.saturating_add(1)));
+        if !transition.accepts_frame_geometry(placement, native_time, native_monotonic_now) {
             let _drop = self.state.try_record_drop();
             return Ok(());
-        }
-        if let Some(not_before) = transition.movement_not_before {
-            if native_time < not_before {
-                let _drop = self.state.try_record_drop();
-                return Ok(());
-            }
-            transition.movement_not_before = None;
         }
 
         let surface = frame.frame().Surface().map_err(native_fault)?;
@@ -1309,13 +1347,7 @@ impl SessionCore {
         drop(surface);
         drop(frame);
 
-        let continuity = if transition.pending_discontinuity {
-            Continuity::Discontinuous
-        } else if transition.pending_geometry_change {
-            Continuity::GeometryChanged
-        } else {
-            Continuity::Continuous
-        };
+        let continuity = transition.continuity();
         let storage = WindowsFrameStorage::new(
             descriptor,
             Arc::clone(&self.domain),
@@ -2880,6 +2912,105 @@ mod tests {
         assert!(permits.try_reserve().is_none());
         held.pop();
         assert!(permits.try_reserve().is_some());
+    }
+
+    fn published_transition() -> TransitionState {
+        TransitionState {
+            extent: PixelExtent::new(4, 4),
+            placement: TargetPlacement::new(
+                (0.0, 0.0),
+                (4.0, 4.0),
+                Scale::new(1.0, 1.0).expect("scale"),
+            )
+            .expect("placement"),
+            pending_discontinuity: false,
+            pending_geometry_change: false,
+            movement_not_before: None,
+            clock_anchor: (100, MonotonicInstant::from_origin(Duration::from_secs(10))),
+            published: true,
+        }
+    }
+
+    #[test]
+    fn geometry_transition_accepts_one_resized_frame_without_a_future_tick() {
+        for sizes in [&[8][..], &[8, 16][..], &[8, 4][..]] {
+            let mut transition = published_transition();
+            for &size in sizes {
+                transition.pool_recreated(PixelExtent::new(size, size));
+            }
+            let final_size = f64::from(*sizes.last().expect("at least one resize"));
+            let placement = TargetPlacement::new(
+                (0.0, 0.0),
+                (final_size, final_size),
+                Scale::new(1.0, 1.0).expect("scale"),
+            )
+            .expect("resized placement");
+
+            assert!(transition.accepts_frame_geometry(placement, 90, || {
+                panic!("extent-only changes must not wait for a later capture time")
+            }));
+            assert_eq!(transition.continuity(), Continuity::Discontinuous);
+        }
+    }
+
+    #[test]
+    fn geometry_transition_fences_move_and_both_scales_during_resize() {
+        let unit = Scale::new(1.0, 1.0).expect("unit scale");
+        let double = Scale::new(2.0, 2.0).expect("double scale");
+        let placements = [
+            TargetPlacement::new((20.0, 10.0), (8.0, 8.0), unit).expect("moved"),
+            TargetPlacement::new((0.0, 0.0), (4.0, 4.0), double).expect("target scale"),
+            TargetPlacement::new((0.0, 0.0), (8.0, 8.0), unit)
+                .expect("placement")
+                .with_desktop_scale(double),
+        ];
+        for placement in placements {
+            let mut transition = published_transition();
+            transition.pool_recreated(PixelExtent::new(8, 8));
+            assert!(!transition.accepts_frame_geometry(placement, 90, || Some(100)));
+            assert!(!transition.accepts_frame_geometry(placement, 99, || {
+                panic!("unchanged geometry must not rearm the fence")
+            }));
+            assert!(transition.accepts_frame_geometry(placement, 100, || {
+                panic!("the first fresh candidate must satisfy the existing fence")
+            }));
+            assert_eq!(transition.continuity(), Continuity::Discontinuous);
+        }
+    }
+
+    #[test]
+    fn geometry_transition_preserves_unfulfilled_movement_across_recreation() {
+        let unit = Scale::new(1.0, 1.0).expect("scale");
+        let moved = TargetPlacement::new((20.0, 10.0), (4.0, 4.0), unit).expect("moved");
+        let resized = TargetPlacement::new((20.0, 10.0), (16.0, 16.0), unit).expect("resized");
+        let mut transition = published_transition();
+        assert!(!transition.accepts_frame_geometry(moved, 90, || Some(100)));
+        transition.pool_recreated(PixelExtent::new(8, 8));
+        transition.pool_recreated(PixelExtent::new(16, 16));
+        assert!(!transition.accepts_frame_geometry(resized, 99, || {
+            panic!("only size changed after the movement observation")
+        }));
+        assert!(transition.accepts_frame_geometry(resized, 100, || {
+            panic!("recreation must preserve the original capture-time boundary")
+        }));
+        assert_eq!(transition.continuity(), Continuity::Discontinuous);
+    }
+
+    #[test]
+    fn geometry_transition_clock_fallback_does_not_lower_an_active_fence() {
+        let unit = Scale::new(1.0, 1.0).expect("scale");
+        let first = TargetPlacement::new((20.0, 10.0), (4.0, 4.0), unit).expect("first");
+        let second = TargetPlacement::new((40.0, 10.0), (4.0, 4.0), unit).expect("second");
+        let mut transition = published_transition();
+        assert!(!transition.accepts_frame_geometry(first, 90, || Some(100)));
+        assert!(!transition.accepts_frame_geometry(second, 95, || None));
+        assert!(!transition.accepts_frame_geometry(second, 99, || {
+            panic!("the clock fallback must retain the stronger pending fence")
+        }));
+        assert!(transition.accepts_frame_geometry(second, 100, || {
+            panic!("the first fresh candidate must be accepted without another observation")
+        }));
+        assert_eq!(transition.continuity(), Continuity::GeometryChanged);
     }
 
     #[test]
