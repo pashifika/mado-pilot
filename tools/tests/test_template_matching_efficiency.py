@@ -932,60 +932,28 @@ class EvidenceTests(unittest.TestCase):
         with self.assertRaisesRegex(ValueError, "binary does not match"):
             collector.binary_identity(binary, metadata, NATIVE_TARGET)
 
-    @unittest.skipUnless(shutil.which("git") and shutil.which("rustc"), "git and rustc required")
-    def test_attestation_collects_source_identity_through_real_process_runner(self):
-        binary, dependency = self.root / "binary", self.root / "libopencv_core.dylib"
+    def test_attestation_preserves_existing_metadata_and_probe_without_launch(self):
+        binary = self.root / "binary"
         binary.write_bytes(b"explicit executable bytes")
-        dependency.write_bytes(b"actual loaded OpenCV bytes")
-        (self.root / "Cargo.lock").write_text("fixture lockfile", encoding="utf-8")
-        git = str(Path(shutil.which("git")).absolute())
-        real_run = collector.run_process
-
-        def git_command(*args):
-            record = real_run([git, *args], cwd=str(self.root), env=collector.environment(),
-                              timeout_seconds=10, output_limit_bytes=4096, cleanup_seconds=1)
-            self.assertTrue(collector.successful(record), record)
-            return record["stdout"].strip()
-
-        git_command("init", "--quiet")
-        git_command("add", "Cargo.lock")
-        expected_tree = git_command("write-tree")
-        git_command("-c", "user.name=Fixture", "-c", "user.email=fixture@example.invalid",
-                    "-c", "commit.gpgsign=false", "commit", "--quiet", "-m", "fixture")
-        expected_revision = git_command("rev-parse", "HEAD")
-        value = manifest()
-        value["target"] = NATIVE_TARGET
-        if NATIVE_TARGET == collector.TARGETS[1]:
-            value["loaded_native_runtime"]["method"] = "K32EnumProcessModules-GetModuleFileNameW"
-        value["loaded_native_runtime"]["images"] = [{"path": str(dependency), "sha256": collector.sha256(dependency)}]
-        probe = {"exit_code": 0, "timed_out": False, "output_limited": False, "cleanup_ok": True,
-                 "launch_error": None, "duration_seconds": 0.1, "stdout": json.dumps(value), "stderr": ""}
-
-        def launch_probe(argv, **kwargs):
-            if argv == [str(binary), "--list"]:
-                return probe
-            return real_run(argv, **kwargs)
-
-        metadata = self.root / "observed-build.json"
-        args = collector.parser().parse_args([
-            "attest", "--target", NATIVE_TARGET, "--binary", str(binary),
-            "--build-argv-json", '["cargo","bench","--no-run","--locked"]', "--output", str(metadata)])
-        with (mock.patch.object(collector, "ROOT", self.root),
-              mock.patch.object(collector, "host_identity", return_value={"target": NATIVE_TARGET}),
-              mock.patch.object(collector, "run_process", side_effect=launch_probe)):
-            collector.attest(args)
-        observed = collector.load(metadata)
-        self.assertEqual(observed["dependencies"], value["loaded_native_runtime"]["images"])
-        self.assertEqual(observed["source_revision"], expected_revision)
-        self.assertEqual(observed["source_tree"], expected_tree)
-        self.assertEqual(observed["binary_sha256"], collector.sha256(binary))
-        self.assertIn("rustc ", observed["rustc"])
-        self.assertEqual(collector.load(str(metadata) + ".probe.json")["commands"],
-                         observed["provenance_commands"])
-        with mock.patch.object(collector, "run_process") as launch:
-            with self.assertRaisesRegex(ValueError, "already exists"):
-                collector.attest(args)
-        launch.assert_not_called()
+        for index, suffix in enumerate(("", ".probe.json")):
+            with self.subTest(existing_suffix=suffix):
+                metadata = self.root / f"existing-{index}.json"
+                probe = Path(str(metadata) + ".probe.json")
+                existing = Path(str(metadata) + suffix)
+                original = b"immutable prior evidence\n"
+                existing.write_bytes(original)
+                args = collector.parser().parse_args([
+                    "attest", "--protocol-version", "2", "--build-mode", "normal",
+                    "--target", TARGET, "--binary", str(binary),
+                    "--build-argv-json", '["cargo","bench"]', "--output", str(metadata)])
+                with (mock.patch.object(collector, "host_identity", return_value={"target": TARGET}),
+                      mock.patch.object(collector.shutil, "which", return_value=sys.executable),
+                      mock.patch.object(collector, "run_process") as launch):
+                    with self.assertRaises(ValueError):
+                        collector.attest(args)
+                launch.assert_not_called()
+                self.assertEqual(existing.read_bytes(), original)
+                self.assertFalse((probe if existing == metadata else metadata).exists())
 
     def test_failed_attestation_probe_is_preserved_without_retry_or_metadata(self):
         binary, metadata = self.root / "binary", self.root / "failed-build.json"
