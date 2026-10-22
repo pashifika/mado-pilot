@@ -10,12 +10,16 @@ publish = false
 
 [features]
 benchmark-instrumentation = ["mado-pilot-capture/benchmark-instrumentation"]
+benchmark-selection = ["dep:cc"]
 
 [dependencies]
 mado-pilot-core = { path = "../../automation/core" }
 mado-pilot-capture = { path = "../../automation/capture" }
 mado-pilot-vision = { path = "../../automation/vision" }
 opencv = { workspace = true }
+
+[build-dependencies]
+cc = { workspace = true, optional = true }
 
 [dev-dependencies]
 mado-pilot-testkit = { path = "../../support/testkit" }

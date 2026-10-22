@@ -14,6 +14,7 @@ qualification row passed.  Record keys, always present:
 - ``stdout`` / ``stderr``: retained bytes decoded as UTF-8 with replacement.
 - ``duration_seconds``: wall time from the launch attempt to this record.
 - ``launch_error``: why the child never executed, else ``None``.
+- ``process_id``: the owned root PID, or ``None`` when launch failed.
 
 The child leads a new POSIX session/process group, or is the first member of a
 Windows job that denies breakaway and kills on close; only that group or job is
@@ -42,6 +43,7 @@ RECORD_KEYS = (
     "stderr",
     "duration_seconds",
     "launch_error",
+    "process_id",
 )
 
 _CHUNK_BYTES = 65536
@@ -69,6 +71,7 @@ def run_process(
             proc = tree.launch(argv, os.fspath(cwd), env)
         except OSError as exc:
             return _record(
+                process_id=None,
                 exit_code=None,
                 timed_out=False,
                 output_limited=False,
@@ -112,6 +115,7 @@ def run_process(
         if not completed and status is not None and tree.is_kill_status(status):
             exit_code = None
         return _record(
+            process_id=proc.pid,
             exit_code=exit_code,
             timed_out=timed_out,
             output_limited=capture.limited,
@@ -177,7 +181,7 @@ def _positive_finite(value) -> bool:
     )
 
 
-def _record(*, exit_code, timed_out, output_limited, cleanup_ok, capture, started, launch_error):
+def _record(*, process_id, exit_code, timed_out, output_limited, cleanup_ok, capture, started, launch_error):
     return {
         "exit_code": exit_code,
         "timed_out": timed_out,
@@ -187,6 +191,7 @@ def _record(*, exit_code, timed_out, output_limited, cleanup_ok, capture, starte
         "stderr": capture.text(1),
         "duration_seconds": time.monotonic() - started,
         "launch_error": launch_error,
+        "process_id": process_id,
     }
 
 

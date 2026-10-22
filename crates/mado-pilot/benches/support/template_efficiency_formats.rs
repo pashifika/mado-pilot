@@ -1,19 +1,31 @@
 //! Finite selected-layout, persistent-hit and genuine active-eviction observations.
+//!
+//! The declaration is mode-independent corpus identity; its counter-based
+//! observations exist only in the instrumented build.
 
+#[cfg(feature = "template-matching-benchmark")]
 use std::time::Duration;
 
+use mado_pilot::PixelFormat;
+#[cfg(feature = "template-matching-benchmark")]
 use mado_pilot::{
-    ClipPolicy, Frame, FrameDescriptor, MatchResult, OperationContext, PixelFormat,
-    PreparedTemplate, RegionSelection,
+    ClipPolicy, Frame, FrameDescriptor, MatchResult, OperationContext, PreparedTemplate,
+    RegionSelection,
 };
+#[cfg(feature = "template-matching-benchmark")]
 use mado_pilot_backend_opencv::benchmark_instrumentation as backend;
+#[cfg(feature = "template-matching-benchmark")]
 use mado_pilot_testkit::MatchRequest;
 use serde_json::{Value, json};
 
+#[cfg(feature = "template-matching-benchmark")]
 use super::fixtures::{self, Workload};
 
+#[cfg(feature = "template-matching-benchmark")]
 const WAIT: Duration = Duration::from_secs(5);
+#[cfg(feature = "template-matching-benchmark")]
 const FULL_BGR: u64 = 1920 * 1080 * 3;
+#[cfg(feature = "template-matching-benchmark")]
 const ROI_BGR: u64 = 320 * 180 * 3;
 
 #[derive(Clone, Copy)]
@@ -136,12 +148,14 @@ pub(super) fn manifest() -> Value {
     })
 }
 
+#[cfg(feature = "template-matching-benchmark")]
 fn operation() -> OperationContext {
     OperationContext::new()
         .with_timeout(WAIT)
         .expect("finite format operation")
 }
 
+#[cfg(feature = "template-matching-benchmark")]
 fn require(condition: bool, message: &str) -> Result<(), String> {
     if condition {
         Ok(())
@@ -150,6 +164,7 @@ fn require(condition: bool, message: &str) -> Result<(), String> {
     }
 }
 
+#[cfg(feature = "template-matching-benchmark")]
 fn frame(row: Workload, case: Case, variant: u32) -> Result<Frame, String> {
     let pixels = fixtures::scene(row.extent(), variant, case.source);
     if case.padding == 0 {
@@ -168,6 +183,7 @@ fn frame(row: Workload, case: Case, variant: u32) -> Result<Frame, String> {
     super::replay_frame_with_descriptor(descriptor, padded)
 }
 
+#[cfg(feature = "template-matching-benchmark")]
 fn request<'a>(
     frame: &'a Frame,
     template: &'a PreparedTemplate,
@@ -182,6 +198,7 @@ fn request<'a>(
     ))
 }
 
+#[cfg(feature = "template-matching-benchmark")]
 fn work(before: backend::WorkSnapshot) -> Value {
     let after = backend::work_snapshot();
     json!({
@@ -192,6 +209,7 @@ fn work(before: backend::WorkSnapshot) -> Value {
     })
 }
 
+#[cfg(feature = "template-matching-benchmark")]
 fn checkpoint(name: &str, mapping_live: bool, source_alive: bool, result_live: bool) -> Value {
     let state = backend::work_snapshot();
     json!({"checkpoint": name, "mapping_owner_live": mapping_live,
@@ -201,6 +219,7 @@ fn checkpoint(name: &str, mapping_live: bool, source_alive: bool, result_live: b
         "active_backend_finds": backend::snapshot().active_finds})
 }
 
+#[cfg(feature = "template-matching-benchmark")]
 fn checked_result(
     result: &MatchResult,
     frame: &Frame,
@@ -214,6 +233,7 @@ fn checked_result(
     )
 }
 
+#[cfg(feature = "template-matching-benchmark")]
 fn persistent(row: Workload, template: &PreparedTemplate) -> Result<Value, String> {
     let matcher = super::matcher()?;
     let frame = frame(row, CASES[4], 0)?;
@@ -288,6 +308,7 @@ fn persistent(row: Workload, template: &PreparedTemplate) -> Result<Value, Strin
     Ok(json!({"id": "persistent-hit", "checkpoints": checkpoints, "work": work(before)}))
 }
 
+#[cfg(feature = "template-matching-benchmark")]
 fn active(mut row: Workload, template: &PreparedTemplate) -> Result<Value, String> {
     row.roi = false;
     let matcher = super::matcher()?;
@@ -391,6 +412,7 @@ fn active(mut row: Workload, template: &PreparedTemplate) -> Result<Value, Strin
     Ok(json!({"id": "active-evicted", "checkpoints": checkpoints, "work": work(before)}))
 }
 
+#[cfg(feature = "template-matching-benchmark")]
 fn transitions(
     row: Workload,
     first: &PreparedTemplate,
@@ -463,6 +485,7 @@ fn transitions(
     Ok(json!(observations))
 }
 
+#[cfg(feature = "template-matching-benchmark")]
 pub(super) fn run(mut row: Workload) -> Result<Value, String> {
     let compiler = super::matcher()?;
     let sources = fixtures::templates();

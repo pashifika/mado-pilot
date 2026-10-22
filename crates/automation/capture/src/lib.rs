@@ -50,6 +50,10 @@
 //! removing one is a breaking change needing an ADR and a version bump, while
 //! adding is free. The stability promise itself begins at 1.0.
 
+/// Effective physical-copy instrumentation, including unified Cargo features.
+#[doc(hidden)]
+pub const BENCHMARK_INSTRUMENTATION_ENABLED: bool = cfg!(feature = "benchmark-instrumentation");
+
 /// Opt-in observations of physical CPU mapping copies.
 #[cfg(feature = "benchmark-instrumentation")]
 #[doc(hidden)]

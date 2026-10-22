@@ -2806,6 +2806,14 @@ selected v0.5.0 release candidate, without changing failed or missing historical
 results. Both-target performance claims require their own applicable evidence;
 planning or integration completion does not provide it.
 
+[ADR 0094](adr/0094-normal-and-instrumented-component-measurement.md) separates
+normal system-allocator component timing from instrumented work/ownership
+evidence. Its optional OpenCV benchmark feature compiles a small C++ scalar
+boundary for runtime backend/thread observation; production defaults and public
+Rust/C integration contracts are unchanged. Native provenance, observer
+eligibility, calibration/control and numerical profile acceptance are separate
+gates. Campaign recorder/child restrictions do not constrain SDK consumers.
+
 Public scores are compared against a tolerance rather than exactly, on one host as
 well as across the two. OpenCV normalizes through integral images and correlates a
 whole region at once, so a score carries rounding from arithmetic involving pixels

@@ -166,6 +166,16 @@ class ProcessRunnerTests(unittest.TestCase):
         self.assertTrue(record["cleanup_ok"])
         self.assertIsNone(record["launch_error"])
 
+    def test_process_identity_matches_the_launched_child(self):
+        record = process_runner.run_process(
+            [sys.executable, "-I", "-S", "-c", "import os; print(os.getpid())"],
+            cwd=self.root, env=child_env(), timeout_seconds=5.0, output_limit_bytes=1024,
+        )
+        self.assert_clean(record)
+        self.assertEqual(record["exit_code"], 0)
+        self.assertEqual(record["process_id"], int(record["stdout"]))
+        self.assertNotEqual(record["process_id"], os.getpid())
+
     def test_exact_output_at_the_limit_with_zero_exit(self):
         total = len(STDOUT_ASCII) + len(STDERR_ASCII)
         record = self.run_child("exact", STDOUT_ASCII.hex(), STDERR_ASCII.hex(), "0", limit=total)
@@ -231,6 +241,7 @@ class ProcessRunnerTests(unittest.TestCase):
         self.assertGreaterEqual(record["duration_seconds"], 3.0)
         self.assertLess(record["duration_seconds"], 10.0)
         self.assertTrue(process_gone(self.pid_from(pid_file)))
+        self.assertEqual(record["process_id"], self.pid_from(pid_file))
 
     def test_zero_exit_cannot_hide_a_descendant_holding_the_pipe(self):
         pid_file = self.root / "hold.pid"
@@ -337,6 +348,7 @@ class ProcessRunnerTests(unittest.TestCase):
         self.assert_record(record)
         self.assertTrue(record["launch_error"])
         self.assertIsNone(record["exit_code"])
+        self.assertIsNone(record["process_id"])
         self.assertFalse(record["timed_out"])
         self.assertFalse(record["output_limited"])
         self.assertTrue(record["cleanup_ok"])
@@ -353,6 +365,7 @@ class ProcessRunnerTests(unittest.TestCase):
         )
         self.assertTrue(record["launch_error"])
         self.assertIsNone(record["exit_code"])
+        self.assertIsNone(record["process_id"])
         self.assertTrue(record["cleanup_ok"])
         self.assertEqual(record["stdout"], "")
 

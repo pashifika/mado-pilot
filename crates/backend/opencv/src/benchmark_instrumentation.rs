@@ -5,9 +5,7 @@ use std::sync::{Arc, Condvar, Mutex, Weak};
 use std::time::{Duration, Instant};
 
 use mado_pilot_core::{Interruption, OperationContext};
-use mado_pilot_vision::{MatchBackend, Suppression};
-
-use crate::candidates::{Peak, PeakSearch, peaks};
+use mado_pilot_vision::MatchBackend;
 
 static FIND_CALLS: AtomicU64 = AtomicU64::new(0);
 static FIND_COMPLETIONS: AtomicU64 = AtomicU64::new(0);
@@ -288,61 +286,6 @@ pub fn forced_bgra_matcher() -> mado_pilot_core::Result<mado_pilot_vision::Match
     Ok(mado_pilot_vision::Matcher::new(Arc::new(BgraControl(
         crate::OpenCvBackend::new()?,
     ))))
-}
-
-/// Selection-only benchmark input; the supplied score slice is disposable.
-#[derive(Debug, Clone, Copy)]
-pub struct SelectionRequest {
-    /// Score-map columns.
-    pub width: usize,
-    /// Score-map rows.
-    pub height: usize,
-    /// Template columns.
-    pub template_width: usize,
-    /// Template rows.
-    pub template_height: usize,
-    /// Inclusive public-score threshold.
-    pub min_score: f64,
-    /// Maximum returned candidates.
-    pub candidate_budget: usize,
-    /// Requested overlap policy.
-    pub suppression: Suppression,
-}
-
-/// Selected positions and public scores, without an extra result-vector copy.
-#[derive(Debug)]
-pub struct SelectedScores(Vec<Peak>);
-
-impl SelectedScores {
-    /// Iterates in canonical result order.
-    pub fn iter(&self) -> impl ExactSizeIterator<Item = (usize, usize, f64)> + '_ {
-        self.0.iter().map(|peak| (peak.left, peak.top, peak.score))
-    }
-}
-
-/// Runs the production selector independently of OpenCV score generation.
-///
-/// # Errors
-/// Returns the caller's cancellation or deadline interruption.
-pub fn select_scores(
-    scores: &mut [f32],
-    request: SelectionRequest,
-    operation: &OperationContext,
-) -> Result<SelectedScores, Interruption> {
-    peaks(
-        scores,
-        PeakSearch {
-            width: request.width,
-            height: request.height,
-            template_width: request.template_width,
-            template_height: request.template_height,
-            min_score: request.min_score,
-            candidate_budget: request.candidate_budget,
-            suppression: request.suppression,
-        },
-        operation,
-    )
-    .map(SelectedScores)
 }
 
 /// Exclusive process-wide controlled delay for one native qualification row.

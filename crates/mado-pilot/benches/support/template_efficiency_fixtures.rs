@@ -6,7 +6,7 @@ use mado_pilot::{
     ContentDigest, CoordinateSpace, MatchDefaults, PixelExtent, PixelFormat, Suppression,
     TemplateEncoding, TemplateId, TemplateSource, TemplateSourceRequest,
 };
-use mado_pilot_backend_opencv::benchmark_instrumentation::SelectionRequest;
+use mado_pilot_backend_opencv::benchmark_selection::SelectionRequest;
 use mado_pilot_testkit::{match_fixtures, png};
 use serde_json::{Value, json};
 
