@@ -3,6 +3,7 @@
 import contextlib
 import copy
 import importlib.util
+import hashlib
 import json
 import os
 from pathlib import Path, PurePosixPath
@@ -3153,6 +3154,636 @@ class ProtocolThreeGradingTests(unittest.TestCase):
             collector.collect(args, "calibration")
         launch.assert_not_called()
         self.assertFalse(Path(args.output).exists())
+
+
+UNCACHED_ROLE = "uncached-bgra-repeated-scan-v1"
+
+
+def uncached_format_contract():
+    cases = []
+    for name, source, padding, roi, forced in (
+        ("rgba-full", "rgba8", 0, False, False), ("bgra-full", "bgra8", 0, False, False),
+        ("rgba-padded-full", "rgba8", 16, False, False), ("bgra-padded-full", "bgra8", 16, False, False),
+        ("rgba-roi", "rgba8", 0, True, False), ("bgra-roi", "bgra8", 0, True, False),
+        ("rgba-padded-roi", "rgba8", 16, True, False), ("bgra-padded-roi", "bgra8", 16, True, False),
+        ("rgba-forced-bgra-full", "rgba8", 0, False, True),
+        ("rgba-forced-bgra-roi", "rgba8", 0, True, True),
+    ):
+        pixels = 57_600 if roi else 2_073_600
+        copied = source == "rgba8" or roi
+        cases.append({"id": name, "source_format": source, "selected_format": "bgra8",
+                      "row_padding_bytes": padding, "nonzero_roi": roi, "forced_bgra_public_mapping": forced,
+                      "expected_matches": 1, "expected_bounds": [80, 64, 92, 74],
+                      "expected_mapping_copies": int(copied),
+                      "expected_mapping_copied_bytes": pixels * 4 if copied else 0,
+                      "expected_bgr_conversions": 1, "expected_bgr_converted_bytes": pixels * 3})
+    return {
+        "cases": cases,
+        "transition_cases": [
+            {"id": "same-source-roi", "selected_format": "bgra8", "region": [64, 48, 384, 228],
+             "expected_bounds": [80, 64, 92, 74], "mapping_copies": 1, "mapping_copied_bytes": 230400,
+             "bgr_conversions": 1, "bgr_converted_bytes": 172800},
+            {"id": "same-source-alternate-roi", "selected_format": "bgra8", "region": [72, 56, 376, 220],
+             "expected_bounds": [152, 64, 164, 74], "mapping_copies": 1, "mapping_copied_bytes": 199424,
+             "bgr_conversions": 1, "bgr_converted_bytes": 149568},
+            {"id": "distinct-bgra-full", "selected_format": "bgra8", "region": [0, 0, 1920, 1080],
+             "expected_bounds": [80, 64, 92, 74], "mapping_copies": 0, "mapping_copied_bytes": 0,
+             "bgr_conversions": 1, "bgr_converted_bytes": 6220800},
+        ],
+        "lifetime_order": ["persistent-uncached", "active-uncached"],
+        "persistent_checkpoint_order": ["mapping-live", "cold-result", "repeated-search", "mapping-released",
+                                        "frame-released", "result-released", "final-backend-released"],
+        "active_checkpoint_order": ["prepared-reader-paused", "active-reader-after-pressure", "final-reader-completed",
+                                    "frames-released", "results-released", "final-backend-released"],
+        "expected_per_iteration": {"backend_find_calls": 18, "bgr_conversions": 18,
+                                   "bgr_converted_bytes": 57_519_168,
+                                   "mapping_copies": 15, "mapping_copied_bytes": 51_809_024},
+        "operation_timeout_seconds": 5, "prepared_reader_pause_timeout_seconds": 5,
+        "resource_scope": "logical mapping owners and cache-retained/evicted BGR gauges; uncached native BGR scratch is not a cache gauge or total native allocation/RSS observation",
+        "active_owner_order": "final production reader completes before final backend release",
+    }
+
+
+def uncached_manifest(build_mode="instrumented"):
+    value = v3_manifest(build_mode)
+    value["apparatus"]["accounting_contract"] = UNCACHED_ROLE
+    for row in value["workloads"]:
+        if row["id"] == "contract-roi-format-transition":
+            row["format_contract"] = uncached_format_contract()
+    return value
+
+
+def uncached_payload(workload, build_mode="instrumented"):
+    value = v3_payload(workload, build_mode, smoke=True)
+    declaration = uncached_manifest(build_mode)
+    value["apparatus"] = declaration["apparatus"]
+    row = value["workloads"][0]
+    if build_mode == "normal":
+        return value
+    metrics = row["metrics"]
+    metrics["native_allocation_scope"] = "cache-payload gauges and process RSS, not total native allocation tracking"
+    for name in ("bgr_retained_bytes", "bgr_retained_peak_bytes", "bgr_retained_after_drop_bytes",
+                 "bgr_evicted_bytes", "bgr_evicted_peak_bytes", "bgr_evicted_after_drop_bytes"):
+        metrics[name] = 0
+    if workload in collector.SESSION_DEFINITIONS:
+        case = row["session_contract"]["case"]
+        calls, scans = {
+            "retained-hit": (1, 2), "retained-miss": (1, 1), "patch64": (1, 2),
+            "group": (8, 16), "distinct-group": (8, 16), "owner-group": (8, 16),
+            "turnover": (4, 6), "query-match": (3, 5), "query-deadline": (1, 1),
+            "lifecycle-session": (1, 2), "lifecycle-independent": (4, 8),
+        }[case]
+        left, top, right, bottom = row["effective_regions"][0]
+        pixels = (right - left) * (bottom - top)
+        copied = "-roi" in workload or row["session_contract"]["source_format"] == "rgba8"
+        copies = calls * int(copied) + int(case in ("owner-group", "lifecycle-session"))
+        for unit in row["unit_observations"]:
+            unit["work"] = {"accounting_contract": UNCACHED_ROLE,
+                            "backend_find_calls": calls, "backend_find_completions": calls,
+                            "backend_find_failures": 0, "bgr_conversions": calls,
+                            "bgr_converted_bytes": calls * pixels * 3, "mapping_copies": copies,
+                            "mapping_copied_bytes": copies * pixels * 4, "correct": True}
+            if case == "lifecycle-independent":
+                unit["lifecycle"].update(a_clone_reused=False, b_independent=True, b_reused=False)
+            for point in unit["checkpoints"]:
+                point.update(bgr_retained_bytes=0, bgr_evicted_bytes=0)
+        for name in ("backend_find_calls", "backend_find_failures", "bgr_conversions", "bgr_converted_bytes",
+                     "mapping_copies", "mapping_copied_bytes"):
+            metrics[name] = sum(unit["work"][name] for unit in row["unit_observations"])
+        patch_width, patch_height = row["session_contract"]["patch_extent"]
+        offsets = (right - left - patch_width + 1) * (bottom - top - patch_height + 1)
+        metrics.update(score_copied_bytes=4 * offsets * calls * 4,
+                       score_offsets_scanned=4 * offsets * scans,
+                       logical_mapped_bytes=4 * calls * pixels * 4)
+    elif workload == "contract-roi-format-transition":
+        contract = uncached_format_contract()
+        row["format_contract"] = contract
+        for observed in row["format_observations"]:
+            for case, expected in zip(observed["cases"], contract["cases"]):
+                copied = expected["expected_mapping_copies"] != 0
+                case.update(selected_format="bgra8", mapping_shared=not copied,
+                            mapped_stride=1280 if expected["nonzero_roi"] else
+                            7680 if copied else case["source_stride"])
+                case["work"].update(mapping_copies=expected["expected_mapping_copies"],
+                                    mapping_copied_bytes=expected["expected_mapping_copied_bytes"])
+            for transition in observed["transitions"]:
+                transition["selected_format"] = "bgra8"
+            for lifetime, name, order in zip(
+                observed["lifetimes"], contract["lifetime_order"],
+                (contract["persistent_checkpoint_order"], contract["active_checkpoint_order"]),
+            ):
+                lifetime["id"] = name
+                lifetime["work"] = (
+                    {"mapping_copies": 2, "mapping_copied_bytes": 460800,
+                     "bgr_conversions": 2, "bgr_converted_bytes": 345600}
+                    if name == "persistent-uncached" else
+                    {"mapping_copies": 3, "mapping_copied_bytes": 24883200,
+                     "bgr_conversions": 3, "bgr_converted_bytes": 18662400})
+                for point, stage in zip(lifetime["checkpoints"], order):
+                    point.update(checkpoint=stage, cache_held_bgr_bytes=0, active_evicted_bgr_bytes=0)
+            observed["work"] = {key: item for key, item in contract["expected_per_iteration"].items()
+                                if key != "backend_find_calls"}
+        metrics.update({key: item * 4 for key, item in contract["expected_per_iteration"].items()})
+        metrics.update(score_copied_bytes=301_903_648, score_offsets_scanned=75_475_912,
+                       logical_mapped_bytes=306_838_016)
+    elif workload.startswith("selection-"):
+        offsets, scans = {
+            "selection-k1-large": (8_294_400, 1),
+            "selection-k16-dense1080p-keepall": (2_073_600, 16),
+            "selection-k16-dense1080p-dropoverlapping": (2_073_600, 16),
+            "selection-k256-small-dense-tied": (6_144, 256),
+            "selection-k256-large-sparse": (8_294_400, 4),
+        }[workload]
+        metrics.update(score_copied_bytes=offsets * 16, score_offsets_scanned=offsets * scans * 4,
+                       backend_find_calls=0, bgr_conversions=0, bgr_converted_bytes=0,
+                       mapping_copies=0, mapping_copied_bytes=0, logical_mapped_bytes=0)
+    elif workload in ("watch-analysis-always", "watch-exact-rgba"):
+        metrics.update(backend_find_calls=16, bgr_conversions=16, bgr_converted_bytes=36_864,
+                       mapping_copies=16, mapping_copied_bytes=49_152,
+                       score_copied_bytes=20_160, score_offsets_scanned=5_040,
+                       logical_mapped_bytes=49_152)
+    else:
+        calls, copies, width, height = {
+            "single-small96x64": (4, 4, 96, 64), "single-1080p": (4, 4, 1920, 1080),
+            "single-4k": (4, 4, 3840, 2160), "batch8-cold-full1080p": (32, 32, 1920, 1080),
+            "batch8-cold-roi320x180": (32, 32, 320, 180),
+            "batch8-live-owner-roi320x180": (32, 36, 320, 180),
+            "batch8-warm-full1080p": (40, 40, 1920, 1080),
+            "concurrent2-cold-full1080p": (8, 8, 1920, 1080),
+            "contract-different-frame": (8, 8, 1920, 1080), "contract-equal-stamp": (8, 8, 1920, 1080),
+            "contract-expired-mapping": (8, 12, 320, 180), "contract-eviction": (16, 16, 1920, 1080),
+            "contract-oversized-bgr": (4, 4, 4096, 2732),
+        }[workload]
+        metrics.update(backend_find_calls=calls, bgr_conversions=calls,
+                       bgr_converted_bytes=calls * width * height * 3,
+                       mapping_copies=copies, mapping_copied_bytes=copies * width * height * 4,
+                       score_copied_bytes=calls * (width - 11) * (height - 9) * 4,
+                       score_offsets_scanned=calls * (width - 11) * (height - 9),
+                       logical_mapped_bytes=calls * width * height * 4)
+    return value
+
+
+class BaselineRoleAdmissionTests(unittest.TestCase):
+    def parse(self, value, workload, mode="instrumented"):
+        frozen = collector.manifest_identity(uncached_manifest(mode), TARGET, "4.12.0", 3, mode)
+        return collector.observations(value, frozen, workload, True)
+
+    def test_both_roles_share_only_validated_logical_semantics(self):
+        for mode in ("normal", "instrumented"):
+            baseline = collector.manifest_identity(uncached_manifest(mode), TARGET, "4.12.0", 3, mode)
+            candidate = collector.manifest_identity(v3_manifest(mode), TARGET, "4.12.0", 3, mode)
+            self.assertNotEqual(baseline, candidate)
+            self.assertEqual(collector.common_manifest(baseline), collector.common_manifest(candidate))
+            for workload, _, _, _ in V3_ROWS:
+                with self.subTest(mode=mode, workload=workload):
+                    self.assertEqual(self.parse(uncached_payload(workload, mode), workload, mode)["unavailable"], [])
+        for workload in collector.DEFINITIONS:
+            with self.subTest(workload=workload):
+                self.parse(uncached_payload(workload), workload)
+
+    def test_declared_expectations_cannot_override_physical_role(self):
+        for change in ("wrong-role", "case-copy", "selected-format", "total", "active-stage", "lifetime-kind"):
+            declaration = uncached_manifest()
+            if change == "wrong-role":
+                declaration["apparatus"]["accounting_contract"] = "prepared-cache-row-winner-v1"
+            else:
+                direct = next(row for row in declaration["workloads"] if row["id"] == "contract-roi-format-transition")["format_contract"]
+                if change == "case-copy":
+                    direct["cases"][0]["expected_mapping_copies"] = 0
+                elif change == "selected-format":
+                    direct["cases"][0]["selected_format"] = "rgba8"
+                elif change == "total":
+                    direct["expected_per_iteration"]["bgr_conversions"] = 17
+                elif change == "active-stage":
+                    direct["active_checkpoint_order"][1] = "active-image-evicted"
+                else:
+                    direct["lifetime_order"][1] = "active-evicted"
+            with self.subTest(change=change), self.assertRaises(ValueError):
+                collector.manifest_identity(declaration, TARGET, "4.12.0", 3, "instrumented")
+
+    def test_role_confusion_cache_hits_copies_and_selector_work_fail_closed(self):
+        workload = "session-retained-rgba-full-hit"
+        for change in ("role", "hit-conversion", "mapping", "gauge", "score-copy", "scan"):
+            value = uncached_payload(workload)
+            row = value["workloads"][0]
+            if change == "role":
+                value["apparatus"]["accounting_contract"] = "prepared-cache-row-winner-v1"
+            elif change == "hit-conversion":
+                row["unit_observations"][1]["work"]["bgr_conversions"] = 0
+            elif change == "mapping":
+                row["unit_observations"][0]["work"]["mapping_copies"] = 0
+            elif change == "gauge":
+                row["metrics"]["bgr_retained_peak_bytes"] = 1
+            elif change == "score-copy":
+                row["metrics"]["score_copied_bytes"] = 0
+            else:
+                row["metrics"]["score_offsets_scanned"] -= 1
+            with self.subTest(change=change), self.assertRaises(ValueError):
+                self.parse(value, workload)
+        workload = "selection-k256-large-sparse"
+        value = uncached_payload(workload)
+        value["workloads"][0]["metrics"]["score_offsets_scanned"] = 3 * 8_294_400 * 4
+        with self.assertRaises(ValueError):
+            self.parse(value, workload)
+
+    def test_uncached_component_cold_warm_owner_and_format_accounting_cannot_be_relabeled(self):
+        for workload, field in (
+            ("batch8-cold-full1080p", "bgr_conversions"),
+            ("batch8-warm-full1080p", "backend_find_calls"),
+            ("batch8-live-owner-roi320x180", "mapping_copies"),
+            ("contract-expired-mapping", "mapping_copied_bytes"),
+            ("watch-exact-rgba", "mapping_copies"),
+            ("contract-roi-format-transition", "score_copied_bytes"),
+        ):
+            value = uncached_payload(workload)
+            value["workloads"][0]["metrics"][field] -= 1
+            with self.subTest(workload=workload, field=field), self.assertRaises(ValueError):
+                self.parse(value, workload)
+
+    def test_uncached_mapped_views_include_repeated_searches_and_shared_padding(self):
+        for workload in (
+            "single-1080p", "batch8-warm-full1080p", "batch8-live-owner-roi320x180",
+            "session-retained-rgba-full-hit", "selection-k256-large-sparse",
+            "watch-exact-rgba", "contract-roi-format-transition",
+        ):
+            value = uncached_payload(workload)
+            metrics = value["workloads"][0]["metrics"]
+            expected = metrics["logical_mapped_bytes"]
+            for invalid in {0, expected + 1} - {expected}:
+                metrics["logical_mapped_bytes"] = invalid
+                with self.subTest(workload=workload, invalid=invalid), self.assertRaises(ValueError):
+                    self.parse(value, workload)
+        padded = uncached_payload("contract-roi-format-transition")
+        padded["workloads"][0]["metrics"]["logical_mapped_bytes"] -= 4 * 1080 * 16
+        with self.assertRaises(ValueError):
+            self.parse(padded, "contract-roi-format-transition")
+
+    def test_retained_smoke_admits_baseline_and_preserves_failed_role_raw_bytes(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            for broken in (False, True):
+                root = Path(temporary) / ("failed" if broken else "accepted")
+                root.mkdir()
+                (root / "started").mkdir()
+                (root / "attempts").mkdir()
+                workload, mode = "session-retained-rgba-full-hit", "instrumented"
+                declaration = uncached_manifest(mode)
+                specification = v3_plan(root.parent, "smoke", mode)
+                binary = specification["binaries"]["baseline"]
+                binary["build"].update(
+                    apparatus=copy.deepcopy(declaration["apparatus"]),
+                    benchmark_manifest=collector.manifest_identity(declaration, TARGET, "4.12.0", 3, mode))
+                binary["build"]["provenance_commands"][0]["record"] = process_record(declaration)
+                specification.update(workloads=[workload], schedule=collector.schedule("smoke", [workload], 3))
+                specification["execution_limits"] = collector.execution_limits("smoke", 2)
+                collector.save(root / "plan.json", specification)
+                raw = {}
+                for index, task in enumerate(specification["schedule"]):
+                    attempt = {"task": task, "argv": collector.command(binary, task, "smoke", 3),
+                               "plan_sha256": collector.sha256(root / "plan.json"), "started_unix_ns": index + 1,
+                               "campaign_elapsed_before": index, "output_limit_bytes": 8 * 1024 * 1024,
+                               "cleanup_seconds": 5, "runtime_binding_seconds": 0}
+                    filename = root / "attempts" / f"{task['id']}.json"
+                    collector.save(root / "started" / filename.name, attempt)
+                    value = copy.deepcopy(declaration) if index == 0 else uncached_payload(workload)
+                    if broken and index == 1:
+                        value["apparatus"]["accounting_contract"] = "prepared-cache-row-winner-v1"
+                    attempt.update(identity_before=binary, identity_after=binary, identity_error=None,
+                                   campaign_elapsed_after=index + 0.1, record=process_record(value), timeout_seconds=90)
+                    collector.save(filename, attempt)
+                    raw[filename] = filename.read_bytes()
+                evidence = collector.report(root)
+                self.assertEqual(bool(evidence["issues"]), broken)
+                for filename, content in raw.items():
+                    self.assertEqual(filename.read_bytes(), content)
+                if not broken:
+                    self.assertIn(workload, evidence["process_observations"]["baseline"])
+
+    def test_lifecycle_and_direct_active_work_remain_real_and_role_specific(self):
+        for workload, change in (
+            ("lifecycle-independent-rgba-4k", "reuse"),
+            ("lifecycle-session-rgba-roi", "cache"),
+            ("contract-roi-format-transition", "active"),
+            ("contract-roi-format-transition", "shared"),
+        ):
+            value = uncached_payload(workload)
+            row = value["workloads"][0]
+            if change == "reuse":
+                row["unit_observations"][0]["lifecycle"]["a_clone_reused"] = True
+            elif change == "cache":
+                row["unit_observations"][0]["checkpoints"][1]["bgr_retained_bytes"] = 172800
+            elif change == "active":
+                row["format_observations"][0]["lifetimes"][1]["checkpoints"][0]["active_backend_finds"] = 0
+            else:
+                row["format_observations"][0]["cases"][0]["mapping_shared"] = True
+            with self.subTest(workload=workload, change=change), self.assertRaises(ValueError):
+                self.parse(value, workload)
+
+    def test_common_comparison_never_erases_logical_changes(self):
+        baseline = collector.manifest_identity(uncached_manifest(), TARGET, "4.12.0", 3, "instrumented")
+        for field, value in (("min_score", 0.5), ("timing_boundary", "different public operation")):
+            changed = v3_manifest("instrumented")
+            changed["workloads"][0][field] = value
+            changed = collector.manifest_identity(changed, TARGET, "4.12.0", 3, "instrumented")
+            self.assertNotEqual(collector.common_manifest(baseline), collector.common_manifest(changed))
+        changed = copy.deepcopy(baseline)
+        direct = next(row for row in changed["workloads"] if row["id"] == "contract-roi-format-transition")
+        direct["format_contract"]["cases"][0]["expected_bounds"][0] = 81
+        with self.assertRaises(ValueError):
+            collector.common_manifest(changed)
+
+
+class ExportedSourceAttestationTests(unittest.TestCase):
+    def setUp(self):
+        temporary = tempfile.TemporaryDirectory()
+        self.addCleanup(temporary.cleanup)
+        self.root = Path(temporary.name).resolve()
+        self.source = self.root / "export"
+        self.source.mkdir()
+        self.binary = self.root / "binary"
+        self.native = self.root / "libopencv_core.fixture"
+        self.binary.write_bytes(b"real explicit binary fixture")
+        self.native.write_bytes(b"native library fixture")
+        self.revision, self.tree = "a" * 40, "c" * 40
+        self.declaration = uncached_manifest("normal")
+        self.declaration["target"] = NATIVE_TARGET
+        self.declaration["loaded_native_runtime"] = {
+            "method": "K32EnumProcessModules-GetModuleFileNameW" if os.name == "nt" else RUNTIME["method"],
+            "images": [{"path": str(self.native), "sha256": collector.sha256(self.native)}]}
+        self.contents = {"Cargo.lock": b"locked dependencies\n", "Cargo.toml": b"[workspace]\n",
+                         "crates/backend/src/physical.rs": b"uncached historical backend fixture\n",
+                         **{path: f"compiled source fixture {index}\n".encode()
+                            for index, path in enumerate(V3_APPARATUS_SOURCES)}}
+        entries = []
+        for path, content in self.contents.items():
+            target = self.source / path
+            target.parent.mkdir(parents=True, exist_ok=True)
+            target.write_bytes(content)
+            blob = hashlib.sha1(f"blob {len(content)}\0".encode() + content).hexdigest()
+            entries.append(f"100644 blob {blob}\t{path}\0")
+            if path in V3_APPARATUS_SOURCES:
+                self.declaration["apparatus"]["source_files"][path] = hashlib.sha256(content).hexdigest()
+        entries.append("120000 blob 681311eb9cf453d0faddf3aacaec7357e97ba8e9\tAGENTS.md\0")
+        self.listing = "".join(entries)
+        self.output = self.root / "metadata.json"
+        self.args = collector.parser().parse_args([
+            "attest", "--build-mode", "normal", "--target", NATIVE_TARGET, "--binary", str(self.binary),
+            "--build-argv-json", '["cargo","bench","--locked","--no-run"]', "--output", str(self.output),
+            "--source-root", str(self.source), "--source-revision", self.revision])
+
+    def run_attest(self, *, outputs=None, hook=None, record_hook=None):
+        outputs = outputs if outputs is not None else [
+            self.declaration, self.revision + "\n", self.tree + "\n", self.listing, "rustc fixture\n"]
+        count = 0
+
+        def process(argv, **kwargs):
+            nonlocal count
+            index = count
+            count += 1
+            if hook is not None:
+                hook(index, argv, kwargs)
+            record = process_record(outputs[index])
+            if record_hook is not None:
+                record_hook(index, record)
+            return record
+
+        with (mock.patch.object(collector, "ROOT", self.root),
+              mock.patch.object(collector, "host_identity", return_value={"target": NATIVE_TARGET}),
+              mock.patch.object(collector.shutil, "which", return_value=sys.executable),
+              mock.patch.object(collector, "run_process", side_effect=process) as launch):
+            result = collector.attest(self.args)
+        return result, launch
+
+    def assert_failed_receipt(self):
+        self.assertFalse(self.output.exists())
+        retained = collector.load(str(self.output) + ".probe.json")
+        self.assertIsNotNone(retained["error"])
+        self.assertEqual(retained["source_binding"]["variant"], "exported-git-tree-v1")
+        return retained
+
+    def test_exact_export_binds_actual_commit_tree_lock_and_compiled_sources(self):
+        result, launch = self.run_attest()
+        self.assertEqual(result["sha256"], collector.sha256(self.output))
+        build = collector.load(self.output)
+        self.assertEqual(launch.call_count, 5)
+        self.assertEqual(build["source_revision"], self.revision)
+        self.assertEqual(build["source_tree"], self.tree)
+        self.assertNotIn("source_status_porcelain", build)
+        binding = build["source_binding"]
+        self.assertEqual(binding["before"], binding["after"])
+        self.assertEqual(binding["before"]["file_mode_method"],
+                         "windows-regular-file-bytes" if os.name == "nt" else "posix-executable-bits")
+        self.assertEqual(set(binding["before"]["files"]), set(self.contents))
+        self.assertEqual(binding["before"]["omitted_context_links"], {
+            "AGENTS.md": {"mode": "120000", "git_object": "681311eb9cf453d0faddf3aacaec7357e97ba8e9"}})
+        self.assertEqual(build["cargo_lock_sha256"], hashlib.sha256(self.contents["Cargo.lock"]).hexdigest())
+        for probe, call in zip(build["provenance_commands"], launch.call_args_list):
+            self.assertEqual(probe["argv"], call.args[0])
+            self.assertEqual(probe["cwd"], str(call.kwargs["cwd"]))
+            self.assertLessEqual(call.kwargs["timeout_seconds"], 90)
+            self.assertEqual(call.kwargs["output_limit_bytes"], 8 * 1024 * 1024)
+        collector.validate_v2_build({"path": str(self.binary), "build": build}, NATIVE_TARGET, "normal", 3)
+        original, probe = self.output.read_bytes(), Path(str(self.output) + ".probe.json").read_bytes()
+        with mock.patch.object(collector, "run_process") as blocked, self.assertRaises(ValueError):
+            collector.attest(self.args)
+        blocked.assert_not_called()
+        self.assertEqual(self.output.read_bytes(), original)
+        self.assertEqual(Path(str(self.output) + ".probe.json").read_bytes(), probe)
+
+    def test_paired_options_fail_without_launch_and_keep_failure(self):
+        for field in ("source_root", "source_revision"):
+            with self.subTest(field=field):
+                self.args.output = str(self.root / f"unpaired-{field}.json")
+                saved = getattr(self.args, field)
+                setattr(self.args, field, None)
+                with mock.patch.object(collector, "run_process") as launch, self.assertRaises(ValueError):
+                    collector.attest(self.args)
+                launch.assert_not_called()
+                self.assertFalse(Path(self.args.output).exists())
+                self.assertEqual(collector.load(self.args.output + ".probe.json")["commands"], [])
+                setattr(self.args, field, saved)
+
+    def test_wrong_missing_changed_extra_sources_and_lock_fail_with_retention(self):
+        for change in ("wrong-root", "missing", "changed", "extra", "lock", "extra-directory"):
+            with self.subTest(change=change):
+                self.args.output = str(self.root / f"{change}.json")
+                victim = self.source / "crates/backend/src/physical.rs"
+                original = victim.read_bytes()
+                lock = self.source / "Cargo.lock"
+                if change == "wrong-root":
+                    self.args.source_root = str(self.root)
+                elif change == "missing":
+                    victim.unlink()
+                elif change == "changed":
+                    victim.write_bytes(b"changed backend")
+                elif change == "extra":
+                    (self.source / "extra.rs").write_bytes(b"extra source")
+                elif change == "lock":
+                    lock.write_bytes(b"other dependencies")
+                else:
+                    (self.source / "extra").mkdir()
+                with self.assertRaises((ValueError, OSError)):
+                    self.run_attest()
+                retained = collector.load(self.args.output + ".probe.json")
+                self.assertFalse(Path(self.args.output).exists())
+                self.assertEqual(len(retained["commands"]), 4)
+                self.assertFalse(retained["source_binding"]["before"].get("complete", False))
+                victim.write_bytes(original)
+                lock.write_bytes(self.contents["Cargo.lock"])
+                self.args.source_root = str(self.source)
+                if change == "extra":
+                    (self.source / "extra.rs").unlink()
+                if change == "extra-directory":
+                    (self.source / "extra").rmdir()
+
+    def test_changed_compiled_apparatus_and_wrong_revision_never_attest(self):
+        for change in ("compiled", "revision", "tree"):
+            self.args.output = str(self.root / f"bad-{change}.json")
+            outputs = [copy.deepcopy(self.declaration), self.revision + "\n",
+                       self.tree + "\n", self.listing, "rustc fixture\n"]
+            if change == "compiled":
+                outputs[0]["apparatus"]["source_files"][V3_APPARATUS_SOURCES[0]] = "0" * 64
+            elif change == "revision":
+                outputs[1] = "b" * 40 + "\n"
+            else:
+                outputs[2] = "not a tree\n"
+            with self.subTest(change=change), self.assertRaises(ValueError):
+                self.run_attest(outputs=outputs)
+            retained = collector.load(self.args.output + ".probe.json")
+            self.assertFalse(Path(self.args.output).exists())
+            self.assertIn("error", retained)
+
+    def test_export_and_binary_mutation_between_probes_fail_with_both_passes(self):
+        for change in ("source", "binary"):
+            self.args.output = str(self.root / f"mutation-{change}.json")
+            victim = self.source / "Cargo.lock" if change == "source" else self.binary
+            content = victim.read_bytes()
+
+            def mutate(index, _argv, _kwargs):
+                if index == 4:
+                    victim.write_bytes(b"changed during rustc probe")
+
+            with self.subTest(change=change), self.assertRaises(ValueError):
+                self.run_attest(hook=mutate)
+            retained = collector.load(self.args.output + ".probe.json")
+            self.assertFalse(Path(self.args.output).exists())
+            self.assertEqual(len(retained["commands"]), 5)
+            self.assertTrue(retained["source_binding"]["before"]["complete"])
+            self.assertEqual(retained["commands"][-1]["record"]["stdout"], "rustc fixture\n")
+            victim.write_bytes(content)
+
+    def test_links_unsafe_tree_paths_and_unapproved_omissions_are_rejected(self):
+        for entry in (
+            "100644 blob " + "a" * 40 + "\t../escape.rs\0",
+            "100644 blob " + "a" * 40 + "\tC:/escape.rs\0",
+            "100644 blob " + "a" * 40 + "\tcrates\\escape.rs\0",
+            "120000 blob " + "a" * 40 + "\tbuild.rs\0",
+            "120000 blob " + "a" * 40 + "\tAGENTS.md\0",
+            "160000 commit " + "a" * 40 + "\tdependency\0",
+        ):
+            self.args.output = str(self.root / f"unsafe-{hashlib.sha256(entry.encode()).hexdigest()}.json")
+            outputs = [self.declaration, self.revision + "\n", self.tree + "\n",
+                       self.listing + entry, "rustc fixture\n"]
+            with self.subTest(entry=entry), self.assertRaises(ValueError):
+                self.run_attest(outputs=outputs)
+            self.assertFalse(Path(self.args.output).exists())
+            self.assertEqual(len(collector.load(self.args.output + ".probe.json")["commands"]), 4)
+        if os.name != "nt":
+            victim = self.source / "Cargo.lock"
+            victim.unlink()
+            victim.symlink_to(self.native)
+            self.args.output = str(self.root / "source-link.json")
+            with self.assertRaisesRegex(ValueError, "link"):
+                self.run_attest()
+            self.assertFalse(Path(self.args.output).exists())
+            self.assertIsNotNone(collector.load(self.args.output + ".probe.json")["error"])
+
+    def test_source_deadline_and_launch_exception_retain_actual_completed_probes(self):
+        def fail(index, _argv, _kwargs):
+            if index == 4:
+                raise OSError("compiler identity probe could not launch")
+
+        with self.assertRaisesRegex(OSError, "could not launch"):
+            self.run_attest(hook=fail)
+        retained = self.assert_failed_receipt()
+        self.assertEqual(len(retained["commands"]), 5)
+        self.assertIsNone(retained["commands"][-1]["record"])
+        self.assertTrue(retained["source_binding"]["before"]["complete"])
+        self.args.output = str(self.root / "deadline.json")
+        with (mock.patch.object(collector, "SOURCE_LIMITS", {**collector.SOURCE_LIMITS, "verification_seconds": 0}),
+              self.assertRaisesRegex(ValueError, "deadline")):
+            self.run_attest()
+        retained = collector.load(self.args.output + ".probe.json")
+        self.assertEqual(len(retained["commands"]), 4)
+        self.assertFalse(retained["source_binding"]["before"]["complete"])
+
+    def test_failed_or_truncated_tree_probe_retains_exact_partial_output_without_source_claim(self):
+        for field, value in (("exit_code", 1), ("timed_out", True), ("output_limited", True), ("cleanup_ok", False)):
+            self.args.output = str(self.root / f"failed-tree-{field}.json")
+
+            def fail(index, record):
+                if index == 3:
+                    record[field] = value
+                    record["stdout"] = "retained partial Git tree output"
+
+            with self.subTest(field=field), self.assertRaises(ValueError):
+                self.run_attest(record_hook=fail)
+            self.assertFalse(Path(self.args.output).exists())
+            retained = collector.load(self.args.output + ".probe.json")
+            self.assertEqual(len(retained["commands"]), 4)
+            self.assertEqual(retained["commands"][-1]["record"]["stdout"], "retained partial Git tree output")
+            self.assertFalse(retained["source_binding"]["before"].get("complete", False))
+
+    def test_source_traversal_and_byte_limits_preserve_partial_verification(self):
+        for field, limit in (("entries", 1), ("file_bytes", 1), ("total_bytes", 1)):
+            self.args.output = str(self.root / f"limit-{field}.json")
+            with (mock.patch.object(collector, "SOURCE_LIMITS", {**collector.SOURCE_LIMITS, field: limit}),
+                  self.subTest(field=field), self.assertRaises(ValueError)):
+                self.run_attest()
+            retained = collector.load(self.args.output + ".probe.json")
+            self.assertFalse(Path(self.args.output).exists())
+            self.assertEqual(len(retained["commands"]), 4)
+            self.assertIsNotNone(retained["error"])
+
+    @unittest.skipIf(os.name == "nt", "POSIX executable-bit and link observations")
+    def test_executable_mode_hardlinks_and_materialized_context_link_are_rejected(self):
+        victim = self.source / "Cargo.lock"
+        victim.chmod(0o755)
+        with self.assertRaisesRegex(ValueError, "differs"):
+            self.run_attest()
+        self.assert_failed_receipt()
+        victim.chmod(0o644)
+        self.args.output = str(self.root / "hard-link.json")
+        os.link(victim, self.root / "outside-source-link")
+        with self.assertRaisesRegex(ValueError, "hard-linked"):
+            self.run_attest()
+        (self.root / "outside-source-link").unlink()
+        self.assertFalse(Path(self.args.output).exists())
+        self.args.output = str(self.root / "materialized-context.json")
+        (self.source / "AGENTS.md").symlink_to("CLAUDE.md")
+        with self.assertRaisesRegex(ValueError, "link"):
+            self.run_attest()
+        self.assertFalse(Path(self.args.output).exists())
+        self.assertIsNotNone(collector.load(self.args.output + ".probe.json")["error"])
+
+    def test_retained_source_identity_cannot_be_relabelled_as_checkout_or_other_role(self):
+        self.run_attest()
+        build = collector.load(self.output)
+        for change in ("variant", "status", "tree", "source-file", "lock", "role"):
+            value = copy.deepcopy(build)
+            if change == "variant":
+                value["source_binding"]["variant"] = "current-checkout"
+            elif change == "status":
+                value["source_status_porcelain"] = ""
+            elif change == "tree":
+                value["source_tree"] = "f" * 40
+            elif change == "source-file":
+                value["source_binding"]["after"]["files"]["Cargo.toml"]["sha256"] = "f" * 64
+            elif change == "lock":
+                value["cargo_lock_sha256"] = "f" * 64
+            else:
+                value["apparatus"]["accounting_contract"] = "prepared-cache-row-winner-v1"
+            with self.subTest(change=change), self.assertRaises(ValueError):
+                collector.validate_v2_build({"path": str(self.binary), "build": value}, NATIVE_TARGET, "normal", 3)
 
 
 if __name__ == "__main__":

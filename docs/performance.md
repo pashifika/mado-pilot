@@ -174,15 +174,24 @@ timed outside primary. Lifecycle contracts time their complete owner script.
 Owner checkpoints preserve RSS, peak RSS, private bytes and footprint where
 available, without inventing a calibrated per-checkpoint envelope. Instrumented
 independent-backend checkpoints require `49,766,400 → 24,883,200 → 0` BGR payload
-bytes; only that row permits two simultaneous 32-MiB cache allowances. Growth and
-final-owner residual receive no extra allowance.
+bytes for the prepared-cache role; only that row permits two simultaneous
+32-MiB cache allowances. The uncached role reports zero cache payload, not zero
+temporary native allocation. Growth and final-owner residual receive no extra
+allowance.
 
 Logical fixture identity includes inputs, options, row order and timing/owner
 contracts, not helper source hashes or implementation-specific work counts.
 Each role separately binds the exact 11-source `apparatus` manifest to its
-executable and attestation; it must remain unchanged within that role. Only the
-implemented `prepared-cache-row-winner-v1` accounting contract is admitted.
-Historical-port accounting requires its own implemented and reviewed contract.
+executable and attestation; it must remain unchanged within that role.
+
+| Accounting contract | Physical work and ownership |
+|---|---|
+| `prepared-cache-row-winner-v1` | Direct RGBA/BGRA preparation, bounded prepared-image reuse and row-winner selection. |
+| `uncached-bgra-repeated-scan-v1` | Historical BGRA mapping, per-call BGR conversion and repeated response scans. Cache gauges remain zero; an active reader holds its real local BGR matrix without an eviction claim. |
+
+Both contracts validate mapped-view bytes separately from mapping-copy and BGR
+conversion bytes. Common-manifest comparison removes only admitted role-specific
+physical metadata; inputs, public oracles and timing/owner boundaries must agree.
 The new rows add regression/sensitivity coverage; they do not waive the existing
 selection/preparation improvement requirements or establish consumer performance.
 
@@ -348,6 +357,21 @@ Windows uses its configured MSVC/OpenCV environment and `python`.
   --baseline-metadata "$EVIDENCE/build-metadata.json" \
   --output "$EVIDENCE/campaign"
 ```
+
+For a measurement-only historical export, add both `--source-root "$EXPORT"`
+and `--source-revision "$MEASUREMENT_COMMIT"` to `attest`. The full commit must
+exist in the collector's repository. `exported-git-tree-v1` uses real commit,
+tree and recursive Git-tree probes, then verifies the complete export before
+and after attestation against Git blob identities, sizes and SHA256. It does
+not synthesize checkout `HEAD` or a clean status. The original historical tree
+and executable remain unchanged; the port has its own commit and build roots.
+
+Export checks allow at most 20,000 entries, 64 MiB per file, 512 MiB total and
+60 seconds per pass. Regular files must match; only the exact allowlisted
+repository-context symlink may be omitted. POSIX checks executable bits;
+Windows records Git modes as metadata and verifies regular-file bytes without
+claiming POSIX-mode equality. The lockfile and compiled helper-source manifest
+remain independently bound.
 
 The collector uses one warmup and three retained iterations per row, a 90-second
 owned-child deadline, a 900-second campaign deadline, 8 MiB bounded child output

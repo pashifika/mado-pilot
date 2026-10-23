@@ -77,6 +77,22 @@ observation.
    fields remain unavailable, and two independent caches do not widen a
    per-backend bound or the final-owner residual allowance. The collector retains
    protocol-1/2 readers; current binaries emit only protocol 3.
+8. Admit two fixed, separately source-bound physical contracts:
+   `prepared-cache-row-winner-v1` and `uncached-bgra-repeated-scan-v1`. A
+   measurement-only historical port preserves old BGRA mapping, uncached BGR
+   preparation and repeated selection scans while sharing the logical corpus
+   and public-result oracles. Zero historical cache gauges do not describe its
+   temporary native matrices. Logical mapped-view, copied and converted bytes
+   remain separate validated quantities; common-manifest comparison removes
+   only admitted physical-role differences.
+9. Bind an exported measurement port to its own actual Git commit/tree, not
+   the collector checkout's `HEAD`. Paired `--source-root`/`--source-revision`
+   options verify the complete regular-file export before and after attestation
+   through real recursive-tree/blob identities and bounded file hashes.
+   Preserve the original historical source and artifacts. Refuse unexpected
+   files, unsafe links, changed bytes or helper-source mismatches. Windows
+   regular-file verification retains declared Git modes without inventing
+   POSIX executable-bit observations.
 
 ## Alternatives
 
