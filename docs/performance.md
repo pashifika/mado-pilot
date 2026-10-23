@@ -64,13 +64,12 @@ capture/input behavior, a new host or a broader release claim.
 
 ## Rust template-matching work efficiency
 
-`template-matching-efficiency` is a capture-free Rust benchmark. The
-`template-matching-benchmark` feature enables its instrumented mode: 21 fixed
-rows covering replay/OpenCV matching, score selection, eight distinct templates,
-retained and released ROI owners, concurrent calls, source collisions, eviction,
-oversized inputs and both fixed watcher change policies. `--list` prints the
-first-party generated corpus manifest and hashes; `--smoke` runs one warmup and
-three samples. No row opens a capture device, injects input or runs OCR.
+`template-matching-efficiency` is a capture-free Rust benchmark. Its current
+protocol-3 corpus has 57 instrumented rows, of which 54 also run in normal mode.
+It preserves the 21 component/selection/ownership guards and adds 36 public
+Session, query and lifecycle rows. `--list` prints the first-party generated
+corpus manifest and hashes; `--smoke` runs one warmup and three samples. No row
+opens a capture device, injects input or runs OCR.
 
 OpenCV accepts source RGBA8 and BGRA8 directly, with BGRA8 as its default.
 `BackendDescriptor::format()` names that default; use `accepts_format` for
@@ -123,17 +122,19 @@ verification has its own `CARGO_TARGET_DIR`.
 
 The separate `template-matching-timing` feature builds normal release code with
 the system allocator and no matching/mapping work counters. Invoke its emitted
-executable with `--protocol-version 2`; protocol 1 remains instrumented-only.
+executable with `--protocol-version 3`, its default. The collector also reads
+historical protocol-1/2 binaries and evidence; the current executable emits only 3.
 Cargo feature unification that enables OpenCV or capture instrumentation makes a
 normal benchmark fail at compile time, including direct dependency features.
 
-Protocol 2 records the compiled `build_mode`, allocator label and an explicit
-`unavailable` declaration. Normal mode runs the same 13 statistical rows and
-five public-result contract rows. Its 26 unobserved heap/work/owner fields are
-`null`, not zero. The format-transition and two watcher counter-oracle rows
-remain instrumented-only; requesting one from a normal executable is an error.
-Both modes share fixtures and canonical result oracles. Instrumented owner/work
-proof does not establish a normal-build resource or timing verdict.
+Protocol 3 records the compiled `build_mode`, allocator label and an explicit
+`unavailable` declaration. Both modes run 41 statistical rows; normal adds 13
+public-result contracts and instrumented adds 16 contracts. Normal's 26 unobserved
+heap/work/owner fields are `null`, not zero. The format-transition and two watcher
+counter-oracle rows remain instrumented-only; requesting one from a normal
+executable is an error. Both modes share semantic fixtures and public-result
+oracles. Instrumented owner/work proof does not establish a normal-build resource
+or timing verdict.
 
 Build each mode in its own Cargo directory. The build command above selects
 instrumented mode; substitute `template-matching-timing` and a distinct
@@ -142,7 +143,7 @@ avoids [Rust issue 157750](https://github.com/rust-lang/rust/issues/157750) on
 macOS 27 without changing measured-code optimization, allocator or deployment
 minimum. Keep that configuration in each build receipt.
 
-Protocol 2 observes `cv::currentParallelFramework` and `cv::getNumThreads` before
+The component protocols observe `cv::currentParallelFramework` and `cv::getNumThreads` before
 and after work through a benchmark-only, exception-contained C++ boundary. It
 does not set limits. The value is the library-reported parallel-region setting,
 not actual worker utilization. Unavailable, unsupported GCD, invalid or changed
@@ -151,7 +152,41 @@ Build information is not substituted for the active backend.
 Roles must share the same backend identifier and thread setting; collection and
 retained comparison validation refuse differences between roles.
 
-### Protocol-2 collection
+### Protocol-3 Session corpus
+
+New rows request `0.9/8/DropOverlapping` on packed RGBA and BGRA, with full-frame
+and nonzero-ROI cases. These are explicit workload options, not inferred consumer
+defaults. Hits name the planted template, bounds and complete source-frame
+identity; misses return an empty collection without an invented absent score.
+Existing component guards keep their input bytes, options and timing boundaries.
+
+| Family | Semantic unit and measured boundary |
+|---|---|
+| Retained hit/miss and `64×48` patch sensitivity | One live `Session::find_template` call through bounded scalar projection and outcome release; the frame/backend persist across units. |
+| Eight-template groups | Eight sequential public searches on full, same-ROI or distinct-ROI keys. The compatible-owner variant separately records mapping creation/release outside the group interval. |
+| New-frame turnover | Exactly `M,H0,M,H1`; one publication/acquisition-to-final-release cycle plus separate hit/miss search strata. Their overlapping times are never added or treated as independent processes. |
+| Matched query | Fresh provider/engine/session/query with shared row backend/templates; producer release through actual wait, terminal projection and producer join. Public completed-work receipts gate `M → H0 → H1`; the third frame supplies two confirmed hits. |
+| Deadline query | Publish `M`, prove completed no-match, then require the real query-lifetime deadline. Caller-wait interruption is not that terminal result. |
+| Owner lifecycles | Complete Session-close/retained-value/refused-search script, or real Matcher calls through A, A-clone and independent B followed by B reuse after A release. |
+
+Query setup and close/retained-terminal/query-result/runtime release are separately
+timed outside primary. Lifecycle contracts time their complete owner script.
+Owner checkpoints preserve RSS, peak RSS, private bytes and footprint where
+available, without inventing a calibrated per-checkpoint envelope. Instrumented
+independent-backend checkpoints require `49,766,400 → 24,883,200 → 0` BGR payload
+bytes; only that row permits two simultaneous 32-MiB cache allowances. Growth and
+final-owner residual receive no extra allowance.
+
+Logical fixture identity includes inputs, options, row order and timing/owner
+contracts, not helper source hashes or implementation-specific work counts.
+Each role separately binds the exact 11-source `apparatus` manifest to its
+executable and attestation; it must remain unchanged within that role. Only the
+implemented `prepared-cache-row-winner-v1` accounting contract is admitted.
+Historical-port accounting requires its own implemented and reviewed contract.
+The new rows add regression/sensitivity coverage; they do not waive the existing
+selection/preparation improvement requirements or establish consumer performance.
+
+### Component collection
 
 The source-bound collector separates these stages:
 
@@ -182,7 +217,7 @@ setup so child `PATH` staging cannot select another interpreter:
 ```sh
 "$NATIVE_PYTHON" tools/setup-native.py -- "$NATIVE_PYTHON" \
   tools/template-matching-efficiency.py runtime-preflight \
-  --protocol-version 2 --build-mode normal --target aarch64-apple-darwin \
+  --protocol-version 3 --build-mode normal --target aarch64-apple-darwin \
   --binary "$NORMAL_BINARY" --build-metadata "$BUILD_METADATA" \
   --output "$NEW_PREFLIGHT_DIRECTORY"
 ```
@@ -193,7 +228,7 @@ shared-cache membership rather than a system-path exemption. Its loader UUID
 and pre/post on-disk bindings require a reviewed stable-file/OS scope; they are
 not proof against arbitrary concurrent replacement or same-UUID mutation.
 The Windows held-file debugger observer is preflight-only: it is not admitted
-for normal timing. Windows protocol-2 qualification therefore remains closed.
+for normal timing. Windows normal qualification therefore remains closed.
 
 The macOS native observer suite uses owned loader/dylib fixtures for transient
 reloads, vanished-image refusal and foreign-process rejection. CI enables these
@@ -222,9 +257,10 @@ recorders, and component evidence does not guarantee arbitrary consumer behavior
 ### Historical format-1 collector
 
 
-`tools/template-matching-efficiency.py` consumes explicitly named prebuilt
-executables. Its JSON format version 1 is separate from the legacy TOML format
-below. `policy` prints the fixed sampling and envelope formulas. `calibrate`
+`tools/template-matching-efficiency.py` retains JSON format-1 interpretation,
+separate from the legacy TOML format below. Use `--protocol-version 1` with a
+compatible retained executable; current binaries cannot reproduce that protocol.
+`policy --protocol-version 1` prints its fixed sampling and envelope formulas. `calibrate`
 retains five fresh baseline processes per row; `freeze` records a reviewed,
 hash-bound numerical profile; `compare` runs a separate alternating five-baseline,
 five-candidate cohort per row. Performance rows use 20 warmups and 200 retained
@@ -247,11 +283,10 @@ observations, with original process indices; missing values cannot qualify a
 benefit. Started attempts without a result remain `incomplete`, distinct from
 `not-run` work. Recorded interruptions and unreadable attempt records are `failed`.
 
-Current hosted CI executes the protocol-2 normal and instrumented semantic plans
-on both targets. The format-1 commands below remain historical compatibility
-recipes. Smoke, missing resource observations, a missing target, or a failed
-envelope cannot establish performance acceptance. Existing historical profiles
-and their source/binary identities are unchanged.
+Hosted CI executes the current protocol-3 normal and instrumented semantic plans
+on both targets. Smoke, missing resource observations, a missing target, or a
+failed envelope cannot establish performance acceptance. Existing historical
+profiles and their source/binary identities are unchanged.
 Revalidation uses the campaign's recorded collector revision. A collector change
 does not regrade earlier campaigns or replace their source hashes.
 
@@ -272,13 +307,14 @@ and requires reruns or reviewed applicability after relevant source changes.
 This scheduling decision changes no frozen ceiling, failed verdict or historical
 source identity; a completed development checklist is not performance acceptance.
 
-### Direct-format semantic and ownership smoke
+### Semantic smoke and direct-format compatibility
 
-Corpus `template-efficiency-integer-v2-direct-formats` retains the 21 workload
-rows and extends non-statistical `contract-roi-format-transition` with full,
+Historical corpus `template-efficiency-integer-v2-direct-formats` has 21 workload
+rows, including non-statistical `contract-roi-format-transition` with full,
 padded and nonzero-ROI RGBA/BGRA inputs plus forced-BGRA public-mapping controls.
-Its manifest fixes case order, expected matches and physical-work counts before
-execution. Persistent hits and a real paused production reader exercise
+These cases and their physical-work oracles remain in the successor corpus;
+historical manifests retain their original interpretation. Persistent hits and a
+real paused production reader exercise
 mapping/source/result release and active eviction. The active reader completes
 before final backend release; these are separate checkpoints, not RSS-return
 or all-native-allocation guarantees.
@@ -289,7 +325,7 @@ the command and Cargo JSON output:
 
 ```sh
 PYTHON="$(python3 -c 'import sys; print(sys.executable)')"
-CARGO_TARGET_DIR=target/direct-format-smoke \
+CARGO_TARGET_DIR=target/template-efficiency-smoke-instrumented \
   "$PYTHON" tools/setup-native.py -- cargo bench --locked \
   --config 'profile.bench.build-override.strip="none"' \
   --package mado-pilot --features template-matching-benchmark \
@@ -302,12 +338,13 @@ is the actual supported host target and `EVIDENCE` is a new output directory.
 Windows uses its configured MSVC/OpenCV environment and `python`.
 
 ```sh
-"$PYTHON" tools/template-matching-efficiency.py policy
+"$PYTHON" tools/template-matching-efficiency.py policy --protocol-version 3 --build-mode instrumented
 "$PYTHON" tools/setup-native.py -- "$PYTHON" tools/template-matching-efficiency.py attest \
-  --target "$TARGET" --binary "$BINARY" --build-argv-json "$BUILD_ARGV_JSON" \
+  --protocol-version 3 --build-mode instrumented --target "$TARGET" \
+  --binary "$BINARY" --build-argv-json "$BUILD_ARGV_JSON" \
   --output "$EVIDENCE/build-metadata.json"
 "$PYTHON" tools/setup-native.py -- "$PYTHON" tools/template-matching-efficiency.py smoke \
-  --target "$TARGET" --baseline "$BINARY" \
+  --protocol-version 3 --build-mode instrumented --target "$TARGET" --baseline "$BINARY" \
   --baseline-metadata "$EVIDENCE/build-metadata.json" \
   --output "$EVIDENCE/campaign"
 ```

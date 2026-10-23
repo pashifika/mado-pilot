@@ -2813,6 +2813,14 @@ boundary for runtime backend/thread observation; production defaults and public
 Rust/C integration contracts are unchanged. Native provenance, observer
 eligibility, calibration/control and numerical profile acceptance are separate
 gates. Campaign recorder/child restrictions do not constrain SDK consumers.
+Protocol 3 extends that apparatus with public Session searches, completed-work
+query barriers and explicit owner lifecycles. Logical inputs/oracles are common
+across roles; each role separately binds its helper sources and implemented
+accounting contract. Setup, primary work and teardown retain distinct boundaries,
+and turnover hit/miss strata are graded without adding overlapping intervals.
+The collector preserves historical protocol-1/2 interpretation. See the
+[Session corpus](performance.md#protocol-3-session-corpus); no SDK API or
+performance qualification changes follow from these apparatus additions.
 
 Public scores are compared against a tolerance rather than exactly, on one host as
 well as across the two. OpenCV normalizes through integral images and correlates a
