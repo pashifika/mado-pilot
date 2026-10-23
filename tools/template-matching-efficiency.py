@@ -20,6 +20,7 @@ import platform
 import re
 import shutil
 import statistics
+import stat
 import sys
 import tempfile
 import time
@@ -209,13 +210,17 @@ def validate_v2_build(identity, target, build_mode, protocol_version=2):
         "v2 source-bound manifest/source probes required")
     require(probe[0].get("argv") == [identity["path"], "--protocol-version", str(protocol_version), "--list"]
             and successful(probe[0].get("record", {})), "attested manifest command mismatch")
-    for index, key in ((1, "source_revision"), (2, "source_tree"), (3, "source_status_porcelain"), (4, "rustc")):
-        actual = probe[index]["record"]["stdout"]
-        require(build.get(key) == (actual.strip() if index in (1, 2) else actual),
-                f"attested source probe differs: {key}")
-    require([item["argv"][1:] for item in probe[1:]] ==
-            [["rev-parse", "HEAD"], ["rev-parse", "HEAD^{tree}"], ["status", "--porcelain"], ["-vV"]],
-            "source provenance command mismatch")
+    if "source_binding" in build:
+        require(protocol_version == 3, "exported source requires protocol3")
+        validate_export_binding(build, probe)
+    else:
+        for index, key in ((1, "source_revision"), (2, "source_tree"), (3, "source_status_porcelain"), (4, "rustc")):
+            actual = probe[index]["record"]["stdout"]
+            require(build.get(key) == (actual.strip() if index in (1, 2) else actual),
+                    f"attested source probe differs: {key}")
+        require([item["argv"][1:] for item in probe[1:]] ==
+                [["rev-parse", "HEAD"], ["rev-parse", "HEAD^{tree}"], ["status", "--porcelain"], ["-vV"]],
+                "source provenance command mismatch")
     observed = strict_json(probe[0]["record"]["stdout"])
     frozen = manifest_identity(observed, target, build["opencv_version"], protocol_version, build_mode)
     require(build.get("benchmark_manifest") == frozen, "attested source/mode manifest mismatch")
@@ -256,6 +261,12 @@ def native_thread_issues(settings, roles):
     return issues
 
 
+def preflight_identity(identity, protocol_version):
+    """Protocol3 boundary proofs bind the complete canonical plan.binary document."""
+    return ({"plan_binary_sha256": hashlib.sha256(document(identity)).hexdigest()}
+            if protocol_version == 3 else identity)
+
+
 def validate_runtime_bundle(bundle, identity, target, build_mode):
     """Revalidate retained representative runs; no live target or dependency reads."""
     version = identity["build"].get("protocol_version", 2)
@@ -285,12 +296,14 @@ def validate_runtime_bundle(bundle, identity, target, build_mode):
             "runtime preflight has unrun paths")
     manifest = validate_v2_build(base, target, build_mode, version)
     threads = effective_threads(strict_json(base["build"]["provenance_commands"][0]["record"]["stdout"]))
+    boundary_identity = preflight_identity(base, version)
     receipts = []
     for task, attempt in zip(expected_schedule, runs):
         require(isinstance(attempt, dict) and attempt.get("task") == task
                 and attempt.get("argv") == command(base, task, "smoke", version),
                 "runtime preflight path/order mismatch")
-        require(attempt.get("identity_before") == base and attempt.get("identity_after") == base
+        require(attempt.get("identity_before") == boundary_identity
+                and attempt.get("identity_after") == boundary_identity
                 and attempt.get("identity_error") is None and attempt.get("interruption") is None,
                 "runtime preflight file identity or completion failed")
         before, after = attempt.get("campaign_elapsed_before"), attempt.get("campaign_elapsed_after")
@@ -366,8 +379,9 @@ def runtime_closure_admission(identity, target, build_mode, bundle_path=None):
     reference = identity["build"].get("runtime_image_preflight")
     require(target == TARGETS[0] and isinstance(reference, dict),
             "missing runtime closure prerequisite: full native image preflight required; zero launches")
-    require(identity["build"].get("source_status_porcelain") == "",
-            "dirty source is not a qualification artifact; zero launches")
+    if "source_binding" not in identity["build"]:
+        require(identity["build"].get("source_status_porcelain") == "",
+                "dirty source is not a qualification artifact; zero launches")
     digest(reference.get("sha256"), "runtime preflight sha256")
     native_path(reference.get("path"), target)
     with Path(reference["path"] if bundle_path is None else bundle_path).open("rb") as stream:
@@ -421,17 +435,21 @@ ACTIVE_ORDER = ("prepared-reader-paused", "active-image-evicted", "final-reader-
                 "frames-released", "results-released", "final-backend-released")
 
 
-def direct_format_contract():
+def direct_format_contract(accounting="prepared-cache-row-winner-v1"):
+    require(accounting in ("prepared-cache-row-winner-v1", "uncached-bgra-repeated-scan-v1"),
+            "unsupported direct-format accounting role")
+    uncached = accounting == "uncached-bgra-repeated-scan-v1"
     cases = []
     for name, source, padding, roi, forced in DIRECT_FORMAT_CASES:
         pixels = 320 * 180 if roi else 1920 * 1080
+        copied = roi or forced or uncached and source == "rgba8"
         cases.append({"id": name, "source_format": source,
-                      "selected_format": "bgra8" if forced else source,
+                      "selected_format": "bgra8" if forced or uncached else source,
                       "row_padding_bytes": padding, "nonzero_roi": roi,
                       "forced_bgra_public_mapping": forced,
                       "expected_matches": 1, "expected_bounds": [80, 64, 92, 74],
-                      "expected_mapping_copies": int(roi or forced),
-                      "expected_mapping_copied_bytes": pixels * 4 if roi or forced else 0,
+                      "expected_mapping_copies": int(copied),
+                      "expected_mapping_copied_bytes": pixels * 4 if copied else 0,
                       "expected_bgr_conversions": 1, "expected_bgr_converted_bytes": pixels * 3})
     transitions = [
         {"id": "same-source-roi", "selected_format": "rgba8", "region": [64, 48, 384, 228], "expected_bounds": [80, 64, 92, 74],
@@ -441,12 +459,24 @@ def direct_format_contract():
         {"id": "distinct-bgra-full", "selected_format": "bgra8", "region": [0, 0, 1920, 1080], "expected_bounds": [80, 64, 92, 74],
          "mapping_copies": 0, "mapping_copied_bytes": 0, "bgr_conversions": 1, "bgr_converted_bytes": 6220800},
     ]
-    return {"cases": cases, "transition_cases": transitions, "lifetime_order": ["persistent-hit", "active-evicted"],
-            "persistent_checkpoint_order": list(PERSISTENT_ORDER),
-            "active_checkpoint_order": list(ACTIVE_ORDER),
-            "expected_per_iteration": dict(DIRECT_FORMAT_WORK),
+    if uncached:
+        for transition in transitions:
+            transition["selected_format"] = "bgra8"
+    persistent_order = list(PERSISTENT_ORDER)
+    active_order = list(ACTIVE_ORDER)
+    if uncached:
+        persistent_order[2] = "repeated-search"
+        active_order[1] = "active-reader-after-pressure"
+    work = ({"backend_find_calls": 18, "bgr_conversions": 18, "bgr_converted_bytes": 57_519_168,
+             "mapping_copies": 15, "mapping_copied_bytes": 51_809_024} if uncached else dict(DIRECT_FORMAT_WORK))
+    return {"cases": cases, "transition_cases": transitions,
+            "lifetime_order": ["persistent-uncached", "active-uncached"] if uncached else ["persistent-hit", "active-evicted"],
+            "persistent_checkpoint_order": persistent_order,
+            "active_checkpoint_order": active_order,
+            "expected_per_iteration": work,
             "operation_timeout_seconds": 5, "prepared_reader_pause_timeout_seconds": 5,
-            "resource_scope": "logical mapping owners and owned BGR payload; not total native allocation or RSS release",
+            "resource_scope": ("logical mapping owners and cache-retained/evicted BGR gauges; uncached native BGR scratch is not a cache gauge or total native allocation/RSS observation"
+                               if uncached else "logical mapping owners and owned BGR payload; not total native allocation or RSS release"),
             "active_owner_order": "final production reader completes before final backend release"}
 
 
@@ -633,6 +663,12 @@ def execution_failures(record):
 
 
 ACCOUNTING_CONTRACT = "prepared-cache-row-winner-v1"
+BASELINE_ACCOUNTING_CONTRACT = "uncached-bgra-repeated-scan-v1"
+EXPORTED_SOURCE_BINDING = "exported-git-tree-v1"
+SOURCE_LIMITS = {"entries": 20000, "file_bytes": 64 * MIB, "total_bytes": 512 * MIB,
+                 "verification_seconds": 60}
+CONTEXT_LINK_OMISSIONS = {
+    "AGENTS.md": {"mode": "120000", "git_object": "681311eb9cf453d0faddf3aacaec7357e97ba8e9"}}
 APPARATUS_SOURCES = (
     "crates/mado-pilot/benches/template-matching-efficiency.rs",
     *(f"crates/mado-pilot/benches/support/template_efficiency_{name}.rs" for name in (
@@ -654,7 +690,7 @@ CHECKPOINT_METRICS = ("rss_bytes", "peak_rss_bytes", "private_bytes", "footprint
 
 def apparatus_identity(value):
     require(isinstance(value, dict) and set(value) == {"accounting_contract", "source_files"}
-            and value["accounting_contract"] == ACCOUNTING_CONTRACT,
+            and value["accounting_contract"] in (ACCOUNTING_CONTRACT, BASELINE_ACCOUNTING_CONTRACT),
             "unsupported or missing role apparatus accounting contract")
     sources = value["source_files"]
     require(isinstance(sources, dict) and set(sources) == set(APPARATUS_SOURCES),
@@ -667,7 +703,17 @@ def apparatus_identity(value):
 def common_manifest(value):
     if not isinstance(value, dict) or value.get("format_version") != 3:
         return value
-    return {key: item for key, item in value.items() if key != "apparatus"}
+    # Physical layouts are comparable only after admission against a fixed role contract.
+    role = apparatus_identity(value.get("apparatus"))["accounting_contract"]
+    rows = []
+    for row in value["workloads"]:
+        if row["id"] == DIRECT_FORMAT_WORKLOAD:
+            require(exact_value(row.get("format_contract"), direct_format_contract(role)),
+                    "unvalidated role format contract")
+            row = {key: item for key, item in row.items() if key != "format_contract"}
+        rows.append(row)
+    return {**{key: item for key, item in value.items() if key not in ("apparatus", "workloads")},
+            "workloads": rows}
 
 
 def exact_value(actual, expected):
@@ -1000,7 +1046,7 @@ def validate_query(value, case, projections):
     return stamps
 
 
-def expected_session_work(row, index):
+def expected_session_work(row, index, accounting=ACCOUNTING_CONTRACT):
     contract = row["session_contract"]
     case, searches = contract["case"], contract["searches_per_unit"]
     conversions = (int(index == 0) if case in ("retained-hit", "retained-miss", "patch64") else
@@ -1008,14 +1054,19 @@ def expected_session_work(row, index):
                    searches if case in ("turnover", "query-match", "query-deadline") else 1)
     roi = "-roi" in row["id"]
     copies = (1 if case in ("owner-group", "lifecycle-session") else searches if roi else 0)
+    if accounting == BASELINE_ACCOUNTING_CONTRACT:
+        conversions = searches
+        copies = searches * int(roi or contract["source_format"] == "rgba8")
+        copies += int(case in ("owner-group", "lifecycle-session"))
     pixels = 320 * 180 if roi else row["width"] * row["height"]
-    return {"accounting_contract": ACCOUNTING_CONTRACT, "backend_find_calls": searches,
+    return {"accounting_contract": accounting, "backend_find_calls": searches,
             "backend_find_completions": searches, "backend_find_failures": 0,
             "bgr_conversions": conversions, "bgr_converted_bytes": conversions * pixels * 3,
             "mapping_copies": copies, "mapping_copied_bytes": copies * pixels * 4, "correct": True}
 
 
-def validate_session_observations(row, build_mode, warmups, count, timer, cpu_resolution, unavailable):
+def validate_session_observations(row, build_mode, warmups, count, timer, cpu_resolution, unavailable,
+                                  accounting=ACCOUNTING_CONTRACT):
     normal = build_mode == "normal"
     contract, metrics = row["session_contract"], row["metrics"]
     case = contract["case"]
@@ -1095,7 +1146,9 @@ def validate_session_observations(row, build_mode, warmups, count, timer, cpu_re
                      ("a_clone_reused", "b_independent", "b_reused", "source_released"))
             require(isinstance(lifecycle, dict) and set(lifecycle) == set(flags)
                     and all(lifecycle[flag] is (None if normal and flag in
-                            ("a_clone_reused", "b_independent", "b_reused") else True) for flag in flags),
+                            ("a_clone_reused", "b_independent", "b_reused") else
+                            False if accounting == BASELINE_ACCOUNTING_CONTRACT and flag in
+                            ("a_clone_reused", "b_reused") else True) for flag in flags),
                     "public lifecycle/closed owner oracle failed")
             order = SESSION_OWNER_ORDER if case == "lifecycle-session" else INDEPENDENT_OWNER_ORDER
             validate_checkpoints(unit["checkpoints"], order, normal, contract["max_independent_backends"],
@@ -1104,6 +1157,8 @@ def validate_session_observations(row, build_mode, warmups, count, timer, cpu_re
                 held = ([0, 172800, 172800, 172800, 172800, 172800, 172800, 0]
                         if case == "lifecycle-session" else
                         [0, 49_766_400, 24_883_200, 24_883_200, 24_883_200, 0])
+                if accounting == BASELINE_ACCOUNTING_CONTRACT:
+                    held = [0] * len(order)
                 require([point["bgr_retained_bytes"] for point in unit["checkpoints"]] == held,
                         "independent caches staged payload mismatch" if case == "lifecycle-independent"
                         else "Session lifecycle staged payload mismatch")
@@ -1112,7 +1167,7 @@ def validate_session_observations(row, build_mode, warmups, count, timer, cpu_re
         if normal:
             require(unit["work"] is None, "normal work must be explicitly unavailable")
         else:
-            expected = expected_session_work(row, index)
+            expected = expected_session_work(row, index, accounting)
             require(isinstance(unit["work"], dict) and set(unit["work"]) == set(expected),
                     "Session work evidence missing")
             for key, value in expected.items():
@@ -1122,6 +1177,9 @@ def validate_session_observations(row, build_mode, warmups, count, timer, cpu_re
                         f"Session role work mismatch: {key}")
     if not normal:
         points = owners + [point for unit in units for point in unit["checkpoints"]]
+        if accounting == BASELINE_ACCOUNTING_CONTRACT:
+            require(all(point["bgr_retained_bytes"] == point["bgr_evicted_bytes"] == 0 for point in points),
+                    "uncached role cannot claim cache-owned payload")
         for state in ("retained", "evicted"):
             require(metrics[f"bgr_{state}_peak_bytes"] >= max(point[f"bgr_{state}_bytes"] for point in points),
                     f"Session BGR {state} peak below lifecycle checkpoint")
@@ -1186,7 +1244,8 @@ def manifest_identity(value, target, opencv_version, protocol_version=1, build_m
                 and row.get("sample_count") == (200 if expected["statistical"] else 3),
                 "manifest sampling plan mismatch")
         if expected["id"] == DIRECT_FORMAT_WORKLOAD:
-            require(row.get("format_contract") == direct_format_contract(),
+            require(exact_value(row.get("format_contract"), direct_format_contract(
+                mode_fields["apparatus"]["accounting_contract"] if protocol_version == 3 else ACCOUNTING_CONTRACT)),
                     "direct-format declaration/order/work mismatch")
         if protocol_version == 3 and expected["id"] in SESSION_DEFINITIONS:
             require(exact_value(row, value["fixture"]["sessions"]["workloads"][
@@ -1320,6 +1379,13 @@ def observations(value, manifest, workload, smoke):
         for state in ("retained", "evicted"):
             require(metrics[f"bgr_{state}_peak_bytes"] >= metrics[f"bgr_{state}_bytes"],
                     f"BGR {state} peak below measured endpoint")
+        if version == 3 and manifest["apparatus"]["accounting_contract"] == BASELINE_ACCOUNTING_CONTRACT:
+            require(all(metrics[name] == 0 for name in COUNTERS if name.startswith(("bgr_retained", "bgr_evicted"))),
+                    "uncached BGR gauges cover cache payload only and must remain zero")
+            require(metrics["native_allocation_scope"] ==
+                    "cache-payload gauges and process RSS, not total native allocation tracking",
+                    "uncached gauges must not claim native scratch allocation coverage")
+            validate_uncached_work(row, warmups + count)
     for prefix in ("rss", "heap"):
         peak = metrics[f"peak_{prefix}_bytes"]
         endpoints = [metrics[f"{prefix}_{part}_bytes"] for part in
@@ -1327,7 +1393,8 @@ def observations(value, manifest, workload, smoke):
         if peak is not None and all(item is not None for item in endpoints):
             require(peak >= max(endpoints), f"{prefix} peak below measured endpoint")
     if workload == DIRECT_FORMAT_WORKLOAD:
-        validate_direct_formats(row, warmups + count)
+        validate_direct_formats(row, warmups + count, manifest["apparatus"]["accounting_contract"]
+                                if version == 3 else ACCOUNTING_CONTRACT)
     elapsed = sorted(sample["elapsed_ns"] for sample in retained)
     summary = {"p50_ns": elapsed[(count - 1) // 2], "p95_ns": elapsed[math.ceil(0.95 * count) - 1],
                "max_ns": elapsed[-1], "cpu_ns": cpu, "timer_resolution_ns": timer,
@@ -1340,7 +1407,8 @@ def observations(value, manifest, workload, smoke):
             summary[f"{prefix}_{kind}_bytes"] = None if a is None or b is None else max(0, b - a)
     if version == 3 and workload in SESSION_DEFINITIONS:
         summary.update(validate_session_observations(row, manifest["build_mode"], warmups, count,
-                                                     timer, cpu_resolution, unavailable))
+                                                     timer, cpu_resolution, unavailable,
+                                                     manifest["apparatus"]["accounting_contract"]))
     return summary
 
 
@@ -1361,11 +1429,78 @@ def schedule(mode, selected, protocol_version=1):
     return result
 
 
-def validate_direct_formats(row, iterations):
+def validate_uncached_work(row, iterations):
+    """Independent formulas for the historical public operations and repeated selector."""
+    workload, metrics = row["id"], row["metrics"]
+    if workload in SESSION_DEFINITIONS:
+        contract = row["session_contract"]
+        searches = contract["searches_per_unit"]
+        patch_width, patch_height = contract["patch_extent"]
+        left, top, right, bottom = row["effective_regions"][0]
+        offsets = (right - left - patch_width + 1) * (bottom - top - patch_height + 1)
+        scans = {"retained-miss": 1, "turnover": 6, "query-match": 5, "query-deadline": 1}.get(
+            contract["case"], searches * 2)
+        expected = {"score_copied_bytes": offsets * searches * 4 * iterations,
+                    "score_offsets_scanned": offsets * scans * iterations,
+                    "logical_mapped_bytes": (right - left) * (bottom - top) * 4 * searches * iterations}
+    elif workload == DIRECT_FORMAT_WORKLOAD:
+        offsets = 9 * (1909 * 1071) + 8 * (309 * 171) + 293 * 155
+        expected = {"score_copied_bytes": offsets * 4 * iterations,
+                    "score_offsets_scanned": offsets * iterations,
+                    # One shared full BGRA mapping preserves 16 bytes of row padding.
+                    "logical_mapped_bytes": (57_519_168 // 3 * 4 + 16 * 1080) * iterations}
+    elif workload.startswith("selection-"):
+        dimensions, scans = {
+            "selection-k1-large": ((3840, 2160), 1),
+            "selection-k16-dense1080p-keepall": ((1920, 1080), 16),
+            "selection-k16-dense1080p-dropoverlapping": ((1920, 1080), 16),
+            "selection-k256-small-dense-tied": ((96, 64), 256),
+            "selection-k256-large-sparse": ((3840, 2160), 4),
+        }[workload]
+        offsets = math.prod(dimensions)
+        expected = {"score_copied_bytes": offsets * 4 * iterations,
+                    "score_offsets_scanned": offsets * scans * iterations,
+                    "backend_find_calls": 0, "bgr_conversions": 0, "bgr_converted_bytes": 0,
+                    "mapping_copies": 0, "mapping_copied_bytes": 0, "logical_mapped_bytes": 0}
+    elif workload.startswith("watch-"):
+        offsets = (32 - 12 + 1) * (24 - 10 + 1)
+        expected = {"backend_find_calls": 4 * iterations, "bgr_conversions": 4 * iterations,
+                    "bgr_converted_bytes": 4 * 32 * 24 * 3 * iterations,
+                    "mapping_copies": 4 * iterations, "mapping_copied_bytes": 4 * 32 * 24 * 4 * iterations,
+                    "score_copied_bytes": 4 * offsets * 4 * iterations,
+                    "score_offsets_scanned": 4 * offsets * iterations,
+                    "logical_mapped_bytes": 4 * 32 * 24 * 4 * iterations}
+    else:
+        width, height = ((96, 64) if workload == "single-small96x64" else
+                         (3840, 2160) if workload == "single-4k" else
+                         (4096, 2732) if workload == "contract-oversized-bgr" else
+                         (320, 180) if workload in (
+                             "batch8-cold-roi320x180", "batch8-live-owner-roi320x180",
+                             "contract-expired-mapping") else (1920, 1080))
+        calls = (8 if workload.startswith("batch8-") else
+                 2 if workload in ("concurrent2-cold-full1080p", "contract-different-frame",
+                                   "contract-equal-stamp", "contract-expired-mapping") else
+                 4 if workload == "contract-eviction" else 1)
+        calls = calls * iterations + (8 if workload == "batch8-warm-full1080p" else 0)
+        copies = calls + (iterations if workload in (
+            "batch8-live-owner-roi320x180", "contract-expired-mapping") else 0)
+        offsets = (width - 12 + 1) * (height - 10 + 1)
+        expected = {"backend_find_calls": calls, "bgr_conversions": calls,
+                    "bgr_converted_bytes": calls * width * height * 3,
+                    "mapping_copies": copies, "mapping_copied_bytes": copies * width * height * 4,
+                    "score_copied_bytes": calls * offsets * 4, "score_offsets_scanned": calls * offsets,
+                    "logical_mapped_bytes": calls * width * height * 4}
+    for name, value in expected.items():
+        require(integer(metrics.get(name), name) == value, f"uncached role physical work mismatch: {name}")
+
+
+def validate_direct_formats(row, iterations, accounting=ACCOUNTING_CONTRACT):
     observations = row.get("format_observations")
     require(isinstance(observations, list) and len(observations) == iterations,
             "all warmup/retained format observations required")
-    declared = direct_format_contract()
+    declared = direct_format_contract(accounting)
+    uncached = accounting == BASELINE_ACCOUNTING_CONTRACT
+    expected_work = declared["expected_per_iteration"]
     for observed in observations:
         require(observed.get("correct") is True, "incorrect direct-format observation")
         cases = observed.get("cases")
@@ -1375,9 +1510,10 @@ def validate_direct_formats(row, iterations):
             require(case.get("correct") is True and case.get("source_format") == expected["source_format"]
                     and case.get("selected_format") == expected["selected_format"], "actual selected format mismatch")
             source_stride = 1920 * 4 + expected["row_padding_bytes"]
-            mapped_stride = 320 * 4 if expected["nonzero_roi"] else 1920 * 4 if expected["forced_bgra_public_mapping"] else source_stride
+            copied = bool(expected["expected_mapping_copies"])
+            mapped_stride = 320 * 4 if expected["nonzero_roi"] else 1920 * 4 if copied else source_stride
             require(case.get("source_stride") == source_stride and case.get("mapped_stride") == mapped_stride
-                    and case.get("mapping_shared") is (not expected["nonzero_roi"] and not expected["forced_bgra_public_mapping"]),
+                    and case.get("mapping_shared") is (not copied),
                     "actual padded/shared/packed mapping layout mismatch")
             for key in ("mapping_copies", "mapping_copied_bytes", "bgr_conversions", "bgr_converted_bytes"):
                 require(integer(case.get("work", {}).get(key), key) == expected[f"expected_{key}"],
@@ -1385,23 +1521,26 @@ def validate_direct_formats(row, iterations):
         transitions = observed.get("transitions")
         require(isinstance(transitions, list) and len(transitions) == 3, "existing ROI/format transitions missing")
         for actual, expected in zip(transitions, declared["transition_cases"]):
-            require(actual.get("correct") is True and all(actual.get(key) == expected[key]
+            require(actual.get("correct") is True and all(exact_value(actual.get(key), expected[key])
                     for key in ("id", "selected_format", "region")), "ROI/format transition order/outcome mismatch")
-            require(actual.get("work") == {key: expected[key] for key in
-                    ("mapping_copies", "mapping_copied_bytes", "bgr_conversions", "bgr_converted_bytes")},
+            require(exact_value(actual.get("work"), {key: expected[key] for key in
+                    ("mapping_copies", "mapping_copied_bytes", "bgr_conversions", "bgr_converted_bytes")}),
                     "ROI/format transition work mismatch")
-        require(observed.get("work") == {key: value for key, value in DIRECT_FORMAT_WORK.items()
-                                        if key != "backend_find_calls"}
-                and observed.get("backend_find_calls") == 18
-                and observed.get("backend_find_completions") == 18, "direct-format iteration work mismatch")
+        require(exact_value(observed.get("work"), {key: value for key, value in expected_work.items()
+                                                  if key != "backend_find_calls"})
+                and integer(observed.get("backend_find_calls"), "format backend_find_calls") == 18
+                and integer(observed.get("backend_find_completions"), "format backend_find_completions") == 18,
+                "direct-format iteration work mismatch")
         lifetimes = observed.get("lifetimes")
         require(isinstance(lifetimes, list) and [item.get("id") for item in lifetimes] ==
                 declared["lifetime_order"], "lifetime observation order/count mismatch")
         for lifetime, order, held, evicted, active in (
-            (lifetimes[0], PERSISTENT_ORDER, (0, 172800, 172800, 172800, 172800, 172800, 0),
+            (lifetimes[0], declared["persistent_checkpoint_order"],
+             (0,) * 7 if uncached else (0, 172800, 172800, 172800, 172800, 172800, 0),
              (0,) * 7, (0,) * 7),
-            (lifetimes[1], ACTIVE_ORDER, (6220800, 12441600, 12441600, 12441600, 12441600, 0),
-             (0, 6220800, 0, 0, 0, 0), (1, 1, 0, 0, 0, 0)),
+            (lifetimes[1], declared["active_checkpoint_order"],
+             (0,) * 6 if uncached else (6220800, 12441600, 12441600, 12441600, 12441600, 0),
+             (0,) * 6 if uncached else (0, 6220800, 0, 0, 0, 0), (1, 1, 0, 0, 0, 0)),
         ):
             checkpoints = lifetime.get("checkpoints")
             require(isinstance(checkpoints, list) and [point.get("checkpoint") for point in checkpoints] ==
@@ -1412,13 +1551,20 @@ def validate_direct_formats(row, iterations):
                 require(point.get("cache_held_bgr_bytes") == cache_bytes
                         and point.get("active_evicted_bgr_bytes") == evicted_bytes
                         and point.get("active_backend_finds") == finds, "finite BGR/active-reader checkpoint mismatch")
-            mapping = (True, True, True, False, False, False, False) if lifetime["id"] == "persistent-hit" else (True, True, False, False, False, False)
-            sources = (True, True, True, True, False, False, False) if lifetime["id"] == "persistent-hit" else (True, True, True, False, False, False)
-            results = (False, True, True, True, True, False, False) if lifetime["id"] == "persistent-hit" else (False, False, True, True, False, False)
+            persistent = lifetime["id"] in ("persistent-hit", "persistent-uncached")
+            if uncached:
+                lifetime_work = ({"mapping_copies": 2, "mapping_copied_bytes": 460800,
+                                  "bgr_conversions": 2, "bgr_converted_bytes": 345600} if persistent else
+                                 {"mapping_copies": 3, "mapping_copied_bytes": 24883200,
+                                  "bgr_conversions": 3, "bgr_converted_bytes": 18662400})
+                require(exact_value(lifetime.get("work"), lifetime_work), "uncached lifetime physical work mismatch")
+            mapping = (True, True, True, False, False, False, False) if persistent else (True, True, False, False, False, False)
+            sources = (True, True, True, True, False, False, False) if persistent else (True, True, True, False, False, False)
+            results = (False, True, True, True, True, False, False) if persistent else (False, False, True, True, False, False)
             for point, mapped, source, result in zip(checkpoints, mapping, sources, results):
                 require(point.get("mapping_owner_live") is mapped and point.get("source_frame_alive") is source
                         and point.get("result_owner_live") is result, "logical owner checkpoint mismatch")
-    for key, per_iteration in DIRECT_FORMAT_WORK.items():
+    for key, per_iteration in expected_work.items():
         require(integer(row["metrics"].get(key), key) == per_iteration * iterations,
                 f"direct-format aggregate work mismatch: {key}")
     require(row["metrics"].get("final_owner_correct") is True, "direct-format final owner failure")
@@ -1963,6 +2109,7 @@ def runtime_preflight(args):
     plan = {"target": args.target, "build_mode": args.build_mode, "binary": identity,
             "host": host_identity(), "environment": environment(), "collector": collector_identity(),
             "observer": macos_images.method_identity(), "schedule": tasks, "execution_limits": limits}
+    boundary_identity = preflight_identity(identity, version)
     destination = Path(args.output).resolve()
     with exclusive_collector():
         destination.mkdir(parents=True, exist_ok=False)
@@ -1982,10 +2129,11 @@ def runtime_preflight(args):
             attempt = {"task": task, "argv": argv, "identity_before": None, "identity_after": None,
                        "identity_error": None, "receipt": None, "campaign_elapsed_before": before,
                        "timeout_seconds": timeout}
+            attempt_path = destination / "attempts" / f"{task['id']}.json"
             save(destination / "started" / f"{task['id']}.json", attempt)
             try:
                 check_files(identity)
-                attempt["identity_before"] = identity
+                attempt["identity_before"] = boundary_identity
                 timeout = min(timeout, deadline - time.monotonic()
                               - limits["cleanup_seconds"] - limits["runtime_binding_seconds"])
                 require(timeout > 0, "preflight deadline reached before child launch")
@@ -1996,7 +2144,7 @@ def runtime_preflight(args):
                     binding_seconds=limits["runtime_binding_seconds"])
                 attempt["receipt"] = receipt
                 check_files(identity)
-                attempt["identity_after"] = identity
+                attempt["identity_after"] = boundary_identity
                 require(successful(receipt["record"]), "preflight process or owned cleanup failed")
                 closed = macos_images.validate_closure(receipt)
                 require(closed["ok"], "preflight image binding failed: " + str(closed["reason"]))
@@ -2015,14 +2163,14 @@ def runtime_preflight(args):
                 attempt["interruption"] = type(error).__name__
                 attempt["campaign_elapsed_after"] = time.monotonic() - started
                 try:
-                    save(destination / "attempts" / f"{task['id']}.json", attempt)
+                    save(attempt_path, attempt)
                 except (OSError, ValueError):
                     pass  # Preserve the primary interruption after best-effort receipt retention.
                 raise
             attempt["campaign_elapsed_after"] = time.monotonic() - started
-            save(destination / "attempts" / f"{task['id']}.json", attempt)
+            save(attempt_path, attempt)
             attempts.append(attempt)
-            retained_bytes += len(document(attempt))
+            retained_bytes += attempt_path.stat().st_size
             if retained_bytes > 64 * MIB:
                 issues.append("runtime preflight bundle exceeds 64 MiB")
             if issues:
@@ -2242,13 +2390,245 @@ def collect(args, mode):
         return result
 
 
+def source_path(value):
+    require(isinstance(value, str) and value and "\\" not in value and "\0" not in value
+            and all(ord(char) >= 32 and ord(char) != 127 for char in value),
+            "unsafe exported source path")
+    path = PurePosixPath(value)
+    require(path.parts and not path.is_absolute() and path.as_posix() == value
+            and all(part not in ("", ".", "..", ".git") and ":" not in part
+                    and not part.endswith((" ", ".")) for part in path.parts),
+            "unsafe exported source path")
+    return value
+
+
+def exported_tree(text):
+    require(isinstance(text, str) and len(text.encode("utf-8")) <= SMOKE_LIMITS["output_limit_bytes"]
+            and text.endswith("\0"), "complete bounded source tree listing required")
+    entries = text[:-1].split("\0")
+    require(len(entries) <= SOURCE_LIMITS["entries"], "source tree entry limit reached")
+    files, omissions, folded = {}, {}, set()
+    for entry in entries:
+        header, separator, path = entry.partition("\t")
+        require(separator and re.fullmatch(r"(100644|100755|120000) blob [0-9a-f]{40}", header),
+                "unsupported exported source tree entry")
+        source_path(path)
+        require(path.casefold() not in folded, "duplicate or aliased source tree path")
+        folded.add(path.casefold())
+        mode, _, oid = header.split(" ")
+        item = {"mode": mode, "git_object": oid}
+        if mode == "120000":
+            require(CONTEXT_LINK_OMISSIONS.get(path) == item, "unsafe source tree link")
+            omissions[path] = item
+        else:
+            files[path] = item
+    require("Cargo.lock" in files and all(path in files for path in APPARATUS_SOURCES),
+            "source commit lacks Cargo.lock or compiled apparatus")
+    return files, omissions
+
+
+def verify_export(root, expected, omissions, deadline, receipt):
+    """Hash regular materialized bytes without following links, within fixed bounds."""
+    started = time.monotonic()
+    deadline = min(deadline, started + SOURCE_LIMITS["verification_seconds"])
+    root = Path(root).absolute()
+    receipt.update(root=str(root), files={}, omitted_context_links=omissions, complete=False,
+                   file_mode_method="windows-regular-file-bytes" if os.name == "nt" else "posix-executable-bits")
+    require(root == root.resolve(strict=True) and stat.S_ISDIR(root.lstat().st_mode),
+            "source root must be an exact real directory without links")
+    directories = {PurePosixPath(path).parent.as_posix() for path in expected}
+    directories |= {parent.as_posix() for path in expected for parent in PurePosixPath(path).parents}
+    pending, count, total = [(root, "")], 0, 0
+    while pending:
+        directory, prefix = pending.pop()
+        require(directory == directory.resolve(strict=True) and stat.S_ISDIR(directory.lstat().st_mode),
+                "source directory changed or escaped through a link")
+        require(time.monotonic() < deadline, "export source verification deadline reached")
+        with os.scandir(directory) as children:
+            for child in children:
+                count += 1
+                require(count <= SOURCE_LIMITS["entries"], "export source traversal entry limit reached")
+                require(time.monotonic() < deadline, "export source verification deadline reached")
+                path = source_path(prefix + child.name)
+                # Windows DirEntry.stat omits file identity and link count.
+                info = os.stat(child.path, follow_symlinks=False)
+                if stat.S_ISDIR(info.st_mode):
+                    require(path in directories, f"extra source directory: {path}")
+                    pending.append((Path(child.path), path + "/"))
+                    continue
+                require(stat.S_ISREG(info.st_mode), f"unsafe source link or special file: {path}")
+                require(path in expected, f"extra exported source: {path}")
+                require(info.st_nlink == 1, f"unsafe hard-linked source: {path}")
+                require(info.st_size <= SOURCE_LIMITS["file_bytes"], f"source file byte limit: {path}")
+                total += info.st_size
+                require(total <= SOURCE_LIMITS["total_bytes"], "export source total byte limit reached")
+                blob = hashlib.sha1(f"blob {info.st_size}\0".encode("ascii"))
+                checksum = hashlib.sha256()
+                size = 0
+                descriptor = os.open(child.path, os.O_RDONLY | getattr(os, "O_NOFOLLOW", 0)
+                                     | getattr(os, "O_NONBLOCK", 0))
+                with os.fdopen(descriptor, "rb") as stream:
+                    opened = os.fstat(stream.fileno())
+                    require((opened.st_dev, opened.st_ino, opened.st_mode, opened.st_size)
+                            == (info.st_dev, info.st_ino, info.st_mode, info.st_size),
+                            f"source changed while opening: {path}")
+                    while True:
+                        require(time.monotonic() < deadline, "export source verification deadline reached")
+                        chunk = stream.read(1024 * 1024)
+                        if not chunk:
+                            break
+                        size += len(chunk)
+                        require(size <= info.st_size, f"source changed while reading: {path}")
+                        blob.update(chunk)
+                        checksum.update(chunk)
+                    after = os.fstat(stream.fileno())
+                current = os.stat(child.path, follow_symlinks=False)
+                # Windows pathname and descriptor ctime can have different meanings.
+                require(size == info.st_size and all(
+                    (item.st_dev, item.st_ino, item.st_mode, item.st_size, item.st_mtime_ns, item.st_ctime_ns)
+                    == (prior.st_dev, prior.st_ino, prior.st_mode, prior.st_size, prior.st_mtime_ns, prior.st_ctime_ns)
+                    for item, prior in ((after, opened), (current, info))), f"source changed while hashing: {path}")
+                # Windows verifies tree-declared modes as metadata, not unavailable POSIX execute bits.
+                item = {"mode": expected[path]["mode"] if os.name == "nt" else
+                        "100755" if info.st_mode & 0o111 else "100644",
+                        "git_object": blob.hexdigest(), "sha256": checksum.hexdigest(), "bytes": size}
+                receipt["files"][path] = item
+                require(all(item[key] == value for key, value in expected[path].items()),
+                        f"exported source differs from exact Git tree: {path}")
+    require(set(receipt["files"]) == set(expected), "missing exported source files")
+    receipt.update(complete=True, total_bytes=total,
+                   files_sha256=hashlib.sha256(document(receipt["files"])).hexdigest())
+    return receipt
+
+
+def validate_export_binding(build, probes):
+    binding = build["source_binding"]
+    require(isinstance(binding, dict) and binding.get("variant") == EXPORTED_SOURCE_BINDING
+            and binding.get("limits") == SOURCE_LIMITS and "source_status_porcelain" not in build,
+            "unsupported exported source binding")
+    revision = digest(build["source_revision"], "exported source revision", 40)
+    require([item["argv"][1:] for item in probes[1:]] == [
+        ["--no-replace-objects", "rev-parse", "--verify", revision + "^{commit}"],
+        ["--no-replace-objects", "rev-parse", "--verify", revision + "^{tree}"],
+        ["--no-replace-objects", "ls-tree", "-r", "-z", "--full-tree", revision], ["-vV"]],
+        "exported source provenance command mismatch")
+    require(all(item.get("cwd") == binding.get("repository") for item in probes),
+            "exported source repository observation missing")
+    native_path(binding.get("repository"), build["target"])
+    native_path(binding.get("source_root"), build["target"])
+    require(probes[1]["record"]["stdout"].strip() == revision
+            and probes[2]["record"]["stdout"].strip() == build["source_tree"]
+            and probes[4]["record"]["stdout"] == build["rustc"], "exported source probe identity differs")
+    expected, omissions = exported_tree(probes[3]["record"]["stdout"])
+    before, after = binding.get("before"), binding.get("after")
+    require(isinstance(before, dict) and before == after and before.get("complete") is True
+            and before.get("root") == binding.get("source_root")
+            and before.get("file_mode_method") == (
+                "windows-regular-file-bytes" if build["target"] == TARGETS[1] else "posix-executable-bits")
+            and before.get("omitted_context_links") == omissions, "incomplete or changed exported source verification")
+    files = before.get("files")
+    require(isinstance(files, dict) and set(files) == set(expected), "exported source file set differs")
+    for path, item in files.items():
+        require(isinstance(item, dict) and set(item) == {"mode", "git_object", "sha256", "bytes"}
+                and all(item[key] == value for key, value in expected[path].items()),
+                f"exported source tree identity differs: {path}")
+        digest(item["sha256"], f"exported source {path}")
+        require(integer(item["bytes"], f"exported source size {path}") <= SOURCE_LIMITS["file_bytes"],
+                "exported source file byte limit")
+    total = sum(item["bytes"] for item in files.values())
+    require(total == before.get("total_bytes") and total <= SOURCE_LIMITS["total_bytes"]
+            and before.get("files_sha256") == hashlib.sha256(document(files)).hexdigest(),
+            "exported source receipt digest or total differs")
+    require(files["Cargo.lock"]["sha256"] == build["cargo_lock_sha256"]
+            and all(files[path]["sha256"] == checksum for path, checksum in
+                    apparatus_identity(build.get("apparatus"))["source_files"].items()),
+            "exported Cargo.lock or compiled apparatus differs")
+
+
+def attest_export(args):
+    commands, before, after = [], {}, {}
+    binding = {"variant": EXPORTED_SOURCE_BINDING, "source_root": str(Path(args.source_root).absolute())
+               if args.source_root else None, "repository": str(ROOT), "limits": dict(SOURCE_LIMITS),
+               "before": before, "after": after}
+    schedule, error = [], None
+    try:
+        require(args.source_root is not None and args.source_revision is not None,
+                "--source-root and --source-revision are required together")
+        require(args.protocol_version == 3, "exported source attestation requires protocol3")
+        definitions_for(args.build_mode, 3)
+        revision = digest(args.source_revision, "source_revision", 40)
+        require(host_identity()["target"] == args.target, "attestation must run on the actual native target")
+        binary = Path(args.binary).resolve(strict=True)
+        binary_hash = sha256(binary)
+        git, rustc = shutil.which("git"), shutil.which("rustc")
+        require(git and rustc, "attestation requires git and rustc on PATH")
+        git, rustc = str(Path(git).absolute()), str(Path(rustc).absolute())
+        schedule = [command({"path": str(binary)}, {"workload": None}, "smoke", 3),
+                    [git, "--no-replace-objects", "rev-parse", "--verify", revision + "^{commit}"],
+                    [git, "--no-replace-objects", "rev-parse", "--verify", revision + "^{tree}"],
+                    [git, "--no-replace-objects", "ls-tree", "-r", "-z", "--full-tree", revision], [rustc, "-vV"]]
+        deadline = time.monotonic() + SMOKE_LIMITS["campaign_timeout_seconds"]
+        for index, argv in enumerate(schedule):
+            timeout = min(SMOKE_LIMITS["child_timeout_seconds"],
+                          deadline - time.monotonic() - SMOKE_LIMITS["cleanup_seconds"])
+            require(timeout > 0, "attestation campaign deadline reached; remaining probe slots not-run")
+            attempt = {"argv": argv, "cwd": str(ROOT), "record": None}
+            commands.append(attempt)
+            attempt["record"] = run_process(
+                argv, cwd=ROOT, env=environment(), timeout_seconds=timeout,
+                output_limit_bytes=SMOKE_LIMITS["output_limit_bytes"],
+                cleanup_seconds=SMOKE_LIMITS["cleanup_seconds"])
+            require(successful(attempt["record"]), f"attestation command failed: {argv}")
+            text = attempt["record"]["stdout"]
+            if index == 0:
+                value = strict_json(text)
+                manifest = manifest_identity(value, args.target, value["opencv_version"], 3, args.build_mode)
+                runtime = loaded_runtime(value, verify_files=True)
+            elif index == 1:
+                require(text.strip() == revision, "source revision is not the exact retained Git commit")
+            elif index == 2:
+                tree = digest(text.strip(), "source_tree", 40)
+            elif index == 3:
+                expected, omissions = exported_tree(text)
+                verify_export(args.source_root, expected, omissions, deadline, before)
+                require(all(before["files"][path]["sha256"] == checksum for path, checksum in
+                            manifest["apparatus"]["source_files"].items()),
+                        "attested apparatus source bytes differ from export")
+        verify_export(args.source_root, expected, omissions, deadline, after)
+        require(before == after, "exported source changed during attestation")
+        require(sha256(binary) == binary_hash and loaded_runtime(value, verify_files=True) == runtime,
+                "binary or native dependency changed during attestation")
+        build = {"target": args.target, "protocol_version": 3, "build_mode": args.build_mode,
+                 "source_revision": revision, "source_tree": tree, "source_binding": binding,
+                 "binary_sha256": binary_hash, "cargo_lock_sha256": before["files"]["Cargo.lock"]["sha256"],
+                 "rustc": commands[4]["record"]["stdout"], "build_argv": strict_json(args.build_argv_json),
+                 "opencv_version": value["opencv_version"], "dependencies": runtime["images"],
+                 "loaded_native_runtime": runtime, "provenance_commands": commands,
+                 "benchmark_manifest": manifest, "apparatus": manifest["apparatus"],
+                 "attestation_scope": "exact exported Git commit/tree bytes; operator-supplied build command; not a review, reproducible build or loaded-image closure proof",
+                 "runtime_observation_scope": "OpenCV endpoint only; not full transitive/short-lived closure; nonqualifying"}
+        validate_v2_build({"path": str(binary), "build": build}, args.target, args.build_mode, 3)
+        save(args.output, build)
+        return {"metadata": str(Path(args.output).resolve()), "sha256": sha256(args.output)}
+    except BaseException as failure:
+        error = f"{type(failure).__name__}: {failure}"
+        raise
+    finally:
+        save(str(args.output) + ".probe.json", {
+            "format_version": args.protocol_version, "build_mode": args.build_mode, "commands": commands,
+            "schedule": schedule, "source_binding": binding, "error": error,
+            "execution_limits": execution_limits("smoke", len(schedule))})
+
+
 def attest(args):
     """Bind an explicit prebuilt executable to its actual loaded OpenCV images."""
     version = args.protocol_version
-    if version >= 2:
-        definitions_for(args.build_mode, version)
     require(not Path(args.output).exists() and not Path(str(args.output) + ".probe.json").exists(),
             "attestation destination already exists")
+    if args.source_root is not None or args.source_revision is not None:
+        return attest_export(args)
+    if version >= 2:
+        definitions_for(args.build_mode, version)
     require(host_identity()["target"] == args.target, "attestation must run on the actual native target")
     binary = Path(args.binary).resolve(strict=True)
     binary_hash = sha256(binary)
@@ -2331,6 +2711,8 @@ def parser():
     binding.add_argument("--binary", required=True)
     binding.add_argument("--build-argv-json", required=True, help="exact completed build command as a JSON array")
     binding.add_argument("--output", required=True, help="new build metadata JSON")
+    binding.add_argument("--source-root", help="exact exported source directory; requires --source-revision")
+    binding.add_argument("--source-revision", help="exact retained measurement Git commit; requires --source-root")
     discovery = commands.add_parser("runtime-preflight", help="protocol 2/3 macOS only: bind all representative image loads; non-acceptance")
     protocol_arguments(discovery)
     discovery.add_argument("--target", choices=TARGETS, required=True)

@@ -2818,9 +2818,12 @@ query barriers and explicit owner lifecycles. Logical inputs/oracles are common
 across roles; each role separately binds its helper sources and implemented
 accounting contract. Setup, primary work and teardown retain distinct boundaries,
 and turnover hit/miss strata are graded without adding overlapping intervals.
-The collector preserves historical protocol-1/2 interpretation. See the
-[Session corpus](performance.md#protocol-3-session-corpus); no SDK API or
-performance qualification changes follow from these apparatus additions.
+The collector admits fixed prepared-cache and uncached historical accounting
+contracts while preserving protocol-1/2 interpretation. Measurement-only
+exports bind their own actual Git commit/tree and complete pre/post regular-file
+identities; they do not replace historical artifacts or the release checkout.
+See the [Session corpus](performance.md#protocol-3-session-corpus); no SDK API
+or performance qualification changes follow from these apparatus additions.
 
 Public scores are compared against a tolerance rather than exactly, on one host as
 well as across the two. OpenCV normalizes through integral images and correlates a

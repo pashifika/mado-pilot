@@ -6,20 +6,12 @@ nothing about consumer startup, UI or multiprocess lanes. ``discover`` and
 ``observe`` run the exact child through the existing process runner with a
 child-only ``DYLD_PRINT_LIBRARIES=1`` and parse the retained stderr.
 
-Source-defined behavior (apple-oss-distributions/dyld, tag dyld-1231.3):
-``Loader::logLoad`` in dyld/Loader.cpp writes ``<UUID> path`` (or ``<no uuid>``)
-when a Loader is created or first mapped: the main executable in
-``RuntimeState::setMainLoader`` (dyld/DyldRuntimeState.cpp), disk images in
-``JustInTimeLoader::makeJustInTimeLoaderDisk`` and shared-cache images in
-``makeJustInTimeLoaderDyldCache`` (dyld/JustInTimeLoader.cpp) and
-``PrebuiltLoader::map`` (dyld/PrebuiltLoader.cpp). Delay-init moves and
-interposing/weak-def/inserted-duplicate notes are the only other
-``log.libraries`` messages. Unloads (``RuntimeState::removeLoaders``) log
-nothing; a reload after unmap creates a new Loader and logs again. Output
-reaches fd 2 through ``RuntimeState::vlog`` only when that descriptor is open
-and ``DYLD_PRINT_TO_FILE`` is unset; AMFI denies print variables to restricted
-processes, so a missing main-executable line is an unsupported loader, not an
-empty inventory. Manual mappings and unloads are therefore outside coverage.
+The host's dyld(1) contract documents one log line per loaded Mach-O image.
+Qualification binds that manual and OS identity; it does not assume the public
+dyld-1231.3 source reference below matches the running dyld. The reference
+describes UUID/path lines, delay-init notes and fd 2 output. Missing root
+logging is unsupported, not an empty inventory. Manual mappings and unload
+chronology are outside coverage.
 
 Every observed image must be bound: on-disk images by file identity, SHA-256
 and the Mach-O slice whose LC_UUID equals the logged UUID; shared-cache membership
@@ -72,6 +64,7 @@ PROCESS_SCOPE = {
                    "spawn and this helper cannot verify that assumption",
 }
 SOURCE = {
+    "role": "non-host implementation reference; coverage uses the pinned host dyld(1) contract",
     "repository": "https://github.com/apple-oss-distributions/dyld",
     "tag": "dyld-1231.3",
     "load_line": "dyld/Loader.cpp Loader::logLoad emits '<UUID> path' per Loader creation",
@@ -91,7 +84,7 @@ SOURCE = {
     "output": "RuntimeState::vlog: 'dyld[pid]: ' prefix then message on STDERR_FILENO",
 }
 OBSERVER_EFFECTS = (
-    "dyld write(2) calls to stderr at every Loader creation inside the child",
+    "dyld log formatting, stderr writes and possible pipe/scheduling contention inside the child",
     "child-only DYLD_PRINT_LIBRARIES=1 added to the supplied environment",
     "file stat/hash/Mach-O reads before launch and after owned exit only",
 )
