@@ -214,6 +214,16 @@ thread setting. Each observed run reserves its pre/post binding time separately
 from the child deadline. Raw output, failed outcomes and unrun schedule entries
 remain evidence; successful cleanup does not repair missing provenance.
 
+The shared owned-process runner adds lifetime `cpu` accounting without changing
+timeout, output, root-exit or cleanup decisions or their deadlines. POSIX collects
+the root's owning `wait4` usage at reap and reports
+`root-and-native-descendant-rollup` as `partial`, even when final. Windows uses
+the existing Job user/kernel totals, including nested jobs; `complete` requires
+observing zero active processes. Unavailable usage remains `unknown` with null
+values. Microsecond and 100-ns source representation units do not establish
+resolution or accuracy: `accounting_resolution_seconds` remains `null`. This
+accounting does not establish full POSIX-tree coverage or performance qualification.
+
 Protocol-3 runtime preflight stores the complete binary/source identity once in
 `plan.binary`. Successful before/after file checks retain its canonical-JSON
 SHA256 as `plan_binary_sha256`; unobserved boundaries remain null. Admission

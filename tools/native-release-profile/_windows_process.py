@@ -184,6 +184,9 @@ class JobTree:
         self._proc = None
         self.launch_cleanup_ok = True
         self._cleanup_attempted = False
+        self._cpu_times = None
+        self._cpu_final = False
+        self._cpu_reason = "job_not_queried"
 
     def launch(self, argv, cwd, env):
         self._job = _create_job()
@@ -241,20 +244,47 @@ class JobTree:
             self._cleanup_attempted = True
             self._proc.wait(timeout=max(0.0, deadline - time.monotonic()))
         except subprocess.TimeoutExpired:
+            self._cpu_reason = "root_not_reaped"
             return False
         # CPython owns this handle after Popen discards the primary-thread handle.
         # Cache returncode before closing it: Job accounting can retain its process reference.
         self._proc._handle.Close()
         if self._job is None:
+            self._cpu_reason = "job_handle_closed_before_accounting"
             return False
         while time.monotonic() < deadline:
             counts = _JobAccounting()
             if not _kernel32.QueryInformationJobObject(self._job, 1, ctypes.byref(counts), ctypes.sizeof(counts), None):
+                self._cpu_reason = "job_query_failed"
                 return False
+            self._cpu_times = (counts.times[0] / 10_000_000, counts.times[1] / 10_000_000)
+            self._cpu_final = counts.active == 0
+            self._cpu_reason = None if self._cpu_final else "owned_job_still_active"
             if counts.active == 0:
                 return True
             time.sleep(min(0.01, max(0.0, deadline - time.monotonic())))
+        self._cpu_reason = "job_settlement_deadline"
         return False
+
+    def reap(self, deadline):
+        try:
+            return self._proc.wait(timeout=max(0.0, deadline - time.monotonic()))
+        except subprocess.TimeoutExpired:
+            return None
+
+    def cpu_snapshot(self):
+        values = self._cpu_times
+        return {
+            "user_seconds": None if values is None else values[0],
+            "system_seconds": None if values is None else values[1],
+            "source": "windows-job-basic-accounting",
+            "scope": "owned-job-including-nested-jobs",
+            "status": "unknown" if values is None else "complete" if self._cpu_final else "partial",
+            "final": self._cpu_final,
+            "reason": self._cpu_reason,
+            "source_unit_seconds": 1e-7,
+            "accounting_resolution_seconds": None,
+        }
 
     def is_kill_status(self, status) -> bool:
         return self._job is None or (status & 0xFFFFFFFF) == TERMINATED_EXIT_CODE

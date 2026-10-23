@@ -15,6 +15,9 @@ qualification row passed.  Record keys, always present:
 - ``duration_seconds``: wall time from the launch attempt to this record.
 - ``launch_error``: why the child never executed, else ``None``.
 - ``process_id``: the owned root PID, or ``None`` when launch failed.
+- ``cpu``: lifetime native-scope accounting, separate from operational success.
+  Missing usage is null; POSIX descendant rollup remains partial. Native
+  representation units do not establish accounting resolution or accuracy.
 
 The child leads a new POSIX session/process group, or is the first member of a
 Windows job that denies breakaway and kills on close; only that group or job is
@@ -33,18 +36,6 @@ import sys
 import threading
 import time
 from pathlib import Path
-
-RECORD_KEYS = (
-    "exit_code",
-    "timed_out",
-    "output_limited",
-    "cleanup_ok",
-    "stdout",
-    "stderr",
-    "duration_seconds",
-    "launch_error",
-    "process_id",
-)
 
 _CHUNK_BYTES = 65536
 _POLL_SECONDS = 0.01
@@ -79,6 +70,7 @@ def run_process(
                 capture=capture,
                 started=started,
                 launch_error=str(exc) or type(exc).__name__,
+                cpu=_cpu_record(tree, launch_completed=False),
             )
         for stream, index in ((proc.stdout, 0), (proc.stderr, 1)):
             readers.append(_start_reader(stream, capture, index))
@@ -104,7 +96,7 @@ def run_process(
         # One sweep in every path: a live leader dies, a finished one only loses descendants.
         killed = tree.terminate()
         stopped = tree.await_cleanup(cleanup_deadline)
-        status = _reap(proc, cleanup_deadline)
+        status = tree.reap(cleanup_deadline)
         drain_deadline = cleanup_deadline - min(0.1, cleanup_seconds / 2)
         for reader in readers:
             reader.join(max(0.0, drain_deadline - time.monotonic()))
@@ -124,6 +116,7 @@ def run_process(
             capture=capture,
             started=started,
             launch_error=None,
+            cpu=_cpu_record(tree, launch_completed=True),
         )
     finally:
         capture.stop.set()
@@ -181,7 +174,7 @@ def _positive_finite(value) -> bool:
     )
 
 
-def _record(*, process_id, exit_code, timed_out, output_limited, cleanup_ok, capture, started, launch_error):
+def _record(*, process_id, exit_code, timed_out, output_limited, cleanup_ok, capture, started, launch_error, cpu):
     return {
         "exit_code": exit_code,
         "timed_out": timed_out,
@@ -192,7 +185,24 @@ def _record(*, process_id, exit_code, timed_out, output_limited, cleanup_ok, cap
         "duration_seconds": time.monotonic() - started,
         "launch_error": launch_error,
         "process_id": process_id,
+        "cpu": cpu,
     }
+
+
+def _cpu_record(tree, *, launch_completed):
+    record = tree.cpu_snapshot()
+    reason = None
+    if not launch_completed:
+        reason = "launch_not_completed"
+    elif record["status"] != "unknown":
+        values = (record["user_seconds"], record["system_seconds"])
+        if not all(isinstance(value, (int, float)) and not isinstance(value, bool)
+                   and math.isfinite(value) and value >= 0 for value in values):
+            reason = "invalid_native_accounting"
+    if reason is not None:
+        record.update(user_seconds=None, system_seconds=None, status="unknown",
+                      final=False, reason=reason)
+    return record
 
 
 def _reap(proc, deadline):
@@ -270,6 +280,8 @@ class _PosixTree:
         self._swept = False
         self._cleanup_seconds = cleanup_seconds
         self.launch_cleanup_ok = True
+        self._cpu_times = None
+        self._cpu_reason = "root_not_reaped"
 
     def launch(self, argv, cwd, env):
         self._proc = subprocess.Popen(
@@ -285,7 +297,7 @@ class _PosixTree:
         return self._proc
 
     def await_exit(self, deadline) -> bool:
-        return _await_exit_unreaped(self._proc, deadline)
+        return _await_exit_unreaped(self._proc, deadline, self.reap)
 
     def terminate(self) -> bool:
         self._swept = True
@@ -303,6 +315,54 @@ class _PosixTree:
             time.sleep(min(_POLL_SECONDS, max(0.0, deadline - time.monotonic())))
         return False
 
+    def reap(self, deadline):
+        if self._proc.returncode is not None:
+            if self._cpu_times is None and self._cpu_reason == "root_not_reaped":
+                self._cpu_reason = "already_reaped_without_usage"
+            return self._proc.returncode
+        if not hasattr(os, "wait4"):
+            self._cpu_reason = "wait4_unavailable"
+            return _reap(self._proc, deadline)
+        while True:
+            try:
+                pid, status, usage = os.wait4(self._proc.pid, os.WNOHANG)
+            except InterruptedError:
+                pid = 0
+            except ChildProcessError:
+                self._cpu_reason = "already_reaped_without_usage"
+                return _reap(self._proc, deadline)
+            except OSError:
+                self._cpu_reason = "wait4_failed"
+                return _reap(self._proc, deadline)
+            if pid == self._proc.pid:
+                if os.WIFEXITED(status) or os.WIFSIGNALED(status):
+                    self._proc.returncode = os.waitstatus_to_exitcode(status)
+                    self._cpu_times = (usage.ru_utime, usage.ru_stime)
+                    self._cpu_reason = "descendant_rollup_unproven"
+                    return self._proc.returncode
+            elif pid != 0:
+                self._cpu_reason = "wait4_pid_mismatch"
+                return _reap(self._proc, deadline)
+            remaining = deadline - time.monotonic()
+            if remaining <= 0:
+                self._cpu_reason = "reap_deadline"
+                return None
+            time.sleep(min(_POLL_SECONDS, remaining))
+
+    def cpu_snapshot(self):
+        values = self._cpu_times
+        return {
+            "user_seconds": None if values is None else values[0],
+            "system_seconds": None if values is None else values[1],
+            "source": "posix-wait4",
+            "scope": "root-and-native-descendant-rollup",
+            "status": "unknown" if values is None else "partial",
+            "final": values is not None,
+            "reason": self._cpu_reason,
+            "source_unit_seconds": 1e-6,
+            "accounting_resolution_seconds": None,
+        }
+
     @staticmethod
     def is_kill_status(status) -> bool:
         return status == -signal.SIGKILL
@@ -312,13 +372,13 @@ class _PosixTree:
             self.terminate()
             deadline = time.monotonic() + self._cleanup_seconds
             self.await_cleanup(deadline)
-            _reap(self._proc, deadline)
+            self.reap(deadline)
 
 
 # The leader stays a zombie until the sweep so its pgid cannot be recycled meanwhile.
 if hasattr(select, "kqueue"):
 
-    def _await_exit_unreaped(proc, deadline) -> bool:
+    def _await_exit_unreaped(proc, deadline, reap) -> bool:
         queue = select.kqueue()
         try:
             exit_event = select.kevent(
@@ -337,7 +397,7 @@ if hasattr(select, "kqueue"):
 
 elif hasattr(os, "waitid"):
 
-    def _await_exit_unreaped(proc, deadline) -> bool:
+    def _await_exit_unreaped(proc, deadline, reap) -> bool:
         flags = os.WEXITED | os.WNOHANG | os.WNOWAIT
         while os.waitid(os.P_PID, proc.pid, flags) is None:
             remaining = deadline - time.monotonic()
@@ -348,8 +408,8 @@ elif hasattr(os, "waitid"):
 
 else:
 
-    def _await_exit_unreaped(proc, deadline) -> bool:
-        return _reap(proc, deadline) is not None
+    def _await_exit_unreaped(proc, deadline, reap) -> bool:
+        return reap(deadline) is not None
 
 
 if sys.platform == "win32":
