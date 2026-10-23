@@ -122,8 +122,9 @@ verification has its own `CARGO_TARGET_DIR`.
 
 The separate `template-matching-timing` feature builds normal release code with
 the system allocator and no matching/mapping work counters. Invoke its emitted
-executable with `--protocol-version 3`, its default. The collector also reads
-historical protocol-1/2 binaries and evidence; the current executable emits only 3.
+executable with `--protocol-version 3`, its default. The collector also parses
+protocol-1/2 executable output. Existing campaigns require their recorded
+collector and policy for revalidation; the current executable emits only 3.
 Cargo feature unification that enables OpenCV or capture instrumentation makes a
 normal benchmark fail at compile time, including direct dependency features.
 
@@ -238,6 +239,21 @@ the external method review. All roles use the same declared observer-on runtime;
 normal remains the system-allocator/no-accounting build mode.
 [ADR 0095](adr/0095-component-timed-loader-boundaries.md) records this evidence
 contract without accepting a numerical profile.
+
+Prospective numerical policy revisions `template-efficiency-v2-prospective-r2`
+and `template-efficiency-v3-session-prospective-r2` require the absolute
+between-role A/A median difference to stay within the frozen allowance for
+every graded timing metric. Control and comparison independently enforce the
+15% cohort noise cap for each role, including turnover hit/miss strata, using
+the metric's frozen maximum calibration resolution and existing target CPU
+floor. Later role observations cannot enlarge that allowance. Equality passes
+both gates. Known failures remain failures when another role, metric or clock
+observation is incomplete; a passing median benefit never overrides them.
+Sampling, ceilings, benefit allowances and resource budgets are unchanged.
+Existing numerical evidence remains bound to its original collector and policy
+and cannot authorize the revised policy. New campaigns require fresh
+collector-bound preflights, method review, calibration, control and numerical review.
+See [ADR 0096](adr/0096-component-control-and-comparison-gates.md).
 
 The shared owned-process runner adds lifetime `cpu` accounting without changing
 timeout, output, root-exit or cleanup decisions or their deadlines. POSIX collects

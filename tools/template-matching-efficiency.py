@@ -123,16 +123,16 @@ SMOKE_LIMITS = {"child_timeout_seconds": 90, "campaign_timeout_seconds": 900,
                 "cleanup_seconds": 5, "output_limit_bytes": 8 * MIB}
 
 # Prospective component apparatus only; this never regrades format-one evidence.
-V2_POLICY = {**POLICY, "id": "template-efficiency-v2-prospective", "processes": 6,
+V2_POLICY = {**POLICY, "id": "template-efficiency-v2-prospective-r2", "processes": 6,
              "control_pairs": 6, "comparison_pairs": 6,
              "pair_order": ["AB", "BA", "AB", "BA", "AB", "BA"],
              "timing_ceiling": "ceil(max(calibration6) + max(spread, 2 * clock_allowance))",
              "benefit": "normal median(baseline6) - median(candidate6) > frozen allowance, jointly p95 and CPU",
-             "noise": "spread / max(median(cohort6), 2 * clock_allowance) <= noise_cap",
+             "noise": "spread / max(median(cohort6), 2 * frozen calibration clock_allowance) <= noise_cap",
              "resource_ceiling": "max(calibration6) + max(spread, fixed slack); live cache only on native RSS peak",
-             "control": "all processes within ceilings; order and half-cohort median differences <= allowance",
+             "control": "all processes within ceilings; between-role, order and half-cohort median differences <= allowance",
              "scope": "component only; no actual-consumer coverage or accepted numerical qualification"}
-V3_POLICY = {**V2_POLICY, "id": "template-efficiency-v3-session-prospective",
+V3_POLICY = {**V2_POLICY, "id": "template-efficiency-v3-session-prospective-r2",
              "resource_ceiling": "max(calibration6) + max(spread, fixed slack); native RSS peak live cache is row-scoped by simultaneous independent backend count",
              "strata": "turnover hit and miss remain process-local; grade each stratum and the overlapping primary cycle independently",
              "scope": "prospective Session component apparatus; no accepted method, profile or actual-consumer qualification"}
@@ -1870,7 +1870,7 @@ def derive_envelopes(evidence):
         require(len(rows) == count and (version == 1 or
                 sorted(row["process"] for row in rows) == list(range(count))),
                 "calibration requires five fresh processes" if version == 1 else "calibration requires 6 fresh processes")
-        limits, allowances = {}, {}
+        limits, allowances, clocks = {}, {}, {}
         if definition["statistical"]:
             for metric, clock in timing_metrics(workload, version):
                 values = [row.get(metric) for row in rows]
@@ -1886,6 +1886,8 @@ def derive_envelopes(evidence):
                         f"noisy calibration: {workload}/{metric}; retain the whole campaign")
                 limits[metric] = math.ceil(max(values) + allowance)
                 allowances[metric] = allowance
+                if version >= 2:
+                    clocks[metric] = resolution
         prefixes = ("rss",) if version >= 2 and evidence["plan"]["build_mode"] == "normal" else ("rss", "heap")
         for prefix in prefixes:
             for metric in (f"peak_{prefix}_bytes", f"{prefix}_growth_bytes", f"{prefix}_residual_bytes"):
@@ -1898,6 +1900,8 @@ def derive_envelopes(evidence):
                     live *= 2
                 limits[metric] = max(values) + slack + live
         result[workload] = {"limits": limits, "benefit_allowances": allowances}
+        if version >= 2:
+            result[workload]["clock_allowances"] = clocks
     return result
 
 
@@ -1933,6 +1937,7 @@ def control_evidence(calibration, control):
     issues = (list(calibration.get("prerequisite_issues", []))
               + list(control["issues"]) + control.get("prerequisite_issues", []))
     for workload, envelope in envelopes.items():
+        medians = {metric: [] for metric in envelope["benefit_allowances"]}
         for role in ("baseline", "control"):
             rows = control["observations"].get(role, {}).get(workload, [])
             complete = (len(rows) == 6 and sorted(row["process"] for row in rows) == list(range(6))
@@ -1949,15 +1954,14 @@ def control_evidence(calibration, control):
                         issues.append({"attempt": f"{role}:{workload}:{row['process']}", "status": "failed",
                                        "reason": f"{metric}={value} exceeds {limit}"})
             for metric, allowance in envelope["benefit_allowances"].items():
-                clock = "timer_resolution_ns" if metric.endswith("p95_ns") else "cpu_timer_resolution_ns"
-                if not complete or any(row.get(metric) is None or row[clock] is None for row in rows):
+                if not complete or any(row.get(metric) is None for row in rows):
                     continue
                 values = [row[metric] for row in rows]
-                resolution = max(row[clock] for row in rows)
-                if metric.endswith("cpu_ns"):
-                    resolution = max(resolution, POLICY["cpu_accounting_floor_ns"][control["plan"]["target"]])
+                median = statistics.median(values)
+                medians[metric].append(median)
+                resolution = envelope["clock_allowances"][metric]
                 checks = {
-                    "noise": (max(values) - min(values)) / max(statistics.median(values), 2 * resolution)
+                    "noise": (max(values) - min(values)) / max(median, 2 * resolution)
                              <= V2_POLICY["noise_cap"],
                     "order": abs(statistics.median(row[metric] for row in rows if row["position"] == 0)
                                  - statistics.median(row[metric] for row in rows if row["position"] == 1)) <= allowance,
@@ -1968,6 +1972,10 @@ def control_evidence(calibration, control):
                     if not passed:
                         issues.append({"attempt": f"{role}:{workload}", "status": "failed",
                                        "reason": f"A/A {metric} {name} exceeds frozen control tolerance"})
+        for metric, values in medians.items():
+            if len(values) == 2 and abs(values[0] - values[1]) > envelope["benefit_allowances"][metric]:
+                issues.append({"attempt": workload, "status": "failed",
+                               "reason": f"A/A {metric} between-role bias exceeds frozen control tolerance"})
     return issues
 
 
@@ -2067,6 +2075,16 @@ def compare_evidence(evidence, profile):
         complete = complete and all(row.get(metric) is not None for rows in cohorts.values()
                                     for row in rows for metric in envelope["limits"])
         for role, rows in cohorts.items():
+            if version >= 2 and len(rows) == count and sorted(row["process"] for row in rows) == list(range(count)):
+                for metric in envelope["benefit_allowances"]:
+                    if any(row.get(metric) is None for row in rows):
+                        continue
+                    values = [row[metric] for row in rows]
+                    resolution = envelope["clock_allowances"][metric]
+                    noise = (max(values) - min(values)) / max(statistics.median(values), 2 * resolution)
+                    if noise > V2_POLICY["noise_cap"]:
+                        issues.append({"attempt": f"{role}:{workload}", "status": "failed",
+                                       "reason": f"comparison {metric} noise exceeds frozen cohort tolerance"})
             for row in rows:
                 process = row["process"]
                 for metric, limit in envelope["limits"].items():

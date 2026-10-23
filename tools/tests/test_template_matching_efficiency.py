@@ -1909,6 +1909,47 @@ class ProtocolTwoControlTests(unittest.TestCase):
                 self.assertTrue(any(kind in issue["reason"] or (kind == "ceiling" and "exceeds" in issue["reason"])
                                     for issue in issues))
 
+    def test_control_between_role_bias_uses_frozen_allowance_in_both_directions(self):
+        workload = "single-small96x64"
+        for metric in ("p95_ns", "cpu_ns"):
+            calibration = copy.deepcopy(self.calibration)
+            for row in calibration["observations"]["baseline"][workload]:
+                row[metric] = 100_000
+            allowance = collector.derive_envelopes(calibration)[workload]["benefit_allowances"][metric]
+            for role in ("baseline", "control"):
+                for excess in (0, 1):
+                    with self.subTest(metric=metric, role=role, excess=excess):
+                        control = copy.deepcopy(self.control)
+                        for label in ("baseline", "control"):
+                            for row in control["observations"][label][workload]:
+                                row[metric] = 100_000 - (allowance + excess if label == role else 0)
+                        issues = collector.control_evidence(calibration, control)
+                        self.assertEqual(bool(issues), bool(excess))
+                        self.assertTrue(all(issue["status"] == "failed" for issue in issues))
+
+    def test_comparison_noise_is_role_local_and_preserves_missing_data(self):
+        workload = "single-small96x64"
+        for metric in ("p95_ns", "cpu_ns"):
+            calibration = copy.deepcopy(self.calibration)
+            for row in calibration["observations"]["baseline"][workload]:
+                row[metric] = 100_000
+            profile = v2_numeric_profile(calibration)
+            for role in ("baseline", "candidate"):
+                for excess, missing in ((0, False), (1, False), (1, True)):
+                    with self.subTest(metric=metric, role=role, excess=excess, missing=missing):
+                        comparison = copy.deepcopy(self.comparison)
+                        other = "candidate" if role == "baseline" else "baseline"
+                        for row in comparison["observations"][other][workload]:
+                            row[metric] = 100_000
+                        for index, row in enumerate(comparison["observations"][role][workload]):
+                            row[metric] = 80_000 if index < 4 else 92_000 + excess
+                        if missing:
+                            comparison["observations"][other][workload].pop()
+                            comparison["observations"][role][workload][0]["peak_rss_bytes"] = None
+                        issues, _ = collector.compare_evidence(comparison, profile)
+                        self.assertEqual(any(issue["status"] == "failed" for issue in issues), bool(excess))
+                        self.assertEqual(any(issue["status"] == "incomplete" for issue in issues), missing)
+
     def test_control_rejects_rebinding_to_another_calibration_receipt(self):
         for field in ("plan_sha256", "attempts"):
             with self.subTest(field=field):
@@ -3419,6 +3460,92 @@ class ProtocolThreeGradingTests(unittest.TestCase):
                     self.assertTrue(any(metric in issue["reason"] and
                                         (kind in issue["reason"] or kind == "ceiling" and "exceeds" in issue["reason"])
                                         for issue in issues))
+
+    def test_stratum_control_bias_cannot_pass_as_unchanged(self):
+        workload = "session-turnover-rgba-full"
+        for metric in ("strata.hit.p95_ns", "strata.miss.cpu_ns"):
+            calibration = copy.deepcopy(self.calibration)
+            for row in calibration["observations"]["baseline"][workload]:
+                row[metric] = 100_000
+            allowance = collector.derive_envelopes(calibration)[workload]["benefit_allowances"][metric]
+            for role in ("baseline", "control"):
+                with self.subTest(metric=metric, role=role):
+                    control = copy.deepcopy(self.control)
+                    for label in ("baseline", "control"):
+                        for row in control["observations"][label][workload]:
+                            row[metric] = 100_000 - (allowance + 1 if label == role else 0)
+                    control["observations"][role][workload][0]["peak_rss_bytes"] = None
+                    issues = collector.control_evidence(calibration, control)
+                    self.assertTrue(any(issue["status"] == "failed" for issue in issues))
+                    self.assertTrue(any(issue["status"] == "incomplete" for issue in issues))
+
+    def test_each_comparison_stratum_keeps_its_own_noise_cap(self):
+        workload = "session-turnover-rgba-full"
+        for metric in ("strata.hit.p95_ns", "strata.miss.cpu_ns"):
+            calibration = copy.deepcopy(self.calibration)
+            for row in calibration["observations"]["baseline"][workload]:
+                row[metric] = 100_000
+            profile = v2_numeric_profile(calibration)
+            profile["format_version"] = 3
+            for role in ("baseline", "candidate"):
+                for excess in (0, 1):
+                    with self.subTest(metric=metric, role=role, excess=excess):
+                        comparison = copy.deepcopy(self.comparison)
+                        other = "candidate" if role == "baseline" else "baseline"
+                        for row in comparison["observations"][other][workload]:
+                            row[metric] = 100_000
+                        for index, row in enumerate(comparison["observations"][role][workload]):
+                            row[metric] = 80_000 if index < 4 else 92_000 + excess
+                        issues, _ = collector.compare_evidence(comparison, profile)
+                        self.assertEqual(bool(issues), bool(excess))
+                        self.assertTrue(all(issue["status"] == "failed" for issue in issues))
+
+    def test_observed_role_clock_cannot_relax_frozen_cohort_noise(self):
+        cases = (("single-small96x64", "p95_ns"), ("single-small96x64", "cpu_ns"),
+                 ("session-turnover-rgba-full", "strata.hit.p95_ns"),
+                 ("session-turnover-rgba-full", "strata.miss.cpu_ns"))
+        for workload, metric in cases:
+            clock = "timer_resolution_ns" if metric.endswith("p95_ns") else "cpu_timer_resolution_ns"
+            calibration = copy.deepcopy(self.calibration)
+            for row in calibration["observations"]["baseline"][workload]:
+                row[metric], row[clock] = 100_000, 1_000
+            profile = v2_numeric_profile(calibration)
+            profile["format_version"] = 3
+            for mode, original in (("control", self.control), ("comparison", self.comparison)):
+                for role in original["observations"]:
+                    with self.subTest(workload=workload, metric=metric, mode=mode, role=role):
+                        evidence = copy.deepcopy(original)
+                        for rows in evidence["observations"].values():
+                            for row in rows[workload]:
+                                row[metric], row[clock] = 100_000, 1_000
+                        rows = evidence["observations"][role][workload]
+                        rows[0][metric] = 84_999
+                        for row in rows:
+                            row[clock] = 200_000
+                        issues = (collector.control_evidence(calibration, evidence) if mode == "control"
+                                  else collector.compare_evidence(evidence, profile)[0])
+                        self.assertEqual(len(issues), 1)
+                        self.assertEqual(issues[0]["status"], "failed")
+
+    def test_unavailable_clock_keeps_known_between_role_cpu_bias(self):
+        for workload, metric in (("single-small96x64", "cpu_ns"),
+                                 ("session-turnover-rgba-full", "strata.miss.cpu_ns")):
+            calibration = copy.deepcopy(self.calibration)
+            for row in calibration["observations"]["baseline"][workload]:
+                row[metric] = 100_000
+            allowance = collector.derive_envelopes(calibration)[workload]["benefit_allowances"][metric]
+            for role in ("baseline", "control"):
+                with self.subTest(workload=workload, role=role):
+                    control = copy.deepcopy(self.control)
+                    for label in control["observations"]:
+                        for row in control["observations"][label][workload]:
+                            row[metric] = 100_000 - (allowance + 1 if label == role else 0)
+                    row = control["observations"][role][workload][0]
+                    row["cpu_timer_resolution_ns"] = None
+                    row["unavailable"] = ["cpu_timer_resolution_ns"]
+                    issues = collector.control_evidence(calibration, control)
+                    self.assertTrue(any(issue["status"] == "failed" for issue in issues))
+                    self.assertTrue(any(issue["status"] == "incomplete" for issue in issues))
 
     def test_independent_cache_allowance_changes_only_its_rss_peak(self):
         independent = self.profile["envelopes"]["lifecycle-independent-rgba-4k"]["limits"]
