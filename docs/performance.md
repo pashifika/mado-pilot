@@ -275,9 +275,12 @@ and other campaign receipt formats retain their existing identities.
 
 Attempt reports distinguish execution, cleanup, file identity, runtime provenance
 and semantic failures. Post-run file identity is retained before receipt validation.
-A fully bound row failure preserves later scheduled work but never enters accepted
-scalar cohorts. Unsafe cleanup, identity or runtime-provenance failure stops later
-launches; failed manifest discovery also stops sampling.
+Diagnostic smoke may continue after a fully bound row failure; that failure
+never enters accepted scalar cohorts. Unsafe cleanup, identity or
+runtime-provenance failure stops later launches; failed manifest discovery also
+stops sampling. Current Apple timing-policy campaigns additionally stop on
+execution or semantic failure. Historical receipts retain their recorded
+collector and policy interpretation.
 
 For macOS preflight, use the same absolute native Python path on both sides of
 setup so child `PATH` staging cannot select another interpreter:
@@ -325,6 +328,57 @@ choices. Applications select their own scope and own consumer-created children.
 The SDK remains responsible for its documented parameter contracts and the
 resources and workers it creates. No application is required to adopt these
 recorders, and component evidence does not guarantee arbitrary consumer behavior.
+
+### Apple observer-on component campaign
+
+[ADR 0097](adr/0097-apple-observer-on-component-campaign.md) accepts the
+source-bound method after actual management-owner smoke and concrete initial
+host/storage admission. It covers only the Apple Silicon single-process,
+capture-free warm component lane under `macos-dyld-observer-on-warm-v1`, with
+separate normal and instrumented calibration, A/A control and comparison:
+six collection stages. Every stage requires fresh admission.
+Each mode requires its own accepted numerical-profile review after calibration
+and control, before comparison. Normal p95/CPU benefit and instrumented mechanism
+evidence remain separate; no measurement or qualification is accepted here.
+
+The fixed protocol-3 schedule retains 41 statistical rows at 20/200 warmups and
+samples, with 13 normal or 16 instrumented contract rows at 1/3. Maximum launches
+are 325/650/650 and 343/686/686, including manifests. Each stage retains the
+300-second child, 8-MiB combined raw-output, five-second cleanup and 120-second
+per-pass image-binding limits. Independent collection clocks are 21,600 seconds
+for calibration and 43,200 for control/comparison. Whole-owner execution
+windows are 23,400/45,000 seconds with a separate 65-second cleanup/retention
+tail; these bounds promise neither completion nor complete persistence.
+
+The private owner calls the exact collector in-process and reuses its
+owned-process runner, deferring deadline interruption while native ownership and
+cleanup are active. It must retain late/failing child receipts without retry or
+success promotion. Whole-owner/OS loss and non-returning OS primitives remain
+outside the cleanup guarantee. Apple timing-policy prerequisite failures stop
+later launches; known failures and unrun slots remain evidence.
+
+Admission must count serialized evidence, fixed metadata and owner receipts,
+not just raw pipe bytes. Fresh free-space checks and post-stage inventories are
+not filesystem reservations or quotas. Operator-controlled host exclusivity
+does not exclude unrelated writers; the collector lock is not a host lock.
+RSS high-water is observed only at apparatus checkpoints, not necessarily at
+the final process-lifetime peak; these observations exclude management-owner
+memory. Rust heap accounting does not cover all native allocations.
+
+Final hash-bound method artifacts and subsequent profile reviews govern each
+campaign. Historical evidence remains immutable. Startup, observer-off, Windows
+normal observation, actual-consumer qualification and the whole performance
+Change remain incomplete; campaign no-spawn assumptions impose no SDK or
+consumer restriction.
+
+The admitted normal calibration has no accepted numerical profile. Its first
+stored CPU-repeatability failure is `single-small96x64/cpu_ns`; evaluation stops
+there, without declaring other rows clean. An independent offline audit also
+finds CPU-noise failures for `session-owner8-bgra-roi` and `query-match-rgba-roi`,
+without rerunning or regrading the campaign. Successful process cleanup and
+immutable input bindings do not validate noisy timings. A/A control and candidate
+comparison remain unrun; no product regression or benefit follows from this
+calibration failure.
 
 ### Historical format-1 collector
 
