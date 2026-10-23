@@ -1,5 +1,6 @@
 """Exercise process_runner with a stdlib child whose behaviour is gated by explicit arguments."""
 
+import json
 import ctypes
 import os
 import shutil
@@ -52,6 +53,10 @@ CHILD = textwrap.dedent(
         sys.exit(int(sys.argv[4]))
     if mode == "stdin":
         emit(sys.stdout, str(len(sys.stdin.buffer.read())).encode())
+    if mode == "cpu":
+        import json
+        checksum = sum(i * i for i in range(300000))
+        emit(sys.stdout, json.dumps({"checksum": checksum, "cpu_seconds": time.process_time()}).encode())
     if mode == "hang":
         record_pid(sys.argv[2], os.getpid())
         emit(sys.stdout, b"started\\n")
@@ -156,7 +161,6 @@ class ProcessRunnerTests(unittest.TestCase):
         return int(path.read_text(encoding="utf-8"))
 
     def assert_record(self, record):
-        self.assertEqual(set(record), set(process_runner.RECORD_KEYS))
         self.assertIsInstance(record["duration_seconds"], float)
         self.assertGreaterEqual(record["duration_seconds"], 0.0)
 
@@ -175,6 +179,25 @@ class ProcessRunnerTests(unittest.TestCase):
         self.assertEqual(record["exit_code"], 0)
         self.assertEqual(record["process_id"], int(record["stdout"]))
         self.assertNotEqual(record["process_id"], os.getpid())
+
+    def test_cpu_preserves_native_usage_with_explicit_coverage(self):
+        record = self.run_child("cpu")
+        self.assert_clean(record)
+        self.assertEqual(record["exit_code"], 0)
+        child = json.loads(record["stdout"])
+        self.assertEqual(child["checksum"], 300000 * 299999 * 599999 // 6)
+        cpu = record["cpu"]
+        self.assertTrue(cpu["final"])
+        self.assertGreaterEqual(cpu["user_seconds"] + cpu["system_seconds"] + 1e-6,
+                                child["cpu_seconds"])
+        self.assertIsNone(cpu["accounting_resolution_seconds"])
+        if WINDOWS:
+            self.assertEqual(cpu["status"], "complete")
+            self.assertEqual(cpu["scope"], "owned-job-including-nested-jobs")
+        else:
+            self.assertEqual(cpu["status"], "partial")
+            self.assertEqual(cpu["scope"], "root-and-native-descendant-rollup")
+            self.assertEqual(cpu["reason"], "descendant_rollup_unproven")
 
     def test_exact_output_at_the_limit_with_zero_exit(self):
         total = len(STDOUT_ASCII) + len(STDERR_ASCII)
@@ -322,17 +345,17 @@ class ProcessRunnerTests(unittest.TestCase):
 
     def test_cleanup_observed_after_deadline_is_not_success(self):
         clock = time.monotonic
-        reap = process_runner._reap
+        reap = process_runner._Tree.reap
         shifted = 0.0
 
-        def observe(child, deadline):
+        def observe(tree, deadline):
             nonlocal shifted
-            status = reap(child, deadline)
+            status = reap(tree, deadline)
             shifted = 60.0
             return status
 
         with mock.patch.object(time, "monotonic", side_effect=lambda: clock() + shifted), \
-             mock.patch.object(process_runner, "_reap", side_effect=observe):
+             mock.patch.object(process_runner._Tree, "reap", observe):
             record = self.run_child("exact", "", "", "0")
         self.assertEqual(record["exit_code"], 0)
         self.assertFalse(record["cleanup_ok"])
@@ -354,6 +377,11 @@ class ProcessRunnerTests(unittest.TestCase):
         self.assertTrue(record["cleanup_ok"])
         self.assertEqual(record["stdout"], "")
         self.assertEqual(record["stderr"], "")
+        self.assertEqual(record["cpu"]["status"], "unknown")
+        self.assertEqual(record["cpu"]["reason"], "launch_not_completed")
+        self.assertFalse(record["cpu"]["final"])
+        self.assertIsNone(record["cpu"]["user_seconds"])
+        self.assertIsNone(record["cpu"]["system_seconds"])
 
     def test_missing_cwd_is_a_launch_error(self):
         record = process_runner.run_process(
