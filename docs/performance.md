@@ -370,8 +370,9 @@ Export checks allow at most 20,000 entries, 64 MiB per file, 512 MiB total and
 60 seconds per pass. Regular files must match; only the exact allowlisted
 repository-context symlink may be omitted. POSIX checks executable bits;
 Windows records Git modes as metadata and verifies regular-file bytes without
-claiming POSIX-mode equality. The lockfile and compiled helper-source manifest
-remain independently bound.
+claiming POSIX-mode equality. File identity and hard-link counts use full
+no-follow filesystem metadata, not Windows directory-entry cache fields. The
+lockfile and compiled helper-source manifest remain independently bound.
 
 The collector uses one warmup and three retained iterations per row, a 90-second
 owned-child deadline, a 900-second campaign deadline, 8 MiB bounded child output

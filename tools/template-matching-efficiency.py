@@ -2439,7 +2439,8 @@ def verify_export(root, expected, omissions, deadline, receipt):
                 require(count <= SOURCE_LIMITS["entries"], "export source traversal entry limit reached")
                 require(time.monotonic() < deadline, "export source verification deadline reached")
                 path = source_path(prefix + child.name)
-                info = child.stat(follow_symlinks=False)
+                # Windows DirEntry.stat omits file identity and link count.
+                info = os.stat(child.path, follow_symlinks=False)
                 if stat.S_ISDIR(info.st_mode):
                     require(path in directories, f"extra source directory: {path}")
                     pending.append((Path(child.path), path + "/"))

@@ -11,6 +11,7 @@ import shutil
 import sys
 import tempfile
 import unittest
+from types import SimpleNamespace
 from unittest import mock
 
 
@@ -3589,6 +3590,28 @@ class ExportedSourceAttestationTests(unittest.TestCase):
         self.assertEqual(self.output.read_bytes(), original)
         self.assertEqual(Path(str(self.output) + ".probe.json").read_bytes(), probe)
 
+    def test_directory_cache_without_file_identity_still_binds_real_source_bytes(self):
+        scandir = os.scandir
+
+        @contextlib.contextmanager
+        def cached_entries(directory):
+            with scandir(directory) as entries:
+                cached = []
+                for entry in entries:
+                    fields = list(entry.stat(follow_symlinks=False))
+                    fields[1:4] = [0, 0, 0]
+                    cached.append(SimpleNamespace(
+                        name=entry.name, path=entry.path,
+                        stat=mock.Mock(return_value=os.stat_result(fields))))
+                yield iter(cached)
+
+        with mock.patch.object(collector.os, "scandir", side_effect=cached_entries):
+            self.run_attest()
+        binding = collector.load(self.output)["source_binding"]
+        self.assertEqual(binding["before"], binding["after"])
+        for path, content in self.contents.items():
+            self.assertEqual(binding["before"]["files"][path]["sha256"], hashlib.sha256(content).hexdigest())
+
     def test_paired_options_fail_without_launch_and_keep_failure(self):
         for field in ("source_root", "source_revision"):
             with self.subTest(field=field):
@@ -3744,20 +3767,21 @@ class ExportedSourceAttestationTests(unittest.TestCase):
             self.assertEqual(len(retained["commands"]), 4)
             self.assertIsNotNone(retained["error"])
 
+    def test_hardlinked_export_cannot_attest_shared_source(self):
+        os.link(self.source / "Cargo.lock", self.root / "outside-source-link")
+        with self.assertRaisesRegex(ValueError, "hard-linked"):
+            self.run_attest()
+        retained = self.assert_failed_receipt()
+        self.assertFalse(retained["source_binding"]["before"]["complete"])
+
     @unittest.skipIf(os.name == "nt", "POSIX executable-bit and link observations")
-    def test_executable_mode_hardlinks_and_materialized_context_link_are_rejected(self):
+    def test_executable_mode_and_materialized_context_link_are_rejected(self):
         victim = self.source / "Cargo.lock"
         victim.chmod(0o755)
         with self.assertRaisesRegex(ValueError, "differs"):
             self.run_attest()
         self.assert_failed_receipt()
         victim.chmod(0o644)
-        self.args.output = str(self.root / "hard-link.json")
-        os.link(victim, self.root / "outside-source-link")
-        with self.assertRaisesRegex(ValueError, "hard-linked"):
-            self.run_attest()
-        (self.root / "outside-source-link").unlink()
-        self.assertFalse(Path(self.args.output).exists())
         self.args.output = str(self.root / "materialized-context.json")
         (self.source / "AGENTS.md").symlink_to("CLAUDE.md")
         with self.assertRaisesRegex(ValueError, "link"):
