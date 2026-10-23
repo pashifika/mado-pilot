@@ -1025,7 +1025,7 @@ class EvidenceTests(unittest.TestCase):
         self.assertEqual(collector.load(destination / "attempts/0000.json")["record"]["stderr"],
                          "retained diagnostic")
 
-    def test_candidate_cannot_write_inside_calibration_or_start_with_an_unpinned_profile(self):
+    def test_legacy_profiles_cannot_start_new_macos_qualification_even_when_pinned(self):
         calibration = self.root / "calibration"
         persist_campaign(calibration, "calibration")
         profile = collector.profile_from(collector.evaluate(calibration), calibration, "reviewer", "fixed host")
@@ -1042,10 +1042,10 @@ class EvidenceTests(unittest.TestCase):
               mock.patch.object(collector, "binary_identity",
                                 side_effect=lambda binary, metadata, target: identity(self.root, binary)),
               mock.patch.object(collector, "run_process") as launch):
-            with self.assertRaisesRegex(ValueError, "must not write into calibration"):
+            with self.assertRaisesRegex(ValueError, "timing-capable protocol 2/3.*zero qualifying launches"):
                 collector.collect(args, "comparison")
             args.profile_sha256 = "0" * 64
-            with self.assertRaisesRegex(ValueError, "reviewed profile hash mismatch"):
+            with self.assertRaisesRegex(ValueError, "timing-capable protocol 2/3.*zero qualifying launches"):
                 collector.collect(args, "comparison")
         launch.assert_not_called()
         self.assertFalse(destination.exists())
@@ -1173,6 +1173,18 @@ def v2_identity(root, build_mode="normal", role="baseline"):
     return binding
 
 
+def timing_identity(binding):
+    binding = copy.deepcopy(binding)
+    build = binding["build"]
+    probe = build["provenance_commands"][0]["record"]
+    value = collector.strict_json(probe["stdout"])
+    value.update(timing_boundary_protocol="mado-component-timing-v1", timing_boundaries_enabled=False)
+    probe["stdout"] = json.dumps(value)
+    build["benchmark_manifest"] = collector.manifest_identity(
+        value, build["target"], build["opencv_version"], build["protocol_version"], build["build_mode"])
+    return binding
+
+
 def v2_plan(root, mode, build_mode="normal"):
     value = plan(root, "comparison" if mode == "comparison" else "calibration")
     rows = list(collector.definitions_for(build_mode))
@@ -1265,12 +1277,12 @@ class ProtocolTwoTests(unittest.TestCase):
             argv += ["--exclusive-host"]
         return collector.parser().parse_args(argv)
 
-    def launch_smoke(self, args, records, clock=None):
+    def launch_smoke(self, args, records, clock=None, binding=None):
         original_runtime = collector.loaded_runtime
         with contextlib.ExitStack() as stack:
             stack.enter_context(mock.patch.object(collector, "host_identity", return_value={"target": TARGET}))
             stack.enter_context(mock.patch.object(collector, "binary_identity",
-                                                  return_value=v2_identity(self.root, args.build_mode)))
+                                                  return_value=binding or v2_identity(self.root, args.build_mode)))
             stack.enter_context(mock.patch.object(collector, "check_files"))
             stack.enter_context(mock.patch.object(collector, "exclusive_collector",
                                                   return_value=contextlib.nullcontext()))
@@ -1282,6 +1294,21 @@ class ProtocolTwoTests(unittest.TestCase):
             launch = stack.enter_context(mock.patch.object(collector, "run_process", side_effect=records))
             result = collector.collect(args, "smoke")
         return result, launch
+
+    def test_capable_binary_keeps_ordinary_smoke_off_and_does_not_accept_claimed_enablement(self):
+        binding = timing_identity(v2_identity(self.root))
+        declaration = collector.strict_json(binding["build"]["provenance_commands"][0]["record"]["stdout"])
+        for enabled in (False, True):
+            with self.subTest(enabled=enabled):
+                args = self.arguments()
+                args.output = str(self.root / f"capable-{enabled}")
+                value = v2_payload("single-small96x64", smoke=True)
+                value.update(timing_boundary_protocol="mado-component-timing-v1", timing_boundaries_enabled=enabled)
+                result, launch = self.launch_smoke(
+                    args, [process_record(declaration), process_record(value)], binding=binding)
+                self.assertEqual(result["status"], "failed" if enabled else "passed")
+                self.assertFalse(result["performance_qualified"])
+                self.assertTrue(all("--timing-boundaries" not in call.args[0] for call in launch.call_args_list))
 
     def test_exact_source_rows_and_normal_null_metrics(self):
         for build_mode, count in (("normal", 18), ("instrumented", 21)):
@@ -1611,6 +1638,8 @@ def save_method_review(root, specification):
               "stage_limits": {mode: collector.execution_limits(
                   mode, len(collector.schedule(mode, specification["workloads"], 2)))
                   for mode in ("calibration", "control", "comparison")}}
+    if "runtime_observer_policy" in specification:
+        review["runtime_observer_policy"] = specification["runtime_observer_policy"]
     path = root / "method.json"
     collector.save(path, review)
     return {"path": str(path), "sha256": collector.sha256(path)}
@@ -1622,6 +1651,9 @@ class ProtocolTwoAdmissionTests(unittest.TestCase):
         self.addCleanup(temporary.cleanup)
         self.root = Path(temporary.name).resolve()
         self.calibration = v2_parsed_evidence(self.root, "calibration")
+        self.calibration["plan"]["runtime_observer_policy"] = "macos-dyld-observer-on-warm-v1"
+        self.identity = timing_identity(v2_identity(self.root))
+        self.calibration["plan"]["binaries"]["baseline"] = self.identity
         self.binding = save_method_review(self.root, self.calibration["plan"])
         self.calibration["plan"]["method_review"] = self.binding
 
@@ -1636,10 +1668,28 @@ class ProtocolTwoAdmissionTests(unittest.TestCase):
         args = self.calibration_args()
         with (mock.patch.object(collector, "host_identity", return_value=self.calibration["plan"]["host"]),
               mock.patch.object(collector, "environment", return_value={}),
-              mock.patch.object(collector, "binary_identity", return_value=v2_identity(self.root)),
+              mock.patch.object(collector, "binary_identity", return_value=self.identity),
               mock.patch.object(collector, "run_process") as launch,
               self.assertRaisesRegex(ValueError, "missing runtime closure.*zero launches")):
             collector.collect(args, "calibration")
+        launch.assert_not_called()
+        self.assertFalse(Path(args.output).exists())
+
+    def test_review_cannot_authorize_an_incapable_binary(self):
+        binding = v2_identity(self.root)
+        review = collector.load(self.binding["path"])
+        review["baseline"] = binding
+        Path(self.binding["path"]).write_bytes(collector.document(review))
+        args = self.calibration_args()
+        args.method_review_sha256 = collector.sha256(self.binding["path"])
+        with (mock.patch.object(collector, "host_identity", return_value=self.calibration["plan"]["host"]),
+              mock.patch.object(collector, "environment", return_value={}),
+              mock.patch.object(collector, "binary_identity", return_value=binding),
+              mock.patch.object(collector.macos_images, "observe") as observe,
+              mock.patch.object(collector, "run_process") as launch,
+              self.assertRaisesRegex(ValueError, "timing boundary capability.*zero qualifying launches")):
+            collector.collect(args, "calibration")
+        observe.assert_not_called()
         launch.assert_not_called()
         self.assertFalse(Path(args.output).exists())
 
@@ -1657,12 +1707,29 @@ class ProtocolTwoAdmissionTests(unittest.TestCase):
                     args.method_review_sha256 = collector.sha256(self.binding["path"])
                 with (mock.patch.object(collector, "host_identity", return_value=self.calibration["plan"]["host"]),
                       mock.patch.object(collector, "environment", return_value={}),
-                      mock.patch.object(collector, "binary_identity", return_value=v2_identity(self.root)),
+                      mock.patch.object(collector, "binary_identity", return_value=self.identity),
                       mock.patch.object(collector, "run_process") as launch,
                       self.assertRaisesRegex(ValueError, "method review")):
                     collector.collect(args, "calibration")
                 launch.assert_not_called()
                 Path(self.binding["path"]).write_bytes(original)
+
+    def test_nonempty_eligibility_prose_does_not_replace_the_machine_policy(self):
+        review = collector.load(self.binding["path"])
+        review.pop("runtime_observer_policy")
+        Path(self.binding["path"]).write_bytes(collector.document(review))
+        args = self.calibration_args()
+        args.method_review_sha256 = collector.sha256(self.binding["path"])
+        with (mock.patch.object(collector, "host_identity", return_value=self.calibration["plan"]["host"]),
+              mock.patch.object(collector, "environment", return_value={}),
+              mock.patch.object(collector, "binary_identity", return_value=self.identity),
+              mock.patch.object(collector.macos_images, "observe") as observe,
+              mock.patch.object(collector, "run_process") as launch,
+              self.assertRaisesRegex(ValueError, "runtime_observer_policy mismatch")):
+            collector.collect(args, "calibration")
+        observe.assert_not_called()
+        launch.assert_not_called()
+        self.assertFalse(Path(args.output).exists())
 
     def test_rejected_or_unresolved_method_review_cannot_authorize_collection(self):
         original = collector.load(self.binding["path"])
@@ -1689,7 +1756,7 @@ class ProtocolTwoAdmissionTests(unittest.TestCase):
                            "raw": b"{}", "closure": {}}
         with (mock.patch.object(collector, "host_identity", return_value=calibration["plan"]["host"]),
               mock.patch.object(collector, "environment", return_value={}),
-              mock.patch.object(collector, "binary_identity", return_value=v2_identity(self.root)),
+              mock.patch.object(collector, "binary_identity", return_value=self.identity),
               mock.patch.object(collector, "evaluate", return_value=calibration),
               mock.patch.object(collector, "runtime_closure_admission", return_value=current_runtime),
               mock.patch.object(collector, "check_files"),
@@ -1706,6 +1773,8 @@ class ProtocolTwoAdmissionTests(unittest.TestCase):
         for numeric_failure, expected in ((False, "incomplete"), (True, "failed")):
             with self.subTest(numeric_failure=numeric_failure):
                 control = v2_parsed_evidence(self.root, "control")
+                control["plan"]["runtime_observer_policy"] = self.calibration["plan"]["runtime_observer_policy"]
+                control["plan"]["binaries"] = {"baseline": self.identity, "control": self.identity}
                 control["plan"]["method_review"] = self.binding
                 control["plan"]["calibration"] = {"path": str(self.root / "calibration"),
                                                    **collector.cohort_binding(calibration)}
@@ -1725,7 +1794,7 @@ class ProtocolTwoAdmissionTests(unittest.TestCase):
             "--output", str(self.root / "control")])
         with (mock.patch.object(collector, "host_identity", return_value=self.calibration["plan"]["host"]),
               mock.patch.object(collector, "environment", return_value={}),
-              mock.patch.object(collector, "binary_identity", return_value=v2_identity(self.root)),
+              mock.patch.object(collector, "binary_identity", return_value=self.identity),
               mock.patch.object(collector, "evaluate", return_value=self.calibration),
               mock.patch.object(collector, "run_process") as launch,
               self.assertRaisesRegex(ValueError, "missing runtime closure")):
@@ -1735,12 +1804,15 @@ class ProtocolTwoAdmissionTests(unittest.TestCase):
 
     def test_even_reviewed_numerical_profile_needs_actual_runtime_coverage(self):
         control = v2_parsed_evidence(self.root, "control")
+        control["plan"]["runtime_observer_policy"] = self.calibration["plan"]["runtime_observer_policy"]
+        control["plan"]["binaries"] = {"baseline": self.identity, "control": self.identity}
         control["plan"]["method_review"] = self.binding
         review = {"format_version": 2, "kind": "component-profile-review", "decision": "accepted",
                   "target": TARGET, "build_mode": "normal",
                   "method_review": self.binding, "calibration": collector.cohort_binding(self.calibration),
                   "control": collector.cohort_binding(control), "envelopes": collector.derive_envelopes(self.calibration),
                   "reviewer": "fixture reviewer", "rationale": "synthetic arithmetic only"}
+        review["runtime_observer_policy"] = self.calibration["plan"]["runtime_observer_policy"]
         path = self.root / "profile-review.json"
         collector.save(path, review)
         with self.assertRaisesRegex(ValueError, "missing runtime closure"):
@@ -2012,6 +2084,9 @@ class NativeThreadObservationTests(unittest.TestCase):
                                  ("framework", {"framework": "another-runtime"})):
                 with self.subTest(name=name):
                     specification = v2_plan(root, "comparison")
+                    specification["runtime_observer_policy"] = "macos-dyld-observer-on-warm-v1"
+                    specification["binaries"] = {
+                        role: timing_identity(binary) for role, binary in specification["binaries"].items()}
                     probe = specification["binaries"]["candidate"]["build"]["provenance_commands"][0]["record"]
                     value = collector.strict_json(probe["stdout"])
                     for point in ("before", "after"):
@@ -2023,6 +2098,8 @@ class NativeThreadObservationTests(unittest.TestCase):
                     profile = v2_numeric_profile(v2_parsed_evidence(root, "calibration"))
                     profile.update(method_review=method, calibration={"path": str(root / "calibration")},
                                    control={"path": str(root / "control")})
+                    profile.update(baseline=specification["binaries"]["baseline"],
+                                   runtime_observer_policy=specification["runtime_observer_policy"])
                     profile_path = inputs / "profile.json"
                     collector.save(profile_path, profile)
                     args = collector.parser().parse_args([
@@ -2126,7 +2203,134 @@ class RuntimePreflightTests(unittest.TestCase):
     def validate(self, bundle=None):
         return collector.validate_runtime_bundle(bundle or self.bundle, self.identity, TARGET, "normal")
 
-    def test_observed_nonzero_exit_keeps_post_identity_and_later_rows(self):
+    def enable_timing(self):
+        capable = timing_identity(self.identity)
+        self.identity.clear()
+        self.identity.update(capable)
+        self.bundle["plan"]["runtime_observer_policy"] = "macos-dyld-observer-on-warm-v1"
+        for attempt in self.bundle["attempts"]:
+            task = attempt["task"]
+            value = collector.strict_json(attempt["receipt"]["record"]["stdout"])
+            value.update(timing_boundary_protocol="mado-component-timing-v1", timing_boundaries_enabled=True)
+            log = self.run.log()
+            if task["workload"] is not None:
+                log += self.native.timing_row(task["workload"])
+            attempt["receipt"] = self.run.discovery(log, stdout=json.dumps(value))
+            attempt["receipt"]["duration_seconds"] = 0.2
+            attempt["argv"] = collector.command(self.identity, task, "smoke", 2, timing_boundaries=True)
+            collector.validate_timing_attempt(
+                attempt, self.identity["build"]["benchmark_manifest"], attempt["receipt"]["record"], retain=True)
+        self.close(self.bundle)
+
+    def test_incapable_preflight_refuses_before_creating_output_or_launching(self):
+        args = collector.parser().parse_args([
+            "runtime-preflight", "--protocol-version", "2", "--build-mode", "normal", "--target", TARGET,
+            "--binary", "fixture", "--build-metadata", "fixture.json", "--output", str(self.root / "incapable")])
+        with (mock.patch.object(collector, "host_identity", return_value={"target": TARGET}),
+              mock.patch.object(collector, "binary_identity", return_value=self.identity),
+              mock.patch.object(collector.macos_images, "discover") as discover,
+              self.assertRaisesRegex(ValueError, "timing boundary capability.*zero qualifying launches")):
+            collector.runtime_preflight(args)
+        discover.assert_not_called()
+        self.assertFalse(Path(args.output).exists())
+
+    def test_historical_image_only_bundle_cannot_authorize_the_warm_policy(self):
+        path = self.root / "image-only.json"
+        collector.save(path, self.bundle)
+        binding = copy.deepcopy(self.identity)
+        binding["build"]["runtime_image_preflight"] = {"path": str(path), "sha256": collector.sha256(path)}
+        collector.runtime_closure_admission(binding, TARGET, "normal")
+        with self.assertRaisesRegex(ValueError, "timing boundary capability"):
+            collector.runtime_closure_admission(
+                binding, TARGET, "normal", timing_policy="macos-dyld-observer-on-warm-v1")
+
+    def test_capable_image_only_preflight_does_not_imply_the_warm_policy(self):
+        capable = timing_identity(self.identity)
+        self.identity.clear()
+        self.identity.update(capable)
+        for attempt in self.bundle["attempts"]:
+            value = collector.strict_json(attempt["receipt"]["record"]["stdout"])
+            value.update(timing_boundary_protocol="mado-component-timing-v1", timing_boundaries_enabled=False)
+            attempt["receipt"]["record"]["stdout"] = json.dumps(value)
+        self.close(self.bundle)
+        path = self.root / "capable-image-only.json"
+        collector.save(path, self.bundle)
+        binding = copy.deepcopy(self.identity)
+        binding["build"]["runtime_image_preflight"] = {"path": str(path), "sha256": collector.sha256(path)}
+        collector.runtime_closure_admission(binding, TARGET, "normal")
+        with self.assertRaisesRegex(ValueError, "timing boundary preflight policy"):
+            collector.runtime_closure_admission(
+                binding, TARGET, "normal", timing_policy="macos-dyld-observer-on-warm-v1")
+
+    def test_preflight_summary_cannot_hide_missing_or_late_raw_markers(self):
+        self.enable_timing()
+        self.validate()
+        original = self.bundle["attempts"][1]
+        task = original["task"]
+        stdout = original["receipt"]["record"]["stdout"]
+        duplicate = self.native.load_line(7, self.native.UUID_B, str(self.run.lib))
+        for name, log in (
+                ("missing", self.run.log()),
+                ("duplicate", self.run.log() + self.native.timing_row(task["workload"], inside=duplicate * 2)),
+                ("wrong-row", self.run.log() + self.native.timing_row("other-row")),
+                ("foreign-pid", self.run.log() + self.native.timing_row(task["workload"]).replace("[7]", "[8]"))):
+            with self.subTest(name=name):
+                broken = copy.deepcopy(self.bundle)
+                broken["attempts"][1]["receipt"] = self.run.discovery(log, stdout=stdout)
+                broken["attempts"][1]["receipt"]["duration_seconds"] = 0.2
+                self.close(broken)
+                with self.assertRaisesRegex(ValueError, "timing observation summary mismatch"):
+                    self.validate(broken)
+
+    def test_capability_is_not_invocation_enablement_or_a_blank_window(self):
+        self.enable_timing()
+        original = self.bundle["attempts"][1]
+        manifest = self.identity["build"]["benchmark_manifest"]
+        for change in ("disabled", "missing-enabled", "unsupported", "missing-flag", "duplicate-flag",
+                       "wrong-output-row", "missing-pid", "forged-count", "missing-summary"):
+            with self.subTest(change=change):
+                attempt = copy.deepcopy(original)
+                record = attempt["receipt"]["record"]
+                value = collector.strict_json(record["stdout"])
+                if change == "disabled":
+                    value["timing_boundaries_enabled"] = False
+                elif change == "missing-enabled":
+                    del value["timing_boundaries_enabled"]
+                elif change == "unsupported":
+                    value["timing_boundary_protocol"] = "mado-component-timing-v2"
+                elif change == "missing-flag":
+                    attempt["argv"].remove("--timing-boundaries")
+                elif change == "duplicate-flag":
+                    attempt["argv"].append("--timing-boundaries")
+                elif change == "wrong-output-row":
+                    value["workloads"][0]["id"] = "other-row"
+                elif change == "missing-pid":
+                    record.pop("process_id")
+                elif change == "forged-count":
+                    attempt["timing_observation"]["rows"][0]["in_window_dyld_records"] = False
+                else:
+                    del attempt["timing_observation"]
+                record["stdout"] = json.dumps(value)
+                with self.assertRaises(ValueError):
+                    collector.validate_timing_attempt(attempt, manifest, record)
+
+    def test_nonstatistical_rows_keep_counts_but_still_require_complete_markers(self):
+        self.enable_timing()
+        manifest = self.identity["build"]["benchmark_manifest"]
+        workload = next(row["id"] for row in manifest["workloads"] if not row["statistical"])
+        attempt = copy.deepcopy(next(item for item in self.bundle["attempts"] if item["task"]["workload"] == workload))
+        duplicate = self.native.load_line(7, self.native.UUID_B, str(self.run.lib))
+        record = attempt["receipt"]["record"]
+        record["stderr"] = self.run.log() + self.native.timing_row(workload, inside=duplicate * 2)
+        collector.validate_timing_attempt(attempt, manifest, record, retain=True)
+        self.assertFalse(attempt["timing_observation"]["ok"])
+        self.assertEqual(attempt["timing_observation"]["rows"][0]["in_window_dyld_records"], 2)
+        record["stderr"] = self.run.log()
+        with self.assertRaisesRegex(ValueError, "timing_markers_missing"):
+            collector.validate_timing_attempt(attempt, manifest, record, retain=True)
+
+    def test_qualifying_failures_keep_post_identity_and_stop_later_rows(self):
+        self.enable_timing()
         bundle_path = self.root / "runtime.json"
         collector.save(bundle_path, self.bundle)
         binding = copy.deepcopy(self.identity)
@@ -2138,6 +2342,7 @@ class RuntimePreflightTests(unittest.TestCase):
         specification = v2_plan(self.root, "calibration")
         specification.update(binaries={"baseline": binding}, host=self.bundle["plan"]["host"],
                              environment=self.bundle["plan"]["environment"])
+        specification["runtime_observer_policy"] = "macos-dyld-observer-on-warm-v1"
         method = save_method_review(self.root, specification)
         args = collector.parser().parse_args([
             "calibrate", "--protocol-version", "2", "--build-mode", "normal", "--target", TARGET,
@@ -2149,31 +2354,47 @@ class RuntimePreflightTests(unittest.TestCase):
         def observe(argv, **options):
             task = specification["schedule"][len(launched)]
             launched.append(task)
+            self.assertEqual(argv.count("--timing-boundaries"), 1)
             if task["workload"] is None:
                 value = collector.strict_json(binding["build"]["provenance_commands"][0]["record"]["stdout"])
             else:
                 value = v2_payload(task["workload"])
                 value["loaded_native_runtime"] = self.runtime
-            receipt = self.run.observation(options["closure"], stdout=json.dumps(value),
-                                           exit_code=23 if task["id"] == "0001" else 0)
+            value.update(timing_boundary_protocol="mado-component-timing-v1", timing_boundaries_enabled=True)
+            log = self.run.log()
+            if task["workload"] is not None:
+                inside = (self.native.load_line(7, self.native.UUID_B, str(self.run.lib)) * 2
+                          if failure == "in-window" else "")
+                if failure != "missing":
+                    log += self.native.timing_row(task["workload"], inside=inside)
+                if failure == "oracle":
+                    value["workloads"][0]["oracle_failures"] = 1
+                    value["workloads"][0]["samples"][0]["correct"] = False
+            receipt = self.run.observation(options["closure"], log, stdout=json.dumps(value),
+                                           exit_code=23 if task["id"] == "0001" and failure == "exit" else 0)
             receipt["duration_seconds"] = 0.2
             return receipt
 
-        with (mock.patch.object(collector, "host_identity", return_value=specification["host"]),
-              mock.patch.object(collector, "environment", return_value=specification["environment"]),
-              mock.patch.object(collector, "binary_identity", return_value=binding),
-              mock.patch.object(collector, "exclusive_collector", return_value=contextlib.nullcontext()),
-              mock.patch.object(collector.macos_images, "observe", side_effect=observe)):
-            result = collector.collect(args, "calibration")
-        failed = collector.load(Path(args.output) / "attempts/0001.json")
-        self.assertEqual(failed["identity_after"], binding)
-        self.assertIsNone(failed["identity_error"])
-        self.assertEqual(launched, specification["schedule"])
-        self.assertEqual(result["status"], "failed")
-        self.assertFalse(result["performance_qualified"])
-        self.assertIn("exit", {issue.get("category") for issue in result["issues"]})
-        self.assertNotIn("identity", {issue.get("category") for issue in result["issues"]})
-        self.assertFalse(any(issue["status"] == "not-run" for issue in result["issues"]))
+        for failure, category in (("exit", "exit"), ("missing", "provenance"),
+                                  ("in-window", "provenance"), ("oracle", "semantic")):
+            with self.subTest(failure=failure):
+                launched.clear()
+                args.output = str(self.root / f"campaign-{failure}")
+                with (mock.patch.object(collector, "host_identity", return_value=specification["host"]),
+                      mock.patch.object(collector, "environment", return_value=specification["environment"]),
+                      mock.patch.object(collector, "binary_identity", return_value=binding),
+                      mock.patch.object(collector, "exclusive_collector", return_value=contextlib.nullcontext()),
+                      mock.patch.object(collector.macos_images, "observe", side_effect=observe)):
+                    result = collector.collect(args, "calibration")
+                failed = collector.load(Path(args.output) / "attempts/0001.json")
+                self.assertEqual(failed["identity_after"], binding)
+                self.assertIsNone(failed["identity_error"])
+                self.assertEqual(launched, specification["schedule"][:2])
+                self.assertEqual(result["status"], "failed")
+                self.assertFalse(result["performance_qualified"])
+                self.assertIn(category, {issue.get("category") for issue in result["issues"]})
+                self.assertNotIn("identity", {issue.get("category") for issue in result["issues"]})
+                self.assertTrue(any(issue["status"] == "not-run" for issue in result["issues"]))
 
     def test_retained_preflight_admission_needs_no_original_target_files(self):
         path = self.root / "bundle.json"
@@ -2187,6 +2408,7 @@ class RuntimePreflightTests(unittest.TestCase):
         self.assertEqual(result["threads"], self.bundle["threads"])
 
     def test_protocol2_producer_and_admission_keep_full_boundary_identities(self):
+        self.enable_timing()
         metadata = self.root / "original-build.json"
         collector.save(metadata, self.identity["build"])
         destination = self.root / "protocol2"
@@ -2293,7 +2515,36 @@ class RuntimePreflightTests(unittest.TestCase):
                 with self.assertRaises(ValueError):
                     collector.validate_runtime_attempt(broken, runtime)
 
+    def test_preflight_stops_at_first_missing_or_nonzero_statistical_window(self):
+        self.enable_timing()
+        metadata = self.root / "original-build.json"
+        collector.save(metadata, self.identity["build"])
+        task = self.bundle["attempts"][1]["task"]
+        value = self.bundle["attempts"][1]["receipt"]["record"]["stdout"]
+        duplicate = self.native.load_line(7, self.native.UUID_B, str(self.run.lib))
+        for name, markers in (("missing", ""), ("in-window", self.native.timing_row(task["workload"], inside=duplicate))):
+            with self.subTest(name=name):
+                destination = self.root / name
+                args = collector.parser().parse_args([
+                    "runtime-preflight", "--protocol-version", "2", "--build-mode", "normal", "--target", TARGET,
+                    "--binary", str(self.run.main), "--build-metadata", str(metadata), "--output", str(destination)])
+                failed = self.run.discovery(self.run.log() + markers, stdout=value)
+                failed["duration_seconds"] = 0.2
+                with (mock.patch.object(collector, "host_identity", return_value=self.bundle["plan"]["host"]),
+                      mock.patch.object(collector, "environment", return_value=self.bundle["plan"]["environment"]),
+                      mock.patch.object(collector, "exclusive_collector", return_value=contextlib.nullcontext()),
+                      mock.patch.object(collector.macos_images, "discover", side_effect=[
+                          self.bundle["attempts"][0]["receipt"], failed]) as discover):
+                    result = collector.runtime_preflight(args)
+                self.assertEqual(result["status"], "incomplete")
+                self.assertEqual(discover.call_count, 2)
+                self.assertFalse((destination / "bundle.json").exists())
+                attempt = collector.load(destination / "attempts/0001.json")
+                self.assertEqual(attempt["receipt"]["record"], failed["record"])
+                self.assertIn("timing boundary evidence refused", attempt["identity_error"])
+
     def test_interruption_survives_failed_receipt_persistence(self):
+        self.enable_timing()
         args = collector.parser().parse_args([
             "runtime-preflight", "--protocol-version", "2", "--build-mode", "normal", "--target", TARGET,
             "--binary", "fixture", "--build-metadata", "fixture.json", "--output", str(self.root / "out")])
@@ -3912,6 +4163,7 @@ class ProtocolThreeRuntimePreflightTests(unittest.TestCase):
             {"path": str(self.run.lib), "sha256": collector.sha256(self.run.lib)}]}
         self.declaration = v3_manifest(build_mode)
         self.declaration["loaded_native_runtime"] = self.runtime
+        self.declaration.update(timing_boundary_protocol="mado-component-timing-v1", timing_boundaries_enabled=False)
         contents = {"Cargo.lock": b"locked fixture dependencies\n", "Cargo.toml": b"[workspace]\n",
                     **{path: f"compiled apparatus fixture {index}\n".encode()
                        for index, path in enumerate(V3_APPARATUS_SOURCES)}}
@@ -3966,7 +4218,13 @@ class ProtocolThreeRuntimePreflightTests(unittest.TestCase):
                  v3_payload(argv[argv.index("--workload") + 1], self.build_mode, smoke=True))
         value["loaded_native_runtime"] = self.runtime
         value["apparatus"] = copy.deepcopy(self.declaration["apparatus"])
-        receipt = self.run.discovery(stdout=json.dumps(value))
+        value.update(timing_boundary_protocol="mado-component-timing-v1",
+                     timing_boundaries_enabled="--timing-boundaries" in argv)
+        from tools.tests.test_macos_image_observer import timing_row
+        log = self.run.log()
+        if "--list" not in argv:
+            log += timing_row(argv[argv.index("--workload") + 1])
+        receipt = self.run.discovery(log, stdout=json.dumps(value))
         receipt["duration_seconds"] = 0.2
         return receipt
 
@@ -4179,7 +4437,8 @@ class ProtocolThreeRuntimePreflightTests(unittest.TestCase):
         self.assertEqual(attempt["identity_before"], reference)
         self.assertEqual(attempt["identity_after"], reference)
         self.assertEqual(attempt["receipt"]["record"]["exit_code"], 23)
-        self.assertEqual(collector.strict_json(attempt["receipt"]["record"]["stdout"]), self.declaration)
+        self.assertEqual(collector.strict_json(attempt["receipt"]["record"]["stdout"]),
+                         {**self.declaration, "timing_boundaries_enabled": True})
         self.assertFalse((self.root / "failed/bundle.json").exists())
 
 

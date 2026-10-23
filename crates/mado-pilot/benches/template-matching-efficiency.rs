@@ -14,6 +14,7 @@ const _: () = assert!(
 
 #[cfg(feature = "template-matching-benchmark")]
 use std::alloc::{GlobalAlloc, Layout};
+use std::io::Write;
 use std::sync::Barrier;
 #[cfg(feature = "template-matching-benchmark")]
 use std::sync::atomic::{AtomicU64, Ordering};
@@ -62,6 +63,7 @@ mod watch;
 use fixtures::{Kind, PATCH, ROI, SCORE_TOLERANCE, WORKLOADS, Workload};
 
 const INSTRUMENTED: bool = cfg!(feature = "template-matching-benchmark");
+const TIMING_BOUNDARY_PROTOCOL: &str = "mado-component-timing-v1";
 const BUILD_MODE: &str = if INSTRUMENTED {
     "instrumented"
 } else {
@@ -674,7 +676,44 @@ fn contract_sample(row: Workload) -> (Sample, Option<Value>) {
     (sample, None)
 }
 
-fn observe(row: Workload, smoke: bool) -> Value {
+fn emit_timing_boundary(enabled: bool, id: &str, phase: &str) -> Result<(), String> {
+    if !enabled {
+        return Ok(());
+    }
+    if id.is_empty()
+        || id.len() > 128
+        || !id
+            .bytes()
+            .all(|byte| byte.is_ascii_alphanumeric() || byte == b'-')
+    {
+        return Err(format!("invalid timing boundary workload ID: {id}"));
+    }
+    let mut buffer = [0_u8; 256];
+    let unused = {
+        let mut line = buffer.as_mut_slice();
+        writeln!(
+            line,
+            "{TIMING_BOUNDARY_PROTOCOL}[{}]: {id} {phase}",
+            std::process::id()
+        )
+        .map_err(|error| format!("failed to format timing boundary for {id} {phase}: {error}"))?;
+        line.len()
+    };
+    let length = buffer.len() - unused;
+    // One unbuffered write; never retry or complete a torn marker.
+    let written = std::io::stderr()
+        .write(&buffer[..length])
+        .map_err(|error| format!("failed to write timing boundary for {id} {phase}: {error}"))?;
+    if written != length {
+        return Err(format!(
+            "short timing boundary write for {id} {phase}: {written}/{length} bytes"
+        ));
+    }
+    Ok(())
+}
+
+fn observe(row: Workload, smoke: bool, timing_boundaries: bool) -> Result<Value, String> {
+    emit_timing_boundary(timing_boundaries, row.id, "row-start")?;
     let (warmups, count) = row.plan(smoke);
     let mut warmup_samples = Vec::with_capacity(warmups);
     let mut samples = Vec::with_capacity(count);
@@ -724,6 +763,9 @@ fn observe(row: Workload, smoke: bool) -> Value {
     };
     if setup_error.is_none() {
         for iteration in 0..warmups + count {
+            if iteration == warmups {
+                emit_timing_boundary(timing_boundaries, row.id, "samples-begin")?;
+            }
             let sample = if let Some(fixture) = &mut selection {
                 fixture.run()
             } else if let Some(fixture) = &mut session {
@@ -771,6 +813,7 @@ fn observe(row: Workload, smoke: bool) -> Value {
                 steady_before = Memory::observe();
             }
         }
+        emit_timing_boundary(timing_boundaries, row.id, "samples-end")?;
     }
     if let Some(fixture) = &mut session {
         fixture.checkpoint("after-samples");
@@ -939,7 +982,7 @@ fn observe(row: Workload, smoke: bool) -> Value {
         metrics.extend(counted);
     }
     object.insert("metrics".into(), metrics);
-    report
+    Ok(report)
 }
 
 const PROTOCOL_VERSION: u8 = 3;
@@ -954,6 +997,7 @@ fn workload_rows() -> impl Iterator<Item = Workload> {
 struct Arguments {
     list: bool,
     smoke: bool,
+    timing_boundaries: bool,
     workload: Option<String>,
 }
 
@@ -961,6 +1005,7 @@ fn arguments() -> Result<Arguments, String> {
     let mut parsed = Arguments {
         list: false,
         smoke: false,
+        timing_boundaries: false,
         workload: None,
     };
     let mut protocol_given = false;
@@ -969,6 +1014,7 @@ fn arguments() -> Result<Arguments, String> {
         match value.as_str() {
             "--list" => parsed.list = true,
             "--smoke" => parsed.smoke = true,
+            "--timing-boundaries" => parsed.timing_boundaries = true,
             "--bench" => {}
             "--workload" => {
                 if parsed.workload.is_some() {
@@ -1138,17 +1184,19 @@ fn run(arguments: Arguments) -> Result<Value, String> {
         .filter(|row| arguments.workload.as_deref().is_none_or(|id| row.id == id))
         .map(|row| {
             if arguments.list {
-                row.manifest(arguments.smoke)
+                Ok(row.manifest(arguments.smoke))
             } else {
-                observe(row, arguments.smoke)
+                observe(row, arguments.smoke, arguments.timing_boundaries)
             }
         })
-        .collect();
+        .collect::<Result<_, String>>()?;
     let threads_after = thread_observation();
     // Corpus and source hashing are outside every measured resource interval.
     let (fixture_sha256, fixture) = fixtures::manifest();
     Ok(json!({
         "format_version": PROTOCOL_VERSION, "kind": if arguments.list { "manifest" } else { "observations" },
+        "timing_boundary_protocol": TIMING_BOUNDARY_PROTOCOL,
+        "timing_boundaries_enabled": arguments.timing_boundaries,
         "target": target(), "opencv_version": version, "fixture_sha256": fixture_sha256,
         "loaded_native_runtime": runtime::observe()?,
         "fixture": fixture, "apparatus": apparatus(), "warmups": if arguments.smoke { 1 } else { 20 },
@@ -1171,7 +1219,11 @@ fn run(arguments: Arguments) -> Result<Value, String> {
 }
 
 fn main() {
-    let (report, failed) = match arguments().and_then(run) {
+    let arguments = arguments();
+    let timing_boundaries_enabled = arguments
+        .as_ref()
+        .is_ok_and(|arguments| arguments.timing_boundaries);
+    let (report, failed) = match arguments.and_then(run) {
         Ok(report) => {
             let failed = report["workloads"].as_array().is_some_and(|rows| {
                 rows.iter().any(|row| {
@@ -1192,7 +1244,9 @@ fn main() {
         }
         Err(error) => {
             let report = json!({"format_version": PROTOCOL_VERSION, "kind": "observations",
-                "target": target(), "build_mode": BUILD_MODE, "error": error, "workloads": []});
+                "target": target(), "build_mode": BUILD_MODE, "error": error, "workloads": [],
+                "timing_boundary_protocol": TIMING_BOUNDARY_PROTOCOL,
+                "timing_boundaries_enabled": timing_boundaries_enabled});
             (report, true)
         }
     };

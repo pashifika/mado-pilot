@@ -79,6 +79,95 @@ def record(stderr, **overrides):
     return value
 
 
+def timing_line(row, phase, pid=7):
+    return f"mado-component-timing-v1[{pid}]: {row} {phase}\n"
+
+
+def timing_row(row, *, inside="", before="", after=""):
+    return (timing_line(row, "row-start") + before + timing_line(row, "samples-begin")
+            + inside + timing_line(row, "samples-end") + after)
+
+
+class TimingBoundaryTests(unittest.TestCase):
+    def setUp(self):
+        self.startup = load_line(7, UUID_A, "/app/main") + load_line(7, UUID_B, "/opt/lib/liba.dylib")
+
+    def validate(self, text, rows=None, **overrides):
+        return observer.validate_timing_boundaries(record(text, **overrides), ["row-a"] if rows is None else rows)
+
+    def test_warm_and_late_records_are_located_outside_the_sample_window(self):
+        delayed = "dyld[7]: move loaded to delayed: liba.dylib\n"
+        text = self.startup + timing_row("row-a", before=delayed, after=delayed)
+        result = self.validate(text)
+        self.assertTrue(result["ok"], result["reason"])
+        self.assertEqual(result["dyld_lines"], [1, 2, 4, 7])
+        self.assertEqual(result["rows"], [{
+            "id": "row-a", "row_start_line": 3, "samples_begin_line": 5, "samples_end_line": 6,
+            "pre_window_dyld_records": 3, "in_window_dyld_records": 0, "post_window_dyld_records": 1}])
+
+    def test_transient_duplicate_loads_and_informational_records_each_block_the_window(self):
+        duplicate = load_line(7, UUID_B, "/opt/lib/liba.dylib")
+        note = "dyld[7]: move loaded to delayed: liba.dylib\n"
+        for inside, count in ((duplicate, 1), (duplicate * 2, 2), (note, 1), (duplicate * 2 + note, 3)):
+            with self.subTest(inside=inside):
+                text = self.startup + timing_row("row-a", inside=inside)
+                result = self.validate(text)
+                self.assertTrue(result["complete"])
+                self.assertFalse(result["ok"])
+                self.assertEqual(result["reason"], "timing_in_window_dyld_records")
+                self.assertEqual(result["rows"][0]["in_window_dyld_records"], count)
+                self.assertEqual(len(observer._parse_log(text)["images"]), 2)
+
+    def test_invalid_transitions_never_become_empty_windows(self):
+        start = timing_line("row-a", "row-start")
+        begin = timing_line("row-a", "samples-begin")
+        end = timing_line("row-a", "samples-end")
+        for markers in ("", start, start + begin, begin + end, start + end + begin,
+                        start + start + begin + end, start + begin + begin + end,
+                        start + begin + end + end, start + begin + end + start,
+                        start + timing_row("row-b") + begin + end):
+            with self.subTest(markers=markers):
+                result = self.validate(self.startup + markers)
+                self.assertFalse(result["complete"])
+                self.assertFalse(result["ok"])
+                self.assertEqual(result["rows"], [])
+
+    def test_pid_row_and_wire_corruption_are_incomplete(self):
+        valid = timing_row("row-a")
+        for markers in (
+                valid.replace("[7]", "[8]"), valid.replace("[7]", "[07]"),
+                valid.replace("row-a", "row-b"), valid.replace("-v1[", "-v2["),
+                valid.replace(": row-a", ": row_a"), valid.replace("row-a", "a" * 129),
+                valid.replace("row-start\n", "row-start app text\n"),
+                valid.replace("mado-component", "app mado-component", 1),
+                valid.replace("row-start\n", "row-start" + load_line(7, UUID_B, "/opt/lib/liba.dylib")),
+                valid[:-1], valid.replace("\n", "\r\n")):
+            with self.subTest(markers=markers):
+                result = self.validate(self.startup + markers)
+                self.assertFalse(result["complete"])
+                self.assertFalse(result["ok"])
+        for pid in (None, True, 0, 8):
+            with self.subTest(process_id=pid):
+                self.assertFalse(self.validate(self.startup + valid, process_id=pid)["complete"])
+
+    def test_rows_must_match_the_entire_expected_sequence(self):
+        text = self.startup + timing_row("row-a") + timing_row("row-b")
+        self.assertTrue(self.validate(text, ["row-a", "row-b"])["ok"])
+        for rows in (["row-b", "row-a"], ["row-a"], ["row-a", "row-b", "row-c"], ["row-a", "row-a"], []):
+            with self.subTest(rows=rows):
+                self.assertFalse(self.validate(text, rows)["complete"])
+        self.assertTrue(self.validate(self.startup, [])["ok"])
+
+    def test_loader_unknown_foreign_pid_and_truncated_output_remain_incomplete(self):
+        for inside in ("dyld[7]: unknown event\n", load_line(8, UUID_B, "/opt/lib/liba.dylib"),
+                       "app dyld[7]: interleaved\n"):
+            with self.subTest(inside=inside):
+                self.assertFalse(self.validate(self.startup + timing_row("row-a", inside=inside))["complete"])
+        for overrides in ({"timed_out": True}, {"output_limited": True}, {"launch_error": "failed"}):
+            with self.subTest(overrides=overrides):
+                self.assertFalse(self.validate(self.startup + timing_row("row-a"), **overrides)["complete"])
+
+
 class ParseTests(unittest.TestCase):
     def test_load_lines_and_delay_notes_close_the_inventory(self):
         text = (load_line(7, UUID_A, "/app/main") + load_line(7, UUID_B, "/opt/lib/liba.dylib")
@@ -516,6 +605,13 @@ class ObservationTests(unittest.TestCase):
                                side_effect=AssertionError("retained evidence queried the live cache")):
             verdict = observer.validate_observation(receipt, self.closure)
         self.assertTrue(verdict["ok"], verdict["reason"])
+
+    def test_image_only_history_does_not_claim_a_missing_timing_interval(self):
+        receipt = self.run.observation(self.closure)
+        self.assertTrue(observer.validate_observation(receipt, self.closure)["ok"])
+        timing = observer.validate_timing_boundaries(receipt["record"], ["row-a"])
+        self.assertFalse(timing["complete"])
+        self.assertEqual(timing["reason"], "timing_markers_missing")
 
     def test_retained_observation_is_revalidated_from_raw_data_only(self):
         receipt = self.run.observation(self.closure, self.run.log(repeat_lib=2), cleanup_ok=False)

@@ -149,6 +149,10 @@ _INFORMATIONAL = (
     ("inserted_duplicate", re.compile(r"^skipping duplicate inserted dylib '(.*)'$")),
 )
 _HEX64 = re.compile(r"^[0-9a-f]{64}$")
+TIMING_PROTOCOL = "mado-component-timing-v1"
+_TIMING_MARKER = re.compile(
+    r"mado-component-timing-v1\[([0-9]{1,10})\]: ([A-Za-z0-9-]{1,128}) "
+    r"(row-start|samples-begin|samples-end)")
 
 # The existing runner is imported by file, like the Windows preflight helper.
 _TOOLS = str(Path(__file__).resolve().parent)
@@ -514,6 +518,72 @@ def _parse_log(text, *, image_limit=MAX_IMAGES, event_limit=MAX_EVENTS):
             problems.append("unknown_informational_reference")
     parsed["reason"] = problems[0] if problems else None
     return parsed
+
+
+def validate_timing_boundaries(record, expected_rows):
+    """Re-derive byte-order windows, independently of execution success and image binding.
+
+    Zero records is not proof of zero loader activity or zero observer cost.
+    """
+    result = {"protocol": TIMING_PROTOCOL, "complete": False, "ok": False, "reason": None,
+              "process_id": None, "dyld_lines": [], "rows": []}
+    try:
+        _require(isinstance(record, dict) and isinstance(record.get("stderr"), str),
+                 "timing_record_invalid")
+        pid = _root_pid(record)
+        result["process_id"] = pid
+        _require(pid is not None, "root_pid_unavailable")
+        _require(isinstance(expected_rows, list) and all(
+            isinstance(row, str) and re.fullmatch(r"[A-Za-z0-9-]{1,128}", row)
+            for row in expected_rows) and len(set(expected_rows)) == len(expected_rows),
+            "timing_expected_rows_invalid")
+        text = record["stderr"]
+        lines = text.split("\n")
+        terminated = text.endswith("\n")
+        if lines[-1] == "":
+            lines.pop()
+        result["dyld_lines"] = [number for number, line in enumerate(lines, 1) if "dyld[" in line]
+        phases = ("row-start", "samples-begin", "samples-end")
+        row_index, phase_index, positions = 0, 0, []
+        windows = []
+        for number, line in enumerate(lines, 1):
+            if "mado-component-timing" not in line:
+                continue
+            _require(number != len(lines) or terminated, "timing_marker_unterminated")
+            marker = _TIMING_MARKER.fullmatch(line)
+            _require(marker is not None, "timing_marker_malformed_or_unsupported")
+            marker_pid, row, phase = marker.groups()
+            _require(marker_pid == str(pid), "timing_marker_pid_mismatch")
+            _require(row_index < len(expected_rows) and row == expected_rows[row_index],
+                     "timing_marker_row_mismatch")
+            _require(phase == phases[phase_index], "timing_marker_transition_invalid")
+            positions.append(number)
+            phase_index += 1
+            if phase_index == len(phases):
+                windows.append((row, *positions))
+                row_index += 1
+                phase_index, positions = 0, []
+        _require(row_index == len(expected_rows) and phase_index == 0, "timing_markers_missing")
+        parsed = _parse_log(text)
+        _require(parsed["reason"] is None, "timing_raw_log_not_closed: " + str(parsed["reason"]))
+        authority = _authority_reason(record, parsed)
+        _require(authority is None, authority)
+        _require(record.get("timed_out") is False and record.get("output_limited") is False
+                 and record.get("launch_error") is None and type(record.get("exit_code")) is int,
+                 "timing_record_incomplete")
+        for row, start, begin, end in windows:
+            result["rows"].append({
+                "id": row, "row_start_line": start, "samples_begin_line": begin, "samples_end_line": end,
+                "pre_window_dyld_records": sum(line < begin for line in result["dyld_lines"]),
+                "in_window_dyld_records": sum(begin < line < end for line in result["dyld_lines"]),
+                "post_window_dyld_records": sum(line > end for line in result["dyld_lines"])})
+        result["complete"] = True
+        _require(not any(row["in_window_dyld_records"] for row in result["rows"]),
+                 "timing_in_window_dyld_records")
+        result["ok"] = True
+    except _Refusal as exc:
+        result["reason"] = str(exc)
+    return result
 
 
 def _main_identity(path):
