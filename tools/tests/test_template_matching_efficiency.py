@@ -10,6 +10,7 @@ from pathlib import Path, PurePosixPath
 import shutil
 import sys
 import tempfile
+import time
 import unittest
 from types import SimpleNamespace
 from unittest import mock
@@ -2185,6 +2186,45 @@ class RuntimePreflightTests(unittest.TestCase):
         self.assertEqual(result["closure"], self.bundle["closure"])
         self.assertEqual(result["threads"], self.bundle["threads"])
 
+    def test_protocol2_producer_and_admission_keep_full_boundary_identities(self):
+        metadata = self.root / "original-build.json"
+        collector.save(metadata, self.identity["build"])
+        destination = self.root / "protocol2"
+        args = collector.parser().parse_args([
+            "runtime-preflight", "--protocol-version", "2", "--build-mode", "normal", "--target", TARGET,
+            "--binary", str(self.run.main), "--build-metadata", str(metadata), "--output", str(destination)])
+        receipts = [copy.deepcopy(attempt["receipt"]) for attempt in self.bundle["attempts"]]
+        with (mock.patch.object(collector, "host_identity", return_value=self.bundle["plan"]["host"]),
+              mock.patch.object(collector, "environment", return_value=self.bundle["plan"]["environment"]),
+              mock.patch.object(collector, "exclusive_collector", return_value=contextlib.nullcontext()),
+              mock.patch.object(collector.macos_images, "discover", side_effect=receipts)):
+            result = collector.runtime_preflight(args)
+        self.assertEqual(result["status"], "passed", result["issues"])
+        bundle = collector.load(destination / "bundle.json")
+        for attempt in bundle["attempts"]:
+            self.assertEqual(attempt["identity_before"], bundle["plan"]["binary"])
+            self.assertEqual(attempt["identity_after"], bundle["plan"]["binary"])
+        identity = collector.binary_identity(self.run.main, result["metadata"], TARGET)
+        admitted = collector.runtime_closure_admission(identity, TARGET, "normal")
+        self.assertEqual(admitted["closure"], self.bundle["closure"])
+        bundle["attempts"][-1]["identity_after"] = {
+            "plan_binary_sha256": hashlib.sha256(collector.document(bundle["plan"]["binary"])).hexdigest()}
+        path = self.root / "compact-protocol2.json"
+        collector.save(path, bundle)
+        identity["build"]["runtime_image_preflight"] = {"path": str(path), "sha256": collector.sha256(path)}
+        with self.assertRaisesRegex(ValueError, "runtime preflight file identity"):
+            collector.runtime_closure_admission(identity, TARGET, "normal")
+
+    def test_checkout_admission_refuses_consistently_attested_dirty_source(self):
+        path = self.root / "dirty-bundle.json"
+        collector.save(path, self.bundle)
+        augmented = copy.deepcopy(self.identity)
+        augmented["build"]["runtime_image_preflight"] = {"path": str(path), "sha256": collector.sha256(path)}
+        augmented["build"]["source_status_porcelain"] = " M Cargo.lock\n"
+        augmented["build"]["provenance_commands"][3]["record"]["stdout"] = " M Cargo.lock\n"
+        with self.assertRaisesRegex(ValueError, "dirty source"):
+            collector.runtime_closure_admission(augmented, TARGET, "normal")
+
     def test_missing_representative_path_cannot_reuse_complete_summary(self):
         broken = copy.deepcopy(self.bundle)
         broken["attempts"].pop()
@@ -3590,6 +3630,50 @@ class ExportedSourceAttestationTests(unittest.TestCase):
         self.assertEqual(self.output.read_bytes(), original)
         self.assertEqual(Path(str(self.output) + ".probe.json").read_bytes(), probe)
 
+    def test_path_and_descriptor_change_times_have_independent_stable_baselines(self):
+        fstat = os.fstat
+
+        def descriptor_stat(fd):
+            info = fstat(fd)
+            fields = {name: getattr(info, name) for name in dir(info) if name.startswith("st_")}
+            fields["st_ctime_ns"] += 1_000_000
+            return SimpleNamespace(**fields)
+
+        with mock.patch.object(collector.os, "fstat", side_effect=descriptor_stat):
+            self.run_attest()
+        binding = collector.load(self.output)["source_binding"]
+        self.assertEqual(binding["before"], binding["after"])
+        for path, content in self.contents.items():
+            self.assertEqual(binding["after"]["files"][path]["sha256"], hashlib.sha256(content).hexdigest())
+
+    def test_change_times_within_either_metadata_api_still_refuse_drift(self):
+        expected, omissions = collector.exported_tree(self.listing)
+        victim = self.source / "Cargo.lock"
+        stat_call, fstat_call = os.stat, os.fstat
+        victim_info = stat_call(victim)
+        for api, original in (("stat", stat_call), ("fstat", fstat_call)):
+            with self.subTest(api=api):
+                calls = 0
+
+                def changed(*args, **kwargs):
+                    nonlocal calls
+                    info = original(*args, **kwargs)
+                    if (info.st_dev, info.st_ino) != (victim_info.st_dev, victim_info.st_ino):
+                        return info
+                    calls += 1
+                    if calls != 2:
+                        return info
+                    fields = {name: getattr(info, name) for name in dir(info) if name.startswith("st_")}
+                    fields["st_ctime_ns"] += 1_000_000
+                    return SimpleNamespace(**fields)
+
+                receipt = {}
+                with (mock.patch.object(collector.os, api, side_effect=changed),
+                      self.assertRaisesRegex(ValueError, "source changed while hashing: Cargo.lock")):
+                    collector.verify_export(self.source, expected, omissions, time.monotonic() + 60, receipt)
+                self.assertFalse(receipt["complete"])
+                self.assertNotIn("Cargo.lock", receipt["files"])
+
     def test_directory_cache_without_file_identity_still_binds_real_source_bytes(self):
         scandir = os.scandir
 
@@ -3808,6 +3892,295 @@ class ExportedSourceAttestationTests(unittest.TestCase):
                 value["apparatus"]["accounting_contract"] = "prepared-cache-row-winner-v1"
             with self.subTest(change=change), self.assertRaises(ValueError):
                 collector.validate_v2_build({"path": str(self.binary), "build": value}, NATIVE_TARGET, "normal", 3)
+
+
+@unittest.skipIf(sys.platform == "win32", "retained Mach-O fixture uses POSIX image paths")
+class ProtocolThreeRuntimePreflightTests(unittest.TestCase):
+    def setUp(self):
+        temporary = tempfile.TemporaryDirectory()
+        self.addCleanup(temporary.cleanup)
+        self.root = Path(temporary.name).resolve()
+
+    def prepare(self, build_mode="normal", file_count=14):
+        from tools.tests import test_macos_image_observer as native
+        root = self.root / build_mode
+        root.mkdir()
+        self.run = native.SyntheticRun(root)
+        self.run.lib = self.run.lib.rename(root / "libopencv_core.fixture.dylib")
+        self.build_mode = build_mode
+        self.runtime = {"method": RUNTIME["method"], "images": [
+            {"path": str(self.run.lib), "sha256": collector.sha256(self.run.lib)}]}
+        self.declaration = v3_manifest(build_mode)
+        self.declaration["loaded_native_runtime"] = self.runtime
+        contents = {"Cargo.lock": b"locked fixture dependencies\n", "Cargo.toml": b"[workspace]\n",
+                    **{path: f"compiled apparatus fixture {index}\n".encode()
+                       for index, path in enumerate(V3_APPARATUS_SOURCES)}}
+        for index in range(file_count - len(contents)):
+            path = (f"crates/adapters/fixture-backend-{index // 32:02d}/src/recognition/"
+                    f"template_matching_contract_{index:04d}.rs")
+            contents[path] = f"pub const FIXTURE_CASE: usize = {index};\n".encode()
+        source = root / "export"
+        source.mkdir()
+        expected, listing = {}, []
+        for path, content in contents.items():
+            target = source / path
+            target.parent.mkdir(parents=True, exist_ok=True)
+            target.write_bytes(content)
+            blob = hashlib.sha1(f"blob {len(content)}\0".encode() + content).hexdigest()
+            expected[path] = {"mode": "100644", "git_object": blob}
+            listing.append(f"100644 blob {blob}\t{path}\0")
+            if path in V3_APPARATUS_SOURCES:
+                self.declaration["apparatus"]["source_files"][path] = hashlib.sha256(content).hexdigest()
+        omissions = {"AGENTS.md": {"mode": "120000", "git_object": "681311eb9cf453d0faddf3aacaec7357e97ba8e9"}}
+        listing.append("120000 blob 681311eb9cf453d0faddf3aacaec7357e97ba8e9\tAGENTS.md\0")
+        before = collector.verify_export(source, expected, omissions, time.monotonic() + 60, {})
+        after = collector.verify_export(source, expected, omissions, time.monotonic() + 60, {})
+        build = v3_identity(root, build_mode)["build"]
+        del build["source_status_porcelain"]
+        build.update(binary_sha256=collector.sha256(self.run.main), dependencies=self.runtime["images"],
+                     cargo_lock_sha256=hashlib.sha256(contents["Cargo.lock"]).hexdigest(),
+                     apparatus=copy.deepcopy(self.declaration["apparatus"]),
+                     benchmark_manifest=collector.manifest_identity(
+                         self.declaration, TARGET, "4.12.0", 3, build_mode),
+                     source_binding={"variant": "exported-git-tree-v1", "repository": str(root),
+                                     "source_root": str(source), "limits": dict(collector.SOURCE_LIMITS),
+                                     "before": before, "after": after})
+        revision = build["source_revision"]
+        probes = [
+            ([str(self.run.main), "--protocol-version", "3", "--list"], self.declaration),
+            (["/git", "--no-replace-objects", "rev-parse", "--verify", revision + "^{commit}"], revision + "\n"),
+            (["/git", "--no-replace-objects", "rev-parse", "--verify", revision + "^{tree}"], build["source_tree"] + "\n"),
+            (["/git", "--no-replace-objects", "ls-tree", "-r", "-z", "--full-tree", revision], "".join(listing)),
+            (["/rustc", "-vV"], build["rustc"]),
+        ]
+        build["provenance_commands"] = [
+            {"argv": argv, "cwd": str(root), "record": process_record(value)} for argv, value in probes]
+        self.metadata = root / "base.json"
+        collector.save(self.metadata, build)
+        self.identity = collector.binary_identity(self.run.main, self.metadata, TARGET)
+        self.launched = []
+
+    def discover(self, argv, **options):
+        self.launched.append(argv)
+        value = (copy.deepcopy(self.declaration) if "--list" in argv else
+                 v3_payload(argv[argv.index("--workload") + 1], self.build_mode, smoke=True))
+        value["loaded_native_runtime"] = self.runtime
+        value["apparatus"] = copy.deepcopy(self.declaration["apparatus"])
+        receipt = self.run.discovery(stdout=json.dumps(value))
+        receipt["duration_seconds"] = 0.2
+        return receipt
+
+    def preflight(self, name, discover=None):
+        args = collector.parser().parse_args([
+            "runtime-preflight", "--protocol-version", "3", "--build-mode", self.build_mode,
+            "--target", TARGET, "--binary", str(self.run.main), "--build-metadata", str(self.metadata),
+            "--output", str(self.root / name)])
+        with (mock.patch.object(collector, "host_identity", return_value={"target": TARGET}),
+              mock.patch.object(collector, "environment", return_value={"DYLD_LIBRARY_PATH": "/opt/lib"}),
+              mock.patch.object(collector, "exclusive_collector", return_value=contextlib.nullcontext()),
+              mock.patch.object(collector.macos_images, "discover", side_effect=discover or self.discover)):
+            return collector.runtime_preflight(args)
+
+    def retained_identity(self, bundle, name):
+        path = self.root / f"{name}.json"
+        collector.save(path, bundle)
+        identity = copy.deepcopy(self.identity)
+        identity["build"]["runtime_image_preflight"] = {"path": str(path), "sha256": collector.sha256(path)}
+        return identity
+
+    def test_full_source_export_preflight_and_offline_admission_fit_fixed_bundle_limit(self):
+        for mode, count in (("normal", 55), ("instrumented", 58)):
+            with self.subTest(mode=mode):
+                self.prepare(mode, file_count=749)
+                result = self.preflight(f"full-{mode}")
+                self.assertEqual(result["status"], "passed", result["issues"])
+                self.assertEqual((result["attempts"], result["scheduled"]), (count, count))
+                self.assertEqual(len(self.launched), count)
+                self.assertFalse(result["performance_qualified"])
+                bundle_path = self.root / f"full-{mode}" / "bundle.json"
+                self.assertLessEqual(bundle_path.stat().st_size, 64 * 1024 * 1024)
+                bundle = collector.load(bundle_path)
+                base = bundle["plan"]["binary"]
+                self.assertNotIn("source_status_porcelain", base["build"])
+                self.assertEqual(len(base["build"]["source_binding"]["before"]["files"]), 749)
+                canonical = (json.dumps(base, sort_keys=True, indent=2, allow_nan=False) + "\n").encode("utf-8")
+                reference = {"plan_binary_sha256": hashlib.sha256(canonical).hexdigest()}
+                for attempt in bundle["attempts"]:
+                    self.assertEqual(attempt["identity_before"], reference)
+                    self.assertEqual(attempt["identity_after"], reference)
+                augmented = collector.binary_identity(self.run.main, result["metadata"], TARGET)
+                self.run.main.unlink()
+                self.run.lib.unlink()
+                self.metadata.unlink()
+                shutil.rmtree(base["build"]["source_binding"]["source_root"])
+                admitted = collector.runtime_closure_admission(augmented, TARGET, mode)
+                self.assertEqual(admitted["closure"], bundle["closure"])
+                self.assertEqual(admitted["threads"], {"threads": 4, "framework": "fixture-runtime", "reason": None})
+
+    def test_export_admission_requires_complete_exact_and_unmixed_provenance(self):
+        self.prepare()
+        result = self.preflight("valid")
+        self.assertEqual(result["status"], "passed", result["issues"])
+        original = collector.binary_identity(self.run.main, result["metadata"], TARGET)
+        for change in ("variant", "porcelain", "post-proof", "incomplete", "changed", "tree", "probe", "lock"):
+            with self.subTest(change=change):
+                identity = copy.deepcopy(original)
+                build = identity["build"]
+                binding = build["source_binding"]
+                if change == "variant":
+                    binding["variant"] = "unchecked-export"
+                elif change == "porcelain":
+                    build["source_status_porcelain"] = ""
+                elif change == "post-proof":
+                    del binding["after"]
+                elif change == "incomplete":
+                    binding["before"]["complete"] = binding["after"]["complete"] = False
+                elif change == "changed":
+                    binding["after"]["files"]["Cargo.toml"]["sha256"] = "f" * 64
+                elif change == "tree":
+                    build["source_tree"] = "f" * 40
+                elif change == "probe":
+                    build["provenance_commands"][3]["record"]["stdout"] = "truncated source listing"
+                else:
+                    build["cargo_lock_sha256"] = "f" * 64
+                with self.assertRaises(ValueError):
+                    collector.runtime_closure_admission(identity, TARGET, "normal")
+
+    def test_checkout_admission_preserves_clean_source_requirement(self):
+        self.prepare()
+        build = copy.deepcopy(self.identity["build"])
+        del build["source_binding"]
+        build["source_status_porcelain"] = ""
+        for index, (argv, stdout) in enumerate((
+            (["/git", "rev-parse", "HEAD"], build["source_revision"] + "\n"),
+            (["/git", "rev-parse", "HEAD^{tree}"], build["source_tree"] + "\n"),
+            (["/git", "status", "--porcelain"], ""),
+        ), 1):
+            build["provenance_commands"][index] = {"argv": argv, "record": process_record(stdout)}
+        self.metadata.write_bytes(collector.document(build))
+        self.identity = collector.binary_identity(self.run.main, self.metadata, TARGET)
+        result = self.preflight("checkout")
+        self.assertEqual(result["status"], "passed", result["issues"])
+        identity = collector.binary_identity(self.run.main, result["metadata"], TARGET)
+        collector.runtime_closure_admission(identity, TARGET, "normal")
+        identity["build"]["source_status_porcelain"] = " M Cargo.lock\n"
+        identity["build"]["provenance_commands"][3]["record"]["stdout"] = " M Cargo.lock\n"
+        with self.assertRaisesRegex(ValueError, "dirty source"):
+            collector.runtime_closure_admission(identity, TARGET, "normal")
+
+    def test_both_boundary_references_bind_every_canonical_identity_field(self):
+        self.prepare()
+        result = self.preflight("valid")
+        self.assertEqual(result["status"], "passed", result["issues"])
+        original = collector.load(self.root / "valid" / "bundle.json")
+        changes = [(boundary, change) for boundary in ("identity_before", "identity_after")
+                   for change in ("digest", "missing", "null", "extra", "full", "build-only", "wrong-key")]
+        changes += [("plan", "metadata_path"), ("plan", "metadata_sha256"), ("plan", "extra")]
+        for index, (boundary, change) in enumerate(changes):
+            with self.subTest(boundary=boundary, change=change):
+                bundle = copy.deepcopy(original)
+                base = bundle["plan"]["binary"]
+                attempt = bundle["attempts"][-1]
+                if boundary == "plan":
+                    if change == "extra":
+                        base["unobserved_identity_field"] = True
+                    else:
+                        base[change] = "/other/metadata.json" if change == "metadata_path" else "f" * 64
+                elif change == "digest":
+                    attempt[boundary]["plan_binary_sha256"] = "f" * 64
+                elif change == "missing":
+                    del attempt[boundary]
+                elif change == "null":
+                    attempt[boundary] = None
+                elif change == "extra":
+                    attempt[boundary]["unobserved_identity_field"] = True
+                elif change == "full":
+                    attempt[boundary] = copy.deepcopy(base)
+                elif change == "build-only":
+                    attempt[boundary] = {"plan_binary_sha256": hashlib.sha256(
+                        collector.document(base["build"])).hexdigest()}
+                else:
+                    attempt[boundary] = {"sha256": attempt[boundary]["plan_binary_sha256"]}
+                identity = self.retained_identity(bundle, f"tampered-{index}")
+                with self.assertRaisesRegex(ValueError, "runtime preflight file identity"):
+                    collector.runtime_closure_admission(identity, TARGET, "normal")
+
+    def test_actual_before_and_after_file_changes_keep_unobserved_boundary_null(self):
+        self.prepare()
+        for stage, kind, message in (
+            ("before", "binary", "binary changed"), ("after", "binary", "binary changed"),
+            ("after", "metadata", "source metadata changed"), ("after", "dependency", "native dependency changed"),
+        ):
+            with self.subTest(stage=stage, kind=kind):
+                victim = {"binary": self.run.main, "metadata": self.metadata, "dependency": self.run.lib}[kind]
+                original = victim.read_bytes()
+                save = collector.save
+                self.launched.clear()
+
+                def save_started(path, value):
+                    save(path, value)
+                    if Path(path).parent.name == "started" and stage == "before":
+                        victim.write_bytes(original + b"changed at the boundary")
+
+                def discover(argv, **options):
+                    receipt = self.discover(argv, **options)
+                    victim.write_bytes(original + b"changed at the boundary")
+                    return receipt
+
+                name = f"changed-{stage}-{kind}"
+                try:
+                    with mock.patch.object(collector, "save", side_effect=save_started):
+                        result = self.preflight(name, discover)
+                finally:
+                    victim.write_bytes(original)
+                self.assertEqual(result["status"], "incomplete")
+                attempt = collector.load(self.root / name / "attempts/0000.json")
+                self.assertEqual(attempt["identity_error"], message)
+                self.assertIsNone(attempt["identity_after"])
+                if stage == "before":
+                    self.assertIsNone(attempt["identity_before"])
+                    self.assertIsNone(attempt["receipt"])
+                    self.assertEqual(self.launched, [])
+                else:
+                    self.assertEqual(attempt["identity_before"], {
+                        "plan_binary_sha256": hashlib.sha256(collector.document(self.identity)).hexdigest()})
+                    self.assertTrue(collector.successful(attempt["receipt"]["record"]))
+                    self.assertEqual(len(self.launched), 1)
+                self.assertFalse((self.root / name / "bundle.json").exists())
+                started = collector.load(self.root / name / "started/0000.json")
+                self.assertIsNone(started["identity_before"])
+                self.assertIsNone(started["identity_after"])
+
+    def test_interruption_and_failed_observer_keep_observed_boundary_proofs(self):
+        self.prepare()
+        reference = {"plan_binary_sha256": hashlib.sha256(collector.document(self.identity)).hexdigest()}
+
+        def interrupted(_argv, **_options):
+            raise KeyboardInterrupt("observer interrupted")
+
+        with self.assertRaisesRegex(KeyboardInterrupt, "observer interrupted"):
+            self.preflight("interrupted", interrupted)
+        attempt = collector.load(self.root / "interrupted/attempts/0000.json")
+        self.assertEqual(attempt["identity_before"], reference)
+        self.assertIsNone(attempt["identity_after"])
+        self.assertIsNone(attempt["identity_error"])
+        self.assertIsNone(attempt["receipt"])
+        self.assertEqual(attempt["interruption"], "KeyboardInterrupt")
+        self.assertFalse((self.root / "interrupted/report.json").exists())
+
+        def failed(argv, **options):
+            receipt = self.discover(argv, **options)
+            receipt["record"]["exit_code"] = 23
+            return receipt
+
+        result = self.preflight("failed", failed)
+        self.assertEqual(result["status"], "incomplete")
+        attempt = collector.load(self.root / "failed/attempts/0000.json")
+        self.assertEqual(attempt["identity_before"], reference)
+        self.assertEqual(attempt["identity_after"], reference)
+        self.assertEqual(attempt["receipt"]["record"]["exit_code"], 23)
+        self.assertEqual(collector.strict_json(attempt["receipt"]["record"]["stdout"]), self.declaration)
+        self.assertFalse((self.root / "failed/bundle.json").exists())
 
 
 if __name__ == "__main__":

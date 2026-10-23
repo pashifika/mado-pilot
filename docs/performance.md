@@ -214,6 +214,14 @@ thread setting. Each observed run reserves its pre/post binding time separately
 from the child deadline. Raw output, failed outcomes and unrun schedule entries
 remain evidence; successful cleanup does not repair missing provenance.
 
+Protocol-3 runtime preflight stores the complete binary/source identity once in
+`plan.binary`. Successful before/after file checks retain its canonical-JSON
+SHA256 as `plan_binary_sha256`; unobserved boundaries remain null. Admission
+checks both references and the full retained proof within the unchanged 64 MiB
+bundle ceiling. A fully verified `exported-git-tree-v1` binding is admissible;
+ordinary checkout provenance still requires a clean status. Protocol-2 preflight
+and other campaign receipt formats retain their existing identities.
+
 Attempt reports distinguish execution, cleanup, file identity, runtime provenance
 and semantic failures. Post-run file identity is retained before receipt validation.
 A fully bound row failure preserves later scheduled work but never enters accepted
@@ -236,6 +244,10 @@ mappings. It rejects missing/foreign/unrecognized records and uses observed
 shared-cache membership rather than a system-path exemption. Its loader UUID
 and pre/post on-disk bindings require a reviewed stable-file/OS scope; they are
 not proof against arbitrary concurrent replacement or same-UUID mutation.
+Its coverage review binds the host's `dyld(1)` contract and OS identity; the
+public dyld source reference is not asserted to match the running loader.
+Formatting, stderr writes and possible pipe/scheduling contention are observer
+effects requiring prospective assessment, not costs subtracted from samples.
 The Windows held-file debugger observer is preflight-only: it is not admitted
 for normal timing. Windows normal qualification therefore remains closed.
 
@@ -371,8 +383,12 @@ Export checks allow at most 20,000 entries, 64 MiB per file, 512 MiB total and
 repository-context symlink may be omitted. POSIX checks executable bits;
 Windows records Git modes as metadata and verifies regular-file bytes without
 claiming POSIX-mode equality. File identity and hard-link counts use full
-no-follow filesystem metadata, not Windows directory-entry cache fields. The
-lockfile and compiled helper-source manifest remain independently bound.
+no-follow filesystem metadata, not Windows directory-entry cache fields.
+Pathname and descriptor timestamps are checked against their own before/after
+snapshots: Windows creation-time compatibility can give the two APIs different
+`ctime` meanings. Identity, size, timestamp drift, Git blobs and SHA256 remain
+validated. The lockfile and compiled helper-source manifest remain independently
+bound.
 
 The collector uses one warmup and three retained iterations per row, a 90-second
 owned-child deadline, a 900-second campaign deadline, 8 MiB bounded child output

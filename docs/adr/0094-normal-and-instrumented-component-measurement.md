@@ -46,6 +46,8 @@ observation.
    or unbound records refuse closure. Unload chronology and manual mappings are
    outside this method. Windows debugger-based discovery binds held image-file
    objects but remains preflight-only; it does not qualify normal timing.
+   The macOS coverage review binds the installed loader documentation and OS;
+   a public source tag is a reference, not an assumed host implementation match.
 4. Bind every selected representative path to the executable and declared
    dependencies. Retain preflight bundles and observation receipts with source,
    mode, host, environment and finite execution bounds. Compare each measured
@@ -93,6 +95,13 @@ observation.
    files, unsafe links, changed bytes or helper-source mismatches. Windows
    regular-file verification retains declared Git modes without inventing
    POSIX executable-bit observations.
+   A fully verified export satisfies source admission without manufacturing
+   checkout status; ordinary checkout evidence still requires clean status.
+10. Store protocol-3 runtime-preflight identity once in `plan.binary`, with
+   strict canonical-JSON SHA256 references at successful before/after checks.
+   Preserve actual file checks, null unobserved boundaries, failed receipts
+   and the 64 MiB bundle limit. Protocol-2 and other campaign formats retain
+   their existing identity representation.
 
 ## Alternatives
 

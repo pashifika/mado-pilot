@@ -261,6 +261,12 @@ def native_thread_issues(settings, roles):
     return issues
 
 
+def preflight_identity(identity, protocol_version):
+    """Protocol3 boundary proofs bind the complete canonical plan.binary document."""
+    return ({"plan_binary_sha256": hashlib.sha256(document(identity)).hexdigest()}
+            if protocol_version == 3 else identity)
+
+
 def validate_runtime_bundle(bundle, identity, target, build_mode):
     """Revalidate retained representative runs; no live target or dependency reads."""
     version = identity["build"].get("protocol_version", 2)
@@ -290,12 +296,14 @@ def validate_runtime_bundle(bundle, identity, target, build_mode):
             "runtime preflight has unrun paths")
     manifest = validate_v2_build(base, target, build_mode, version)
     threads = effective_threads(strict_json(base["build"]["provenance_commands"][0]["record"]["stdout"]))
+    boundary_identity = preflight_identity(base, version)
     receipts = []
     for task, attempt in zip(expected_schedule, runs):
         require(isinstance(attempt, dict) and attempt.get("task") == task
                 and attempt.get("argv") == command(base, task, "smoke", version),
                 "runtime preflight path/order mismatch")
-        require(attempt.get("identity_before") == base and attempt.get("identity_after") == base
+        require(attempt.get("identity_before") == boundary_identity
+                and attempt.get("identity_after") == boundary_identity
                 and attempt.get("identity_error") is None and attempt.get("interruption") is None,
                 "runtime preflight file identity or completion failed")
         before, after = attempt.get("campaign_elapsed_before"), attempt.get("campaign_elapsed_after")
@@ -371,8 +379,9 @@ def runtime_closure_admission(identity, target, build_mode, bundle_path=None):
     reference = identity["build"].get("runtime_image_preflight")
     require(target == TARGETS[0] and isinstance(reference, dict),
             "missing runtime closure prerequisite: full native image preflight required; zero launches")
-    require(identity["build"].get("source_status_porcelain") == "",
-            "dirty source is not a qualification artifact; zero launches")
+    if "source_binding" not in identity["build"]:
+        require(identity["build"].get("source_status_porcelain") == "",
+                "dirty source is not a qualification artifact; zero launches")
     digest(reference.get("sha256"), "runtime preflight sha256")
     native_path(reference.get("path"), target)
     with Path(reference["path"] if bundle_path is None else bundle_path).open("rb") as stream:
@@ -2100,6 +2109,7 @@ def runtime_preflight(args):
     plan = {"target": args.target, "build_mode": args.build_mode, "binary": identity,
             "host": host_identity(), "environment": environment(), "collector": collector_identity(),
             "observer": macos_images.method_identity(), "schedule": tasks, "execution_limits": limits}
+    boundary_identity = preflight_identity(identity, version)
     destination = Path(args.output).resolve()
     with exclusive_collector():
         destination.mkdir(parents=True, exist_ok=False)
@@ -2119,10 +2129,11 @@ def runtime_preflight(args):
             attempt = {"task": task, "argv": argv, "identity_before": None, "identity_after": None,
                        "identity_error": None, "receipt": None, "campaign_elapsed_before": before,
                        "timeout_seconds": timeout}
+            attempt_path = destination / "attempts" / f"{task['id']}.json"
             save(destination / "started" / f"{task['id']}.json", attempt)
             try:
                 check_files(identity)
-                attempt["identity_before"] = identity
+                attempt["identity_before"] = boundary_identity
                 timeout = min(timeout, deadline - time.monotonic()
                               - limits["cleanup_seconds"] - limits["runtime_binding_seconds"])
                 require(timeout > 0, "preflight deadline reached before child launch")
@@ -2133,7 +2144,7 @@ def runtime_preflight(args):
                     binding_seconds=limits["runtime_binding_seconds"])
                 attempt["receipt"] = receipt
                 check_files(identity)
-                attempt["identity_after"] = identity
+                attempt["identity_after"] = boundary_identity
                 require(successful(receipt["record"]), "preflight process or owned cleanup failed")
                 closed = macos_images.validate_closure(receipt)
                 require(closed["ok"], "preflight image binding failed: " + str(closed["reason"]))
@@ -2152,14 +2163,14 @@ def runtime_preflight(args):
                 attempt["interruption"] = type(error).__name__
                 attempt["campaign_elapsed_after"] = time.monotonic() - started
                 try:
-                    save(destination / "attempts" / f"{task['id']}.json", attempt)
+                    save(attempt_path, attempt)
                 except (OSError, ValueError):
                     pass  # Preserve the primary interruption after best-effort receipt retention.
                 raise
             attempt["campaign_elapsed_after"] = time.monotonic() - started
-            save(destination / "attempts" / f"{task['id']}.json", attempt)
+            save(attempt_path, attempt)
             attempts.append(attempt)
-            retained_bytes += len(document(attempt))
+            retained_bytes += attempt_path.stat().st_size
             if retained_bytes > 64 * MIB:
                 issues.append("runtime preflight bundle exceeds 64 MiB")
             if issues:
@@ -2472,10 +2483,11 @@ def verify_export(root, expected, omissions, deadline, receipt):
                         checksum.update(chunk)
                     after = os.fstat(stream.fileno())
                 current = os.stat(child.path, follow_symlinks=False)
+                # Windows pathname and descriptor ctime can have different meanings.
                 require(size == info.st_size and all(
                     (item.st_dev, item.st_ino, item.st_mode, item.st_size, item.st_mtime_ns, item.st_ctime_ns)
-                    == (info.st_dev, info.st_ino, info.st_mode, info.st_size, info.st_mtime_ns, info.st_ctime_ns)
-                    for item in (after, current)), f"source changed while hashing: {path}")
+                    == (prior.st_dev, prior.st_ino, prior.st_mode, prior.st_size, prior.st_mtime_ns, prior.st_ctime_ns)
+                    for item, prior in ((after, opened), (current, info))), f"source changed while hashing: {path}")
                 # Windows verifies tree-declared modes as metadata, not unavailable POSIX execute bits.
                 item = {"mode": expected[path]["mode"] if os.name == "nt" else
                         "100755" if info.st_mode & 0o111 else "100644",
