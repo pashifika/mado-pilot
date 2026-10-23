@@ -123,16 +123,16 @@ SMOKE_LIMITS = {"child_timeout_seconds": 90, "campaign_timeout_seconds": 900,
                 "cleanup_seconds": 5, "output_limit_bytes": 8 * MIB}
 
 # Prospective component apparatus only; this never regrades format-one evidence.
-V2_POLICY = {**POLICY, "id": "template-efficiency-v2-prospective", "processes": 6,
+V2_POLICY = {**POLICY, "id": "template-efficiency-v2-prospective-r2", "processes": 6,
              "control_pairs": 6, "comparison_pairs": 6,
              "pair_order": ["AB", "BA", "AB", "BA", "AB", "BA"],
              "timing_ceiling": "ceil(max(calibration6) + max(spread, 2 * clock_allowance))",
              "benefit": "normal median(baseline6) - median(candidate6) > frozen allowance, jointly p95 and CPU",
-             "noise": "spread / max(median(cohort6), 2 * clock_allowance) <= noise_cap",
+             "noise": "spread / max(median(cohort6), 2 * frozen calibration clock_allowance) <= noise_cap",
              "resource_ceiling": "max(calibration6) + max(spread, fixed slack); live cache only on native RSS peak",
-             "control": "all processes within ceilings; order and half-cohort median differences <= allowance",
+             "control": "all processes within ceilings; between-role, order and half-cohort median differences <= allowance",
              "scope": "component only; no actual-consumer coverage or accepted numerical qualification"}
-V3_POLICY = {**V2_POLICY, "id": "template-efficiency-v3-session-prospective",
+V3_POLICY = {**V2_POLICY, "id": "template-efficiency-v3-session-prospective-r2",
              "resource_ceiling": "max(calibration6) + max(spread, fixed slack); native RSS peak live cache is row-scoped by simultaneous independent backend count",
              "strata": "turnover hit and miss remain process-local; grade each stratum and the overlapping primary cycle independently",
              "scope": "prospective Session component apparatus; no accepted method, profile or actual-consumer qualification"}
@@ -232,6 +232,51 @@ def validate_v2_build(identity, target, build_mode, protocol_version=2):
 
 
 OPENCV_THREAD_METHOD = "opencv-runtime-backend-and-thread-setting-v1"
+RUNTIME_OBSERVER_POLICY = "macos-dyld-observer-on-warm-v1"
+
+
+def timing_capability(value, *, enabled=False):
+    """Capability is stable; enablement must match the actual invocation."""
+    if not any(key in value for key in ("timing_boundary_protocol", "timing_boundaries_enabled")):
+        require(not enabled, "timing boundary capability required; zero qualifying launches")
+        return {}
+    require(value.get("timing_boundary_protocol") == macos_images.TIMING_PROTOCOL,
+            "unsupported timing boundary protocol")
+    require(value.get("timing_boundaries_enabled") is enabled, "timing boundary invocation enablement mismatch")
+    return {"timing_boundary_protocol": macos_images.TIMING_PROTOCOL}
+
+
+def validate_timing_attempt(attempt, manifest, record, *, retain=False):
+    require(manifest.get("timing_boundary_protocol") == macos_images.TIMING_PROTOCOL,
+            "timing boundary capability required; zero qualifying launches")
+    require(attempt["argv"].count("--timing-boundaries") == 1, "timing boundary invocation flag missing")
+    value = strict_json(record["stdout"])
+    require(isinstance(value, dict), "process protocol must be an object")
+    timing_capability(value, enabled=True)
+    workload = attempt["task"]["workload"]
+    expected = [] if workload is None else [workload]
+    require(value.get("kind") == ("manifest" if workload is None else "observations"),
+            "timing boundary output kind mismatch")
+    if workload is not None:
+        require(workload in [row["id"] for row in manifest["workloads"]]
+                and isinstance(value.get("workloads"), list)
+                and all(isinstance(row, dict) for row in value["workloads"])
+                and [row.get("id") for row in value["workloads"]] == expected,
+                "timing boundary output row mismatch")
+    derived = macos_images.validate_timing_boundaries(record, expected)
+    if retain:
+        attempt["timing_observation"] = derived
+    require(exact_value(attempt.get("timing_observation"), derived), "timing observation summary mismatch")
+    statistical = workload is not None and next(
+        row for row in manifest["workloads"] if row["id"] == workload)["statistical"]
+    require(derived["complete"] and (not statistical or derived["ok"]),
+            "timing boundary evidence refused: " + str(derived["reason"]))
+
+
+def runtime_observer_policy(plan):
+    policy = plan.get("runtime_observer_policy")
+    require(policy is None or policy == RUNTIME_OBSERVER_POLICY, "unsupported runtime observer policy")
+    return policy
 
 
 def effective_threads(value):
@@ -275,6 +320,7 @@ def validate_runtime_bundle(bundle, identity, target, build_mode):
     plan = bundle.get("plan")
     require(isinstance(plan, dict) and plan.get("target") == target
             and plan.get("build_mode") == build_mode, "runtime preflight target/mode mismatch")
+    timing = runtime_observer_policy(plan) is not None
     base = plan.get("binary")
     require(isinstance(base, dict) and base.get("path") == identity["path"]
             and base.get("sha256") == identity["sha256"]
@@ -300,7 +346,7 @@ def validate_runtime_bundle(bundle, identity, target, build_mode):
     receipts = []
     for task, attempt in zip(expected_schedule, runs):
         require(isinstance(attempt, dict) and attempt.get("task") == task
-                and attempt.get("argv") == command(base, task, "smoke", version),
+                and attempt.get("argv") == command(base, task, "smoke", version, timing_boundaries=timing),
                 "runtime preflight path/order mismatch")
         require(attempt.get("identity_before") == boundary_identity
                 and attempt.get("identity_after") == boundary_identity
@@ -326,11 +372,16 @@ def validate_runtime_bundle(bundle, identity, target, build_mode):
         value = strict_json(record["stdout"])
         loaded_runtime(value, base)
         require(effective_threads(value) == threads, "runtime preflight native thread setting changed")
+        if timing:
+            validate_timing_attempt(attempt, manifest, record)
+        else:
+            require("timing_observation" not in attempt, "timing summary requires an explicit observer policy")
         if task["workload"] is None:
-            require(manifest_identity(value, target, base["build"]["opencv_version"], version, build_mode) == manifest,
+            require(manifest_identity(value, target, base["build"]["opencv_version"], version, build_mode,
+                                      timing_boundaries=timing) == manifest,
                     "runtime preflight manifest changed")
         else:
-            observations(value, manifest, task["workload"], True)
+            observations(value, manifest, task["workload"], True, timing_boundaries=timing)
         receipts.append(receipt)
     derived = macos_images.validate_closure(receipts)
     require(derived["ok"], "runtime preflight closure incomplete: " + str(derived["reason"]))
@@ -372,10 +423,19 @@ def validate_runtime_attempt(attempt, runtime):
     require(isinstance(value, dict), "process protocol must be an object")
     require(effective_threads(value) == runtime["threads"],
             "measurement-time native thread setting changed")
+    if runtime_observer_policy(runtime["plan"]) is not None:
+        require(verdict["ok"] and verdict["cleanup_ok"], "measurement-time process or cleanup failed")
+        validate_timing_attempt(attempt, runtime["plan"]["binary"]["build"]["benchmark_manifest"], attempt["record"])
+    else:
+        require("timing_observation" not in attempt, "timing summary requires an explicit observer policy")
 
 
-def runtime_closure_admission(identity, target, build_mode, bundle_path=None):
-    validate_v2_build(identity, target, build_mode, identity["build"].get("protocol_version", 2))
+def runtime_closure_admission(identity, target, build_mode, bundle_path=None, *, timing_policy=None):
+    manifest = validate_v2_build(identity, target, build_mode, identity["build"].get("protocol_version", 2))
+    if timing_policy is not None:
+        require(timing_policy == RUNTIME_OBSERVER_POLICY, "unsupported runtime observer policy")
+        require(manifest.get("timing_boundary_protocol") == macos_images.TIMING_PROTOCOL,
+                "timing boundary capability required; zero qualifying launches")
     reference = identity["build"].get("runtime_image_preflight")
     require(target == TARGETS[0] and isinstance(reference, dict),
             "missing runtime closure prerequisite: full native image preflight required; zero launches")
@@ -389,6 +449,8 @@ def runtime_closure_admission(identity, target, build_mode, bundle_path=None):
     require(len(raw) <= 64 * MIB and hashlib.sha256(raw).hexdigest() == reference["sha256"],
             "runtime preflight size/hash mismatch")
     result = validate_runtime_bundle(strict_json(raw.decode("utf-8")), identity, target, build_mode)
+    require(timing_policy is None or runtime_observer_policy(result["plan"]) == timing_policy,
+            "timing boundary preflight policy required; zero qualifying launches")
     return {**result, "raw": raw}
 
 
@@ -403,6 +465,8 @@ def reviewed_method(path, expected_sha256, plan):
     require(review.get("decision") == "accepted", "method review has not accepted this lane")
     for key in ("target", "build_mode", "host", "environment", "collector", "policy", "workloads"):
         require(review.get(key) == plan[key], f"method review {key} mismatch")
+    require(review.get("runtime_observer_policy") == runtime_observer_policy(plan),
+            "method review runtime_observer_policy mismatch")
     require(review.get("baseline") == plan["binaries"]["baseline"], "method review baseline/source mismatch")
     if "candidate" in plan["binaries"]:
         require(review.get("candidate") == plan["binaries"]["candidate"],
@@ -1204,9 +1268,10 @@ def validate_session_observations(row, build_mode, warmups, count, timer, cpu_re
     return result
 
 
-def manifest_identity(value, target, opencv_version, protocol_version=1, build_mode=None):
+def manifest_identity(value, target, opencv_version, protocol_version=1, build_mode=None, *, timing_boundaries=False):
     require(isinstance(value, dict) and value.get("format_version") == protocol_version, "invalid protocol version")
     mode_fields = mode_identity(value, build_mode, protocol_version) if protocol_version >= 2 else {}
+    mode_fields.update(timing_capability(value, enabled=timing_boundaries))
     if protocol_version >= 2:
         effective_threads(value)
     require(value.get("kind") == "manifest", "expected manifest")
@@ -1256,10 +1321,13 @@ def manifest_identity(value, target, opencv_version, protocol_version=1, build_m
             "workloads": frozen, **mode_fields}
 
 
-def observations(value, manifest, workload, smoke):
+def observations(value, manifest, workload, smoke, *, timing_boundaries=False):
     version = manifest.get("format_version", 1)
     normal = version >= 2 and manifest["build_mode"] == "normal"
     require(isinstance(value, dict), "invalid observation protocol")
+    require(timing_capability(value, enabled=timing_boundaries) == {
+        key: manifest[key] for key in ("timing_boundary_protocol",) if key in manifest},
+        "observation timing capability changed")
     if version >= 2:
         require(mode_identity(value, manifest["build_mode"], version) == {
             key: manifest[key] for key in ("format_version", "build_mode", "global_allocator", "unavailable")},
@@ -1575,6 +1643,9 @@ def validate_plan(plan):
     require(version in (1, 2, 3) and plan.get("kind") == "campaign", "invalid campaign")
     if version == 3:
         integer(version, "campaign format_version")
+    timing_policy = runtime_observer_policy(plan)
+    require(timing_policy is None or (version >= 2 and plan.get("target") == TARGETS[0]
+                                     and plan.get("mode") != "smoke"), "invalid runtime observer policy lane")
     modes = ("calibration", "comparison", "smoke", "control") if version >= 2 else ("calibration", "comparison", "smoke")
     require(plan.get("mode") in modes, "invalid cohort")
     require(plan.get("policy") == policy_for(version),
@@ -1604,7 +1675,10 @@ def validate_plan(plan):
         digest(identity.get("metadata_sha256"), "metadata_sha256")
         native_path(identity.get("path"), target)
         if version >= 2:
-            validate_v2_build(identity, target, plan["build_mode"], version)
+            manifest = validate_v2_build(identity, target, plan["build_mode"], version)
+            if timing_policy is not None:
+                require(manifest.get("timing_boundary_protocol") == macos_images.TIMING_PROTOCOL,
+                        "timing boundary capability required")
     require(isinstance(plan.get("environment"), dict), "environment missing")
     if version >= 2 and plan["mode"] == "control":
         require(plan["binaries"]["baseline"] == plan["binaries"]["control"],
@@ -1620,13 +1694,14 @@ def evaluate(directory):
     plan = load(directory / "plan.json")
     validate_plan(plan)
     version = plan["format_version"]
+    timing_policy = runtime_observer_policy(plan)
     manifests, observations_by_role, attempts, issues = {}, {}, [], []
     runtimes, prerequisite_issues = {}, []
     if version >= 2 and plan["mode"] != "smoke":
         for role, binary in plan["binaries"].items():
             try:
                 runtime = runtime_closure_admission(binary, plan["target"], plan["build_mode"],
-                                                    directory / f"runtime-{role}.json")
+                                                    directory / f"runtime-{role}.json", timing_policy=timing_policy)
                 require(runtime["plan"]["host"] == plan["host"]
                         and runtime["plan"]["environment"] == plan["environment"],
                         "runtime preflight host/environment changed")
@@ -1670,8 +1745,10 @@ def evaluate(directory):
             require(attempt.get("task") == task, "attempt identity/order mismatch")
             require(attempt.get("plan_sha256") == plan_hash, "attempt plan binding mismatch")
             binary = plan["binaries"][task["role"]]
-            argv = command(binary, task, plan["mode"], version)
+            argv = command(binary, task, plan["mode"], version, timing_boundaries=timing_policy is not None)
             require(attempt.get("argv") == argv, "attempt argv mismatch")
+            if timing_policy is None:
+                require("timing_observation" not in attempt, "timing summary requires an explicit observer policy")
             if version >= 2:
                 started_path = directory / "started" / filename
                 receipt = load(started_path)
@@ -1735,6 +1812,8 @@ def evaluate(directory):
                     validate_runtime_attempt(attempt, runtimes[task["role"]])
                 except (OSError, ValueError, TypeError, KeyError) as error:
                     fail("provenance", str(error))
+            elif timing_policy is not None:
+                fail("provenance", "timing runtime prerequisite unavailable")
             category = "semantic"
             value = strict_json(record["stdout"])
             require(isinstance(value, dict), "process protocol must be an object")
@@ -1746,7 +1825,7 @@ def evaluate(directory):
                 fail("provenance", str(error))
             if task["workload"] is None:
                 manifest = manifest_identity(value, plan["target"], binary["build"]["opencv_version"],
-                                             version, plan.get("build_mode"))
+                                             version, plan.get("build_mode"), timing_boundaries=timing_policy is not None)
                 if version >= 2:
                     require(manifest == binary["build"]["benchmark_manifest"],
                             "observed manifest differs from source/mode attestation")
@@ -1754,7 +1833,8 @@ def evaluate(directory):
                     manifests[task["role"]] = manifest
             else:
                 require(task["role"] in manifests, "role has no valid manifest")
-                summary = observations(value, manifests[task["role"]], task["workload"], plan["mode"] == "smoke")
+                summary = observations(value, manifests[task["role"]], task["workload"], plan["mode"] == "smoke",
+                                       timing_boundaries=timing_policy is not None)
                 summary["process"] = task["process"]
                 if version >= 2:
                     summary["position"] = task["position"]
@@ -1790,7 +1870,7 @@ def derive_envelopes(evidence):
         require(len(rows) == count and (version == 1 or
                 sorted(row["process"] for row in rows) == list(range(count))),
                 "calibration requires five fresh processes" if version == 1 else "calibration requires 6 fresh processes")
-        limits, allowances = {}, {}
+        limits, allowances, clocks = {}, {}, {}
         if definition["statistical"]:
             for metric, clock in timing_metrics(workload, version):
                 values = [row.get(metric) for row in rows]
@@ -1806,6 +1886,8 @@ def derive_envelopes(evidence):
                         f"noisy calibration: {workload}/{metric}; retain the whole campaign")
                 limits[metric] = math.ceil(max(values) + allowance)
                 allowances[metric] = allowance
+                if version >= 2:
+                    clocks[metric] = resolution
         prefixes = ("rss",) if version >= 2 and evidence["plan"]["build_mode"] == "normal" else ("rss", "heap")
         for prefix in prefixes:
             for metric in (f"peak_{prefix}_bytes", f"{prefix}_growth_bytes", f"{prefix}_residual_bytes"):
@@ -1818,6 +1900,8 @@ def derive_envelopes(evidence):
                     live *= 2
                 limits[metric] = max(values) + slack + live
         result[workload] = {"limits": limits, "benefit_allowances": allowances}
+        if version >= 2:
+            result[workload]["clock_allowances"] = clocks
     return result
 
 
@@ -1829,7 +1913,8 @@ def same_v2_context(evidence, calibration):
     plan, base = evidence["plan"], calibration["plan"]
     require(plan.get("format_version") == base.get("format_version") and plan.get("format_version") in (2, 3),
             "mixed protocol cohorts")
-    for key in ("target", "build_mode", "collector", "host", "environment", "policy", "workloads", "method_review"):
+    for key in ("target", "build_mode", "collector", "host", "environment", "policy", "workloads",
+                "method_review", "runtime_observer_policy"):
         require(plan.get(key) == base.get(key), f"cohort {key} differs from calibration")
     require(plan["binaries"]["baseline"] == base["binaries"]["baseline"], "cohort baseline/source changed")
     require(evidence["manifest"] == calibration["manifest"], "cohort manifest/corpus changed")
@@ -1852,6 +1937,7 @@ def control_evidence(calibration, control):
     issues = (list(calibration.get("prerequisite_issues", []))
               + list(control["issues"]) + control.get("prerequisite_issues", []))
     for workload, envelope in envelopes.items():
+        medians = {metric: [] for metric in envelope["benefit_allowances"]}
         for role in ("baseline", "control"):
             rows = control["observations"].get(role, {}).get(workload, [])
             complete = (len(rows) == 6 and sorted(row["process"] for row in rows) == list(range(6))
@@ -1868,15 +1954,14 @@ def control_evidence(calibration, control):
                         issues.append({"attempt": f"{role}:{workload}:{row['process']}", "status": "failed",
                                        "reason": f"{metric}={value} exceeds {limit}"})
             for metric, allowance in envelope["benefit_allowances"].items():
-                clock = "timer_resolution_ns" if metric.endswith("p95_ns") else "cpu_timer_resolution_ns"
-                if not complete or any(row.get(metric) is None or row[clock] is None for row in rows):
+                if not complete or any(row.get(metric) is None for row in rows):
                     continue
                 values = [row[metric] for row in rows]
-                resolution = max(row[clock] for row in rows)
-                if metric.endswith("cpu_ns"):
-                    resolution = max(resolution, POLICY["cpu_accounting_floor_ns"][control["plan"]["target"]])
+                median = statistics.median(values)
+                medians[metric].append(median)
+                resolution = envelope["clock_allowances"][metric]
                 checks = {
-                    "noise": (max(values) - min(values)) / max(statistics.median(values), 2 * resolution)
+                    "noise": (max(values) - min(values)) / max(median, 2 * resolution)
                              <= V2_POLICY["noise_cap"],
                     "order": abs(statistics.median(row[metric] for row in rows if row["position"] == 0)
                                  - statistics.median(row[metric] for row in rows if row["position"] == 1)) <= allowance,
@@ -1887,6 +1972,10 @@ def control_evidence(calibration, control):
                     if not passed:
                         issues.append({"attempt": f"{role}:{workload}", "status": "failed",
                                        "reason": f"A/A {metric} {name} exceeds frozen control tolerance"})
+        for metric, values in medians.items():
+            if len(values) == 2 and abs(values[0] - values[1]) > envelope["benefit_allowances"][metric]:
+                issues.append({"attempt": workload, "status": "failed",
+                               "reason": f"A/A {metric} between-role bias exceeds frozen control tolerance"})
     return issues
 
 
@@ -1903,15 +1992,20 @@ def profile_from_v2(evidence, calibration, control, control_path, reviewer, rati
                        "target": plan["target"], "build_mode": plan["build_mode"],
                        "method_review": plan["method_review"], "calibration": cohort_binding(evidence),
                        "control": cohort_binding(control), "envelopes": envelopes}
+    if runtime_observer_policy(plan) is not None:
+        expected_review["runtime_observer_policy"] = plan["runtime_observer_policy"]
     require(isinstance(review, dict) and all(review.get(key) == value for key, value in expected_review.items()),
             "external profile review does not bind the exact method/cohorts/envelopes")
     nonempty(review.get("reviewer"), "profile review reviewer")
     nonempty(review.get("rationale"), "profile review rationale")
     for role, binary in plan["binaries"].items():
         runtime_closure_admission(binary, plan["target"], plan["build_mode"],
-                                  Path(calibration) / f"runtime-{role}.json")
+                                  Path(calibration) / f"runtime-{role}.json",
+                                  timing_policy=runtime_observer_policy(plan))
     return {"format_version": plan["format_version"], "kind": "frozen-profile",
             **{key: plan[key] for key in ("target", "build_mode", "policy", "collector", "host", "environment", "method_review")},
+            **({"runtime_observer_policy": plan["runtime_observer_policy"]}
+               if runtime_observer_policy(plan) is not None else {}),
             "baseline": plan["binaries"]["baseline"], "manifest": evidence["manifest"], "envelopes": envelopes,
             "calibration": {"path": str(Path(calibration).resolve()), **cohort_binding(evidence)},
             "control": {"path": str(Path(control_path).resolve()), **cohort_binding(control)},
@@ -1956,7 +2050,7 @@ def compare_evidence(evidence, profile):
     count = 6 if version >= 2 else 5
     normal = version >= 2 and plan["build_mode"] == "normal"
     if version >= 2:
-        for name in ("build_mode", "policy", "method_review"):
+        for name in ("build_mode", "policy", "method_review", "runtime_observer_policy"):
             require(plan.get(name) == profile.get(name), f"comparison {name} differs from calibration")
         require(plan["profile_sha256"] is not None, "comparison requires pinned control-accepted profile")
     for name in ("target", "collector", "host", "environment"):
@@ -1981,6 +2075,16 @@ def compare_evidence(evidence, profile):
         complete = complete and all(row.get(metric) is not None for rows in cohorts.values()
                                     for row in rows for metric in envelope["limits"])
         for role, rows in cohorts.items():
+            if version >= 2 and len(rows) == count and sorted(row["process"] for row in rows) == list(range(count)):
+                for metric in envelope["benefit_allowances"]:
+                    if any(row.get(metric) is None for row in rows):
+                        continue
+                    values = [row[metric] for row in rows]
+                    resolution = envelope["clock_allowances"][metric]
+                    noise = (max(values) - min(values)) / max(statistics.median(values), 2 * resolution)
+                    if noise > V2_POLICY["noise_cap"]:
+                        issues.append({"attempt": f"{role}:{workload}", "status": "failed",
+                                       "reason": f"comparison {metric} noise exceeds frozen cohort tolerance"})
             for row in rows:
                 process = row["process"]
                 for metric, limit in envelope["limits"].items():
@@ -2069,8 +2173,12 @@ def report(directory):
             "note": "smoke and calibration do not establish performance qualification; contract rows are non-statistical"}
 
 
-def command(binary, task, mode, protocol_version=1):
+def command(binary, task, mode, protocol_version=1, *, timing_boundaries=False):
     prefix = [binary["path"]] + (["--protocol-version", str(protocol_version)] if protocol_version >= 2 else [])
+    if timing_boundaries:
+        require(binary["build"]["benchmark_manifest"].get("timing_boundary_protocol") == macos_images.TIMING_PROTOCOL,
+                "timing boundary capability required; zero qualifying launches")
+        prefix.append("--timing-boundaries")
     if task["workload"] is None:
         return prefix + ["--list"]
     result = prefix + ["--workload", task["workload"]]
@@ -2103,12 +2211,15 @@ def runtime_preflight(args):
     identity = binary_identity(args.binary, args.build_metadata, args.target)
     require("runtime_image_preflight" not in identity["build"], "preflight requires the original build attestation")
     manifest = validate_v2_build(identity, args.target, args.build_mode, version)
+    require(manifest.get("timing_boundary_protocol") == macos_images.TIMING_PROTOCOL,
+            "timing boundary capability required; zero qualifying launches")
     threads = effective_threads(strict_json(identity["build"]["provenance_commands"][0]["record"]["stdout"]))
     tasks = schedule("smoke", list(definitions_for(args.build_mode, version)), version)
     limits = {**execution_limits("smoke", len(tasks)), "runtime_binding_seconds": 120}
     plan = {"target": args.target, "build_mode": args.build_mode, "binary": identity,
             "host": host_identity(), "environment": environment(), "collector": collector_identity(),
-            "observer": macos_images.method_identity(), "schedule": tasks, "execution_limits": limits}
+            "observer": macos_images.method_identity(), "schedule": tasks, "execution_limits": limits,
+            "runtime_observer_policy": RUNTIME_OBSERVER_POLICY}
     boundary_identity = preflight_identity(identity, version)
     destination = Path(args.output).resolve()
     with exclusive_collector():
@@ -2125,7 +2236,7 @@ def runtime_preflight(args):
             if timeout <= 0:
                 issues.append("campaign deadline reached; remaining representative paths not-run")
                 break
-            argv = command(identity, task, "smoke", version)
+            argv = command(identity, task, "smoke", version, timing_boundaries=True)
             attempt = {"task": task, "argv": argv, "identity_before": None, "identity_after": None,
                        "identity_error": None, "receipt": None, "campaign_elapsed_before": before,
                        "timeout_seconds": timeout}
@@ -2151,11 +2262,13 @@ def runtime_preflight(args):
                 value = strict_json(receipt["record"]["stdout"])
                 loaded_runtime(value, identity, verify_files=True)
                 require(effective_threads(value) == threads, "preflight native thread setting changed")
+                validate_timing_attempt(attempt, manifest, receipt["record"], retain=True)
                 if task["workload"] is None:
                     require(manifest_identity(value, args.target, identity["build"]["opencv_version"],
-                                              version, args.build_mode) == manifest, "preflight manifest changed")
+                                              version, args.build_mode, timing_boundaries=True) == manifest,
+                            "preflight manifest changed")
                 else:
-                    observations(value, manifest, task["workload"], True)
+                    observations(value, manifest, task["workload"], True, timing_boundaries=True)
             except (OSError, ValueError, KeyError, TypeError) as error:
                 attempt["identity_error"] = str(error)
                 issues.append(str(error))
@@ -2201,6 +2314,9 @@ def collect(args, mode):
     version = args.protocol_version
     definitions = definitions_for(args.build_mode, version) if version >= 2 else DEFINITIONS
     require(version >= 2 or mode != "control", "control requires --protocol-version 2/3")
+    timing_policy = RUNTIME_OBSERVER_POLICY if args.target == TARGETS[0] and mode != "smoke" else None
+    require(timing_policy is None or version >= 2,
+            "new macOS qualification requires timing-capable protocol 2/3; zero qualifying launches")
     host = host_identity()
     require(host["target"] == args.target, "actual host cannot execute the selected qualification target")
     baseline = binary_identity(args.baseline, args.baseline_metadata, args.target)
@@ -2227,6 +2343,8 @@ def collect(args, mode):
     preflight = {"format_version": version, "target": args.target, "build_mode": args.build_mode, "host": host,
                  "collector": collector_identity(), "environment": environment(), "policy": policy_for(version),
                  "workloads": selected, "binaries": binaries}
+    if timing_policy is not None:
+        preflight["runtime_observer_policy"] = timing_policy
     method, calibration_binding = None, None
     if version >= 2:
         for binary in binaries.values():
@@ -2242,15 +2360,17 @@ def collect(args, mode):
                 require(not calibration.get("prerequisite_issues"),
                         "calibration runtime prerequisites are incomplete; control not started")
                 derive_envelopes(calibration)
-                for key in ("target", "build_mode", "host", "collector", "environment", "policy", "workloads", "method_review"):
-                    require(preflight[key] == calibration["plan"][key], f"control {key} differs from calibration")
+                for key in ("target", "build_mode", "host", "collector", "environment", "policy", "workloads",
+                            "method_review", "runtime_observer_policy"):
+                    require(preflight.get(key) == calibration["plan"].get(key), f"control {key} differs from calibration")
                 require(baseline == calibration["plan"]["binaries"]["baseline"], "control baseline/source changed")
                 calibration_binding = {"path": str(Path(args.calibration).resolve()), **cohort_binding(calibration)}
             if profile:
-                require(args.build_mode == profile["build_mode"] and method == profile["method_review"],
+                require(args.build_mode == profile["build_mode"] and method == profile["method_review"]
+                        and timing_policy == runtime_observer_policy(profile),
                         "comparison build mode/method review changed")
             for role, binary in binaries.items():
-                runtime = runtime_closure_admission(binary, args.target, args.build_mode)
+                runtime = runtime_closure_admission(binary, args.target, args.build_mode, timing_policy=timing_policy)
                 require(runtime["plan"]["host"] == host and runtime["plan"]["environment"] == environment(),
                         "runtime preflight host/environment changed")
                 runtimes[role] = runtime
@@ -2283,6 +2403,8 @@ def collect(args, mode):
                 "schedule": schedule(mode, selected, version), "exclusive_host": args.exclusive_host,
                 "cwd": str(ROOT), "created_unix_ns": time.time_ns(),
                 "profile_sha256": args.profile_sha256 if profile else None}
+        if timing_policy is not None:
+            plan["runtime_observer_policy"] = timing_policy
         if version >= 2:
             plan.update(build_mode=args.build_mode, method_review=method, calibration=calibration_binding,
                         execution_limits=execution_limits(mode, len(plan["schedule"])))
@@ -2302,7 +2424,7 @@ def collect(args, mode):
             if remaining is not None and remaining <= 2 * binding_seconds:
                 break
             identity = binaries[task["role"]]
-            argv = command(identity, task, mode, version)
+            argv = command(identity, task, mode, version, timing_boundaries=timing_policy is not None)
             attempt = {"task": task, "argv": argv, "plan_sha256": plan_hash,
                        "identity_before": None, "identity_after": None, "identity_error": None,
                        "record": None, "started_unix_ns": time.time_ns()}
@@ -2338,6 +2460,8 @@ def collect(args, mode):
                 attempt["identity_after"] = identity
                 if task["role"] in runtimes:
                     stage = "provenance"
+                    if timing_policy is not None:
+                        validate_timing_attempt(attempt, identity["build"]["benchmark_manifest"], attempt["record"], retain=True)
                     validate_runtime_attempt(attempt, runtimes[task["role"]])
                 if successful(attempt["record"]) or version >= 2:
                     stage = "semantic"
@@ -2349,10 +2473,12 @@ def collect(args, mode):
                     if version >= 2:
                         if task["workload"] is None:
                             require(manifest_identity(value, args.target, identity["build"]["opencv_version"],
-                                                      version, args.build_mode) == identity["build"]["benchmark_manifest"],
+                                                      version, args.build_mode,
+                                                      timing_boundaries=timing_policy is not None) == identity["build"]["benchmark_manifest"],
                                     "observed source/mode manifest changed")
                         else:
-                            observations(value, identity["build"]["benchmark_manifest"], task["workload"], mode == "smoke")
+                            observations(value, identity["build"]["benchmark_manifest"], task["workload"], mode == "smoke",
+                                         timing_boundaries=timing_policy is not None)
             except (OSError, ValueError, KeyError, TypeError) as error:
                 attempt[f"{stage}_error" if version >= 2 else "identity_error"] = str(error)
             except BaseException as error:
@@ -2368,16 +2494,18 @@ def collect(args, mode):
             if version >= 2:
                 attempt["campaign_elapsed_after"] = time.monotonic() - campaign_started
             save(destination / "attempts" / f"{task['id']}.json", attempt)
-            # Row failures remain scheduled; unsafe cleanup or provenance stops
-            # later launches without replacing any retained attempt.
+            # Qualification prerequisites stop the campaign; diagnostic smoke keeps its row behavior.
             if (attempt["record"] is None or not attempt["record"]["cleanup_ok"]
-                    or attempt["identity_error"] or attempt.get("provenance_error")):
+                    or attempt["identity_error"] or attempt.get("provenance_error")
+                    or (timing_policy is not None and (not successful(attempt["record"])
+                        or attempt.get("execution_error") or attempt.get("semantic_error")))):
                 break
             if task["workload"] is None:
                 try:
                     require(successful(attempt["record"]), "manifest process failed")
                     manifest = manifest_identity(strict_json(attempt["record"]["stdout"]), args.target,
-                                                 identity["build"]["opencv_version"], version, args.build_mode)
+                                                 identity["build"]["opencv_version"], version, args.build_mode,
+                                                 timing_boundaries=timing_policy is not None)
                     if profile:
                         require(common_manifest(manifest) == common_manifest(profile["manifest"]),
                                 "manifest differs from frozen profile")

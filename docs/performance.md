@@ -122,8 +122,9 @@ verification has its own `CARGO_TARGET_DIR`.
 
 The separate `template-matching-timing` feature builds normal release code with
 the system allocator and no matching/mapping work counters. Invoke its emitted
-executable with `--protocol-version 3`, its default. The collector also reads
-historical protocol-1/2 binaries and evidence; the current executable emits only 3.
+executable with `--protocol-version 3`, its default. The collector also parses
+protocol-1/2 executable output. Existing campaigns require their recorded
+collector and policy for revalidation; the current executable emits only 3.
 Cargo feature unification that enables OpenCV or capture instrumentation makes a
 normal benchmark fail at compile time, including direct dependency features.
 
@@ -202,7 +203,7 @@ The source-bound collector separates these stages:
 | Command | Evidence and admission |
 |---|---|
 | `attest` | Bounded compiled-mode/manifest, source/toolchain probes and loaded OpenCV endpoint identities; not full runtime closure |
-| `runtime-preflight` | macOS-only representative discovery over every selected path; retains raw loader records, file bindings and a frozen union; not acceptance timing |
+| `runtime-preflight` | macOS-only representative discovery over every selected path; retains raw loader records, file bindings, timed-region markers and a frozen union; not acceptance timing |
 | `calibrate` | Six baseline processes under an accepted, hash-bound source/host/cost/observer-eligibility review and runtime prerequisites |
 | `control` | Independent balanced six-pair unchanged A/A cohort; incomplete calibration prerequisites prevent launch and a passing report |
 | `freeze` | Separate accepted numerical review binds the exact method, calibration/control receipts and envelopes before candidate data |
@@ -213,6 +214,46 @@ compiled mode, host/environment, helper/collector sources and effective native
 thread setting. Each observed run reserves its pre/post binding time separately
 from the child deadline. Raw output, failed outcomes and unrun schedule entries
 remain evidence; successful cleanup does not repair missing provenance.
+
+New macOS campaigns bind `macos-dyld-observer-on-warm-v1` in their method review,
+plan and profile. The benchmark's opt-in `--timing-boundaries` emits
+`mado-component-timing-v1` records for `row-start`, `samples-begin` and
+`samples-end`, naming the actual process and workload. Each bounded record uses
+one stderr write outside individual sample clocks. Default-off invocations emit
+no markers; manifest output declares capability and actual enablement without
+emitting row markers.
+
+The collector re-derives ordered boundaries from retained stderr and the owned
+root PID, counting every `dyld[` record, including duplicate and informational
+records. Statistical rows require complete markers and zero records inside the
+enclosing retained-sample window; non-statistical rows retain their counts but
+still require complete boundaries. Missing, torn, foreign or reordered markers
+are not empty windows. A stored zero cannot override the raw stream.
+Incapable binaries and image-only historical bundles cannot authorize this policy.
+Historical readers retain their original, narrower meaning.
+
+Zero in-window log records establishes their location in the retained stream,
+not zero loader activity, zero observer cost or observer-off equivalence.
+Startup, prehash warming, pipe processing and scheduling effects still require
+the external method review. All roles use the same declared observer-on runtime;
+normal remains the system-allocator/no-accounting build mode.
+[ADR 0095](adr/0095-component-timed-loader-boundaries.md) records this evidence
+contract without accepting a numerical profile.
+
+Prospective numerical policy revisions `template-efficiency-v2-prospective-r2`
+and `template-efficiency-v3-session-prospective-r2` require the absolute
+between-role A/A median difference to stay within the frozen allowance for
+every graded timing metric. Control and comparison independently enforce the
+15% cohort noise cap for each role, including turnover hit/miss strata, using
+the metric's frozen maximum calibration resolution and existing target CPU
+floor. Later role observations cannot enlarge that allowance. Equality passes
+both gates. Known failures remain failures when another role, metric or clock
+observation is incomplete; a passing median benefit never overrides them.
+Sampling, ceilings, benefit allowances and resource budgets are unchanged.
+Existing numerical evidence remains bound to its original collector and policy
+and cannot authorize the revised policy. New campaigns require fresh
+collector-bound preflights, method review, calibration, control and numerical review.
+See [ADR 0096](adr/0096-component-control-and-comparison-gates.md).
 
 The shared owned-process runner adds lifetime `cpu` accounting without changing
 timeout, output, root-exit or cleanup decisions or their deadlines. POSIX collects
