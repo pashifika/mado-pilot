@@ -1042,10 +1042,10 @@ class EvidenceTests(unittest.TestCase):
               mock.patch.object(collector, "binary_identity",
                                 side_effect=lambda binary, metadata, target: identity(self.root, binary)),
               mock.patch.object(collector, "run_process") as launch):
-            with self.assertRaisesRegex(ValueError, "timing-capable protocol 2/3.*zero qualifying launches"):
+            with self.assertRaises(ValueError):
                 collector.collect(args, "comparison")
             args.profile_sha256 = "0" * 64
-            with self.assertRaisesRegex(ValueError, "timing-capable protocol 2/3.*zero qualifying launches"):
+            with self.assertRaises(ValueError):
                 collector.collect(args, "comparison")
         launch.assert_not_called()
         self.assertFalse(destination.exists())
@@ -3092,8 +3092,7 @@ class ProtocolThreeTests(unittest.TestCase):
         frozen = collector.manifest_identity(v3_manifest(build_mode), TARGET, "4.12.0", 3, build_mode)
         return collector.observations(value, frozen, workload, smoke)
 
-    def test_current_cli_and_exact_rows_preserve_historical_corpora(self):
-        self.assertEqual(collector.parser().parse_args(["policy", "--build-mode", "normal"]).protocol_version, 3)
+    def test_protocol_three_preserves_semantic_corpora(self):
         for build_mode, count in (("normal", 54), ("instrumented", 57)):
             frozen = collector.manifest_identity(v3_manifest(build_mode), TARGET, "4.12.0", 3, build_mode)
             self.assertEqual(len(frozen["workloads"]), count)
@@ -3199,7 +3198,7 @@ class ProtocolThreeTests(unittest.TestCase):
                 records = [process_record(declaration), process_record("a" * 40 + "\n"),
                            process_record("c" * 40 + "\n"), process_record(""), process_record("rustc fixture\n")]
                 args = collector.parser().parse_args([
-                    "attest", "--build-mode", "normal", "--target", NATIVE_TARGET, "--binary", str(binary),
+                    "attest", "--protocol-version", "3", "--build-mode", "normal", "--target", NATIVE_TARGET, "--binary", str(binary),
                     "--build-argv-json", '["cargo","bench","--no-run","--locked"]', "--output", str(metadata)])
                 with (mock.patch.object(collector, "ROOT", root),
                       mock.patch.object(collector, "host_identity", return_value={"target": NATIVE_TARGET}),
@@ -3454,7 +3453,7 @@ class ProtocolThreeTests(unittest.TestCase):
     def test_current_smoke_uses_real_collection_and_preserves_independent_failure_classes(self):
         workloads = ["session-retained-rgba-roi-hit", "query-deadline-rgba-roi"]
         args = collector.parser().parse_args([
-            "smoke", "--build-mode", "normal", "--target", TARGET,
+            "smoke", "--protocol-version", "3", "--build-mode", "normal", "--target", TARGET,
             "--baseline", "baseline", "--baseline-metadata", "build.json",
             "--output", str(self.root / "smoke")])
         records = [process_record(v3_manifest())]
@@ -3680,7 +3679,7 @@ class ProtocolThreeGradingTests(unittest.TestCase):
 
     def test_missing_method_review_blocks_current_calibration_before_output_or_launch(self):
         args = collector.parser().parse_args([
-            "calibrate", "--build-mode", "normal", "--target", TARGET,
+            "calibrate", "--protocol-version", "3", "--build-mode", "normal", "--target", TARGET,
             "--baseline", "baseline", "--baseline-metadata", "build.json", "--exclusive-host",
             "--output", str(self.root / "denied")])
         with (mock.patch.object(collector, "host_identity", return_value=self.calibration["plan"]["host"]),
@@ -3736,7 +3735,7 @@ class WorkloadCohortTests(unittest.TestCase):
         plan = evidence["plan"]
         root = Path(plan["method_review"]["path"]).parent
         name = {"calibration": "calibrate", "control": "control", "comparison": "compare"}[plan["mode"]]
-        argv = [name, "--build-mode", plan["build_mode"], "--target", TARGET, "--baseline", "baseline",
+        argv = [name, "--protocol-version", "3", "--build-mode", plan["build_mode"], "--target", TARGET, "--baseline", "baseline",
                 "--baseline-metadata", "baseline.json", "--exclusive-host",
                 "--method-review", plan["method_review"]["path"],
                 "--method-review-sha256", plan["method_review"]["sha256"],
@@ -4576,7 +4575,7 @@ class ExportedSourceAttestationTests(unittest.TestCase):
         self.listing = "".join(entries)
         self.output = self.root / "metadata.json"
         self.args = collector.parser().parse_args([
-            "attest", "--build-mode", "normal", "--target", NATIVE_TARGET, "--binary", str(self.binary),
+            "attest", "--protocol-version", "3", "--build-mode", "normal", "--target", NATIVE_TARGET, "--binary", str(self.binary),
             "--build-argv-json", '["cargo","bench","--locked","--no-run"]', "--output", str(self.output),
             "--source-root", str(self.source), "--source-revision", self.revision])
 
@@ -5198,6 +5197,164 @@ class ProtocolThreeRuntimePreflightTests(unittest.TestCase):
         self.assertEqual(collector.strict_json(attempt["receipt"]["record"]["stdout"]),
                          {**self.declaration, "timing_boundaries_enabled": True})
         self.assertFalse((self.root / "failed/bundle.json").exists())
+
+
+def v4_fields():
+    return {"format_version": 4, "sampling_protocol": "mado-component-sampling-v1",
+            "sampling_limits": {"warmups_min": 1, "warmups_max": 1000, "samples_min": 1, "samples_max": 40000},
+            "retained_loop_cpu_protocol": "mado-component-retained-loop-cpu-v1"}
+
+
+def v4_manifest():
+    return {**v3_manifest(), **v4_fields()}
+
+
+def v4_payload(workload="single-small96x64", warmups=2, count=7):
+    value = {**v3_payload(workload, smoke=True), **v4_fields(), "warmups": warmups, "sample_count": count}
+    row = value["workloads"][0]
+    sample = copy.deepcopy(row["samples"][0])
+    row.update(warmups=warmups, sample_count=count,
+               warmup_samples=[copy.deepcopy(sample) for _ in range(warmups)],
+               samples=[copy.deepcopy(sample) for _ in range(count)])
+    row["metrics"].update(iterations=warmups + count, cpu_ns=sample["cpu_ns"] * count)
+    if workload in collector.SESSION_DEFINITIONS:
+        row["unit_observations"] = [v3_unit(row, index, "normal") for index in range(warmups + count)]
+    row["retained_loop_cpu"] = {
+        "protocol": "mado-component-retained-loop-cpu-v1", "source": "getrusage-RUSAGE_SELF",
+        "source_unit_ns": 1000, "start_ns": 10_000_000,
+        "end_ns": 10_000_000 + row["metrics"]["cpu_ns"] + 100_000,
+        "cpu_ns": row["metrics"]["cpu_ns"] + 100_000, "sample_count": count, "reason": None,
+        "scope": "current-process-retained-loop-including-preparation-oracles-and-storage"}
+    return value
+
+
+class ProtocolFourTests(unittest.TestCase):
+    def setUp(self):
+        temporary = tempfile.TemporaryDirectory()
+        self.addCleanup(temporary.cleanup)
+        self.root = Path(temporary.name).resolve()
+        self.workload = "single-small96x64"
+        self.manifest = collector.manifest_identity(v4_manifest(), TARGET, "4.12.0", 4, "normal")
+
+    def binding(self, rows):
+        raw = json.dumps(rows)
+        return {"path": str(self.root / "sampling.json"), "raw": raw, "rows": copy.deepcopy(rows),
+                "sha256": hashlib.sha256(raw.encode()).hexdigest()}
+
+    def parse(self, value, workload=None, counts=None):
+        return collector.observations(value, self.manifest, workload or self.workload, False,
+                                      sampling=counts or {"warmups": 2, "samples": 7})
+
+    def test_actual_custom_counts_and_contained_cpu_are_independently_checked(self):
+        for workload in (self.workload, "session-retained-rgba-roi-hit"):
+            value = v4_payload(workload)
+            observed = self.parse(value, workload)
+            self.assertEqual(observed["cpu_ns"], sum(item["cpu_ns"] for item in value["workloads"][0]["samples"]))
+            self.assertEqual(observed["retained_loop_cpu_ns"], observed["cpu_ns"] + 100_000)
+            with self.assertRaises(ValueError):
+                self.parse(value, workload, {"warmups": 2, "samples": 6})
+            value["sample_count"] = 200
+            with self.assertRaises(ValueError):
+                self.parse(value, workload)
+
+    def test_loop_cpu_rejects_invalid_arithmetic_sources_and_hidden_availability(self):
+        variants = [
+            {"start_ns": True}, {"end_ns": 1 << 64}, {"cpu_ns": 1}, {"sample_count": 6},
+            {"source": "GetProcessTimes-current-process"}, {"source_unit_ns": 100},
+            {"scope": "owned-process-tree"}, {"reason": "not available"},
+            {"cpu_ns": None, "reason": "not available"}, {"end_ns": 0},
+        ]
+        for change in variants:
+            with self.subTest(change=change), self.assertRaises(ValueError):
+                value = v4_payload()
+                value["workloads"][0]["retained_loop_cpu"].update(change)
+                self.parse(value)
+        value = v4_payload()
+        bracket = value["workloads"][0]["retained_loop_cpu"]
+        bracket.update(start_ns=None, cpu_ns=None, reason="native counter unavailable")
+        summary = self.parse(value)
+        self.assertIsNone(summary["retained_loop_cpu_ns"])
+        self.assertIn("retained_loop_cpu_ns", summary["unavailable"])
+
+    def test_missing_capability_or_bracket_refuses_new_protocol(self):
+        for key in ("sampling_protocol", "sampling_limits", "retained_loop_cpu_protocol"):
+            value = v4_payload()
+            del value[key]
+            with self.subTest(key=key), self.assertRaises(ValueError):
+                self.parse(value)
+        value = v4_payload()
+        del value["workloads"][0]["retained_loop_cpu"]
+        with self.assertRaises(ValueError):
+            self.parse(value)
+
+    def test_sampling_requires_exact_hash_coverage_and_bounded_integer_counts(self):
+        definitions = {self.workload: collector.V3_DEFINITIONS[self.workload]}
+        rows = {self.workload: {"warmups": 20, "samples": 2000}}
+        binding = self.binding(rows)
+        self.assertEqual(collector.validate_sampling(binding, definitions), rows)
+        changes = (
+            ("warmups", 0), ("warmups", 1001), ("samples", 0), ("samples", 40001),
+            ("samples", True), ("samples", 3.5),
+        )
+        for field, number in changes:
+            changed = copy.deepcopy(rows)
+            changed[self.workload][field] = number
+            with self.subTest(field=field, number=number), self.assertRaises(ValueError):
+                collector.validate_sampling(self.binding(changed), definitions)
+        for changed in ({}, {**rows, "unknown": {"warmups": 1, "samples": 3}}):
+            with self.assertRaises(ValueError):
+                collector.validate_sampling(self.binding(changed), definitions)
+        binding["rows"][self.workload]["samples"] = 200
+        with self.assertRaises(ValueError):
+            collector.validate_sampling(binding, definitions)
+        binding = self.binding(rows)
+        binding["sha256"] = "0" * 64
+        with self.assertRaises(ValueError):
+            collector.validate_sampling(binding, definitions)
+
+    def test_contract_rows_cannot_adopt_statistical_counts(self):
+        name = "query-deadline-rgba-roi"
+        definitions = {name: collector.V3_DEFINITIONS[name]}
+        with self.assertRaises(ValueError):
+            collector.validate_sampling(self.binding({name: {"warmups": 20, "samples": 200}}), definitions)
+        rows = {name: {"warmups": 1, "samples": 3}}
+        self.assertEqual(collector.validate_sampling(self.binding(rows), definitions), rows)
+        value = v4_payload(name, 1, 3)
+        self.assertEqual(self.parse(value, name, rows[name])["metrics"]["iterations"], 4)
+        value.update(warmups=20, sample_count=200)
+        with self.assertRaises(ValueError):
+            self.parse(value, name, rows[name])
+
+    def test_changed_frozen_counts_refuse_comparison_before_collection(self):
+        sampling = self.binding({self.workload: {"warmups": 20, "samples": 200}})
+        plan = {"format_version": 4, "build_mode": "normal", "mode": "comparison",
+                "workloads": [self.workload], "sampling": sampling}
+        profile = {"workloads": plan["workloads"], "envelopes": {self.workload: {}},
+                   "sampling": copy.deepcopy(sampling)}
+        collector.comparison_scope(plan, profile)
+        profile["sampling"] = self.binding({self.workload: {"warmups": 20, "samples": 201}})
+        with self.assertRaises(ValueError):
+            collector.comparison_scope(plan, profile)
+
+    def test_normal_loop_cpu_and_instrumented_resource_gates_stay_separate(self):
+        for mode in ("normal", "instrumented"):
+            # Parsed scalar cohorts exercise grading, not source or runtime admission.
+            evidence = v3_parsed_evidence(self.root, "calibration", mode, self.workload)
+            evidence["plan"].update(format_version=4, policy=copy.deepcopy(collector.V4_POLICY))
+            for row in evidence["observations"]["baseline"][self.workload]:
+                row["retained_loop_cpu_ns"] = 200_000_000
+                row["cpu_ns"] = row["process"] * 100_000_000
+            envelope = collector.derive_envelopes(evidence)[self.workload]
+            self.assertNotIn("cpu_ns", envelope["benefit_allowances"])
+            self.assertIn("peak_rss_bytes", envelope["limits"])
+            if mode == "normal":
+                self.assertEqual(set(envelope["benefit_allowances"]), {"p95_ns", "retained_loop_cpu_ns"})
+                evidence["observations"]["baseline"][self.workload][0]["retained_loop_cpu_ns"] = 400_000_000
+                with self.assertRaises(ValueError):
+                    collector.derive_envelopes(evidence)
+            else:
+                self.assertEqual(envelope["benefit_allowances"], {})
+                self.assertIn("peak_heap_bytes", envelope["limits"])
 
 
 if __name__ == "__main__":

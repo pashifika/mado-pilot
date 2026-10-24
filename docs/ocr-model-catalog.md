@@ -12,9 +12,11 @@ text and negative-image failures, not a promise of accuracy on the caller's imag
 [ADR 0080](adr/0080-ocr-model-catalog-and-admission.md) still fixes its execution
 contract and mandatory pinned YAML vocabulary.
 
-Package manifest v1/v2, the C/C++ ABI, provider capabilities and the bounded-v2 OCR
-text-watch scope are unchanged. A manifest that cannot express the required
-auxiliary resource is refused; no ambient dictionary is supplied.
+Package manifest v1/v2, the C/C++ ABI and provider capabilities are unchanged.
+Text watching reuses the caller's compatible initialized OCR selection under
+[ADR 0091](adr/0091-ocr-watch-caller-selection.md); its fixed bounded-v2
+qualification workloads remain revision-bound. A manifest that cannot express
+the required auxiliary resource is refused; no ambient dictionary is supplied.
 
 ## Rust integration
 

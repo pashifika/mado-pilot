@@ -512,11 +512,19 @@ cargo clippy --locked --target x86_64-pc-windows-msvc \
   -p mado-pilot-platform-macos --all-targets -- -D warnings
 
 # 10. macOS host only: the capture scenarios with the native shim instrumented.
-#     Run on the qualified 26.6.2 (25G83) Apple Silicon host. Needs Screen
-#     Recording granted, and fails rather than skips without it.
+#     Run on the current 27.0.1 (26A434) Apple Silicon host under ADR 0101.
+#     Needs Screen Recording granted, and fails rather than skips without it.
 MADO_PILOT_MACOS_ASAN=1 python3 tools/setup-native.py -- cargo test --locked \
   -p mado-pilot-platform-macos --target-dir target/asan --lib -- --test-threads=1
 ```
+
+Step 10's host selection and source-bound scope are recorded in
+[ADR 0101](docs/adr/0101-current-apple-native-sanitizer-host.md). The ASan library
+suite does not replace native input, display-topology or watcher qualification.
+Its recorded run kept no passing-test output, so it establishes none of the
+branches that note an absent subject and pass: window-subject, multi-display,
+mixed-scale, seam, non-Retina and idle-producer (see the window gap below).
+Use a fresh target directory for a new proof; do not rebuild a hash-pinned one.
 
 The opt-in `--release-scope` check validates the immutable v0.4.0 source-release
 tree, not later development changes. Run it separately from a checkout of the
@@ -544,11 +552,14 @@ package's test binaries; with the variable unset the build is unchanged, and the
 is never part of a released artifact. The Xcode Command Line Tools ship it, so the step
 needs nothing installed that the shim did not already need.
 
-The same run is also the permissioned coordinate/selection acceptance gate. It
-compares frame-attached `screenRect` origin, logical size, and effective scale with
-the qualified host's display inventory and checks that a fresh discovery does not
-terminate an already-open retained filter. A run that fails because Screen Recording
-is not granted is useful denial evidence, but passes neither that live gate nor the
+On the historical qualified 26.6.2 host, the same run was also the permissioned
+coordinate/selection acceptance gate. It compared frame-attached `screenRect`
+origin, logical size, and effective scale with that host's display inventory and
+checked that a fresh discovery does not terminate an already-open retained filter.
+An ADR 0101 run on the current host does not satisfy that gate, because it records
+no qualified display inventory or topology. A run that fails because Screen
+Recording is not granted is useful denial evidence, but passes neither that live
+gate nor the
 manual window move/resize/loss probe in
 `crates/platform/macos/tests/window_movement.rs`. The separate owned-window
 replacement command above is the release oracle that proves a retained filter
