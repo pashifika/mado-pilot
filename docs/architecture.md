@@ -2794,9 +2794,11 @@ their readers. Diagnostics omit matrices and pixel content.
 
 Selection consumes the mutable score matrix without a dense copy. One result
 uses one scan; larger budgets use at most one winner/upper bound per row with
-lazy repair. Suppression runs only when another selection is needed. Bounded
-checkpoints and each caller's final commit preserve cancellation/deadline
-authority independently of reusable preparation. See
+lazy repair. Each scan may stop at its first finite public maximum (`1.0`),
+preserving row-major ties and accounting only for visited offsets. Suppression
+runs only when another selection is needed. Bounded checkpoints and each caller's
+final commit preserve cancellation/deadline authority independently of reusable
+preparation. See
 [ADR 0086](adr/0086-template-matching-preparation-reuse-and-selection-work.md).
 
 Development integration retains semantic, ownership, bounded-resource and
