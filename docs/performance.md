@@ -104,9 +104,13 @@ one result: reserve from the smaller of that row count and the requested limit,
 rounded up to a power of two. This skips result-vector growth steps without
 reserving for empty rows. No-hit searches allocate no candidate storage;
 `DropOverlapping` still grows with actual survivors. Reservation can move result
-allocation earlier in an interrupted call; interruption checkpoints are unchanged.
-Dominated raw values bypass normalization; the exact threshold is applied to
-each completed scan maximum. Different templates still execute independently.
+allocation earlier in an interrupted call. Dominated raw values bypass
+normalization. A scan stops at its first finite public score `1.0`: clamping
+prevents any later offset from outranking that canonical maximum. Only the
+visited prefix contributes to scan accounting and the 4096-offset checkpoint
+bound. Exact checkpoint positions can change; the caller's final commit remains
+required. The exact threshold applies to each proven maximum. Different
+templates still execute independently.
 These mechanisms remove named work, not establish a universal latency or memory
 improvement. [ADR 0086](adr/0086-template-matching-preparation-reuse-and-selection-work.md)
 records identity, lifetime and numerical acceptance rules.

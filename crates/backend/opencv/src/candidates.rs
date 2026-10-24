@@ -242,6 +242,14 @@ impl<'context> SelectionWork<'context> {
                         index: first_index + scanned + column,
                         score,
                     });
+                    // The first public maximum cannot be outranked by a later offset.
+                    if score >= 1.0 {
+                        let visited = column + 1;
+                        #[cfg(feature = "benchmark-instrumentation")]
+                        self.observation.scan(visited);
+                        self.advance(visited)?;
+                        return Ok(best.filter(|winner| winner.score >= min_score));
+                    }
                 }
             }
             #[cfg(feature = "benchmark-instrumentation")]
@@ -564,11 +572,21 @@ mod tests {
             candidate_budget: 16,
             ..multi
         };
+        let one = PeakSearch {
+            candidate_budget: 1,
+            ..wide
+        };
+        let mut boundary_maximum = vec![0.75; extent];
+        boundary_maximum[CHECKPOINT_OFFSETS - 1] = 1.0;
         vec![
             (scores.clone(), multi),
             (scores, overlapping),
             (vec![0.75; extent], wide),
             (vec![0.75; extent], tall),
+            (vec![1.0; extent], one),
+            (boundary_maximum, one),
+            (vec![1.0; extent], wide),
+            (vec![1.0; extent], tall),
             (vec![0.75; 2], search(2, 1)),
             (vec![f32::NAN; extent], wide),
             (Vec::new(), search(0, 0)),
