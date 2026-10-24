@@ -276,6 +276,24 @@ values. Microsecond and 100-ns source representation units do not establish
 resolution or accuracy: `accounting_resolution_seconds` remains `null`. This
 accounting does not establish full POSIX-tree coverage or performance qualification.
 
+Each runner receipt also has `process_accounting`. It is `null` outside Windows
+or when launch did not complete. Windows retains raw `total`, `active` and
+`terminated` counters from the same existing cleanup query as CPU, before closing
+the anonymous owned Job. The receipt's `process_id` binds its root; `source`,
+`scope` and `checkpoint` identify the native aggregate observation, not a PID list.
+Nested Job totals are not added again and OS-created members are not excluded.
+[`TotalProcesses`](https://learn.microsoft.com/en-us/windows/win32/api/winnt/ns-winnt-jobobject_basic_accounting_information)
+includes lifetime associations, including failed limit-violation associations;
+`terminated` counts limit violations, not all exits or `total - active`.
+
+`query_succeeded` describes the last attempted query. A later query failure
+preserves an earlier successful snapshot as `partial`. Without an observation,
+status is `unknown` and counters are null, never an invented empty Job. `complete`/`final`
+requires a successful zero-active observation without an accounting failure.
+These facts do not change timeout, nonzero exit or cleanup verdicts. They do not
+establish a process-generation/role census, a process cap, image closure or
+qualification, and cannot reconstruct counters omitted by historical receipts.
+
 Protocol-3 runtime preflight stores the complete binary/source identity once in
 `plan.binary`. Successful before/after file checks retain its canonical-JSON
 SHA256 as `plan_binary_sha256`; unobserved boundaries remain null. Admission
