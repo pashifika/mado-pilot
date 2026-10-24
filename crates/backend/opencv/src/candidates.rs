@@ -110,7 +110,7 @@ pub(crate) fn peaks(
         }
 
         while found.len() < search.candidate_budget {
-            let Some(winner) = rows.pop() else {
+            let Some(mut winner) = rows.peek_mut() else {
                 break;
             };
             if !work.is_live(remaining[winner.index])? {
@@ -120,7 +120,9 @@ pub(crate) fn peaks(
                     start,
                     search.min_score,
                 )? {
-                    rows.push(repaired);
+                    *winner = repaired;
+                } else {
+                    std::collections::binary_heap::PeekMut::pop(winner);
                 }
                 continue;
             }
@@ -133,7 +135,6 @@ pub(crate) fn peaks(
                 break;
             }
             work.suppress(remaining, search, peak)?;
-            rows.push(winner);
         }
     }
 
