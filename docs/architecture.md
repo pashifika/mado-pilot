@@ -2827,6 +2827,12 @@ or performance qualification changes follow from these apparatus additions.
 [ADR 0098](adr/0098-workload-scoped-component-cohorts.md) permits complete
 single-workload protocol-3 collection under bound scope and reviewed stage clocks,
 without changing sampling or granting whole-corpus qualification to scoped passes.
+[ADR 0099](adr/0099-actual-consumer-scalar-measurement.md) separately defines
+fresh-invocation actual-consumer scalars and complete lifetime CPU, without
+borrowing component percentiles or treating observation-off/on as equivalent.
+It requires cross-phase failure state to persist at the campaign-management tier.
+The method does not change SDK ownership or supply a consumer collector,
+numerical profile, normal image closure or performance qualification.
 
 Public scores are compared against a tolerance rather than exactly, on one host as
 well as across the two. OpenCV normalizes through integral images and correlates a
