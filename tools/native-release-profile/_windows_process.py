@@ -187,6 +187,8 @@ class JobTree:
         self._cpu_times = None
         self._cpu_final = False
         self._cpu_reason = "job_not_queried"
+        self._process_counts = None
+        self._accounting_query_succeeded = None
 
     def launch(self, argv, cwd, env):
         self._job = _create_job()
@@ -254,9 +256,12 @@ class JobTree:
             return False
         while time.monotonic() < deadline:
             counts = _JobAccounting()
+            self._accounting_query_succeeded = False
             if not _kernel32.QueryInformationJobObject(self._job, 1, ctypes.byref(counts), ctypes.sizeof(counts), None):
                 self._cpu_reason = "job_query_failed"
                 return False
+            self._accounting_query_succeeded = True
+            self._process_counts = counts
             self._cpu_times = (counts.times[0] / 10_000_000, counts.times[1] / 10_000_000)
             self._cpu_final = counts.active == 0
             self._cpu_reason = None if self._cpu_final else "owned_job_still_active"
@@ -284,6 +289,23 @@ class JobTree:
             "reason": self._cpu_reason,
             "source_unit_seconds": 1e-7,
             "accounting_resolution_seconds": None,
+        }
+
+    def process_snapshot(self):
+        counts = self._process_counts
+        final = (counts is not None and counts.active == 0
+                 and self._accounting_query_succeeded is True and self._cpu_reason is None)
+        return {
+            "source": "windows-job-basic-accounting",
+            "scope": "owned-job-including-nested-jobs",
+            "status": "unknown" if counts is None else "complete" if final else "partial",
+            "final": final,
+            "reason": self._cpu_reason,
+            "checkpoint": None if counts is None else "after-root-reap-before-job-close",
+            "query_succeeded": self._accounting_query_succeeded,
+            "total": None if counts is None else counts.total,
+            "active": None if counts is None else counts.active,
+            "terminated": None if counts is None else counts.terminated,
         }
 
     def is_kill_status(self, status) -> bool:

@@ -18,6 +18,9 @@ qualification row passed.  Record keys, always present:
 - ``cpu``: lifetime native-scope accounting, separate from operational success.
   Missing usage is null; POSIX descendant rollup remains partial. Native
   representation units do not establish accounting resolution or accuracy.
+- ``process_accounting``: Windows owned-Job counters from the existing cleanup
+  query, independent of CPU and operational success. Null outside Windows or
+  when launch did not complete; unavailable counter values are never zero-filled.
 
 The child leads a new POSIX session/process group, or is the first member of a
 Windows job that denies breakaway and kills on close; only that group or job is
@@ -71,6 +74,7 @@ def run_process(
                 started=started,
                 launch_error=str(exc) or type(exc).__name__,
                 cpu=_cpu_record(tree, launch_completed=False),
+                process_accounting=None,
             )
         for stream, index in ((proc.stdout, 0), (proc.stderr, 1)):
             readers.append(_start_reader(stream, capture, index))
@@ -117,6 +121,7 @@ def run_process(
             started=started,
             launch_error=None,
             cpu=_cpu_record(tree, launch_completed=True),
+            process_accounting=tree.process_snapshot() if sys.platform == "win32" else None,
         )
     finally:
         capture.stop.set()
@@ -174,7 +179,8 @@ def _positive_finite(value) -> bool:
     )
 
 
-def _record(*, process_id, exit_code, timed_out, output_limited, cleanup_ok, capture, started, launch_error, cpu):
+def _record(*, process_id, exit_code, timed_out, output_limited, cleanup_ok, capture, started,
+            launch_error, cpu, process_accounting):
     return {
         "exit_code": exit_code,
         "timed_out": timed_out,
@@ -186,6 +192,7 @@ def _record(*, process_id, exit_code, timed_out, output_limited, cleanup_ok, cap
         "launch_error": launch_error,
         "process_id": process_id,
         "cpu": cpu,
+        "process_accounting": process_accounting,
     }
 
 
