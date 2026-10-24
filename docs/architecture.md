@@ -2824,6 +2824,9 @@ exports bind their own actual Git commit/tree and complete pre/post regular-file
 identities; they do not replace historical artifacts or the release checkout.
 See the [Session corpus](performance.md#protocol-3-session-corpus); no SDK API
 or performance qualification changes follow from these apparatus additions.
+[ADR 0098](adr/0098-workload-scoped-component-cohorts.md) permits complete
+single-workload protocol-3 collection under bound scope and reviewed stage clocks,
+without changing sampling or granting whole-corpus qualification to scoped passes.
 
 Public scores are compared against a tolerance rather than exactly, on one host as
 well as across the two. OpenCV normalizes through integral images and correlates a

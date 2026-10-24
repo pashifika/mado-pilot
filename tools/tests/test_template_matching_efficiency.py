@@ -1231,7 +1231,9 @@ def v2_parsed_evidence(root, mode, build_mode="normal"):
 
 def v2_numeric_profile(evidence):
     specification = evidence["plan"]
-    return {"format_version": 2, **{key: specification[key] for key in
+    return {"format_version": specification["format_version"],
+            **({"workloads": specification["workloads"]} if specification["format_version"] == 3 else {}),
+            **{key: specification[key] for key in
             ("target", "build_mode", "collector", "host", "environment", "policy", "method_review")},
             "baseline": specification["binaries"]["baseline"], "manifest": evidence["manifest"],
             "envelopes": collector.derive_envelopes(evidence)}
@@ -1709,24 +1711,31 @@ class ProtocolTwoTests(unittest.TestCase):
             launch.assert_not_called()
 
 
-def save_method_review(root, specification):
-    review = {"format_version": 2, "kind": "component-method-review", "decision": "accepted",
+def save_method_review(root, specification, campaign_seconds=None):
+    version = specification["format_version"]
+    review = {"format_version": version, "kind": "component-method-review", "decision": "accepted",
               **{key: specification[key] for key in
                  ("target", "build_mode", "host", "environment", "collector", "policy", "workloads")},
               "baseline": specification["binaries"]["baseline"],
               "candidate": specification["binaries"].get("candidate")
-                           or v2_identity(root, specification["build_mode"], "candidate"),
+                           or (v3_identity if version == 3 else v2_identity)(
+                               root, specification["build_mode"], "candidate"),
               "reviewer": "fixture reviewer", "rationale": "deterministic apparatus decision only",
               "source_host_cost_review": "synthetic finite component plan; no runtime clearance",
               "runtime_observer_eligibility_review": "synthetic receipt validation only; no native eligibility claim",
               "stage_limits": {mode: collector.execution_limits(
-                  mode, len(collector.schedule(mode, specification["workloads"], 2)))
+                  mode, len(collector.schedule(mode, specification["workloads"], version)))
                   for mode in ("calibration", "control", "comparison")}}
+    if campaign_seconds is not None:
+        for mode, seconds in campaign_seconds.items():
+            review["stage_limits"][mode]["campaign_timeout_seconds"] = seconds
     if "runtime_observer_policy" in specification:
         review["runtime_observer_policy"] = specification["runtime_observer_policy"]
     path = root / "method.json"
     collector.save(path, review)
-    return {"path": str(path), "sha256": collector.sha256(path)}
+    return {"path": str(path), "sha256": collector.sha256(path),
+            **({"stage_limits": review["stage_limits"]}
+               if version == 3 and len(specification["workloads"]) == 1 else {})}
 
 
 class ProtocolTwoAdmissionTests(unittest.TestCase):
@@ -3019,8 +3028,12 @@ def v3_plan(root, mode, build_mode="normal"):
     return value
 
 
-def v3_parsed_evidence(root, mode, build_mode="normal"):
+def v3_parsed_evidence(root, mode, build_mode="normal", workload=None):
     specification = v3_plan(root, mode, build_mode)
+    if workload is not None:
+        specification["workloads"] = [workload]
+        specification["schedule"] = collector.schedule(mode, [workload], 3)
+        specification["execution_limits"] = collector.execution_limits(mode, len(specification["schedule"]))
     frozen = collector.manifest_identity(v3_manifest(build_mode), TARGET, "4.12.0", 3, build_mode)
     cohorts = {}
     for role in specification["binaries"]:
@@ -3646,6 +3659,25 @@ class ProtocolThreeGradingTests(unittest.TestCase):
             with self.subTest(field=field), self.assertRaises(ValueError):
                 collector.control_evidence(self.calibration, control)
 
+    def test_full_corpus_report_retains_normal_performance_verdict(self):
+        directory = self.root / "full-report"
+        directory.mkdir()
+        collector.save(directory / "profile.json", self.profile)
+        evidence = copy.deepcopy(self.comparison)
+        evidence["plan"]["profile_sha256"] = collector.sha256(directory / "profile.json")
+        with (mock.patch.object(collector, "evaluate", return_value=evidence),
+              mock.patch.object(collector, "validate_profile", return_value=self.profile)):
+            result = collector.report(directory)
+        self.assertEqual(result["status"], "passed")
+        self.assertTrue(result["performance_qualified"])
+        self.assertEqual(result["targets"][TARGET], "passed")
+        self.assertEqual(result["normal_timing_verdict"], "passed")
+        self.assertEqual(result["heap_and_work_verdict"], "unavailable")
+        self.assertEqual(result["whole_change_acceptance"], "incomplete")
+        self.assertEqual(result["workload_coverage"],
+                         {"required": self.comparison["plan"]["workloads"],
+                          "selected": self.comparison["plan"]["workloads"], "omitted": [], "complete": True})
+
     def test_missing_method_review_blocks_current_calibration_before_output_or_launch(self):
         args = collector.parser().parse_args([
             "calibrate", "--build-mode", "normal", "--target", TARGET,
@@ -3657,6 +3689,521 @@ class ProtocolThreeGradingTests(unittest.TestCase):
             collector.collect(args, "calibration")
         launch.assert_not_called()
         self.assertFalse(Path(args.output).exists())
+
+
+class WorkloadCohortTests(unittest.TestCase):
+    def setUp(self):
+        temporary = tempfile.TemporaryDirectory()
+        self.addCleanup(temporary.cleanup)
+        self.root = Path(temporary.name).resolve()
+        self.workload = "selection-k16-dense1080p-keepall"
+        self.caps = {"calibration": 1200, "control": 1800, "comparison": 2400}
+
+    def cohorts(self, build_mode="normal", workload=None):
+        workload = workload or self.workload
+        root = self.root / f"{build_mode}-{workload}"
+        root.mkdir()
+        cohorts = tuple(v3_parsed_evidence(root, mode, build_mode, workload)
+                        for mode in ("calibration", "control", "comparison"))
+        for evidence in cohorts:
+            plan = evidence["plan"]
+            plan["runtime_observer_policy"] = "macos-dyld-observer-on-warm-v1"
+            plan["binaries"] = {role: timing_identity(binary) for role, binary in plan["binaries"].items()}
+            evidence["manifest"] = plan["binaries"]["baseline"]["build"]["benchmark_manifest"]
+        binding = save_method_review(root, cohorts[2]["plan"], self.caps)
+        for evidence in cohorts:
+            evidence["plan"]["method_review"] = copy.deepcopy(binding)
+            evidence["plan"]["execution_limits"] = copy.deepcopy(binding["stage_limits"][evidence["plan"]["mode"]])
+        return cohorts
+
+    def freeze(self, calibration, control):
+        plan = calibration["plan"]
+        root = Path(plan["method_review"]["path"]).parent
+        review = {"format_version": 3, "kind": "component-profile-review", "decision": "accepted",
+                  "target": TARGET, "build_mode": plan["build_mode"], "workloads": plan["workloads"],
+                  "runtime_observer_policy": plan["runtime_observer_policy"],
+                  "method_review": plan["method_review"], "calibration": collector.cohort_binding(calibration),
+                  "control": collector.cohort_binding(control), "envelopes": collector.derive_envelopes(calibration),
+                  "reviewer": "fixture reviewer", "rationale": "synthetic scoped arithmetic only"}
+        path = root / "profile-review.json"
+        collector.save(path, review)
+        with mock.patch.object(collector, "runtime_closure_admission"):
+            return collector.profile_from_v2(calibration, root / "calibration", control, root / "control",
+                                             "fixture reviewer", "synthetic scoped arithmetic only",
+                                             path, collector.sha256(path))
+
+    def arguments(self, evidence, profile=None, suffix="run"):
+        plan = evidence["plan"]
+        root = Path(plan["method_review"]["path"]).parent
+        name = {"calibration": "calibrate", "control": "control", "comparison": "compare"}[plan["mode"]]
+        argv = [name, "--build-mode", plan["build_mode"], "--target", TARGET, "--baseline", "baseline",
+                "--baseline-metadata", "baseline.json", "--exclusive-host",
+                "--method-review", plan["method_review"]["path"],
+                "--method-review-sha256", plan["method_review"]["sha256"],
+                "--output", str(root / f"{plan['mode']}-{suffix}")]
+        if len(plan["workloads"]) == 1:
+            argv += ["--workload", plan["workloads"][0]]
+        if name == "control":
+            argv += ["--calibration", str(root / "calibration"), "--calibration-plan-sha256", "1" * 64]
+        if name == "compare":
+            path = root / f"profile-{suffix}.json"
+            collector.save(path, profile)
+            argv += ["--candidate", "candidate", "--candidate-metadata", "candidate.json",
+                     "--profile", str(path), "--profile-sha256", collector.sha256(path)]
+        return collector.parser().parse_args(argv)
+
+    @contextlib.contextmanager
+    def native_context(self, cohorts, records=(), clock=None):
+        # Native provenance/timing already have independent tests; these doubles
+        # isolate scheduling, immutable bindings and grading without native launches.
+        calibration, control, comparison = cohorts
+        plan = comparison["plan"]
+        root = Path(plan["method_review"]["path"]).parent
+        retained = {root / "calibration": calibration, root / "control": control}
+        original_evaluate, original_runtime = collector.evaluate, collector.loaded_runtime
+        runtime = {"plan": {"host": plan["host"], "environment": plan["environment"]},
+                   "threads": collector.effective_threads(v3_manifest(plan["build_mode"])),
+                   "closure": {}, "raw": b"{}"}
+        with contextlib.ExitStack() as stack:
+            stack.enter_context(mock.patch.object(collector, "host_identity", return_value=plan["host"]))
+            stack.enter_context(mock.patch.object(collector, "environment", return_value=plan["environment"]))
+            stack.enter_context(mock.patch.object(
+                collector, "binary_identity", side_effect=lambda role, *args: plan["binaries"][role]))
+            stack.enter_context(mock.patch.object(
+                collector, "evaluate", side_effect=lambda path: retained[Path(path)]
+                if Path(path) in retained else original_evaluate(path)))
+            stack.enter_context(mock.patch.object(collector, "runtime_closure_admission", return_value=runtime))
+            stack.enter_context(mock.patch.object(collector, "validate_runtime_attempt"))
+            stack.enter_context(mock.patch.object(collector, "validate_timing_attempt"))
+            stack.enter_context(mock.patch.object(collector, "check_files"))
+            stack.enter_context(mock.patch.object(collector, "exclusive_collector", return_value=contextlib.nullcontext()))
+            stack.enter_context(mock.patch.object(
+                collector, "loaded_runtime",
+                side_effect=lambda value, identity=None, **kwargs: original_runtime(value, identity)))
+            if clock is not None:
+                stack.enter_context(mock.patch.object(collector.time, "monotonic", side_effect=clock))
+            observe = stack.enter_context(mock.patch.object(
+                collector.macos_images, "observe", side_effect=({"record": record} for record in records)))
+            launch = stack.enter_context(mock.patch.object(collector, "run_process"))
+            yield observe, launch
+
+    def records(self, evidence):
+        plan = evidence["plan"]
+        for task in plan["schedule"]:
+            role = "candidate" if task["role"] == "candidate" else "baseline"
+            value = (v3_manifest(plan["build_mode"], role) if task["workload"] is None else
+                     v3_payload(task["workload"], plan["build_mode"], role=role, candidate=role == "candidate"))
+            value.update(timing_boundary_protocol="mado-component-timing-v1", timing_boundaries_enabled=True)
+            yield process_record(value)
+
+    def test_single_workload_collection_retains_all_processes_counts_and_reviewed_limits(self):
+        for workload in (self.workload, "lifecycle-session-rgba-roi"):
+            cohorts = self.cohorts(workload=workload)
+            profile = self.freeze(*cohorts[:2])
+            for evidence in cohorts:
+                mode = evidence["plan"]["mode"]
+                args = self.arguments(evidence, profile if mode == "comparison" else None)
+                with self.subTest(workload=workload, mode=mode), self.native_context(
+                        cohorts, self.records(evidence)) as (observe, launch):
+                    result = collector.collect(args, mode)
+                    retained = collector.load(Path(args.output) / "plan.json")
+                    collector.validate_plan(retained)
+                launch.assert_not_called()
+                self.assertEqual(observe.call_count, 7 if mode == "calibration" else 14)
+                self.assertEqual(retained["workloads"], [workload])
+                self.assertEqual(retained["execution_limits"], retained["method_review"]["stage_limits"][mode])
+                self.assertEqual(retained["execution_limits"]["campaign_timeout_seconds"], self.caps[mode])
+                self.assertEqual(len(result["attempts"]), observe.call_count)
+                self.assertEqual(result["status"], "passed")
+                self.assertFalse(result["performance_qualified"])
+                for rows in result["process_observations"].values():
+                    self.assertEqual(list(rows), [workload])
+                    self.assertEqual([row["process"] for row in rows[workload]], list(range(6)))
+                tasks = retained["schedule"]
+                roles = ("baseline",) if mode == "calibration" else (
+                    "baseline", "control" if mode == "control" else "candidate")
+                self.assertEqual([task["role"] for task in tasks[:len(roles)]], list(roles))
+                self.assertEqual([task["role"] for task in tasks[len(roles):]],
+                                 [role for index in range(6) for role in
+                                  (roles[::-1] if index % 2 else roles)])
+                self.assertEqual([task["position"] for task in tasks[len(roles):]],
+                                 [0] * 6 if mode == "calibration" else [0, 1] * 6)
+                for task in tasks[len(roles):]:
+                    attempt = collector.load(Path(args.output) / "attempts" / f"{task['id']}.json")
+                    value = collector.strict_json(attempt["record"]["stdout"])["workloads"][0]
+                    self.assertEqual((value["warmups"], value["sample_count"]),
+                                     (20, 200) if workload == self.workload else (1, 3))
+                    self.assertNotIn("--smoke", attempt["argv"])
+                self.assertEqual(profile["workloads"], [workload])
+                self.assertEqual(list(profile["envelopes"]), [workload])
+
+    def test_selected_campaign_pause_consumes_original_reviewed_deadline(self):
+        cohorts = self.cohorts()
+        args = self.arguments(cohorts[0])
+        with self.native_context(cohorts, self.records(cohorts[0]),
+                                 clock=[0, 0, 0, 1, 1201]) as (observe, launch):
+            with contextlib.closing(collector.collection_steps(args, "calibration")) as steps:
+                checkpoint = next(steps)
+                raw = Path(checkpoint["path"]).read_bytes()
+                self.assertEqual(checkpoint["campaign_deadline_monotonic"], 1200)
+                args.workload = "single-small96x64"
+                with self.assertRaises(StopIteration) as stopped:
+                    next(steps)
+            result = stopped.exception.value
+        self.assertEqual(observe.call_count, 1)
+        launch.assert_not_called()
+        self.assertEqual(result["status"], "incomplete")
+        self.assertEqual(result["workload_coverage"]["selected"], [self.workload])
+        self.assertEqual(len(result["issues"]), 6)
+        self.assertTrue(all(issue["status"] == "not-run" for issue in result["issues"]))
+        self.assertEqual(Path(checkpoint["path"]).read_bytes(), raw)
+        self.assertFalse((Path(args.output) / "started/0001.json").exists())
+
+    def test_collected_plan_cap_cannot_be_enlarged_before_control(self):
+        cohorts = self.cohorts()
+        args = self.arguments(cohorts[0])
+        with self.native_context(cohorts, self.records(cohorts[0])):
+            collector.collect(args, "calibration")
+        path = Path(args.output) / "plan.json"
+        plan = collector.load(path)
+        plan["execution_limits"]["campaign_timeout_seconds"] += 1
+        path.write_bytes(collector.document(plan))
+        control_args = self.arguments(cohorts[1])
+        control_args.calibration = args.output
+        control_args.calibration_plan_sha256 = collector.sha256(path)
+        with self.native_context(cohorts) as (observe, launch):
+            with self.assertRaisesRegex(ValueError, "bounded v2 execution policy"):
+                collector.collect(control_args, "control")
+        observe.assert_not_called()
+        launch.assert_not_called()
+        self.assertFalse(Path(control_args.output).exists())
+
+    def test_calibration_requires_exact_reviewed_scope_before_launch(self):
+        cohorts = self.cohorts()
+        for workload in (None, "single-small96x64"):
+            args = self.arguments(cohorts[0])
+            args.workload = workload
+            with self.subTest(workload=workload), self.native_context(cohorts) as (observe, launch):
+                with self.assertRaisesRegex(ValueError, "method review workloads mismatch"):
+                    collector.collect(args, "calibration")
+            observe.assert_not_called()
+            launch.assert_not_called()
+            self.assertFalse(Path(args.output).exists())
+
+    def test_repeated_non_smoke_workload_options_never_select_a_last_winner(self):
+        for command in ("calibrate", "control", "compare", "smoke"):
+            argv = [command, "--build-mode", "normal", "--target", TARGET,
+                    "--baseline", "baseline", "--baseline-metadata", "build.json",
+                    "--output", str(self.root / "denied"), "--exclusive-host"]
+            if command == "control":
+                argv += ["--calibration", "calibration", "--calibration-plan-sha256", "1" * 64]
+            if command == "compare":
+                argv += ["--candidate", "candidate", "--candidate-metadata", "candidate.json",
+                         "--profile", "profile.json", "--profile-sha256", "2" * 64]
+            for second in (self.workload, "single-small96x64"):
+                repeated = argv + ["--workload", self.workload, "--workload", second]
+                if command == "smoke":
+                    self.assertEqual(collector.parser().parse_args(repeated).workload, second)
+                else:
+                    with (self.subTest(command=command, second=second),
+                          mock.patch.object(sys, "stderr"),
+                          mock.patch.object(collector.macos_images, "observe") as observe,
+                          mock.patch.object(collector, "run_process") as launch,
+                          self.assertRaises(SystemExit)):
+                        collector.main(repeated)
+                    observe.assert_not_called()
+                    launch.assert_not_called()
+                    self.assertFalse((self.root / "denied").exists())
+
+    def test_only_reviewed_integer_campaign_caps_can_change_in_each_stage(self):
+        cohorts = self.cohorts()
+        specification = cohorts[0]["plan"]
+        path = Path(specification["method_review"]["path"])
+        original = path.read_bytes()
+        for mode in self.caps:
+            for value in (0, -1, True, 1.5, "1200", None, float("inf"), float("nan"),
+                          (21600 if mode == "calibration" else 43200) + 1):
+                review = collector.strict_json(original.decode())
+                review["stage_limits"][mode]["campaign_timeout_seconds"] = value
+                path.write_text(json.dumps(review), encoding="utf-8")
+                args = self.arguments(cohorts[0])
+                args.method_review_sha256 = collector.sha256(path)
+                with self.subTest(mode=mode, value=value), self.native_context(cohorts) as (observe, launch):
+                    with self.assertRaises(ValueError):
+                        collector.collect(args, "calibration")
+                observe.assert_not_called()
+                launch.assert_not_called()
+                self.assertFalse(Path(args.output).exists())
+            for field in ("child_timeout_seconds", "cleanup_seconds", "output_limit_bytes",
+                          "runtime_binding_seconds", "max_attempts", "campaign_output_limit_bytes"):
+                review = collector.strict_json(original.decode())
+                review["stage_limits"][mode][field] += 1
+                path.write_bytes(collector.document(review))
+                args = self.arguments(cohorts[0])
+                args.method_review_sha256 = collector.sha256(path)
+                with self.subTest(mode=mode, field=field), self.native_context(cohorts) as (observe, launch):
+                    with self.assertRaisesRegex(ValueError, "finite cost/bounds"):
+                        collector.collect(args, "calibration")
+                observe.assert_not_called()
+                launch.assert_not_called()
+                self.assertFalse(Path(args.output).exists())
+        for cap in (1, 21600):
+            review = collector.strict_json(original.decode())
+            review["stage_limits"]["calibration"]["campaign_timeout_seconds"] = cap
+            path.write_bytes(collector.document(review))
+            binding = collector.reviewed_method(path, collector.sha256(path), specification)
+            self.assertEqual(binding["stage_limits"]["calibration"]["campaign_timeout_seconds"], cap)
+
+    def test_method_limits_are_taken_from_the_hashed_review_bytes(self):
+        calibration, _, _ = self.cohorts()
+        specification = calibration["plan"]
+        path = Path(specification["method_review"]["path"])
+        original = path.read_bytes()
+        changed = collector.strict_json(original.decode())
+        changed["stage_limits"]["calibration"]["campaign_timeout_seconds"] += 1
+        original_read = Path.read_bytes
+
+        def replace_after_read(current):
+            raw = original_read(current)
+            if current == path:
+                path.write_bytes(collector.document(changed))
+            return raw
+
+        with mock.patch.object(Path, "read_bytes", replace_after_read):
+            binding = collector.reviewed_method(path, specification["method_review"]["sha256"], specification)
+        self.assertEqual(binding, specification["method_review"])
+        with self.assertRaisesRegex(ValueError, "method review hash mismatch"):
+            collector.reviewed_method(path, binding["sha256"], specification)
+
+    def test_retained_scope_schedule_and_limits_cannot_be_rebound(self):
+        cohorts = self.cohorts()
+        for evidence in cohorts:
+            collector.validate_plan(evidence["plan"])
+            for change in ("missing-scope", "other-scope", "expanded", "duplicate", "all", "order",
+                           "plan-limit", "binding-limit", "missing-binding-limits"):
+                changed = copy.deepcopy(evidence["plan"])
+                if change == "missing-scope":
+                    del changed["workloads"]
+                elif change in ("other-scope", "expanded", "duplicate", "all"):
+                    changed["workloads"] = {
+                        "other-scope": ["single-small96x64"], "expanded": [self.workload, "single-small96x64"],
+                        "duplicate": [self.workload, self.workload],
+                        "all": list(collector.definitions_for("normal", 3))}[change]
+                    changed["schedule"] = collector.schedule(changed["mode"], changed["workloads"], 3)
+                elif change == "order":
+                    changed["schedule"].reverse()
+                elif change == "plan-limit":
+                    changed["execution_limits"]["campaign_timeout_seconds"] += 1
+                elif change == "binding-limit":
+                    changed["method_review"]["stage_limits"]["comparison"]["campaign_timeout_seconds"] += 1
+                else:
+                    del changed["method_review"]["stage_limits"]
+                with self.subTest(mode=evidence["plan"]["mode"], change=change), self.assertRaises(ValueError):
+                    collector.validate_plan(changed)
+
+    def test_older_protocol_and_wrong_mode_selections_refuse_before_native_launch(self):
+        for version, workload in ((1, self.workload), (2, self.workload), (3, "watch-exact-rgba")):
+            for command, mode in (("calibrate", "calibration"), ("control", "control"), ("compare", "comparison")):
+                argv = [command, "--protocol-version", str(version), "--build-mode", "normal",
+                        "--target", TARGET, "--baseline", "baseline", "--baseline-metadata", "build.json",
+                        "--workload", workload, "--output", str(self.root / "denied"), "--exclusive-host"]
+                if mode == "control":
+                    argv += ["--calibration", "calibration", "--calibration-plan-sha256", "1" * 64]
+                if mode == "comparison":
+                    argv += ["--candidate", "candidate", "--candidate-metadata", "candidate.json",
+                             "--profile", "profile.json", "--profile-sha256", "2" * 64]
+                args = collector.parser().parse_args(argv)
+                with (self.subTest(version=version, mode=mode),
+                      mock.patch.object(collector.macos_images, "observe") as observe,
+                      mock.patch.object(collector, "run_process") as launch,
+                      self.assertRaises(ValueError)):
+                    collector.collect(args, mode)
+                observe.assert_not_called()
+                launch.assert_not_called()
+                self.assertFalse(Path(args.output).exists())
+
+    def test_control_refuses_independently_reviewed_cross_scope_or_changed_caps(self):
+        cohorts = self.cohorts()
+        original = collector.load(cohorts[0]["plan"]["method_review"]["path"])
+        for change in ("other", "all", "cap"):
+            review = copy.deepcopy(original)
+            if change != "cap":
+                review["workloads"] = (["single-small96x64"] if change == "other"
+                                       else list(collector.definitions_for("normal", 3)))
+                review["stage_limits"] = {mode: collector.execution_limits(
+                    mode, len(collector.schedule(mode, review["workloads"], 3))) for mode in self.caps}
+            else:
+                review["stage_limits"]["control"]["campaign_timeout_seconds"] += 1
+            path = self.root / f"{change}-method.json"
+            collector.save(path, review)
+            args = self.arguments(cohorts[1])
+            args.workload = review["workloads"][0] if change != "all" else None
+            args.method_review, args.method_review_sha256 = str(path), collector.sha256(path)
+            with self.subTest(change=change), self.native_context(cohorts) as (observe, launch):
+                with self.assertRaisesRegex(ValueError, "control workloads|control method_review"):
+                    collector.collect(args, "control")
+            observe.assert_not_called()
+            launch.assert_not_called()
+            self.assertFalse(Path(args.output).exists())
+
+    def test_profile_scope_envelopes_and_stage_limits_are_frozen_before_comparison_launch(self):
+        cohorts = self.cohorts()
+        profile = self.freeze(*cohorts[:2])
+        for change in ("missing", "other", "expanded", "missing-envelope", "extra-envelope", "cap", "numeric"):
+            changed = copy.deepcopy(profile)
+            if change == "missing":
+                del changed["workloads"]
+            elif change in ("other", "expanded"):
+                changed["workloads"] = ["single-small96x64"] if change == "other" else [
+                    self.workload, "single-small96x64"]
+            elif change == "missing-envelope":
+                changed["envelopes"].clear()
+            elif change == "extra-envelope":
+                changed["envelopes"]["single-small96x64"] = copy.deepcopy(changed["envelopes"][self.workload])
+            elif change == "cap":
+                changed["method_review"]["stage_limits"]["comparison"]["campaign_timeout_seconds"] += 1
+            else:
+                changed["envelopes"][self.workload]["limits"]["rss_growth_bytes"] += 1
+            args = self.arguments(cohorts[2], changed, suffix=change)
+            with self.subTest(change=change), self.native_context(cohorts) as (observe, launch):
+                with self.assertRaisesRegex(ValueError, "profile/provenance/envelopes"):
+                    collector.collect(args, "comparison")
+            observe.assert_not_called()
+            launch.assert_not_called()
+            self.assertFalse(Path(args.output).exists())
+        for workload in (None, "single-small96x64"):
+            args = self.arguments(cohorts[2], profile, suffix=str(workload))
+            args.workload = workload
+            with self.subTest(workload=workload), self.native_context(cohorts) as (observe, launch):
+                with self.assertRaisesRegex(ValueError, "comparison workloads"):
+                    collector.collect(args, "comparison")
+            observe.assert_not_called()
+            launch.assert_not_called()
+            self.assertFalse(Path(args.output).exists())
+        review = collector.load(profile["method_review"]["path"])
+        review["stage_limits"]["comparison"]["campaign_timeout_seconds"] += 1
+        path = self.root / "changed-cap.json"
+        collector.save(path, review)
+        args = self.arguments(cohorts[2], profile, suffix="changed-cap")
+        args.method_review, args.method_review_sha256 = str(path), collector.sha256(path)
+        with self.native_context(cohorts) as (observe, launch):
+            with self.assertRaisesRegex(ValueError, "comparison build mode/method review changed"):
+                collector.collect(args, "comparison")
+        observe.assert_not_called()
+        launch.assert_not_called()
+        self.assertFalse(Path(args.output).exists())
+
+    def test_external_profile_review_must_bind_explicit_scope_and_all_stage_caps(self):
+        cohorts = self.cohorts()
+        profile = self.freeze(*cohorts[:2])
+        path = Path(profile["profile_review"]["path"])
+        original = path.read_bytes()
+        for change in ("missing", "other", "extra-envelope", "cap"):
+            review = collector.strict_json(original.decode())
+            if change == "missing":
+                del review["workloads"]
+            elif change == "other":
+                review["workloads"] = ["single-small96x64"]
+            elif change == "extra-envelope":
+                review["envelopes"]["single-small96x64"] = copy.deepcopy(review["envelopes"][self.workload])
+            else:
+                review["method_review"]["stage_limits"]["comparison"]["campaign_timeout_seconds"] += 1
+            path.write_bytes(collector.document(review))
+            with self.subTest(change=change), self.assertRaisesRegex(ValueError, "exact method/cohorts/envelopes"):
+                collector.profile_from_v2(cohorts[0], profile["calibration"]["path"], cohorts[1],
+                                          profile["control"]["path"], "reviewer", "scoped fixture",
+                                          path, collector.sha256(path))
+
+    def test_partial_report_preserves_scoped_pass_incompleteness_and_known_failures(self):
+        for build_mode in ("normal", "instrumented"):
+            cohorts = self.cohorts(build_mode)
+            calibration, control, comparison = cohorts
+            profile = self.freeze(calibration, control)
+            directory = Path(profile["method_review"]["path"]).parent / "report"
+            directory.mkdir()
+            collector.save(directory / "profile.json", profile)
+            for condition in ("passed", "incomplete", "failed"):
+                evidence = copy.deepcopy(comparison)
+                evidence["plan"]["profile_sha256"] = collector.sha256(directory / "profile.json")
+                if condition != "passed":
+                    evidence["observations"]["baseline"][self.workload].pop()
+                if condition == "failed":
+                    evidence["observations"]["candidate"][self.workload][-1]["rss_residual_bytes"] = 2 * collector.MIB
+                with (self.subTest(build_mode=build_mode, condition=condition),
+                      mock.patch.object(collector, "evaluate", side_effect=[evidence, calibration, control]),
+                      mock.patch.object(collector, "runtime_closure_admission")):
+                    result = collector.report(directory)
+                self.assertEqual(result["status"], condition)
+                self.assertFalse(result["performance_qualified"])
+                self.assertEqual(result["whole_change_acceptance"], "incomplete")
+                expected = "failed" if condition == "failed" else "incomplete"
+                self.assertEqual(result["targets"], {TARGET: expected, collector.TARGETS[1]: "not-run"})
+                verdict = "normal_timing_verdict" if build_mode == "normal" else "heap_and_work_verdict"
+                self.assertEqual(result[verdict], expected)
+                coverage = result["workload_coverage"]
+                required = [row["id"] for row in v3_manifest(build_mode)["workloads"]]
+                self.assertEqual(coverage, {"required": required, "selected": [self.workload],
+                                           "omitted": [row for row in required if row != self.workload],
+                                           "complete": False})
+                self.assertEqual(list(result["process_observations"]["candidate"]), [self.workload])
+                if condition == "passed" and build_mode == "normal":
+                    self.assertTrue(all(value["passed"] for value in result["benefits"][self.workload].values()))
+                if condition == "failed":
+                    self.assertTrue(any("rss_residual_bytes" in issue["reason"] for issue in result["issues"]))
+
+    def test_single_workload_grading_keeps_complete_process_and_numerical_gates(self):
+        calibration, control, comparison = self.cohorts()
+        profile = self.freeze(calibration, control)
+        for missing in ("row", "sixth", "metric"):
+            changed = copy.deepcopy(calibration)
+            rows = changed["observations"]["baseline"][self.workload]
+            if missing == "row":
+                del changed["observations"]["baseline"][self.workload]
+            elif missing == "sixth":
+                rows.pop()
+            else:
+                rows[-1]["cpu_ns"] = None
+            with self.subTest(missing=missing), self.assertRaises(ValueError):
+                collector.derive_envelopes(changed)
+        for metric in ("p95_ns", "cpu_ns"):
+            changed = copy.deepcopy(comparison)
+            baseline = changed["observations"]["baseline"][self.workload][0][metric]
+            for row in changed["observations"]["candidate"][self.workload]:
+                row[metric] = baseline - profile["envelopes"][self.workload]["benefit_allowances"][metric]
+            issues, benefits = collector.compare_evidence(changed, profile)
+            self.assertFalse(benefits[self.workload][metric]["passed"])
+            self.assertTrue(any(f"{metric} benefit" in issue["reason"] for issue in issues))
+        control["observations"]["control"][self.workload][-1]["rss_residual_bytes"] = 2 * collector.MIB
+        with self.assertRaisesRegex(ValueError, "A/A control failed"):
+            collector.profile_from_v2(calibration, profile["calibration"]["path"], control,
+                                      profile["control"]["path"], "reviewer", "scoped fixture", None, None)
+
+    def test_full_corpus_bindings_order_and_fixed_limits_remain_available(self):
+        for build_mode, count in (("normal", 54), ("instrumented", 57)):
+            for mode, manifests, processes, cap in (("calibration", 1, 6, 21600),
+                                                    ("control", 2, 12, 43200),
+                                                    ("comparison", 2, 12, 43200)):
+                root = self.root / f"{build_mode}-{mode}"
+                root.mkdir()
+                specification = v3_plan(root, mode, build_mode)
+                binding = save_method_review(root, specification)
+                specification["method_review"] = binding
+                with self.subTest(build_mode=build_mode, mode=mode):
+                    collector.validate_plan(specification)
+                    self.assertEqual(set(binding), {"path", "sha256"})
+                    self.assertEqual(len(specification["workloads"]), count)
+                    self.assertEqual(len(specification["schedule"]), manifests + processes * count)
+                    self.assertEqual(specification["execution_limits"]["campaign_timeout_seconds"], cap)
+                    changed = copy.deepcopy(specification)
+                    changed["workloads"].reverse()
+                    changed["schedule"] = collector.schedule(mode, changed["workloads"], 3)
+                    with self.assertRaisesRegex(ValueError, "workload coverage"):
+                        collector.validate_plan(changed)
+                    review = collector.load(binding["path"])
+                    review["stage_limits"][mode]["campaign_timeout_seconds"] -= 1
+                    Path(binding["path"]).write_bytes(collector.document(review))
+                    with self.assertRaisesRegex(ValueError, "finite cost/bounds"):
+                        collector.reviewed_method(binding["path"], collector.sha256(binding["path"]), specification)
 
 
 UNCACHED_ROLE = "uncached-bgra-repeated-scan-v1"
