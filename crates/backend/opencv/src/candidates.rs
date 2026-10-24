@@ -109,6 +109,11 @@ pub(crate) fn peaks(
             }
         }
 
+        if !rows.is_empty() && matches!(search.suppression, Suppression::KeepAll) {
+            // Each live row guarantees a result; preserve geometric capacity growth.
+            found.reserve(rows.len().min(search.candidate_budget).next_power_of_two());
+        }
+
         while found.len() < search.candidate_budget {
             let Some(mut winner) = rows.peek_mut() else {
                 break;
