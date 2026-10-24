@@ -98,6 +98,8 @@ alone need not flush a surviving backend.
 
 Score selection owns no second dense map. The one-result path scans once;
 multi-result extraction keeps a row-bounded heap and repairs stale winners.
+A live maximum stays at the heap root; only stale roots are repaired or removed.
+This avoids unchanged pop/push cycles without reserving additional capacity.
 Dominated raw values bypass normalization; the exact threshold is applied to
 each completed scan maximum. Different templates still execute independently.
 These mechanisms remove named work, not establish a universal latency or memory
