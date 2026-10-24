@@ -384,7 +384,7 @@ class RetainedSchema(unittest.TestCase):
         retained = collector.loader_check(self.plan, {"children": reports}, record, sinks)
         self.assertEqual(len(retained), 2)
         self.assertTrue(all(row["scope"] == "transport-only-not-image-closure" for row in retained))
-        (sinks / "101.stderr").write_text("dyld[999]: /runtime/image.dylib\n")
+        (sinks / "101.stderr").write_bytes(b"dyld[999]: /runtime/image.dylib\n")
         with self.assertRaisesRegex(ValueError, "PID transport"):
             collector.loader_check(self.plan, {"children": reports}, record, sinks)
 
