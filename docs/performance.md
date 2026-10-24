@@ -336,6 +336,26 @@ The SDK remains responsible for its documented parameter contracts and the
 resources and workers it creates. No application is required to adopt these
 recorders, and component evidence does not guarantee arbitrary consumer behavior.
 
+### Incremental collection
+
+`collection_steps(args, mode)` uses the ordinary parser's namespace and yields
+after each saved attempt, launching at most one benchmark process per advance.
+Each checkpoint names the attempt, its raw file and the original absolute
+campaign deadline. A management owner can inspect the retained prefix before
+advancing again; pauses consume that same deadline.
+
+Keep the iterator inside `contextlib.closing`. It holds the exclusive collector
+lock until exhaustion or close. Early close preserves every completed or started
+slot; `report` classifies the missing suffix as incomplete. There is no persisted
+resume, retry or replacement-sample API. Exhaustion returns the final report in
+`StopIteration.value`; `collect` and the CLI still consume the full schedule.
+
+The owner must separately bound admission, inspection, evaluation and retention.
+Checkpoints do not change workload counts, numerical rules, native ownership or
+method-review requirements, and are not crash-durability acknowledgments. A new
+collector identity requires fresh applicable method/source binding before any
+qualification campaign.
+
 ### Apple observer-on component campaign
 
 [ADR 0097](adr/0097-apple-observer-on-component-campaign.md) accepts the

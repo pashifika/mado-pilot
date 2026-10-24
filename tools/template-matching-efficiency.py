@@ -2311,6 +2311,17 @@ def runtime_preflight(args):
 
 
 def collect(args, mode):
+    with contextlib.closing(collection_steps(args, mode)) as steps:
+        while True:
+            try:
+                next(steps)
+            except StopIteration as completed:
+                return completed.value
+
+
+def collection_steps(args, mode):
+    """Yield retained attempts; one live iterator keeps the original campaign clock."""
+    args = argparse.Namespace(**vars(args))
     version = args.protocol_version
     definitions = definitions_for(args.build_mode, version) if version >= 2 else DEFINITIONS
     require(version >= 2 or mode != "control", "control requires --protocol-version 2/3")
@@ -2494,6 +2505,9 @@ def collect(args, mode):
             if version >= 2:
                 attempt["campaign_elapsed_after"] = time.monotonic() - campaign_started
             save(destination / "attempts" / f"{task['id']}.json", attempt)
+            yield {"attempt": task["id"],
+                   "path": str(destination / "attempts" / f"{task['id']}.json"),
+                   "campaign_deadline_monotonic": deadline}
             # Qualification prerequisites stop the campaign; diagnostic smoke keeps its row behavior.
             if (attempt["record"] is None or not attempt["record"]["cleanup_ok"]
                     or attempt["identity_error"] or attempt.get("provenance_error")
