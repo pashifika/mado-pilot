@@ -459,6 +459,157 @@ non-regression, both targets and build modes, and separate actual-consumer
 evidence. Neither a selected profile nor a passing scoped report supplies that
 qualification or authorizes a new native launch.
 
+### Actual-consumer scalar method
+
+[ADR 0099](adr/0099-actual-consumer-scalar-measurement.md) accepts a prospective
+method, not an executable consumer collector or a numerical profile. Preserve
+the actual desktop-selected dev profile (`opt_level=0`, `debuginfo=2`, debug
+assertions), with benchmark accounting absent and
+`MADO_P050_OBSERVATIONS=1`. This is distinct from component release timing and
+from observation-off. Current source/binary/lock/resource substitutions must be
+bound independently for baseline and candidate; an embedded revision constant
+does not identify the actual linked producer.
+
+Keep all twelve fixed cases and their exact RGBA, full/nonzero-ROI, retained
+observation, frame-sequence and result oracles:
+
+| Cases | Primary decision | Required independent observations |
+| --- | --- | --- |
+| Replay full / ROI | Non-regression | Exported startup, child preflight/workflow, successful cleanup and whole-invocation elapsed/CPU |
+| Retained eight-template group full / ROI | Group-span scalar benefit | Each fixed call position/outcome, lifecycle and whole-invocation CPU non-regression |
+| Matched query wait full / ROI | Caller-wait scalar benefit | Source/result correlation, settlement and whole-invocation CPU non-regression |
+| Deadline query wait full / ROI | Semantics and non-regression, not speed benefit | Expected application `FAIL`/`Timeout`/`deadline_exceeded`/exit1 remains a failure; retain actual return/settlement overrun and clean teardown |
+| Fresh saved-RGBA trial hit / miss × full / ROI | Driver-operation scalar benefit | Real selected OCR initialization, stage/settlement observations and whole-invocation CPU non-regression |
+
+These cases neither replace both component joint p95/CPU goals nor add a
+requirement to improve unrelated initialization in every consumer case.
+Saved-RGBA completion does not measure dispatch-to-visible UI completion;
+unestablished UI/native-capture boundaries remain not run.
+
+#### Observable units and clocks
+
+Each scalar-primary invocation supplies one group, wait or trial-operation
+scalar, not a process-local latency distribution. Report six same-case values, their
+median, minimum and maximum. Do not label the six-process maximum a process-local
+p95 or pool heterogeneous calls, roles, outcomes, targets or configurations.
+
+| Observation | Actual boundary and availability |
+| --- | --- |
+| Host call / query wait | Observation-on raw `control.started` ns; one call through terminal-fault retention, before aggregate insertion and JS return. Internal SDK search timing is not inferred. Off has integer-us aggregates, not equivalent raw call records. |
+| Retained group | Observation-on first recognize start through eighth release end, one child epoch. Includes intervening JS/bookkeeping and fifteen preceding call-record insertions. Off has no group-span observation. |
+| Replay parent endpoints | Exported `startup_us` records receipt of `ChildStarted`; `elapsed_us` ends after writer/reader/stderr joins. Include actual polling, refresh, delivery/drain and scheduling delay. Startup can be recorded during post-exit drain. Internal `exit_us` is not exported; failure-only `containment_us` is not a success endpoint. |
+| Replay child endpoints | `preflight_us` and `workflow_us` are child-local `Instant` durations. Workflow includes Node import inspection; parent detection delay is not added. |
+| Replay cleanup | Child `Host::finish` starts after admission closure/optional cancellation and ends at evaluation of the reported `elapsed_us`. Includes child-local polling, but excludes later result fields and receipt-permit release. Cached clean results are not new samples; incomplete cleanup fails its oracle. This is not final-owner teardown. |
+| Trial operation / stages | Primary `operation.total_duration_us` starts immediately before `recognition_trial` and ends after terminal polling, public shutdown and final drain. Input decoding/hash and controller construction are excluded; top-level `total_duration_us` includes them and is not the primary. Observation-on child initialization/matching/projection/settlement/close/release marks and per-child parent marks retain separate epochs; never subtract across them. Off lacks these marks and capability-child identity. |
+| Lifetime CPU | Final owned-invocation user+system CPU includes its declared startup, descendants and teardown, denominator one invocation. Require complete coverage and independent non-regression. It is not operation CPU, wall utilization or a sum with already-included child CPU. |
+
+Bind each metric's API, stored unit/reporting quantum, effective resolution
+method/value, PID/owner scope, interval and missing reason before calibration.
+Ns/us representation, QPC frequency and Job100ns units do not alone prove
+resolution or accuracy. Requested5ms or1ms polling sleeps are neither clock
+resolution nor upper detection-lag bounds. Boundary work remains in its observed
+interval; no cadence subtraction, inferred event time or overlapping-stage sum
+is permitted. Apple `posix-wait4` coverage is currently partial; Windows final
+Job coverage is complete but its accounting resolution is unavailable. Neither
+supplies the required numerical CPU admission yet.
+
+#### Scalar calibration, controls and comparison
+
+For each case/target/configuration, retain six fresh baseline calibrations, six
+unchanged-baseline A/A pairs and six B/C pairs. Paired stages use balanced
+`AB,BA,AB,BA,AB,BA` order. This is30 attempts per case (24 baseline, six
+candidate),360 per target and720 across the two targets for the selected
+dev-normal/observation-on configuration. Off or another build mode needs a
+separate prospective contract and is not hidden in those totals.
+
+For each graded metric, let `B` be its six baseline values, `q` its reporting
+quantum and `r` the maximum effective calibration resolution in the same unit.
+Use exact ticks or a lossless decimal representation:
+
+- Freeze `s=max(B)-min(B)`, `a=max(s,2*r)` and
+  `ceiling=q*ceil((max(B)+a)/q)`.
+- Reject calibration when `s/max(median(B),2*r)>0.15`.
+- Every control/comparison invocation must meet its own ceiling and all semantic,
+  ownership and resource oracles. A good median cannot cancel one failure.
+- Each role independently meets the same noise rule with frozen `r`. The absolute
+  A/A role-median difference must be `<=a`. Within each A/A and comparison role,
+  both the absolute first/second-position median difference and the absolute
+  chronological first/last-three median difference must be `<=a`.
+- A declared scalar benefit requires `median(Bcomparison)-median(Ccomparison)>a`.
+  Lifetime CPU and separately selected endpoints independently meet non-regression
+  rules. An additional lifetime-CPU benefit requires its own median difference
+  above its allowance; it is not operation-local CPU attribution.
+
+Unknown required coverage/resolution is unavailable, not zero. A later coarser
+clock cannot enlarge frozen allowances. Valid calibration, controls and explicit
+profile acceptance precede candidate collection; no retries, replaced samples,
+outlier removal, post-result ceilings or historical regrading are allowed.
+
+Identity/cleanup failure persists at the target/host campaign-management tier,
+outside restartable phase owners. Every new phase checks that fence; all lanes
+sharing affected identity/host conditions lose applicability until an explicit
+source-bound cleanup/applicability disposition. Control failure blocks that
+target/lane's candidate collection, not only one case. Keep known failures
+visible alongside incomplete prerequisites and unrun work.
+
+#### Closed execution and resource reservations
+
+A phase is one case, target, configuration and cohort stage, with inspection
+after each complete two-attempt block. Pauses consume its original absolute
+deadline; no disk resume, automatic stage chain or clock reset is permitted.
+
+| Stage | Attempts | Work reservation | Independent total | Evidence reservation |
+| --- | ---: | --- | ---: | ---: |
+| Baseline calibration | 6 | `60+6*(90+5+10)+60=750s` | 900s | 292MiB |
+| Unchanged A/A | 12 | `60+12*(90+5+10)+60=1380s` | 1680s | 580MiB |
+| Comparison | 12 | Same1380s | 1680s | 580MiB |
+
+Each attempt reserves90s primary,5s cleanup,10s retention and4MiB combined
+stdout/stderr. Descendants share its absolute end. Admission reserves the full
+next105s plus pending60s final retention; a pair needs210s plus that reserve.
+These are scope-specific operational bounds, not latency ceilings or a universal
+ten-minute rule. Trial's internal10s preflight,30s operation and14s shutdown stay
+inside90s. A successor driver must bind these enforced outer values rather than
+reuse the historical embedded60s/1MiB declaration.
+
+One replay/group/query invocation selects an engine and Node child; a trial
+selects sequential capability and recognition children. The resulting1080
+application-process creations per target (360 roots plus720 selected children)
+are not a complete owned-tree cap.
+Platform-created owned members still require identities and a finite reviewed
+maximum. Unexpected members or counts refuse collection; SDK applications are
+not required to adopt these campaign restrictions.
+
+The prospective48MiB per-attempt evidence allocation includes at most24MiB
+escaped outer text (`6*4MiB`),64KiB raw metadata,64KiB started receipt,256KiB
+validation,256KiB duplicated summary details and two8MiB child sinks:
+40.625MiB plus7.375MiB headroom. Reserve `48*n+4`MiB per phase and64MiB free-space
+safety margin. New closure records/sinks must fit before admission or receive a
+prospective bound revision. No second raw-copy summary, packaging copy or
+unaccounted output is allowed. Sampled storage scans are not hard quotas.
+
+Keep logical BGR, requested Rust bytes, native allocation domains, RSS/OS
+high-water/private commit, same-owner growth and final-owner residual separate.
+Normal consumer Rust counters remain unavailable; instrumented checkpoints and
+independent controls apply only to a separately admitted configuration. Sampled
+engine/supervisor RSS does not cover Node or trial children. Only accepted steady
+window refreshes have clock brackets; lifetime sampled maxima have no bracket
+for every contributing refresh and are not OS high-water.
+
+For admitted covered resource endpoints, the prospective envelope form is
+`max(calibration6)+max(spread,1MiB)`, or256KiB slack for counted requested Rust
+bytes. Growth/residual use same-process positive differences, not fresh-child
+variation or division by cycles. Exact cache capacity/ownership contracts are
+not calibrated allowances. No sampled maximum or post-exit absence proves
+all-native leak freedom or zero owner residual.
+
+**Collection remains blocked** pending current role/image closure, complete
+owned counts, observer eligibility/cost, clocks/CPU coverage, named resource
+checkpoints and headroom, byte-accounted retention and cross-phase enforcement.
+The component collector does not implement this consumer method. No consumer
+profile, candidate benefit, UI result or whole-release qualification is accepted.
+
+
 ### Historical format-1 collector
 
 
