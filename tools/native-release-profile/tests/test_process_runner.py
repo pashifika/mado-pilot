@@ -198,6 +198,7 @@ class ProcessRunnerTests(unittest.TestCase):
             self.assertEqual(cpu["status"], "partial")
             self.assertEqual(cpu["scope"], "root-and-native-descendant-rollup")
             self.assertEqual(cpu["reason"], "descendant_rollup_unproven")
+            self.assertIsNone(record["process_accounting"])
 
     def test_exact_output_at_the_limit_with_zero_exit(self):
         total = len(STDOUT_ASCII) + len(STDERR_ASCII)
@@ -276,6 +277,13 @@ class ProcessRunnerTests(unittest.TestCase):
         self.assertFalse(record["output_limited"])
         self.assertEqual(record["stdout"], "spawned\n")
         self.assertTrue(process_gone(self.pid_from(pid_file)))
+        if WINDOWS:
+            counts = record["process_accounting"]
+            self.assertEqual(counts["status"], "complete")
+            self.assertTrue(counts["final"])
+            self.assertTrue(counts["query_succeeded"])
+            self.assertEqual(counts["active"], 0)
+            self.assertGreaterEqual(counts["total"], 2)  # Root and the known descendant.
 
     def test_completed_run_sweeps_a_detached_descendant(self):
         pid_file = self.root / "detach.pid"
@@ -382,6 +390,7 @@ class ProcessRunnerTests(unittest.TestCase):
         self.assertFalse(record["cpu"]["final"])
         self.assertIsNone(record["cpu"]["user_seconds"])
         self.assertIsNone(record["cpu"]["system_seconds"])
+        self.assertIsNone(record["process_accounting"])
 
     def test_missing_cwd_is_a_launch_error(self):
         record = process_runner.run_process(
@@ -434,6 +443,74 @@ class ProcessRunnerTests(unittest.TestCase):
                 argv = arguments.pop("argv")
                 with self.assertRaises(ValueError):
                     process_runner.run_process(argv, **arguments)
+
+    @unittest.skipUnless(WINDOWS, "Windows Job accounting")
+    def test_windows_unavailable_counts_cannot_be_reported_as_empty(self):
+        with mock.patch.object(_windows_process._kernel32, "QueryInformationJobObject", return_value=0):
+            record = self.run_child("stdin")
+        self.assertEqual(record["exit_code"], 0)
+        self.assertFalse(record["cleanup_ok"])
+        counts = record["process_accounting"]
+        self.assertEqual(counts["status"], "unknown")
+        self.assertEqual(counts["reason"], "job_query_failed")
+        self.assertFalse(counts["final"])
+        self.assertFalse(counts["query_succeeded"])
+        self.assertIsNone(counts["checkpoint"])
+        self.assertTrue(all(counts[key] is None for key in ("total", "active", "terminated")))
+
+    @unittest.skipUnless(WINDOWS, "Windows Job accounting")
+    def test_windows_counts_preserve_partial_snapshot_until_settlement(self):
+        pid_file = self.root / "accounting-descendant.pid"
+        tree = _windows_process.JobTree(5.0)
+        proc = tree.launch(
+            [sys.executable, "-I", "-S", str(self.script), "spawn", "detach", str(pid_file)],
+            str(self.root), child_env(),
+        )
+        clock = time.monotonic
+        query = _windows_process._kernel32.QueryInformationJobObject
+        shifted = 0.0
+
+        def observed_query(*args):
+            nonlocal shifted
+            success = query(*args)
+            shifted = 60.0
+            return success
+
+        try:
+            self.assertTrue(tree.await_exit(clock() + 30.0))
+            with mock.patch.object(time, "monotonic", side_effect=lambda: clock() + shifted), \
+                 mock.patch.object(_windows_process._kernel32, "QueryInformationJobObject", observed_query):
+                self.assertFalse(tree.await_cleanup(clock() + 5.0))
+            partial = tree.process_snapshot()
+            self.assertEqual(partial["status"], "partial")
+            self.assertEqual(partial["reason"], "job_settlement_deadline")
+            self.assertFalse(partial["final"])
+            self.assertTrue(partial["query_succeeded"])
+            self.assertGreaterEqual(partial["total"], 2)
+            self.assertGreaterEqual(partial["active"], 1)
+            with mock.patch.object(_windows_process._kernel32, "QueryInformationJobObject", return_value=0):
+                self.assertFalse(tree.await_cleanup(clock() + 5.0))
+            failed = tree.process_snapshot()
+            self.assertEqual(failed["status"], "partial")
+            self.assertEqual(failed["reason"], "job_query_failed")
+            self.assertFalse(failed["final"])
+            self.assertFalse(failed["query_succeeded"])
+            for key in ("total", "active", "terminated"):
+                self.assertEqual(failed[key], partial[key])
+        finally:
+            tree.terminate()
+            settled = tree.await_cleanup(clock() + 5.0)
+            tree.close()
+            proc.stdout.close()
+            proc.stderr.close()
+        self.assertTrue(settled)
+        final = tree.process_snapshot()
+        self.assertEqual(final["status"], "complete")
+        self.assertTrue(final["final"])
+        self.assertTrue(final["query_succeeded"])
+        self.assertEqual(final["active"], 0)
+        self.assertGreaterEqual(final["total"], partial["total"])
+        self.assertTrue(process_gone(self.pid_from(pid_file)))
 
     @unittest.skipUnless(WINDOWS, "Windows job ownership")
     def test_windows_child_never_runs_when_job_assignment_fails(self):
