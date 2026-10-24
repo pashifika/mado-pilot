@@ -1277,7 +1277,8 @@ class ProtocolTwoTests(unittest.TestCase):
             argv += ["--exclusive-host"]
         return collector.parser().parse_args(argv)
 
-    def launch_smoke(self, args, records, clock=None, binding=None):
+    @contextlib.contextmanager
+    def smoke_context(self, args, records, clock=None, binding=None):
         original_runtime = collector.loaded_runtime
         with contextlib.ExitStack() as stack:
             stack.enter_context(mock.patch.object(collector, "host_identity", return_value={"target": TARGET}))
@@ -1292,6 +1293,10 @@ class ProtocolTwoTests(unittest.TestCase):
             if clock is not None:
                 stack.enter_context(mock.patch.object(collector.time, "monotonic", side_effect=clock))
             launch = stack.enter_context(mock.patch.object(collector, "run_process", side_effect=records))
+            yield launch
+
+    def launch_smoke(self, args, records, clock=None, binding=None):
+        with self.smoke_context(args, records, clock, binding) as launch:
             result = collector.collect(args, "smoke")
         return result, launch
 
@@ -1468,6 +1473,85 @@ class ProtocolTwoTests(unittest.TestCase):
         self.assertTrue(any(issue["status"] == "not-run" for issue in result["issues"]))
         retained = collector.load(Path(args.output) / "plan.json")
         self.assertEqual(retained["execution_limits"], collector.execution_limits("smoke", 2))
+
+    def test_incremental_pause_consumes_original_campaign_deadline(self):
+        args = self.arguments()
+        with self.smoke_context(
+                args, [process_record(v2_manifest())], clock=[0, 0, 0, 1, 901]):
+            with contextlib.closing(collector.collection_steps(args, "smoke")) as steps:
+                checkpoint = next(steps)
+                retained = Path(checkpoint["path"]).read_bytes()
+                with self.assertRaises(StopIteration) as finished:
+                    next(steps)
+            result = finished.exception.value
+            self.assertEqual(result["status"], "incomplete")
+            self.assertEqual([item["file"] for item in result["attempts"]], ["0000.json"])
+            self.assertEqual([item["attempt"] for item in result["issues"]],
+                             ["0001:baseline:single-small96x64"])
+            self.assertEqual(Path(checkpoint["path"]).read_bytes(), retained)
+            self.assertFalse((Path(args.output) / "started/0001.json").exists())
+
+    def test_incremental_close_preserves_prefix_and_releases_collector(self):
+        args = self.arguments()
+        original_lock = collector.exclusive_collector
+        records = [process_record(v2_manifest()), process_record(v2_manifest()),
+                   process_record(v2_payload("single-small96x64", smoke=True))]
+        with (self.smoke_context(args, records),
+              mock.patch.object(collector, "exclusive_collector", original_lock),
+              mock.patch.object(collector.tempfile, "gettempdir", return_value=str(self.root))):
+            with contextlib.closing(collector.collection_steps(args, "smoke")) as steps:
+                checkpoint = next(steps)
+                retained = Path(checkpoint["path"]).read_bytes()
+                with self.assertRaisesRegex(ValueError, "collector lock exists"):
+                    collector.collect(args, "smoke")
+            partial = collector.report(args.output)
+            self.assertEqual(partial["status"], "incomplete")
+            self.assertFalse(partial["performance_qualified"])
+            self.assertEqual([item["file"] for item in partial["attempts"]], ["0000.json"])
+            with self.assertRaises(FileExistsError):
+                collector.collect(args, "smoke")
+            args.output = str(self.root / "independent-smoke")
+            completed = collector.collect(args, "smoke")
+            self.assertEqual(completed["status"], "passed")
+            self.assertEqual([item["file"] for item in completed["attempts"]],
+                             ["0000.json", "0001.json"])
+            self.assertEqual(Path(checkpoint["path"]).read_bytes(), retained)
+
+    def test_incremental_collection_freezes_supplied_arguments(self):
+        args = self.arguments()
+        records = [process_record(v2_manifest()),
+                   process_record(v2_payload("single-small96x64", smoke=True))]
+        with self.smoke_context(args, records):
+            with contextlib.closing(collector.collection_steps(args, "smoke")) as steps:
+                first = next(steps)
+                args.target = collector.TARGETS[1]
+                args.build_mode = "instrumented"
+                second = next(steps)
+                with self.assertRaises(StopIteration) as finished:
+                    next(steps)
+            result = finished.exception.value
+            self.assertEqual(result["status"], "passed")
+            self.assertEqual(result["target"], TARGET)
+            self.assertEqual(result["build_mode"], "normal")
+            self.assertEqual(second["campaign_deadline_monotonic"],
+                             first["campaign_deadline_monotonic"])
+            self.assertEqual([item["file"] for item in result["attempts"]],
+                             ["0000.json", "0001.json"])
+
+    def test_incremental_cleanup_failure_cannot_launch_after_checkpoint(self):
+        args = self.arguments()
+        failed = process_record(v2_manifest())
+        failed.update(cleanup_ok=False, stderr="owned cleanup incomplete")
+        with self.smoke_context(args, [failed]):
+            with contextlib.closing(collector.collection_steps(args, "smoke")) as steps:
+                checkpoint = next(steps)
+                with self.assertRaises(StopIteration) as finished:
+                    next(steps)
+            result = finished.exception.value
+            self.assertEqual(result["status"], "failed")
+            self.assertIn("cleanup", {item.get("category") for item in result["issues"]})
+            self.assertFalse((Path(args.output) / "started/0001.json").exists())
+            self.assertEqual(collector.load(checkpoint["path"])["record"], failed)
 
     def test_timeout_output_or_cleanup_failure_preserves_partial_streams_and_slots(self):
         for flag in ("timed_out", "output_limited", "cleanup_ok"):
