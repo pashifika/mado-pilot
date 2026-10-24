@@ -395,6 +395,8 @@ class ImmutableCampaign(unittest.TestCase):
         self.addCleanup(self.temporary.cleanup)
         self.root = Path(self.temporary.name)
         self.plan = plan_for(self.root)
+        self.plan["host"]["target"] = self.plan["target"]
+        self.enterContext(mock.patch.object(collector, "host_identity", return_value=self.plan["host"]))
         self.campaign = collector.Campaign(self.plan)
         self.campaign.initialize()
 
