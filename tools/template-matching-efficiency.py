@@ -6,6 +6,8 @@ Run ``policy`` before calibration; ``freeze`` reviews a successful calibration;
 Build metadata is an operator-supplied provenance attestation, not a reproducible
 build proof. Keep the calibration directory with its reviewed profile.
 Protocol three separates common semantic inputs from each role's apparatus.
+It can collect one complete reviewed workload; partial coverage never qualifies
+the full corpus.
 Protocols one and two retain their historical corpus and numerical policies.
 """
 from __future__ import annotations
@@ -34,7 +36,7 @@ from process_runner import run_process  # noqa: E402
 import macos_image_observer as macos_images  # noqa: E402
 
 TARGETS = ("aarch64-apple-darwin", "x86_64-pc-windows-msvc")
-# Order is part of the corpus contract, not a user-selectable qualification subset.
+# This ordered corpus remains required for whole-target qualification.
 WORKLOADS = (
     ("single-small96x64", "guard", False, True),
     ("single-1080p", "guard", False, True),
@@ -169,6 +171,23 @@ def definitions_for(build_mode, protocol_version=2):
             if build_mode == "instrumented" or key not in NORMAL_UNAVAILABLE_WORKLOADS}
 
 
+def scoped_definitions(plan):
+    version = plan["format_version"]
+    definitions = definitions_for(plan.get("build_mode"), version) if version >= 2 else DEFINITIONS
+    selected = plan.get("workloads")
+    require(isinstance(selected, list) and selected, "missing workload selection")
+    require(all(isinstance(row, str) and row in definitions for row in selected),
+            "workload unavailable in selected build mode")
+    require(len(selected) == len(set(selected)) and (
+        plan["mode"] == "smoke" or selected == list(definitions) or version == 3 and len(selected) == 1),
+        "qualification workload coverage mismatch")
+    return {row: definitions[row] for row in selected}
+
+
+def workload_scoped(plan):
+    return plan["format_version"] == 3 and plan["mode"] != "smoke" and len(plan["workloads"]) == 1
+
+
 def mode_identity(value, build_mode, protocol_version=2):
     definitions_for(build_mode, protocol_version)
     require(value.get("format_version") == protocol_version and value.get("build_mode") == build_mode,
@@ -194,6 +213,12 @@ def execution_limits(mode, slots):
             "cleanup_seconds": 5, "output_limit_bytes": 8 * MIB,
             "runtime_binding_seconds": 0 if mode == "smoke" else 120,
             "max_attempts": slots, "campaign_output_limit_bytes": slots * 8 * MIB}
+
+
+def cohort_limits(plan):
+    if workload_scoped(plan):
+        return plan["method_review"]["stage_limits"][plan["mode"]]
+    return execution_limits(plan["mode"], len(plan["schedule"]))
 
 
 def validate_v2_build(identity, target, build_mode, protocol_version=2):
@@ -456,8 +481,10 @@ def runtime_closure_admission(identity, target, build_mode, bundle_path=None, *,
 
 def reviewed_method(path, expected_sha256, plan):
     digest(expected_sha256, "method_review_sha256")
-    require(path is not None and sha256(path) == expected_sha256, "method review hash mismatch")
-    review = load(path)
+    require(path is not None, "method review hash mismatch")
+    raw = Path(path).read_bytes()
+    require(hashlib.sha256(raw).hexdigest() == expected_sha256, "method review hash mismatch")
+    review = strict_json(raw.decode("utf-8"))
     version = plan.get("format_version", 2)
     require(isinstance(review, dict) and review.get("format_version") == version
             and review.get("kind") == "component-method-review",
@@ -473,10 +500,26 @@ def reviewed_method(path, expected_sha256, plan):
                 "method review candidate/source mismatch")
     for key in ("reviewer", "rationale", "source_host_cost_review", "runtime_observer_eligibility_review"):
         nonempty(review.get(key), key)
-    require(review.get("stage_limits") == {
-        mode: execution_limits(mode, len(schedule(mode, plan["workloads"], version)))
-        for mode in ("calibration", "control", "comparison")}, "method review finite cost/bounds mismatch")
-    return {"path": str(Path(path).resolve()), "sha256": expected_sha256}
+    scoped_definitions(plan)
+    limits = {mode: execution_limits(mode, len(schedule(mode, plan["workloads"], version)))
+              for mode in ("calibration", "control", "comparison")}
+    binding = {"path": str(Path(path).resolve()), "sha256": expected_sha256}
+    if workload_scoped(plan):
+        stages = review.get("stage_limits")
+        require(isinstance(stages, dict) and stages.keys() == limits.keys(),
+                "method review finite cost/bounds mismatch")
+        for mode, expected in limits.items():
+            stage = stages[mode]
+            require(isinstance(stage, dict), "method review finite cost/bounds mismatch")
+            cap = stage.get("campaign_timeout_seconds")
+            require(type(cap) is int and 0 < cap <= expected["campaign_timeout_seconds"],
+                    "method review campaign timeout must be a positive integer within the full-stage ceiling")
+            expected["campaign_timeout_seconds"] = cap
+        require(exact_value(stages, limits), "method review finite cost/bounds mismatch")
+        binding["stage_limits"] = limits
+    else:
+        require(review.get("stage_limits") == limits, "method review finite cost/bounds mismatch")
+    return binding
 DIRECT_FORMAT_WORKLOAD = "contract-roi-format-transition"
 DIRECT_FORMAT_CASES = (
     ("rgba-full", "rgba8", 0, False, False),
@@ -1650,20 +1693,11 @@ def validate_plan(plan):
     require(plan.get("mode") in modes, "invalid cohort")
     require(plan.get("policy") == policy_for(version),
             "policy differs from predeclared collector policy")
-    if version >= 2:
-        require(plan.get("execution_limits") == execution_limits(plan["mode"], len(plan.get("schedule", []))),
-                "bounded v2 execution policy mismatch")
-    elif plan["mode"] == "smoke":
-        require(plan.get("execution_limits") == SMOKE_LIMITS, "bounded smoke execution policy mismatch")
     target = plan.get("target")
     require(target in TARGETS and plan.get("host", {}).get("target") == target, "host/target mismatch")
     require(plan.get("collector") == collector_identity(), "collector source differs; use the retained collector revision")
-    selected = plan.get("workloads")
-    require(isinstance(selected, list) and selected, "missing workload selection")
-    definitions = definitions_for(plan.get("build_mode"), version) if version >= 2 else DEFINITIONS
-    require(selected == list(definitions) if plan["mode"] != "smoke" else
-            len(selected) == len(set(selected)) and all(row in definitions for row in selected),
-            "qualification workload coverage mismatch")
+    scoped_definitions(plan)
+    selected = plan["workloads"]
     require(plan.get("schedule") == schedule(plan["mode"], selected, version), "cohort order/count mismatch")
     require(plan.get("exclusive_host") is True or plan["mode"] == "smoke", "exclusive host declaration required")
     roles = ("baseline", "candidate") if plan["mode"] == "comparison" else (
@@ -1685,8 +1719,14 @@ def validate_plan(plan):
                 "A/A control must use the unchanged identical baseline executable/source")
     if version >= 2 and plan["mode"] != "smoke":
         review = plan.get("method_review", {})
-        require(reviewed_method(review.get("path"), review.get("sha256"), plan) == review,
+        require(exact_value(reviewed_method(review.get("path"), review.get("sha256"), plan), review),
                 "source/host/cost review binding mismatch")
+    if version >= 2:
+        limits = cohort_limits(plan)
+        require(exact_value(plan.get("execution_limits"), limits) if workload_scoped(plan)
+                else plan.get("execution_limits") == limits, "bounded v2 execution policy mismatch")
+    elif plan["mode"] == "smoke":
+        require(plan.get("execution_limits") == SMOKE_LIMITS, "bounded smoke execution policy mismatch")
 
 
 def evaluate(directory):
@@ -1863,10 +1903,10 @@ def derive_envelopes(evidence):
     require(not evidence["issues"], "calibration has failed, unavailable, or unrun attempts")
     version = evidence["plan"]["format_version"]
     count = 6 if version >= 2 else 5
-    definitions = definitions_for(evidence["plan"]["build_mode"], version) if version >= 2 else DEFINITIONS
+    definitions = scoped_definitions(evidence["plan"])
     result = {}
     for workload, definition in definitions.items():
-        rows = evidence["observations"]["baseline"][workload]
+        rows = evidence["observations"].get("baseline", {}).get(workload, [])
         require(len(rows) == count and (version == 1 or
                 sorted(row["process"] for row in rows) == list(range(count))),
                 "calibration requires five fresh processes" if version == 1 else "calibration requires 6 fresh processes")
@@ -1992,6 +2032,8 @@ def profile_from_v2(evidence, calibration, control, control_path, reviewer, rati
                        "target": plan["target"], "build_mode": plan["build_mode"],
                        "method_review": plan["method_review"], "calibration": cohort_binding(evidence),
                        "control": cohort_binding(control), "envelopes": envelopes}
+    if plan["format_version"] == 3:
+        expected_review["workloads"] = plan["workloads"]
     if runtime_observer_policy(plan) is not None:
         expected_review["runtime_observer_policy"] = plan["runtime_observer_policy"]
     require(isinstance(review, dict) and all(review.get(key) == value for key, value in expected_review.items()),
@@ -2004,6 +2046,7 @@ def profile_from_v2(evidence, calibration, control, control_path, reviewer, rati
                                   timing_policy=runtime_observer_policy(plan))
     return {"format_version": plan["format_version"], "kind": "frozen-profile",
             **{key: plan[key] for key in ("target", "build_mode", "policy", "collector", "host", "environment", "method_review")},
+            **({"workloads": plan["workloads"]} if plan["format_version"] == 3 else {}),
             **({"runtime_observer_policy": plan["runtime_observer_policy"]}
                if runtime_observer_policy(plan) is not None else {}),
             "baseline": plan["binaries"]["baseline"], "manifest": evidence["manifest"], "envelopes": envelopes,
@@ -2042,11 +2085,21 @@ def validate_profile(profile):
     return profile
 
 
+def comparison_scope(plan, profile):
+    if plan["format_version"] == 3:
+        selected = scoped_definitions(plan)
+        require(profile.get("workloads") == plan["workloads"],
+                "comparison workloads differ from frozen profile")
+        require(isinstance(profile.get("envelopes"), dict) and profile["envelopes"].keys() == selected.keys(),
+                "profile envelope workload coverage mismatch")
+
+
 def compare_evidence(evidence, profile):
     plan = evidence["plan"]
     require(plan["mode"] == "comparison", "not a comparison cohort")
     version = plan["format_version"]
     require(version == profile["format_version"], "mixed profile protocol")
+    comparison_scope(plan, profile)
     count = 6 if version >= 2 else 5
     normal = version >= 2 and plan["build_mode"] == "normal"
     if version >= 2:
@@ -2064,7 +2117,7 @@ def compare_evidence(evidence, profile):
             if issue not in issues:
                 issues.append(issue)
     benefits = {}
-    definitions = definitions_for(plan["build_mode"], version) if version >= 2 else DEFINITIONS
+    definitions = scoped_definitions(plan)
     for workload, definition in definitions.items():
         cohorts = {role: evidence["observations"].get(role, {}).get(workload, [])
                    for role in ("baseline", "candidate")}
@@ -2155,20 +2208,26 @@ def report(directory):
             issues.append({"attempt": "profile", "status": "failed", "reason": str(error)})
     status = "failed" if any(item["status"] == "failed" for item in issues) else "incomplete" if issues else "passed"
     target = evidence["plan"]["target"]
-    qualified = mode == "comparison" and status == "passed" and (
+    definitions = definitions_for(evidence["plan"]["build_mode"], version) if version >= 2 else DEFINITIONS
+    selected = evidence["plan"]["workloads"]
+    omitted = [workload for workload in definitions if workload not in selected]
+    coverage = {"required": list(definitions), "selected": selected, "omitted": omitted, "complete": not omitted}
+    target_status = "incomplete" if version == 3 and omitted and status == "passed" else status
+    qualified = mode == "comparison" and status == "passed" and (version != 3 or coverage["complete"]) and (
         version == 1 or evidence["plan"]["build_mode"] == "normal")
     return {"format_version": version, "mode": mode, "target": target, "status": status,
+            **({"workload_coverage": coverage} if version == 3 else {}),
             "performance_qualified": qualified, "whole_change_acceptance": "incomplete",
-            "targets": {name: (status if mode == "comparison" else "incomplete") if name == target else "not-run"
+            "targets": {name: (target_status if mode == "comparison" else "incomplete") if name == target else "not-run"
                         for name in TARGETS},
             "plan_sha256": evidence["plan_sha256"], "issues": issues, "benefits": benefits,
             "attempts": evidence["attempts"],
             "process_observations": evidence["observations"],
             **({"build_mode": evidence["plan"]["build_mode"], "lane": "component",
                 "normal_timing_verdict": ("unavailable" if evidence["plan"]["build_mode"] == "instrumented"
-                                          else status if mode == "comparison" else "not-qualified"),
+                                          else target_status if mode == "comparison" else "not-qualified"),
                 "heap_and_work_verdict": ("unavailable" if evidence["plan"]["build_mode"] == "normal"
-                                          else status if mode == "comparison" else "descriptive"),
+                                          else target_status if mode == "comparison" else "descriptive"),
                 "actual_consumer_coverage": "not-implemented"} if version >= 2 else {}),
             "note": "smoke and calibration do not establish performance qualification; contract rows are non-statistical"}
 
@@ -2325,6 +2384,11 @@ def collection_steps(args, mode):
     version = args.protocol_version
     definitions = definitions_for(args.build_mode, version) if version >= 2 else DEFINITIONS
     require(version >= 2 or mode != "control", "control requires --protocol-version 2/3")
+    require(not args.workload or mode == "smoke" or version == 3,
+            "--workload requires protocol 3 outside smoke")
+    selected = [args.workload] if args.workload else list(definitions)
+    scoped_definitions({"format_version": version, "build_mode": args.build_mode,
+                        "mode": mode, "workloads": selected})
     timing_policy = RUNTIME_OBSERVER_POLICY if args.target == TARGETS[0] and mode != "smoke" else None
     require(timing_policy is None or version >= 2,
             "new macOS qualification requires timing-capable protocol 2/3; zero qualifying launches")
@@ -2349,13 +2413,13 @@ def collection_steps(args, mode):
         require(baseline == profile["baseline"], "baseline differs from reviewed profile")
         require(collector_identity() == profile["collector"], "collector differs from reviewed profile")
         binaries["candidate"] = binary_identity(args.candidate, args.candidate_metadata, args.target)
-    selected = [args.workload] if mode == "smoke" and args.workload else list(definitions)
-    require(all(workload in definitions for workload in selected), "workload unavailable in selected build mode")
-    preflight = {"format_version": version, "target": args.target, "build_mode": args.build_mode, "host": host,
+    preflight = {"format_version": version, "mode": mode, "target": args.target, "build_mode": args.build_mode, "host": host,
                  "collector": collector_identity(), "environment": environment(), "policy": policy_for(version),
                  "workloads": selected, "binaries": binaries}
     if timing_policy is not None:
         preflight["runtime_observer_policy"] = timing_policy
+    if profile:
+        comparison_scope(preflight, profile)
     method, calibration_binding = None, None
     if version >= 2:
         for binary in binaries.values():
@@ -2417,8 +2481,8 @@ def collection_steps(args, mode):
         if timing_policy is not None:
             plan["runtime_observer_policy"] = timing_policy
         if version >= 2:
-            plan.update(build_mode=args.build_mode, method_review=method, calibration=calibration_binding,
-                        execution_limits=execution_limits(mode, len(plan["schedule"])))
+            plan.update(build_mode=args.build_mode, method_review=method, calibration=calibration_binding)
+            plan["execution_limits"] = cohort_limits(plan)
         elif mode == "smoke":
             plan["execution_limits"] = SMOKE_LIMITS
         for role, runtime in runtimes.items():
@@ -2841,6 +2905,13 @@ def protocol_arguments(sub):
                      help="required for protocol 2/3; verified from compiled executable manifest")
 
 
+class SingleWorkload(argparse.Action):
+    def __call__(self, parser, namespace, value, option_string=None):
+        if getattr(namespace, self.dest, None) is not None:
+            raise argparse.ArgumentError(self, "--workload may be supplied only once")
+        setattr(namespace, self.dest, value)
+
+
 def parser():
     result = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter,
                                      epilog="Build metadata JSON: target, binary_sha256, source_revision (40 hex), source_tree (40 hex), cargo_lock_sha256, rustc, build_argv (array), opencv_version, dependencies ([{path: absolute, sha256}]). Metadata attests the build; collector verifies the named executable/dependency bytes, never rebuilds or infers source from the current checkout.")
@@ -2883,8 +2954,8 @@ def parser():
         if name == "control":
             sub.add_argument("--calibration", required=True)
             sub.add_argument("--calibration-plan-sha256", required=True)
-        if name == "smoke":
-            sub.add_argument("--workload", choices=list(V3_DEFINITIONS))
+        sub.add_argument("--workload", choices=list(V3_DEFINITIONS), action="store" if name == "smoke" else SingleWorkload,
+                         help="one complete workload (protocol 3); smoke keeps its diagnostic selection")
     freeze = commands.add_parser("freeze", help="review calibration and exclusively write a numeric target profile")
     protocol_arguments(freeze)
     freeze.add_argument("--control", help="separate unchanged control evidence directory (protocol 2/3)")

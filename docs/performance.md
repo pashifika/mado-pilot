@@ -407,6 +407,58 @@ immutable input bindings do not validate noisy timings. A/A control and candidat
 comparison remain unrun; no product regression or benefit follows from this
 calibration failure.
 
+### Workload-scoped component cohorts
+
+[ADR 0098](adr/0098-workload-scoped-component-cohorts.md) refines collection
+granularity for newly bound protocol-3 scopes, not ADR 0097's historical method
+or failed calibration. `tools/template-matching-efficiency.py` accepts
+`--protocol-version 3 --workload` on `calibrate`, `control` and `compare` to select
+one complete workload. Omitting `--workload` retains the exact ordered full corpus:
+54 normal or 57 instrumented rows. Arbitrary subsets, duplicate IDs, wrong-mode
+workloads and older-protocol non-smoke selections are refused. Smoke is unchanged.
+
+Each statistical workload retains 20 warmups and 200 retained units per process;
+contract workloads retain 1/3. A selected calibration runs one manifest and six
+baseline processes. Control runs two manifests and six independent unchanged A/A
+pairs; comparison runs two manifests and six fresh baseline/candidate pairs.
+Both paired stages retain `AB, BA, AB, BA, AB, BA`. There is no automatic stage
+chain, cohort aggregation, retry, resume or replacement sampling.
+
+The source/hash-bound method review fixes all three `stage_limits` before
+collection. For a single workload, only `campaign_timeout_seconds` may be lower
+than the existing full-stage ceiling: a positive finite integer at most 21,600
+seconds for calibration or 43,200 for control/comparison. The accepted review
+chooses case-specific clocks from workload cost, not a blanket ten-minute limit
+or universal 900-second policy. All other limits equal `execution_limits` for the
+exact schedule, retaining the 300-second child, 8-MiB combined output, five-second
+cleanup and 120-second per-pass image-binding bounds. Pauses consume the same
+live absolute stage deadline; no enlargement or reset is permitted. Management
+execution, serialized storage and retention still require separate admission.
+
+`plan.workloads`, profile `workloads`, the external numerical-profile review and
+comparison must bind the same exact scope. The partial `method_review` binding
+retains the validated `stage_limits`; `plan.execution_limits` must equal the
+selected stage's limits. Changed scope, cap or profile envelope coverage refuses
+before native launch. Raw slots, failures, observer/source gates, noise/A/A gates,
+frozen allowances and per-process timing/resource ceilings remain mandatory.
+
+Protocol-3 reports expose `workload_coverage.required`, `.selected` and `.omitted`
+as workload ID lists and `.complete` as a boolean against the full mode-specific
+corpus. `status` describes only the declared cohort. A partial comparison may
+report `status: "passed"` while `performance_qualified` remains `false`;
+`targets[target]` and the applicable `normal_timing_verdict` or
+`heap_and_work_verdict` remain `incomplete`, not whole-corpus `passed`.
+Known failures remain `failed`; unavailable observations remain unavailable.
+Omitted rows do not become missing attempts within a complete selected cohort.
+
+Both normal selection and repeated-preparation goals still require joint p95
+and summed retained-sample process CPU benefit above frozen allowances.
+Instrumented work/ownership evidence cannot replace either goal. Whole-target,
+Change and release claims still require every required case, per-process/resource
+non-regression, both targets and build modes, and separate actual-consumer
+evidence. Neither a selected profile nor a passing scoped report supplies that
+qualification or authorizes a new native launch.
+
 ### Historical format-1 collector
 
 
