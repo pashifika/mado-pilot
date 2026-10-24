@@ -449,7 +449,7 @@ jobs:
               shutil.copy2(source, binary)
               metadata = mode_root / "build-metadata.json"
               target = os.environ["MATCHING_SMOKE_TARGET"]
-              protocol = ["--protocol-version", "3", "--build-mode", mode]
+              protocol = ["--protocol-version", "4", "--build-mode", mode]
               for label, argv, timeout in (
                   ("attest", [sys.executable, "tools/template-matching-efficiency.py", "attest", *protocol, "--target", target, "--binary", str(binary), "--build-argv-json", json.dumps(build), "--output", str(metadata)], 500),
                   ("smoke", [sys.executable, "tools/template-matching-efficiency.py", "smoke", *protocol, "--target", target, "--baseline", str(binary), "--baseline-metadata", str(metadata), "--output", str(mode_root / "campaign")], 930),
@@ -853,7 +853,7 @@ jobs:
               shutil.copy2(source, binary)
               metadata = mode_root / "build-metadata.json"
               target = os.environ["MATCHING_SMOKE_TARGET"]
-              protocol = ["--protocol-version", "3", "--build-mode", mode]
+              protocol = ["--protocol-version", "4", "--build-mode", mode]
               for label, argv, timeout in (
                   ("attest", [sys.executable, "tools/template-matching-efficiency.py", "attest", *protocol, "--target", target, "--binary", str(binary), "--build-argv-json", json.dumps(build), "--output", str(metadata)], 500),
                   ("smoke", [sys.executable, "tools/template-matching-efficiency.py", "smoke", *protocol, "--target", target, "--baseline", str(binary), "--baseline-metadata", str(metadata), "--output", str(mode_root / "campaign")], 930),

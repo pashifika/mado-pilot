@@ -5,10 +5,10 @@ Run ``policy`` before calibration; ``freeze`` reviews a successful calibration;
 ``compare`` consumes that immutable, SHA-256-pinned profile. No command builds.
 Build metadata is an operator-supplied provenance attestation, not a reproducible
 build proof. Keep the calibration directory with its reviewed profile.
-Protocol three separates common semantic inputs from each role's apparatus.
-It can collect one complete reviewed workload; partial coverage never qualifies
-the full corpus.
-Protocols one and two retain their historical corpus and numerical policies.
+Protocol four binds workload-specific sampling and retained-loop process CPU.
+Protocol three adds Session rows and source-independent logical corpus identity.
+Historical readers retain their original numerical policies. Partial workload
+coverage never qualifies the full corpus.
 """
 from __future__ import annotations
 
@@ -138,6 +138,16 @@ V3_POLICY = {**V2_POLICY, "id": "template-efficiency-v3-session-prospective-r2",
              "resource_ceiling": "max(calibration6) + max(spread, fixed slack); native RSS peak live cache is row-scoped by simultaneous independent backend count",
              "strata": "turnover hit and miss remain process-local; grade each stratum and the overlapping primary cycle independently",
              "scope": "prospective Session component apparatus; no accepted method, profile or actual-consumer qualification"}
+V4_POLICY = {**V3_POLICY, "id": "template-efficiency-v4-retained-loop-prospective",
+             "cpu_metric": "retained-loop current-process CPU including preparation, oracles and storage; operation sum remains diagnostic",
+             "sampling": "explicit source/hash-bound per-workload counts; reference manifest is not an execution plan",
+             "instrumented_timing": "descriptive only; independent resource and exact work/ownership gates remain",
+             "scope": "prospective component apparatus; no accepted count, profile or runtime eligibility by implementation"}
+SAMPLING_PROTOCOL = "mado-component-sampling-v1"
+SAMPLING_LIMITS = {"warmups_min": 1, "warmups_max": 1000, "samples_min": 1, "samples_max": 40000}
+LOOP_CPU_PROTOCOL = "mado-component-retained-loop-cpu-v1"
+LOOP_CPU_SCOPE = "current-process-retained-loop-including-preparation-oracles-and-storage"
+SAMPLING_INPUT_LIMIT = 64 * 1024
 NORMAL_UNAVAILABLE_METRICS = (
     "allocations", "heap_before_bytes", "heap_after_bytes", "heap_after_drop_bytes",
     "heap_steady_before_bytes", "heap_steady_after_bytes", "peak_heap_bytes", "peak_heap_scope",
@@ -160,13 +170,14 @@ NORMAL_UNAVAILABLE_WORKLOADS = (
 
 
 def policy_for(protocol_version):
-    return V3_POLICY if protocol_version == 3 else V2_POLICY if protocol_version == 2 else POLICY
+    return (V4_POLICY if protocol_version == 4 else V3_POLICY if protocol_version == 3
+            else V2_POLICY if protocol_version == 2 else POLICY)
 
 
 def definitions_for(build_mode, protocol_version=2):
-    require(protocol_version in (2, 3), "unsupported component protocol")
+    require(protocol_version in (2, 3, 4), "unsupported component protocol")
     require(build_mode in ("normal", "instrumented"), "component protocol requires --build-mode normal|instrumented")
-    definitions = V3_DEFINITIONS if protocol_version == 3 else DEFINITIONS
+    definitions = V3_DEFINITIONS if protocol_version >= 3 else DEFINITIONS
     return {key: value for key, value in definitions.items()
             if build_mode == "instrumented" or key not in NORMAL_UNAVAILABLE_WORKLOADS}
 
@@ -179,20 +190,65 @@ def scoped_definitions(plan):
     require(all(isinstance(row, str) and row in definitions for row in selected),
             "workload unavailable in selected build mode")
     require(len(selected) == len(set(selected)) and (
-        plan["mode"] == "smoke" or selected == list(definitions) or version == 3 and len(selected) == 1),
+        plan["mode"] == "smoke" or selected == list(definitions) or version >= 3 and len(selected) == 1),
         "qualification workload coverage mismatch")
     return {row: definitions[row] for row in selected}
 
 
 def workload_scoped(plan):
-    return plan["format_version"] == 3 and plan["mode"] != "smoke" and len(plan["workloads"]) == 1
+    return plan["format_version"] >= 3 and plan["mode"] != "smoke" and len(plan["workloads"]) == 1
+
+
+def sampling_capability(value):
+    expected = {"sampling_protocol": SAMPLING_PROTOCOL, "sampling_limits": SAMPLING_LIMITS,
+                "retained_loop_cpu_protocol": LOOP_CPU_PROTOCOL}
+    require(all(exact_value(value.get(key), item) for key, item in expected.items()),
+            "sampling/retained-loop CPU capability mismatch")
+    return expected
+
+
+def validate_sampling(binding, definitions):
+    require(isinstance(binding, dict) and binding.keys() == {"path", "sha256", "raw", "rows"},
+            "explicit protocol4 sampling plan required")
+    nonempty(binding["path"], "sampling plan path")
+    checksum = digest(binding["sha256"], "sampling plan sha256")
+    raw = binding["raw"]
+    require(isinstance(raw, str), "sampling plan raw JSON required")
+    encoded = raw.encode("utf-8")
+    require(len(encoded) <= SAMPLING_INPUT_LIMIT and hashlib.sha256(encoded).hexdigest() == checksum,
+            "sampling plan byte/hash mismatch")
+    rows = strict_json(raw)
+    require(exact_value(rows, binding["rows"]) and isinstance(rows, dict)
+            and rows.keys() == definitions.keys(), "sampling plan workload coverage mismatch")
+    for name, counts in rows.items():
+        require(isinstance(counts, dict) and counts.keys() == {"warmups", "samples"},
+                "sampling plan count fields mismatch")
+        for key in ("warmups", "samples"):
+            count = integer(counts[key], f"{name}.{key}", SAMPLING_LIMITS[f"{key}_min"])
+            require(count <= SAMPLING_LIMITS[f"{key}_max"], f"{name}.{key} exceeds sampling bound")
+        if not definitions[name]["statistical"]:
+            require(counts == {"warmups": 1, "samples": 3}, "contract sampling plan must remain 1/3")
+    return rows
+
+
+def sampling_input(path, expected_sha256, definitions):
+    require(path is not None, "protocol4 qualification requires --sampling-plan")
+    digest(expected_sha256, "sampling plan sha256")
+    source = Path(path).resolve(strict=True)
+    with source.open("rb") as stream:
+        raw = stream.read(SAMPLING_INPUT_LIMIT + 1)
+    require(len(raw) <= SAMPLING_INPUT_LIMIT, "sampling plan exceeds input bound")
+    binding = {"path": str(source), "sha256": expected_sha256, "raw": raw.decode("utf-8"),
+               "rows": strict_json(raw.decode("utf-8"))}
+    validate_sampling(binding, definitions)
+    return binding
 
 
 def mode_identity(value, build_mode, protocol_version=2):
     definitions_for(build_mode, protocol_version)
     require(value.get("format_version") == protocol_version and value.get("build_mode") == build_mode,
             "compiled build mode/protocol mismatch")
-    if protocol_version == 3:
+    if protocol_version >= 3:
         integer(value.get("format_version"), "format_version")
     require(value.get("global_allocator") == (
         "system" if build_mode == "normal" else "accounting-over-system"), "allocator mode mismatch")
@@ -226,7 +282,7 @@ def validate_v2_build(identity, target, build_mode, protocol_version=2):
     validate_build(build, target)
     require(build.get("protocol_version") == protocol_version and build.get("build_mode") == build_mode,
             "component build attestation mode/protocol mismatch")
-    if protocol_version == 3:
+    if protocol_version >= 3:
         integer(build.get("protocol_version"), "attested protocol_version")
     probe = build.get("provenance_commands")
     require(isinstance(probe, list) and len(probe) == 5 and all(
@@ -236,7 +292,7 @@ def validate_v2_build(identity, target, build_mode, protocol_version=2):
     require(probe[0].get("argv") == [identity["path"], "--protocol-version", str(protocol_version), "--list"]
             and successful(probe[0].get("record", {})), "attested manifest command mismatch")
     if "source_binding" in build:
-        require(protocol_version == 3, "exported source requires protocol3")
+        require(protocol_version >= 3, "exported source requires protocol3")
         validate_export_binding(build, probe)
     else:
         for index, key in ((1, "source_revision"), (2, "source_tree"), (3, "source_status_porcelain"), (4, "rustc")):
@@ -249,7 +305,7 @@ def validate_v2_build(identity, target, build_mode, protocol_version=2):
     observed = strict_json(probe[0]["record"]["stdout"])
     frozen = manifest_identity(observed, target, build["opencv_version"], protocol_version, build_mode)
     require(build.get("benchmark_manifest") == frozen, "attested source/mode manifest mismatch")
-    if protocol_version == 3:
+    if protocol_version >= 3:
         require(apparatus_identity(build.get("apparatus")) == frozen["apparatus"],
                 "attested role apparatus differs from executable/source manifest")
     loaded_runtime(observed, identity)
@@ -334,7 +390,7 @@ def native_thread_issues(settings, roles):
 def preflight_identity(identity, protocol_version):
     """Protocol3 boundary proofs bind the complete canonical plan.binary document."""
     return ({"plan_binary_sha256": hashlib.sha256(document(identity)).hexdigest()}
-            if protocol_version == 3 else identity)
+            if protocol_version >= 3 else identity)
 
 
 def validate_runtime_bundle(bundle, identity, target, build_mode):
@@ -494,6 +550,9 @@ def reviewed_method(path, expected_sha256, plan):
         require(review.get(key) == plan[key], f"method review {key} mismatch")
     require(review.get("runtime_observer_policy") == runtime_observer_policy(plan),
             "method review runtime_observer_policy mismatch")
+    if version == 4:
+        require(exact_value(review.get("sampling"), plan.get("sampling")),
+                "method review sampling mismatch")
     require(review.get("baseline") == plan["binaries"]["baseline"], "method review baseline/source mismatch")
     if "candidate" in plan["binaries"]:
         require(review.get("candidate") == plan["binaries"]["candidate"],
@@ -808,7 +867,7 @@ def apparatus_identity(value):
 
 
 def common_manifest(value):
-    if not isinstance(value, dict) or value.get("format_version") != 3:
+    if not isinstance(value, dict) or value.get("format_version") not in (3, 4):
         return value
     # Physical layouts are comparable only after admission against a fixed role contract.
     role = apparatus_identity(value.get("apparatus"))["accounting_contract"]
@@ -1035,11 +1094,15 @@ def validate_session_manifest(row):
             "Session owner/timing/change-policy contract mismatch")
 
 
-def timing_metrics(workload, version):
-    primary = (("p95_ns", "timer_resolution_ns"), ("cpu_ns", "cpu_timer_resolution_ns"))
-    if version == 3 and workload.startswith("session-turnover-"):
+def timing_metrics(workload, version, build_mode=None):
+    if version == 4 and build_mode == "instrumented":
+        return ()
+    primary = (("p95_ns", "timer_resolution_ns"),
+               ("retained_loop_cpu_ns" if version == 4 else "cpu_ns", "cpu_timer_resolution_ns"))
+    if version >= 3 and workload.startswith("session-turnover-"):
+        strata = primary[:1] if version == 4 else primary
         return primary + tuple((f"strata.{name}.{metric}", clock)
-                               for name in ("hit", "miss") for metric, clock in primary)
+                               for name in ("hit", "miss") for metric, clock in strata)
     return primary
 
 
@@ -1315,6 +1378,8 @@ def manifest_identity(value, target, opencv_version, protocol_version=1, build_m
     require(isinstance(value, dict) and value.get("format_version") == protocol_version, "invalid protocol version")
     mode_fields = mode_identity(value, build_mode, protocol_version) if protocol_version >= 2 else {}
     mode_fields.update(timing_capability(value, enabled=timing_boundaries))
+    if protocol_version == 4:
+        mode_fields.update(sampling_capability(value))
     if protocol_version >= 2:
         effective_threads(value)
     require(value.get("kind") == "manifest", "expected manifest")
@@ -1353,9 +1418,9 @@ def manifest_identity(value, target, opencv_version, protocol_version=1, build_m
                 "manifest sampling plan mismatch")
         if expected["id"] == DIRECT_FORMAT_WORKLOAD:
             require(exact_value(row.get("format_contract"), direct_format_contract(
-                mode_fields["apparatus"]["accounting_contract"] if protocol_version == 3 else ACCOUNTING_CONTRACT)),
+                mode_fields["apparatus"]["accounting_contract"] if protocol_version >= 3 else ACCOUNTING_CONTRACT)),
                     "direct-format declaration/order/work mismatch")
-        if protocol_version == 3 and expected["id"] in SESSION_DEFINITIONS:
+        if protocol_version >= 3 and expected["id"] in SESSION_DEFINITIONS:
             require(exact_value(row, value["fixture"]["sessions"]["workloads"][
                 list(SESSION_DEFINITIONS).index(expected["id"])]), "Session fixture/manifest row mismatch")
             validate_session_manifest(row)
@@ -1364,10 +1429,13 @@ def manifest_identity(value, target, opencv_version, protocol_version=1, build_m
             "workloads": frozen, **mode_fields}
 
 
-def observations(value, manifest, workload, smoke, *, timing_boundaries=False):
+def observations(value, manifest, workload, smoke, *, timing_boundaries=False, sampling=None):
     version = manifest.get("format_version", 1)
     normal = version >= 2 and manifest["build_mode"] == "normal"
     require(isinstance(value, dict), "invalid observation protocol")
+    if version == 4:
+        require(exact_value(sampling_capability(value), sampling_capability(manifest)),
+                "observation sampling/CPU capability changed")
     require(timing_capability(value, enabled=timing_boundaries) == {
         key: manifest[key] for key in ("timing_boundary_protocol",) if key in manifest},
         "observation timing capability changed")
@@ -1382,7 +1450,7 @@ def observations(value, manifest, workload, smoke, *, timing_boundaries=False):
         require(value.get(key) == manifest[key], f"observation {key} mismatch")
     if version >= 2:
         require(value.get("fixture") == manifest["fixture"], "observation source/fixture declaration changed")
-    if version == 3:
+    if version >= 3:
         require(apparatus_identity(value.get("apparatus")) == manifest["apparatus"],
                 "observation role apparatus changed")
     loaded_runtime(value)
@@ -1393,18 +1461,21 @@ def observations(value, manifest, workload, smoke, *, timing_boundaries=False):
     require(isinstance(row, dict) and all(type(row.get(key)) is type(want) and row.get(key) == want
                                         for key, want in expected.items()
                                         if key not in ("warmups", "sample_count")), "observation workload mismatch")
-    if version == 3:
+    if version >= 3:
         require(all(exact_value(row.get(key), want) for key, want in expected.items()
                     if key not in ("warmups", "sample_count")), "observation semantic row changed")
     short = smoke or not expected["statistical"]
-    warmups, count = (1, 3) if short else (20, 200)
+    if version == 4 and not short and sampling is not None:
+        warmups, count = sampling["warmups"], sampling["samples"]
+    else:
+        warmups, count = (1, 3) if short else (20, 200)
     require(row.get("warmups") == warmups and row.get("sample_count") == count,
             "row sampling plan mismatch")
-    # Top-level counts select the campaign; contract rows declare their short plan.
-    require(value.get("warmups") == (1 if smoke else 20)
-            and value.get("sample_count") == (3 if smoke else 200),
+    # Historical process plans describe defaults; protocol4 names the actual selected row.
+    process_counts = (warmups, count) if version == 4 else (1, 3) if smoke else (20, 200)
+    require(value.get("warmups") == process_counts[0] and value.get("sample_count") == process_counts[1],
             "process sampling plan mismatch")
-    if version == 3:
+    if version >= 3:
         for container in (row, value):
             integer(container.get("warmups"), "warmups")
             integer(container.get("sample_count"), "sample_count", 1)
@@ -1457,7 +1528,7 @@ def observations(value, manifest, workload, smoke, *, timing_boundaries=False):
         for index, sample in enumerate(samples):
             require(isinstance(sample, dict), f"invalid {name}[{index}]")
             require(sample.get("correct") is True, f"incorrect {name}[{index}]")
-            if version == 3:
+            if version >= 3:
                 require(sample.get("error") is None, f"failed {name}[{index}]")
             integer(sample.get("elapsed_ns"), "elapsed_ns")
             if sample.get("cpu_ns") is None:
@@ -1477,11 +1548,37 @@ def observations(value, manifest, workload, smoke, *, timing_boundaries=False):
     nonempty(value.get("cpu_resolution_method"), "cpu_resolution_method")
     cpu = None if any(sample["cpu_ns"] is None for sample in retained) else sum(sample["cpu_ns"] for sample in retained)
     require(metrics.get("cpu_ns") == cpu, "aggregate CPU disagrees with retained samples")
-    if version == 3 and cpu is not None:
+    if version >= 3 and cpu is not None:
         integer(metrics.get("cpu_ns"), "aggregate CPU")
+    loop_cpu = None
+    if version == 4:
+        bracket = row.get("retained_loop_cpu")
+        require(isinstance(bracket, dict) and bracket.keys() == {
+            "protocol", "source", "source_unit_ns", "start_ns", "end_ns", "cpu_ns",
+            "sample_count", "reason", "scope"}, "complete retained-loop CPU bracket required")
+        source, unit = (("getrusage-RUSAGE_SELF", 1000) if manifest["target"] == TARGETS[0]
+                        else ("GetProcessTimes-current-process", 100))
+        require(bracket["protocol"] == LOOP_CPU_PROTOCOL and bracket["scope"] == LOOP_CPU_SCOPE
+                and bracket["source"] == source and exact_value(bracket["source_unit_ns"], unit)
+                and exact_value(bracket["sample_count"], count), "retained-loop CPU source/scope/count mismatch")
+        if bracket["cpu_ns"] is None:
+            nonempty(bracket["reason"], "retained-loop CPU unavailable reason")
+            for key in ("start_ns", "end_ns"):
+                if bracket[key] is not None:
+                    integer(bracket[key], key)
+            require(bracket["start_ns"] is None or bracket["end_ns"] is None
+                    or bracket["end_ns"] < bracket["start_ns"], "available retained-loop CPU hidden as null")
+            unavailable.append("retained_loop_cpu_ns")
+        else:
+            start = integer(bracket["start_ns"], "retained-loop CPU start")
+            end = integer(bracket["end_ns"], "retained-loop CPU end")
+            loop_cpu = integer(bracket["cpu_ns"], "retained-loop CPU delta")
+            require(start <= end and loop_cpu == end - start and bracket["reason"] is None,
+                    "retained-loop CPU endpoint arithmetic mismatch")
+            require(cpu is None or loop_cpu >= cpu, "retained-loop CPU below contained operation sum")
     if not normal:
         backends = (expected["session_contract"]["max_independent_backends"]
-                    if version == 3 and workload in SESSION_DEFINITIONS else 1)
+                    if version >= 3 and workload in SESSION_DEFINITIONS else 1)
         require(metrics["bgr_retained_bytes"] <= POLICY["live_cache_bytes"] * backends
                 and metrics["bgr_retained_peak_bytes"] <= POLICY["live_cache_bytes"] * backends,
                 "live BGR retention bound")
@@ -1490,7 +1587,7 @@ def observations(value, manifest, workload, smoke, *, timing_boundaries=False):
         for state in ("retained", "evicted"):
             require(metrics[f"bgr_{state}_peak_bytes"] >= metrics[f"bgr_{state}_bytes"],
                     f"BGR {state} peak below measured endpoint")
-        if version == 3 and manifest["apparatus"]["accounting_contract"] == BASELINE_ACCOUNTING_CONTRACT:
+        if version >= 3 and manifest["apparatus"]["accounting_contract"] == BASELINE_ACCOUNTING_CONTRACT:
             require(all(metrics[name] == 0 for name in COUNTERS if name.startswith(("bgr_retained", "bgr_evicted"))),
                     "uncached BGR gauges cover cache payload only and must remain zero")
             require(metrics["native_allocation_scope"] ==
@@ -1505,18 +1602,21 @@ def observations(value, manifest, workload, smoke, *, timing_boundaries=False):
             require(peak >= max(endpoints), f"{prefix} peak below measured endpoint")
     if workload == DIRECT_FORMAT_WORKLOAD:
         validate_direct_formats(row, warmups + count, manifest["apparatus"]["accounting_contract"]
-                                if version == 3 else ACCOUNTING_CONTRACT)
+                                if version >= 3 else ACCOUNTING_CONTRACT)
     elapsed = sorted(sample["elapsed_ns"] for sample in retained)
     summary = {"p50_ns": elapsed[(count - 1) // 2], "p95_ns": elapsed[math.ceil(0.95 * count) - 1],
                "max_ns": elapsed[-1], "cpu_ns": cpu, "timer_resolution_ns": timer,
                "cpu_timer_resolution_ns": cpu_resolution, "metrics": metrics, "unavailable": unavailable}
+    if version == 4:
+        summary["retained_loop_cpu_ns"] = loop_cpu
+        summary["retained_loop_cpu"] = bracket
     for prefix in ("rss", "heap"):
         summary[f"peak_{prefix}_bytes"] = metrics[f"peak_{prefix}_bytes"]
         for kind, first, last in (("growth", "steady_before", "steady_after"),
                                   ("residual", "before", "after_drop")):
             a, b = metrics[f"{prefix}_{first}_bytes"], metrics[f"{prefix}_{last}_bytes"]
             summary[f"{prefix}_{kind}_bytes"] = None if a is None or b is None else max(0, b - a)
-    if version == 3 and workload in SESSION_DEFINITIONS:
+    if version >= 3 and workload in SESSION_DEFINITIONS:
         summary.update(validate_session_observations(row, manifest["build_mode"], warmups, count,
                                                      timer, cpu_resolution, unavailable,
                                                      manifest["apparatus"]["accounting_contract"]))
@@ -1683,8 +1783,8 @@ def validate_direct_formats(row, iterations, accounting=ACCOUNTING_CONTRACT):
 
 def validate_plan(plan):
     version = plan.get("format_version")
-    require(version in (1, 2, 3) and plan.get("kind") == "campaign", "invalid campaign")
-    if version == 3:
+    require(version in (1, 2, 3, 4) and plan.get("kind") == "campaign", "invalid campaign")
+    if version >= 3:
         integer(version, "campaign format_version")
     timing_policy = runtime_observer_policy(plan)
     require(timing_policy is None or (version >= 2 and plan.get("target") == TARGETS[0]
@@ -1698,6 +1798,13 @@ def validate_plan(plan):
     require(plan.get("collector") == collector_identity(), "collector source differs; use the retained collector revision")
     scoped_definitions(plan)
     selected = plan["workloads"]
+    if version == 4:
+        if plan["mode"] == "smoke":
+            require(plan.get("sampling") is None, "smoke cannot adopt a sampling plan")
+        else:
+            validate_sampling(plan.get("sampling"), scoped_definitions(plan))
+    else:
+        require(plan.get("sampling") is None, "historical protocol cannot adopt new sampling")
     require(plan.get("schedule") == schedule(plan["mode"], selected, version), "cohort order/count mismatch")
     require(plan.get("exclusive_host") is True or plan["mode"] == "smoke", "exclusive host declaration required")
     roles = ("baseline", "candidate") if plan["mode"] == "comparison" else (
@@ -1785,7 +1892,10 @@ def evaluate(directory):
             require(attempt.get("task") == task, "attempt identity/order mismatch")
             require(attempt.get("plan_sha256") == plan_hash, "attempt plan binding mismatch")
             binary = plan["binaries"][task["role"]]
-            argv = command(binary, task, plan["mode"], version, timing_boundaries=timing_policy is not None)
+            sampling = plan.get("sampling", {}).get("rows", {}) if plan.get("sampling") else {}
+            counts = sampling.get(task["workload"])
+            argv = command(binary, task, plan["mode"], version, timing_boundaries=timing_policy is not None,
+                           sampling=counts)
             require(attempt.get("argv") == argv, "attempt argv mismatch")
             if timing_policy is None:
                 require("timing_observation" not in attempt, "timing summary requires an explicit observer policy")
@@ -1874,7 +1984,7 @@ def evaluate(directory):
             else:
                 require(task["role"] in manifests, "role has no valid manifest")
                 summary = observations(value, manifests[task["role"]], task["workload"], plan["mode"] == "smoke",
-                                       timing_boundaries=timing_policy is not None)
+                                       timing_boundaries=timing_policy is not None, sampling=counts)
                 summary["process"] = task["process"]
                 if version >= 2:
                     summary["position"] = task["position"]
@@ -1912,7 +2022,7 @@ def derive_envelopes(evidence):
                 "calibration requires five fresh processes" if version == 1 else "calibration requires 6 fresh processes")
         limits, allowances, clocks = {}, {}, {}
         if definition["statistical"]:
-            for metric, clock in timing_metrics(workload, version):
+            for metric, clock in timing_metrics(workload, version, evidence["plan"].get("build_mode")):
                 values = [row.get(metric) for row in rows]
                 require(all(value is not None for value in values)
                         and all(row[clock] is not None for row in rows), f"unavailable calibration {workload}/{metric}")
@@ -1936,7 +2046,7 @@ def derive_envelopes(evidence):
                 slack = max(max(values) - min(values), POLICY[f"{prefix}_slack_bytes"])
                 # OpenCV payload is native: no allowance for Rust heap, growth or residual.
                 live = POLICY["live_cache_bytes"] if metric == "peak_rss_bytes" and definition["category"] != "selection" else 0
-                if version == 3 and workload.startswith("lifecycle-independent-"):
+                if version >= 3 and workload.startswith("lifecycle-independent-"):
                     live *= 2
                 limits[metric] = max(values) + slack + live
         result[workload] = {"limits": limits, "benefit_allowances": allowances}
@@ -1951,10 +2061,10 @@ def cohort_binding(evidence):
 
 def same_v2_context(evidence, calibration):
     plan, base = evidence["plan"], calibration["plan"]
-    require(plan.get("format_version") == base.get("format_version") and plan.get("format_version") in (2, 3),
+    require(plan.get("format_version") == base.get("format_version") and plan.get("format_version") in (2, 3, 4),
             "mixed protocol cohorts")
     for key in ("target", "build_mode", "collector", "host", "environment", "policy", "workloads",
-                "method_review", "runtime_observer_policy"):
+                "method_review", "runtime_observer_policy", "sampling"):
         require(plan.get(key) == base.get(key), f"cohort {key} differs from calibration")
     require(plan["binaries"]["baseline"] == base["binaries"]["baseline"], "cohort baseline/source changed")
     require(evidence["manifest"] == calibration["manifest"], "cohort manifest/corpus changed")
@@ -2032,8 +2142,10 @@ def profile_from_v2(evidence, calibration, control, control_path, reviewer, rati
                        "target": plan["target"], "build_mode": plan["build_mode"],
                        "method_review": plan["method_review"], "calibration": cohort_binding(evidence),
                        "control": cohort_binding(control), "envelopes": envelopes}
-    if plan["format_version"] == 3:
+    if plan["format_version"] >= 3:
         expected_review["workloads"] = plan["workloads"]
+    if plan["format_version"] == 4:
+        expected_review["sampling"] = plan["sampling"]
     if runtime_observer_policy(plan) is not None:
         expected_review["runtime_observer_policy"] = plan["runtime_observer_policy"]
     require(isinstance(review, dict) and all(review.get(key) == value for key, value in expected_review.items()),
@@ -2046,7 +2158,8 @@ def profile_from_v2(evidence, calibration, control, control_path, reviewer, rati
                                   timing_policy=runtime_observer_policy(plan))
     return {"format_version": plan["format_version"], "kind": "frozen-profile",
             **{key: plan[key] for key in ("target", "build_mode", "policy", "collector", "host", "environment", "method_review")},
-            **({"workloads": plan["workloads"]} if plan["format_version"] == 3 else {}),
+            **({"workloads": plan["workloads"]} if plan["format_version"] >= 3 else {}),
+            **({"sampling": plan["sampling"]} if plan["format_version"] == 4 else {}),
             **({"runtime_observer_policy": plan["runtime_observer_policy"]}
                if runtime_observer_policy(plan) is not None else {}),
             "baseline": plan["binaries"]["baseline"], "manifest": evidence["manifest"], "envelopes": envelopes,
@@ -2068,8 +2181,8 @@ def profile_from(evidence, calibration, reviewer, rationale):
 
 
 def validate_profile(profile):
-    require(profile.get("format_version") in (1, 2, 3) and profile.get("kind") == "frozen-profile", "invalid profile")
-    if profile.get("format_version") == 3:
+    require(profile.get("format_version") in (1, 2, 3, 4) and profile.get("kind") == "frozen-profile", "invalid profile")
+    if profile.get("format_version") >= 3:
         integer(profile["format_version"], "profile format_version")
     calibration = profile.get("calibration", {})
     evidence = evaluate(calibration["path"])
@@ -2086,12 +2199,15 @@ def validate_profile(profile):
 
 
 def comparison_scope(plan, profile):
-    if plan["format_version"] == 3:
+    if plan["format_version"] >= 3:
         selected = scoped_definitions(plan)
         require(profile.get("workloads") == plan["workloads"],
                 "comparison workloads differ from frozen profile")
         require(isinstance(profile.get("envelopes"), dict) and profile["envelopes"].keys() == selected.keys(),
                 "profile envelope workload coverage mismatch")
+    if plan["format_version"] == 4:
+        require(exact_value(plan.get("sampling"), profile.get("sampling")),
+                "comparison sampling differs from frozen profile")
 
 
 def compare_evidence(evidence, profile):
@@ -2103,7 +2219,7 @@ def compare_evidence(evidence, profile):
     count = 6 if version >= 2 else 5
     normal = version >= 2 and plan["build_mode"] == "normal"
     if version >= 2:
-        for name in ("build_mode", "policy", "method_review", "runtime_observer_policy"):
+        for name in ("build_mode", "policy", "method_review", "runtime_observer_policy", "sampling"):
             require(plan.get(name) == profile.get(name), f"comparison {name} differs from calibration")
         require(plan["profile_sha256"] is not None, "comparison requires pinned control-accepted profile")
     for name in ("target", "collector", "host", "environment"):
@@ -2127,6 +2243,11 @@ def compare_evidence(evidence, profile):
         envelope = profile["envelopes"][workload]
         complete = complete and all(row.get(metric) is not None for rows in cohorts.values()
                                     for row in rows for metric in envelope["limits"])
+        if version == 4:
+            complete = complete and all(
+                row.get("position") == (row["process"] % 2 if role == "baseline"
+                                        else 1 - row["process"] % 2)
+                for role, rows in cohorts.items() for row in rows)
         for role, rows in cohorts.items():
             if version >= 2 and len(rows) == count and sorted(row["process"] for row in rows) == list(range(count)):
                 for metric in envelope["benefit_allowances"]:
@@ -2138,6 +2259,19 @@ def compare_evidence(evidence, profile):
                     if noise > V2_POLICY["noise_cap"]:
                         issues.append({"attempt": f"{role}:{workload}", "status": "failed",
                                        "reason": f"comparison {metric} noise exceeds frozen cohort tolerance"})
+                    if version == 4 and all(
+                            row.get("position") == (row["process"] % 2 if role == "baseline"
+                                                    else 1 - row["process"] % 2) for row in rows):
+                        allowance = envelope["benefit_allowances"][metric]
+                        for name, first, second in (
+                            ("order", [row[metric] for row in rows if row["position"] == 0],
+                             [row[metric] for row in rows if row["position"] == 1]),
+                            ("drift", [row[metric] for row in rows if row["process"] < 3],
+                             [row[metric] for row in rows if row["process"] >= 3]),
+                        ):
+                            if abs(statistics.median(first) - statistics.median(second)) > allowance:
+                                issues.append({"attempt": f"{role}:{workload}", "status": "failed",
+                                               "reason": f"comparison {metric} {name} exceeds frozen cohort tolerance"})
             for row in rows:
                 process = row["process"]
                 for metric, limit in envelope["limits"].items():
@@ -2212,11 +2346,11 @@ def report(directory):
     selected = evidence["plan"]["workloads"]
     omitted = [workload for workload in definitions if workload not in selected]
     coverage = {"required": list(definitions), "selected": selected, "omitted": omitted, "complete": not omitted}
-    target_status = "incomplete" if version == 3 and omitted and status == "passed" else status
-    qualified = mode == "comparison" and status == "passed" and (version != 3 or coverage["complete"]) and (
+    target_status = "incomplete" if version >= 3 and omitted and status == "passed" else status
+    qualified = mode == "comparison" and status == "passed" and (version < 3 or coverage["complete"]) and (
         version == 1 or evidence["plan"]["build_mode"] == "normal")
     return {"format_version": version, "mode": mode, "target": target, "status": status,
-            **({"workload_coverage": coverage} if version == 3 else {}),
+            **({"workload_coverage": coverage} if version >= 3 else {}),
             "performance_qualified": qualified, "whole_change_acceptance": "incomplete",
             "targets": {name: (target_status if mode == "comparison" else "incomplete") if name == target else "not-run"
                         for name in TARGETS},
@@ -2232,7 +2366,7 @@ def report(directory):
             "note": "smoke and calibration do not establish performance qualification; contract rows are non-statistical"}
 
 
-def command(binary, task, mode, protocol_version=1, *, timing_boundaries=False):
+def command(binary, task, mode, protocol_version=1, *, timing_boundaries=False, sampling=None):
     prefix = [binary["path"]] + (["--protocol-version", str(protocol_version)] if protocol_version >= 2 else [])
     if timing_boundaries:
         require(binary["build"]["benchmark_manifest"].get("timing_boundary_protocol") == macos_images.TIMING_PROTOCOL,
@@ -2243,6 +2377,9 @@ def command(binary, task, mode, protocol_version=1, *, timing_boundaries=False):
     result = prefix + ["--workload", task["workload"]]
     if mode == "smoke":
         result.append("--smoke")
+    elif protocol_version == 4 and V3_DEFINITIONS[task["workload"]]["statistical"]:
+        require(isinstance(sampling, dict), "protocol4 statistical command requires frozen sampling")
+        result.extend(["--warmups", str(sampling["warmups"]), "--samples", str(sampling["samples"])])
     return result
 
 
@@ -2264,9 +2401,9 @@ def exclusive_collector():
 def runtime_preflight(args):
     """Discover every selected component path without collecting acceptance samples."""
     version = args.protocol_version
-    require(version in (2, 3) and args.target == TARGETS[0]
+    require(version in (2, 3, 4) and args.target == TARGETS[0]
             and host_identity()["target"] == args.target,
-            "runtime preflight requires protocol 2/3 on native Apple Silicon; Windows remains incomplete")
+            "runtime preflight requires protocol 2+ on native Apple Silicon; Windows remains incomplete")
     identity = binary_identity(args.binary, args.build_metadata, args.target)
     require("runtime_image_preflight" not in identity["build"], "preflight requires the original build attestation")
     manifest = validate_v2_build(identity, args.target, args.build_mode, version)
@@ -2383,15 +2520,24 @@ def collection_steps(args, mode):
     args = argparse.Namespace(**vars(args))
     version = args.protocol_version
     definitions = definitions_for(args.build_mode, version) if version >= 2 else DEFINITIONS
-    require(version >= 2 or mode != "control", "control requires --protocol-version 2/3")
-    require(not args.workload or mode == "smoke" or version == 3,
-            "--workload requires protocol 3 outside smoke")
+    require(version >= 2 or mode != "control", "control requires --protocol-version 2+")
+    require(not args.workload or mode == "smoke" or version >= 3,
+            "--workload requires protocol 3+ outside smoke")
     selected = [args.workload] if args.workload else list(definitions)
     scoped_definitions({"format_version": version, "build_mode": args.build_mode,
                         "mode": mode, "workloads": selected})
+    sampling = None
+    requested_sampling = getattr(args, "sampling_plan", None)
+    requested_sampling_hash = getattr(args, "sampling_plan_sha256", None)
+    if version == 4 and mode != "smoke":
+        sampling = sampling_input(requested_sampling, requested_sampling_hash,
+                                  {name: definitions[name] for name in selected})
+    else:
+        require(requested_sampling is None and requested_sampling_hash is None,
+                "custom sampling requires protocol4 qualification")
     timing_policy = RUNTIME_OBSERVER_POLICY if args.target == TARGETS[0] and mode != "smoke" else None
     require(timing_policy is None or version >= 2,
-            "new macOS qualification requires timing-capable protocol 2/3; zero qualifying launches")
+            "new macOS qualification requires timing-capable protocol 2+; zero qualifying launches")
     host = host_identity()
     require(host["target"] == args.target, "actual host cannot execute the selected qualification target")
     baseline = binary_identity(args.baseline, args.baseline_metadata, args.target)
@@ -2416,6 +2562,8 @@ def collection_steps(args, mode):
     preflight = {"format_version": version, "mode": mode, "target": args.target, "build_mode": args.build_mode, "host": host,
                  "collector": collector_identity(), "environment": environment(), "policy": policy_for(version),
                  "workloads": selected, "binaries": binaries}
+    if version == 4:
+        preflight["sampling"] = sampling
     if timing_policy is not None:
         preflight["runtime_observer_policy"] = timing_policy
     if profile:
@@ -2436,7 +2584,7 @@ def collection_steps(args, mode):
                         "calibration runtime prerequisites are incomplete; control not started")
                 derive_envelopes(calibration)
                 for key in ("target", "build_mode", "host", "collector", "environment", "policy", "workloads",
-                            "method_review", "runtime_observer_policy"):
+                            "method_review", "runtime_observer_policy", "sampling"):
                     require(preflight.get(key) == calibration["plan"].get(key), f"control {key} differs from calibration")
                 require(baseline == calibration["plan"]["binaries"]["baseline"], "control baseline/source changed")
                 calibration_binding = {"path": str(Path(args.calibration).resolve()), **cohort_binding(calibration)}
@@ -2478,6 +2626,8 @@ def collection_steps(args, mode):
                 "schedule": schedule(mode, selected, version), "exclusive_host": args.exclusive_host,
                 "cwd": str(ROOT), "created_unix_ns": time.time_ns(),
                 "profile_sha256": args.profile_sha256 if profile else None}
+        if version == 4:
+            plan["sampling"] = sampling
         if timing_policy is not None:
             plan["runtime_observer_policy"] = timing_policy
         if version >= 2:
@@ -2499,7 +2649,9 @@ def collection_steps(args, mode):
             if remaining is not None and remaining <= 2 * binding_seconds:
                 break
             identity = binaries[task["role"]]
-            argv = command(identity, task, mode, version, timing_boundaries=timing_policy is not None)
+            counts = sampling["rows"].get(task["workload"]) if sampling else None
+            argv = command(identity, task, mode, version, timing_boundaries=timing_policy is not None,
+                           sampling=counts)
             attempt = {"task": task, "argv": argv, "plan_sha256": plan_hash,
                        "identity_before": None, "identity_after": None, "identity_error": None,
                        "record": None, "started_unix_ns": time.time_ns()}
@@ -2553,7 +2705,7 @@ def collection_steps(args, mode):
                                     "observed source/mode manifest changed")
                         else:
                             observations(value, identity["build"]["benchmark_manifest"], task["workload"], mode == "smoke",
-                                         timing_boundaries=timing_policy is not None)
+                                         timing_boundaries=timing_policy is not None, sampling=counts)
             except (OSError, ValueError, KeyError, TypeError) as error:
                 attempt[f"{stage}_error" if version >= 2 else "identity_error"] = str(error)
             except BaseException as error:
@@ -2760,8 +2912,9 @@ def attest_export(args):
     try:
         require(args.source_root is not None and args.source_revision is not None,
                 "--source-root and --source-revision are required together")
-        require(args.protocol_version == 3, "exported source attestation requires protocol3")
-        definitions_for(args.build_mode, 3)
+        require(args.protocol_version >= 3, "exported source attestation requires protocol3")
+        version = args.protocol_version
+        definitions_for(args.build_mode, version)
         revision = digest(args.source_revision, "source_revision", 40)
         require(host_identity()["target"] == args.target, "attestation must run on the actual native target")
         binary = Path(args.binary).resolve(strict=True)
@@ -2769,7 +2922,7 @@ def attest_export(args):
         git, rustc = shutil.which("git"), shutil.which("rustc")
         require(git and rustc, "attestation requires git and rustc on PATH")
         git, rustc = str(Path(git).absolute()), str(Path(rustc).absolute())
-        schedule = [command({"path": str(binary)}, {"workload": None}, "smoke", 3),
+        schedule = [command({"path": str(binary)}, {"workload": None}, "smoke", version),
                     [git, "--no-replace-objects", "rev-parse", "--verify", revision + "^{commit}"],
                     [git, "--no-replace-objects", "rev-parse", "--verify", revision + "^{tree}"],
                     [git, "--no-replace-objects", "ls-tree", "-r", "-z", "--full-tree", revision], [rustc, "-vV"]]
@@ -2788,7 +2941,7 @@ def attest_export(args):
             text = attempt["record"]["stdout"]
             if index == 0:
                 value = strict_json(text)
-                manifest = manifest_identity(value, args.target, value["opencv_version"], 3, args.build_mode)
+                manifest = manifest_identity(value, args.target, value["opencv_version"], version, args.build_mode)
                 runtime = loaded_runtime(value, verify_files=True)
             elif index == 1:
                 require(text.strip() == revision, "source revision is not the exact retained Git commit")
@@ -2804,7 +2957,7 @@ def attest_export(args):
         require(before == after, "exported source changed during attestation")
         require(sha256(binary) == binary_hash and loaded_runtime(value, verify_files=True) == runtime,
                 "binary or native dependency changed during attestation")
-        build = {"target": args.target, "protocol_version": 3, "build_mode": args.build_mode,
+        build = {"target": args.target, "protocol_version": version, "build_mode": args.build_mode,
                  "source_revision": revision, "source_tree": tree, "source_binding": binding,
                  "binary_sha256": binary_hash, "cargo_lock_sha256": before["files"]["Cargo.lock"]["sha256"],
                  "rustc": commands[4]["record"]["stdout"], "build_argv": strict_json(args.build_argv_json),
@@ -2813,7 +2966,7 @@ def attest_export(args):
                  "benchmark_manifest": manifest, "apparatus": manifest["apparatus"],
                  "attestation_scope": "exact exported Git commit/tree bytes; operator-supplied build command; not a review, reproducible build or loaded-image closure proof",
                  "runtime_observation_scope": "OpenCV endpoint only; not full transitive/short-lived closure; nonqualifying"}
-        validate_v2_build({"path": str(binary), "build": build}, args.target, args.build_mode, 3)
+        validate_v2_build({"path": str(binary), "build": build}, args.target, args.build_mode, version)
         save(args.output, build)
         return {"metadata": str(Path(args.output).resolve()), "sha256": sha256(args.output)}
     except BaseException as failure:
@@ -2868,7 +3021,7 @@ def attest(args):
                 value = strict_json(record["stdout"])
                 manifest = manifest_identity(value, args.target, value["opencv_version"], version, args.build_mode)
                 runtime = loaded_runtime(value, verify_files=True)
-                if version == 3:
+                if version >= 3:
                     for path, checksum in manifest["apparatus"]["source_files"].items():
                         require(sha256(ROOT / path) == checksum, f"attested apparatus source bytes differ: {path}")
                 require(sha256(binary) == binary_hash, "binary changed during runtime probe")
@@ -2892,7 +3045,7 @@ def attest(args):
     if version >= 2:
         build.update(protocol_version=version, build_mode=args.build_mode, benchmark_manifest=manifest,
                      runtime_observation_scope="OpenCV endpoint only; not full transitive/short-lived closure; nonqualifying")
-    if version == 3:
+    if version >= 3:
         build["apparatus"] = manifest["apparatus"]
     validate_build(build, args.target)
     save(args.output, build)
@@ -2900,9 +3053,9 @@ def attest(args):
 
 
 def protocol_arguments(sub):
-    sub.add_argument("--protocol-version", type=int, choices=(1, 2, 3), default=3)
+    sub.add_argument("--protocol-version", type=int, choices=(1, 2, 3, 4), default=4)
     sub.add_argument("--build-mode", choices=("normal", "instrumented"),
-                     help="required for protocol 2/3; verified from compiled executable manifest")
+                     help="required for protocol 2+; verified from compiled executable manifest")
 
 
 class SingleWorkload(argparse.Action):
@@ -2926,20 +3079,22 @@ def parser():
     binding.add_argument("--output", required=True, help="new build metadata JSON")
     binding.add_argument("--source-root", help="exact exported source directory; requires --source-revision")
     binding.add_argument("--source-revision", help="exact retained measurement Git commit; requires --source-root")
-    discovery = commands.add_parser("runtime-preflight", help="protocol 2/3 macOS only: bind all representative image loads; non-acceptance")
+    discovery = commands.add_parser("runtime-preflight", help="protocol 2+ macOS only: bind all representative image loads; non-acceptance")
     protocol_arguments(discovery)
     discovery.add_argument("--target", choices=TARGETS, required=True)
     discovery.add_argument("--binary", required=True)
     discovery.add_argument("--build-metadata", required=True)
     discovery.add_argument("--output", required=True, help="new evidence directory")
-    for name, description in (("calibrate", "baseline-only calibration: v1 five, v2/v3 six processes per row"),
-                              ("control", "protocol 2/3: six independent balanced unchanged A/A pairs per row"),
-                              ("compare", "profile-bound comparison; v2/v3 use six balanced pairs per row"),
+    for name, description in (("calibrate", "baseline-only calibration: v1 five, v2+ six processes per row"),
+                              ("control", "protocol 2+: six independent balanced unchanged A/A pairs per row"),
+                              ("compare", "profile-bound comparison; v2+ uses six balanced pairs per row"),
                               ("smoke", "one short process per row; never performance qualification")):
         sub = commands.add_parser(name, help=description)
         protocol_arguments(sub)
-        sub.add_argument("--method-review", help="external prospective source/host/cost review JSON (protocol 2/3)")
-        sub.add_argument("--method-review-sha256", help="pinned method review bytes (protocol 2/3)")
+        sub.add_argument("--method-review", help="external prospective source/host/cost review JSON (protocol 2+)")
+        sub.add_argument("--method-review-sha256", help="pinned method review bytes (protocol 2+)")
+        sub.add_argument("--sampling-plan", help="protocol4: exact selected workload count map; not smoke")
+        sub.add_argument("--sampling-plan-sha256", help="protocol4: pinned sampling-plan bytes")
         sub.add_argument("--target", choices=TARGETS, required=True)
         sub.add_argument("--baseline", required=True, help="explicit prebuilt executable")
         sub.add_argument("--baseline-metadata", required=True, help="hash-bound build provenance JSON")
@@ -2955,12 +3110,12 @@ def parser():
             sub.add_argument("--calibration", required=True)
             sub.add_argument("--calibration-plan-sha256", required=True)
         sub.add_argument("--workload", choices=list(V3_DEFINITIONS), action="store" if name == "smoke" else SingleWorkload,
-                         help="one complete workload (protocol 3); smoke keeps its diagnostic selection")
+                         help="one complete workload (protocol 3+); smoke keeps its diagnostic selection")
     freeze = commands.add_parser("freeze", help="review calibration and exclusively write a numeric target profile")
     protocol_arguments(freeze)
-    freeze.add_argument("--control", help="separate unchanged control evidence directory (protocol 2/3)")
-    freeze.add_argument("--profile-review", help="external review binding exact method/cohorts/envelopes (protocol 2/3)")
-    freeze.add_argument("--profile-review-sha256", help="pinned external numerical profile review bytes (protocol 2/3)")
+    freeze.add_argument("--control", help="separate unchanged control evidence directory (protocol 2+)")
+    freeze.add_argument("--profile-review", help="external review binding exact method/cohorts/envelopes (protocol 2+)")
+    freeze.add_argument("--profile-review-sha256", help="pinned external numerical profile review bytes (protocol 2+)")
     freeze.add_argument("--calibration", required=True)
     freeze.add_argument("--reviewer", required=True)
     freeze.add_argument("--rationale", required=True)

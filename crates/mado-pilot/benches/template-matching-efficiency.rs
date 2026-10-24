@@ -2,9 +2,8 @@
 //!
 //! `template-matching-timing` builds the normal mode: system allocator, no work
 //! counters. `template-matching-benchmark` builds the instrumented mode with
-//! counted Rust allocation and backend/mapping work. Protocol3 adds public
-//! Session/query/lifecycle rows and separates logical corpus identity from
-//! apparatus source. Historical protocol1/2 artifacts retain their own readers.
+//! counted Rust allocation and backend/mapping work. Protocol4 adds explicit
+//! sampling plans and retained-loop CPU; historical artifacts keep their readers.
 
 #[cfg(not(feature = "template-matching-benchmark"))]
 const _: () = assert!(
@@ -64,6 +63,10 @@ use fixtures::{Kind, PATCH, ROI, SCORE_TOLERANCE, WORKLOADS, Workload};
 
 const INSTRUMENTED: bool = cfg!(feature = "template-matching-benchmark");
 const TIMING_BOUNDARY_PROTOCOL: &str = "mado-component-timing-v1";
+const SAMPLING_PROTOCOL: &str = "mado-component-sampling-v1";
+const RETAINED_LOOP_CPU_PROTOCOL: &str = "mado-component-retained-loop-cpu-v1";
+const MAX_WARMUPS: usize = 1_000;
+const MAX_SAMPLES: usize = 40_000;
 const BUILD_MODE: &str = if INSTRUMENTED {
     "instrumented"
 } else {
@@ -712,9 +715,15 @@ fn emit_timing_boundary(enabled: bool, id: &str, phase: &str) -> Result<(), Stri
     Ok(())
 }
 
-fn observe(row: Workload, smoke: bool, timing_boundaries: bool) -> Result<Value, String> {
+fn observe(
+    row: Workload,
+    smoke: bool,
+    timing_boundaries: bool,
+    sampling: Option<Sampling>,
+) -> Result<Value, String> {
     emit_timing_boundary(timing_boundaries, row.id, "row-start")?;
-    let (warmups, count) = row.plan(smoke);
+    let (warmups, count) =
+        sampling.map_or_else(|| row.plan(smoke), |plan| (plan.warmups, plan.samples));
     let mut warmup_samples = Vec::with_capacity(warmups);
     let mut samples = Vec::with_capacity(count);
     let before = Memory::observe();
@@ -761,10 +770,13 @@ fn observe(row: Workload, smoke: bool, timing_boundaries: bool) -> Result<Value,
     } else {
         None
     };
+    let mut loop_cpu_start = None;
+    let mut loop_cpu_end = None;
     if setup_error.is_none() {
         for iteration in 0..warmups + count {
             if iteration == warmups {
                 emit_timing_boundary(timing_boundaries, row.id, "samples-begin")?;
+                loop_cpu_start = cpu::process_cpu_ns();
             }
             let sample = if let Some(fixture) = &mut selection {
                 fixture.run()
@@ -813,6 +825,7 @@ fn observe(row: Workload, smoke: bool, timing_boundaries: bool) -> Result<Value,
                 steady_before = Memory::observe();
             }
         }
+        loop_cpu_end = cpu::process_cpu_ns();
         emit_timing_boundary(timing_boundaries, row.id, "samples-end")?;
     }
     if let Some(fixture) = &mut session {
@@ -948,6 +961,29 @@ fn observe(row: Workload, smoke: bool, timing_boundaries: bool) -> Result<Value,
         + owner_failures;
     let mut report = row.manifest(smoke);
     let object = report.as_object_mut().expect("manifest object");
+    object.insert("warmups".into(), json!(warmups));
+    object.insert("sample_count".into(), json!(count));
+    let loop_cpu_ns = loop_cpu_start
+        .zip(loop_cpu_end)
+        .and_then(|(start, end)| end.checked_sub(start));
+    object.insert(
+        "retained_loop_cpu".into(),
+        json!({
+            "protocol": RETAINED_LOOP_CPU_PROTOCOL,
+            "source": if cfg!(target_os = "macos") {
+                "getrusage-RUSAGE_SELF"
+            } else if cfg!(windows) {
+                "GetProcessTimes-current-process"
+            } else {
+                "unsupported"
+            },
+            "source_unit_ns": if cfg!(windows) { Some(100) } else if cfg!(target_os = "macos") { Some(1000) } else { None },
+            "start_ns": loop_cpu_start, "end_ns": loop_cpu_end, "cpu_ns": loop_cpu_ns,
+            "sample_count": count,
+            "reason": loop_cpu_ns.is_none().then_some("retained-loop process CPU unavailable or nonmonotonic"),
+            "scope": "current-process-retained-loop-including-preparation-oracles-and-storage",
+        }),
+    );
     object.insert("samples".into(), json!(samples));
     object.insert("warmup_samples".into(), json!(warmup_samples));
     object.insert("oracle_failures".into(), json!(oracle_failures));
@@ -985,7 +1021,7 @@ fn observe(row: Workload, smoke: bool, timing_boundaries: bool) -> Result<Value,
     Ok(report)
 }
 
-const PROTOCOL_VERSION: u8 = 3;
+const PROTOCOL_VERSION: u8 = 4;
 
 fn workload_rows() -> impl Iterator<Item = Workload> {
     WORKLOADS
@@ -994,11 +1030,18 @@ fn workload_rows() -> impl Iterator<Item = Workload> {
         .copied()
 }
 
+#[derive(Clone, Copy)]
+struct Sampling {
+    warmups: usize,
+    samples: usize,
+}
+
 struct Arguments {
     list: bool,
     smoke: bool,
     timing_boundaries: bool,
     workload: Option<String>,
+    sampling: Option<Sampling>,
 }
 
 fn arguments() -> Result<Arguments, String> {
@@ -1007,8 +1050,11 @@ fn arguments() -> Result<Arguments, String> {
         smoke: false,
         timing_boundaries: false,
         workload: None,
+        sampling: None,
     };
     let mut protocol_given = false;
+    let mut warmups = None;
+    let mut samples = None;
     let mut values = std::env::args().skip(1);
     while let Some(value) = values.next() {
         match value.as_str() {
@@ -1022,17 +1068,46 @@ fn arguments() -> Result<Arguments, String> {
                 }
                 parsed.workload = Some(values.next().ok_or("--workload requires an ID")?);
             }
+            "--warmups" | "--samples" => {
+                let (destination, maximum) = if value == "--warmups" {
+                    (&mut warmups, MAX_WARMUPS)
+                } else {
+                    (&mut samples, MAX_SAMPLES)
+                };
+                if destination.is_some() {
+                    return Err(format!("{value} supplied twice"));
+                }
+                let count = values
+                    .next()
+                    .ok_or_else(|| format!("{value} requires a count"))?
+                    .parse::<usize>()
+                    .map_err(|_| format!("{value} requires an integer in 1..={maximum}"))?;
+                if !(1..=maximum).contains(&count) {
+                    return Err(format!("{value} requires an integer in 1..={maximum}"));
+                }
+                *destination = Some(count);
+            }
             "--protocol-version" => {
                 if protocol_given {
                     return Err("--protocol-version supplied twice".into());
                 }
                 protocol_given = true;
-                if values.next().as_deref() != Some("3") {
-                    return Err("--protocol-version requires 3; historical artifacts retain their original protocol".into());
+                if values.next().as_deref() != Some("4") {
+                    return Err("--protocol-version requires 4; historical artifacts retain their original protocol".into());
                 }
             }
             _ => return Err(format!("unsupported argument: {value}")),
         }
+    }
+    parsed.sampling = match (warmups, samples) {
+        (None, None) => None,
+        (Some(warmups), Some(samples)) => Some(Sampling { warmups, samples }),
+        _ => return Err("--warmups and --samples must be supplied together".into()),
+    };
+    if parsed.sampling.is_some() && (parsed.smoke || parsed.list || parsed.workload.is_none()) {
+        return Err(
+            "custom sampling requires one statistical --workload without --list or --smoke".into(),
+        );
     }
     if let Some(id) = &parsed.workload {
         let row = workload_rows()
@@ -1040,6 +1115,9 @@ fn arguments() -> Result<Arguments, String> {
             .ok_or_else(|| format!("unknown workload: {id}"))?;
         if !INSTRUMENTED && counter_oracle(row) {
             return Err(format!("{id} requires the instrumented build"));
+        }
+        if parsed.sampling.is_some() && !row.statistical {
+            return Err(format!("{id} keeps its fixed contract sampling plan"));
         }
     }
     Ok(parsed)
@@ -1186,21 +1264,35 @@ fn run(arguments: Arguments) -> Result<Value, String> {
             if arguments.list {
                 Ok(row.manifest(arguments.smoke))
             } else {
-                observe(row, arguments.smoke, arguments.timing_boundaries)
+                observe(
+                    row,
+                    arguments.smoke,
+                    arguments.timing_boundaries,
+                    arguments.sampling,
+                )
             }
         })
         .collect::<Result<_, String>>()?;
     let threads_after = thread_observation();
     // Corpus and source hashing are outside every measured resource interval.
     let (fixture_sha256, fixture) = fixtures::manifest();
+    let short = arguments.smoke
+        || (!arguments.list && workloads.len() == 1 && workloads[0]["statistical"] == false);
     Ok(json!({
         "format_version": PROTOCOL_VERSION, "kind": if arguments.list { "manifest" } else { "observations" },
         "timing_boundary_protocol": TIMING_BOUNDARY_PROTOCOL,
+        "sampling_protocol": SAMPLING_PROTOCOL,
+        "sampling_limits": {
+            "warmups_min": 1, "warmups_max": MAX_WARMUPS,
+            "samples_min": 1, "samples_max": MAX_SAMPLES,
+        },
+        "retained_loop_cpu_protocol": RETAINED_LOOP_CPU_PROTOCOL,
         "timing_boundaries_enabled": arguments.timing_boundaries,
         "target": target(), "opencv_version": version, "fixture_sha256": fixture_sha256,
         "loaded_native_runtime": runtime::observe()?,
-        "fixture": fixture, "apparatus": apparatus(), "warmups": if arguments.smoke { 1 } else { 20 },
-        "sample_count": if arguments.smoke { 3 } else { 200 },
+        "fixture": fixture, "apparatus": apparatus(),
+        "warmups": arguments.sampling.map_or(if short { 1 } else { 20 }, |plan| plan.warmups),
+        "sample_count": arguments.sampling.map_or(if short { 3 } else { 200 }, |plan| plan.samples),
         "timer_resolution_ns": timer_resolution_ns, "cpu_timer_resolution_ns": cpu_timer_resolution_ns,
         "timer_resolution_method": "minimum-observed-positive-Instant-delta",
         "cpu_resolution_method": "minimum-observed-positive-process-cpu-delta",
@@ -1230,6 +1322,8 @@ fn main() {
                     row["oracle_failures"]
                         .as_u64()
                         .is_some_and(|count| count != 0)
+                        || (report["kind"] == "observations"
+                            && row["retained_loop_cpu"]["cpu_ns"].as_u64().is_none())
                 })
             });
             let threads = &report["opencv_parallel_threads"];

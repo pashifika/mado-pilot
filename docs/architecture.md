@@ -160,7 +160,7 @@ Version one targets two platforms, and each is verified natively:
 | Release target | Native verification host |
 |---|---|
 | `x86_64-pc-windows-msvc` | Current CPU OCR verification: Core i7-12700KF, 32 GiB, Windows 11 Pro 26H2 build 26300.9550, under ADR 0082. Historical platform qualification: Windows 11 Pro 25H2 build family 26200 (Qualification V2 host 26200.9278), SDK 10.0.26100.0; `windows-2025` CI remains supporting server evidence |
-| `aarch64-apple-darwin` | Current CPU OCR verification: Apple M1 Pro macOS 27.0.1 (26A434), 32 GiB, under ADR 0081. Historical platform qualification: macOS 26.6.2 (25G83), SDK 26.5. Deployment floor: 26.5.2 |
+| `aarch64-apple-darwin` | Current CPU OCR verification: Apple M1 Pro macOS 27.0.1 (26A434), 32 GiB, under ADR 0081. Native-shim ASan: same host, ADR 0101, library scenarios only. Historical platform qualification: macOS 26.6.2 (25G83), SDK 26.5. Deployment floor: 26.5.2 |
 
 A cross-compiled result never stands in for native verification of the other
 target. [ADR 0019](adr/0019-windows-qualified-system-and-controlled-availability.md)
@@ -182,6 +182,16 @@ host. The operator-selected current CPU OCR verification baseline is macOS 27.0.
 its exact frozen cohort allowlist. This does not inherit prior qualification,
 relabel earlier macOS 27 diagnostics, or qualify capture/input on the upgraded
 host. The deployment floor remains 26.5.2.
+
+[ADR 0101](adr/0101-current-apple-native-sanitizer-host.md) separately accepts
+macOS 27.0.1 for prospective native-shim ASan library scenarios. Its
+source-bound 321-test run exercised display-based live capture with permission
+skips refused. Some branches note an absent subject and pass: window-subject,
+multi-display/mixed-scale seam, non-Retina and idle-producer. The run kept no passing-test
+output, so their execution is not established. Its ASan runtime and clang/CLT
+identities are unbound. This is native-shim memory-safety evidence, not
+coordinate/selection, display-topology, input, watcher or performance
+qualification.
 
 OS support and feature/workload qualification are separate. An unexecuted native
 OCR scenario, a numerical gate, or a failed measurement run does not by itself
@@ -208,7 +218,7 @@ owns and where they genuinely differ.
 | Input ownership | System pointer/keyboard/text plus explicit exact-window `WindowMessage`: ordinary retained top-level windows are unknown-but-attemptable with target-queue evidence, while the dedicated fixture is supported with protocol acknowledgement (implemented in the platform package) | `CGEvent` system pointer/keyboard/text plus an explicitly selected owning-process `ProcessDirected` route. Final protocol-v11 candidate `dec43d7` passed the controlled profiles, and independent `single`, exact two-display non-mirrored `same-scale`, and `mixed-scale` matrices passed for all fourteen controlled pairs. Their release decision is 14 qualified, 0 rejected, and 0 unexecuted. No `WindowMessage` route exists |
 | Permission handling | Capture presents no permission UI; no permission probe exists; input compares target integrity and reports proven UIPI at route preflight | Screen Recording and event-post access reported separately without permission UI; `PermissionKind::InputControl` maps to the public `CGPreflightPostEventAccess` decision re-read before every irreversible event, regardless of the Privacy & Security pane label, while legacy Accessibility trust is only a separate focus input and paired qualification fact (implemented) |
 | Native Rust template watcher | Implemented through maintained WGC window/display sessions; historical source `f16591f` passed 5/5 with the corrected different-monitor 144-to-120-DPI scale oracle. Integrated candidate `9cf746f` includes ADR 0061's private report-admission repair, but its authorized builder terminated at a pre-namespace environment control before Cargo. ADR 0063 retains the attempt. Qualification V2 Windows execution source `3e3079f` passed all eight compact semantic and cleanup scenarios, including acknowledged target loss and mixed-DPI token geometry; test-only successor `53608af` pins the earlier deadline clamp, and the boundary is supported on the qualified Windows floor | Implemented through maintained ScreenCaptureKit window/display sessions; historical source `f16591f` passed processes 1–4, then process 5 terminated red at `retained_result_mapping` after ScreenCaptureKit suspended the new stream. Integrated candidate `9cf746f` includes ADR 0062's exact retained-lifetime and typed-finalization repair, but its authorized builder terminated at a post-Cargo apparatus control before a complete artifact pair or process 1. ADR 0063 retains the attempt. Qualification V2 source `318ad1c` passed all eight compact semantic and cleanup scenarios with exact fixture finalization; reviewed target-isolated applicability carries that result through `53608af`, and the boundary is supported on the qualified macOS floor |
-| Native verification host | Current CPU OCR cohort: Core i7-12700KF, 32 GiB, Windows 11 Pro 26H2 build 26300.9550, ADR 0082. Historical platform evidence: Core i7-12700KF / RTX 4080, Windows 11 Pro 25H2 build family 26200, Qualification V2 UBR 9278, SDK 10.0.26100.0. ADR 0061 keeps UBR/hardware text as diagnostic provenance; `windows-2025` CI remains supporting server evidence | Current CPU OCR cohort: Apple M1 Pro, 32 GiB, macOS 27.0.1 (26A434), ADR 0081. Historical platform evidence: macOS 26.6.2 (25G83), SDK 26.5. `macos-26` CI remains compile and deterministic-contract evidence without Screen Recording authority |
+| Native verification host | Current CPU OCR cohort: Core i7-12700KF, 32 GiB, Windows 11 Pro 26H2 build 26300.9550, ADR 0082. Historical platform evidence: Core i7-12700KF / RTX 4080, Windows 11 Pro 25H2 build family 26200, Qualification V2 UBR 9278, SDK 10.0.26100.0. ADR 0061 keeps UBR/hardware text as diagnostic provenance; `windows-2025` CI remains supporting server evidence | Current CPU OCR cohort: Apple M1 Pro, 32 GiB, macOS 27.0.1 (26A434), ADR 0081. Native-shim ASan: same host, ADR 0101, library scenarios only. Historical platform evidence: macOS 26.6.2 (25G83), SDK 26.5. `macos-26` CI remains compile and deterministic-contract evidence without Screen Recording authority |
 | Deployment floor | Windows 11 25H2 build family 26200 on a currently serviced x64 desktop installation; earlier versions unsupported | macOS 26.5.2; older versions unsupported |
 | Candidate verification | Windows Phase 1 reruns plus repository and release-target checks pass on the exact exit candidate; ADRs 0026, 0028, 0031, and 0032 retain their separate Windows workload sources | Apple Silicon Phase 1 runs remain attributed to `d8336be` and apply by reviewed complete diff; repository and release-target checks pass on the exact exit candidate; ADRs 0024, 0025, 0029, and 0030 retain their separate macOS workload sources |
 
@@ -1641,8 +1651,10 @@ An odd System UTF-16 prefix records one private pending key-up. The controller
 releases it before prior sequence-owned keys/buttons under one cleanup context
 and allowance. Receipts preserve the original fault and complete logical prefix
 while reporting exact aggregate cleanup counts. No public type or ABI changes.
-The audit repairs have deterministic coverage; current-source mixed-DPI arrival
-and real non-ASCII consumer acceptance remain open.
+The audit repairs have deterministic coverage. Mixed-DPI arrival and ACP932
+package/OCR consumers also passed at the revisions recorded in the
+[release notes](releases/v0.5.0.md#windows-audit-repairs); those results need
+final-source applicability review and are not new executions of the current tree.
 
 Every published WGC frame records its stamp and authoritative transform in the
 target's bounded live-stream geometry ledger. `ReprojectCurrent` reads live
@@ -2478,8 +2490,17 @@ observable that proves it fired — a raise before the callback must stop any fr
 reaching a caller, and a raise after it must still deliver one — rather than only
 that no native object leaked, which held either way.
 
+The current macOS 27.0.1 host separately passed all 321 native-shim ASan library
+tests at product source `1e4d0b4`, with unavailable-capture skips promoted to
+failures. [ADR 0101](adr/0101-current-apple-native-sanitizer-host.md) records its
+exact executable and scope. Its window-subject, multi-display/mixed-scale seam,
+non-Retina and idle-producer note-and-pass branches are not established, because passing-test
+output was not retained. It does not satisfy the historical coordinate/selection or
+display-topology gates above. The earlier movement, replacement and matrix
+evidence retains its original OS and source.
+
 The macOS Adapter's input path is described under
-[macOS native input delivery](#macos-native-input-delivery); it shares this
+[macOS native input submission](#macos-native-input-submission); it shares this
 Adapter's retained target records and per-frame transforms. Both are reachable
 from the public composition root through `mado_pilot::macos_engine`.
 
@@ -2829,12 +2850,26 @@ or performance qualification changes follow from these apparatus additions.
 [ADR 0098](adr/0098-workload-scoped-component-cohorts.md) permits complete
 single-workload protocol-3 collection under bound scope and reviewed stage clocks,
 without changing sampling or granting whole-corpus qualification to scoped passes.
+[ADR 0100](adr/0100-retained-loop-cpu-and-prospective-sampling.md) makes protocol 4
+the current executable protocol. The corpus and oracles are unchanged. Normal
+CPU is graded by one current-process bracket over the retained loop, including
+preparation, oracles and storage; the summed-sample `cpu_ns` stays diagnostic.
+Per-workload counts come from a frozen, hash-bound plan within `1..=1000`
+warmups and `1..=40000` samples. Instrumented timing is descriptive, while its
+resource and work/ownership gates stay graded. Protocol-1/2/3 evidence is not
+regraded.
 [ADR 0099](adr/0099-actual-consumer-scalar-measurement.md) separately defines
 fresh-invocation actual-consumer scalars and complete lifetime CPU, without
 borrowing component percentiles or treating observation-off/on as equivalent.
 It requires cross-phase failure state to persist at the campaign-management tier.
-The method does not change SDK ownership or supply a consumer collector,
-numerical profile, normal image closure or performance qualification.
+`tools/consumer-performance.py` implements separate, source-bound consumer
+calibration, control and comparison phases. Apple runtime discovery observes the
+root and two named children through their actual loader transports; data-only
+closure does not approve a method. Source-closed CPU eligibility and a prospective
+accounting margin remain separate from the runner's raw partial/null accounting.
+Windows numerical admission remains unavailable.
+The method supplies neither a numerical profile nor normal image closure or
+performance qualification; SDK ownership and caller responsibilities are unchanged.
 
 Public scores are compared against a tolerance rather than exactly, on one host as
 well as across the two. OpenCV normalizes through integral images and correlates a

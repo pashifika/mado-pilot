@@ -65,7 +65,8 @@ capture/input behavior, a new host or a broader release claim.
 ## Rust template-matching work efficiency
 
 `template-matching-efficiency` is a capture-free Rust benchmark. Its current
-protocol-3 corpus has 57 instrumented rows, of which 54 also run in normal mode.
+protocol-4 executable keeps the protocol-3 corpus: 57 instrumented rows, of which
+54 also run in normal mode.
 It preserves the 21 component/selection/ownership guards and adds 36 public
 Session, query and lifecycle rows. `--list` prints the first-party generated
 corpus manifest and hashes; `--smoke` runs one warmup and three samples. No row
@@ -133,13 +134,14 @@ verification has its own `CARGO_TARGET_DIR`.
 
 The separate `template-matching-timing` feature builds normal release code with
 the system allocator and no matching/mapping work counters. Invoke its emitted
-executable with `--protocol-version 3`, its default. The collector also parses
-protocol-1/2 executable output. Existing campaigns require their recorded
-collector and policy for revalidation; the current executable emits only 3.
+executable with `--protocol-version 4`, its default and only accepted value. The
+collector also parses protocol-1/2/3 executable output for retained campaigns,
+which require their recorded collector and policy for revalidation; current
+executables cannot reproduce those protocols.
 Cargo feature unification that enables OpenCV or capture instrumentation makes a
 normal benchmark fail at compile time, including direct dependency features.
 
-Protocol 3 records the compiled `build_mode`, allocator label and an explicit
+Protocols 3 and 4 record the compiled `build_mode`, allocator label and an explicit
 `unavailable` declaration. Both modes run 41 statistical rows; normal adds 13
 public-result contracts and instrumented adds 16 contracts. Normal's 26 unobserved
 heap/work/owner fields are `null`, not zero. The format-transition and two watcher
@@ -294,7 +296,7 @@ These facts do not change timeout, nonzero exit or cleanup verdicts. They do not
 establish a process-generation/role census, a process cap, image closure or
 qualification, and cannot reconstruct counters omitted by historical receipts.
 
-Protocol-3 runtime preflight stores the complete binary/source identity once in
+Protocol-3/4 runtime preflight stores the complete binary/source identity once in
 `plan.binary`. Successful before/after file checks retain its canonical-JSON
 SHA256 as `plan_binary_sha256`; unobserved boundaries remain null. Admission
 checks both references and the full retained proof within the unchanged 64 MiB
@@ -317,7 +319,7 @@ setup so child `PATH` staging cannot select another interpreter:
 ```sh
 "$NATIVE_PYTHON" tools/setup-native.py -- "$NATIVE_PYTHON" \
   tools/template-matching-efficiency.py runtime-preflight \
-  --protocol-version 3 --build-mode normal --target aarch64-apple-darwin \
+  --protocol-version 4 --build-mode normal --target aarch64-apple-darwin \
   --binary "$NORMAL_BINARY" --build-metadata "$BUILD_METADATA" \
   --output "$NEW_PREFLIGHT_DIRECTORY"
 ```
@@ -434,13 +436,14 @@ calibration failure.
 [ADR 0098](adr/0098-workload-scoped-component-cohorts.md) refines collection
 granularity for newly bound protocol-3 scopes, not ADR 0097's historical method
 or failed calibration. `tools/template-matching-efficiency.py` accepts
-`--protocol-version 3 --workload` on `calibrate`, `control` and `compare` to select
+`--workload` under protocol 3 or 4 on `calibrate`, `control` and `compare` to select
 one complete workload. Omitting `--workload` retains the exact ordered full corpus:
 54 normal or 57 instrumented rows. Arbitrary subsets, duplicate IDs, wrong-mode
 workloads and older-protocol non-smoke selections are refused. Smoke is unchanged.
 
-Each statistical workload retains 20 warmups and 200 retained units per process;
-contract workloads retain 1/3. A selected calibration runs one manifest and six
+Under protocol 3, each statistical workload retains 20 warmups and 200 retained
+units per process; protocol 4 uses its frozen sampling plan (below). Both keep
+contract workloads at 1/3. A selected calibration runs one manifest and six
 baseline processes. Control runs two manifests and six independent unchanged A/A
 pairs; comparison runs two manifests and six fresh baseline/candidate pairs.
 Both paired stages retain `AB, BA, AB, BA, AB, BA`. There is no automatic stage
@@ -464,7 +467,7 @@ selected stage's limits. Changed scope, cap or profile envelope coverage refuses
 before native launch. Raw slots, failures, observer/source gates, noise/A/A gates,
 frozen allowances and per-process timing/resource ceilings remain mandatory.
 
-Protocol-3 reports expose `workload_coverage.required`, `.selected` and `.omitted`
+Protocol-3/4 reports expose `workload_coverage.required`, `.selected` and `.omitted`
 as workload ID lists and `.complete` as a boolean against the full mode-specific
 corpus. `status` describes only the declared cohort. A partial comparison may
 report `status: "passed"` while `performance_qualified` remains `false`;
@@ -474,17 +477,102 @@ Known failures remain `failed`; unavailable observations remain unavailable.
 Omitted rows do not become missing attempts within a complete selected cohort.
 
 Both normal selection and repeated-preparation goals still require joint p95
-and summed retained-sample process CPU benefit above frozen allowances.
+and CPU benefit above frozen allowances: summed retained-sample process CPU under
+protocol 3, or the retained-loop bracket under protocol 4.
 Instrumented work/ownership evidence cannot replace either goal. Whole-target,
 Change and release claims still require every required case, per-process/resource
 non-regression, both targets and build modes, and separate actual-consumer
 evidence. Neither a selected profile nor a passing scoped report supplies that
 qualification or authorizes a new native launch.
 
+### Protocol-4 retained-loop CPU and frozen sampling
+
+[ADR 0100](adr/0100-retained-loop-cpu-and-prospective-sampling.md) defines
+prospective protocol 4 under policy `template-efficiency-v4-retained-loop-prospective`.
+Corpus, oracles, timing boundaries, Session strata and the build-mode split are
+unchanged from protocol 3.
+
+Every observed row adds `retained_loop_cpu`, a single current-process CPU
+bracket:
+
+- It reads CPU once immediately after `samples-begin` and once after the last
+  retained sample is stored, before `samples-end`.
+- Its scope, `current-process-retained-loop-including-preparation-oracles-and-storage`,
+  covers per-iteration preparation, the measured operation, public-result oracles
+  and sample storage on all process threads. Setup, warmups, post-warmup memory
+  observation, markers and serialization are excluded.
+- macOS reads `getrusage(RUSAGE_SELF)` user plus system time
+  (`source_unit_ns: 1000`). Windows reads current-process `GetProcessTimes`
+  kernel plus user time (`source_unit_ns: 100`). These units are source
+  representation, not resolution or accuracy.
+- A missing or reversed bracket is unavailable with a reason, never zero, and its
+  observed row exits nonzero.
+
+Normal protocol-4 grading uses nearest-rank process p95 and
+`retained_loop_cpu_ns`; turnover rows also grade stratum p95. `metrics.cpu_ns`
+keeps its summed-sample meaning as a diagnostic, and the bracket may not fall
+below it. ADR 0096 noise, A/A, order/drift and per-process ceilings still apply,
+as do the existing CPU accounting floors. Each comparison role must also follow
+`AB, BA` positions and pass the first/second-position and first/last-three median
+checks. Instrumented protocol-4 timing and CPU are descriptive. Their resource
+ceilings and exact work/ownership checks remain graded and cannot set
+`performance_qualified`.
+
+The benchmark accepts paired `--warmups W --samples N` only for one statistical
+`--workload`, with W in `1..=1000` and N in `1..=40000`. Default and `--list`
+manifests keep the logical reference counts: 20/200 for statistical rows and 1/3
+for contract rows. Smoke remains 1/3, and records name the counts actually run.
+
+Protocol-4 `calibrate`, `control` and `compare` require a pinned plan. The plan is
+UTF-8 JSON of at most 64 KiB that maps exactly the selected workloads to
+`{"warmups": W, "samples": N}`; contract rows must be `{"warmups": 1, "samples": 3}`.
+For one selected workload:
+
+```sh
+"$PYTHON" tools/setup-native.py -- "$PYTHON" tools/template-matching-efficiency.py calibrate \
+  --protocol-version 4 --build-mode normal --target "$TARGET" \
+  --workload single-small96x64 \
+  --sampling-plan "$SAMPLING_PLAN" --sampling-plan-sha256 "$SAMPLING_PLAN_SHA256" \
+  --method-review "$METHOD_REVIEW" --method-review-sha256 "$METHOD_REVIEW_SHA256" \
+  --baseline "$NORMAL_BINARY" --baseline-metadata "$BUILD_METADATA" \
+  --exclusive-host --output "$NEW_CALIBRATION_DIRECTORY"
+```
+
+Smoke refuses a plan. The method review, calibration, control, numerical-profile
+review, frozen profile and comparison must carry the identical embedded plan, and
+changed counts refuse before collection.
+
+Parser bounds are not adopted counts, cost proofs or output guarantees. Each count
+is a reviewed prospective input fixed before calibration. The 300-second child,
+8-MiB output and five-second cleanup bounds still fail closed, and ADR 0098 stage
+clocks still come from the method review. Automatic count selection, adaptive
+stopping, resampling, retry, post-result changes and CPU normalization across
+counts are not permitted.
+
+Protocol-1/2/3 evidence, including ADR 0097's failed calibration, is not
+converted or regraded. A protocol-4 campaign needs its own method review,
+collector-bound preflight, calibration, control and profile review. Windows normal
+image closure remains unresolved, and both joint p95/CPU goals remain required.
+
+A development smoke on the Apple Silicon host invoked the current normal and
+instrumented executables directly through the owned-process runner:
+
+- Their manifests listed 54 and 57 rows.
+- Each mode ran three selected rows with timing boundaries and loader logging:
+  `single-small96x64` at 2/7, `session-retained-rgba-roi-hit` at 2/5 and contract
+  `query-deadline-rgba-roi` at 1/3.
+- All six rows had zero oracle failures, valid `getrusage` brackets, three
+  same-process boundary markers and zero in-window loader records.
+- Unpaired counts and `--samples 40001` exited 1 before benchmark work.
+- All ten processes cleaned up.
+
+This is development evidence only. It used no collector sampling plan and is not
+whole-corpus collection, complete image-file closure or qualification.
+
 ### Actual-consumer scalar method
 
 [ADR 0099](adr/0099-actual-consumer-scalar-measurement.md) accepts a prospective
-method, not an executable consumer collector or a numerical profile. Preserve
+method, not a numerical profile. Preserve
 the actual desktop-selected dev profile (`opt_level=0`, `debuginfo=2`, debug
 assertions), with benchmark accounting absent and
 `MADO_P050_OBSERVATIONS=1`. This is distinct from component release timing and
@@ -591,8 +679,17 @@ stdout/stderr. Descendants share its absolute end. Admission reserves the full
 next105s plus pending60s final retention; a pair needs210s plus that reserve.
 These are scope-specific operational bounds, not latency ceilings or a universal
 ten-minute rule. Trial's internal10s preflight,30s operation and14s shutdown stay
-inside90s. A successor driver must bind these enforced outer values rather than
-reuse the historical embedded60s/1MiB declaration.
+inside90s. Three bounds stay separate:
+
+- the retained trial driver's embedded declaration (60s primary, 5s cleanup,
+  1MiB output);
+- the collector-enforced per-attempt envelope above;
+- the stage reservation and independent total in the table.
+
+Each attempt retains the declaration unchanged. Declared primary and output must
+be `<=` the enforced values, and cleanup must be equal. The one real enforced
+bound governs execution, so rebuilding the driver only to equalize caps is
+unnecessary.
 
 One replay/group/query invocation selects an engine and Node child; a trial
 selects sequential capability and recognition children. The resulting1080
@@ -625,11 +722,38 @@ variation or division by cycles. Exact cache capacity/ownership contracts are
 not calibrated allowances. No sampled maximum or post-exit absence proves
 all-native leak freedom or zero owner residual.
 
-**Collection remains blocked** pending current role/image closure, complete
-owned counts, observer eligibility/cost, clocks/CPU coverage, named resource
-checkpoints and headroom, byte-accounted retention and cross-phase enforcement.
-The component collector does not implement this consumer method. No consumer
-profile, candidate benefit, UI result or whole-release qualification is accepted.
+`tools/consumer-performance.py` implements one source-bound case per phase with
+`prepare`, `smoke`, `calibrate`, `control`, `freeze`, `compare`,
+`profile-proposal`, `report` and `inspect`. Calibration has six fresh invocations;
+control and comparison each have six balanced pairs. Campaign registrations and
+failure fences survive the phase owner. Failed control cannot launch a candidate,
+and neither an interrupted phase nor a different output directory permits retry.
+
+For Apple loader-on plans, `discover` launches one real invocation and retains
+the root and two named child transports. `close-runtime` reparses explicitly
+named raw/sink records, rechecks file/cache identity and freezes their closure
+without launching a process or accepting a method. Replay also pins the actual
+PATH-selected Node executable. Unknown images, foreign PIDs, incomplete sinks
+and identity drift refuse closure. Launch rechecks the original deadline after
+durable admission; a cleanup failure fences the campaign even if raw retention
+fails.
+
+CPU eligibility additionally requires a source-bound descendant-creation and
+reap certificate, selected native-path evidence and actual terminal witnesses.
+A separately reviewed accounting margin never changes `record.cpu`'s partial
+status, reason or null resolution and is not a physical-accuracy claim. The
+collector does not approve those documents itself. Its direct Apple trial
+development smoke and loader-on trial/replay/deadline discoveries passed their
+contracts. The deadline application retains `FAIL`/`Timeout` and exit 1.
+These are not calibration, observer-cost acceptance or consumer qualification.
+
+**Numerical collection remains blocked** pending current role/image closure,
+complete owned counts, observer eligibility/cost, clocks/CPU coverage, named
+resource checkpoints and headroom, byte-accounted retention and cross-phase
+enforcement. A hash-bound method review must admit every gate before numerical
+phases start. Windows numerical admission remains unavailable. No
+consumer profile, candidate benefit, UI result or whole-release qualification is
+accepted.
 
 
 ### Historical format-1 collector
@@ -661,7 +785,7 @@ observations, with original process indices; missing values cannot qualify a
 benefit. Started attempts without a result remain `incomplete`, distinct from
 `not-run` work. Recorded interruptions and unreadable attempt records are `failed`.
 
-Hosted CI executes the current protocol-3 normal and instrumented semantic plans
+Hosted CI executes the current executable's normal and instrumented semantic plans
 on both targets. Smoke, missing resource observations, a missing target, or a
 failed envelope cannot establish performance acceptance. Existing historical
 profiles and their source/binary identities are unchanged.
@@ -716,13 +840,13 @@ is the actual supported host target and `EVIDENCE` is a new output directory.
 Windows uses its configured MSVC/OpenCV environment and `python`.
 
 ```sh
-"$PYTHON" tools/template-matching-efficiency.py policy --protocol-version 3 --build-mode instrumented
+"$PYTHON" tools/template-matching-efficiency.py policy --protocol-version 4 --build-mode instrumented
 "$PYTHON" tools/setup-native.py -- "$PYTHON" tools/template-matching-efficiency.py attest \
-  --protocol-version 3 --build-mode instrumented --target "$TARGET" \
+  --protocol-version 4 --build-mode instrumented --target "$TARGET" \
   --binary "$BINARY" --build-argv-json "$BUILD_ARGV_JSON" \
   --output "$EVIDENCE/build-metadata.json"
 "$PYTHON" tools/setup-native.py -- "$PYTHON" tools/template-matching-efficiency.py smoke \
-  --protocol-version 3 --build-mode instrumented --target "$TARGET" --baseline "$BINARY" \
+  --protocol-version 4 --build-mode instrumented --target "$TARGET" --baseline "$BINARY" \
   --baseline-metadata "$EVIDENCE/build-metadata.json" \
   --output "$EVIDENCE/campaign"
 ```
@@ -864,7 +988,8 @@ A budget names one measure. The version-one vocabulary is:
 | `steady_allocated_bytes` | bytes | Live heap bytes when the sampled run finished, above the same baseline, with the fixture still alive. |
 | `allocated_growth_bytes` | bytes | Signed change in live heap bytes across the sampled run alone. A hard gate, on the same terms as `memory_growth`. |
 | `copied_bytes_per_result` | bytes | Producer-surface bytes copied while producing one retained sample. The report keeps the largest sample, so unexpected duplicate copies remain visible. |
-| `cpu_ns` | nanoseconds | Sum of retained sample process-CPU deltas, with accounting resolution recorded separately. |
+| `cpu_ns` | nanoseconds | Sum of retained sample process-CPU deltas, with accounting resolution recorded separately; diagnostic only under protocol 4. |
+| `retained_loop_cpu_ns` | nanoseconds | Protocol 4: one current-process CPU bracket over all retained iterations, including per-iteration preparation, oracles and sample storage. Source units are not accuracy. |
 | `score_copied_bytes` | bytes | Physically duplicated score-map storage observed by the opt-in selector instrumentation. |
 | `score_offsets_scanned` | count | Score offsets inspected by production selection, including row repairs. |
 | `mapping_copied_bytes` | bytes | Actual packed CPU mapping copies; distinct from logical mapped-view extents. |
