@@ -19,11 +19,15 @@ calibration as {"directory": "...", "binding": {"path": ".../summary.json",
 "sha256": "..."}}; comparison names profile as {"path": "...", "sha256": "..."}.
 profile-proposal prints the exact proposal digest for the independent freeze review.
 
-Numerical admission is a hash-bound review (kind consumer-method-review-v1),
+Numerical admission is a hash-bound review (kind consumer-method-review-v2),
 with context_sha256=context_digest(plan), accepted=true, reviewer/rationale,
 metric contracts, and evidence for source, runtime_images, owned_processes,
 observer_cost, clocks_cpu, resources, retention and exclusive_host. Each gate
 names its remaining issues and hash-bound evidence files; unknown is not passed.
+Each selected resident bytes metric declares exact hard_ceiling_bytes and
+comparison_allowance_floor_bytes; bound resources evidence repeats them under
+resident_policies with a justification. Every invocation obeys that fixed point
+ceiling; comparisons use max(calibration spread, floor). No peak/growth/residual.
 prepare --loader [--node ABSOLUTE_BINARY] enables actual Apple dyld logging.
 discover invokes one selected real command; close-runtime unions only its explicit
 hash-bound raw/sink discoveries and rechecks images/cache. Neither grants numerical
@@ -371,6 +375,26 @@ def capture_runtime(plan, bundle, role, deadline):
         return {"value": None, "issues": [issue("identity", "runtime identity verification: " + str(error))]}
 
 
+def resident_bounds(value):
+    """Declared fixed point ceiling and comparison floor; exact JSON integers, never sample-derived."""
+    ceiling = integer(value.get("hard_ceiling_bytes"), "hard_ceiling_bytes", 1)
+    floor = integer(value.get("comparison_allowance_floor_bytes"), "comparison_allowance_floor_bytes", 1)
+    require(floor <= ceiling, "comparison allowance floor exceeds hard ceiling")
+    return ceiling, floor
+
+
+def resident_policies(value, resident):
+    """One resources-gate policy map keyed exactly by the selected resident metrics."""
+    require(isinstance(value, dict) and resident and set(value) == resident,
+            "resident policies must name exactly the selected resident metrics")
+    result = {}
+    for metric, policy in value.items():
+        require(isinstance(policy, dict), metric + ": resident policy object required")
+        nonempty(policy.get("justification"), metric + " resident policy justification")
+        result[metric] = resident_bounds(policy)
+    return result
+
+
 def admission(plan):
     failures = []
     review = None
@@ -379,7 +403,7 @@ def admission(plan):
             review = read_reference(plan["admission"])
             require(isinstance(review, dict) and isinstance(review.get("gates"), dict)
                     and isinstance(review.get("metrics"), dict), "method review gates/metrics objects required")
-            require(review.get("kind") == "consumer-method-review-v1" and review.get("accepted") is True,
+            require(review.get("kind") == "consumer-method-review-v2" and review.get("accepted") is True,
                     "accepted consumer method review required")
             require(review.get("context_sha256") == context_digest(plan), "method review context mismatch")
             nonempty(review.get("reviewer"), "reviewer")
@@ -387,6 +411,11 @@ def admission(plan):
         except (KeyError, TypeError, ValueError, OSError) as error:
             failures.append(issue("admission", str(error)))
             review = None
+    contracts = (review or {}).get("metrics", {})
+    selected = {**required_metrics(plan["case"]), **{
+        name: selectable_metrics(plan["case"]).get(name) for name in contracts}}
+    resident = {name for name, unit in selected.items() if unit == "bytes"}
+    policies = []
     for name in GATES:
         gate = (review or {}).get("gates", {}).get(name, {})
         if (not isinstance(gate, dict) or gate.get("status") != "accepted" or gate.get("issues") != []
@@ -414,11 +443,10 @@ def admission(plan):
                     require(evidence.get("accounting_allowance") == review.get("accounting_allowance")
                             and evidence.get("accounting_allowance") is not None,
                             "prospective source/host/API-bound accounting allowance missing")
+                if name == "resources" and "resident_policies" in evidence:
+                    policies.append(resident_policies(evidence["resident_policies"], resident))
             except (KeyError, TypeError, ValueError, OSError) as error:
                 failures.append(issue("unavailable", name + ": " + str(error)))
-    contracts = (review or {}).get("metrics", {})
-    selected = {**required_metrics(plan["case"]), **{
-        name: selectable_metrics(plan["case"]).get(name) for name in contracts}}
     for metric, unit in selected.items():
         contract = contracts.get(metric, {})
         try:
@@ -430,6 +458,11 @@ def admission(plan):
                 nonempty(contract.get(key), key)
             if unit == "bytes":
                 require(contract.get("domain") == "resident", "resource point is not allocation/owner residual")
+                require(not {"quantum", "resolution", "resolution_method"} & set(contract),
+                        "resident byte point has no timer quantum/resolution")
+                bounds = resident_bounds(contract)
+                require(policies and all(policy[metric] == bounds for policy in policies),
+                        "bound resources evidence must declare the same resident ceiling/floor")
             elif metric == "lifetime_cpu_seconds":
                 require(contract.get("api") == "posix-wait4"
                         and contract.get("accounting_allowance") == (review or {}).get("accounting_allowance")
@@ -864,8 +897,18 @@ def reconcile(plan, slot, record, review=None, sink_root=None, runtime_observati
         unavailable.append(issue("unavailable", "source-closed owned roles unavailable; no complete identified census inferred"))
     details["cpu_coverage"] = coverage
     for metric, contract in (review or {}).get("metrics", {}).items():
-        if details["metrics"].get(metric) is None:
+        point = details["metrics"].get(metric)
+        if point is None:
             unavailable.append(issue("unavailable", "required metric missing: " + metric))
+        elif isinstance(contract, dict) and contract.get("unit") == "bytes":
+            # Every invocation, calibration included, obeys the declared point ceiling.
+            try:
+                ceiling, _ = resident_bounds(contract)
+            except ValueError as error:
+                unavailable.append(issue("unavailable", metric + ": " + str(error)))
+            else:
+                if exact(point) > ceiling:
+                    failures.append(issue("numerical", metric + " exceeds fixed resident checkpoint ceiling"))
         if metric == "lifetime_cpu_seconds" and resolution is not None and "resolution" in contract:
             if exact(resolution) > exact(contract["resolution"]):
                 failures.append(issue("clock", "CPU resolution coarser than frozen method"))
@@ -898,6 +941,18 @@ def scalar_envelope(values, quantum, resolution):
             "spread": str(spread), "median": str(median(values)), "minimum": str(min(values)), "maximum": str(max(values))}
 
 
+def resident_envelope(values, ceiling, floor):
+    """Declared point ceiling plus empirical comparison allowance; no peak, growth or residual."""
+    require(len(values) == 6 and all(type(value) is int and 0 < value <= ceiling for value in values),
+            "six positive integral resident bytes within the fixed checkpoint ceiling required")
+    center, spread = median(values), max(values) - min(values)
+    # Same 15% method tolerance as timing, reported as repeatability, never confidence.
+    require(spread <= center * Fraction(15, 100), "calibration resident repeatability exceeds 0.15")
+    return {"resource": True, "ceiling": str(ceiling), "comparison_allowance_floor_bytes": str(floor),
+            "allowance": str(max(spread, floor)), "spread": str(spread), "median": str(center),
+            "minimum": str(min(values)), "maximum": str(max(values))}
+
+
 def derive_envelopes(rows, review):
     require(len(rows) == 6, "complete six-invocation calibration required")
     result = {}
@@ -905,9 +960,8 @@ def derive_envelopes(rows, review):
         values = [row["metrics"].get(name) for row in rows]
         require(all(value is not None for value in values), "unavailable calibration: " + name)
         if contract.get("unit") == "bytes":
-            values = [exact(value) for value in values]
             require(contract.get("domain") == "resident", "normal consumer supports resident endpoints only")
-            result[name] = {"ceiling": str(max(values) + max(max(values) - min(values), MIB)), "resource": True}
+            result[name] = resident_envelope(values, *resident_bounds(contract))
         elif name == "lifetime_cpu_seconds" and contract.get("accounting_allowance") is not None:
             margins = [row.get("accounting_allowance_seconds") for row in rows]
             require(all(value is not None for value in margins) and len(set(margins)) == 1,
@@ -961,8 +1015,7 @@ def grade_rows(rows, stage, envelopes, case):
         return failures
     roles = ("baseline", "control" if stage == "control" else "candidate")
     for name, envelope in envelopes.items():
-        if envelope.get("resource"):
-            continue
+        resource = envelope.get("resource")
         medians = {}
         for role in roles:
             selected = [row for row in rows if row["slot"]["role"] == role]
@@ -970,10 +1023,14 @@ def grade_rows(rows, stage, envelopes, case):
                 continue
             values = [exact(row["metrics"][name]) for row in selected]
             medians[role] = median(values)
-            r = exact(envelope.get("accounting_allowance_seconds", envelope.get("resolution")))
             allowance = exact(envelope["allowance"])
-            if (max(values) - min(values)) / max(median(values), 2 * r) > Fraction(15, 100):
-                failures.append(issue("numerical", role + ": " + name + " noise"))
+            if resource:
+                noisy = max(values) - min(values) > median(values) * Fraction(15, 100)
+            else:
+                r = exact(envelope.get("accounting_allowance_seconds", envelope.get("resolution")))
+                noisy = (max(values) - min(values)) / max(median(values), 2 * r) > Fraction(15, 100)
+            if noisy:
+                failures.append(issue("numerical", role + ": " + name + (" repeatability" if resource else " noise")))
             first = [row["metrics"][name] for row in selected if row["slot"]["position"] == 0]
             second = [row["metrics"][name] for row in selected if row["slot"]["position"] == 1]
             if len(first) != 3 or len(second) != 3 or abs(median(first) - median(second)) > allowance:
@@ -988,6 +1045,9 @@ def grade_rows(rows, stage, envelopes, case):
                 failures.append(issue("numerical", name + ": unchanged A/A role bias"))
             if stage == "comparison" and name == benefit_metric(case) and difference <= exact(envelope["allowance"]):
                 failures.append(issue("numerical", name + ": scalar benefit does not exceed allowance"))
+            # Non-regression only: never a benefit claim and never a substitute for one.
+            if stage == "comparison" and resource and -difference > exact(envelope["allowance"]):
+                failures.append(issue("numerical", name + ": candidate resident median exceeds baseline plus allowance"))
     return failures
 
 

@@ -6,6 +6,8 @@ Run ``policy`` before calibration; ``freeze`` reviews a successful calibration;
 Build metadata is an operator-supplied provenance attestation, not a reproducible
 build proof. Keep the calibration directory with its reviewed profile.
 Protocol four binds workload-specific sampling and retained-loop process CPU.
+The proposed protocol-four control budget is separate from empirical timing
+ceilings; benefits must exceed that budget independently for wall p95 and CPU.
 Protocol three adds Session rows and source-independent logical corpus identity.
 Historical readers retain their original numerical policies. Partial workload
 coverage never qualifies the full corpus.
@@ -138,10 +140,16 @@ V3_POLICY = {**V2_POLICY, "id": "template-efficiency-v3-session-prospective-r2",
              "resource_ceiling": "max(calibration6) + max(spread, fixed slack); native RSS peak live cache is row-scoped by simultaneous independent backend count",
              "strata": "turnover hit and miss remain process-local; grade each stratum and the overlapping primary cycle independently",
              "scope": "prospective Session component apparatus; no accepted method, profile or actual-consumer qualification"}
-V4_POLICY = {**V3_POLICY, "id": "template-efficiency-v4-retained-loop-prospective",
+V4_POLICY = {**V3_POLICY, "id": "template-efficiency-v4-retained-loop-control-budget-prospective-r2",
              "cpu_metric": "retained-loop current-process CPU including preparation, oracles and storage; operation sum remains diagnostic",
              "sampling": "explicit source/hash-bound per-workload counts; reference manifest is not an execution plan",
              "instrumented_timing": "descriptive only; independent resource and exact work/ownership gates remain",
+             "empirical_allowance": "e = max(spread(calibration6), 2 * frozen clock_allowance); individual timing ceilings remain ceil(max(calibration6) + e)",
+             "control_relative_allocation": {"numerator": 15, "denominator": 100},
+             "control_allowance": "c = max(e, ceil(own calibration median * 15 / 100)); engineering control-error budget, not clock accuracy or statistical coverage",
+             "control": "all processes within unchanged ceilings; between-role, order and half-cohort median differences <= c; role noise remains <=15%",
+             "comparison": "order and half-cohort median differences <= c; role noise and individual ceilings unchanged",
+             "benefit": "normal median(baseline6) - median(candidate6) > b = max(e, c), jointly p95 and retained-loop CPU",
              "scope": "prospective component apparatus; no accepted count, profile or runtime eligibility by implementation"}
 SAMPLING_PROTOCOL = "mado-component-sampling-v1"
 SAMPLING_LIMITS = {"warmups_min": 1, "warmups_max": 1000, "samples_min": 1, "samples_max": 40000}
@@ -2008,10 +2016,20 @@ def evaluate(directory):
             **({"prerequisite_issues": prerequisite_issues, "native_threads": native_threads} if version >= 2 else {})}
 
 
+def median_twice(values):
+    """Exact twice-median for integer-nanosecond observations, including odd sums."""
+    ordered = sorted(values)
+    middle = len(ordered) // 2
+    return 2 * ordered[middle] if len(ordered) % 2 else ordered[middle - 1] + ordered[middle]
+
+
 def derive_envelopes(evidence):
     require(evidence["plan"]["mode"] == "calibration", "not a baseline-only calibration")
     require(not evidence["issues"], "calibration has failed, unavailable, or unrun attempts")
     version = evidence["plan"]["format_version"]
+    if version == 4:
+        require(exact_value(evidence["plan"].get("policy"), V4_POLICY),
+                "policy differs from predeclared collector policy")
     count = 6 if version >= 2 else 5
     definitions = scoped_definitions(evidence["plan"])
     result = {}
@@ -2021,6 +2039,7 @@ def derive_envelopes(evidence):
                 sorted(row["process"] for row in rows) == list(range(count))),
                 "calibration requires five fresh processes" if version == 1 else "calibration requires 6 fresh processes")
         limits, allowances, clocks = {}, {}, {}
+        empirical, controls = {}, {}
         if definition["statistical"]:
             for metric, clock in timing_metrics(workload, version, evidence["plan"].get("build_mode")):
                 values = [row.get(metric) for row in rows]
@@ -2036,6 +2055,13 @@ def derive_envelopes(evidence):
                         f"noisy calibration: {workload}/{metric}; retain the whole campaign")
                 limits[metric] = math.ceil(max(values) + allowance)
                 allowances[metric] = allowance
+                if version == 4:
+                    relative = V4_POLICY["control_relative_allocation"]
+                    numerator = median_twice(values) * relative["numerator"]
+                    denominator = 2 * relative["denominator"]
+                    control = max(allowance, (numerator + denominator - 1) // denominator)
+                    empirical[metric], controls[metric] = allowance, control
+                    allowances[metric] = max(allowance, control)
                 if version >= 2:
                     clocks[metric] = resolution
         prefixes = ("rss",) if version >= 2 and evidence["plan"]["build_mode"] == "normal" else ("rss", "heap")
@@ -2052,6 +2078,8 @@ def derive_envelopes(evidence):
         result[workload] = {"limits": limits, "benefit_allowances": allowances}
         if version >= 2:
             result[workload]["clock_allowances"] = clocks
+        if version == 4:
+            result[workload].update(empirical_allowances=empirical, control_allowances=controls)
     return result
 
 
@@ -2084,10 +2112,14 @@ def control_evidence(calibration, control):
     require(control["plan"]["binaries"]["control"] == control["plan"]["binaries"]["baseline"],
             "A/A control executable/source changed")
     envelopes = derive_envelopes(calibration)
+    version = calibration["plan"]["format_version"]
+    median_of = median_twice if version == 4 else statistics.median
+    median_scale = 2 if version == 4 else 1
     issues = (list(calibration.get("prerequisite_issues", []))
               + list(control["issues"]) + control.get("prerequisite_issues", []))
     for workload, envelope in envelopes.items():
-        medians = {metric: [] for metric in envelope["benefit_allowances"]}
+        allowances = envelope["control_allowances"] if version == 4 else envelope["benefit_allowances"]
+        medians = {metric: [] for metric in allowances}
         for role in ("baseline", "control"):
             rows = control["observations"].get(role, {}).get(workload, [])
             complete = (len(rows) == 6 and sorted(row["process"] for row in rows) == list(range(6))
@@ -2103,27 +2135,27 @@ def control_evidence(calibration, control):
                     if value is not None and value > limit:
                         issues.append({"attempt": f"{role}:{workload}:{row['process']}", "status": "failed",
                                        "reason": f"{metric}={value} exceeds {limit}"})
-            for metric, allowance in envelope["benefit_allowances"].items():
+            for metric, allowance in allowances.items():
                 if not complete or any(row.get(metric) is None for row in rows):
                     continue
                 values = [row[metric] for row in rows]
                 median = statistics.median(values)
-                medians[metric].append(median)
+                medians[metric].append(median_twice(values) if version == 4 else median)
                 resolution = envelope["clock_allowances"][metric]
                 checks = {
                     "noise": (max(values) - min(values)) / max(median, 2 * resolution)
                              <= V2_POLICY["noise_cap"],
-                    "order": abs(statistics.median(row[metric] for row in rows if row["position"] == 0)
-                                 - statistics.median(row[metric] for row in rows if row["position"] == 1)) <= allowance,
-                    "drift": abs(statistics.median(row[metric] for row in rows if row["process"] < 3)
-                                 - statistics.median(row[metric] for row in rows if row["process"] >= 3)) <= allowance,
+                    "order": abs(median_of(row[metric] for row in rows if row["position"] == 0)
+                                 - median_of(row[metric] for row in rows if row["position"] == 1)) <= median_scale * allowance,
+                    "drift": abs(median_of(row[metric] for row in rows if row["process"] < 3)
+                                 - median_of(row[metric] for row in rows if row["process"] >= 3)) <= median_scale * allowance,
                 }
                 for name, passed in checks.items():
                     if not passed:
                         issues.append({"attempt": f"{role}:{workload}", "status": "failed",
                                        "reason": f"A/A {metric} {name} exceeds frozen control tolerance"})
         for metric, values in medians.items():
-            if len(values) == 2 and abs(values[0] - values[1]) > envelope["benefit_allowances"][metric]:
+            if len(values) == 2 and abs(values[0] - values[1]) > median_scale * allowances[metric]:
                 issues.append({"attempt": workload, "status": "failed",
                                "reason": f"A/A {metric} between-role bias exceeds frozen control tolerance"})
     return issues
@@ -2148,7 +2180,9 @@ def profile_from_v2(evidence, calibration, control, control_path, reviewer, rati
         expected_review["sampling"] = plan["sampling"]
     if runtime_observer_policy(plan) is not None:
         expected_review["runtime_observer_policy"] = plan["runtime_observer_policy"]
-    require(isinstance(review, dict) and all(review.get(key) == value for key, value in expected_review.items()),
+    require(isinstance(review, dict) and all(
+        exact_value(review.get(key), value) if plan["format_version"] == 4 else review.get(key) == value
+        for key, value in expected_review.items()),
             "external profile review does not bind the exact method/cohorts/envelopes")
     nonempty(review.get("reviewer"), "profile review reviewer")
     nonempty(review.get("rationale"), "profile review rationale")
@@ -2184,6 +2218,9 @@ def validate_profile(profile):
     require(profile.get("format_version") in (1, 2, 3, 4) and profile.get("kind") == "frozen-profile", "invalid profile")
     if profile.get("format_version") >= 3:
         integer(profile["format_version"], "profile format_version")
+    if profile["format_version"] == 4:
+        require(exact_value(profile.get("policy"), V4_POLICY),
+                "policy differs from predeclared collector policy")
     calibration = profile.get("calibration", {})
     evidence = evaluate(calibration["path"])
     if profile["format_version"] >= 2:
@@ -2194,7 +2231,8 @@ def validate_profile(profile):
                                    review.get("path"), review.get("sha256"))
     else:
         expected = profile_from(evidence, calibration["path"], profile.get("reviewer"), profile.get("rationale"))
-    require(profile == expected, "profile/provenance/envelopes differ from frozen calibration")
+    require(exact_value(profile, expected) if profile["format_version"] == 4 else profile == expected,
+            "profile/provenance/envelopes differ from frozen calibration")
     return profile
 
 
@@ -2215,6 +2253,9 @@ def compare_evidence(evidence, profile):
     require(plan["mode"] == "comparison", "not a comparison cohort")
     version = plan["format_version"]
     require(version == profile["format_version"], "mixed profile protocol")
+    if version == 4:
+        require(exact_value(plan.get("policy"), V4_POLICY),
+                "policy differs from predeclared collector policy")
     comparison_scope(plan, profile)
     count = 6 if version >= 2 else 5
     normal = version >= 2 and plan["build_mode"] == "normal"
@@ -2262,14 +2303,14 @@ def compare_evidence(evidence, profile):
                     if version == 4 and all(
                             row.get("position") == (row["process"] % 2 if role == "baseline"
                                                     else 1 - row["process"] % 2) for row in rows):
-                        allowance = envelope["benefit_allowances"][metric]
+                        allowance = envelope["control_allowances"][metric]
                         for name, first, second in (
                             ("order", [row[metric] for row in rows if row["position"] == 0],
                              [row[metric] for row in rows if row["position"] == 1]),
                             ("drift", [row[metric] for row in rows if row["process"] < 3],
                              [row[metric] for row in rows if row["process"] >= 3]),
                         ):
-                            if abs(statistics.median(first) - statistics.median(second)) > allowance:
+                            if abs(median_twice(first) - median_twice(second)) > 2 * allowance:
                                 issues.append({"attempt": f"{role}:{workload}", "status": "failed",
                                                "reason": f"comparison {metric} {name} exceeds frozen cohort tolerance"})
             for row in rows:
@@ -2306,9 +2347,17 @@ def compare_evidence(evidence, profile):
                 baseline = statistics.median(row[metric] for row in cohorts["baseline"])
                 candidate = statistics.median(row[metric] for row in cohorts["candidate"])
                 passed = baseline - candidate > allowance
+                exact_medians = {}
+                if version == 4:
+                    baseline_twice = median_twice(row[metric] for row in cohorts["baseline"])
+                    candidate_twice = median_twice(row[metric] for row in cohorts["candidate"])
+                    passed = baseline_twice - candidate_twice > 2 * allowance
+                    # Display medians remain descriptive; these integer fields bind the decision.
+                    exact_medians = {"baseline_median_twice_ns": baseline_twice,
+                                     "candidate_median_twice_ns": candidate_twice}
                 if complete:
                     benefits[workload][metric] = {"baseline_median": baseline, "candidate_median": candidate,
-                                                 "allowance": allowance, "passed": passed}
+                                                 "allowance": allowance, "passed": passed, **exact_medians}
                 if not passed:
                     issues.append({"attempt": workload, "status": "failed", "reason": f"{metric} benefit does not exceed frozen noise"})
     return issues, benefits

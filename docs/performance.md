@@ -488,9 +488,11 @@ qualification or authorizes a new native launch.
 ### Protocol-4 retained-loop CPU and frozen sampling
 
 [ADR 0100](adr/0100-retained-loop-cpu-and-prospective-sampling.md) defines
-prospective protocol 4 under policy `template-efficiency-v4-retained-loop-prospective`.
-Corpus, oracles, timing boundaries, Session strata and the build-mode split are
-unchanged from protocol 3.
+prospective protocol 4. Its current policy is
+`template-efficiency-v4-retained-loop-control-budget-prospective-r2`, specified
+by [ADR 0103](adr/0103-component-control-error-allocation.md). Corpus, oracles,
+timing boundaries, Session strata and the build-mode split are unchanged from
+protocol 3.
 
 Every observed row adds `retained_loop_cpu`, a single current-process CPU
 bracket:
@@ -511,12 +513,29 @@ bracket:
 Normal protocol-4 grading uses nearest-rank process p95 and
 `retained_loop_cpu_ns`; turnover rows also grade stratum p95. `metrics.cpu_ns`
 keeps its summed-sample meaning as a diagnostic, and the bracket may not fall
-below it. ADR 0096 noise, A/A, order/drift and per-process ceilings still apply,
+below it. The calibration noise and per-process ceilings remain those of ADR 0096,
 as do the existing CPU accounting floors. Each comparison role must also follow
 `AB, BA` positions and pass the first/second-position and first/last-three median
 checks. Instrumented protocol-4 timing and CPU are descriptive. Their resource
 ceilings and exact work/ownership checks remain graded and cannot set
 `performance_qualified`.
+
+For each normal timing metric independently, the empirical allowance is
+`e=max(spread(calibration6),2*clock_allowance)` and the per-process ceiling stays
+`max(calibration6)+e`. The control allowance is
+`c=max(e,ceil(median(calibration6)*15/100))`; it bounds unchanged A/A role bias
+and within-role order/drift in control and comparison. Benefit rows require
+strict improvement above `b=max(e,c)` jointly on p95 and retained-loop CPU.
+The three allowances are stored separately and recomputed with exact
+half-nanosecond median arithmetic; `c` and `b` never enlarge a ceiling.
+
+The 15% is an engineering sensitivity contract, not statistical coverage.
+When a role's median does not exceed the calibration median, its order/drift
+checks are implied by the noise gate and add no independent detection.
+Effects at or below `b` are not claimable. The protocol-4 policy change requires
+fresh source-bound preflight, method, calibration, unchanged A/A and profile
+review. Earlier policy artifacts and failed controls are not converted or
+regraded. The prospective policy alone admits no numerical execution.
 
 The benchmark accepts paired `--warmups W --samples N` only for one statistical
 `--workload`, with W in `1..=1000` and N in `1..=40000`. Default and `--list`
@@ -613,8 +632,10 @@ p95 or pool heterogeneous calls, roles, outcomes, targets or configurations.
 | Trial operation / stages | Primary `operation.total_duration_us` starts immediately before `recognition_trial` and ends after terminal polling, public shutdown and final drain. Input decoding/hash and controller construction are excluded; top-level `total_duration_us` includes them and is not the primary. Observation-on child initialization/matching/projection/settlement/close/release marks and per-child parent marks retain separate epochs; never subtract across them. Off lacks these marks and capability-child identity. |
 | Lifetime CPU | Final owned-invocation user+system CPU includes its declared startup, descendants and teardown, denominator one invocation. Require complete coverage and independent non-regression. It is not operation CPU, wall utilization or a sum with already-included child CPU. |
 
-Bind each metric's API, stored unit/reporting quantum, effective resolution
-method/value, PID/owner scope, interval and missing reason before calibration.
+Bind each metric's API, stored unit, PID/owner, interval or checkpoint and
+missing reason before calibration. Timing/CPU additionally bind reporting
+quantum and reviewed resolution or accounting allowance. Resident-byte
+contracts do not invent timer resolution.
 Ns/us representation, QPC frequency and Job100ns units do not alone prove
 resolution or accuracy. Requested5ms or1ms polling sleeps are neither clock
 resolution nor upper detection-lag bounds. Boundary work remains in its observed
@@ -632,9 +653,11 @@ candidate),360 per target and720 across the two targets for the selected
 dev-normal/observation-on configuration. Off or another build mode needs a
 separate prospective contract and is not hidden in those totals.
 
-For each graded metric, let `B` be its six baseline values, `q` its reporting
-quantum and `r` the maximum effective calibration resolution in the same unit.
-Use exact ticks or a lossless decimal representation:
+Resident metrics use the separate two-axis resource rule below. For each graded
+timing/CPU metric, let `B` be its six baseline values, `q` its reporting quantum
+and `r` the maximum effective calibration resolution in the same unit, or its
+separately reviewed accounting allowance. Use exact ticks or a lossless decimal
+representation:
 
 - Freeze `s=max(B)-min(B)`, `a=max(s,2*r)` and
   `ceiling=q*ceil((max(B)+a)/q)`.
@@ -715,12 +738,47 @@ engine/supervisor RSS does not cover Node or trial children. Only accepted stead
 window refreshes have clock brackets; lifetime sampled maxima have no bracket
 for every contributing refresh and are not OS high-water.
 
-For admitted covered resource endpoints, the prospective envelope form is
-`max(calibration6)+max(spread,1MiB)`, or256KiB slack for counted requested Rust
-bytes. Growth/residual use same-process positive differences, not fresh-child
+[ADR 0102](adr/0102-actual-consumer-resident-point-policy.md) separates fixed
+resident checkpoint ceilings from calibrated comparison allowances. Its
+prospective Apple `trial-hit-roi`, dev-normal/observation-on allocation is
+256MiB at the recognition child's post-owner-release point on the bound32GiB
+host, with a1MiB comparison floor. The fixed allocation is an engineering
+choice, not an observed-RSS fit, scaling formula, host-capacity guarantee or SDK
+consumer limit. Other hosts, observation-off, sampled replay RSS and other
+cases need their own source-bound resource admission.
+
+A `consumer-method-review-v2` binds each selected resident metric's positive
+integer `hard_ceiling_bytes` and `comparison_allowance_floor_bytes`, with floor
+no larger than ceiling, to matching context/source-bound `resources` evidence
+and a nonempty justification. Missing policies refuse admission; no v1
+fallback exists. Every invocation, including calibration, requires available
+positive integer bytes no larger than its fixed ceiling. For six baseline
+values, freeze `s=max(B)-min(B)`, `a=max(s,comparison_allowance_floor_bytes)`,
+the fixed ceiling, floor, minimum, maximum, spread and exact median. Reject
+`s/median(B)>0.15`; zero spread and fractional medians are valid.
+
+Resident control/comparison roles each require six observations with
+`spread/median<=0.15`. Each role's first/second-position and first/last-three
+median differences must be `<=a`. Unchanged A/A additionally requires absolute
+role-median difference `<=a`; comparison requires
+`median(candidate)<=median(baseline)+a`. The per-row resident gate is the fixed
+ceiling, while these balanced checks carry comparison sensitivity.
+`a<=max(0.15*median(B),1MiB)` for this allocation; at low medians the floor can
+dominate the percentage. The floor is comparison slack, not page size,
+measurement resolution or a confidence interval.
+
+All timing/CPU ceilings and benefit obligations remain independent.
+Separately admitted counted requested-Rust-byte endpoints retain
+`max(calibration6)+max(spread,256KiB)`; this admits no missing normal counter.
+Growth/residual use same-process positive differences, not fresh-child
 variation or division by cycles. Exact cache capacity/ownership contracts are
-not calibrated allowances. No sampled maximum or post-exit absence proves
-all-native leak freedom or zero owner residual.
+not calibrated allowances. A resident point proves neither high-water usage,
+all-native leak freedom nor zero final-owner residual.
+
+Original resource envelopes, failed controls and campaign fences remain final.
+A new context requires fresh runtime closure, method/resource review,
+calibration, unchanged A/A and an accepted profile before candidate collection.
+The new directory or policy does not bypass a fence or rebind old observations.
 
 `tools/consumer-performance.py` implements one source-bound case per phase with
 `prepare`, `smoke`, `calibrate`, `control`, `freeze`, `compare`,
