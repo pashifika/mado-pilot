@@ -832,44 +832,46 @@ architecture check, formatting, lints with warnings denied, locked tests,
 documentation examples, documentation with rustdoc warnings denied, dependency
 policy, and the C and C++ surfaces.
 
-Continuous integration separates fast repository policy from native target
-verification, and reports three stable check names:
+Continuous integration separates repository policy from native verification.
+The stable target statuses aggregate six native lanes each:
 
-| Check | Host | Scope |
+| Check | Execution host | Scope |
 |---|---|---|
 | `Repository policy` | `ubuntu-latest` | Package inventory, dependency directions, formatting, dependency policy |
-| `Windows x86_64-pc-windows-msvc` | `windows-2025` | Native inventory, lint, test, doctest, documentation, C ABI and direct C/C++ consumer checks |
-| `macOS aarch64-apple-darwin` | `macos-26` | Native inventory, lint, test, doctest, documentation, C ABI and direct C/C++ consumer checks |
+| `Windows x86_64-pc-windows-msvc` | `windows-2025` workers; Ubuntu result gate | Complete Windows native verification group |
+| `macOS aarch64-apple-darwin` | `macos-26` workers; Ubuntu result gate | Complete Apple Silicon native verification group |
 
-That split is not incidental, so the rule behind it is recorded here rather than
-inferred from the table. The `Repository policy` job builds no product package,
-which is what places every check that needs a compiled product in the two native
-jobs. `mado-pilot-backend-opencv` generates its bindings at build time, so
-building any product package needs an OpenCV 4 installation and a loadable
-libclang, and that installation is provisioned on the two release targets rather
-than on a host that is neither. The repository-policy steps read manifests,
-metadata, and source text; the one thing that job compiles is the maintenance
-checker, which depends on no product package. Documentation, lints, tests, and
-the C and C++ boundary are verified in both native jobs, where the compiler that
-reports a broken link or a layout mismatch is the one the product is verified
-with.
+Each group owns `workspace`, `ocr`, `matching-normal`,
+`matching-instrumented`, `consumers`, and `external` lanes. Workers compile from
+fresh output roots and reuse compatible build products only within their own job;
+there is no persistent compiler-output cache or cross-job compiled-artifact
+transfer. Matching consumers use fixed executable copies, C/C++ consumers use
+the selected built library, and the external Rust consumer retains independent
+Cargo state. Build variants that identify different verification authority stay
+separate. [ADR 0107](adr/0107-clean-build-native-ci-lanes.md) records the decision.
 
-Each job prints `rustc -vV` and the resolved package inventory, so the tested
-environment and any accidental workspace member are observable in the log. Each
-native job asserts its own host triple and fails rather than reporting a
-cross-compiled result as native verification.
+The workspace lane on each target runs inventory, lint, tests, doctests and
+documentation. Other checks retain their native owners and existing commands.
+Repository policy builds only the dependency checker, which depends on no product
+package; result gates only evaluate native outcomes. Neither substitutes Linux
+compilation for native verification. All product compilation remains on the
+release targets with OpenCV 4 and a loadable libclang.
 
-The native jobs name an operating-system version rather than a `-latest` label, so
-moving to a new OS version is a reviewed change. A label pins only that version;
-GitHub migrates the image behind it on its own schedule, so the label does not
-freeze the image contents. The repository-policy job uses the moving
-`ubuntu-latest` on purpose, because it verifies host-independent policy rather than
-a release target. The pinned toolchain, not the runner label, is what makes compiler
-results reproducible.
+Each native worker prints `rustc -vV` and asserts its host triple. Workspace
+inventory remains observable on both targets. A required target status succeeds
+only when its entire matrix succeeds; failures, cancellation and unexpected skips
+remain non-success. Matrix fail-fast is disabled, and workers have a 30-minute
+safety timeout. Existing PR coverage, dev-push selection and distinct push status
+names remain unchanged.
+
+Native runner labels pin an OS version, not an immutable image. GitHub can update
+the image behind `windows-2025` and `macos-26`; moving to another OS version
+requires review. Repository policy and result gates use `ubuntu-latest` because
+they perform host-independent work.
 
 Workflows use GitHub-maintained actions pinned to a commit revision, and install
-Rust with the `rustup` already present on hosted runners rather than adding a
-third-party setup action.
+Rust with hosted `rustup`. Existing native prerequisite and tool caches remain;
+they are not product build caches.
 
 ## Licensing and third-party dependencies
 

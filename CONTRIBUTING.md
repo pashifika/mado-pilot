@@ -817,16 +817,16 @@ The stable required pull-request check names are:
 |---|---|---|
 | `Validate branch flow` | `branch-policy.yml` | The source and target branches follow the pull request flow. |
 | `Repository policy` | `rust.yml` | Package inventory, dependency directions, formatting, and dependency policy. |
-| `Windows x86_64-pc-windows-msvc` | `rust.yml` | Native `windows-2025` inventory, lint, test, doctest, documentation, C/C++ checks, the required Lane A semantic run, and compilation of Lane B/C. It does not execute approved-host WGC Lane B. |
-| `macOS aarch64-apple-darwin` | `rust.yml` | Native `macos-26` Apple Silicon inventory, lint, test, doctest, documentation, C/C++ checks, the required Lane A semantic run, and compilation of Lane B/C. It has no Screen Recording authority and does not execute ScreenCaptureKit Lane B. |
+| `Windows x86_64-pc-windows-msvc` | `rust.yml` | Aggregates all six native `windows-2025` lanes: workspace, OCR, normal/instrumented matching, C ABI consumers, and the independent Rust consumer. Includes Lane A execution and Lane B/C compilation, not approved-host WGC Lane B. |
+| `macOS aarch64-apple-darwin` | `rust.yml` | Aggregates the same six lanes on native `macos-26` Apple Silicon. It has no Screen Recording authority and does not execute ScreenCaptureKit Lane B. |
 
 Every pull request targeting `main` or `dev/**` runs these checks without a path
-filter. A `dev/**` push normally runs Repository policy and both native jobs
-again after integration. Before those push jobs start, a lightweight
+filter. A `dev/**` push normally runs Repository policy and both native groups
+again after integration. Before those push groups start, a lightweight
 `Select dev push checks` job looks for an open `dev/x.y.z` → `main` release PR
 in this repository whose head branch and commit exactly match the push.
-Only a confirmed match suppresses the three duplicate push jobs; draft release
-PRs count because their PR checks also run. A closed PR, another repository,
+Only a confirmed match suppresses repository policy and both native groups; draft
+release PRs count because their PR checks also run. A closed PR, another repository,
 another branch, or a different head commit does not suppress verification.
 API errors, unreadable responses, or a failed selector leave push checks enabled.
 
@@ -844,16 +844,35 @@ the skipped push. Subsequent pushes without a covering release PR run normally.
 Superseded PR runs still cancel only earlier runs of that same PR. `main` pushes
 remain disabled; release-PR checks remain the release merge gate.
 
-The `Repository policy` job builds no product package, which is why
-documentation, lints, tests, and the C and C++ boundary are verified only in the
-two native jobs. Building any product package needs OpenCV and a loadable
-libclang, because `mado-pilot-backend-opencv` generates its bindings at build
-time, and that installation exists on the two release targets rather than on a
-host that is neither. Of the verification sequence above, steps 3 through 6,
-step 8, Lane A execution, and Lane B/C compilation therefore run only in the two
-native jobs; steps 2 and 7 run only in the repository-policy job, and step 1 runs
-in all three. The separate approved-host Lane B jobs are support evidence, not
-GitHub required-status names.
+Each native group has six independent build-owning lanes: `workspace`, `ocr`,
+`matching-normal`, `matching-instrumented`, `consumers`, and `external`.
+Every lane starts on a fresh hosted runner and keeps compiled outputs within that
+job. No Cargo target or compiler-output cache is restored, and no compiled
+artifact is downloaded from another job or attempt. Existing prerequisite/tool
+caches remain. Matching attest/smoke checks reuse the fixed executable copy;
+C/C++ consumers use the selected freshly built C ABI library. Normal/instrumented,
+ordinary/private-fixture, and debug/release variants retain separate identities.
+The external Rust consumer retains its independent Cargo home, target and lockfile.
+
+The stable native check names belong to small Ubuntu aggregation jobs, not to
+cross-compiled verification. Each requires its entire native matrix to succeed;
+failure, cancellation, missing results and unexpected skips cannot turn green.
+Matrix fail-fast is disabled so another lane's failure does not cancel evidence
+collection. Native lanes have a 30-minute timeout; this is a safety limit, not a
+15-minute performance claim.
+
+`Repository policy` and the aggregation jobs compile no product package.
+Every product build still runs on the applicable native target with OpenCV and
+libclang. The two workspace lanes run inventory, lint, tests, doctests and docs;
+other native checks retain their existing commands in their owning lane.
+Approved-host Lane B remains separate support evidence.
+
+Rerunning a failed lane builds it afresh; it does not import a prior attempt's
+compiled files. Earlier successful checks retain their original attempt
+attribution. CI timing acceptance uses complete attempts, reports initial queue
+delay separately, and includes setup, compilation, execution and downstream
+scheduling in the critical path. More parallel jobs can increase total runner
+time. See [ADR 0107](docs/adr/0107-clean-build-native-ci-lanes.md).
 
 A check is activated as a live required status only after that check has produced
 its first successful run on the branch it will guard, and only with separate
