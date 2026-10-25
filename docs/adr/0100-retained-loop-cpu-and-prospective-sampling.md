@@ -36,7 +36,9 @@ from protocol 3: 54 normal rows and 57 instrumented rows. Current binaries canno
 reproduce protocols 1–3. The collector keeps those readers and their original
 policies for retained artifacts; its default is protocol 4.
 
-New campaigns use policy `template-efficiency-v4-retained-loop-prospective`.
+This record introduced policy `template-efficiency-v4-retained-loop-prospective`.
+[ADR 0103](0103-component-control-error-allocation.md) specifies its prospective
+control/benefit successor for new campaigns; retained policy bindings stay exact.
 Manifests and observations declare:
 
 - `sampling_protocol: "mado-component-sampling-v1"`;
@@ -91,6 +93,12 @@ Instrumented protocol-4 timing and CPU are descriptive and set no ceiling or
 benefit allowance. Its RSS, Rust-heap, growth and residual ceilings and exact
 work/ownership/mechanism checks remain graded. Instrumented evidence cannot set
 `performance_qualified` or substitute for a normal goal.
+
+[ADR 0103](0103-component-control-error-allocation.md) specifies the current
+prospective protocol-4 policy: empirical allowance for the unchanged individual
+ceiling, declared 15% control tolerance and a benefit threshold no smaller than
+that tolerance. Noise and sampling remain unchanged. It requires fresh
+collector-bound admission and does not regrade earlier protocol-4 artifacts.
 
 ### Frozen sampling plans
 

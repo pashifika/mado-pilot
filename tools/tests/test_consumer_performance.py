@@ -148,6 +148,38 @@ def cohort_rows(stage, metric="operation_us", baseline=1000, other=1000):
              "cpu_resolution": "1/1000"} for slot in collector.schedule(stage)]
 
 
+RSS = "recognition_child_rss_bytes"
+# Fixture values only; the collector binds whatever the reviewed policy declares.
+HARD, FLOOR = 160 * collector.MIB, 2 * collector.MIB
+
+
+def resident_contract(**changes):
+    return {"unit": "bytes", "domain": "resident", "missing_reason": None,
+            "api": "libc::proc_pidinfo(PROC_PIDTASKINFO).pti_resident_size",
+            "owner": "actual recognition child", "interval": "one post-owner-release point",
+            "hard_ceiling_bytes": HARD, "comparison_allowance_floor_bytes": FLOOR, **changes}
+
+
+def resident_policy(**changes):
+    return {RSS: {"hard_ceiling_bytes": HARD, "comparison_allowance_floor_bytes": FLOOR,
+                  "justification": "fixture engineering budget, not a host capacity claim", **changes}}
+
+
+def calibrated_resident(values=(100 * collector.MIB,) * 6, **changes):
+    rows = cohort_rows("calibration", RSS)
+    for row, value in zip(rows, values):
+        row["metrics"][RSS] = value
+    return collector.derive_envelopes(rows, {"metrics": {RSS: resident_contract(**changes)}})[RSS]
+
+
+def paired_rows(stage, timing, resident):
+    """Balanced rows carrying one timing endpoint and the resident point per role."""
+    rows = cohort_rows(stage, "operation_us", *timing)
+    for row in rows:
+        row["metrics"][RSS] = resident[0] if row["slot"]["role"] == "baseline" else resident[1]
+    return rows
+
+
 class ScalarRules(unittest.TestCase):
     def test_only_case_required_endpoints_are_mandatory(self):
         self.assertEqual(collector.required_metrics("trial-hit-full"),
@@ -699,7 +731,7 @@ class AppleSourceClosedEvidence(unittest.TestCase):
                           "drift_rule": "exact-source-host-api-unit", "raw_accounting_resolution_seconds": None,
                           "evidence": [margin_proof]}
         allowance_ref = collector.save(self.root / "allowance.json", self.allowance)
-        self.review = {"kind": "consumer-method-review-v1", "accepted": True, "context_sha256": self.context,
+        self.review = {"kind": "consumer-method-review-v2", "accepted": True, "context_sha256": self.context,
                        "reviewer": "fixture-reviewer", "rationale": "deterministic contract fixture",
                        "source_closed_cpu": certificate_ref, "accounting_allowance": allowance_ref,
                        "metrics": {
@@ -745,6 +777,20 @@ class AppleSourceClosedEvidence(unittest.TestCase):
         self.assertIsNone(result["cpu_resolution"])
         self.assertEqual(result["accounting_allowance_seconds"], "1/1000000")
         self.assertEqual((self.root / "discovery-raw.json").read_bytes(), before)
+
+    def test_bound_resident_policy_completes_admission_and_allows_actual_point(self):
+        resources = collector.read_reference(self.review["gates"]["resources"]["evidence"][0])
+        review = copy.deepcopy(self.review)
+        review["metrics"][RSS] = resident_contract()
+        review["gates"]["resources"]["evidence"] = [collector.save(
+            self.root / "resources-resident.json", {**resources, "resident_policies": resident_policy()})]
+        self.plan["admission"] = collector.save(self.root / "review-resident.json", review)
+        self.assertEqual(collector.admission(self.plan)[1], [])
+        self.review = review
+        result = self.reconcile()
+        self.assertEqual((result["issues"], result["unavailable"]), ([], []))
+        self.assertEqual(result["metrics"][RSS], 100 * collector.MIB)
+        self.assertTrue(result["ungraded_resource_domains"]["os_high_water"].startswith("unavailable"))
 
     def test_bare_accepted_certificate_and_unproved_native_paths_refuse(self):
         with self.assertRaises((KeyError, ValueError)):
@@ -902,6 +948,192 @@ class ProfileAcceptance(unittest.TestCase):
         collector.Campaign(self.plan).fence("identity", "source changed", "prior-case")
         with self.assertRaisesRegex(ValueError, "campaign"):
             collector.profile_proposal(self.calibration, self.control)
+
+    def test_unchanged_resident_control_is_graded_before_profile_freeze(self):
+        self.calibration["review"] = {"metrics": {**self.calibration["review"]["metrics"], RSS: resident_contract()}}
+        for row in self.calibration["rows"] + self.control["rows"]:
+            row["metrics"][RSS] = 100 * collector.MIB
+        envelope = collector.profile_proposal(self.calibration, self.control)["envelopes"][RSS]
+        self.assertEqual((envelope["ceiling"], envelope["allowance"]), (str(HARD), str(FLOOR)))
+        for row in self.control["rows"]:
+            if row["slot"]["role"] == "control":
+                row["metrics"][RSS] += FLOOR + 1
+        with self.assertRaisesRegex(ValueError, "unchanged control failed"):
+            collector.profile_proposal(self.calibration, self.control)
+
+
+class ResidentAdmission(unittest.TestCase):
+    """Real hash-bound review/evidence files; unrelated runtime/CPU gates stay unavailable here."""
+
+    def setUp(self):
+        self.temporary = tempfile.TemporaryDirectory()
+        self.addCleanup(self.temporary.cleanup)
+        self.root = Path(self.temporary.name).resolve()
+        self.plan = plan_for(self.root)
+        self.context = collector.context_digest(self.plan)
+        self.source = str(self.root / "driver")
+        self.files = 0
+
+    def bound(self, value):
+        self.files += 1
+        return collector.save(self.root / f"bound-{self.files}.json", value)
+
+    def evidence(self, gate, **fields):
+        return self.bound({"gate": gate, "complete": True, "context_sha256": self.context,
+                           "source_files": {self.source: self.plan["inputs"][self.source]["sha256"]}, **fields})
+
+    def resident_issues(self, metrics, *resources, kind="consumer-method-review-v2"):
+        """Admission failures of the method record, resources gate and resident metric only."""
+        gates = {gate: {"status": "accepted", "issues": [], "evidence": [self.evidence(gate)]}
+                 for gate in collector.GATES}
+        gates["resources"]["evidence"] = [self.evidence("resources", **fields) for fields in resources or ({},)]
+        self.plan["admission"] = self.bound({
+            "kind": kind, "accepted": True, "context_sha256": self.context, "reviewer": "fixture-reviewer",
+            "rationale": "resident policy fixture", "gates": gates, "metrics": metrics})
+        return [row for row in collector.admission(self.plan)[1]
+                if row["category"] == "admission" or row["reason"].startswith(("resources:", RSS))]
+
+    def test_matching_bound_policy_admits_parameterized_resident_contract(self):
+        policy = {"resident_policies": resident_policy()}
+        self.assertEqual(self.resident_issues({RSS: resident_contract()}, policy), [])
+        # A bound resources record without a policy neither satisfies nor contradicts another.
+        self.assertEqual(self.resident_issues({RSS: resident_contract()}, {}, policy), [])
+        other = {"hard_ceiling_bytes": 3 * HARD, "comparison_allowance_floor_bytes": 1}
+        self.assertEqual(self.resident_issues({RSS: resident_contract(**other)},
+                                              {"resident_policies": resident_policy(**other)}), [])
+
+    def test_missing_mismatched_unbound_or_inconsistent_policy_refuses(self):
+        policy = {"resident_policies": resident_policy()}
+        cases = {
+            "missing": [{}],
+            "mismatched ceiling": [{"resident_policies": resident_policy(hard_ceiling_bytes=HARD - 1)}],
+            "mismatched floor": [{"resident_policies": resident_policy(comparison_allowance_floor_bytes=FLOOR + 1)}],
+            "inconsistent second record": [policy, {"resident_policies": resident_policy(hard_ceiling_bytes=HARD + 1)}],
+            "other context": [{**policy, "context_sha256": "0" * 64}],
+            "unbound source": [{**policy, "source_files": {self.source: "0" * 64}}],
+            "empty justification": [{"resident_policies": resident_policy(justification=" ")}],
+            "unselected metric": [{"resident_policies": {**resident_policy(),
+                                                         "child_sampled_rss_bytes": resident_policy()[RSS]}}],
+            "not an object": [{"resident_policies": [resident_policy()[RSS]]}],
+        }
+        for name, resources in cases.items():
+            with self.subTest(case=name):
+                self.assertTrue(self.resident_issues({RSS: resident_contract()}, *resources))
+
+    def test_invalid_numeric_fields_refuse_even_when_policy_repeats_them(self):
+        for key in ("hard_ceiling_bytes", "comparison_allowance_floor_bytes"):
+            for value in (None, True, 0, -1, float(FLOOR), str(FLOOR), 1 << 64):
+                with self.subTest(field=key, value=value):
+                    self.assertTrue(self.resident_issues({RSS: resident_contract(**{key: value})},
+                                                         {"resident_policies": resident_policy(**{key: value})}))
+        inverted = {"hard_ceiling_bytes": FLOOR, "comparison_allowance_floor_bytes": FLOOR + 1}
+        self.assertTrue(self.resident_issues({RSS: resident_contract(**inverted)},
+                                             {"resident_policies": resident_policy(**inverted)}))
+        for key, value in (("quantum", 1), ("resolution", 4096), ("resolution_method", "page size")):
+            with self.subTest(timer_field=key):
+                self.assertTrue(self.resident_issues({RSS: resident_contract(**{key: value})},
+                                                     {"resident_policies": resident_policy()}))
+
+    def test_no_selected_resident_metric_needs_no_policy_and_refuses_a_fabricated_one(self):
+        self.assertEqual(self.resident_issues({}, {}), [])
+        self.assertTrue(self.resident_issues({}, {"resident_policies": resident_policy()}))
+        self.assertTrue(self.resident_issues({}, {"resident_policies": {}}))
+
+    def test_previous_method_kind_has_no_resource_formula_fallback(self):
+        issues = self.resident_issues({RSS: resident_contract()}, {"resident_policies": resident_policy()},
+                                      kind="consumer-method-review-v1")
+        self.assertIn(collector.issue("admission", "accepted consumer method review required"), issues)
+
+
+class ResidentGrading(unittest.TestCase):
+    BASE = 100 * collector.MIB
+
+    def test_declared_ceiling_and_floor_are_not_sample_derived(self):
+        self.assertEqual(calibrated_resident(), {
+            "resource": True, "ceiling": str(HARD), "comparison_allowance_floor_bytes": str(FLOOR),
+            "allowance": str(FLOOR), "spread": "0", "median": str(self.BASE),
+            "minimum": str(self.BASE), "maximum": str(self.BASE)})
+        wider = calibrated_resident(hard_ceiling_bytes=2 * HARD, comparison_allowance_floor_bytes=1)
+        self.assertEqual((wider["ceiling"], wider["allowance"]), (str(2 * HARD), "1"))
+
+    def test_spread_above_floor_and_half_byte_median_stay_exact(self):
+        values = [self.BASE] * 3 + [self.BASE + 1] + [self.BASE + 3 * collector.MIB] * 2
+        envelope = calibrated_resident(values)
+        self.assertEqual(envelope["allowance"], str(3 * collector.MIB))
+        self.assertEqual(envelope["median"], str(collector.Fraction(2 * self.BASE + 1, 2)))
+        self.assertEqual(envelope["comparison_allowance_floor_bytes"], str(FLOOR))
+
+    def test_calibration_repeatability_boundary_and_absolute_ceiling(self):
+        unit = 1024
+        self.assertEqual(calibrated_resident([925 * unit] + [1000 * unit] * 4 + [1075 * unit])["spread"],
+                         str(150 * unit))
+        with self.assertRaisesRegex(ValueError, "repeatability"):
+            calibrated_resident([924 * unit] + [1000 * unit] * 4 + [1075 * unit])
+        self.assertEqual(calibrated_resident([HARD] * 6)["maximum"], str(HARD))
+        for bad in (HARD + 1, 0, str(self.BASE), float(self.BASE), True):
+            with self.subTest(value=bad), self.assertRaises(ValueError):
+                calibrated_resident([bad] + [self.BASE] * 5)
+        with self.assertRaisesRegex(ValueError, "unavailable calibration"):
+            calibrated_resident([None] + [self.BASE] * 5)
+
+    def test_every_invocation_obeys_fixed_point_ceiling_and_missing_stays_unavailable(self):
+        with tempfile.TemporaryDirectory() as directory:
+            plan = plan_for(directory)
+            output = trial_output(plan)
+            slot = collector.schedule("calibration")[0]
+            review = lambda ceiling: {"metrics": {RSS: resident_contract(hard_ceiling_bytes=ceiling)}}
+            result = collector.reconcile(plan, slot, record_for(output), review(self.BASE))
+            self.assertEqual(result["issues"], [])
+            self.assertEqual(result["metrics"][RSS], self.BASE)
+            result = collector.reconcile(plan, slot, record_for(output), review(self.BASE - 1))
+            self.assertEqual(result["issues"],
+                             [collector.issue("numerical", RSS + " exceeds fixed resident checkpoint ceiling")])
+            output["operation"]["controller"]["result"]["measurement"].pop("process_rss_after")
+            result = collector.reconcile(plan, slot, record_for(output), review(self.BASE - 1))
+            self.assertEqual(result["issues"], [])
+            self.assertIn(collector.issue("unavailable", "required metric missing: " + RSS), result["unavailable"])
+
+    def test_unchanged_resident_control_uses_balanced_checks(self):
+        envelopes = {RSS: calibrated_resident()}
+
+        def grade(rows):
+            return [row["reason"] for row in collector.grade_rows(rows, "control", envelopes, "trial-hit-roi")]
+
+        self.assertEqual(grade(cohort_rows("control", RSS, self.BASE, self.BASE + FLOOR)), [])
+        self.assertTrue(any("role bias" in reason for reason in
+                            grade(cohort_rows("control", RSS, self.BASE, self.BASE + FLOOR + 1))))
+        for name, shifted in (("order", lambda slot: slot["position"] == 1),
+                              ("drift", lambda slot: slot["process"] >= 3)):
+            rows = cohort_rows("control", RSS, self.BASE, self.BASE)
+            for row in rows:
+                if shifted(row["slot"]):
+                    row["metrics"][RSS] += FLOOR + 1
+            with self.subTest(check=name):
+                self.assertTrue(any(name in reason for reason in grade(rows)))
+        rows = cohort_rows("control", RSS, self.BASE, self.BASE)
+        rows[0]["metrics"][RSS] += 16 * collector.MIB
+        self.assertTrue(any("repeatability" in reason for reason in grade(rows)))
+
+    def test_candidate_resident_median_is_non_regression_not_benefit(self):
+        envelopes = {"operation_us": collector.scalar_envelope([1000] * 6, 1, 1), RSS: calibrated_resident()}
+
+        def grade(timing, resident):
+            rows = paired_rows("comparison", timing, resident)
+            return [row["reason"] for row in collector.grade_rows(rows, "comparison", envelopes, "trial-hit-roi")]
+
+        self.assertEqual(grade((1000, 997), (self.BASE, self.BASE + FLOOR)), [])
+        self.assertEqual(grade((1000, 997), (self.BASE, self.BASE + FLOOR + 1)),
+                         [RSS + ": candidate resident median exceeds baseline plus allowance"])
+        self.assertEqual(grade((1000, 1000), (self.BASE, self.BASE - 10 * collector.MIB)),
+                         ["operation_us: scalar benefit does not exceed allowance"])
+
+    def test_per_process_hard_ceiling_survives_passing_medians(self):
+        rows = cohort_rows("comparison", RSS, self.BASE, self.BASE)
+        rows[5]["metrics"][RSS] = HARD + 1
+        rows[6]["metrics"].pop(RSS)
+        issues = collector.grade_rows(rows, "comparison", {RSS: calibrated_resident()}, "trial-hit-roi")
+        self.assertIn(collector.issue("numerical", "05: " + RSS + " exceeds frozen ceiling"), issues)
+        self.assertIn(collector.issue("unavailable", "06: " + RSS), issues)
 
 
 if __name__ == "__main__":

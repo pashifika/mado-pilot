@@ -1232,7 +1232,8 @@ def v2_parsed_evidence(root, mode, build_mode="normal"):
 def v2_numeric_profile(evidence):
     specification = evidence["plan"]
     return {"format_version": specification["format_version"],
-            **({"workloads": specification["workloads"]} if specification["format_version"] == 3 else {}),
+            **({"workloads": specification["workloads"]} if specification["format_version"] >= 3 else {}),
+            **({"sampling": specification["sampling"]} if specification["format_version"] == 4 else {}),
             **{key: specification[key] for key in
             ("target", "build_mode", "collector", "host", "environment", "policy", "method_review")},
             "baseline": specification["binaries"]["baseline"], "manifest": evidence["manifest"],
@@ -1718,7 +1719,7 @@ def save_method_review(root, specification, campaign_seconds=None):
                  ("target", "build_mode", "host", "environment", "collector", "policy", "workloads")},
               "baseline": specification["binaries"]["baseline"],
               "candidate": specification["binaries"].get("candidate")
-                           or (v3_identity if version == 3 else v2_identity)(
+                           or (v4_identity if version == 4 else v3_identity if version == 3 else v2_identity)(
                                root, specification["build_mode"], "candidate"),
               "reviewer": "fixture reviewer", "rationale": "deterministic apparatus decision only",
               "source_host_cost_review": "synthetic finite component plan; no runtime clearance",
@@ -1731,11 +1732,13 @@ def save_method_review(root, specification, campaign_seconds=None):
             review["stage_limits"][mode]["campaign_timeout_seconds"] = seconds
     if "runtime_observer_policy" in specification:
         review["runtime_observer_policy"] = specification["runtime_observer_policy"]
+    if version == 4:
+        review["sampling"] = specification["sampling"]
     path = root / "method.json"
     collector.save(path, review)
     return {"path": str(path), "sha256": collector.sha256(path),
             **({"stage_limits": review["stage_limits"]}
-               if version == 3 and len(specification["workloads"]) == 1 else {})}
+               if version >= 3 and len(specification["workloads"]) == 1 else {})}
 
 
 class ProtocolTwoAdmissionTests(unittest.TestCase):
@@ -5205,8 +5208,8 @@ def v4_fields():
             "retained_loop_cpu_protocol": "mado-component-retained-loop-cpu-v1"}
 
 
-def v4_manifest():
-    return {**v3_manifest(), **v4_fields()}
+def v4_manifest(build_mode="normal", role="baseline"):
+    return {**v3_manifest(build_mode, role), **v4_fields()}
 
 
 def v4_payload(workload="single-small96x64", warmups=2, count=7):
@@ -5226,6 +5229,37 @@ def v4_payload(workload="single-small96x64", warmups=2, count=7):
         "cpu_ns": row["metrics"]["cpu_ns"] + 100_000, "sample_count": count, "reason": None,
         "scope": "current-process-retained-loop-including-preparation-oracles-and-storage"}
     return value
+
+
+def v4_identity(root, build_mode="normal", role="baseline"):
+    binding = v3_identity(root, build_mode, role)
+    declaration = v4_manifest(build_mode, role)
+    build = binding["build"]
+    build.update(protocol_version=4,
+                 benchmark_manifest=collector.manifest_identity(declaration, TARGET, "4.12.0", 4, build_mode))
+    build["provenance_commands"][0] = {
+        "argv": [binding["path"], "--protocol-version", "4", "--list"], "record": process_record(declaration)}
+    return binding
+
+
+def v4_parsed_evidence(root, mode, build_mode="normal", workload="selection-k16-dense1080p-keepall"):
+    # Synthetic scalar cohorts exercise the frozen arithmetic, not native eligibility.
+    evidence = v3_parsed_evidence(root, mode, build_mode, workload)
+    plan = evidence["plan"]
+    plan.update(format_version=4, policy=copy.deepcopy(collector.V4_POLICY))
+    plan["binaries"] = {role: v4_identity(root, build_mode, "baseline" if role == "control" else role)
+                        for role in plan["binaries"]}
+    evidence["manifest"] = plan["binaries"]["baseline"]["build"]["benchmark_manifest"]
+    counts = {"warmups": 20, "samples": 200} if collector.V3_DEFINITIONS[workload]["statistical"] else {
+        "warmups": 1, "samples": 3}
+    sampling = {workload: counts}
+    raw = json.dumps(sampling)
+    plan["sampling"] = {"path": str(root / "sampling.json"), "raw": raw, "rows": sampling,
+                        "sha256": hashlib.sha256(raw.encode()).hexdigest()}
+    for workloads in evidence["observations"].values():
+        for row in workloads[workload]:
+            row["retained_loop_cpu_ns"] = row["cpu_ns"] + 100_000
+    return evidence
 
 
 class ProtocolFourTests(unittest.TestCase):
@@ -5338,23 +5372,349 @@ class ProtocolFourTests(unittest.TestCase):
 
     def test_normal_loop_cpu_and_instrumented_resource_gates_stay_separate(self):
         for mode in ("normal", "instrumented"):
-            # Parsed scalar cohorts exercise grading, not source or runtime admission.
-            evidence = v3_parsed_evidence(self.root, "calibration", mode, self.workload)
-            evidence["plan"].update(format_version=4, policy=copy.deepcopy(collector.V4_POLICY))
+            evidence = v4_parsed_evidence(self.root, "calibration", mode, self.workload)
             for row in evidence["observations"]["baseline"][self.workload]:
                 row["retained_loop_cpu_ns"] = 200_000_000
                 row["cpu_ns"] = row["process"] * 100_000_000
             envelope = collector.derive_envelopes(evidence)[self.workload]
             self.assertNotIn("cpu_ns", envelope["benefit_allowances"])
+            self.assertEqual(set(envelope["empirical_allowances"]), set(envelope["benefit_allowances"]))
+            self.assertEqual(set(envelope["control_allowances"]), set(envelope["benefit_allowances"]))
             self.assertIn("peak_rss_bytes", envelope["limits"])
             if mode == "normal":
                 self.assertEqual(set(envelope["benefit_allowances"]), {"p95_ns", "retained_loop_cpu_ns"})
+                self.assertEqual(envelope["empirical_allowances"]["retained_loop_cpu_ns"], 2000)
+                self.assertEqual(envelope["control_allowances"]["retained_loop_cpu_ns"], 30_000_000)
+                self.assertEqual(envelope["limits"]["retained_loop_cpu_ns"], 200_002_000)
                 evidence["observations"]["baseline"][self.workload][0]["retained_loop_cpu_ns"] = 400_000_000
                 with self.assertRaises(ValueError):
                     collector.derive_envelopes(evidence)
             else:
                 self.assertEqual(envelope["benefit_allowances"], {})
                 self.assertIn("peak_heap_bytes", envelope["limits"])
+
+
+class ProtocolFourControlBudgetTests(unittest.TestCase):
+    def setUp(self):
+        temporary = tempfile.TemporaryDirectory()
+        self.addCleanup(temporary.cleanup)
+        self.root = Path(temporary.name).resolve()
+        self.workload = "selection-k16-dense1080p-keepall"
+        self.calibration, self.control, self.comparison = (
+            v4_parsed_evidence(self.root, mode, workload=self.workload)
+            for mode in ("calibration", "control", "comparison"))
+        self.profile = v2_numeric_profile(self.calibration)
+
+    def freeze(self):
+        binding = save_method_review(self.root, self.comparison["plan"])
+        for evidence in (self.calibration, self.control, self.comparison):
+            plan = evidence["plan"]
+            plan["method_review"] = copy.deepcopy(binding)
+            plan["execution_limits"] = copy.deepcopy(binding["stage_limits"][plan["mode"]])
+        plan = self.calibration["plan"]
+        review = {"format_version": 4, "kind": "component-profile-review", "decision": "accepted",
+                  "target": TARGET, "build_mode": "normal", "workloads": plan["workloads"],
+                  "sampling": plan["sampling"], "method_review": binding,
+                  "calibration": collector.cohort_binding(self.calibration),
+                  "control": collector.cohort_binding(self.control),
+                  "envelopes": collector.derive_envelopes(self.calibration),
+                  "reviewer": "fixture reviewer", "rationale": "synthetic control-budget arithmetic only"}
+        path = self.root / "profile-review.json"
+        collector.save(path, review)
+        with mock.patch.object(collector, "runtime_closure_admission"):
+            return collector.profile_from_v2(
+                self.calibration, self.root / "calibration", self.control, self.root / "control",
+                "fixture reviewer", "synthetic control-budget arithmetic only", path, collector.sha256(path))
+
+    def test_own_metric_half_integer_medians_are_rounded_up_exactly(self):
+        cases = (
+            ("p95_ns", 100_000, 20, 15_001),
+            ("retained_loop_cpu_ns", 900_000, 2000, 135_001),
+            ("p95_ns", 10**18 + 6, 20, 150_000_000_000_000_001),
+        )
+        for metric, low, empirical, control in cases:
+            calibration = copy.deepcopy(self.calibration)
+            rows = calibration["observations"]["baseline"][self.workload]
+            for row, value in zip(rows, (low, low + 1, low, low + 1, low, low + 1)):
+                row[metric] = value
+            envelope = collector.derive_envelopes(calibration)[self.workload]
+            with self.subTest(metric=metric, low=low):
+                self.assertEqual(envelope["empirical_allowances"][metric], empirical)
+                self.assertEqual(envelope["control_allowances"][metric], control)
+                self.assertEqual(envelope["benefit_allowances"][metric], control)
+                self.assertIs(type(envelope["control_allowances"][metric]), int)
+                self.assertEqual(envelope["limits"][metric], low + 1 + empirical)
+                other = "retained_loop_cpu_ns" if metric == "p95_ns" else "p95_ns"
+                for field in ("empirical_allowances", "control_allowances", "benefit_allowances", "limits"):
+                    self.assertEqual(envelope[field][other], self.profile["envelopes"][self.workload][field][other])
+
+    def test_control_budget_does_not_enlarge_individual_timing_or_resource_limits(self):
+        historical = copy.deepcopy(self.calibration)
+        historical["plan"].update(format_version=3, policy=copy.deepcopy(collector.V3_POLICY))
+        for row in historical["observations"]["baseline"][self.workload]:
+            row["cpu_ns"] = row["retained_loop_cpu_ns"]
+        old = collector.derive_envelopes(historical)[self.workload]
+        envelope = self.profile["envelopes"][self.workload]
+        for field, values in (("limits", old["limits"]), ("empirical_allowances", old["benefit_allowances"]),
+                              ("clock_allowances", old["clock_allowances"])):
+            expected = {("retained_loop_cpu_ns" if key == "cpu_ns" else key): value
+                        for key, value in values.items()}
+            self.assertEqual(envelope[field], expected)
+        for metric in ("p95_ns", "retained_loop_cpu_ns"):
+            self.assertGreater(envelope["control_allowances"][metric], envelope["empirical_allowances"][metric])
+        for mode, original in (("control", self.control), ("comparison", self.comparison)):
+            for role in original["observations"]:
+                for metric in envelope["limits"]:
+                    changed = copy.deepcopy(original)
+                    changed["observations"][role][self.workload][-1][metric] = envelope["limits"][metric] + 1
+                    issues = (collector.control_evidence(self.calibration, changed) if mode == "control"
+                              else collector.compare_evidence(changed, self.profile)[0])
+                    with self.subTest(mode=mode, role=role, metric=metric):
+                        self.assertTrue(any(issue["attempt"] == f"{role}:{self.workload}:5"
+                                            and f"{metric}=" in issue["reason"] for issue in issues))
+
+    def test_target_cpu_floor_and_zero_clock_aware_guards_are_unchanged(self):
+        for target, floor in ((TARGET, 1000), (collector.TARGETS[1], 15_625_000)):
+            calibration = copy.deepcopy(self.calibration)
+            calibration["plan"]["target"] = target
+            for row in calibration["observations"]["baseline"][self.workload]:
+                row.update(p95_ns=0, retained_loop_cpu_ns=0)
+            envelope = collector.derive_envelopes(calibration)[self.workload]
+            with self.subTest(target=target):
+                self.assertEqual(envelope["clock_allowances"]["retained_loop_cpu_ns"], floor)
+                for field in ("limits", "empirical_allowances", "control_allowances", "benefit_allowances"):
+                    self.assertEqual(envelope[field]["p95_ns"], 20)
+                    self.assertEqual(envelope[field]["retained_loop_cpu_ns"], 2 * floor)
+
+    def test_control_bias_uses_own_frozen_budget_in_both_directions(self):
+        envelope = self.profile["envelopes"][self.workload]
+        for metric, allowance in envelope["control_allowances"].items():
+            reference = self.calibration["observations"]["baseline"][self.workload][0][metric]
+            for role in ("baseline", "control"):
+                for excess in (0, 1):
+                    changed = copy.deepcopy(self.control)
+                    for row in changed["observations"][role][self.workload]:
+                        row[metric] = reference - allowance - excess
+                    issues = collector.control_evidence(self.calibration, changed)
+                    with self.subTest(metric=metric, role=role, excess=excess):
+                        self.assertEqual(bool(issues), bool(excess))
+                        self.assertTrue(all(f"{metric} between-role bias" in issue["reason"] for issue in issues))
+
+    def test_control_and_comparison_order_drift_keep_separate_noise_gate(self):
+        envelope = self.profile["envelopes"][self.workload]
+        for mode, original in (("control", self.control), ("comparison", self.comparison)):
+            for role in original["observations"]:
+                for metric, control in envelope["control_allowances"].items():
+                    for kind in ("order", "drift"):
+                        for delta in (envelope["empirical_allowances"][metric] + 1, control, control + 1):
+                            changed = copy.deepcopy(original)
+                            rows = changed["observations"][role][self.workload]
+                            # Both roles use the calibration scale here; benefit is an independent gate.
+                            reference = self.calibration["observations"]["baseline"][self.workload][0][metric]
+                            for row in rows:
+                                shifted = row["position"] == 0 if kind == "order" else row["process"] >= 3
+                                row[metric] = reference - (delta if shifted else 0)
+                            issues = (collector.control_evidence(self.calibration, changed) if mode == "control"
+                                      else collector.compare_evidence(changed, self.profile)[0])
+                            with self.subTest(mode=mode, role=role, metric=metric, kind=kind, delta=delta):
+                                self.assertEqual(any(f"{metric} {kind}" in issue["reason"]
+                                                     and issue["attempt"] == f"{role}:{self.workload}"
+                                                     for issue in issues), delta > control)
+                                self.assertEqual(any(f"{metric} noise" in issue["reason"]
+                                                     and issue["attempt"] == f"{role}:{self.workload}"
+                                                     for issue in issues), delta >= control)
+
+    def test_comparison_role_noise_keeps_exact_declared_boundary(self):
+        for role in ("baseline", "candidate"):
+            for excess in (0, 1):
+                changed = copy.deepcopy(self.comparison)
+                for row in changed["observations"][role][self.workload]:
+                    row["p95_ns"] = 800_000 if row["process"] < 4 else 920_000 + excess
+                issues, _ = collector.compare_evidence(changed, self.profile)
+                with self.subTest(role=role, excess=excess):
+                    self.assertEqual(any("p95_ns noise" in issue["reason"]
+                                         and issue["attempt"] == f"{role}:{self.workload}" for issue in issues),
+                                     bool(excess))
+
+    def test_joint_benefits_must_strictly_exceed_control_not_just_empirical_error(self):
+        envelope = self.profile["envelopes"][self.workload]
+        self.assertEqual(collector.compare_evidence(self.comparison, self.profile)[0], [])
+        for metric, control in envelope["control_allowances"].items():
+            for delta in (envelope["empirical_allowances"][metric] + 1, control, control + 1):
+                changed = copy.deepcopy(self.comparison)
+                reference = changed["observations"]["baseline"][self.workload][0][metric]
+                for row in changed["observations"]["candidate"][self.workload]:
+                    row[metric] = reference - delta
+                issues, benefits = collector.compare_evidence(changed, self.profile)
+                with self.subTest(metric=metric, delta=delta):
+                    self.assertEqual(benefits[self.workload][metric]["allowance"], control)
+                    self.assertEqual(benefits[self.workload][metric]["passed"], delta > control)
+                    self.assertEqual(bool(issues), delta <= control)
+                    other = "retained_loop_cpu_ns" if metric == "p95_ns" else "p95_ns"
+                    self.assertTrue(benefits[self.workload][other]["passed"])
+        calibration = v4_parsed_evidence(self.root, "calibration", workload="single-small96x64")
+        comparison = v4_parsed_evidence(self.root, "comparison", workload="single-small96x64")
+        self.assertEqual(collector.compare_evidence(comparison, v2_numeric_profile(calibration)), ([], {}))
+
+    def test_recomputed_profile_rejects_every_allowance_and_bound_perturbation(self):
+        profile = self.freeze()
+        with (mock.patch.object(collector, "evaluate", side_effect=[self.calibration, self.control]),
+              mock.patch.object(collector, "runtime_closure_admission")):
+            self.assertEqual(collector.validate_profile(profile), profile)
+        fields = ("empirical_allowances", "control_allowances", "benefit_allowances", "clock_allowances", "limits")
+        for field in fields:
+            for mutation in ("increase", "decrease", "float", "remove"):
+                changed = copy.deepcopy(profile)
+                values = changed["envelopes"][self.workload][field]
+                if mutation == "remove":
+                    del changed["envelopes"][self.workload][field]
+                else:
+                    value = values["p95_ns"]
+                    values["p95_ns"] = float(value) if mutation == "float" else value + (
+                        1 if mutation == "increase" else -1)
+                path = self.root / f"profile-{field}-{mutation}.json"
+                collector.save(path, changed)
+                with (self.subTest(field=field, mutation=mutation),
+                      mock.patch.object(collector, "evaluate", side_effect=[self.calibration, self.control]),
+                      mock.patch.object(collector, "runtime_closure_admission"),
+                      self.assertRaisesRegex(ValueError, "profile/provenance/envelopes")):
+                    collector.validate_profile(collector.load(path))
+
+    def test_rehashed_profile_review_cannot_authorize_edited_allowances(self):
+        profile = self.freeze()
+        original = collector.load(profile["profile_review"]["path"])
+        for field in ("empirical_allowances", "control_allowances", "benefit_allowances", "limits"):
+            review = copy.deepcopy(original)
+            review["envelopes"][self.workload][field]["retained_loop_cpu_ns"] += 1
+            path = self.root / f"review-{field}.json"
+            collector.save(path, review)
+            with self.subTest(field=field), self.assertRaisesRegex(ValueError, "exact method/cohorts/envelopes"):
+                collector.profile_from_v2(
+                    self.calibration, profile["calibration"]["path"], self.control, profile["control"]["path"],
+                    "fixture reviewer", "synthetic control-budget arithmetic only", path, collector.sha256(path))
+
+    def test_old_policy_method_profile_and_source_references_are_not_admitted(self):
+        profile = self.freeze()
+        collector.validate_plan(self.calibration["plan"])
+        old_policy = {**copy.deepcopy(collector.V3_POLICY),
+                      "id": "template-efficiency-v4-retained-loop-prospective",
+                      **{key: collector.V4_POLICY[key] for key in
+                         ("cpu_metric", "sampling", "instrumented_timing", "scope")}}
+        changed = copy.deepcopy(self.calibration)
+        changed["plan"]["policy"] = old_policy
+        for operation in (lambda: collector.validate_plan(changed["plan"]),
+                          lambda: collector.derive_envelopes(changed)):
+            with self.assertRaisesRegex(ValueError, "policy differs"):
+                operation()
+        old_profile = copy.deepcopy(profile)
+        old_profile["policy"] = old_policy
+        with self.assertRaisesRegex(ValueError, "policy differs"):
+            collector.validate_profile(old_profile)
+        review = collector.load(profile["method_review"]["path"])
+        review["policy"] = old_policy
+        path = self.root / "old-policy-method.json"
+        collector.save(path, review)
+        with self.assertRaisesRegex(ValueError, "method review policy mismatch"):
+            collector.reviewed_method(path, collector.sha256(path), self.calibration["plan"])
+        changed = copy.deepcopy(self.calibration["plan"])
+        changed["collector"]["tools/template-matching-efficiency.py"] = "0" * 64
+        with self.assertRaisesRegex(ValueError, "collector source differs"):
+            collector.validate_plan(changed)
+        changed = copy.deepcopy(self.control)
+        changed["plan"]["method_review"]["sha256"] = "0" * 64
+        with self.assertRaisesRegex(ValueError, "cohort method_review"):
+            collector.control_evidence(self.calibration, changed)
+        changed = copy.deepcopy(self.comparison)
+        changed["plan"]["policy"] = old_policy
+        with self.assertRaisesRegex(ValueError, "policy differs"):
+            collector.compare_evidence(changed, old_profile)
+
+    def test_historical_protocols_keep_empirical_benefits_and_control_semantics(self):
+        for version, fixture in ((1, parsed_evidence), (2, v2_parsed_evidence), (3, v3_parsed_evidence)):
+            calibration = fixture(self.root, "calibration")
+            comparison = fixture(self.root, "comparison")
+            envelope = collector.derive_envelopes(calibration)[self.workload]
+            with self.subTest(version=version):
+                self.assertNotIn("empirical_allowances", envelope)
+                self.assertNotIn("control_allowances", envelope)
+                self.assertEqual(envelope["benefit_allowances"]["p95_ns"], 20)
+                self.assertEqual(envelope["benefit_allowances"]["cpu_ns"], 2000)
+                for row in comparison["observations"]["candidate"][self.workload]:
+                    row["p95_ns"] = 1_000_000 - 21
+                profile = (collector.profile_from(calibration, self.root, "fixture", "historical arithmetic")
+                           if version == 1 else v2_numeric_profile(calibration))
+                self.assertEqual(collector.compare_evidence(comparison, profile)[0], [])
+                if version >= 2:
+                    control = fixture(self.root, "control")
+                    for row in control["observations"]["control"][self.workload]:
+                        row["p95_ns"] -= 21
+                    self.assertTrue(any("p95_ns between-role bias" in issue["reason"]
+                                        for issue in collector.control_evidence(calibration, control)))
+
+    def test_public_policy_cli_exposes_only_new_protocol4_policy(self):
+        identifiers = {
+            1: "template-efficiency-v1", 2: "template-efficiency-v2-prospective-r2",
+            3: "template-efficiency-v3-session-prospective-r2",
+            4: "template-efficiency-v4-retained-loop-control-budget-prospective-r2",
+        }
+        for version, identifier in identifiers.items():
+            with self.subTest(version=version), mock.patch("builtins.print") as output:
+                self.assertEqual(collector.main(["policy", "--protocol-version", str(version),
+                                                 "--build-mode", "normal"]), 0)
+            policy = json.loads(output.call_args.args[0])["policy"]
+            self.assertEqual(policy["id"], identifier)
+            if version == 4:
+                self.assertEqual(policy["control_relative_allocation"], {"numerator": 15, "denominator": 100})
+            else:
+                self.assertNotIn("control_relative_allocation", policy)
+
+    def test_large_half_ns_medians_cannot_round_control_or_benefit_across_threshold(self):
+        reference = 10**18 + 6
+        for metric in ("p95_ns", "retained_loop_cpu_ns"):
+            calibration = copy.deepcopy(self.calibration)
+            for row in calibration["observations"]["baseline"][self.workload]:
+                row[metric] = reference + row["process"] % 2
+            profile = v2_numeric_profile(calibration)
+            allowance = profile["envelopes"][self.workload]["control_allowances"][metric]
+            self.assertEqual(allowance, 150_000_000_000_000_001)
+            for excess in (0, 1):
+                control = copy.deepcopy(self.control)
+                for role, rows in control["observations"].items():
+                    for row in rows[self.workload]:
+                        row[metric] = reference + row["process"] % 2 - (
+                            allowance + excess if role == "control" else 0)
+                with self.subTest(metric=metric, excess=excess):
+                    issues = collector.control_evidence(calibration, control)
+                    self.assertEqual(bool(issues), bool(excess))
+            for shortfall in (0, 1):
+                comparison = copy.deepcopy(self.comparison)
+                for row in comparison["observations"]["baseline"][self.workload]:
+                    row[metric] = reference + row["process"] % 2
+                for row in comparison["observations"]["candidate"][self.workload]:
+                    row[metric] = reference - allowance + shortfall
+                issues, benefits = collector.compare_evidence(comparison, profile)
+                result = benefits[self.workload][metric]
+                with self.subTest(metric=metric, shortfall=shortfall):
+                    self.assertEqual(result["passed"], shortfall == 0)
+                    self.assertEqual(bool(issues), shortfall == 1)
+                    self.assertEqual(result["baseline_median_twice_ns"], 2 * reference + 1)
+                    self.assertEqual(result["candidate_median_twice_ns"], 2 * (reference - allowance + shortfall))
+                    self.assertEqual(json.loads(collector.document(result)), result)
+
+    def test_turnover_strata_retain_independent_wall_budgets_without_stratum_cpu(self):
+        workload = "session-turnover-rgba-full"
+        calibration = v4_parsed_evidence(self.root, "calibration", workload=workload)
+        for row in calibration["observations"]["baseline"][workload]:
+            row["strata.hit.p95_ns"] = 2_000_000
+            row["strata.miss.p95_ns"] = 4_000_000
+        envelope = collector.derive_envelopes(calibration)[workload]
+        for name, median in (("hit", 2_000_000), ("miss", 4_000_000)):
+            metric = f"strata.{name}.p95_ns"
+            self.assertEqual(envelope["empirical_allowances"][metric], 20)
+            self.assertEqual(envelope["control_allowances"][metric], median * 15 // 100)
+            self.assertEqual(envelope["benefit_allowances"][metric], median * 15 // 100)
+            self.assertEqual(envelope["limits"][metric], median + 20)
+            self.assertNotIn(f"strata.{name}.cpu_ns", envelope["limits"])
 
 
 if __name__ == "__main__":

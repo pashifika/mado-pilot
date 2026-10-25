@@ -44,6 +44,12 @@ The [consumer method](../performance.md#actual-consumer-scalar-method) defines:
   a campaign-level identity/cleanup fence that outlives a phase owner;
 - separate logical, Rust, native, resident, growth and final-owner observations.
 
+[ADR 0102](0102-actual-consumer-resident-point-policy.md) specifies the
+prospective `consumer-method-review-v2` split between an independently declared
+resident checkpoint ceiling and a calibrated comparison allowance. Exact
+owner/checkpoint and host-specific resource admission remain required.
+Historical methods, failures and unavailable domains are unchanged.
+
 A process-local percentile is not applicable to a singleton consumer unit. Report
 same-case cross-process median/range, not a workflow p95. Additional distributions
 or operation-local CPU attribution need their own prospective contract; they are
