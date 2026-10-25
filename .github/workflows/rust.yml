@@ -292,7 +292,7 @@ jobs:
 
       - name: Retain independent Rust consumer evidence
         if: ${{ always() && matrix.lane == 'external' }}
-        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
           name: external-rust-consumer-windows-${{ github.run_id }}-${{ github.run_attempt }}
           path: |
@@ -483,7 +483,7 @@ jobs:
 
       - name: Preserve matching efficiency smoke observations
         if: ${{ always() && (matrix.lane == 'matching-normal' || matrix.lane == 'matching-instrumented') }}
-        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
           name: matching-efficiency-smoke-windows-${{ matrix.lane }}-${{ github.run_id }}-${{ github.run_attempt }}
           path: ${{ runner.temp }}/matching-efficiency-smoke
@@ -618,7 +618,7 @@ jobs:
 
       - name: Retain direct C ABI consumer evidence
         if: ${{ always() && matrix.lane == 'consumers' && steps.native-consumers.outcome != '' && steps.native-consumers.outcome != 'skipped' }}
-        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
           name: direct-c-abi-consumers-windows-${{ github.run_id }}-${{ github.run_attempt }}
           path: |
@@ -730,7 +730,7 @@ jobs:
 
       - name: Retain independent Rust consumer evidence
         if: ${{ always() && matrix.lane == 'external' }}
-        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
           name: external-rust-consumer-macos-${{ github.run_id }}-${{ github.run_attempt }}
           path: |
@@ -924,7 +924,7 @@ jobs:
 
       - name: Preserve matching efficiency smoke observations
         if: ${{ always() && (matrix.lane == 'matching-normal' || matrix.lane == 'matching-instrumented') }}
-        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
           name: matching-efficiency-smoke-macos-${{ matrix.lane }}-${{ github.run_id }}-${{ github.run_attempt }}
           path: ${{ runner.temp }}/matching-efficiency-smoke
@@ -1053,7 +1053,7 @@ jobs:
 
       - name: Retain direct C ABI consumer evidence
         if: ${{ always() && matrix.lane == 'consumers' && steps.native-consumers.outcome != '' && steps.native-consumers.outcome != 'skipped' }}
-        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
           name: direct-c-abi-consumers-macos-${{ github.run_id }}-${{ github.run_attempt }}
           path: |
