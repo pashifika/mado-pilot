@@ -44,11 +44,24 @@ The [consumer method](../performance.md#actual-consumer-scalar-method) defines:
   a campaign-level identity/cleanup fence that outlives a phase owner;
 - separate logical, Rust, native, resident, growth and final-owner observations.
 
-[ADR 0102](0102-actual-consumer-resident-point-policy.md) specifies the
-prospective `consumer-method-review-v2` split between an independently declared
-resident checkpoint ceiling and a calibrated comparison allowance. Exact
-owner/checkpoint and host-specific resource admission remain required.
-Historical methods, failures and unavailable domains are unchanged.
+[ADR 0102](0102-actual-consumer-resident-point-policy.md) records the
+revision-bound `consumer-method-review-v2` split between an independently
+declared resident checkpoint ceiling and a calibrated comparison allowance.
+[ADR 0104](0104-fresh-trial-responsiveness-and-non-regression.md) selects
+`consumer-method-review-v3` for new admission and carries that resident policy
+unchanged. Exact owner/checkpoint and host-specific resource admission remain
+required; historical methods, failures and unavailable domains are unchanged.
+
+For fresh saved-RGBA trials, v3 requires `operation_us` responsiveness and
+observed non-regression, not a positive whole-operation benefit. Its
+`fresh-process-first-operation` population, fixed absolute ceiling and fixed
+regression allowance require matching context/source-bound justification before
+collection. ADR 0104 accepts scoped Apple `trial-hit-roi` engineering amounts;
+current-context admission and numerical qualification remain separate.
+Six-value repeatability and balanced pair/order/drift checks use the declared
+absolute allowance; insufficient repeatability is inconclusive, while an observed ceiling or regression-budget
+violation remains numerical `NONPASS`. Retained group-span and matched-query
+benefits, other timing/CPU gates and component obligations remain unchanged.
 
 A process-local percentile is not applicable to a singleton consumer unit. Report
 same-case cross-process median/range, not a workflow p95. Additional distributions
@@ -79,12 +92,16 @@ This changes no SDK API, supported target, native thread setting, model policy,
 consumer checkout or packaging. Application callers still own selected targets
 and consumer-created children. Campaign restrictions apply only to its claims.
 
-The method is not a runnable consumer extension to the component collector.
+`tools/consumer-performance.py` implements separate actual-consumer admission,
+collection and profile-freeze stages, not an extension of component sampling.
 Actual role/image closure, complete process counts, clock/CPU eligibility,
 resource coverage, byte-accounted retention and cross-phase admission enforcement
-must be established before numerical collection. Current Apple descendant CPU
-coverage and Windows accounting resolution/image closure remain unresolved.
-A new accepted method does not regrade or complete historical evidence.
+must be established for each new numerical context. Apple source-closed CPU
+admission does not rewrite partial raw accounting; Windows accounting
+resolution/image closure remain unresolved. No accepted real v3 numerical
+profile follows from implementation. A successor method does not regrade or
+complete historical evidence, including the original Apple 17.42% calibration
+failure.
 
 ## Verification
 
@@ -96,6 +113,6 @@ remain with the owning `v0-5-0-pre-release-performance-measurement-and-adjustmen
 Change; no new native consumer cohort supports this decision.
 
 Documentation checks verify tracked links and the declared schedule arithmetic.
-There is no numerical profile or automated consumer enforcement claim. Release
-review must reject collection while the explicit admission gates remain open,
-and must review prospective source/method changes before new samples.
+Collector implementation does not accept a trial budget or numerical profile.
+Release review must reject collection while contextual admission gates remain
+open and review prospective source/method changes before new samples.

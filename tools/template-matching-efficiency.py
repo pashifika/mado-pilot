@@ -1790,6 +1790,7 @@ def validate_direct_formats(row, iterations, accounting=ACCOUNTING_CONTRACT):
 
 
 def validate_plan(plan):
+    require(isinstance(plan, dict), "campaign plan must be an object")
     version = plan.get("format_version")
     require(version in (1, 2, 3, 4) and plan.get("kind") == "campaign", "invalid campaign")
     if version >= 3:
@@ -1846,7 +1847,8 @@ def validate_plan(plan):
 
 def evaluate(directory):
     directory = Path(directory).resolve(strict=True)
-    plan = load(directory / "plan.json")
+    plan_bytes = (directory / "plan.json").read_bytes()
+    plan = strict_json(plan_bytes.decode("utf-8"))
     validate_plan(plan)
     version = plan["format_version"]
     timing_policy = runtime_observer_policy(plan)
@@ -1871,7 +1873,7 @@ def evaluate(directory):
     for folder in ("attempts", "started"):
         files[folder] = {path.name for path in (directory / folder).glob("*.json")}
         require(not files[folder] - expected_files, f"unexpected {folder}: hidden retry or extra process")
-    plan_hash = sha256(directory / "plan.json")
+    plan_hash = hashlib.sha256(plan_bytes).hexdigest()
     for task in plan["schedule"]:
         filename = f"{task['id']}.json"
         label = f"{task['id']}:{task['role']}:{task['workload'] or 'manifest'}"
@@ -1909,8 +1911,10 @@ def evaluate(directory):
                 require("timing_observation" not in attempt, "timing summary requires an explicit observer policy")
             if version >= 2:
                 started_path = directory / "started" / filename
-                receipt = load(started_path)
-                retained["started_sha256"] = sha256(started_path)
+                started_bytes = started_path.read_bytes()
+                retained["started_sha256"] = hashlib.sha256(started_bytes).hexdigest()
+                receipt = strict_json(started_bytes.decode("utf-8"))
+                require(isinstance(receipt, dict), "started receipt must be an object")
                 require(all(receipt.get(key) == attempt.get(key) for key in
                             ("task", "argv", "plan_sha256", "started_unix_ns", "campaign_elapsed_before")),
                         "started receipt differs from completed attempt")
@@ -2168,8 +2172,10 @@ def profile_from_v2(evidence, calibration, control, control_path, reviewer, rati
     envelopes = derive_envelopes(evidence)
     plan = evidence["plan"]
     digest(profile_review_sha256, "profile_review_sha256")
-    require(profile_review is not None and sha256(profile_review) == profile_review_sha256, "profile review hash mismatch")
-    review = load(profile_review)
+    require(profile_review is not None, "profile review hash mismatch")
+    review_bytes = Path(profile_review).read_bytes()
+    require(hashlib.sha256(review_bytes).hexdigest() == profile_review_sha256, "profile review hash mismatch")
+    review = strict_json(review_bytes.decode("utf-8"))
     expected_review = {"format_version": plan["format_version"], "kind": "component-profile-review", "decision": "accepted",
                        "target": plan["target"], "build_mode": plan["build_mode"],
                        "method_review": plan["method_review"], "calibration": cohort_binding(evidence),
@@ -2384,8 +2390,10 @@ def report(directory):
     if mode == "comparison":
         try:
             profile_path = directory / "profile.json"
-            require(sha256(profile_path) == evidence["plan"].get("profile_sha256"), "frozen profile hash mismatch")
-            profile = validate_profile(load(profile_path))
+            profile_bytes = profile_path.read_bytes()
+            require(hashlib.sha256(profile_bytes).hexdigest() == evidence["plan"].get("profile_sha256"),
+                    "frozen profile hash mismatch")
+            profile = validate_profile(strict_json(profile_bytes.decode("utf-8")))
             issues, benefits = compare_evidence(evidence, profile)
         except (OSError, ValueError, KeyError, TypeError) as error:
             issues.append({"attempt": "profile", "status": "failed", "reason": str(error)})
@@ -2600,8 +2608,8 @@ def collection_steps(args, mode):
     if mode == "comparison":
         profile_path = Path(args.profile).resolve(strict=True)
         digest(args.profile_sha256, "profile_sha256")
-        require(sha256(profile_path) == args.profile_sha256, "reviewed profile hash mismatch")
         profile_bytes = profile_path.read_bytes()
+        require(hashlib.sha256(profile_bytes).hexdigest() == args.profile_sha256, "reviewed profile hash mismatch")
         profile = validate_profile(strict_json(profile_bytes.decode("utf-8")))
         require(profile["format_version"] == version, "mixed profile protocol")
         require(host == profile["host"] and environment() == profile["environment"], "host/environment differs from reviewed profile")
@@ -2687,8 +2695,10 @@ def collection_steps(args, mode):
         for role, runtime in runtimes.items():
             with (destination / f"runtime-{role}.json").open("xb") as stream:
                 stream.write(runtime["raw"])
-        save(destination / "plan.json", plan)
-        plan_hash = sha256(destination / "plan.json")
+        plan_bytes = document(plan)
+        with (destination / "plan.json").open("xb") as stream:
+            stream.write(plan_bytes)
+        plan_hash = hashlib.sha256(plan_bytes).hexdigest()
         limits = plan.get("execution_limits")
         campaign_started = time.monotonic() if limits is not None else None
         deadline = campaign_started + limits["campaign_timeout_seconds"] if limits is not None else None

@@ -2828,6 +2828,11 @@ assigns the optimization's remaining statistical performance qualification to th
 selected v0.5.0 release candidate, without changing failed or missing historical
 results. Both-target performance claims require their own applicable evidence;
 planning or integration completion does not provide it.
+[ADR 0106](adr/0106-observational-host-readiness.md) defers uncertain empirical
+qualification from mandatory implementation and release-decision gates and makes
+ambient host-load observations non-gating. Historical failures and unsupported
+benefit claims remain unchanged; correctness, provenance, ownership/cleanup,
+finite bounds, compatibility and required CI remain mandatory.
 
 [ADR 0094](adr/0094-normal-and-instrumented-component-measurement.md) separates
 normal system-allocator component timing from instrumented work/ownership

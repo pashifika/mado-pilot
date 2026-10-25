@@ -169,15 +169,43 @@ def calibrated_resident(values=(100 * collector.MIB,) * 6, **changes):
     rows = cohort_rows("calibration", RSS)
     for row, value in zip(rows, values):
         row["metrics"][RSS] = value
-    return collector.derive_envelopes(rows, {"metrics": {RSS: resident_contract(**changes)}})[RSS]
+    return collector.derive_envelopes(rows, {"metrics": {RSS: resident_contract(**changes)}}, "trial-hit-roi")[RSS]
 
 
-def paired_rows(stage, timing, resident):
+def paired_rows(stage, metric, timing, resident):
     """Balanced rows carrying one timing endpoint and the resident point per role."""
-    rows = cohort_rows(stage, "operation_us", *timing)
+    rows = cohort_rows(stage, metric, *timing)
     for row in rows:
         row["metrics"][RSS] = resident[0] if row["slot"]["role"] == "baseline" else resident[1]
     return rows
+
+
+OP = "operation_us"
+# Synthetic fixture budget only: never a production default or an accepted user-derived budget.
+TRIAL_CEILING, TRIAL_REGRESSION = 1200, 10
+
+
+def trial_budget(**changes):
+    return {"policy": collector.TRIAL_POLICY, "population": collector.TRIAL_POPULATION,
+            "hard_ceiling_us": TRIAL_CEILING, "max_regression_us": TRIAL_REGRESSION, **changes}
+
+
+def trial_contract(**changes):
+    return {"api": "driver Instant", "owner": "driver", "interval": "operation through shutdown",
+            "unit": "us", "missing_reason": None, "quantum": 1, "resolution": 1,
+            "resolution_method": "source-bound", **trial_budget(**changes)}
+
+
+def trial_declaration(**changes):
+    return {**trial_budget(), "justification": "synthetic fixture budget, not a user-derived response requirement",
+            **changes}
+
+
+def calibrated_trial(values=(1000,) * 6, **changes):
+    rows = cohort_rows("calibration")
+    for row, value in zip(rows, values):
+        row["metrics"][OP] = value
+    return collector.derive_envelopes(rows, {"metrics": {OP: trial_contract(**changes)}}, "trial-hit-roi")[OP]
 
 
 class ScalarRules(unittest.TestCase):
@@ -199,38 +227,51 @@ class ScalarRules(unittest.TestCase):
         with self.assertRaisesRegex(ValueError, "noise"):
             collector.scalar_envelope([924, 1000, 1000, 1000, 1000, 1075], 1, 1)
 
+    def test_historical_apple_trial_values_remain_old_scalar_nonpass(self):
+        # Retained Apple trial-hit-roi calibration (PR #109 dossier): old arithmetic only, never regraded.
+        values = [551859, 471323, 475221, 470318, 469603, 473136]
+        spread, center = max(values) - min(values), collector.median(values)
+        self.assertEqual((spread, center), (82256, collector.Fraction(944459, 2)))
+        self.assertEqual(spread / max(center, 2), collector.Fraction(164512, 944459))
+        with self.assertRaisesRegex(ValueError, "calibration noise exceeds 0.15"):
+            collector.scalar_envelope(values, 1, 1)
+
     def test_single_violation_survives_good_median_and_missing_metric(self):
-        envelopes = {"operation_us": collector.scalar_envelope([1000] * 6, 1, 1),
+        envelopes = {"group_span_ns": collector.scalar_envelope([1000] * 6, 1, 1),
                      "lifetime_cpu_seconds": collector.scalar_envelope([1] * 6, "1/1000", "1/1000")}
-        rows = cohort_rows("comparison", baseline=1000, other=900)
-        rows[0]["metrics"]["operation_us"] = 1003
-        issues = collector.grade_rows(rows, "comparison", envelopes, "trial-hit-full")
+        rows = cohort_rows("comparison", "group_span_ns", baseline=1000, other=900)
+        rows[0]["metrics"]["group_span_ns"] = 1003
+        issues = collector.grade_rows(rows, "comparison", envelopes, "group-full")
         self.assertTrue(any("exceeds frozen ceiling" in row["reason"] for row in issues))
         self.assertTrue(any(row["category"] == "unavailable" for row in issues))
 
-    def test_unchanged_role_bias_and_strict_benefit_threshold(self):
-        envelope = {"operation_us": collector.scalar_envelope([1000] * 6, 1, 1)}
-        rows = cohort_rows("control", baseline=1000, other=997)
-        self.assertTrue(any("role bias" in row["reason"] for row in
-                            collector.grade_rows(rows, "control", envelope, "trial-hit-full")))
-        rows = cohort_rows("comparison", baseline=1000, other=998)
-        self.assertTrue(any("benefit" in row["reason"] for row in
-                            collector.grade_rows(rows, "comparison", envelope, "trial-hit-full")))
-        rows = cohort_rows("comparison", baseline=1000, other=997)
-        self.assertEqual(collector.grade_rows(rows, "comparison", envelope, "trial-hit-full"), [])
+    def test_unchanged_role_bias_and_strict_group_and_query_benefit_threshold(self):
+        for case, metric in (("group-full", "group_span_ns"), ("matched-roi", "query_wait_ns")):
+            with self.subTest(case=case):
+                self.assertEqual(collector.benefit_metric(case), metric)
+                envelope = {metric: collector.scalar_envelope([1000] * 6, 1, 1)}
+                rows = cohort_rows("control", metric, baseline=1000, other=997)
+                self.assertTrue(any("role bias" in row["reason"] for row in
+                                    collector.grade_rows(rows, "control", envelope, case)))
+                for other in (1000, 998):
+                    rows = cohort_rows("comparison", metric, baseline=1000, other=other)
+                    self.assertIn(collector.issue("numerical", metric + ": scalar benefit does not exceed allowance"),
+                                  collector.grade_rows(rows, "comparison", envelope, case))
+                rows = cohort_rows("comparison", metric, baseline=1000, other=997)
+                self.assertEqual(collector.grade_rows(rows, "comparison", envelope, case), [])
 
     def test_order_and_chronological_drift_are_independent(self):
-        envelope = {"operation_us": collector.scalar_envelope([1000] * 6, 1, 1)}
-        rows = cohort_rows("control")
+        envelope = {"group_span_ns": collector.scalar_envelope([1000] * 6, 1, 1)}
+        rows = cohort_rows("control", "group_span_ns")
         for row in rows:
             if row["slot"]["position"] == 1:
-                row["metrics"]["operation_us"] = 990
-        self.assertTrue(any("order" in row["reason"] for row in collector.grade_rows(rows, "control", envelope, "trial-hit-full")))
-        rows = cohort_rows("control")
+                row["metrics"]["group_span_ns"] = 990
+        self.assertTrue(any("order" in row["reason"] for row in collector.grade_rows(rows, "control", envelope, "group-full")))
+        rows = cohort_rows("control", "group_span_ns")
         for row in rows:
             if row["slot"]["process"] >= 3:
-                row["metrics"]["operation_us"] = 990
-        self.assertTrue(any("drift" in row["reason"] for row in collector.grade_rows(rows, "control", envelope, "trial-hit-full")))
+                row["metrics"]["group_span_ns"] = 990
+        self.assertTrue(any("drift" in row["reason"] for row in collector.grade_rows(rows, "control", envelope, "group-full")))
 
     def test_later_coarser_cpu_does_not_widen_ceiling(self):
         envelopes = {"lifetime_cpu_seconds": collector.scalar_envelope([1] * 6, "1/1000", "1/1000")}
@@ -254,6 +295,42 @@ class ScalarRules(unittest.TestCase):
         self.assertFalse(collector.admission_room(631, 900, 2, smaller))
         self.assertTrue(collector.admission_room(735, 900, 1, smaller))
         self.assertFalse(collector.admission_room(900, 900, 1, smaller))
+
+
+class BoundReferences(unittest.TestCase):
+    def setUp(self):
+        self.temporary = tempfile.TemporaryDirectory()
+        self.addCleanup(self.temporary.cleanup)
+        self.path = Path(self.temporary.name) / "review.json"
+        self.binding = collector.save(self.path, {"accepted": False})
+
+    def test_reference_parse_uses_verified_bytes_when_path_changes_after_digest(self):
+        original_sha256 = collector.hashlib.sha256
+        replacement = collector.document({"accepted": True})
+        path = self.path
+
+        class ReplacingDigest:
+            def __init__(self, *args, **kwargs):
+                self.value = original_sha256(*args, **kwargs)
+
+            def update(self, data):
+                self.value.update(data)
+
+            def hexdigest(self):
+                result = self.value.hexdigest()
+                path.write_bytes(replacement)
+                return result
+
+        with mock.patch.object(collector.hashlib, "sha256", ReplacingDigest):
+            result = collector.read_reference(self.binding)
+        self.assertEqual(result, {"accepted": False})
+        self.assertEqual(self.path.read_bytes(), replacement)
+
+    def test_reference_byte_limit_includes_exact_boundary(self):
+        size = self.path.stat().st_size
+        self.assertEqual(collector.read_reference(self.binding, size), {"accepted": False})
+        with self.assertRaises(ValueError):
+            collector.read_reference(self.binding, size - 1)
 
 
 class RetainedSchema(unittest.TestCase):
@@ -340,6 +417,54 @@ class RetainedSchema(unittest.TestCase):
         self.assertEqual(self.reconcile()["issues"], [])
         self.plan["bounds"]["primary_seconds"] = 59
         self.assertTrue(any("driver-declared" in row["reason"] for row in self.reconcile()["issues"]))
+
+    def test_every_reviewed_trial_operation_obeys_declared_ceiling(self):
+        def issues(**changes):
+            review = {"metrics": {OP: trial_contract(**changes)}}
+            result = collector.reconcile(self.plan, collector.schedule("smoke")[0], record_for(self.output), review)
+            return result["issues"], [row for row in result["unavailable"] if row["reason"].startswith(OP)]
+
+        self.assertEqual(issues(hard_ceiling_us=1000), ([], []))
+        self.assertEqual(issues(hard_ceiling_us=999),
+                         ([collector.issue("numerical", OP + " exceeds fixed trial responsiveness ceiling")], []))
+        # A malformed budget is missing method evidence, never a passed or failed observation.
+        failures, missing = issues(hard_ceiling_us=True)
+        self.assertEqual(failures, [])
+        self.assertTrue(missing)
+
+    def test_trial_ceiling_survives_later_result_or_resource_failure(self):
+        for failure in ("result", "driver-semantic", "resource"):
+            with self.subTest(failure=failure):
+                output = copy.deepcopy(self.output)
+                output["operation"]["total_duration_us"] = TRIAL_CEILING + 1
+                child = output["operation"]["controller"]["result"]
+                if failure in ("result", "driver-semantic"):
+                    child["result"]["matches"][0]["bounds"]["x"] = 81
+                else:
+                    child["measurement"]["process_rss_after"]["started_ns"] = 0
+                record = record_for(output)
+                if failure == "driver-semantic":
+                    output.update(success=False, status="semantic_failure",
+                                  oracle={"passed": False, "violations": ["public_match_bounds_mismatch"]})
+                    record = record_for(output)
+                    record["exit_code"] = 1
+                result = collector.reconcile(self.plan, collector.schedule("smoke")[0], record,
+                                             {"metrics": {OP: trial_contract()}})
+                self.assertEqual(result["metrics"][OP], TRIAL_CEILING + 1)
+                self.assertTrue({"semantics", "numerical"} <= {row["category"] for row in result["issues"]})
+                if failure == "driver-semantic":
+                    self.assertIn("execution", {row["category"] for row in result["issues"]})
+                    self.assertEqual(result["application_status"], "semantic_failure")
+                    self.assertEqual(result["original_exit_code"], 1)
+
+    def test_unbound_child_duration_is_not_a_trial_budget_observation(self):
+        self.output["operation"]["total_duration_us"] = TRIAL_CEILING + 1
+        self.output["operation"]["controller"]["result"]["build"]["executable_sha256"] = "0" * 64
+        result = collector.reconcile(self.plan, collector.schedule("smoke")[0], record_for(self.output),
+                                     {"metrics": {OP: trial_contract()}})
+        self.assertIsNone(result["metrics"][OP])
+        self.assertIn("identity", {row["category"] for row in result["issues"]})
+        self.assertNotIn("numerical", {row["category"] for row in result["issues"]})
 
     def test_semantic_failure_does_not_mask_sticky_cleanup_identity(self):
         self.output["success"] = False
@@ -550,6 +675,25 @@ class ImmutableCampaign(unittest.TestCase):
         self.assertEqual(active.read_bytes(), before)
         self.assertTrue((self.root / "locked-phase" / "summary.json").is_file())
 
+    def test_noisy_trial_calibration_is_retained_inconclusive_not_numerical(self):
+        # Method, launch and per-invocation boundaries are substituted; schedule, receipts and derivation are real.
+        self.plan["roles"]["candidate"] = copy.deepcopy(self.plan["roles"]["baseline"])
+        review = {"metrics": {OP: trial_contract()}}
+        values = iter([1000, 1000 + TRIAL_REGRESSION + 1, 1000 + TRIAL_REGRESSION + 1, 1000, 1000, 1000])
+
+        def observed(*_):
+            return {"metrics": {OP: next(values)}, "issues": [], "unavailable": []}
+
+        with mock.patch.object(collector, "admission", side_effect=lambda plan: (review, [])), \
+                mock.patch.object(collector, "reconcile", side_effect=observed), \
+                mock.patch.object(collector, "run_process", return_value=record_for({})) as launch:
+            with contextlib.redirect_stdout(io.StringIO()):
+                result = collector.collect(self.plan, "calibration", self.root / "calibration")
+        self.assertEqual((launch.call_count, result["unrun"], result["envelopes"]), (6, [], {}))
+        self.assertFalse(result["qualification"])
+        self.assertEqual([row["category"] for row in result["issues"]], ["inconclusive"])
+        self.assertEqual(self.campaign.fences(), [])
+
     def test_observation_off_and_non_dev_role_refused(self):
         bad = copy.deepcopy(self.plan)
         bad["env"]["MADO_P050_OBSERVATIONS"] = "0"
@@ -731,12 +875,11 @@ class AppleSourceClosedEvidence(unittest.TestCase):
                           "drift_rule": "exact-source-host-api-unit", "raw_accounting_resolution_seconds": None,
                           "evidence": [margin_proof]}
         allowance_ref = collector.save(self.root / "allowance.json", self.allowance)
-        self.review = {"kind": "consumer-method-review-v2", "accepted": True, "context_sha256": self.context,
+        self.review = {"kind": collector.METHOD_REVIEW, "accepted": True, "context_sha256": self.context,
                        "reviewer": "fixture-reviewer", "rationale": "deterministic contract fixture",
                        "source_closed_cpu": certificate_ref, "accounting_allowance": allowance_ref,
                        "metrics": {
-                           "operation_us": {"api": "driver Instant", "owner": "driver", "interval": "operation through shutdown",
-                                            "unit": "us", "missing_reason": None, "quantum": 1, "resolution": 1, "resolution_method": "source-bound"},
+                           "operation_us": trial_contract(),
                            "lifetime_cpu_seconds": {"api": "posix-wait4", "owner": "owned tree", "interval": "whole invocation",
                                                     "unit": "s", "missing_reason": None, "quantum": "1/1000000", "accounting_allowance": allowance_ref}},
                        "gates": {}}
@@ -744,6 +887,8 @@ class AppleSourceClosedEvidence(unittest.TestCase):
             evidence = {"gate": gate, "complete": True, "context_sha256": self.context,
                         "source_files": {str(self.source): collector.sha256(self.source)},
                         "closure": self.plan["runtime_closure"], "source_certificate": certificate_ref, "accounting_allowance": allowance_ref}
+            if gate == "resources":
+                evidence["trial_responsiveness"] = trial_declaration()
             self.review["gates"][gate] = {"status": "accepted", "issues": [],
                                           "evidence": [collector.save(self.root / (gate + ".json"), evidence)]}
         self.plan["admission"] = collector.save(self.root / "review.json", self.review)
@@ -894,13 +1039,13 @@ class AppleSourceClosedEvidence(unittest.TestCase):
     def test_cpu_margin_remains_named_and_cannot_enlarge_frozen_profile(self):
         result = self.reconcile()
         rows = [{"slot": slot, **result} for slot in collector.schedule("calibration")]
-        envelope = collector.derive_envelopes(rows, self.review)["lifetime_cpu_seconds"]
+        envelope = collector.derive_envelopes(rows, self.review, self.plan["case"])["lifetime_cpu_seconds"]
         self.assertNotIn("resolution", envelope)
         self.assertEqual(envelope["margin_kind"], "prospective-accounting-allowance")
         row = {**rows[0], "accounting_allowance_seconds": "1/100"}
         self.assertTrue(any(failure["category"] == "clock" for failure in
                             collector.invocation_limits(row, {"lifetime_cpu_seconds": envelope})))
-        envelopes = collector.derive_envelopes(rows, self.review)
+        envelopes = collector.derive_envelopes(rows, self.review, self.plan["case"])
         control = [{**copy.deepcopy(result), "slot": slot} for slot in collector.schedule("control")]
         self.assertEqual(collector.grade_rows(control, "control", envelopes, self.plan["case"]), [])
         control[0]["metrics"]["lifetime_cpu_seconds"] = "1"
@@ -915,7 +1060,7 @@ class ProfileAcceptance(unittest.TestCase):
         self.root = Path(self.temporary.name)
         self.plan = plan_for(self.root)
         collector.Campaign(self.plan).initialize()
-        review = {"metrics": {"operation_us": {"unit": "us", "quantum": 1, "resolution": 1}}}
+        review = {"metrics": {OP: trial_contract()}}
         self.calibration = {"plan": copy.deepcopy(self.plan), "summary": {"stage": "calibration", "attempts": []},
                             "rows": cohort_rows("calibration"), "review": review, "issues": [],
                             "directory": str(self.root / "calibration"), "binding": {"path": str(self.root / "calibration-summary"), "sha256": "a" * 64}}
@@ -961,8 +1106,48 @@ class ProfileAcceptance(unittest.TestCase):
         with self.assertRaisesRegex(ValueError, "unchanged control failed"):
             collector.profile_proposal(self.calibration, self.control)
 
+    def test_trial_budget_is_bound_through_full_profile_recomputation(self):
+        envelope = self.proposal["envelopes"][OP]
+        self.assertEqual({key: envelope[key] for key in collector.TRIAL_FIELDS}, trial_budget())
+        self.assertEqual((envelope["ceiling"], envelope["allowance"]), (str(TRIAL_CEILING), str(TRIAL_REGRESSION)))
+        for key, value in (("policy", "fresh-trial-responsiveness-v0"), ("population", "warm-fresh-process"),
+                           ("hard_ceiling_us", TRIAL_CEILING + 1), ("max_regression_us", TRIAL_REGRESSION + 1),
+                           ("ceiling", str(TRIAL_CEILING + 1)), ("allowance", str(TRIAL_REGRESSION + 1)),
+                           ("central_four", {"spread": "0", "mean": "1000", "input_indices": [0, 1, 2, 3]})):
+            tampered = copy.deepcopy(self.profile)
+            tampered["envelopes"][OP][key] = value
+            with self.subTest(field=key), self.assertRaisesRegex(ValueError, "contents changed"):
+                collector.accepted_profile(self.proposal, tampered, self.review)
+        # A changed declared budget recomputes a proposal that the earlier acceptance does not bind.
+        for changes in ({"hard_ceiling_us": TRIAL_CEILING + 1}, {"max_regression_us": TRIAL_REGRESSION + 1}):
+            self.calibration["review"] = {"metrics": {OP: trial_contract(**changes)}}
+            changed = collector.profile_proposal(self.calibration, self.control)
+            with self.subTest(changes=changes), self.assertRaisesRegex(ValueError, "contents changed"):
+                collector.accepted_profile(changed, self.profile, self.review)
+        # An earlier scalar trial contract carries no policy and is never reinterpreted.
+        self.calibration["review"] = {"metrics": {OP: {"unit": "us", "quantum": 1, "resolution": 1}}}
+        with self.assertRaisesRegex(ValueError, "policy/population"):
+            collector.profile_proposal(self.calibration, self.control)
 
-class ResidentAdmission(unittest.TestCase):
+    def test_inconclusive_trial_calibration_or_control_blocks_profile(self):
+        for row in self.control["rows"]:
+            if row["slot"]["role"] == "control":
+                row["metrics"][OP] += TRIAL_REGRESSION
+        collector.profile_proposal(self.calibration, self.control)
+        for row in self.control["rows"]:
+            if row["slot"]["role"] == "control":
+                row["metrics"][OP] += 1
+        with self.assertRaisesRegex(ValueError, "unchanged control failed"):
+            collector.profile_proposal(self.calibration, self.control)
+        self.control["rows"] = cohort_rows("control")
+        for row in self.calibration["rows"][:2]:
+            row["metrics"][OP] += TRIAL_REGRESSION + 1
+        with self.assertRaises(collector.ContractError) as caught:
+            collector.profile_proposal(self.calibration, self.control)
+        self.assertEqual(caught.exception.category, "inconclusive")
+
+
+class BoundReview(unittest.TestCase):
     """Real hash-bound review/evidence files; unrelated runtime/CPU gates stay unavailable here."""
 
     def setUp(self):
@@ -982,16 +1167,21 @@ class ResidentAdmission(unittest.TestCase):
         return self.bound({"gate": gate, "complete": True, "context_sha256": self.context,
                            "source_files": {self.source: self.plan["inputs"][self.source]["sha256"]}, **fields})
 
-    def resident_issues(self, metrics, *resources, kind="consumer-method-review-v2"):
-        """Admission failures of the method record, resources gate and resident metric only."""
+    def review_issues(self, metrics, *resources, kind=collector.METHOD_REVIEW, prefixes=()):
+        """Admission failures of the method record, resources gate and the named metrics only."""
         gates = {gate: {"status": "accepted", "issues": [], "evidence": [self.evidence(gate)]}
                  for gate in collector.GATES}
         gates["resources"]["evidence"] = [self.evidence("resources", **fields) for fields in resources or ({},)]
         self.plan["admission"] = self.bound({
             "kind": kind, "accepted": True, "context_sha256": self.context, "reviewer": "fixture-reviewer",
-            "rationale": "resident policy fixture", "gates": gates, "metrics": metrics})
+            "rationale": "bound policy fixture", "gates": gates, "metrics": metrics})
         return [row for row in collector.admission(self.plan)[1]
-                if row["category"] == "admission" or row["reason"].startswith(("resources:", RSS))]
+                if row["category"] == "admission" or row["reason"].startswith(("resources:", *prefixes))]
+
+
+class ResidentAdmission(BoundReview):
+    def resident_issues(self, metrics, *resources, kind=collector.METHOD_REVIEW):
+        return self.review_issues(metrics, *resources, kind=kind, prefixes=(RSS,))
 
     def test_matching_bound_policy_admits_parameterized_resident_contract(self):
         policy = {"resident_policies": resident_policy()}
@@ -1043,6 +1233,88 @@ class ResidentAdmission(unittest.TestCase):
         issues = self.resident_issues({RSS: resident_contract()}, {"resident_policies": resident_policy()},
                                       kind="consumer-method-review-v1")
         self.assertIn(collector.issue("admission", "accepted consumer method review required"), issues)
+
+
+class TrialAdmission(BoundReview):
+    def trial_issues(self, metrics, *resources, kind=collector.METHOD_REVIEW):
+        return self.review_issues(metrics, *resources, kind=kind, prefixes=tuple(name + ":" for name in metrics))
+
+    @staticmethod
+    def declared(**changes):
+        return {"trial_responsiveness": trial_declaration(**changes)}
+
+    def test_matching_bound_budget_admits_trial_operation(self):
+        self.assertEqual(self.trial_issues({OP: trial_contract()}, self.declared()), [])
+        # A bound resources record without a declaration neither satisfies nor contradicts another.
+        self.assertEqual(self.trial_issues({OP: trial_contract()}, {}, self.declared()), [])
+        equal = {"max_regression_us": TRIAL_CEILING}
+        self.assertEqual(self.trial_issues({OP: trial_contract(**equal)}, self.declared(**equal)), [])
+
+    def test_response_ceiling_must_be_below_process_timeout(self):
+        timeout_us = self.plan["bounds"]["primary_seconds"] * 1_000_000
+        for ceiling, accepted in ((timeout_us - 1, True), (timeout_us, False), (timeout_us + 1, False)):
+            with self.subTest(ceiling=ceiling):
+                issues = self.trial_issues({OP: trial_contract(hard_ceiling_us=ceiling)},
+                                          self.declared(hard_ceiling_us=ceiling))
+                self.assertEqual(not issues, accepted)
+                if not accepted:
+                    self.assertTrue(any("outer process timeout" in row["reason"] for row in issues))
+
+    def test_missing_mismatched_unbound_or_inconsistent_declaration_refuses(self):
+        declared = self.declared()
+        cases = {
+            "missing": [{}],
+            "mismatched ceiling": [self.declared(hard_ceiling_us=TRIAL_CEILING + 1)],
+            "mismatched tolerance": [self.declared(max_regression_us=TRIAL_REGRESSION - 1)],
+            "other policy": [self.declared(policy="fresh-trial-responsiveness-v0")],
+            "other population": [self.declared(population="warm-fresh-process")],
+            "inconsistent second record": [declared, self.declared(max_regression_us=TRIAL_REGRESSION + 1)],
+            "other context": [{**declared, "context_sha256": "0" * 64}],
+            "unbound source": [{**declared, "source_files": {self.source: "0" * 64}}],
+            "empty justification": [self.declared(justification=" ")],
+            "not an object": [{"trial_responsiveness": [trial_declaration()]}],
+        }
+        for name, resources in cases.items():
+            with self.subTest(case=name):
+                self.assertTrue(self.trial_issues({OP: trial_contract()}, *resources))
+
+    def test_invalid_budget_fields_refuse_even_when_declaration_repeats_them(self):
+        for key in ("hard_ceiling_us", "max_regression_us"):
+            for value in (None, True, 0, -1, float(TRIAL_REGRESSION), TRIAL_REGRESSION + 0.5,
+                          str(TRIAL_REGRESSION), 1 << 64):
+                with self.subTest(field=key, value=value):
+                    self.assertTrue(self.trial_issues({OP: trial_contract(**{key: value})},
+                                                      self.declared(**{key: value})))
+        inverted = {"hard_ceiling_us": TRIAL_REGRESSION, "max_regression_us": TRIAL_REGRESSION + 1}
+        self.assertTrue(self.trial_issues({OP: trial_contract(**inverted)}, self.declared(**inverted)))
+        for key in ("policy", "population"):
+            with self.subTest(missing=key):
+                self.assertTrue(self.trial_issues({OP: trial_contract(**{key: None})}, self.declared(**{key: None})))
+
+    def test_clock_must_be_positive_and_twice_resolution_must_fit_tolerance(self):
+        self.assertEqual(self.trial_issues({OP: trial_contract(resolution=TRIAL_REGRESSION // 2)}, self.declared()), [])
+        for changes in ({"resolution": f"{TRIAL_REGRESSION + 1}/2"}, {"resolution": 0}, {"quantum": 0},
+                        {"quantum": True}, {"resolution_method": " "}):
+            with self.subTest(changes=changes):
+                self.assertTrue(self.trial_issues({OP: trial_contract(**changes)}, self.declared()))
+
+    def test_trial_policy_is_refused_outside_trial_operation(self):
+        issues = self.trial_issues({OP: trial_contract(), RSS: resident_contract(**trial_budget())},
+                                   {**self.declared(), "resident_policies": resident_policy()})
+        self.assertTrue(any(row["reason"].startswith(RSS + ":") for row in issues))
+        self.plan["case"] = "group-full"
+        self.context = collector.context_digest(self.plan)
+        group = {"api": "host call records", "owner": "engine", "interval": "first recognize to last release",
+                 "unit": "ns", "missing_reason": None, "quantum": 1, "resolution": 1, "resolution_method": "source-bound"}
+        self.assertEqual(self.trial_issues({"group_span_ns": group}, {}), [])
+        self.assertTrue(self.trial_issues({"group_span_ns": {**group, **trial_budget()}}, {}))
+        self.assertTrue(self.trial_issues({"group_span_ns": group}, self.declared()))
+
+    def test_previous_method_kinds_are_refused_not_reinterpreted(self):
+        for kind in ("consumer-method-review-v1", "consumer-method-review-v2", "consumer-method-review-v3"):
+            with self.subTest(kind=kind):
+                self.assertIn(collector.issue("admission", "accepted consumer method review required"),
+                              self.trial_issues({OP: trial_contract()}, self.declared(), kind=kind))
 
 
 class ResidentGrading(unittest.TestCase):
@@ -1115,17 +1387,20 @@ class ResidentGrading(unittest.TestCase):
         self.assertTrue(any("repeatability" in reason for reason in grade(rows)))
 
     def test_candidate_resident_median_is_non_regression_not_benefit(self):
-        envelopes = {"operation_us": collector.scalar_envelope([1000] * 6, 1, 1), RSS: calibrated_resident()}
+        def grade(case, metric, envelope, timing, resident):
+            rows = paired_rows("comparison", metric, timing, resident)
+            envelopes = {metric: envelope, RSS: calibrated_resident()}
+            return [row["reason"] for row in collector.grade_rows(rows, "comparison", envelopes, case)]
 
-        def grade(timing, resident):
-            rows = paired_rows("comparison", timing, resident)
-            return [row["reason"] for row in collector.grade_rows(rows, "comparison", envelopes, "trial-hit-roi")]
-
-        self.assertEqual(grade((1000, 997), (self.BASE, self.BASE + FLOOR)), [])
-        self.assertEqual(grade((1000, 997), (self.BASE, self.BASE + FLOOR + 1)),
+        trial = ("trial-hit-roi", OP, calibrated_trial())
+        self.assertEqual(grade(*trial, (1000, 1000), (self.BASE, self.BASE + FLOOR)), [])
+        self.assertEqual(grade(*trial, (1000, 1000), (self.BASE, self.BASE + FLOOR + 1)),
                          [RSS + ": candidate resident median exceeds baseline plus allowance"])
-        self.assertEqual(grade((1000, 1000), (self.BASE, self.BASE - 10 * collector.MIB)),
-                         ["operation_us: scalar benefit does not exceed allowance"])
+        # A resident improvement never substitutes for the group benefit it does not measure.
+        group = ("group-full", "group_span_ns", collector.scalar_envelope([1000] * 6, 1, 1))
+        self.assertEqual(grade(*group, (1000, 997), (self.BASE, self.BASE + FLOOR)), [])
+        self.assertEqual(grade(*group, (1000, 1000), (self.BASE, self.BASE - 10 * collector.MIB)),
+                         ["group_span_ns: scalar benefit does not exceed allowance"])
 
     def test_per_process_hard_ceiling_survives_passing_medians(self):
         rows = cohort_rows("comparison", RSS, self.BASE, self.BASE)
@@ -1134,6 +1409,229 @@ class ResidentGrading(unittest.TestCase):
         issues = collector.grade_rows(rows, "comparison", {RSS: calibrated_resident()}, "trial-hit-roi")
         self.assertIn(collector.issue("numerical", "05: " + RSS + " exceeds frozen ceiling"), issues)
         self.assertIn(collector.issue("unavailable", "06: " + RSS), issues)
+
+
+class TrialGrading(unittest.TestCase):
+    """Synthetic budget arithmetic only; no historical cohort is regraded."""
+
+    def grade(self, stage, rows, envelope=None):
+        return collector.grade_rows(rows, stage, {OP: envelope or calibrated_trial()}, "trial-hit-roi")
+
+    @staticmethod
+    def pair_rows(stage, baseline, other):
+        """Unchanged roles except corresponding pair 0, which carries the given values."""
+        rows = cohort_rows(stage, OP, 1000, 1000)
+        for row in rows:
+            if row["slot"]["pair"] == 0:
+                row["metrics"][OP] = baseline if row["slot"]["role"] == "baseline" else other
+        return rows
+
+    def test_declared_ceiling_and_tolerance_are_not_sample_derived(self):
+        values = [990, 995, 1000, 1000, 1005, 1010]
+        envelope = calibrated_trial(values)
+        self.assertEqual((envelope["ceiling"], envelope["allowance"]), (str(TRIAL_CEILING), str(TRIAL_REGRESSION)))
+        self.assertEqual((envelope["spread"], envelope["central_four"]["spread"]), ("20", "10"))
+        self.assertEqual(envelope["central_four"]["values"], ["995", "1000", "1000", "1005"])
+        values[4] += 1
+        with self.assertRaises(collector.ContractError) as caught:
+            calibrated_trial(values)
+        self.assertEqual(caught.exception.category, "inconclusive")
+
+    def test_calibration_uses_absolute_tolerance_not_percentage_gate(self):
+        # 50% range/median: refused by the scalar gate, within the declared absolute tolerance.
+        relative = [10, 20, 20, 20, 20, 20]
+        self.assertEqual(calibrated_trial(relative)["spread"], "10")
+        with self.assertRaisesRegex(ValueError, "noise"):
+            collector.scalar_envelope(relative, 1, 1)
+        # Two high values leave one inside the central four; the absolute tolerance still applies.
+        absolute = [1000, 1000 + TRIAL_REGRESSION + 1, 1000 + TRIAL_REGRESSION + 1, 1000, 1000, 1000]
+        collector.scalar_envelope(absolute, 1, 1)
+        with self.assertRaises(collector.ContractError) as caught:
+            calibrated_trial(absolute)
+        self.assertEqual(caught.exception.category, "inconclusive")
+
+    def test_calibration_ceiling_completeness_and_clock_are_enforced(self):
+        self.assertEqual(calibrated_trial([TRIAL_CEILING] * 6)["maximum"], str(TRIAL_CEILING))
+        with self.assertRaisesRegex(ValueError, "ceiling") as caught:
+            calibrated_trial([TRIAL_CEILING + 1] + [TRIAL_CEILING] * 5)
+        self.assertNotIsInstance(caught.exception, collector.ContractError)
+        with self.assertRaisesRegex(ValueError, "unavailable calibration"):
+            calibrated_trial([None] + [1000] * 5)
+        with self.assertRaisesRegex(ValueError, "six"):
+            collector.derive_envelopes(cohort_rows("calibration")[:5], {"metrics": {OP: trial_contract()}}, "trial-hit-roi")
+        self.assertEqual(calibrated_trial(resolution=TRIAL_REGRESSION // 2)["resolution"], str(TRIAL_REGRESSION // 2))
+        for changes in ({"resolution": f"{TRIAL_REGRESSION + 1}/2"}, {"quantum": 0}, {"resolution": 0},
+                        {"policy": None}, {"max_regression_us": TRIAL_CEILING + 1},
+                        {"hard_ceiling_us": float(TRIAL_CEILING)}):
+            with self.subTest(changes=changes), self.assertRaises(ValueError):
+                calibrated_trial(**changes)
+
+    def test_unchanged_control_pairs_and_role_medians_share_the_tolerance(self):
+        self.assertEqual(self.grade("control", cohort_rows("control", OP, 1000, 1000 + TRIAL_REGRESSION)), [])
+        issues = self.grade("control", cohort_rows("control", OP, 1000, 1000 + TRIAL_REGRESSION + 1))
+        self.assertEqual({row["category"] for row in issues}, {"inconclusive"})
+        self.assertEqual(sum("A/A pair" in row["reason"] for row in issues), 6)
+        self.assertIn(collector.issue(
+            "inconclusive", OP + ": unchanged A/A role median difference exceeds max_regression_us"), issues)
+        pair = [collector.issue("inconclusive", OP + ": unchanged A/A pair 0 difference exceeds max_regression_us")]
+        self.assertEqual(self.grade("control", self.pair_rows("control", 995, 1005)), [])
+        self.assertEqual(self.grade("control", self.pair_rows("control", 995, 1006)), pair)
+        self.assertEqual(self.grade("control", self.pair_rows("control", 1006, 995)), pair)
+
+    def test_role_range_order_and_drift_are_inconclusive_not_regression(self):
+        for name, shifted in (("central-four range", lambda slot: slot["pair"] in (1, 2)),
+                              ("order", lambda slot: slot["position"] == 1),
+                              ("drift", lambda slot: slot["process"] >= 3)):
+            rows = cohort_rows("control", OP, 1000, 1000)
+            for row in rows:
+                if shifted(row["slot"]):
+                    row["metrics"][OP] += TRIAL_REGRESSION + 1
+            issues = self.grade("control", rows)
+            with self.subTest(check=name):
+                self.assertEqual({row["category"] for row in issues}, {"inconclusive"})
+                for role in ("baseline", "control"):
+                    self.assertIn(collector.issue("inconclusive", f"{role}: {OP} {name} exceeds max_regression_us"), issues)
+        # The same movement in both comparison roles is uncertainty, not an observed regression.
+        rows = cohort_rows("comparison", OP, 1000, 1000)
+        for row in rows:
+            if row["slot"]["process"] >= 3:
+                row["metrics"][OP] += TRIAL_REGRESSION + 1
+        self.assertEqual({row["category"] for row in self.grade("comparison", rows)}, {"inconclusive"})
+
+    def test_comparison_budget_violation_is_numerical_and_faster_needs_no_gain(self):
+        self.assertIsNone(collector.benefit_metric("trial-hit-roi"))
+        for other in (500, 1000, 1000 + TRIAL_REGRESSION):
+            with self.subTest(candidate=other):
+                self.assertEqual(self.grade("comparison", cohort_rows("comparison", OP, 1000, other)), [])
+        issues = self.grade("comparison", cohort_rows("comparison", OP, 1000, 1000 + TRIAL_REGRESSION + 1))
+        self.assertEqual({row["category"] for row in issues}, {"numerical"})
+        self.assertEqual(sum(" pair " in row["reason"] for row in issues), 6)
+        self.assertIn(collector.issue(
+            "numerical", OP + ": candidate median exceeds baseline median plus max_regression_us"), issues)
+        self.assertEqual(self.grade("comparison", self.pair_rows("comparison", 995, 1005)), [])
+        self.assertEqual(self.grade("comparison", self.pair_rows("comparison", 995, 1006)),
+                         [collector.issue("numerical", OP + ": pair 0 candidate exceeds baseline plus max_regression_us")])
+        self.assertEqual(self.grade("comparison", self.pair_rows("comparison", 1006, 995)), [])
+
+    def test_inconclusive_noise_does_not_erase_known_violation(self):
+        rows = cohort_rows("comparison", OP, 1000, 1000 + TRIAL_REGRESSION + 1)
+        for row in rows:
+            if row["slot"]["role"] == "candidate" and row["slot"]["pair"] in (2, 3):
+                row["metrics"][OP] += TRIAL_REGRESSION + 1
+        issues = self.grade("comparison", rows)
+        self.assertIn(collector.issue("inconclusive", f"candidate: {OP} central-four range exceeds max_regression_us"), issues)
+        self.assertIn(collector.issue(
+            "numerical", OP + ": candidate median exceeds baseline median plus max_regression_us"), issues)
+
+    def test_one_ceiling_violation_survives_passing_pairs_and_medians(self):
+        envelope = calibrated_trial(hard_ceiling_us=1005)
+        rows = cohort_rows("comparison", OP, 1000, 1000)
+        rows[5]["metrics"][OP] = 1006
+        self.assertEqual(self.grade("comparison", rows, envelope),
+                         [collector.issue("numerical", "05: " + OP + " exceeds frozen ceiling")])
+        rows[6]["metrics"].pop(OP)
+        self.assertIn(collector.issue("unavailable", "06: " + OP), self.grade("comparison", rows, envelope))
+
+    def test_complete_pair_violation_survives_other_missing_or_unrun_slots(self):
+        for stage, category in (("control", "inconclusive"), ("comparison", "numerical")):
+            for incomplete in ("missing", "unrun"):
+                with self.subTest(stage=stage, incomplete=incomplete):
+                    rows = self.pair_rows(stage, 1000, 1000 + TRIAL_REGRESSION + 1)
+                    if incomplete == "missing":
+                        rows[-2]["metrics"][OP] = None
+                    else:
+                        rows = rows[:2]
+                    issues = self.grade(stage, rows)
+                    self.assertTrue(any(row["category"] == category and "pair 0" in row["reason"]
+                                        for row in issues))
+                    self.assertIn("unavailable" if incomplete == "missing" else "incomplete",
+                                  {row["category"] for row in issues})
+                    self.assertFalse(any("median" in row["reason"] for row in issues))
+
+
+class TrialCentralFour(unittest.TestCase):
+    def test_ties_remove_exactly_one_occurrence_at_each_tail(self):
+        result = collector.trial_central_four([105, 100, 110, 100, 110, 105])
+        self.assertEqual(result["input_indices"], [3, 0, 5, 2])
+        self.assertEqual([(row["side"], row["input_index"]) for row in result["excluded"]],
+                         [("minimum", 1), ("maximum", 4)])
+        self.assertEqual(result["values"], ["100", "105", "105", "110"])
+        equal = collector.trial_central_four([1000] * 6)
+        self.assertEqual(equal["input_indices"], [1, 2, 3, 4])
+        self.assertEqual([row["input_index"] for row in equal["excluded"]], [0, 5])
+        self.assertEqual((equal["spread"], equal["mean"]), ("0", "1000"))
+
+    def test_central_mean_remains_exact_above_float_integer_precision(self):
+        base = 9007199254740993
+        result = collector.trial_central_four([base - 100, base, base + 1, base + 2, base + 3, base + 100])
+        self.assertEqual(result["mean"], str(collector.Fraction(2 * base + 3, 2)))
+        self.assertEqual(result["median"], result["mean"])
+        self.assertEqual(result["spread"], "3")
+
+    def test_extreme_is_not_an_automatic_first_invocation_exclusion(self):
+        rows = cohort_rows("calibration")
+        for row, value in zip(rows, [1002, 990, 1001, 1003, 1010, 1004]):
+            row["metrics"][OP] = value
+        statistics = collector.cohort_statistics(rows, "trial-hit-roi", central_four=True)["baseline"][OP]
+        central = statistics["central_four"]
+        self.assertEqual([statistics["slots"][row["input_index"]]["id"] for row in central["excluded"]], ["01", "04"])
+        self.assertIn("00", [statistics["slots"][index]["id"] for index in central["input_indices"]])
+        self.assertEqual(statistics["values"], ["1002", "990", "1001", "1003", "1010", "1004"])
+        self.assertEqual((statistics["spread"], central["spread"], central["mean"]), ("20", "3", "2005/2"))
+        self.assertEqual(statistics["median"], central["median"])
+
+    def test_unadmitted_statistics_retain_full_values_without_successor_projection(self):
+        rows = cohort_rows("calibration")
+        rows[0]["metrics"][OP] = 1100
+        historical = collector.cohort_statistics(rows, "trial-hit-roi")["baseline"][OP]
+        self.assertEqual(historical["values"], ["1100", "1000", "1000", "1000", "1000", "1000"])
+        self.assertEqual(historical["spread"], "100")
+        self.assertNotIn("central_four", historical)
+        admitted = collector.cohort_statistics(rows, "trial-hit-roi", central_four=True)["baseline"][OP]
+        self.assertEqual(admitted["central_four"]["spread"], "0")
+        self.assertEqual(admitted["values"], historical["values"])
+
+    def test_incomplete_values_never_form_a_replacement_central_cohort(self):
+        for values in ([1, 2, 3, 4, 5], [1, 2, 3, 4, 5, 6, 7], [1, 2, 3, 4, 5, None]):
+            with self.subTest(values=values), self.assertRaises(ValueError):
+                collector.trial_central_four(values)
+        for unrun in (False, True):
+            rows = cohort_rows("calibration")
+            if unrun:
+                rows.pop()
+            else:
+                rows[0]["metrics"][OP] = None
+            self.assertIsNone(collector.cohort_statistics(rows, "trial-hit-roi", central_four=True)["baseline"][OP]["central_four"])
+
+    def test_a_trimmed_extreme_still_obeys_ceilings_and_original_pairs(self):
+        envelope = calibrated_trial([1000] * 5 + [1100])
+        self.assertEqual((envelope["spread"], envelope["central_four"]["spread"]), ("100", "0"))
+        rows = cohort_rows("comparison", OP, 1000, 1000)
+        rows[1]["metrics"][OP] = 1100
+        self.assertEqual(collector.cohort_statistics(rows, "trial-hit-roi", central_four=True)["candidate"][OP]["central_four"]["spread"], "0")
+        issues = collector.grade_rows(rows, "comparison", {OP: envelope}, "trial-hit-roi")
+        self.assertIn(collector.issue("numerical", OP + ": pair 0 candidate exceeds baseline plus max_regression_us"), issues)
+        rows[1]["metrics"][OP] = TRIAL_CEILING + 1
+        issues = collector.grade_rows(rows, "comparison", {OP: envelope}, "trial-hit-roi")
+        self.assertIn(collector.issue("numerical", "01: " + OP + " exceeds frozen ceiling"), issues)
+        rows = cohort_rows("control", OP, 1000, 1000)
+        rows[1]["metrics"][OP] = 1100
+        issues = collector.grade_rows(rows, "control", {OP: envelope}, "trial-hit-roi")
+        self.assertIn(collector.issue("inconclusive", OP + ": unchanged A/A pair 0 difference exceeds max_regression_us"), issues)
+        rows = cohort_rows("comparison", OP, 1000, 1000)
+        rows[0]["metrics"][OP], rows[1]["metrics"][OP] = 1100, 1100 + TRIAL_REGRESSION
+        self.assertEqual(collector.grade_rows(rows, "comparison", {OP: envelope}, "trial-hit-roi"), [])
+        rows[1]["metrics"][OP] += 1
+        self.assertIn(collector.issue("numerical", OP + ": pair 0 candidate exceeds baseline plus max_regression_us"),
+                      collector.grade_rows(rows, "comparison", {OP: envelope}, "trial-hit-roi"))
+
+    def test_other_metrics_do_not_acquire_trimmed_grading(self):
+        with self.assertRaises(ValueError):
+            collector.scalar_envelope([1000] * 5 + [1200], 1, 1)
+        with self.assertRaises(ValueError):
+            calibrated_resident([ResidentGrading.BASE] * 5 + [ResidentGrading.BASE + 16 * collector.MIB])
+        rows = cohort_rows("calibration", "group_span_ns", 1000, 1000)
+        self.assertNotIn("central_four", collector.cohort_statistics(rows, "group-full", central_four=True)["baseline"]["group_span_ns"])
 
 
 if __name__ == "__main__":
