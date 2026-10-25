@@ -1303,6 +1303,123 @@ class ProtocolTwoTests(unittest.TestCase):
             result = collector.collect(args, "smoke")
         return result, launch
 
+    @contextlib.contextmanager
+    def replace_document_after_read(self, target, replacement):
+        original_bytes, original_text = Path.read_bytes, Path.read_text
+
+        def read_bytes(path, *args, **kwargs):
+            content = original_bytes(path, *args, **kwargs)
+            if path == target:
+                path.write_bytes(replacement)
+            return content
+
+        def read_text(path, *args, **kwargs):
+            content = original_text(path, *args, **kwargs)
+            if path == target:
+                path.write_bytes(replacement)
+            return content
+
+        with mock.patch.object(Path, "read_bytes", read_bytes), \
+                mock.patch.object(Path, "read_text", read_text):
+            yield
+
+    def test_plan_replacement_cannot_bind_attempts_to_unparsed_bytes(self):
+        directory = self.root / "smoke"
+        specification = persist_v2_smoke(directory)
+        path = directory / "plan.json"
+        original = path.read_bytes()
+        specification["environment"]["PLAN_SNAPSHOT_TEST"] = "replacement"
+        replacement = collector.document(specification)
+        replacement_hash = hashlib.sha256(replacement).hexdigest()
+        for folder in ("started", "attempts"):
+            for receipt in (directory / folder).glob("*.json"):
+                value = collector.load(receipt)
+                value["plan_sha256"] = replacement_hash
+                receipt.write_bytes(collector.document(value))
+        with self.replace_document_after_read(path, replacement):
+            result = collector.report(directory)
+        self.assertEqual(result["status"], "failed")
+        self.assertFalse(result["performance_qualified"])
+        self.assertEqual(result["plan_sha256"], hashlib.sha256(original).hexdigest())
+        self.assertEqual(sum(issue.get("category") == "protocol" for issue in result["issues"]), 2)
+        self.assertEqual(path.read_bytes(), replacement)
+
+    def test_failed_started_receipt_hash_names_the_bytes_actually_validated(self):
+        directory = self.root / "smoke"
+        persist_v2_smoke(directory)
+        path = directory / "started/0001.json"
+        replacement = path.read_bytes()
+        invalid = collector.strict_json(replacement.decode("utf-8"))
+        invalid["started_unix_ns"] += 1
+        original = collector.document(invalid)
+        path.write_bytes(original)
+        with self.replace_document_after_read(path, replacement):
+            result = collector.report(directory)
+        self.assertEqual(result["status"], "failed")
+        self.assertFalse(result["performance_qualified"])
+        self.assertTrue(any(issue.get("category") == "protocol"
+                            and issue.get("file") == "attempts/0001.json" for issue in result["issues"]))
+        retained = next(item for item in result["attempts"] if item["file"] == "0001.json")
+        self.assertEqual(retained["started_sha256"], hashlib.sha256(original).hexdigest())
+        self.assertEqual(path.read_bytes(), replacement)
+
+    def test_damaged_started_receipt_retains_hash_and_other_attempts(self):
+        for damage, raw in (("truncated", b'{"task":'), ("encoding", b"\xff"), ("non-object", b"[]")):
+            with self.subTest(damage=damage):
+                directory = self.root / damage
+                persist_v2_smoke(directory)
+                path = directory / "started/0001.json"
+                path.write_bytes(raw)
+                result = collector.report(directory)
+                self.assertEqual(result["status"], "failed")
+                self.assertFalse(result["performance_qualified"])
+                self.assertEqual({item["file"] for item in result["attempts"]}, {"0000.json", "0001.json"})
+                retained = next(item for item in result["attempts"] if item["file"] == "0001.json")
+                self.assertEqual(retained["started_sha256"], hashlib.sha256(raw).hexdigest())
+                self.assertTrue(any(issue.get("category") == "protocol"
+                                    and issue.get("file") == "attempts/0001.json" for issue in result["issues"]))
+
+    def test_created_plan_replacement_cannot_relabel_executed_environment(self):
+        args = self.arguments()
+        path = Path(args.output) / "plan.json"
+        original_open = Path.open
+        written = []
+
+        @contextlib.contextmanager
+        def replace_created(stream):
+            with stream:
+                yield stream
+            original = path.read_bytes()
+            written.append(original)
+            replacement = collector.strict_json(original.decode("utf-8"))
+            replacement["environment"]["PLAN_SNAPSHOT_TEST"] = "not-executed"
+            path.write_bytes(collector.document(replacement))
+
+        def open_path(current, mode="r", *args, **kwargs):
+            stream = original_open(current, mode, *args, **kwargs)
+            return replace_created(stream) if current == path and mode == "xb" else stream
+
+        records = [process_record(v2_manifest()),
+                   process_record(v2_payload("single-small96x64", smoke=True))]
+        with mock.patch.object(Path, "open", open_path):
+            result, launch = self.launch_smoke(args, records)
+        self.assertEqual(result["status"], "failed")
+        self.assertFalse(result["performance_qualified"])
+        self.assertEqual(len(written), 1)
+        written_hash = hashlib.sha256(written[0]).hexdigest()
+        self.assertNotEqual(written_hash, collector.sha256(path))
+        for call in launch.call_args_list:
+            self.assertNotIn("PLAN_SNAPSHOT_TEST", call.kwargs["env"])
+        for receipt in (Path(args.output) / "attempts").glob("*.json"):
+            self.assertEqual(collector.load(receipt)["plan_sha256"], written_hash)
+
+    def test_non_object_plan_is_a_validation_failure(self):
+        directory = self.root / "invalid-plan"
+        directory.mkdir()
+        (directory / "plan.json").write_bytes(b"[]")
+        with self.assertRaises(ValueError):
+            collector.evaluate(directory)
+
     def test_capable_binary_keeps_ordinary_smoke_off_and_does_not_accept_claimed_enablement(self):
         binding = timing_identity(v2_identity(self.root))
         declaration = collector.strict_json(binding["build"]["provenance_commands"][0]["record"]["stdout"])
@@ -3797,6 +3914,74 @@ class WorkloadCohortTests(unittest.TestCase):
                      v3_payload(task["workload"], plan["build_mode"], role=role, candidate=role == "candidate"))
             value.update(timing_boundary_protocol="mado-component-timing-v1", timing_boundaries_enabled=True)
             yield process_record(value)
+
+    @contextlib.contextmanager
+    def replace_profile_before_read(self, path, replacement):
+        original_bytes, original_text = Path.read_bytes, Path.read_text
+
+        def read_bytes(current):
+            if current == path:
+                current.write_bytes(replacement)
+            return original_bytes(current)
+
+        def read_text(current, *args, **kwargs):
+            if current == path:
+                current.write_bytes(replacement)
+            return original_text(current, *args, **kwargs)
+
+        with (mock.patch.object(Path, "read_bytes", read_bytes),
+              mock.patch.object(Path, "read_text", read_text)):
+            yield
+
+    def test_comparison_profile_read_cannot_replace_reviewed_bytes(self):
+        cohorts = self.cohorts()
+        profile = self.freeze(*cohorts[:2])
+        args = self.arguments(cohorts[2], profile)
+        replacement = collector.document({**profile, "rationale": "unreviewed replacement"})
+        with (self.native_context(cohorts, self.records(cohorts[2])) as (observe, launch),
+              self.replace_profile_before_read(Path(args.profile), replacement),
+              self.assertRaisesRegex(ValueError, "reviewed profile hash mismatch")):
+            collector.collect(args, "comparison")
+        observe.assert_not_called()
+        launch.assert_not_called()
+        self.assertFalse(Path(args.output).exists())
+
+    def test_profile_review_read_cannot_replace_rejected_decision(self):
+        cohorts = self.cohorts()
+        profile = self.freeze(*cohorts[:2])
+        path = Path(profile["profile_review"]["path"])
+        accepted = path.read_bytes()
+        review = collector.load(path)
+        path.write_bytes(collector.document({**review, "decision": "rejected"}))
+        rejected_hash = collector.sha256(path)
+        with (self.native_context(cohorts),
+              self.replace_profile_before_read(path, accepted),
+              self.assertRaisesRegex(ValueError, "profile review hash mismatch")):
+            collector.profile_from_v2(cohorts[0], path.parent / "calibration",
+                                      cohorts[1], path.parent / "control",
+                                      "fixture reviewer", "synthetic scoped arithmetic only",
+                                      path, rejected_hash)
+
+    def test_report_profile_read_cannot_replace_frozen_bytes(self):
+        cohorts = self.cohorts()
+        profile = self.freeze(*cohorts[:2])
+        directory = self.root / "retained-report"
+        directory.mkdir()
+        path = directory / "profile.json"
+        collector.save(path, profile)
+        comparison = cohorts[2]
+        comparison["plan"]["profile_sha256"] = collector.sha256(path)
+        replacement = collector.document({**profile, "rationale": "unreviewed replacement"})
+        with self.native_context(cohorts):
+            original_evaluate = collector.evaluate
+            with (mock.patch.object(collector, "evaluate", side_effect=lambda current:
+                                    comparison if Path(current) == directory else original_evaluate(current)),
+                  self.replace_profile_before_read(path, replacement)):
+                result = collector.report(directory)
+        self.assertEqual(result["status"], "failed")
+        self.assertFalse(result["performance_qualified"])
+        self.assertTrue(any(issue["reason"] == "frozen profile hash mismatch"
+                            for issue in result["issues"]))
 
     def test_single_workload_collection_retains_all_processes_counts_and_reviewed_limits(self):
         for workload in (self.workload, "lifecycle-session-rgba-roi"):

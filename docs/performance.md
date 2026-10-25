@@ -374,11 +374,26 @@ slot; `report` classifies the missing suffix as incomplete. There is no persiste
 resume, retry or replacement-sample API. Exhaustion returns the final report in
 `StopIteration.value`; `collect` and the CLI still consume the full schedule.
 
-The owner must separately bound admission, inspection, evaluation and retention.
+For numerical collection, a reviewed, source-bound management owner starts its
+absolute whole-command clock before admission and covers inspection, evaluation
+and retention. The collector clock covers collection; the existing process
+helpers bound individual owned invocations. Neither supplies the outer
+management deadline by itself.
 Checkpoints do not change workload counts, numerical rules, native ownership or
 method-review requirements, and are not crash-durability acknowledgments. A new
 collector identity requires fresh applicable method/source binding before any
 qualification campaign.
+
+External profile reviews, comparison admission and retained reports verify the
+digest of the exact JSON bytes they parse. Comparison retains that same verified
+snapshot. Replacing a file between digest verification and parsing cannot
+authorize different content; a mismatch refuses the profile before use.
+Historical campaigns remain bound to their recorded collector revision.
+
+Cohort plans and started receipts also bind interpretation and digest to one
+read snapshot. Plan creation hashes the exact bytes written. Malformed started
+receipts retain their read-byte digest as failed evidence without discarding
+other attempts; non-object plans are validation failures.
 
 ### Apple observer-on component campaign
 
@@ -588,12 +603,61 @@ instrumented executables directly through the owned-process runner:
 This is development evidence only. It used no collector sampling plan and is not
 whole-corpus collection, complete image-file closure or qualification.
 
+### p050 host observations
+
+[ADR 0106](adr/0106-observational-host-readiness.md) makes CPU idle percentages,
+transient host-process CPU and OS background activity optional descriptive
+observations for new p050 scopes. Neither their values nor their unavailability
+may refuse launch, trigger quiet resampling or start replacement campaign loops.
+Do not intentionally overlap owned builds, tests or independent timing work.
+Source/binary/resource identity, actual ownership and cleanup, correctness,
+deadlines, output/storage bounds and campaign fences remain mandatory.
+Required owned-invocation CPU accounting is not an optional host observation.
+
+Uncertain OS-sensitive empirical numerical qualification is not a prerequisite
+to development, implementation closure or release-decision progress. The
+numerical rules below remain unchanged for optional qualification reports and
+performance claims; replacement calibration/controls or tuning until pass are
+not required to close implementation work. Deterministic correctness, safety,
+provenance, compatibility and required CI remain mandatory.
+
+Successor plans and receipts must name `ADR 0106` as their host-readiness policy
+separately from their numerical method/profile. Historical 90% readiness
+refusals, including 89.69% and 85.82% idle, retain their original evidence and
+unrun stages; they are not consumer failures or regraded passes.
+The current trial-v4 continuation retains its collector/context/method and passing
+calibration bytes. An explicit ADR 0106 applicability supplement supersedes only
+the `exclusive_host` gate's outer CPU/process-readiness requirement and accompanies
+the new result. Reuse the bounded owner with one new stage plan, deadlines and
+output path under the existing owner root; do not add a CPU probe or recalibrate
+merely to remove this prelaunch predicate. Numerical grading remains unchanged.
+
+Numerical variability, benefit and inconclusive outcomes retain their
+source-bound rules and failure fences; do not rerun a failed control or bypass
+its fence for implementation closure. Removing these gates establishes neither
+accepted performance nor release approval or all-target benefit.
+`P050-OS-NOISE` in the independent planning repository's `rasen/backlog.md` owns
+unresolved noise causality, OS-independent repeatability and numerical
+qualification follow-up. Deferral does not permit unsupported performance claims
+or require tuning until pass.
+
+The trial-v4 control under the unchanged numerical method stopped after its first
+invocation exceeded the frozen lifetime-CPU ceiling; semantics, runtime checks
+and cleanup passed. Eleven slots remain unrun and the failed control fence is
+retained without numerical retry. This outcome is distinct from the current
+deferred release gate and establishes no OS-noise cause; ADR 0106 records its
+scope and evidence.
+
 ### Actual-consumer scalar method
 
-[ADR 0099](adr/0099-actual-consumer-scalar-measurement.md) accepts a prospective
-method, not a numerical profile. Preserve
-the actual desktop-selected dev profile (`opt_level=0`, `debuginfo=2`, debug
-assertions), with benchmark accounting absent and
+[ADR 0099](adr/0099-actual-consumer-scalar-measurement.md) defines the scalar
+method. [ADR 0105](adr/0105-central-four-fresh-trial-repeatability.md) selects
+`consumer-method-review-v4` for new admission and succeeds ADR 0104's full-six
+trial repeatability screen. The collector rejects v1/v2/v3 reviews rather than
+reinterpreting historical receipts or profiles. Method implementation alone
+accepts no contextual method or numerical profile.
+Preserve the actual desktop-selected dev profile (`opt_level=0`, `debuginfo=2`,
+debug assertions), with benchmark accounting absent and
 `MADO_P050_OBSERVATIONS=1`. This is distinct from component release timing and
 from observation-off. Current source/binary/lock/resource substitutions must be
 bound independently for baseline and candidate; an embedded revision constant
@@ -608,7 +672,7 @@ observation, frame-sequence and result oracles:
 | Retained eight-template group full / ROI | Group-span scalar benefit | Each fixed call position/outcome, lifecycle and whole-invocation CPU non-regression |
 | Matched query wait full / ROI | Caller-wait scalar benefit | Source/result correlation, settlement and whole-invocation CPU non-regression |
 | Deadline query wait full / ROI | Semantics and non-regression, not speed benefit | Expected application `FAIL`/`Timeout`/`deadline_exceeded`/exit1 remains a failure; retain actual return/settlement overrun and clean teardown |
-| Fresh saved-RGBA trial hit / miss × full / ROI | Driver-operation scalar benefit | Real selected OCR initialization, stage/settlement observations and whole-invocation CPU non-regression |
+| Fresh saved-RGBA trial hit / miss × full / ROI | Fixed operation responsiveness and observed non-regression, not positive benefit | Mandatory `operation_us`, real selected OCR initialization, stage/settlement observations and whole-invocation CPU non-regression |
 
 These cases neither replace both component joint p95/CPU goals nor add a
 requirement to improve unrelated initialization in every consumer case.
@@ -640,9 +704,10 @@ Ns/us representation, QPC frequency and Job100ns units do not alone prove
 resolution or accuracy. Requested5ms or1ms polling sleeps are neither clock
 resolution nor upper detection-lag bounds. Boundary work remains in its observed
 interval; no cadence subtraction, inferred event time or overlapping-stage sum
-is permitted. Apple `posix-wait4` coverage is currently partial; Windows final
-Job coverage is complete but its accounting resolution is unavailable. Neither
-supplies the required numerical CPU admission yet.
+is permitted. Apple raw `posix-wait4` coverage remains partial; Windows final
+Job coverage is complete but its accounting resolution is unavailable. Raw
+records alone do not supply numerical CPU admission; source-closed coverage
+and a separately reviewed accounting allowance remain distinct evidence.
 
 #### Scalar calibration, controls and comparison
 
@@ -653,11 +718,12 @@ candidate),360 per target and720 across the two targets for the selected
 dev-normal/observation-on configuration. Off or another build mode needs a
 separate prospective contract and is not hidden in those totals.
 
-Resident metrics use the separate two-axis resource rule below. For each graded
-timing/CPU metric, let `B` be its six baseline values, `q` its reporting quantum
-and `r` the maximum effective calibration resolution in the same unit, or its
-separately reviewed accounting allowance. Use exact ticks or a lossless decimal
-representation:
+Resident metrics use the separate two-axis resource rule below. Trial
+`operation_us` uses the fixed responsiveness policy below, not this percentage
+noise rule or sample-derived ceiling. For every other graded timing/CPU metric,
+let `B` be its six baseline values, `q` its reporting quantum and `r` the maximum
+effective calibration resolution in the same unit, or its separately reviewed
+accounting allowance. Use exact ticks or a lossless decimal representation:
 
 - Freeze `s=max(B)-min(B)`, `a=max(s,2*r)` and
   `ceiling=q*ceil((max(B)+a)/q)`.
@@ -676,7 +742,9 @@ representation:
 Unknown required coverage/resolution is unavailable, not zero. A later coarser
 clock cannot enlarge frozen allowances. Valid calibration, controls and explicit
 profile acceptance precede candidate collection; no retries, replaced samples,
-outlier removal, post-result ceilings or historical regrading are allowed.
+post-result ceilings or historical regrading are allowed. The sole aggregate
+exception is the prospective trial central-four range below; every raw
+observation remains retained and all other policies keep their original inputs.
 
 Identity/cleanup failure persists at the target/host campaign-management tier,
 outside restartable phase owners. Every new phase checks that fence; all lanes
@@ -684,6 +752,137 @@ sharing affected identity/host conditions lose applicability until an explicit
 source-bound cleanup/applicability disposition. Control failure blocks that
 target/lane's candidate collection, not only one case. Keep known failures
 visible alongside incomplete prerequisites and unrun work.
+
+#### Fresh-trial responsiveness and non-regression
+
+Every `trial-*` operation contract requires
+`policy="fresh-trial-central-four-v1"` and
+`population="fresh-process-first-operation"`. Declare `hard_ceiling_us` and
+`max_regression_us` as positive exact JSON integers; Boolean, floating-point
+and string budgets are invalid. Require
+`max_regression_us <= hard_ceiling_us`, with `hard_ceiling_us` strictly below
+`bounds.primary_seconds * 1_000_000`. Keep positive `quantum` and `resolution`,
+a nonempty `resolution_method`, and `2*resolution <= max_regression_us`.
+These fields have no numeric defaults. The timeout bound is only a sanity check,
+not a source for either user-response budget.
+
+At least one accepted, hash-bound `resources` evidence item must contain
+`trial_responsiveness` with the identical policy, population and two budgets,
+plus a nonempty justification. Every such declaration must agree and retain
+the exact `context_sha256`, matching source-file bindings, `gate="resources"`
+and `complete=true`. Reject this trial-only policy on nontrial contracts or
+evidence. The justification must relate both budgets to intended user response,
+build and observation configuration, not fit the failed cohort or reuse an
+execution timeout. Missing, malformed or mismatched evidence blocks numerical
+collection before a target starts.
+
+Every operation observation must be `<= hard_ceiling_us`: smoke when a review
+is supplied, calibration, both control roles and both comparison roles.
+One excess is numerical `NONPASS`, independently of every other row or median.
+Correctness, runtime identity and cleanup failures remain primary and retained.
+
+Keep exactly six complete fresh calibration values, including the first.
+Sort exact `operation_us` values by value and original schedule order; exclude
+one minimum and one maximum occurrence from repeatability only. Ties choose
+the earliest minimum and latest maximum; all-equal values still exclude two
+distinct occurrences. The first invocation is not automatically excluded.
+Missing, failed or partial observations cannot form a replacement cohort.
+
+The trial envelope retains policy, population, both budgets, clock metadata
+and full-six minimum, median, maximum and spread. It separately reports the
+central-four values, spread, mean and median, with excluded values/indexes.
+Statistics bind these indexes to the role's original values and complete slot
+objects; the phase retains the corresponding raw references. The central-four
+and full-six medians are identical. The central-four mean is descriptive only.
+Reports without a current method review omit the successor aggregate.
+
+The ceiling is exactly `hard_ceiling_us` and allowance exactly
+`max_regression_us`; neither is derived from calibration or rounded upwards.
+Central-four spread above that allowance is inconclusive repeatability, not a
+candidate regression. No percentage noise gate applies to this endpoint.
+
+Passing control and comparison require all six balanced pairs in
+`AB,BA,AB,BA,AB,BA` order without pooling, replacement or exclusion. With
+`a=max_regression_us`, apply these exact checks:
+
+| Scope | Required bound | Excess |
+| --- | --- | --- |
+| Each role separately | Central-four range `<= a` | Inconclusive repeatability |
+| Each role's three first-position and three second-position values | Absolute median difference `<= a` | Inconclusive order effect |
+| Each role's chronological first three and last three values | Absolute median difference `<= a` | Inconclusive drift |
+| Unchanged A/A | Every corresponding pair's absolute difference and the absolute role-median difference `<= a` | Inconclusive control; profile/candidate admission blocked |
+| Baseline/candidate comparison | Every pair's `candidate-baseline <= a` and `median(candidate)-median(baseline) <= a` | Numerical observed non-regression-budget violation |
+
+Equality passes; an excess of one microsecond fails the corresponding bound.
+Faster candidates need no minimum gain. Retain known per-row or comparative
+numerical violations alongside any independent inconclusive findings; neither
+can erase the other. These are observed finite-cohort decisions, not causal SDK
+regression proof, confidence/prediction intervals, clock-accuracy evidence or
+population-wide guarantees. The same fixed tolerance governs the central-four
+screen, controls and non-regression; no empirical widening is allowed.
+
+This screen is weaker than full-six repeatability. The ceiling and pair checks
+remain, but median/order/drift checks do not recover extreme magnitude. A slow
+baseline maximum may mask its comparison partner, while an isolated calibration
+extreme below its ceiling can pass. ADR 0105's sensitivity table records these
+limits. A slow first operation may still fail the ceiling or A/A pair check.
+The method is neither startup-free nor a warmed-process measurement.
+
+The existing `consumer-profile-v1` proposal/freeze path binds the accepted
+method and fully recomputes the envelope. Policy, population, budget or clock
+mismatch, substituted old reviews and edited envelopes invalidate admission.
+Hash-bound method-review, gate and runtime-closure reads use `read_reference`:
+the byte-bounded snapshot supplies both the SHA256 check and the parsed value,
+with stable file identity checked across the read. A later pathname replacement
+cannot substitute different bytes for that verified snapshot.
+Unchanged A/A must pass before profile acceptance or candidate collection;
+the campaign control fence, bounded stages and no-automatic-retry rule remain.
+This policy authorizes neither a full campaign nor a 15%-to-20% substitution.
+Lifetime CPU admission, other timing/CPU envelopes, resident policy,
+`group_span_ns` and matched `query_wait_ns` benefits, and component obligations
+are unchanged.
+
+[ADR 0104](adr/0104-fresh-trial-responsiveness-and-non-regression.md) accepts
+`hard_ceiling_us=1000000` and `max_regression_us=100000` as prospective engineering
+limits solely for Apple `trial-hit-roi`, `fresh-process-first-operation`, on the
+approved 32 GiB host, `dev-normal`, `MADO_P050_OBSERVATIONS=1` and the reviewed
+loader-on configuration. Other cases, targets, hosts, builds and observation
+modes inherit neither amount. The ADR's primary UX sources motivate one second
+for continuity of an authoring command and a separately chosen 100 ms deterioration
+allowance; neither historical runtimes nor process timeouts determine them.
+
+Inclusive bounds permit exactly 100 ms deterioration, which can be noticeable and
+a large percentage at a low baseline. UX guidance does not derive that regression
+allowance or its use for repeatability/controls. The operation observes no
+displayed result and excludes input decoding/hash and controller construction;
+these limits are not a user/product SLO, imperceptibility guarantee, visible-UI
+measurement or release/observation-off equivalence.
+
+The selected Apple context has an accepted v3 method, six fresh baseline
+calibration invocations, twelve unchanged A/A invocations and one independently
+accepted numerical profile. Its subsequent twelve-invocation baseline/candidate
+comparison is **inconclusive**: baseline operation range is102878µs, exceeding
+the fixed100000µs allowance. All twelve semantic/runtime/cleanup checks pass,
+and no candidate non-regression violation is reported. The profile does not turn
+this failed comparison into acceptance; no retry, warmup exclusion or budget
+change is applied. Other cases and targets retain their separate admission gates.
+The observed configuration remains dev-normal, observation-on and loader-on,
+not an optimized shipping build or observation-off equivalence.
+
+A separate one-shot diagnostic uses newly built private sources to split child
+startup from parent transport handling. Original semantics and cleanup pass.
+The capability notification spends539.245ms in the parent's frame read, while
+the child's own main-entry-to-emission interval is23.245ms. These are separate
+clock domains, not a measured pre-main residual. Loader, scheduling and pipe
+causality remain unestablished; this diagnostic neither reproduces the frozen
+binary's latency nor changes the profile, comparison or qualification status.
+
+The original Apple six-value
+calibration remains `NONPASS`: range `82256 us`, median `472229.5 us`, and
+range/median `17.418649%` (about `17.42%`) against its original 15% rule. Keep
+all six values, empty envelopes, source/build bindings and unrun A/A/candidate
+stages unchanged. That baseline failure establishes no candidate regression
+and is not regraded under v3.
 
 #### Closed execution and resource reservations
 
@@ -738,23 +937,25 @@ engine/supervisor RSS does not cover Node or trial children. Only accepted stead
 window refreshes have clock brackets; lifetime sampled maxima have no bracket
 for every contributing refresh and are not OS high-water.
 
-[ADR 0102](adr/0102-actual-consumer-resident-point-policy.md) separates fixed
-resident checkpoint ceilings from calibrated comparison allowances. Its
-prospective Apple `trial-hit-roi`, dev-normal/observation-on allocation is
-256MiB at the recognition child's post-owner-release point on the bound32GiB
-host, with a1MiB comparison floor. The fixed allocation is an engineering
-choice, not an observed-RSS fit, scaling formula, host-capacity guarantee or SDK
-consumer limit. Other hosts, observation-off, sampled replay RSS and other
-cases need their own source-bound resource admission.
+[ADR 0102](adr/0102-actual-consumer-resident-point-policy.md) records the
+historical v2 split between fixed resident checkpoint ceilings and calibrated
+comparison allowances; v3 carries that policy unchanged. Its prospective Apple
+`trial-hit-roi`, dev-normal/observation-on allocation is 256MiB at the recognition
+child's post-owner-release point on the bound32GiB host, with a1MiB comparison
+floor. The fixed allocation is an engineering choice, not an observed-RSS fit,
+scaling formula, host-capacity guarantee or SDK consumer limit. Other hosts,
+observation-off, sampled replay RSS and other cases need their own source-bound
+resource admission.
 
-A `consumer-method-review-v2` binds each selected resident metric's positive
+A `consumer-method-review-v4` binds each selected resident metric's positive
 integer `hard_ceiling_bytes` and `comparison_allowance_floor_bytes`, with floor
 no larger than ceiling, to matching context/source-bound `resources` evidence
-and a nonempty justification. Missing policies refuse admission; no v1
-fallback exists. Every invocation, including calibration, requires available
-positive integer bytes no larger than its fixed ceiling. For six baseline
-values, freeze `s=max(B)-min(B)`, `a=max(s,comparison_allowance_floor_bytes)`,
-the fixed ceiling, floor, minimum, maximum, spread and exact median. Reject
+and a nonempty justification. Missing policies refuse admission; no old-method
+fallback exists. Existing `resident_policies` handling is unchanged. Every
+invocation, including calibration, requires available positive integer bytes
+no larger than its fixed ceiling. For six baseline values, freeze
+`s=max(B)-min(B)`, `a=max(s,comparison_allowance_floor_bytes)`, the fixed ceiling,
+floor, minimum, maximum, spread and exact median. Reject
 `s/median(B)>0.15`; zero spread and fractional medians are valid.
 
 Resident control/comparison roles each require six observations with
@@ -805,13 +1006,14 @@ development smoke and loader-on trial/replay/deadline discoveries passed their
 contracts. The deadline application retains `FAIL`/`Timeout` and exit 1.
 These are not calibration, observer-cost acceptance or consumer qualification.
 
-**Numerical collection remains blocked** pending current role/image closure,
-complete owned counts, observer eligibility/cost, clocks/CPU coverage, named
-resource checkpoints and headroom, byte-accounted retention and cross-phase
-enforcement. A hash-bound method review must admit every gate before numerical
-phases start. Windows numerical admission remains unavailable. No
-consumer profile, candidate benefit, UI result or whole-release qualification is
-accepted.
+**Fresh v3 numerical collection remains blocked** pending current role/image
+closure, complete owned counts, observer eligibility/cost, clocks/CPU coverage,
+named resource checkpoints and headroom, justified trial responsiveness and
+regression budgets, byte-accounted retention and cross-phase enforcement.
+A hash-bound method review must admit every gate before numerical phases
+start; earlier context-specific acceptance does not transfer. Windows numerical
+admission remains unavailable. No v3 consumer profile, candidate benefit,
+UI result, whole-Change completion or whole-release qualification is accepted.
 
 
 ### Historical format-1 collector

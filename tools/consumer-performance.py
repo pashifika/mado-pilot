@@ -19,15 +19,24 @@ calibration as {"directory": "...", "binding": {"path": ".../summary.json",
 "sha256": "..."}}; comparison names profile as {"path": "...", "sha256": "..."}.
 profile-proposal prints the exact proposal digest for the independent freeze review.
 
-Numerical admission is a hash-bound review (kind consumer-method-review-v2),
+Numerical admission is a hash-bound review (kind consumer-method-review-v4),
 with context_sha256=context_digest(plan), accepted=true, reviewer/rationale,
 metric contracts, and evidence for source, runtime_images, owned_processes,
 observer_cost, clocks_cpu, resources, retention and exclusive_host. Each gate
 names its remaining issues and hash-bound evidence files; unknown is not passed.
+v1/v2/v3 reviews are refused, never reinterpreted.
 Each selected resident bytes metric declares exact hard_ceiling_bytes and
 comparison_allowance_floor_bytes; bound resources evidence repeats them under
 resident_policies with a justification. Every invocation obeys that fixed point
 ceiling; comparisons use max(calibration spread, floor). No peak/growth/residual.
+Trial operation_us declares policy fresh-trial-central-four-v1, population
+fresh-process-first-operation, exact hard_ceiling_us and max_regression_us;
+bound resources evidence repeats them under trial_responsiveness with a
+justification. Every trial operation obeys that ceiling. Only repeatability
+uses the central four of six values after removing one minimum and maximum.
+All-six paired non-regression, order, drift and median checks remain intact.
+Excess repeatability is inconclusive; candidate excess is an observed
+non-regression violation. Trials carry no benefit obligation; group/matched do.
 prepare --loader [--node ABSOLUTE_BINARY] enables actual Apple dyld logging.
 discover invokes one selected real command; close-runtime unions only its explicit
 hash-bound raw/sink discoveries and rechecks images/cache. Neither grants numerical
@@ -90,6 +99,10 @@ LIMITS = {"primary_seconds": 90, "cleanup_seconds": 5, "retention_seconds": 10,
           "admission_seconds": 60, "final_retention_seconds": 60}
 GATES = ("source", "runtime_images", "owned_processes", "observer_cost", "clocks_cpu",
          "resources", "retention", "exclusive_host")
+METHOD_REVIEW = "consumer-method-review-v4"
+TRIAL_POLICY = "fresh-trial-central-four-v1"
+TRIAL_POPULATION = "fresh-process-first-operation"
+TRIAL_FIELDS = ("policy", "population", "hard_ceiling_us", "max_regression_us")
 TRIAL_MARKS = ("entered", "validated", "resources_verified", "init_started", "initialized",
                "resources_reverified", "open_started", "opened", "acquired", "prepared",
                "search_started", "search_finished", "projected", "primary_returned", "settled",
@@ -183,8 +196,22 @@ def reference(path):
 def read_reference(binding, maximum=4 * MIB):
     require(isinstance(binding, dict), "missing evidence reference")
     component.digest(binding.get("sha256"), "evidence sha256")
-    require(file_digest(binding["path"]) == binding["sha256"], "evidence identity changed")
-    return load(binding["path"], maximum)
+    path = Path(binding["path"])
+    before = path.lstat()
+    require(stat.S_ISREG(before.st_mode) and before.st_size <= 512 * MIB,
+            "bounded regular input required: " + str(path))
+    require(before.st_size <= maximum, "JSON exceeds retained bound: " + str(path))
+    with path.open("rb") as stream:
+        opened = os.fstat(stream.fileno())
+        raw = stream.read(maximum + 1)
+        after = os.fstat(stream.fileno())
+    final = path.stat()
+    identity = lambda value: (value.st_dev, value.st_ino, value.st_size, value.st_mtime_ns)
+    require(identity(before) == identity(opened) == identity(after) == identity(final),
+            "input changed while reading: " + str(path))
+    require(len(raw) <= maximum, "JSON exceeds retained bound: " + str(path))
+    require(hashlib.sha256(raw).hexdigest() == binding["sha256"], "evidence identity changed")
+    return strict_json(raw.decode("utf-8"))
 
 
 def collector_identity():
@@ -327,7 +354,12 @@ def selectable_metrics(case):
 
 
 def benefit_metric(case):
-    return {"trial": "operation_us", "group": "group_span_ns", "matched": "query_wait_ns"}.get(case.split("-")[0])
+    # Fresh trials prove responsiveness/non-regression only, never a positive benefit.
+    return {"group": "group_span_ns", "matched": "query_wait_ns"}.get(case.split("-")[0])
+
+
+def trial_metric(case, name):
+    return case.startswith("trial-") and name == "operation_us"
 
 
 def semantic_output(plan, role, record):
@@ -338,7 +370,8 @@ def semantic_output(plan, role, record):
     output = strict_json(record["stdout"])
     selected = plan["roles"][role]
     require(not terminal_issues(plan, selected, output), "discovery terminal identity/cleanup failed")
-    checked = (trial_check if plan["case"].startswith("trial-") else replay_check)(plan, selected, output)
+    checked = (trial_check(plan, selected, output, {}) if plan["case"].startswith("trial-")
+               else replay_check(plan, selected, output))
     if checked["driver_declared_outer"] is not None:
         embedded = checked["driver_declared_outer"]
         require(embedded["outer_primary_ms"] <= plan["bounds"]["primary_seconds"] * 1000
@@ -395,6 +428,27 @@ def resident_policies(value, resident):
     return result
 
 
+def trial_budget(value):
+    """Declared fresh-trial policy, ceiling and absolute tolerance; exact JSON integers, never sample-derived."""
+    require(isinstance(value, dict), "trial responsiveness object required")
+    require(value.get("policy") == TRIAL_POLICY and value.get("population") == TRIAL_POPULATION,
+            "fresh-trial responsiveness policy/population required")
+    ceiling = integer(value.get("hard_ceiling_us"), "hard_ceiling_us", 1)
+    tolerance = integer(value.get("max_regression_us"), "max_regression_us", 1)
+    require(tolerance <= ceiling, "max_regression_us exceeds hard_ceiling_us")
+    return {"policy": TRIAL_POLICY, "population": TRIAL_POPULATION,
+            "hard_ceiling_us": ceiling, "max_regression_us": tolerance}
+
+
+def trial_contract(contract):
+    """Budget and clock of one trial operation contract; 2*resolution must fit the tolerance."""
+    budget = trial_budget(contract)
+    quantum, resolution = exact(contract.get("quantum")), exact(contract.get("resolution"))
+    require(quantum > 0 and resolution > 0, "positive quantum and measured effective resolution required")
+    require(2 * resolution <= budget["max_regression_us"], "2*resolution exceeds max_regression_us")
+    return budget, (quantum, resolution)
+
+
 def admission(plan):
     failures = []
     review = None
@@ -403,7 +457,7 @@ def admission(plan):
             review = read_reference(plan["admission"])
             require(isinstance(review, dict) and isinstance(review.get("gates"), dict)
                     and isinstance(review.get("metrics"), dict), "method review gates/metrics objects required")
-            require(review.get("kind") == "consumer-method-review-v2" and review.get("accepted") is True,
+            require(review.get("kind") == METHOD_REVIEW and review.get("accepted") is True,
                     "accepted consumer method review required")
             require(review.get("context_sha256") == context_digest(plan), "method review context mismatch")
             nonempty(review.get("reviewer"), "reviewer")
@@ -415,7 +469,7 @@ def admission(plan):
     selected = {**required_metrics(plan["case"]), **{
         name: selectable_metrics(plan["case"]).get(name) for name in contracts}}
     resident = {name for name, unit in selected.items() if unit == "bytes"}
-    policies = []
+    policies, budgets = [], []
     for name in GATES:
         gate = (review or {}).get("gates", {}).get(name, {})
         if (not isinstance(gate, dict) or gate.get("status") != "accepted" or gate.get("issues") != []
@@ -445,6 +499,11 @@ def admission(plan):
                             "prospective source/host/API-bound accounting allowance missing")
                 if name == "resources" and "resident_policies" in evidence:
                     policies.append(resident_policies(evidence["resident_policies"], resident))
+                if name == "resources" and "trial_responsiveness" in evidence:
+                    require(plan["case"].startswith("trial-"), "fresh-trial responsiveness policy is trial-only")
+                    declared = trial_budget(evidence["trial_responsiveness"])
+                    nonempty(evidence["trial_responsiveness"].get("justification"), "trial responsiveness justification")
+                    budgets.append(declared)
             except (KeyError, TypeError, ValueError, OSError) as error:
                 failures.append(issue("unavailable", name + ": " + str(error)))
     for metric, unit in selected.items():
@@ -456,6 +515,15 @@ def admission(plan):
                     "metric unit/availability mismatch")
             for key in ("api", "owner", "interval"):
                 nonempty(contract.get(key), key)
+            if trial_metric(plan["case"], metric):
+                budget = trial_contract(contract)[0]
+                require(budget["hard_ceiling_us"] < exact(plan["bounds"]["primary_seconds"]) * 1_000_000,
+                        "hard_ceiling_us must be below the outer process timeout")
+                require(budgets and all(declared == budget for declared in budgets),
+                        "bound resources evidence must declare the same fresh-trial responsiveness budget")
+            else:
+                require(not set(TRIAL_FIELDS) & set(contract),
+                        "fresh-trial responsiveness policy applies only to trial operation_us")
             if unit == "bytes":
                 require(contract.get("domain") == "resident", "resource point is not allocation/owner residual")
                 require(not {"quantum", "resolution", "resolution_method"} & set(contract),
@@ -497,15 +565,12 @@ def thread_check(value):
             "getter order")
 
 
-def trial_check(plan, role, output):
+def trial_check(plan, role, output, metrics):
     case = plan["case"][6:]
     require(output["version"] == 1 and output["scope"] == "supervised-saved-rgba-template-trial",
             "actual saved-frame schema required")
     check(output["case"] == case and output["corpus_sha256"] == plan["fixture"]["corpus_sha256"],
           "identity", "trial case/corpus identity")
-    require(output["success"] is True and output["status"] == "semantic_pass"
-            and output["apparatus_failures"] == [], "public trial operation failed")
-    require(output["oracle"]["passed"] is True and output["oracle"]["violations"] == [], "trial oracle failed")
     require(not any(output[key] for key in ("ui_coverage", "native_capture", "native_input")),
             "saved-frame scope changed")
     fixture = output["fixture_case"]
@@ -558,6 +623,8 @@ def trial_check(plan, role, output):
             values = [integer(parent[name], name) for name in names]
             require(values == sorted(values), "parent lifecycle causal chain")
     check(result["cleanup"]["close_error"] is None, "cleanup", "trial close error")
+    # Retain the identity/terminal-bound duration even if a later result or RSS oracle fails.
+    metrics["operation_us"] = integer(operation["total_duration_us"], "trial operation")
     projection = result["result"]
     require(projection["id"] == "p050-template-0" and projection["kind"] == "template"
             and projection["threshold"] == 0.9 and projection["outcome"] == ("matched" if hit else "no_match"),
@@ -574,7 +641,6 @@ def trial_check(plan, role, output):
     marks = [integer(value, "stage mark") for value in measure["marks"]]
     require(len(marks) == 19 and marks == sorted(marks), "ordered complete trial stages")
     thread_check(measure["native_threads_after"])
-    metrics = {"operation_us": integer(operation["total_duration_us"], "trial operation")}
     rss = measure.get("process_rss_after")
     if rss is not None:
         check(rss["pid"] == result["child_pid"], "identity", "RSS child identity")
@@ -795,9 +861,15 @@ def loader_check(plan, output, record, sink_root):
 
 
 def terminal_issues(plan, role, output):
-    """Inspect sticky terminal facts independently of a failed result oracle."""
+    """Inspect sticky application, identity and cleanup facts independently of result validation."""
     failures = []
     if plan["case"].startswith("trial-"):
+        if not (output.get("success") is True and output.get("status") == "semantic_pass"
+                and output.get("apparatus_failures") == []):
+            failures.append(issue("semantics", "public trial operation failed"))
+        oracle = output.get("oracle")
+        if not (isinstance(oracle, dict) and oracle.get("passed") is True and oracle.get("violations") == []):
+            failures.append(issue("semantics", "trial oracle failed"))
         operation = output.get("operation") or {}
         controller = operation.get("controller") or {}
         reports = [controller.get("result"), *controller.get("attempts", [])]
@@ -851,7 +923,8 @@ def reconcile(plan, slot, record, review=None, sink_root=None, runtime_observati
         elif output.get("runs"):
             details.update(application_status=output["runs"][0].get("status"), primary=output["runs"][0].get("primary"))
         failures.extend(terminal_issues(plan, role, output))
-        checked = (trial_check if plan["case"].startswith("trial-") else replay_check)(plan, role, output)
+        checked = (trial_check(plan, role, output, details["metrics"]) if plan["case"].startswith("trial-")
+                   else replay_check(plan, role, output))
         details.update(checked)
         details["sinks"] = loader_check(plan, output, record, sink_root)
         if record.get("process_id") in details["selected_pids"]:
@@ -909,6 +982,15 @@ def reconcile(plan, slot, record, review=None, sink_root=None, runtime_observati
             else:
                 if exact(point) > ceiling:
                     failures.append(issue("numerical", metric + " exceeds fixed resident checkpoint ceiling"))
+        elif trial_metric(plan["case"], metric):
+            # Every trial operation, smoke with a review and calibration included, obeys the declared ceiling.
+            try:
+                ceiling = trial_budget(contract)["hard_ceiling_us"]
+            except ValueError as error:
+                unavailable.append(issue("unavailable", metric + ": " + str(error)))
+            else:
+                if exact(point) > ceiling:
+                    failures.append(issue("numerical", metric + " exceeds fixed trial responsiveness ceiling"))
         if metric == "lifetime_cpu_seconds" and resolution is not None and "resolution" in contract:
             if exact(resolution) > exact(contract["resolution"]):
                 failures.append(issue("clock", "CPU resolution coarser than frozen method"))
@@ -953,13 +1035,47 @@ def resident_envelope(values, ceiling, floor):
             "minimum": str(min(values)), "maximum": str(max(values))}
 
 
-def derive_envelopes(rows, review):
+def trial_central_four(values):
+    """One occurrence per tail; indexes identify the unchanged input order."""
+    require(len(values) == 6, "six observations required for central-four repeatability")
+    ranked = sorted(enumerate(exact(value) for value in values), key=lambda item: (item[1], item[0]))
+    retained = ranked[1:-1]
+    points = [value for _, value in retained]
+    return {
+        "input_indices": [index for index, _ in retained],
+        "excluded": [{"side": side, "input_index": index, "value": str(value)}
+                     for side, (index, value) in zip(("minimum", "maximum"), (ranked[0], ranked[-1]))],
+        "values": [str(value) for value in points],
+        "minimum": str(points[0]), "maximum": str(points[-1]),
+        "spread": str(points[-1] - points[0]), "mean": str(sum(points) / 4), "median": str(median(points)),
+    }
+
+
+def trial_envelope(values, contract):
+    """Fixed ceiling/tolerance; central-four repeatability never discards an invocation."""
+    budget, (quantum, resolution) = trial_contract(contract)
+    require(len(values) == 6, "six calibration invocations required")
+    values = [exact(value) for value in values]
+    require(max(values) <= budget["hard_ceiling_us"], "calibration operation exceeds fixed trial responsiveness ceiling")
+    spread = max(values) - min(values)
+    central = trial_central_four(values)
+    check(exact(central["spread"]) <= budget["max_regression_us"], "inconclusive",
+          "calibration central-four spread exceeds max_regression_us")
+    return {**budget, "ceiling": str(budget["hard_ceiling_us"]), "allowance": str(budget["max_regression_us"]),
+            "quantum": str(quantum), "resolution": str(resolution), "spread": str(spread),
+            "median": str(median(values)), "minimum": str(min(values)), "maximum": str(max(values)),
+            "central_four": central}
+
+
+def derive_envelopes(rows, review, case):
     require(len(rows) == 6, "complete six-invocation calibration required")
     result = {}
     for name, contract in review["metrics"].items():
         values = [row["metrics"].get(name) for row in rows]
         require(all(value is not None for value in values), "unavailable calibration: " + name)
-        if contract.get("unit") == "bytes":
+        if trial_metric(case, name):
+            result[name] = trial_envelope(values, contract)
+        elif contract.get("unit") == "bytes":
             require(contract.get("domain") == "resident", "normal consumer supports resident endpoints only")
             result[name] = resident_envelope(values, *resident_bounds(contract))
         elif name == "lifetime_cpu_seconds" and contract.get("accounting_allowance") is not None:
@@ -1004,6 +1120,47 @@ def invocation_limits(row, envelopes):
     return failures
 
 
+def trial_findings(rows, stage, roles, name, envelope):
+    """Six balanced pairs at one fixed absolute tolerance; finite-cohort checks, not intervals or population claims."""
+    tolerance = exact(envelope["max_regression_us"])
+    failures, medians, pairs = [], {}, {}
+    for role in roles:
+        selected = [row for row in rows if row["slot"]["role"] == role]
+        pairs[role] = {row["slot"]["pair"]: exact(row["metrics"][name])
+                       for row in selected if row["metrics"].get(name) is not None}
+        if len(selected) != 6 or any(row["metrics"].get(name) is None for row in selected):
+            continue
+        values = [exact(row["metrics"][name]) for row in selected]
+        if exact(trial_central_four(values)["spread"]) > tolerance:
+            failures.append(issue("inconclusive", f"{role}: {name} central-four range exceeds max_regression_us"))
+        first = [row["metrics"][name] for row in selected if row["slot"]["position"] == 0]
+        second = [row["metrics"][name] for row in selected if row["slot"]["position"] == 1]
+        if len(first) != 3 or len(second) != 3 or abs(median(first) - median(second)) > tolerance:
+            failures.append(issue("inconclusive", f"{role}: {name} order exceeds max_regression_us"))
+        chronological = [row["metrics"][name] for row in sorted(selected, key=lambda row: row["slot"]["process"])]
+        if abs(median(chronological[:3]) - median(chronological[3:])) > tolerance:
+            failures.append(issue("inconclusive", f"{role}: {name} drift exceeds max_regression_us"))
+        medians[role] = median(values)
+    baseline, other = roles
+    differences = [(pair, pairs[other][pair] - pairs[baseline][pair])
+                   for pair in sorted(set(pairs[baseline]) & set(pairs[other]))]
+    center = medians[other] - medians[baseline] if len(medians) == 2 else None
+    if stage == "control":
+        for pair, difference in differences:
+            if abs(difference) > tolerance:
+                failures.append(issue("inconclusive", f"{name}: unchanged A/A pair {pair} difference exceeds max_regression_us"))
+        if center is not None and abs(center) > tolerance:
+            failures.append(issue("inconclusive", f"{name}: unchanged A/A role median difference exceeds max_regression_us"))
+        return failures
+    # Observed non-regression budget only: not a causal SDK regression; faster needs no minimum gain.
+    for pair, difference in differences:
+        if difference > tolerance:
+            failures.append(issue("numerical", f"{name}: pair {pair} candidate exceeds baseline plus max_regression_us"))
+    if center is not None and center > tolerance:
+        failures.append(issue("numerical", f"{name}: candidate median exceeds baseline median plus max_regression_us"))
+    return failures
+
+
 def grade_rows(rows, stage, envelopes, case):
     failures = []
     expected = schedule(stage)
@@ -1015,6 +1172,9 @@ def grade_rows(rows, stage, envelopes, case):
         return failures
     roles = ("baseline", "control" if stage == "control" else "candidate")
     for name, envelope in envelopes.items():
+        if trial_metric(case, name):
+            failures.extend(trial_findings(rows, stage, roles, name, envelope))
+            continue
         resource = envelope.get("resource")
         medians = {}
         for role in roles:
@@ -1051,7 +1211,7 @@ def grade_rows(rows, stage, envelopes, case):
     return failures
 
 
-def cohort_statistics(rows):
+def cohort_statistics(rows, case, *, central_four=False):
     result = {}
     for role in sorted({row["slot"]["role"] for row in rows}):
         selected = [row for row in rows if row["slot"]["role"] == role]
@@ -1067,6 +1227,14 @@ def cohort_statistics(rows):
                 "minimum": str(min(present)) if present else None,
                 "maximum": str(max(present)) if present else None,
             }
+            if trial_metric(case, name):
+                result[role][name].update(
+                    slots=[row["slot"] for row in selected],
+                    mean=str(sum(present) / len(present)) if present else None,
+                    spread=str(max(present) - min(present)) if present else None,
+                )
+                if central_four:
+                    result[role][name]["central_four"] = trial_central_four(values) if len(values) == len(present) == 6 else None
     return result
 
 
@@ -1242,7 +1410,7 @@ def prerequisites(plan, stage):
             require(context_digest(plan) == context_digest(calibration["plan"])
                     and plan.get("admission") == calibration["plan"].get("admission"), "calibration context changed")
             require(not calibration["issues"], "calibration failed or unavailable")
-            envelopes = derive_envelopes(calibration["rows"], calibration["review"])
+            envelopes = derive_envelopes(calibration["rows"], calibration["review"], plan["case"])
         elif stage == "comparison":
             profile = read_reference(plan["profile"])
             require(profile["format"] == "consumer-profile-v1" and profile["context_sha256"] == context_digest(plan),
@@ -1258,7 +1426,7 @@ def prerequisites(plan, stage):
             require(not Campaign(plan).fences(ignore_phase=plan["case"] + "-comparison"),
                     "campaign identity/cleanup/control fence")
     except (KeyError, TypeError, ValueError, OSError) as error:
-        failures.append(issue("prerequisite", str(error)))
+        failures.append(issue(getattr(error, "category", "prerequisite"), str(error)))
     return envelopes, failures
 
 
@@ -1283,6 +1451,7 @@ def collect_steps(plan, stage, output):
     phase = plan["case"] + "-" + stage
     registration = None
     active_runtime = None
+    review = None
     with campaign.locked() as lock_issues:
         try:
             review, missing = admission(plan)
@@ -1418,9 +1587,10 @@ def collect_steps(plan, stage, output):
                     break
             if not summary["unrun"] and stage == "calibration" and not summary["issues"]:
                 try:
-                    summary["envelopes"] = derive_envelopes(rows, review)
+                    summary["envelopes"] = derive_envelopes(rows, review, plan["case"])
                 except (KeyError, TypeError, ValueError) as error:
-                    summary["issues"].append(issue("numerical", str(error)))
+                    # Insufficient repeatability stays inconclusive; only other refusals are numerical.
+                    summary["issues"].append(issue(getattr(error, "category", "numerical"), str(error)))
             if stage in ("control", "comparison"):
                 summary["issues"].extend(grade_rows(rows, stage, envelopes, plan["case"]))
         except BaseException as error:
@@ -1449,7 +1619,7 @@ def collect_steps(plan, stage, output):
             if stage == "control" and summary["issues"] and registration is not None:
                 campaign.fence("control", "failed/incomplete unchanged control blocks all candidate cases", phase)
             summary["elapsed_seconds"] = time.monotonic() - started
-            summary["statistics"] = cohort_statistics(rows)
+            summary["statistics"] = cohort_statistics(rows, plan["case"], central_four=review is not None)
             summary["qualification"] = stage == "comparison" and not summary["issues"] and not summary["admission_issues"]
             seal = save(output / "summary.json", summary)
             if registration is not None and registration.exists():
@@ -1474,7 +1644,7 @@ def profile_proposal(calibration, control, *, check_fences=True):
     require(not calibration["issues"] and not control["issues"], "failed/unavailable cohort cannot be frozen")
     require(control["plan"].get("calibration") == {
         "directory": calibration["directory"], "binding": calibration["binding"]}, "control calibration binding mismatch")
-    envelopes = derive_envelopes(calibration["rows"], calibration["review"])
+    envelopes = derive_envelopes(calibration["rows"], calibration["review"], calibration["plan"]["case"])
     require(not grade_rows(control["rows"], "control", envelopes, calibration["plan"]["case"]), "unchanged control failed")
     campaign = Campaign(calibration["plan"])
     require(not check_fences or not campaign.fences(), "campaign identity/cleanup/control fence")
@@ -1736,7 +1906,8 @@ def main(argv=None):
             value = {"stage": evidence["summary"]["stage"], "case": evidence["plan"]["case"],
                      "issues": evidence["issues"], "admission_issues": evidence["summary"]["admission_issues"],
                      "rows": evidence["rows"], "unrun": evidence["summary"]["unrun"],
-                     "statistics": cohort_statistics(evidence["rows"]),
+                     "statistics": cohort_statistics(evidence["rows"], evidence["plan"]["case"],
+                                                     central_four=evidence["review"] is not None),
                      "qualification": evidence["summary"]["qualification"] and not evidence["issues"]}
         else:
             stage = {"calibrate": "calibration", "compare": "comparison"}.get(args.command, args.command)
