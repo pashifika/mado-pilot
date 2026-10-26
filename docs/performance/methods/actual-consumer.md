@@ -35,6 +35,12 @@ do not relabel an old binary with the collector checkout's revision. `smoke`
 also accepts an already prepared valid plan directly. Output files/directories
 must not exist.
 
+`smoke --role candidate` selects the explicitly bound candidate; omitting `--role`
+selects baseline. A missing candidate is refused before output or registration
+creation. For a two-role investigation, use separate outputs and inspect the
+first receipt before launching the second. Each remains an unqualified
+observation, not `compare`; calibration/control/comparison schedules are unchanged.
+
 The twelve case IDs are `replay-{full,roi}`, `group-{full,roi}`,
 `matched-{full,roi}`, `deadline-{full,roi}` and
 `trial-{hit,miss}-{full,roi}`. Select exactly one. Keep its fixed RGBA input,
@@ -46,7 +52,7 @@ The selected configuration is the actual desktop dev-normal build:
 shipping code. Changes to configuration need their own recorded experiment;
 no consumer instrumented mode is silently added.
 
-Smoke executes one baseline invocation within 90 seconds primary, five seconds
+Smoke executes one selected-role invocation within 90 seconds primary, five seconds
 cleanup and ten seconds retention, with 4 MiB combined stdout/stderr and a
 900-second whole-phase ceiling. It needs no method review, calibration, A/A,
 profile, runtime-closure approval or quiet-host reading. Optional accounting or
@@ -71,7 +77,7 @@ showing terminal cleanup with no unknown, semantic or identity failures. This
 applies to a complete or numerical-early-stop control, not arbitrary missing
 evidence. A new output-specific smoke registration neither retries calibration/
 control nor clears the qualification fence. Reuse the actual campaign identity;
-another output directory does not resolve unsafe state or admit a candidate.
+another output directory does not resolve unsafe state or qualify a candidate.
 Never overwrite, clear or reinterpret a failed control to obtain a pass.
 
 ## Units and clock boundaries

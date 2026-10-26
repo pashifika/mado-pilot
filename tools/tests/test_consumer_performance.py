@@ -50,8 +50,8 @@ def thread_point():
             "during_workload_invariance_observed": False, "started_us": 1, "finished_us": 2}
 
 
-def trial_output(plan):
-    role = plan["roles"]["baseline"]
+def trial_output(plan, *, role_name="baseline"):
+    role = plan["roles"][role_name]
     parent = {"format": "trial-supervision-marks-v1", "epoch": "parent-control.started", "unit": "ns",
               "spawn_started_ns": 10, "spawn_returned_ns": 20, "child_started_received_ns": 30,
               "entry_settled_received_ns": 35, "terminal_received_ns": 40,
@@ -781,6 +781,7 @@ class ImmutableCampaign(unittest.TestCase):
         self.assertIn("identity", {problem["category"] for problem in result["issues"]})
 
     def test_unknown_identity_and_cleanup_fences_refuse_new_smoke_output(self):
+        self.plan["roles"]["candidate"] = copy.deepcopy(self.plan["roles"]["baseline"])
         for category in ("control", "identity", "cleanup", "unknown"):
             with self.subTest(category=category):
                 plan = {**self.plan, "campaign": str(self.root / (category + "-campaign"))}
@@ -788,7 +789,7 @@ class ImmutableCampaign(unittest.TestCase):
                 owner.initialize()
                 owner.fence(category, "unresolved original state", "unregistered")
                 with mock.patch.object(collector, "run_process") as launch, contextlib.redirect_stdout(io.StringIO()):
-                    result = collector.collect(plan, "smoke", self.root / category)
+                    result = collector.collect(plan, "smoke", self.root / category, smoke_role="candidate")
                 launch.assert_not_called()
                 self.assertEqual(result["attempts"], [])
                 self.assertTrue(result["issues"])
@@ -801,7 +802,15 @@ class ImmutableCampaign(unittest.TestCase):
         launch.assert_not_called()
         self.assertIn("cleanup", {problem["category"] for problem in result["issues"]})
 
-    def test_smoke_cli_describes_numeric_misses_and_report_keeps_original_validation(self):
+    def test_candidate_smoke_cli_describes_numeric_misses_and_report_keeps_original_validation(self):
+        engine_path = self.root / "candidate-engine"
+        engine_path.write_bytes(b"candidate engine\n")
+        self.plan["inputs"][str(engine_path)] = {"sha256": collector.sha256(engine_path)}
+        candidate = copy.deepcopy(self.plan["roles"]["baseline"])
+        candidate["argv"][2] = str(engine_path)
+        candidate["engine"].update(path=str(engine_path), sha256=collector.sha256(engine_path))
+        self.plan["roles"]["candidate"] = candidate
+        self.output = trial_output(self.plan, role_name="candidate")
         review = {"metrics": {OP: trial_contract(hard_ceiling_us=999),
                               RSS: resident_contract(hard_ceiling_bytes=99 * collector.MIB)}}
         plan_path = self.root / "selected-plan.json"
@@ -811,10 +820,13 @@ class ImmutableCampaign(unittest.TestCase):
                 mock.patch.object(collector, "run_process", return_value=record_for(self.output)) as launch:
             output = io.StringIO()
             with contextlib.redirect_stdout(output):
-                code = collector.main(["smoke", "--plan", str(plan_path), "--output", str(directory)])
+                code = collector.main(["smoke", "--plan", str(plan_path), "--role", "candidate",
+                                       "--output", str(directory)])
             self.assertEqual((code, launch.call_count), (0, 1))
             result = collector.load(directory / "summary.json")
             self.assertEqual(result["format"], "consumer-phase-v2")
+            self.assertEqual(result["schedule"][0]["role"], "candidate")
+            self.assertEqual(collector.load(directory / "00.started.json")["argv"], candidate["argv"])
             self.assertEqual(result["issues"], [])
             self.assertEqual(len(result["observation_issues"]), 2)
             validation = collector.load(directory / "00.validation.json")
@@ -826,11 +838,25 @@ class ImmutableCampaign(unittest.TestCase):
             with contextlib.redirect_stdout(output):
                 self.assertEqual(collector.main(["report", str(directory)]), 0)
             report = collector.strict_json(output.getvalue())
+            self.assertEqual(report["rows"][0]["slot"]["role"], "candidate")
             self.assertEqual(report["observation_issues"], result["observation_issues"])
             self.assertEqual(report["rows"][0]["issues"], validation["issues"])
             self.assertEqual(report["qualification_status"], "not-requested")
             self.assertEqual(original, {path: path.read_bytes() for path in original})
             self.assertEqual(launch.call_count, 1)
+
+    def test_missing_candidate_smoke_refuses_before_output_or_registration(self):
+        plan_path = self.root / "selected-plan.json"
+        collector.save(plan_path, self.plan)
+        directory = self.root / "missing-candidate"
+        with mock.patch.object(collector, "run_process") as launch, \
+                contextlib.redirect_stdout(io.StringIO()), contextlib.redirect_stderr(io.StringIO()):
+            code = collector.main(["smoke", "--plan", str(plan_path), "--role", "candidate",
+                                   "--output", str(directory)])
+        self.assertEqual(code, 2)
+        launch.assert_not_called()
+        self.assertFalse(directory.exists())
+        self.assertEqual(list((self.campaign.root / "phases").iterdir()), [])
 
     def test_explicit_calibration_cli_still_fails_numeric_limit_without_retry(self):
         self.plan["roles"]["candidate"] = copy.deepcopy(self.plan["roles"]["baseline"])
