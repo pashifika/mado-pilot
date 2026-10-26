@@ -1,7 +1,9 @@
 # Windows capture ownership contract tests
 
-This plan translates
-[ADR 0013](adr/0013-windows-capture-frame-detachment.md) into tests for
+This plan translates the Windows capture ownership contract settled under gate
+[`G-002`](validation-gates.md#g-002) and stated in
+[Windows native capture ownership](architecture.md#windows-native-capture-ownership)
+into tests for
 `mado-pilot-platform-windows`. The production Adapter, controlled tests, and
 approved interactive Windows host matrix now exist; this document distinguishes
 their revision-bound evidence from Windows exact-candidate Phase 1 checks, Apple
@@ -46,12 +48,12 @@ case, which skips with a reason only when WGC is unavailable. On a supported
 host, failure to discover the test-owned target is a test failure. The tests do
 not capture an unrelated desktop or application.
 
-[ADR 0031](adr/0031-windows-1280-production-capture-performance-budgets.md)
-accepts the revision-bound 120-warm-up/600-frame 1280×720 production matrix.
-[ADR 0032](adr/0032-windows-dual-4k-production-capture-performance-budgets.md)
-accepts the exact two-display mixed-DPI dual-4K matrix. Both retain
-resource-zeroing observations and affected `G-013` budgets; a skip remains
-ineligible as support evidence.
+The revision-bound 120-warm-up/600-frame 1280×720 production matrix and the
+exact two-display mixed-DPI dual-4K matrix keep their resource-zeroing
+observations in the
+[1280×720](benchmarks/phase-2-production-capture-1280x720-x86_64-pc-windows-msvc.toml)
+and [dual-4K](benchmarks/phase-2-production-capture-dual-4k-x86_64-pc-windows-msvc.toml)
+profiles; a skip remains ineligible as support evidence.
 
 ## Privacy review
 
@@ -146,8 +148,8 @@ identifiers, with no captured payload.
 
 ## Performance obligations
 
-G-002 chooses correctness and ownership, not numeric product budgets. ADR 0031
-accepts the 1280×720 `G-013` profiles for:
+G-002 chooses correctness and ownership, not numeric product targets. The
+1280×720 production workload profiles measure:
 
 - capture arrival and callback-copy p50/p95 latency;
 - full-frame copied bytes and lazy mapped bytes;
@@ -156,7 +158,7 @@ accepts the 1280×720 `G-013` profiles for:
 - session startup, resize recreation, callback drain, complete close, and
   target-loss replacement recovery.
 
-ADR 0032 accepts the same applicable capture, mapping, resource, progress, and
+The dual-4K profile measures the same applicable capture, mapping, resource, progress, and
 cleanup facts for the exact two-display 4K topology. It requires one shared
 600-sample stationary pass per display plus 300 retained frame pairs while the
 fixture moves across the signed seam. Both requested-position markers and each

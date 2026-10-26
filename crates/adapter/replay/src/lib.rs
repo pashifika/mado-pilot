@@ -8,12 +8,8 @@
 //! capture package's stream state so replay frames get the same identity rules
 //! as any other frames.
 //!
-//! It exists as its own package because none of the alternatives held up: the
-//! test-support package must never ship, the capture package must not contain a
-//! concrete adapter, the facade is a composition root rather than an
-//! implementation, and replay is platform-neutral so it does not belong under
-//! `crates/platform`. See
-//! `docs/adr/0002-replay-capture-adapter-package.md`.
+//! Replay is a platform-neutral concrete adapter: test support must not ship,
+//! capture contracts must not depend on adapters, and the facade only wires them.
 //!
 //! # What it deliberately does not do
 //!
@@ -35,20 +31,13 @@
 //! and a memory source is bytes the caller already holds, so the manifest and
 //! the pixel files are as large as the caller made them.
 //!
-//! That is deliberate, and it is the opposite of the rule an asset package
-//! follows. `mado-pilot-assets` bounds manifest bytes, entry count, per-entry
-//! bytes, source bytes, total expanded bytes, and expansion ratio, because a
-//! package is content a host may have obtained from somewhere else — see
-//! [ADR 0001]. A replay source is not that: it is the host describing its own
-//! test input, in the same position as the `Vec<u8>` it would otherwise pass
-//! directly, and a ceiling here would bound the caller's own data against the
-//! caller's own wishes.
+//! Unlike caller-owned replay input, asset packages may contain untrusted data.
+//! `mado-pilot-assets` therefore bounds manifest bytes, entry count, per-entry
+//! bytes, source bytes, total expanded bytes, and expansion ratio.
 //!
 //! The distinction matters when the same reasoning is applied to a later
 //! adapter. Ask whether the bytes are the host's own or something the host
 //! accepted; only the second needs ceilings.
-//!
-//! [ADR 0001]: https://github.com/pashifika/mado-pilot/blob/main/docs/adr/0001-asset-archive-container-and-safety-ceilings.md
 //!
 //! # Allowed seam
 //!
@@ -61,10 +50,9 @@
 //! selection, and close are implemented.
 //!
 //! **The public names here are reviewed, not yet stable.**
-//! `docs/adr/0006-public-rust-names-and-compatibility-policy.md` records the
-//! review that settled them and the policy that now applies: renaming or
-//! removing one is a breaking change needing an ADR and a version bump, while
-//! adding is free. The stability promise itself begins at 1.0.
+//! Renaming or removing a public name is a breaking change requiring a version
+//! bump; additions are allowed. The stability promise begins at 1.0.
+//! Current naming and compatibility policy lives in `docs/architecture.md`.
 //!
 //! # Example
 //!

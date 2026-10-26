@@ -19,7 +19,7 @@ and [`examples/c/ocr-fixture.c`](../crates/bindings/capi/examples/c/ocr-fixture.
 
 C and C++ callers include `madopilot/madopilot.h` and call the negotiated table
 directly. Both link `MadoPilot::C`; no official C++ wrapper or compatibility shim
-is provided. See [ADR 0089](adr/0089-direct-c-abi-consumption.md).
+is provided, so one ABI carries one ownership model and one compatibility policy.
 
 ## Direct C and C++ consumption
 
@@ -45,21 +45,29 @@ replacement or prerequisite skip. This private sample code adds no helper API or
 ABI entry. See [Windows verification](windows-input-verification.md#audit-2-6-and-16-acceptance)
 for conversion-only coverage and the separate real-consumer acceptance gate.
 
-## ABI 1.5, with complete released 1.0, 1.2, 1.3, and 1.4 prefixes preserved
+## Released prefixes and compatibility
 
-The current header declares ABI 1.5. ADR 0007 freezes ABI 1.0's 424-byte
-capture/matching table; ADR 0023 freezes ABI 1.2's 592-byte input/diagnostic
-table; ADRs 0035/0036 freeze ABI 1.3's singular OCR/default construction at 648
-bytes; ADR 0043 freezes ABI 1.4's explicit profile/grouped OCR surface at 720
-bytes. ABI 1.5 appends `engine_create_with_ocr_provider` at offset 720 and
-`engine_ocr_provider_descriptor` at offset 728 for a complete 736-byte table
-under [ADR 0046](adr/0046-onnx-accelerator-provider-policy.md).
-The `v0.4.0` product version leaves this separately versioned ABI unchanged and
-adds no watcher entry.
-The unreleased `v0.5.0` expands grouped OCR to sixteen zones without changing
-ABI 1.5 or any released layout.
+The current header declares ABI 1.5. Every released minor is a frozen complete
+prefix of the current table:
 
-The unreleased 1.1 draft remains intentionally unsupported. Within ABI major 1:
+| ABI | Table extent | What it appended |
+|---|---|---|
+| 1.0 | 424 bytes | Capture and matching: thirteen fixed status values, the forty-byte mandatory prefix ending at `status_text`, every structure's layout, output-state and ownership rules, and the Rust-error-to-C-status mapping |
+| 1.2 | 592 bytes | Native route capability and submission-evidence vocabulary, owned receipt and attempt access, operation activity tags and bounded diagnostics (21 entries) |
+| 1.3 | 648 bytes | Six-entry singular OCR suffix with immutable result/view ownership through offset 640, then `engine_create_with_default_ocr` at offset 640 with standalone default options |
+| 1.4 | 720 bytes | `engine_create_with_ocr_profile`, `session_scan_ocr_zones` and grouped-result owner/accessors at offsets 648–704, then `engine_ocr_descriptor` at 712 |
+| 1.5 | 736 bytes | `engine_create_with_ocr_provider` at 720 and `engine_ocr_provider_descriptor` at 728, with 32-byte provider options and a 40-byte engine-owned descriptor |
+
+Released structures stay fixed: ABI 1.4 kept the 8-byte `madopilot_engine_capabilities_t`
+and 16-byte `madopilot_engine_options_t`, ABI 1.5 kept every ABI 1.4 declaration,
+and the released diagnostic record does not grow. The per-field ABI 1.0 reports
+are under [evidence/c-abi/](evidence/c-abi/). The `v0.4.0` product version left
+this separately versioned ABI unchanged and added no watcher entry. The unreleased
+`v0.5.0` expands grouped OCR to sixteen zones without changing ABI 1.5 or any
+released layout.
+
+The unreleased 1.1 draft was development-only and is intentionally unsupported;
+minimum minor 1 is rejected. Within ABI major 1:
 
 - no released numeric value changes its number;
 - no released structure field moves, and none is removed;
@@ -448,8 +456,7 @@ the fault pair — `MADOPILOT_ASSET_FAULT_UNKNOWN_TEMPLATE` at
 `MADOPILOT_ASSET_STAGE_COMMIT` — because `template_prepare_from_package`
 resolves the identity against the package before asking the backend for
 anything. It names no backend, because none ran. The status says whose mistake
-it was and the fault pair says which one; see
-[ADR 0007](adr/0007-phase-1-c-abi-freeze.md), decision 4.
+it was and the fault pair says which one.
 
 **A caller-supplied C region is in capture pixels.** Any other space is
 `MADOPILOT_STATUS_INVALID_ARGUMENT` with `MADOPILOT_ERROR_CATEGORY_ABI`; this
@@ -468,8 +475,7 @@ here, so a target-normalized coordinate and a frame-normalized one address the
 same point; a session advertises the target-normalized bit when its source
 declares that its frames cover the target, and never as a claim that some other
 extent applies. The first phase that captures a sub-region of a target makes the
-two differ, and that is when the distinction begins to carry information. See
-[ADR 0009](adr/0009-phase-1-normalized-coordinate-spaces.md).
+two differ, and that is when the distinction begins to carry information.
 
 There is no global, thread-local, or engine-wide last-error slot. A failure
 belongs to the call that produced it, and a slot would make two threads' failures
@@ -906,9 +912,9 @@ fixtures; the small direct-ABI samples perform no native operation.
 
 ## How the header is verified
 
-The header is hand-written and tracked, not generated; the reasoning is in
-[ADR 0004](adr/0004-c-header-authorship-and-abi-verification.md). Its agreement
-with the Rust `#[repr(C)]` definitions is proved rather than asserted:
+The header is hand-written and tracked, not generated: it is a reviewed source
+artifact, and no binding generator enters the workspace. Its agreement with the
+Rust `#[repr(C)]` definitions is proved rather than asserted:
 
 ```sh
 cargo build --locked --package mado-pilot-capi
@@ -919,10 +925,15 @@ cargo run --locked --package mado-pilot-capi --features private-fixture \
   --target-dir target/c-abi-private-fixture --example c-abi-check -- --label "<host>"
 ```
 
-The checker compares every current C and Rust size/alignment/offset. It also
-checks the declarations and behavior of frozen ABI 1.0, 1.2, 1.3 and 1.4 callers,
-compiled only against their own headers. Their 424-, 592-, 648- and 720-byte
-tables run against the current 736-byte ABI 1.5 library.
+The checker compares every current C and Rust size/alignment/offset, as reported
+by two different compilers, so a divergence fails on the host where it matters.
+It also checks the declarations and behavior of frozen ABI 1.0, 1.2, 1.3 and 1.4
+callers, compiled only against their own headers. Their 424-, 592-, 648- and
+720-byte tables run against the current 736-byte ABI 1.5 library. The frozen
+check exists because a coordinated edit — swapping two same-width fields in both
+the working header and the Rust definition — moves no offset and would pass the
+working comparison while breaking every released caller. It checks containment,
+not an exact diff, because a later minor appends.
 
 Both direct samples must report the real build facts, cancellation transition
 and successful release. The independent CMake project builds and runs those
@@ -951,42 +962,7 @@ surface — run under `cargo test`.
 Both native CI jobs run the complete boundary check on every pull request. The
 Ubuntu repository-policy job deliberately compiles no product package.
 
-## What the freezes recorded
-
-[ADR 0007](adr/0007-phase-1-c-abi-freeze.md) records the complete ABI 1.0
-prefix: numeric values, the forty-byte mandatory table prefix, every structure's
-layout and required prefix, output-state and ownership rules, and the
-Rust-error-to-C-status mapping. Its per-field reports are under
-[evidence/c-abi/](evidence/c-abi/).
-
-[ADR 0017](adr/0017-c-abi-1-1-native-input-prefix.md) records the
-superseded, unreleased ABI 1.1 draft. ADR 0023 removed its declarations and
-executable caller from the current tree; repository history retains the
-development record without turning it into a compatibility target.
-
-[ADR 0023](adr/0023-input-submission-observation-and-abi-1-2.md) records ABI 1.2:
-the native route capability and submission-evidence vocabulary, owned receipt
-and attempt access, operation activity tags, bounded diagnostics, the complete
-592-byte table, and the deliberate rejection of minimum minor 1.
-
-[ADR 0035](adr/0035-ocr-public-surfaces-and-private-fixture-boundary.md) records
-ABI 1.3's six-entry OCR suffix, immutable result/view ownership, the 640-byte
-owner/accessor extent, redacted diagnostic append, and isolation of the local
-fixture constructor. [ADR 0036](adr/0036-default-ocr-composition-and-abi-prefix.md)
-records the standalone default options, preserved engine-options layout, and
-`engine_create_with_default_ocr` at offset 640 completing the table at 648 bytes.
-
-[ADR 0043](adr/0043-ocr-profile-and-zone-public-surfaces.md) records ABI 1.4:
-the frozen 648-byte ABI 1.3 prefix, 720-byte current table, explicit profile
-kind/options, grouped pointer/count/stride validation, independent owner and
-two-dimensional access, engine-selected descriptor entry, C++ rebinding,
-build-info append, and aggregate-only diagnostics.
-
-[ADR 0046](adr/0046-onnx-accelerator-provider-policy.md) records ABI 1.5: the
-frozen 720-byte ABI 1.4 prefix, fixed-width provider vocabulary, 32-byte options,
-40-byte engine-owned descriptor, two-entry 720/728 suffix, complete 736-byte
-table, and C++ provider-root rebinding. ADR 0047 records why CoreML qualification
-is rejected without changing this ABI shape.
+## Released header fixtures
 
 Each released header gets an immutable fixture. New coverage goes in the next
 fixture rather than editing an old caller; the rule is in

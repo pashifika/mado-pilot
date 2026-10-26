@@ -94,9 +94,9 @@ impl madopilot_bytes_t {
 ///
 /// The shape and nothing else, so this reads no byte the view points at. A null
 /// pointer carrying a length and a length that cannot be an object size are both
-/// malformed requests — the refusal ADR 0007 freezes as
-/// `MADOPILOT_STATUS_INVALID_ARGUMENT` with `MADOPILOT_ERROR_CATEGORY_ABI` — and
-/// they are refusals about the declaration rather than about the content.
+/// malformed requests, reported as `MADOPILOT_STATUS_INVALID_ARGUMENT` with
+/// `MADOPILOT_ERROR_CATEGORY_ABI`. These refusals concern the declaration,
+/// not the content.
 ///
 /// Separated from [`bytes`] so an entry that has to decide something *from* the
 /// length can decide it before a slice over the range exists: a view that becomes

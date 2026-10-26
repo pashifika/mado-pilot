@@ -204,7 +204,6 @@ call-local macOS configuration/start/resize/close seam plus C/Rust layout
 agreement. Windows cross-compilation checks types and cfg, not native execution.
 Both hosted target jobs run the deterministic example. Native pacing qualification
 and the five-case comparison were exercised separately on the two bound hosts below.
-See [ADR0077](adr/0077-native-capture-pacing-and-completion-cooldown.md).
 
 ## Owned native verification apparatus
 
@@ -345,14 +344,19 @@ Do not infer ideal polling coverage or continuous instantaneous peaks from
 sampled maxima. Required memory evidence and all other hard gates still apply.
 The authority and fixture-stat schemas remain version 1.
 
-Schema-one reports and their failures are immutable and are not rescored by the
-new analyzer. The corrected accounting and complete-frame Windows presentation
-belong to separately bound new runs; they do not change historical product
-budgets. See the schema-two apparatus decision in [ADR0077](adr/0077-native-capture-pacing-and-completion-cooldown.md#qualification-apparatus-correction-report-schema-2).
-Schema-2 campaign receipts and accepted results likewise retain their original
-source, bytes and verdicts. Schema 3 governs new qualification; it records no new
-native campaign or performance result. See the prospective final-authority
-amendment in [ADR0077](adr/0077-native-capture-pacing-and-completion-cooldown.md#prospective-final-authority-report-schema-3).
+Schema-one reports and their failures are immutable and are not rescored: the
+schema-two analyzer rejects schema-one evidence rather than applying the
+corrected interpretation retroactively. The renamed counter exists because
+scheduler delay after a successful aggregated observation is not a lost sample;
+calling it one incorrectly invalidated available evidence. Schema-2 campaign
+receipts and accepted results likewise retain their original source, bytes and
+verdicts. New runner receipts and derived reports use schema 3, with consumer
+schema 2 and authority schema 1 unchanged: an explicit `--run-receipt` binds the
+exact records bytes and final source/input/host/native checks, and a passing
+report requires complete passing observations plus a verified passing receipt.
+Raw-only or schema-2-receipt inspection cannot qualify and keeps its case result
+as `observation_status`. Schema 3 records no new native campaign or performance
+result.
 
 Protocol revision 3 also keeps the macOS fixture's preexisting `Prohibited`
 activation policy rather than promoting a CLI process to `Accessory`. Marker

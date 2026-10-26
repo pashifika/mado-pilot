@@ -1,6 +1,6 @@
-"""Validate and compare one OCR process against an already reviewed numeric profile.
+"""Validate and compare one OCR process against a scoped numeric profile.
 
-These helpers select no ceilings and establish no source, host, executable, ADR,
+These helpers select no ceilings and establish no source, host, executable,
 semantic, dependency, or cleanup acceptance. The runner owns those gates. Times
 come from integer nanoseconds without rounding or comparison tolerances; native
 memory observations remain independent of logical view extents.
@@ -153,36 +153,39 @@ def _unit(measure: str) -> str:
 
 
 def validate_profile(profile: dict, target: str) -> None:
-    """Require all eight target-specific absolute-budget blocks before any run.
+    """Validate explicit scope and all eight target-specific budget blocks.
 
-    Existing descriptive profile metadata is allowed. Acceptance and budget
-    tables are closed; predicates, global budgets, and relative limits have no
-    interpretation here. ADR identity and all binding checks belong to the runner.
+    Review references explain tuning; they are never executable approval.
+    Binding and budget tables are closed. The runner checks actual identities.
     """
     if target not in _TARGETS:
         raise ValueError("unsupported workload budget target")
     profile = _table(profile, "profile document")
-    if type(profile.get("format_version")) is not int or profile["format_version"] != 2:
-        raise ValueError("unsupported workload budget profile version")
-    benchmark = _table(profile.get("benchmark"), "benchmark")
-    if benchmark.get("normative") is not True or benchmark.get("measurements_recorded") is not True:
-        raise ValueError("numeric budgets must be normative and measurements recorded")
+    version = profile.get("format_version")
+    if type(version) is int and version == 2:
+        raise ValueError(
+            "historical OCR workload profile version 2 is read-only; use a "
+            "format_version = 3 successor under docs/benchmarks/ocr-text-watch-v3-<target>.toml "
+            "for execution, or --inspect-profile PATH to inspect it"
+        )
+    if type(version) is not int or version != 3:
+        raise ValueError("unsupported OCR workload profile version; execution requires format_version = 3")
+    _table(profile.get("benchmark"), "benchmark")
     facts = _table(profile.get("profile"), "profile")
     if facts.get("release_target") != target:
         raise ValueError("profile and execution target differ")
-    acceptance = _fields(profile.get("acceptance"), {
-        "status", "adr", "host_id", "controlled_executable_sha256", "real_executable_sha256",
-    }, "acceptance")
-    if acceptance["status"] != "accepted":
-        raise ValueError("numeric budgets lack accepted status")
-    _text(acceptance["host_id"], "acceptance.host_id")
-    adr = _text(acceptance["adr"], "acceptance.adr")
-    if not _re.fullmatch(r"docs/adr/[0-9]{4}-ocr-text-watch-workload-profiles\.md", adr):
-        raise ValueError("acceptance.adr must name a four-digit OCR workload-profiles ADR under docs/adr")
+    if "acceptance" in profile:
+        raise ValueError("historical acceptance metadata is not part of a current execution profile")
+    bindings = _fields(profile.get("bindings"), {
+        "host_id", "controlled_executable_sha256", "real_executable_sha256",
+    }, "bindings")
+    _text(bindings["host_id"], "bindings.host_id")
+    review = _fields(profile.get("review"), {"tuning_record"}, "review")
+    _text(review["tuning_record"], "review.tuning_record")
     for key in ("controlled_executable_sha256", "real_executable_sha256"):
-        digest = acceptance[key]
+        digest = bindings[key]
         if not isinstance(digest, str) or not _re.fullmatch(r"[0-9a-f]{64}", digest):
-            raise ValueError(f"acceptance.{key} must be a canonical lowercase SHA-256")
+            raise ValueError(f"bindings.{key} must be a canonical lowercase SHA-256")
     if "budget" in profile:
         raise ValueError("global budgets are not part of the OCR workload profile")
     blocks = profile.get("measurement")
@@ -220,33 +223,39 @@ def validate_profile(profile: dict, target: str) -> None:
 
 
 def _records(measurement: dict, scope: str, count: int) -> list[dict]:
-    measurement = _fields(measurement, {"complete", "scope", "records", "failures"}, "measurement")
+    measurement = _fields(measurement, {
+        "complete", "scope", "records", "failures", "measurement_gaps",
+    }, "measurement")
     if (measurement["complete"] is not True or measurement["scope"] != scope
             or not isinstance(measurement["failures"], list) or measurement["failures"]):
         raise ValueError("complete measurements in the expected scope are required")
+    if (not isinstance(measurement["measurement_gaps"], list)
+            or len(measurement["measurement_gaps"]) > count * 3):
+        raise ValueError("bounded optional OS-memory gap observations are required")
     records = measurement["records"]
     if not isinstance(records, list) or len(records) != count:
         raise ValueError(f"{scope} requires exactly {count} records from one process")
     return records
 
 
-def _available_memory(records: list[dict], fields: tuple[str, ...]) -> tuple[str, ...]:
+def _available_memory(records: list[dict], fields: tuple[str, ...],
+                      allow_unavailable: bool = False) -> tuple[str, ...]:
     current, peak, private, footprint = fields
     available = []
     for field in fields:
         values = [record[field] for record in records]
-        if all(value is None for value in values):
-            if field in (current, peak):
-                raise ValueError(f"required {field} is unavailable")
-            continue
-        if any(value is None for value in values):
-            raise ValueError(f"{field} is unavailable at some required observations")
         for value in values:
-            _uint(value, field)
-            if field != private and value == 0:
-                raise ValueError(f"required {field} is zero")
+            if value is not None:
+                _uint(value, field)
+                if field != private and value == 0:
+                    raise ValueError(f"required {field} is zero")
+        if any(value is None for value in values):
+            if allow_unavailable or (field not in (current, peak)
+                                     and all(value is None for value in values)):
+                continue
+            raise ValueError(f"{field} is unavailable at required observations")
         available.append(field)
-    if private not in available and footprint not in available:
+    if not allow_unavailable and private not in available and footprint not in available:
         raise ValueError("target-specific native memory is unavailable")
     return tuple(available)
 
@@ -257,7 +266,7 @@ def _quantiles_ns(samples: list[int]) -> tuple[int, int, int]:
     return ordered[(count * 50 + 99) // 100 - 1], ordered[(count * 95 + 99) // 100 - 1], ordered[-1]
 
 
-def _controlled(measurement: dict) -> dict[str, dict[str, int | float]]:
+def _controlled(measurement: dict, allow_unavailable_memory: bool) -> dict[str, dict[str, int | float]]:
     records = _records(measurement, "controlled-workload-invocations", len(_INVOCATIONS))
     expected_fields = _CONTROLLED_INTEGERS | set(_CONTROLLED_MEMORY) | {"workload", "phase", "endpoints"}
     for expected, record in zip(_INVOCATIONS, records):
@@ -279,15 +288,24 @@ def _controlled(measurement: dict) -> dict[str, dict[str, int | float]]:
             if endpoint["stage"] != stage:
                 raise ValueError("controlled endpoint is unknown, duplicate or reordered")
             _uint(endpoint["duration_ns"], "endpoint duration_ns")
-    available_memory = _available_memory(records, _CONTROLLED_MEMORY)
-    resources = (*_CONTROLLED_RESOURCES, *(field for field in available_memory
-                                          if field not in _CONTROLLED_RESOURCES))
+    available_memory = (
+        _available_memory(records, _CONTROLLED_MEMORY) if not allow_unavailable_memory else None
+    )
     metrics = {}
     offset = 0
     for workload in _CONTROLLED_WORKLOADS:
         count = 1 if workload == "cold-startup" else 22
         observations = records[offset:offset + count]
         offset += count
+        memory = (
+            _available_memory(observations, _CONTROLLED_MEMORY, True)
+            if allow_unavailable_memory else available_memory
+        )
+        resources = (
+            *(field for field in _CONTROLLED_RESOURCES
+              if field not in _CONTROLLED_MEMORY or field in memory),
+            *(field for field in memory if field not in _CONTROLLED_RESOURCES),
+        )
         samples = observations if count == 1 else observations[2:]
         p50, p95, maximum = _quantiles_ns([record["elapsed_ns"] for record in samples])
         row = {
@@ -310,7 +328,8 @@ def _controlled(measurement: dict) -> dict[str, dict[str, int | float]]:
     return metrics
 
 
-def _real(measurement: dict, duration_seconds: int | float) -> dict[str, dict[str, int | float]]:
+def _real(measurement: dict, duration_seconds: int | float,
+          allow_unavailable_memory: bool) -> dict[str, dict[str, int | float]]:
     records = _records(measurement, _REAL_WORKLOAD, len(_REAL_STAGES) + 1)
     stages = records[:-1]
     clocks = {}
@@ -324,7 +343,7 @@ def _real(measurement: dict, duration_seconds: int | float) -> dict[str, dict[st
             raise ValueError("real common-clock elapsed_ns decreased")
         previous = elapsed
         clocks[stage] = elapsed
-    available_memory = _available_memory(stages, _REAL_MEMORY)
+    available_memory = _available_memory(stages, _REAL_MEMORY, allow_unavailable_memory)
     summary = _fields(records[-1], _REAL_SUMMARY_INTEGERS | {"kind", "scenario"}, "real summary")
     for field in _REAL_SUMMARY_INTEGERS:
         _uint(summary[field], field)
@@ -338,28 +357,34 @@ def _real(measurement: dict, duration_seconds: int | float) -> dict[str, dict[st
     return {_REAL_WORKLOAD: row}
 
 
-def summarize_process(mode: str, measurement: dict, duration_seconds: float) -> dict[str, dict[str, int | float]]:
+def summarize_process(mode: str, measurement: dict, duration_seconds: float, *,
+                      allow_unavailable_memory: bool = False) -> dict[str, dict[str, int | float]]:
     """Summarize one complete process without pooling or zero-filling missing data.
 
     Normal controlled workloads retain exactly 20 latency samples after two
     warmups; controlled startup retains one. Resource maxima include warmups.
     Unavailable platform counterparts are omitted, never synthesized. Real clock
     intervals exclude the collector; process_elapsed_ms uses the supervisor.
+    Opt-in observations omit an OS-memory maximum when any required observation
+    is null, preserving raw values rather than comparing a partial maximum.
     """
     duration_seconds = _number(duration_seconds, "supervisor duration_seconds")
     if mode == "controlled":
-        return _controlled(measurement)
+        return _controlled(measurement, allow_unavailable_memory)
     if mode == _REAL_WORKLOAD:
-        return _real(measurement, duration_seconds)
+        return _real(measurement, duration_seconds, allow_unavailable_memory)
     raise ValueError("unsupported workload measurement mode")
 
 
 def evaluate_process(profile: dict, target: str, mode: str, measurement: dict,
-                     duration_seconds: float) -> dict:
-    """Compare every required measure; malformed input raises, exceedance fails."""
+                     duration_seconds: float, *, allow_unavailable_memory: bool = False) -> dict:
+    """Compare available measures; nullable OS-memory gaps remain explicit."""
     validate_profile(profile, target)
-    metrics = summarize_process(mode, measurement, duration_seconds)
+    metrics = summarize_process(
+        mode, measurement, duration_seconds, allow_unavailable_memory=allow_unavailable_memory,
+    )
     comparisons = []
+    unavailable = []
     first_failure = None
     for block in profile["measurement"]:
         workload = block["workload"]
@@ -368,6 +393,12 @@ def evaluate_process(profile: dict, target: str, mode: str, measurement: dict,
         limits = {limit["measure"]: limit for limit in block["budget"]}
         for measure in REQUIRED_METRICS[target][workload]:
             if measure not in metrics[workload]:
+                if allow_unavailable_memory and measure in (*_CONTROLLED_MEMORY, *_REAL_MEMORY):
+                    unavailable.append({
+                        "workload": workload, "measure": measure,
+                        "reason": "OS memory was unavailable at one or more required observations",
+                    })
+                    continue
                 raise ValueError(f"required {workload}.{measure} is unavailable for {target}")
             observed = metrics[workload][measure]
             limit = limits[measure]
@@ -379,6 +410,7 @@ def evaluate_process(profile: dict, target: str, mode: str, measurement: dict,
             if not comparison["passed"] and first_failure is None:
                 first_failure = comparison
     return {
-        "passed": first_failure is None, "metrics": metrics, "comparisons": comparisons,
-        "first_failure": first_failure,
+        "passed": False if first_failure is not None else None if unavailable else True,
+        "complete": not unavailable, "metrics": metrics, "comparisons": comparisons,
+        "first_failure": first_failure, "unavailable": unavailable,
     }

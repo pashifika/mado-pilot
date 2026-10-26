@@ -1,34 +1,62 @@
 # Validation gates
 
-A validation gate is a version-one decision that is deliberately unresolved
-because the evidence needed to settle it does not exist yet. Each gate records
-what is undecided, what evidence resolves it, when it must be resolved, what it
-blocks, and how the resolution is recorded.
+A validation gate is a version-one decision that was deliberately left unresolved
+until the evidence needed to settle it existed. Each gate records what is
+undecided, what evidence resolves it, when it must be resolved, what it blocks,
+its status, and where the current rule and its evidence live.
 
-Gates exist so that an unresolved decision stays visible instead of being settled
-by accident in an implementation pull request. A gate is not permission to weaken
-an architectural seam recorded in [architecture.md](architecture.md).
+Gates keep an unresolved decision visible instead of letting an implementation
+pull request settle it by accident. A gate is not permission to weaken an
+architectural seam recorded in [architecture.md](architecture.md).
+
+## Two kinds of gate
+
+| Kind | Gates | What the evidence decides | What stays mandatory |
+|---|---|---|---|
+| Product contract | `G-001`–`G-012`, `G-014` | A platform floor, ownership model, boundary language, default identity or policy, public naming or ABI baseline, packaging profile, or safety ceiling | The gate's required evidence for the scope it blocks, and the resulting contract's tests |
+| Empirical target | `G-013` | Workload-specific numerical latency, memory and throughput targets, and any explicitly requested performance claim | Each benchmark's correctness oracles, enforced resource limits, identity checks and owned cleanup, which are product contracts rather than targets |
+
+An empirical target guides tuning and states what an explicit performance claim
+must meet. Missing, noisy or failed numerical evidence leaves that claim
+unsupported and recorded; it does not block implementation, tuning, integration
+or a phase's correctness exit. It never relaxes a correctness, safety,
+compatibility or support check. See [performance.md](performance.md).
 
 ## How a gate is used
 
 Before entering or exiting a phase, check every gate whose **Due** column names
 that phase. A phase must not exit while a gate that blocks its exit is open, and
-a phase must not begin implementing behavior that an open gate blocks.
+a phase must not begin implementing behavior that an open product-contract gate
+blocks.
 
-Resolving a gate requires all of the following in one change:
+Resolving a gate requires, in one change:
 
-1. The evidence named in the gate, committed or referenced from a tracked
-   location.
-2. An architecture decision record created from
-   [adr/0000-template.md](adr/0000-template.md), recording the decision, the
-   evidence, the rejected alternatives, and the consequences.
-3. A synchronized update to [architecture.md](architecture.md) and any affected
-   specification, test, policy, or example.
-4. An update to this registry marking the gate resolved with its ADR number, or
-   removing the gate when the underlying claim was withdrawn instead.
+1. The evidence named in the gate, adequate for the gate's stated scope and
+   committed or referenced from a tracked location.
+2. A synchronized update to [architecture.md](architecture.md) or the owning topic
+   guide, and to any affected test, policy, profile, or example.
+3. An update to this registry marking the gate resolved with its current
+   destination, or removing the gate when its claim was withdrawn instead.
+4. A short [decision record](adr/README.md) when the resolution makes an important
+   architectural or technical choice, such as a platform floor, an ownership or
+   compatibility model, a backend or technology choice, a public naming rule, or
+   a packaging policy. A numerical benchmark value alone is recorded in
+   [tuning history](performance/tuning/README.md), not in a decision record.
 
 A gate is never presented as resolved on the strength of a plan, an opinion, or a
 successful build alone.
+
+Qualification controls support claims, not integration. An implementation may
+merge into its development branch when its implemented contracts, required
+checks and reviews pass and tracked documentation states any missing or failed
+qualification and withheld support. Merging never turns a failed or missing
+qualification into support.
+
+Gates resolved before source `646369fad6c922ac7b064367817337a18e572d8c` were
+recorded in numbered decision records since retired from the product tree. The
+**History** links below open those records at that source. They explain how a
+gate was resolved; the current rule is the one stated here and in the linked
+contract.
 
 ## Status of Phase 0
 
@@ -38,378 +66,230 @@ registry is itself a Phase 0 deliverable.
 
 ## Registry
 
-| ID | Unresolved decision | Due | Blocks | Status |
-|---|---|---|---|---|
-| [`G-001`](#g-001) | Minimum Windows and macOS versions | Before Phase 2 exit | Windows and macOS support claims | Resolved by [ADR 0019](adr/0019-windows-qualified-system-and-controlled-availability.md) and [ADR 0014](adr/0014-macos-qualified-host-and-frame-placement.md) |
-| [`G-002`](#g-002) | Windows capture producer-pool and frame-detachment strategy | Before Phase 2 implementation | Windows capture ownership | Resolved by [ADR 0013](adr/0013-windows-capture-frame-detachment.md) |
-| [`G-003`](#g-003) | macOS shim language | Before Phase 2 implementation | macOS shim implementation | Resolved by [ADR 0012](adr/0012-macos-shim-language-and-containment.md) |
-| [`G-004`](#g-004) | Default OCR model profile | Before Phase 3 implementation | Default OCR profile identity | Resolved by [ADR 0033](adr/0033-default-ocr-model-profile.md) |
-| [`G-005`](#g-005) | Default change-detection algorithm and threshold | Before Phase 4 watcher implementation | Default watcher policy | Resolved by [ADR 0050](adr/0050-change-detection-default.md) |
-| [`G-006`](#g-006) | Acceleration candidates and provider ordering | Before Phase 5 implementation | Acceleration defaults | Open per future accelerator; v0.3.1 OCR resolved by ADRs 0046–0048 |
-| [`G-007`](#g-007) | Native dependency bundling profiles | Before Phase 5 implementation | Release packaging | Open |
-| [`G-008`](#g-008) | Static-library feasibility | Before Phase 5 exit | Static artifact claim only | Open |
-| [`G-009`](#g-009) | Stable public Rust item names | Before Phase 1 exit | Rust stability promise | Resolved by [ADR 0006](adr/0006-public-rust-names-and-compatibility-policy.md) |
-| [`G-010`](#g-010) | Version-one C ABI status, prefix, and layout | Before Phase 1 exit | ABI compatibility baseline | Resolved by [ADR 0007](adr/0007-phase-1-c-abi-freeze.md) |
-| [`G-011`](#g-011) | Native-frame extension discovery | Future roadmap | Does not block version one | Deferred |
-| [`G-012`](#g-012) | Published Cargo and C build profiles | Before Phase 5 implementation | Release capability matrix | Open |
-| [`G-013`](#g-013) | Numeric benchmark budgets | Before each affected phase exits | That phase's exit | Open per future workload; Phase 1, affected Phase 2 workloads, Phase 3 default OCR, and Phase 3.1 explicit bounded/grouped/provider OCR are resolved by ADRs 0008, 0024–0032, 0037, 0041, 0044, 0047–0049 |
-| [`G-014`](#g-014) | Archive safety ceilings | Before Phase 1 implementation | Version-one archive loading | Resolved by [ADR 0001](adr/0001-asset-archive-container-and-safety-ceilings.md) |
+| ID | Decision | Kind | Due | Blocks | Current destination | Status |
+|---|---|---|---|---|---|---|
+| [`G-001`](#g-001) | Minimum Windows and macOS versions | Contract | Before Phase 2 exit | Windows and macOS support claims | [Release targets](architecture.md#release-targets) | Resolved |
+| [`G-002`](#g-002) | Windows capture producer-pool and frame-detachment strategy | Contract | Before Phase 2 implementation | Windows capture ownership | [Windows native capture ownership](architecture.md#windows-native-capture-ownership) | Resolved |
+| [`G-003`](#g-003) | macOS shim language | Contract | Before Phase 2 implementation | macOS shim implementation | [The macOS native boundary](architecture.md#the-macos-native-boundary) | Resolved |
+| [`G-004`](#g-004) | Default OCR model profile | Contract | Before Phase 3 implementation | Default OCR profile identity | [OCR recognition](architecture.md#ocr-recognition) | Resolved |
+| [`G-005`](#g-005) | Default change-detection algorithm and threshold | Contract | Before Phase 4 watcher implementation | Default watcher policy | [Bounded template-presence queries](architecture.md#bounded-template-presence-queries) | Resolved |
+| [`G-006`](#g-006) | Acceleration candidates and provider ordering | Contract | Before Phase 5 implementation | Acceleration defaults and accelerator support claims | [OCR recognition](architecture.md#ocr-recognition) | Open per future accelerator; v0.3.1 OCR providers resolved |
+| [`G-007`](#g-007) | Native dependency bundling profiles | Contract | Before Phase 5 implementation | Release packaging | [Third-party dependencies](third-party-dependencies.md) | Open |
+| [`G-008`](#g-008) | Static-library feasibility | Contract | Before Phase 5 exit | Static artifact claim only | [C ABI](c-abi.md) | Open |
+| [`G-009`](#g-009) | Stable public Rust item names | Contract | Before Phase 1 exit | Rust stability promise | [Public naming baseline](architecture.md#public-naming-baseline) | Resolved |
+| [`G-010`](#g-010) | Version-one C ABI status, prefix, and layout | Contract | Before Phase 1 exit | ABI compatibility baseline | [Released prefixes](c-abi.md#released-prefixes-and-compatibility) | Resolved |
+| [`G-011`](#g-011) | Native-frame extension discovery | Contract | Future roadmap | Does not block version one | [The opaque frame-storage seam](architecture.md#the-opaque-frame-storage-seam) | Deferred |
+| [`G-012`](#g-012) | Published Cargo and C build profiles | Contract | Before Phase 5 implementation | Release capability matrix | [Third-party dependencies](third-party-dependencies.md) | Open |
+| [`G-013`](#g-013) | Numeric benchmark targets | Empirical | When a workload is introduced or a performance claim is made | The corresponding explicit performance claim or opt-in enforcement only | [Performance](performance.md) and [benchmark profiles](benchmarks/) | Open per workload |
+| [`G-014`](#g-014) | Archive safety ceilings | Contract | Before Phase 1 implementation | Version-one archive loading | [Safety ceilings](architecture.md#safety-ceilings) | Resolved |
 
 ## G-001
 
-**Decision.** [ADR 0019](adr/0019-windows-qualified-system-and-controlled-availability.md)
-fixes the Windows floor at Windows 11 25H2 build family 26200 on a currently
-serviced x64 desktop installation. [ADR 0014](adr/0014-macos-qualified-host-and-frame-placement.md)
-fixes the macOS floor at Apple Silicon macOS 26.5.2 (25F84), SDK 26.5.
+**Decision.** Windows 11 25H2 build family 26200 on a currently serviced x64
+desktop installation is the Windows floor. Apple Silicon macOS 26.5.2 (25F84),
+SDK 26.5, is the macOS floor. Earlier versions are unsupported.
 
-**Required evidence.** Windows build, process-load, SDK, API-availability,
-unsupported-capability, native Rust, C, and C++ evidence is retained in
-[`windows-minimum-system.md`](evidence/g-001/windows-minimum-system.md). macOS
-deployment metadata and controlled linkage are pinned. Its
-2026-08-01 permissioned ASan run passed all 95 library tests with live display and
-window capture, signed and mixed-scale placement checks, retained-filter discovery,
-and no sanitizer finding. Two later manual runs moved the window fully onto a 2x
-display while thousands of frames kept arriving, but the open stream stayed at its
-old 1x extent and effective scale; only fresh discovery after close saw 2x. That
-exposed the missing same-sample producer-capacity signal. The repaired, hardened
-permissioned probe then passed 2/2 over 4,097 frames: 3,371 same-scale moves preserved
-their epoch and 30 cross-scale moves advanced exactly from epoch 0 through epoch 30,
-publishing both the 1x and 2x extents without a stall. Cross-scale acceptance is
-closed. A fresh post-repair ASan build then passed all 101 library tests with live
-capture scenarios running and no sanitizer finding. On 2026-08-09 the
+**Required evidence.** Per target: build, process load, SDK, API availability,
+unsupported-capability behavior, and native Rust, C and C++ flows. On macOS,
+deployment metadata, controlled linkage, permissioned live capture placement,
+cross-scale movement and owned-window replacement.
+
+**Due.** Before Phase 2 exit. **Blocks.** The Windows and macOS support claims and
+release.
+
+**Status.** Resolved. The current floors, verification hosts and OS support policy
+are in [Release targets](architecture.md#release-targets).
+
+**Evidence.** [Windows minimum system](evidence/g-001/windows-minimum-system.md):
+Pro build `26200.9168`, SDK `10.0.26100.0`, source `834a58f` passed build,
+lazy-import, native Rust, product-DLL, C/C++, frozen ABI 1.0, ownership, fixture
+and CMake rows; repair source `c6ff39a` loaded Rust, C and C++ with one
+WinRT-D3D export suppressed and reported typed `Unsupported` discovery. On macOS,
+a 2026-08-01 permissioned ASan run passed 95 library tests; the repaired
+movement probe passed 2/2 over 4,097 frames, 30 cross-scale moves advancing
+epochs 0 through 30; a post-repair ASan build passed 101 library tests; and the
 [owned-window replacement probe](evidence/g-001/macos-owned-window-replacement.md)
-destroyed the selected fixture window, created a same-process successor with
-distinct content, and proved the retained filter published none of that content
-while a fresh session captured it and the retained original mapping stayed
-unchanged. ScreenCaptureKit remained quiescent rather than reporting explicit
-loss, so the Adapter correctly did not infer `TargetLost`. This closes the macOS
-replacement acceptance item.
+closed the replacement item.
 
-The 2026-08-22 Windows positive run used Pro build `26200.9168`, SDK
-`10.0.26100.0`, and clean source `834a58f`; build, lazy-import, native Rust,
-product-DLL, C/C++, frozen ABI 1.0, ownership, fixture, and CMake rows passed.
-Final repair source `c6ff39a` then used the isolated missing-WinRT-D3D-export
-apparatus: Rust, C, and C++ loaded successfully, discovery returned typed
-`Unsupported`, and the ordinary supported paths passed after restoration.
-
-**Due.** Before Phase 2 exit.
-
-**Blocks.** The Windows support claim and release.
-
-**Status.** Resolved. ADR 0019 accepts the Windows minimum; ADR 0014 accepts the
-macOS minimum, cross-scale movement, and owned-window replacement boundary.
-
-**Resolution.** ADR 0019 records the Windows minimum and its build, process-load,
-SDK, API-availability, unsupported-capability boundary, native Rust, C, and C++
-evidence. ADR 0014 records the complete macOS resolution.
+**History.** [ADR 0019](https://github.com/pashifika/mado-pilot/blob/646369fad6c922ac7b064367817337a18e572d8c/docs/adr/0019-windows-qualified-system-and-controlled-availability.md)
+and [ADR 0014](https://github.com/pashifika/mado-pilot/blob/646369fad6c922ac7b064367817337a18e572d8c/docs/adr/0014-macos-qualified-host-and-frame-placement.md)
+(historical).
 
 ## G-002
 
-**Decision.** The Windows Graphics Capture producer-pool sizing, public-frame
-detachment, and texture-reuse strategy.
+**Decision.** The Windows Graphics Capture producer pool holds two frames. The
+callback copies each publishable frame into an Adapter-owned D3D11 texture and
+releases the WGC frame before publication. A private texture is reused only after
+every public-frame, mapping and backend lease releases it.
 
 **Required evidence.** A retained-frame stress prototype showing that published
-frames do not pin producer buffer-pool slots that capture progress requires, and
-that native resources outlive in-flight mapping and backend work.
+frames do not pin producer slots capture progress needs, and that native resources
+outlive in-flight mapping and backend work.
 
-**Due.** Before Phase 2 implementation.
+**Due.** Before Phase 2 implementation. **Blocks.** Windows capture ownership. It
+does not by itself make native Windows capture an implemented capability.
 
-**Blocks.** Windows capture ownership design until resolved. It does not by
-itself make native Windows capture an implemented capability.
+**Status.** Resolved. The production contract is
+[Windows native capture ownership](architecture.md#windows-native-capture-ownership);
+its acceptance suite is [windows-capture-contract-tests.md](windows-capture-contract-tests.md).
 
-**Status.** Resolved by
-[ADR 0013](adr/0013-windows-capture-frame-detachment.md). The producer pool holds
-two frames; the callback copies each publishable frame into an Adapter-owned
-D3D11 texture and releases the WGC frame before publication; a compatible private
-texture is reused only after every public-frame, mapping, and backend lease
-releases it.
+**Evidence.** The [G-002 record](evidence/g-002/README.md) compared four ownership
+candidates at pool sizes two to four with retained mapping, backend lifetime,
+resize, 100 close races, target close, injected reset and two 4K displays. Direct
+WGC retention stalled every producer pool and blind texture reuse changed retained
+content; lease-aware detachment at pool size two passed every hard gate.
 
-**Resolution.** The revision-bound
-[G-002 record](evidence/g-002/README.md) compares four ownership candidates at
-pool sizes two, three, and four; exercises retained mapping, backend lifetime,
-resize, 100 close races, target close, injected reset, and two 4K displays; and
-records the final supported MSVC/SDK confirmation without captured pixels. A
-deterministic queued-delegate case proves owner admission is fenced, while
-complete close/reset and sequence freshness are measured explicitly. Direct WGC
-retention stalled every producer pool and blind texture reuse changed retained
-content. Lease-aware detachment at pool size two passed every hard gate.
-
-**Implementation obligation.** The later Windows capture Change must implement
-the [retained-frame contract-test plan](windows-capture-contract-tests.md), keep
-the detached pool finite with observable pressure drops, and establish affected
-Phase 2 `G-013` budgets. It may not treat the ADR or prototype as a support
-claim.
+**History.** [ADR 0013](https://github.com/pashifika/mado-pilot/blob/646369fad6c922ac7b064367817337a18e572d8c/docs/adr/0013-windows-capture-frame-detachment.md)
+(historical).
 
 ## G-003
 
-**Decision.** The language of the macOS capture and input shim, and the
-containment rules of that boundary.
+**Decision.** The macOS shim is Objective-C with Automatic Reference Counting,
+compiled with `-fobjc-arc-exceptions`, behind one internal C-callable surface with
+the containment rules in [The macOS native boundary](architecture.md#the-macos-native-boundary).
 
 **Required evidence.** A prototype covering exception behavior across the language
 boundary, object ownership, and build integration on Apple Silicon.
 
-**Due.** Before Phase 2 implementation.
+**Due.** Before Phase 2 implementation. **Blocks.** macOS shim implementation.
 
-**Blocks.** macOS shim implementation.
+**Status.** Resolved and implemented in `mado-pilot-platform-macos`, whose tests
+enforce the containment, ownership, autorelease, fence, teardown, panic and
+linkage rules.
 
-**Status.** Resolved by
-[ADR 0012](adr/0012-macos-shim-language-and-containment.md). The shim is
-Objective-C with ARC, compiled with `-fobjc-arc-exceptions`.
+**Evidence.** [evidence/g-003/](evidence/g-003/README.md) built one file as
+Objective-C, Objective-C with `-fobjc-arc-exceptions`, and Objective-C++, and ran
+eighteen cases on each. All three contained every injected exception. Without the
+flag, ARC leaks the retained object on an exception's unwind edge; with it,
+Objective-C matched Objective-C++ without requiring libc++ in every consuming
+process.
 
-**Resolution.** The prototype built one implementation file as Objective-C, as
-Objective-C with `-fobjc-arc-exceptions`, and as Objective-C++, and ran eighteen
-cases on each on the approved Apple Silicon host; the measurements are in
-[evidence/g-003/](evidence/g-003/README.md). All three variants contain every
-injected native exception, so the gate was not decided by exception handling. It
-was decided by what containment costs in ownership: without
-`-fobjc-arc-exceptions`, ARC emits no release on the unwind edge, and an exception
-raised at the position where a stream start or a frame callback would fail leaves the
-object the session retained, or the frame object, alive — the counter observes the
-retained object, and the session's own lifetime is an inference from it. The control
-variant reproduces the Objective-C++ result with that one flag, so Objective-C++'s
-ownership advantage is a default rather than a language property, and it requires
-libc++ in every consuming process for a boundary that contains no C++ — a
-requirement re-measured during review with every C++ construct removed, so that it
-rests on the language mode rather than on the prototype's C++ test.
-
-The ADR also records the containment rules the evidence forces — a catch-all
-boundary handler, the mandatory exception flag, borrowed frames, a per-work-item
-autorelease pool, a disable-and-drain callback fence, teardown that reports
-failure without skipping cleanup, Rust-side panic containment, and shim-owned
-linkage with availability gating — together with the tests the implementing Change
-must carry. `mado-pilot-platform-macos` now implements the boundary and carries
-those tests, so the rules are enforced by the package rather than by review. The
-linkage rule is met by controlled dynamic loading rather than by weak framework
-linking, because Cargo does not propagate a dependency's `rustc-link-arg` to the
-binary that consumes the dependency; the ADR records that amendment and the
-property it preserves.
+**History.** [ADR 0012](https://github.com/pashifika/mado-pilot/blob/646369fad6c922ac7b064367817337a18e572d8c/docs/adr/0012-macos-shim-language-and-containment.md)
+(historical).
 
 ## G-004
 
-**Decision.** [ADR 0033](adr/0033-default-ocr-model-profile.md) selects
-`g-004-rapidocr-ppocrv4-det-v6-rec-small-v1`: RapidOCR v3.9.2's PP-OCRv4
-mobile detector plus PP-OCRv6 small recognizer, with exact bytes, digests,
-vocabulary, language, preprocessing/decoder, normalization, ordering,
-confidence, license, and controlled-host deployment metadata.
+**Decision.** The default OCR profile is
+`g-004-rapidocr-ppocrv4-det-v6-rec-small-v1`: RapidOCR v3.9.2's PP-OCRv4 mobile
+detector plus PP-OCRv6 small recognizer, with exact bytes, digests, vocabulary,
+language, preprocessing/decoder, normalization, ordering, confidence, license and
+caller-provided deployment metadata.
 
 **Required evidence.** The immutable v3 quality fixture under the independently
 reviewed v5 evaluator reproduces exact text, region count, source-relative
-geometry, ordering, confidence validity, and stable outcomes on both release
-targets. The exact fixture bytes consumed, complete pinned tool environment,
-canonical installed RapidOCR code identity, CPU session input/output/provider
-metadata, embedded vocabulary, expected-first unexpected-region classification,
-private raw-path containment, typed resident outcome, model/fixture provenance
-and licenses, and controlled host-provided obligations all match.
+geometry, ordering, confidence validity and stable outcomes on both release
+targets, with matching fixture, tool, code, session, vocabulary and license
+identities.
 
-**Due.** Resolved before Phase 3 implementation.
+**Due.** Before Phase 3 implementation. **Blocks.** The default OCR profile
+identity. Backend, packaging, public-surface and support work are separate.
 
-**Blocks.** No longer blocks the default OCR profile identity. Backend,
-packaging, performance-budget, public-surface, and support work remain separate
-Changes and gates.
+**Status.** Resolved. The profile and its loading boundary are in
+[OCR recognition](architecture.md#ocr-recognition) and
+[the G-004 dependency record](third-party-dependencies.md#g-004-accepted-ocr-profile).
 
-**Status.** Resolved. Four fresh v5 candidate processes on each release target
-used the same evaluator, candidate metadata, RapidOCR code identity, fixture
-bytes, CPU-only profile, two warm-ups, and ten measured passes. Only
-`ppocrv4-det-v6-rec-small` passes all 42 regions and every identity row. The
-other three candidates reproduce the same rejected text, ordering, and
-unexpected-region rows. Every deterministic candidate and image gate matches
-across targets; the frozen plan permits only timing, confidence values, host
-facts, provider availability, and typed resident measurements to differ.
+**Evidence.** [evidence/g-004/](evidence/g-004/): four fresh v5 candidate
+processes per release target; only `ppocrv4-det-v6-rec-small` passes all 42
+regions and every identity row, and every deterministic candidate and image gate
+matches across targets. Later approved-host reruns of the integrated backend
+reproduced every accepted and rejected category.
 
-**Resolution.** Independent patch review passed before v5 execution. Final
-two-target evidence review verified source bindings, provenance, license,
-privacy, cross-target equality, and absence of implementation scope creep. It
-required the network-free validator to recompute every tracked v5 source hash;
-the corrected delta passed re-review. The accepted decision adds no model or
-runtime bytes, backend, public OCR API, default wiring, or support claim.
-
-**Follow-on integration status.** ADRs 0034–0036 implement the accepted CPU
-backend and separate Rust/C/C++ default constructors without changing ADR 0033's
-model choice. Approved Apple Silicon and Windows 11 Pro 25H2 hosts reran all 42
-regions on the same integrated revision and reproduced every accepted/rejected
-category with zero deterministic gate mismatch. Hosted Windows Server product
-smoke remains supporting contract evidence and does not substitute for the
-approved Windows desktop row.
+**History.** [ADR 0033](https://github.com/pashifika/mado-pilot/blob/646369fad6c922ac7b064367817337a18e572d8c/docs/adr/0033-default-ocr-model-profile.md)
+(historical).
 
 ## G-005
 
-**Decision.** [ADR 0050](adr/0050-change-detection-default.md) selects
-`exact-rgba-v1` for compatible already-mapped RGBA8 regions and keeps
-`analysis-always-v1` as the explicit fail-safe. Evaluation-only changed-pixel
-thresholds and fixed-grid sampling are not runtime options.
+**Decision.** `exact-rgba-v1` for compatible already-mapped RGBA8 regions, with
+`analysis-always-v1` as the explicit fail-safe. Changed-pixel thresholds and
+fixed-grid sampling are evaluation-only, not runtime options.
 
-**Required evidence.** Repository-owned Apache-2.0 sequences freeze nine ordered
-transitions: no change, outside-ROI change, one-pixel must-detect change,
-transient and persistent appearance, disappearance, repeated pixels, geometry
-change, and stream discontinuity. The pre-observation contract fixes seven
-candidate/threshold rows, false-skip and admitted-work metrics, comparison order,
-privacy, and no-post-observation rewrite. The canonical report selects exact RGBA
-with zero false skips, six admitted analyses, and three compatible skips. Every
-lower-admitted-work candidate is rejected by at least one false skip.
+**Required evidence.** Repository-owned Apache-2.0 sequences freezing nine ordered
+transitions, a pre-observation candidate/threshold contract, and a canonical
+report showing which candidate admits the least work with zero false skips.
 
-**Due.** Before Phase 4 watcher implementation.
+**Due.** Before Phase 4 watcher implementation. **Blocks.** The default watcher
+policy, not the offline evaluator or the closed policy descriptor seam.
 
-**Blocks.** The default watcher policy, not the offline evaluator or closed
-platform-neutral descriptor seam.
-
-**Status.** Resolved. Local deterministic, bounded-input privacy,
-descriptor-parity, and drift gates pass. On exact revision
-`3bb191d2221608774d4bb07cabc34b9ec92f6936`, protected run `33036793853`
-passed `Repository policy`, Windows `x86_64-pc-windows-msvc`, and macOS
-`aarch64-apple-darwin`; both native jobs reproduced canonical report v2 byte for
-byte without retry or mismatch. Independent correctness, security/privacy, and
-specification re-review returned CLEAN on the same revision.
-
-**Resolution.** ADR 0050 accepts exact RGBA. The bounded Rust template watcher
-consumes that policy; ADR 0051 accepts deterministic replay/OpenCV watcher
-correctness and target-specific latency/resource budgets, and ADR 0052 corrects
-only the independently remediated Windows ROI maximum after retaining its failed
-cohort. ADR 0051 engine/session startup latency remains reported but explicitly
-withheld; every non-time startup gate remains enforced. ADR 0053 accepts
-target-specific native sampled latency, RSS, live-heap, and growth budgets,
-including sampled fresh-session latency, while withholding single-run gate
-timing and cadence-dependent aggregate mapping, work, and publication ceilings.
-ADR 0057 rejects the historical final WGC and ScreenCaptureKit cohorts after
-independent review found unexercised engine-close and Windows cross-DPI topology
-contracts. Replacement source `f16591f` corrected both semantics. Its fresh
-Windows cohort passed 5/5, including the different-monitor 144-to-120-DPI
-transition. Its fresh Apple cohort passed processes 1–4, then process 5
-terminated red at `retained_result_mapping` after ScreenCaptureKit suspended the
-newly opened stream. Fifty focused runs and one immediate full-load diagnostic
-passed without reproducing the suspension, but neither result replaces the
-terminal-red qualification process. The native Rust query API remains
-implemented, but support is withheld.
-Corrective successor `7139a68` serializes backend generation admission per
-query and bounds Windows fixture output before allocation. The `f16591f` host
-cohorts do not qualify those changed runtime and harness semantics, so a future
-support decision requires a fresh complete protocol on both approved hosts.
-
-ADR 0060 separately retains current-source `030398e` Apple cleanup/latency and
-Windows report-admission terminal-red results without assigning either to the
-historical `f16591f` suspension. ADR 0061 repairs only the internal Windows
-report gate: finite canonical UBR and hardware provenance remains distinct from
-typed host-class, build-family, SDK, target, toolchain, and backend
-compatibility. ADR 0062 selects the Apple exact-lifetime and typed-finalization
-repair from cleanup localization and exact-sample correlation bound to
-`030398e`. The accepted timer observes elapsed only after operation-local
-resources, explicit finalization, and the complete fixture ownership chain are
-dropped. Neither repair changes a budget or public watcher contract.
-
-Integrated candidate `9cf746f` contains both repairs. Its sole authorized Apple
-builder terminated at a post-Cargo controlled-home check, and its sole
-authorized Windows builder terminated at a pre-namespace environment check.
-Neither host produced an artifact authority or launched process 1. ADR 0063
-retains both attempts without retry and classifies them as apparatus failures,
-not product-gate results. The required integrated Apple and Windows cohorts
-therefore do not exist, and the support decision remains withheld.
-
-ADR 0064 adopts Qualification V2 as a new identity from PR #64's merge result;
-it does not amend any PR #59–#64 record or claim a cause or repair for the
-historical ScreenCaptureKit suspension. V2 separates authority:
-
-- required Lane A replay/OpenCV suites own deterministic scheduler, query,
-  lifecycle, diagnostics, and complete-work semantics;
-- required Lane B host contracts own only the compact WGC and ScreenCaptureKit
-  integration boundary, using a unique acknowledged post-open visual token that
-  every required session must decode from a newer authoritative pixel frame;
-  and
-- optional Lane C owns statistical latency, resource, topology, provenance, and
-  endurance evidence without replacing or reinterpreting Lane B execution.
-
-Session open alone is not a first-pixel guarantee. Lane B has finite absolute
-startup, token-observation, operation, and teardown deadlines, reports semantic
-and cleanup facts independently, and classifies pre-execution apparatus failure
-as `INFRA` or `UNSUPPORTED` rather than product `FAIL`. Source `318ad1c` passes
-all eight Apple Lane B semantic and cleanup scenarios with exact 2× token
-capture and fixture finalization. Windows execution source `3e3079f` passes all
-eight Lane B semantic and cleanup scenarios on the approved mixed-DPI host, the
-deterministic liveness precedence suite and single-point mutation proof, and the
-hosted acknowledged-target-loss latency check. Test-only successor `53608af`
-pins the earlier caller deadline; all six focused tests and the Windows, macOS,
-and repository CI jobs pass. The runtime changes between the Apple source and
-that successor are Windows-target-only, so reviewed complete-diff applicability
-preserves the Apple result. Required Lane A also passes at the Windows execution
-source; cross-target Rust native watcher support is qualified on the named
-platform floors.
-
-OCR predicates, callbacks/subscriptions, C/C++, automatic input, target activation,
-arbitrary application/template/ROI compatibility or timing, real-time guarantees,
-and installable packaging remain unavailable in the `v0.4.0` source release.
-Any future false skip or behavior-affecting fixture, report, or policy drift
+**Status.** Resolved. The watcher's use of the policy is in
+[Bounded template-presence queries](architecture.md#bounded-template-presence-queries).
+Any future false skip or behavior-affecting fixture, report or policy drift
 removes current authority until an affected-host rerun or reviewed complete-diff
-applicability and ADR pass restore it. Documentation-only changes receive no
-attributed execution.
+applicability restores it.
+
+**Evidence.** [evidence/g-005/](evidence/g-005/): exact RGBA reports zero false
+skips, six admitted analyses and three compatible skips; every lower-work
+candidate has at least one false skip. At revision `3bb191d`, protected run
+`33036793853` reproduced canonical report v2 byte for byte on both release
+targets, and independent review returned CLEAN.
+
+Native watcher support is a separate support decision, documented in
+[native template watching](native-template-watch.md#qualification-v2-protocol-and-migration).
+
+**History.** [ADR 0050](https://github.com/pashifika/mado-pilot/blob/646369fad6c922ac7b064367817337a18e572d8c/docs/adr/0050-change-detection-default.md)
+(historical).
 
 ## G-006
 
-**Version 0.3.1 OCR decision.** Provider selection is independent from model and
+**Decision for v0.3.1 OCR.** Provider selection is independent of the model and
 preprocessing profile. Existing and automatic constructors use CPU on both
-release targets. Explicit Windows CUDA is accepted only for ADR 0049's exact
-successor source over the ADR 0048 target/runtime/dependency boundary. CoreML is
-release-rejected by ADR 0047. Preferred policy may construct one fresh CPU pair
-only before engine publication; required policy publishes no engine on failure.
-No inference, cancellation, deadline, device, or native error switches provider.
+release targets. Explicit Windows CUDA is supported only for the qualified
+source, target, runtime and dependency boundary; CoreML is not release-qualified.
+Preferred policy may construct one fresh CPU pair only before engine publication;
+required policy publishes no engine on failure. No inference, cancellation,
+deadline, device or native error switches provider.
 
-**Evidence.** ADR 0046 fixes the policy and controlled dependency contract. ADR
-0047 retains CoreML placement plus geometry/cancellation failures. ADR 0048
-remains historical Windows CUDA evidence. ADR 0049 retains its exact placement
-and loader policy, adds the internal 128 MiB adaptive recognizer bound, rejects
-arena/workspace/preload alternatives on measured gates, and passes the successor
-five-CUDA/five-fallback matrix.
+**Required evidence for a later claim.** Target-native correctness, placement,
+memory, cancellation, cleanup and fallback evidence for the claimed accelerator,
+plus performance evidence appropriate to any benefit the claim states.
 
-**Status.** The v0.3.1 OCR provider row is resolved. G-006 remains open for
-future accelerator kinds, graphs, targets, automatic defaults, or Phase 5 work.
+**Due.** Before Phase 5 implementation. **Blocks.** Acceleration defaults and
+accelerator support claims.
 
-**Resolution.** Any later support or ordering claim needs its own target-native
-correctness, placement, performance, memory, cancellation, cleanup, and
-fallback evidence plus an ADR.
+**Status.** The v0.3.1 OCR provider row is resolved; the current policy is in
+[OCR recognition](architecture.md#ocr-recognition). The gate stays open for
+future accelerator kinds, graphs, targets or automatic defaults. Changing
+provider ordering or an automatic default is a technology choice and needs a
+decision record.
+
+**History.** CoreML was rejected after geometry and cancellation hard-gate
+failures; explicit CUDA passed the successor five-CUDA/five-fallback matrix, and
+automatic selection stayed CPU because CUDA resident memory exceeded the fixed
+ratio rule. See ADRs
+[0046](https://github.com/pashifika/mado-pilot/blob/646369fad6c922ac7b064367817337a18e572d8c/docs/adr/0046-onnx-accelerator-provider-policy.md),
+[0047](https://github.com/pashifika/mado-pilot/blob/646369fad6c922ac7b064367817337a18e572d8c/docs/adr/0047-coreml-ocr-provider-qualification.md),
+[0048](https://github.com/pashifika/mado-pilot/blob/646369fad6c922ac7b064367817337a18e572d8c/docs/adr/0048-cuda-ocr-provider-qualification.md)
+and
+[0049](https://github.com/pashifika/mado-pilot/blob/646369fad6c922ac7b064367817337a18e572d8c/docs/adr/0049-cuda-ocr-memory-remediation.md)
+(historical).
 
 ## G-007
 
 **Unresolved decision.** Which broader native deployment profiles can be
 published, with complete dependency ownership, controlled loading, and
-license/notice obligations. The current source-only project redistributes no
-native libraries; its developer-prerequisite policy is decided separately below.
+license/notice obligations.
 
-**Required evidence.** Any future deployment-profile claim needs clean-system
-package prototypes on both release targets and a license review of every
-redistributed artifact. Development setup or hosted CI cannot supply this proof.
+**Required evidence.** Clean-system package prototypes on both release targets and
+a license review of every redistributed artifact. Development setup or hosted CI
+cannot supply this proof.
 
-**Due.** Before Phase 5 implementation.
+**Due.** Before Phase 5 implementation. **Blocks.** Release packaging.
 
-**Blocks.** Release packaging.
+**Status.** Open. The current source-only project redistributes no native
+libraries or models. Developers own OpenCV, libclang and their compiler/SDK and
+configure them with `tools/setup-native.py`; see
+[native development prerequisite ownership](architecture.md#native-development-prerequisite-ownership).
+That development policy does not close this gate.
 
-**Status.** Open.
+**History.** The original
+[five-candidate protocol and results](evidence/native-release-profiles/README.md)
+remain frozen, including development-host inventories, failed attempts and the
+direct-linked missing-OpenCV pre-entry failure. They are not passing release
+evidence. OpenCV 4.14.0 was a development prerequisite, not a release profile;
+see [the dependency policy](third-party-dependencies.md#opencv).
 
-**Developer-prerequisite decision.**
-[ADR 0066](adr/0066-developer-owned-native-prerequisites.md) records the
-user-approved 2026-09-05 scope amendment: developers acquire OpenCV 4, libclang,
-and their compiler/SDK, then explicitly run `tools/setup-native.py` to configure
-and check those existing installations. Missing or incompatible prerequisites
-may fail setup or build. Removing eagerly linked OpenCV afterwards invalidates
-the environment and can prevent process entry; no private deferred-load bridge
-or static-link workaround is required for that case. Existing ORT/model
-canonical-path, length/hash, typed runtime-refusal, and platform capability
-checks remain mandatory. Neither setup nor product runtime installs or downloads
-dependencies. This policy decision does not close this gate.
-
-**Historical investigation.** The original
-[five-candidate protocol and supporting results](evidence/native-release-profiles/README.md)
-remain frozen, including development-host inventories, failed attempts, and the
-direct-linked missing-OpenCV pre-entry failure. They are superseded as acceptance
-for the amended setup Change, not converted to passing release evidence.
-Private host loading never repaired the ordinary direct Rust consumer.
-
-**Phase 1 input.** OpenCV 4.14.0 was a development prerequisite, not a release
-profile. Its Apache-2.0 license does not approve its whole transitive closure.
-The eagerly linked missing-library failure occurred before MadoPilot could
-produce a status; the adapter could refuse an unsupported loaded version only.
-ADR 0066 changes the development obligation, not that historical observation.
-See [the dependency policy](third-party-dependencies.md#opencv).
-
-**Resolution.** An ADR recording the profile matrix, the controlled library search
-paths, and the license and notice obligations, followed by updates to
-[third-party-dependencies.md](third-party-dependencies.md) and the packaging
+**Resolution.** A decision record for the profile matrix, controlled library
+search paths, and license and notice obligations, with updates to
+[third-party-dependencies.md](third-party-dependencies.md) and packaging
 documentation.
 
 ## G-008
@@ -420,110 +300,59 @@ dependency combination.
 **Required evidence.** Link results and license review for each combination that a
 static artifact would advertise.
 
-**Due.** Before Phase 5 exit.
-
-**Blocks.** The static artifact claim only. It does not block the shared-library
-release.
+**Due.** Before Phase 5 exit. **Blocks.** The static artifact claim only. It does
+not block the shared-library release.
 
 **Status.** Open.
 
-**Resolution.** An ADR that either records the supported static combinations with
-their evidence, or withdraws the static artifact claim.
+**Resolution.** A decision record that either records the supported static
+combinations with their evidence, or withdraws the static artifact claim.
 
 ## G-009
 
-**Decision.** The reviewed public Rust item names of the facade, and the
-compatibility policy that now applies to them.
+**Decision.** The reviewed public Rust item names of the facade are the `0.x`
+baseline, reviewed rather than stable. Adding a name is free. Renaming or
+removing one is a breaking change that needs a decision record and a version
+bump. Changing what a name means while keeping it is refused. The stability
+promise begins at 1.0.
 
 **Required evidence.** The Phase 1 vertical slice with working Rust examples, and
-an interface review of the names those examples exercise.
+an interface review of the names they exercise.
 
-**Due.** Before Phase 1 exit.
+**Due.** Before Phase 1 exit. **Blocks.** Any Rust API stability promise.
 
-**Blocks.** Any Rust API stability promise.
+**Status.** Resolved. The policy is in
+[Public naming baseline](architecture.md#public-naming-baseline).
 
-**Status.** Resolved by
-[ADR 0006](adr/0006-public-rust-names-and-compatibility-policy.md). The review
-took the thirteen questions and two interface gaps this gate had accumulated —
-raised by writing the Rust example, the C ABI, and the C++ wrapper against the
-provisional names — and settled every one.
-
-Six items were renamed: `EngineParts` to `EngineWiring`, `FrameChoice` to
-`SearchFrame`, `Engine::prepare` to `Engine::prepare_template`, the old
-`Engine::prepare_template` to `Engine::prepare_from_package`, `Session::frame` to
-`Session::acquire_frame`, and the three asset constants at the facade root to
-`ASSET_SCHEMA_VERSION`, `ASSET_MANIFEST_PATH`, and `ASSET_HASH_ALGORITHM`. Four
-things were added: `MatchResult::options`, `ContentDigest::of`,
-`ReplayEngineRequest` — which closes the asset-limits gap — and facade
-re-exports of `AssetLimits`, `BackendDescriptor`, and `BackendId`, three types
-public methods returned but no caller could name. One behaviour was aligned:
-`Session::find_template` now reports `Status::Closed` for every frame choice, so
-the Rust and C surfaces agree about what a closed session does.
-
-The rest were kept with the reason recorded, including the two the ADR expects to
-revisit: `StreamId` and `TargetId` stay opaque with no fixed-width projection,
-which becomes a real defect only when one engine is shared across the language
-boundary, and `REQUIRED_BACKEND` stays a `&str` policy constant until a second
-backend introduces a selection axis to name.
-
-The policy: these names are the `0.x` baseline and are reviewed rather than
-stable. Renaming or removing one is a breaking change needing a superseding ADR
-and a version bump; adding is free; changing what a name means while keeping it
-is refused outright. The promise begins at 1.0.
-
-**Resolution.** An ADR recording the reviewed names and the compatibility policy
-that then applies to them.
+**History.** The review renamed six items, added four, aligned closed-session
+search status across Rust and C, and kept `StreamId`/`TargetId` opaque and
+`REQUIRED_BACKEND` a `&str` with recorded reasons. See
+[ADR 0006](https://github.com/pashifika/mado-pilot/blob/646369fad6c922ac7b064367817337a18e572d8c/docs/adr/0006-public-rust-names-and-compatibility-policy.md)
+(historical).
 
 ## G-010
 
-**Decision.** The exact version-one C status codes, the mandatory function-table
-prefix, the structure layouts, and the mapping from Rust errors to C status
-values.
+**Decision.** C ABI major 1, minor 0 is frozen: thirteen status values with fixed
+numbers, a forty-byte mandatory table prefix ending at `status_text`, twenty-three
+structures with fixed sizes, alignments and offsets, and a Rust-to-C status
+mapping with one arm per `Status`. `MADOPILOT_STATUS_INTERNAL_PANIC` is the only
+C-only value, and a `Status` added to Rust later reports as
+`MADOPILOT_STATUS_INTERNAL`.
 
-**Required evidence.** The Phase 1 minimal C ABI exercised by C and C++ examples,
-with owned-handle lifecycle, structure-size negotiation, and error-ownership tests
-passing.
+**Required evidence.** The Phase 1 C ABI exercised by C and C++ examples, with
+owned-handle lifecycle, structure-size negotiation and error-ownership tests.
 
-**Due.** Before Phase 1 exit.
+**Due.** Before Phase 1 exit. **Blocks.** The ABI compatibility baseline and every
+later old-header-prefix compatibility claim.
 
-**Blocks.** The ABI compatibility baseline, and therefore every later
-old-header-prefix compatibility claim.
+**Status.** Resolved. Released prefixes and their compatibility rules are in
+[the C ABI guide](c-abi.md#released-prefixes-and-compatibility); per-field reports
+are in [evidence/c-abi/](evidence/c-abi/). The frozen caller at
+`crates/bindings/capi/tests/abi-compat/v1/` compiles against the 1.0 header and
+runs against the current library.
 
-**Status.** Resolved by [ADR 0007](adr/0007-phase-1-c-abi-freeze.md). The ABI is
-frozen at major 1, minor 0: thirteen status values with fixed numbers, a
-forty-byte mandatory table prefix ending at `status_text`, twenty-three
-structures whose sizes, alignments, and field offsets are the tracked reports in
-[evidence/c-abi/](evidence/c-abi/), and a Rust-to-C status mapping with one arm
-per `Status`.
-
-Every row of this gate's evidence table is now filled. The two that were
-outstanding: the mapping review happened and is recorded in the ADR — including
-why `MADOPILOT_STATUS_INTERNAL_PANIC` is the only C-only value and why a
-`Status` added to Rust later reports as `MADOPILOT_STATUS_INTERNAL` rather than
-as the nearest existing category — and the frozen old-prefix fixture exists at
-`crates/bindings/capi/tests/abi-compat/v1/`, where `c-abi-check` compiles a C
-program against the frozen header instead of the working one, links it to the
-library built now, negotiates at both the full table size and the mandatory
-prefix, and runs the complete flow.
-
-The six decisions this gate held were settled as: the C status vocabulary does
-not diverge further; the root handle stays `madopilot_engine_t` and the
-specification's wording follows the code rather than the other way round;
-`tmpl` stays and `template` stays the concept, at the cost of one awkward field
-and a permanent C++ member-naming constraint;
-`MADOPILOT_ASSET_FAULT_UNKNOWN_TEMPLATE` is now reachable, because
-`template_prepare_from_package` resolves the identity before asking the backend
-for anything; the asset detail does not generalize and a second structured
-detail is appended rather than folded into it; and freezing the values makes a
-generated C++ mirror safe but not a hand-written one, so the wrapper keeps
-aliasing.
-
-Two function-table entries were renamed in the same change, before the freeze
-took effect: `session_frame` to `session_acquire_frame` and `template_prepare`
-to `template_prepare_from_package`. Their offsets did not move.
-
-**Resolution.** An ADR freezing the allocation and layout rules, followed by the
-ABI layout and old-header compatibility tests that enforce them.
+**History.** [ADR 0007](https://github.com/pashifika/mado-pilot/blob/646369fad6c922ac7b064367817337a18e572d8c/docs/adr/0007-phase-1-c-abi-freeze.md)
+(historical).
 
 ## G-011
 
@@ -533,13 +362,11 @@ allocated in the C ABI.
 **Required evidence.** A portable extension prototype covering discovery,
 allocation, and version negotiation.
 
-**Due.** Future roadmap.
+**Due.** Future roadmap. **Blocks.** Nothing in version one.
 
-**Blocks.** Nothing in version one.
+**Status.** Deferred. Activating it is an ABI decision and needs a decision record.
 
-**Status.** Deferred. An ADR is required if this is activated.
-
-**Resolution.** An ADR recording the prototype and the negotiation rule, plus a
+**Resolution.** A decision record for the prototype and negotiation rule, plus a
 scope update that moves the feature out of the future roadmap.
 
 ## G-012
@@ -550,353 +377,113 @@ profiles.
 **Required evidence.** A feature-matrix build across both release targets with
 binary-size measurements for each profile.
 
-**Due.** Before Phase 5 implementation.
+**Due.** Before Phase 5 implementation. **Blocks.** The release capability matrix.
 
-**Blocks.** The release capability matrix.
+**Status.** Open. `tools/setup-native.py` configures the existing development
+build; it selects no Cargo/C profile and changes no CPU default, provider scope,
+Rust API or ABI 1.5 contract. A passing setup or build is not the published
+feature, capability and size matrix. The frozen
+[five-candidate protocol](evidence/native-release-profiles/protocol.json) and its
+results do not close this gate or `G-007`.
 
-**Status.** Open.
-
-**Developer-prerequisite decision.** ADR 0066 and
-`tools/setup-native.py` configure the existing native development build; they
-select no new Cargo/C profile and change no CPU default, provider scope, Rust
-API, or ABI 1.5 contract. A passing setup/build is not the published
-feature/capability/size matrix required by this gate.
-
-**Historical investigation.** The
-[original five-candidate protocol](evidence/native-release-profiles/protocol.json)
-and its results are frozen evidence, superseded as acceptance for the current
-setup Change. Neither those supporting CI consumers nor the new setup decision
-closes `G-007`/`G-012`, qualifies clean/minimum hosts or signing, or establishes
-full Direction Slice acceptance or merge readiness.
-
-**Resolution.** An ADR recording the matrix and the chosen defaults, plus a
+**Resolution.** A decision record for the matrix and chosen defaults, plus a
 build-profile capability table published with the release.
 
 ## G-013
 
-**Unresolved decision.** The numeric benchmark budgets for every workload a phase
-introduces.
+**Decision.** The numerical latency, memory, mapped-byte, stale-work, model-load
+and startup targets for each performance-sensitive workload, and the evidence an
+explicit performance claim must meet.
 
-**Required evidence.** Repeatable baseline measurements captured with the profile
-format in [performance.md](performance.md), on the release target the workload
-runs on.
+**Required evidence.** For a target: scoped measurements recorded with the profile
+format in [performance.md](performance.md) on the release target the workload runs
+on. For a performance claim: evidence appropriate to the claim's stated workload,
+host, source and statistic.
 
-**Due.** Before each affected phase exits.
+**Due.** When a workload is introduced, and before a performance claim is made.
 
-**Blocks.** That phase's exit.
+**Blocks.** Only the corresponding explicit performance claim or opt-in
+`--enforce-budgets` result. It does not block implementation, tuning, integration
+or a phase's correctness exit.
 
-**Status.** Open per workload. Phase 0 defined the profile and budget format and
-deliberately assigned no numeric product budget.
+**Status.** Open per workload. Each workload's hard checks — zero oracle failures,
+bounded allocation growth, enforced resource and mapping limits, identity
+bindings and owned cleanup — remain mandatory wherever its benchmark runs.
+Numerical targets live in [benchmark profiles](benchmarks/). Changing a target is
+a tuning change recorded in [tuning history](performance/tuning/README.md); it
+applies prospectively and never regrades an earlier run.
 
-**Phase 1 is resolved** by
-[ADR 0008](adr/0008-phase-1-performance-budgets.md). Thirteen workloads across
-two benchmarks are measured on both release targets — Apple M1 Pro under macOS
-26.5.2 and Core i7-12700KF under Windows 11 Pro 26200 — two hundred samples each
-after twenty warm-up iterations, every sample checked against its oracle, and
-zero oracle failures anywhere. Four profiles are committed under
-[benchmarks/](benchmarks/): `phase-1-deterministic-slice-*` for the eight-operation
-Rust workflow and `phase-1-c-boundary-*` for what the C ABI costs. Each
-benchmark's two profiles share a fixture hash, so both targets measured the same
-bytes.
+**History.** These outcomes keep their original sources and verdicts.
 
-Two hard gates apply to every workload on both targets — `result_correctness` is
-zero and `allocated_growth_bytes` is bounded at one page, and both targets
-measured zero growth everywhere. Live heap peaks below half a mebibyte across
-the whole slice. The numeric latency ceilings are regression ceilings rather
-than product requirements, set at three times the measured value, and the ADR
-says so rather than dressing them as a requirement nobody has stated.
-
-`map_full_frame` deliberately has **no** latency budget: it measures exactly zero
-on `x86_64-pc-windows-msvc`, because a matching-format mapping is a
-reference-count increment and the host clock is coarser than that. It is bounded
-by `mapped_bytes_per_result` and by a batched `iteration_span_ms` instead, on
-both targets, so the two profiles agree about what the workload may do.
-`negotiate_table` is bounded the same way, for the same reason.
-
-`engine_create_rust` and `match_warm_rust` carry no per-measurement ceiling at
-all. Each is the control for the C workload above it in the same profile,
-measured so the pair can be compared in one process, one build, one run; the
-Rust workflow's own ceilings live in the deterministic-slice profile, and a
-second set beside the control would be the same claim measured twice and free to
-disagree with itself. Eleven of the thirteen workloads therefore carry a
-per-measurement ceiling, and all thirteen sit under the two hard gates above,
-which apply to every measurement in their file.
-
-Task 9.2's "any material C ABI startup overhead" is answered rather than
-assumed. The boundary costs a fixed amount per table entry: negotiation does not
-register on either host's clock, engine creation costs a sub-microsecond
-constant more than the facade, and a warm match costs 0.1% more on
-`aarch64-apple-darwin` and 3.4% more on `x86_64-pc-windows-msvc` across four
-crossings. It is not material at this size of work, and the ADR records why that
-conclusion does not automatically transfer to a later phase's per-frame entry
-point.
-
-**Phase 2 is resolved for `v0.2.1`.**
-[ADR 0024](adr/0024-input-diagnostic-performance-budgets.md) accepts the
-`aarch64-apple-darwin` diagnostic profile. ADR 0026 accepts the matching Windows
-profile. Both targets retain 200 samples after 20 warmups for each of ten
-capture/mapping, input, overflow, and close/drain workloads, with zero oracle
-failures and allocation growth, exact mapped-byte accounting, and per-workload
-regression ceilings.
-
-The `native-phase2` workloads are resolved on Windows and partially resolved on
-macOS. ADR 0020 historically accepted three macOS profiles at source
-`a1faf04505c8471deb4de8c136fddcc7f76105e7`; [ADR 0021](adr/0021-invalidate-phase-2-native-performance-evidence.md)
-invalidated all three after source drift and false-positive stimulus and
-latest-frame oracles. The macOS capture and transition profiles remain
-`normative = false`.
-
-[ADR 0025](adr/0025-macos-native-input-performance-budgets.md) replaces the
-macOS input and public-language profile and records its post-review refresh at
-source `c4bc8135ae36cf9b110fc435e4fa1b8dfc3ba848`. Its six workloads retained
-300 correct samples with zero allocation growth, exact mapped-byte accounting,
-and measured Rust-heap and child-process resident bounds.
-
-[ADR 0026](adr/0026-windows-native-and-diagnostic-performance-budgets.md)
-accepts the post-review Windows diagnostic, capture, transition, and
-input/public-language requalification at source commit
-`6873d4b05a13fd15cb3ffd961892b1153f606d78`, implementation tree
-`2483269ee071d14adfe14f829d318a4c59337f85`. Its 2,980 retained samples all
-satisfy their exact oracles, report zero allocation growth, and pass the
-unchanged ceilings. The rejected precursor runs proved four apparatus defects
-rather than product failures: insufficient post-resize fixture publication,
-reuse of a 1,024-event fixture for 2,050 redacted summaries, a missing child-only
-Cargo profile DLL path, and a C++ oracle that expected macOS submission evidence
-on Windows. The ADR records the bounded repairs and target-specific oracle.
-
-[ADR 0030](adr/0030-macos-production-capture-performance-budgets.md) accepts the
-separate macOS production-capture and production-transition profiles at measured
-source `d182300cd8710891ded6cba17184c44d6d58a114`, tree
-`c570343d334a5c77415e6a885ef8821c731b0ad5`. Their eight workloads retain 1,150
-correct samples with zero allocation growth and exact mapped-byte accounting on
-the approved exactly-two-display mixed-scale host. The executable harness now
-enforces every accepted latency, live-heap, mapped-byte, correctness, and growth
-budget and requires the fixture's exact next frame-authoritative target geometry
-after resize. The ADR retains the rejected enforcement-repair attempt and changes
-no historical profile or source attribution.
-
-[ADR 0031](adr/0031-windows-1280-production-capture-performance-budgets.md)
-accepts the separate Windows 1280×720 profiles. Shared-marker source `f50285a`,
-tree `4c2f23f`, reran all four capture workloads with zero
-correctness/allocation failures, exact mapping/copy bytes, and nonzero resource
-counts at or below their limits. Transition source `7c31752`, tree `4e99487`,
-reran all five lifecycle workloads after callback completion/binding
-instrumentation changed their publication path; every unchanged gate passed.
-
-[ADR 0032](adr/0032-windows-dual-4k-production-capture-performance-budgets.md)
-accepts the corrected mixed-DPI dual-4K profile at shared-predicate source
-`f50285a`, tree `4c2f23f`. It retains 600 stationary samples per display plus
-300 controlled moving-seam samples, requires requested-position markers on both
-frames, binds each frame to its own post-baseline callback record, and passes
-every latency, mapping/copy, resource, stale-work, heap, resident, correctness,
-growth, and cleanup gate.
-
-The Windows controlled `native-phase2`, ADR 0031 1280×720, and ADR 0032 dual-4K
-profiles remain distinct. Historical measurements keep their original source
-identities. Windows final-source Phase 1 reruns pass on the exact exit candidate;
-Apple Silicon runs remain attributed to `d8336be` and apply by reviewed complete
-diff. Both preserve their existing ceilings rather than creating another profile
-lineage.
-
-**Phase 3 default OCR is resolved on both release targets.**
-[ADR 0037](adr/0037-phase-3-ocr-performance-budgets.md) accepts separate
-`aarch64-apple-darwin` and `x86_64-pc-windows-msvc` profiles on the approved
-Apple M1 Pro and Core i7-12700KF hosts. Each target ran five fresh
-review-fixed final processes after an independent precursor and retained 100
-full-frame, 100 bounded-region, and 100 empty-result samples with zero
-correctness failures, no exclusions or retries, zero post-warmup allocation
-growth, exact observed mappings, detector/recognizer runs, opened session
-topology, and result counts.
-
-Apple worst p95 was 472.623/301.455/184.057 ms, cold open 87.377 ms, first
-close 1.163 ms, reopen-close 64.929 ms, and target-native peak RSS
-516,833,280 bytes. Windows worst final p95 was 717.487/579.638/275.385 ms,
-cold open 177.195 ms, first close 6.081 ms, reopen-close 160.820 ms, and
-`GetProcessMemoryInfo` peak RSS 242,810,880 bytes. Each passed its own
-executable target ceilings. Producer-surface copy is not applicable to the CPU
-replay profiles and has no copied-byte ceiling.
-
-Hosted Windows Server continues to run the same hard correctness,
-source-correlation, observed mapping/inference/session accounting,
-cancellation/late-result, cleanup, and 4 KiB growth gates, but its
-timing/resident memory defines no release-host budget. Watcher scheduling and
-acceleration remain open for the later phases that introduce them.
-
-**The v0.3.1 bounded-detector workloads remain open.** ADR 0038 records the
-rejected rectangular-only tuple, ADR 0040 fixes candidate v2, and ADR 0039 keeps
-target-independent smoke, exact-source precursor measurement, and final budget
-enforcement separate. Hosted timing/RSS establishes no release-host budget.
-
-The reviewed approved-host rectangular precursor used exact source `cff5338`.
-All five bounded processes passed on both Apple M1 Pro and Windows Core
-i7-12700KF hosts. All 3,200 retained native/bounded samples across both targets
-passed quality/source/resource/session/cancellation/growth oracles; ten native
-raw false verdicts remain retained because that precursor applied the
-bounded-only 20 MiB peak to arbitrary-4K native comparison work.
-
-ADR 0039's predeclared formula rejected the rectangular candidate on Windows.
-Margin-derived latency ceilings crossed fixed caps for 4K, reference, odd, and
-dense workloads; cold derived 275 ms above 250 ms. Observed RSS derived 384 MiB
-above 320 MiB, but the harness retained all source fixtures simultaneously, so
-that row is preserved and not reused as one-operation memory evidence. No fixed
-cap or expected result was changed.
-
-**The v0.3.1 explicit bounded-detector row is resolved.** ADR 0038 retains the
-rejected rectangular candidate. ADR 0040 accepts candidate v2, and ADR 0041
-accepts target budgets derived by the unchanged ADR 0039 formula.
-
-Exact schema-v3 source `ce658b3` passed five bounded and five native precursor
-processes on each approved host with zero oracle failure/growth and complete
-final/cumulative RSS fields. Strict final source `33cd36b` fails closed for
-missing prerequisites, rejects unknown/duplicate modes, preserves explicit
-smoke/debug inventory behavior, and passed independent fix review.
-
-Five fresh bounded final enforcement processes passed on each approved host.
-Final executable SHA-256 is
-`7e48921dfeaa7b0f3a4bb33b9e927eea9e50d75422c570adb6443fd4f32cf190`
-on Apple and
-`aefdfa9cd6a023049b532f650a5493191994b22b3c07b582097ca1146a58d5e4`
-on Windows. Every latency, heap, growth, final RSS, detector-fact, identity,
-cancellation, and cleanup row passed without retry or exclusion.
-
-The profile remains an explicit non-default Rust selection under the named
-runtime/model/fixture/target boundaries. Released Phase 3 default OCR evidence,
-budgets, and constructors remain unchanged.
-
-**Resolution.** Resolved by [ADR 0040](adr/0040-compound-bounded-detector-ceiling.md)
-and [ADR 0041](adr/0041-bounded-detector-target-budgets.md). Any future ceiling
-or budget change requires a new identity or ADR as applicable and fresh
-both-target evidence.
-
-**The `v0.3.1` integrated grouped-zone budget decision is resolved.** ADR 0042
-fixes the one-to-eight-zone semantics and safety-only overlap boundary; ADR 0043
-fixes the Rust/C ABI 1.4/C++ ownership surface. Exact source `180c1b1` then
-passed the immutable native/singular/one-/three-/eight-zone matrix and five fresh
-alternating 3+20 precursor processes on each approved host with no retry,
-exclusion, incorrect retained sample, call failure, post-warm growth, or
-deterministic resource-signature mismatch.
-
-[ADR 0044](adr/0044-integrated-zone-ocr-target-budgets.md) accepts separate
-Apple M1 Pro and Windows Core i7-12700KF grouped latency, process, cancellation,
-retained-result, mapping, detector/recognizer, candidate/membership/result,
-heap/growth, and cleanup ceilings. It leaves every ADR 0041 singular ceiling
-unchanged and limits the quality/performance claim to full-frame one-zone
-equivalence plus the fixed semantically distinct non-overlapping three/eight
-layouts. Duplicate, nearly equal, adjacent, slight-overlap, and complete-overlap
-arrays remain safety-only.
-
-The first post-budget Apple source `7835884` remains rejected: its complete
-process passed every non-startup gate but measured 149.832 ms cold open against
-the inherited 125 ms ceiling. A user-authorized macOS disk-cache purge then
-reproduced the same gate at 130.844 ms while warm-cache diagnostics measured
-84.408–91.766 ms. [ADR 0045](adr/0045-integrated-ocr-cache-cold-startup-budget.md)
-supersedes only the new Apple integrated startup row with a 200 ms cache-cold
-ceiling. It does not retry or relabel the failure, prime before timing, alter
-Windows, or edit historical ADR 0041 profiles.
-
-Corrected exact source `1ad2031`, tree `c06a969`, then passed five fresh
-integrated `--enforce-budgets` processes on each approved host with alternating
-workload order and no retry or exclusion. Apple executable
-`9d9941e3a14c7acdea71c8c28c4af215a77a7f143d4cc793a53ef2d1d4d3e1da`
-and Windows executable
-`cce21732cc7afb5b9c4903b95f732c42e725e7c92591845f6a39482be0ea5504`
-passed every singular/grouped latency, process, resource, lifecycle, ownership,
-cleanup, correctness, heap, and growth gate. Hosted checks passed both release
-targets on that source; their timing/RSS remains non-qualifying.
-
-**The `v0.3.1` OCR provider budget decision is resolved.** ADR 0047 assigns no
-CoreML budget because its correctness/cancellation smoke failed. ADR 0048's
-three Windows profiles remain immutable historical evidence. ADR 0049 adds
-three successor profiles for required CUDA singular/grouped work and the
-preferred-CUDA/missing-root fresh-CPU grouped fallback. Exact source tree
-`896e037d962610c4abd7a4a7b143d1ae9c90f549` passed five CUDA and five fallback
-processes with zero retry, exclusion, priming, overlap, incorrect result, growth
-failure, or unexpected stderr diagnostic. Minimum workload-median p95
-CPU-over-CUDA speedup was 3.995×. CUDA median RSS remained 4.881× fallback CPU,
-so automatic selection remains CPU. The retained predecessor tail advances only
-the successor CUDA `zone_empty_4k` maximum to 50 ms. Every historical profile
-and frozen ADR 0047/0048 section remains byte-identical.
-
-**Rust OCR text-presence workload ceilings are accepted; final enforcement remains open.**
-[ADR0075](adr/0075-ocr-text-watch-workload-profiles.md) accepts separate
-[Apple](benchmarks/ocr-text-watch-aarch64-apple-darwin.toml) and
-[Windows](benchmarks/ocr-text-watch-x86_64-pc-windows-msvc.toml) profiles from
-complete controlled3 and real-startup5 precursors per target. Independent review
-reconstructed808 process-local values and verified all248 observed values,
-ceilings and units. Historical Windows real evidence retains its recorded base
-build without importing the later controlled cohort's UBR.
-
-The schema4 Python runner enforces process-local p50/p95/max, paired cancellation
-endpoints, distinct target-native memory and fixed view/retention limits only
-after semantic, identity, dependency and cleanup gates. It binds the accepted
-profile/ADR and exact host/executable, stops at the first failure and requires
-unchanged final identities. Complete measurements are not numerical acceptance.
-Final fixed-cohort execution and target-owned WGC/ScreenCaptureKit evidence remain
-separate required gates. No historical failed/partial record or old ceiling is
-changed, and no opaque allocation or unmeasured numeric work counter is invented.
-
-**OCR model choice is independent of empirical test outcomes.**
-[ADR 0084](adr/0084-ocr-model-choices-and-test-results.md) supersedes the universal
-model-admission condition, not its failed observations.
-[ADR 0080](adr/0080-ocr-model-catalog-and-admission.md) still defines the catalog,
-official PP-OCRv6 tiny/small execution tuple and compact-UI suite. All implemented
-profiles are ordinary Rust choices; their named test rules remain independently
-visible. Closed resource/graph/vocabulary validation, finite execution bounds,
-source correlation, provider/watch scope and lifecycle correctness still apply.
-
-[ADR 0081](adr/0081-current-apple-ocr-verification-cohort.md) and
-[ADR 0082](adr/0082-current-windows-ocr-reference-precursor.md) identify the
-independent CPU cohorts and precursor procedures. Windows calibration at
-`0cb9fc0` completed three processes and 1,452 observations with zero shared
-validation failures; its independently derived
-[`numerical policy`](../tools/ocr-models/windows-i7-12700kf-26300-budgets-v1.json)
-does not authorize another run. Both final comparisons at `cf2763a` completed
-with candidate quality failures and no numerical or operational failure.
-Their original verdicts and all failed/partial attempts remain unchanged.
-
-[ADR 0083](adr/0083-platform-aware-ocr-calibration-and-percent-equivalence.md)
-supersedes only current percent-sign exactness and Windows reference operational
-allowances. Prospective text comparison and repeated-text stability equate
-U+0025 `%` with U+FF05 `％` after NFC and trim on both sides; geometry,
-confidence, order and groups retain their existing gates. Raw output, authored
-fixtures, SDK normalization and historical verdicts remain unchanged.
-One separately frozen Windows campaign receives 900 seconds per process and
-3,300 seconds whole, without incremental retries or security-software changes.
-That headroom is neither a measured security-software cost nor a performance
-budget. The common-source final reports and original nonadmission disposition
-are retained. Derived rule summaries identify both the measured source and
-evaluator revision; they are not a new native qualification or execution grant.
+- Phase 1: thirteen workloads, 200 samples after 20 warmups on Apple M1 Pro and
+  Core i7-12700KF, zero oracle failures and zero growth; latency ceilings are
+  regression ceilings at three times the measured value
+  ([ADR 0008](https://github.com/pashifika/mado-pilot/blob/646369fad6c922ac7b064367817337a18e572d8c/docs/adr/0008-phase-1-performance-budgets.md);
+  `benchmarks/phase-1-*`).
+- Phase 2: diagnostic, native input and public-language, Windows controlled,
+  1280×720 and dual-4K capture, and macOS production capture profiles were
+  accepted with their own sources; the earlier macOS `native-phase2`
+  capture/transition profiles were invalidated and stay `normative = false`
+  (ADRs
+  [0020](https://github.com/pashifika/mado-pilot/blob/646369fad6c922ac7b064367817337a18e572d8c/docs/adr/0020-phase-2-native-performance-budgets.md),
+  [0021](https://github.com/pashifika/mado-pilot/blob/646369fad6c922ac7b064367817337a18e572d8c/docs/adr/0021-invalidate-phase-2-native-performance-evidence.md),
+  [0024](https://github.com/pashifika/mado-pilot/blob/646369fad6c922ac7b064367817337a18e572d8c/docs/adr/0024-input-diagnostic-performance-budgets.md),
+  [0025](https://github.com/pashifika/mado-pilot/blob/646369fad6c922ac7b064367817337a18e572d8c/docs/adr/0025-macos-native-input-performance-budgets.md),
+  [0026](https://github.com/pashifika/mado-pilot/blob/646369fad6c922ac7b064367817337a18e572d8c/docs/adr/0026-windows-native-and-diagnostic-performance-budgets.md),
+  [0028](https://github.com/pashifika/mado-pilot/blob/646369fad6c922ac7b064367817337a18e572d8c/docs/adr/0028-windows-window-message-performance-budgets.md),
+  [0030](https://github.com/pashifika/mado-pilot/blob/646369fad6c922ac7b064367817337a18e572d8c/docs/adr/0030-macos-production-capture-performance-budgets.md),
+  [0031](https://github.com/pashifika/mado-pilot/blob/646369fad6c922ac7b064367817337a18e572d8c/docs/adr/0031-windows-1280-production-capture-performance-budgets.md),
+  [0032](https://github.com/pashifika/mado-pilot/blob/646369fad6c922ac7b064367817337a18e572d8c/docs/adr/0032-windows-dual-4k-production-capture-performance-budgets.md)).
+- Phase 3 default OCR: five final processes per target passed their own target
+  ceilings
+  ([ADR 0037](https://github.com/pashifika/mado-pilot/blob/646369fad6c922ac7b064367817337a18e572d8c/docs/adr/0037-phase-3-ocr-performance-budgets.md)).
+- v0.3.1 bounded-detector, grouped-zone and provider OCR: the rectangular
+  candidate was rejected; candidate v2 singular and grouped target budgets were
+  accepted; the Apple integrated cache-cold startup row was corrected after a
+  retained failure; the CUDA profiles stay distinct from CPU (ADRs
+  [0038](https://github.com/pashifika/mado-pilot/blob/646369fad6c922ac7b064367817337a18e572d8c/docs/adr/0038-bounded-detector-sampling-profile.md)–[0041](https://github.com/pashifika/mado-pilot/blob/646369fad6c922ac7b064367817337a18e572d8c/docs/adr/0041-bounded-detector-target-budgets.md),
+  [0044](https://github.com/pashifika/mado-pilot/blob/646369fad6c922ac7b064367817337a18e572d8c/docs/adr/0044-integrated-zone-ocr-target-budgets.md),
+  [0045](https://github.com/pashifika/mado-pilot/blob/646369fad6c922ac7b064367817337a18e572d8c/docs/adr/0045-integrated-ocr-cache-cold-startup-budget.md),
+  [0049](https://github.com/pashifika/mado-pilot/blob/646369fad6c922ac7b064367817337a18e572d8c/docs/adr/0049-cuda-ocr-memory-remediation.md)).
+- Phase 4 template watching: replay/OpenCV and native regression profiles were
+  accepted with startup timing and single-run gate timing withheld
+  (ADRs
+  [0051](https://github.com/pashifika/mado-pilot/blob/646369fad6c922ac7b064367817337a18e572d8c/docs/adr/0051-template-watch-query-replay-budgets.md)–[0053](https://github.com/pashifika/mado-pilot/blob/646369fad6c922ac7b064367817337a18e572d8c/docs/adr/0053-native-template-watch-budgets.md)).
+  Native watcher support rests on semantic contracts, not these profiles.
+- Rust OCR text queries: target-specific ceilings for the fixed CPU bounded-v2
+  workloads were accepted from complete precursors; final enforcement recorded
+  Apple passes and a Windows real-workload failure
+  ([ADR 0075](https://github.com/pashifika/mado-pilot/blob/646369fad6c922ac7b064367817337a18e572d8c/docs/adr/0075-ocr-text-watch-workload-profiles.md)).
+  Their format-2 profiles are read-only history; current format-3 profiles are
+  described in [OCR text queries](ocr-text-watch.md#model-free-workload-apparatus).
+- OCR model comparisons: both final comparisons at `cf2763a` completed with
+  candidate quality failures and no numerical or operational failure; see
+  [the OCR model catalog](ocr-model-catalog.md#final-comparison-at-cf2763a).
+- v0.5.0 component and actual-consumer measurement history is summarized in
+  [performance.md](performance.md).
 
 ## G-014
 
-**Decision.** The archive entry-count, uncompressed-byte, and compression-ratio
-safety ceilings for asset loading.
+**Decision.** The asset archive container is ZIP restricted to `Stored` and
+`Deflated`; the manifest is strict UTF-8 JSON. Six implementation ceilings bound
+loading: 4 MiB manifest, 4,096 entries, 64 MiB per entry, 512 MiB total
+uncompressed, 256 MiB total compressed, and a compression ratio of 64. A caller
+may lower a limit and may not raise one.
 
 **Required evidence.** Adversarial fixtures covering traversal, links, special
 files, duplicate normalized entries, and decompression bombs, each rejected
 deterministically at the chosen ceilings.
 
-**Due.** Before Phase 1 implementation.
+**Due.** Before Phase 1 implementation. **Blocks.** Version-one archive loading.
 
-**Blocks.** Version-one archive loading.
+**Status.** Resolved. The ceilings and staged enforcement are in
+[Safety ceilings](architecture.md#safety-ceilings). Raising a ceiling is a
+resource-contract change, not tuning.
 
-**Status.** Resolved by
-[ADR 0001](adr/0001-asset-archive-container-and-safety-ceilings.md). The
-container is ZIP restricted to `Stored` and `Deflated`, the manifest is strict
-UTF-8 JSON, and six implementation ceilings are set: 4 MiB of manifest bytes,
-4,096 entries, 64 MiB per entry, 256 MiB of source bytes, 512 MiB of total
-uncompressed bytes, and an expansion ratio of 64. A caller may lower a limit and
-may not raise one. Three ceilings beyond the ones this gate named were added,
-because entry count, expansion bytes, and ratio do not on their own bound what a
-loader allocates.
+**Evidence.** [evidence/g-014](evidence/g-014/) and
+[../fixtures/assets/g-014](../fixtures/assets/g-014/). The conformance suite
+asserts the failure category and refusing stage for every tracked adversarial
+fixture on both release targets.
 
-The evidence is in [evidence/g-014](evidence/g-014/) and the fixtures in
-[../fixtures/assets/g-014](../fixtures/assets/g-014/). `mado-pilot-assets`
-implements the decision, and its conformance suite asserts the failure category
-and the refusing stage for every tracked adversarial fixture, on both release
-targets. A fixture refused later than its documented stage fails that suite even
-though the package was refused, which is what keeps an earlier guard from being
-quietly removed.
-
-**Resolution.** An ADR recording the ceilings and the adversarial fixture results,
-followed by the asset schema and security documentation that states them.
+**History.** [ADR 0001](https://github.com/pashifika/mado-pilot/blob/646369fad6c922ac7b064367817337a18e572d8c/docs/adr/0001-asset-archive-container-and-safety-ceilings.md)
+(historical).

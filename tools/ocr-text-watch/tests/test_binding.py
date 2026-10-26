@@ -148,6 +148,19 @@ class BindingEvidence(unittest.TestCase):
         self.assertFalse(self.result()["measurements"]["complete"])
         self.assertFalse((self.args.output / "observed-native-images.json").exists())
 
+    def test_controlled_binding_keeps_strict_os_memory_requirements(self):
+        self.controlled()
+        self.observed["stdout"] = self.observed["stdout"].replace(
+            "resident_current_high_water_bytes=Some(10000000)",
+            "resident_current_high_water_bytes=None",
+        )
+        self.assertFalse(bind_replay.execute(self.args))
+        self.assertEqual(self.result()["failure"]["stage"], "measurement-observation")
+        self.assertFalse(self.result()["measurements"]["complete"])
+        self.assertFalse(self.result()["binding_complete"])
+        self.assertFalse((self.args.output / "observed-native-images.json").exists())
+        self.assertEqual(self.launch.call_count, 1)
+
     def test_controlled_discovery_must_contain_the_exact_executable(self):
         self.controlled()
         self.images[self.inputs["executable"]["path"]] = "d" * 64

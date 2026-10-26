@@ -4,11 +4,8 @@
 //! that call into it. Above this module the adapter sees owned handles, borrowed
 //! views tied to them, and typed statuses; it never sees a raw pointer.
 //!
-//! The declarations mirror `native/madopilot_macos_shim.h` by hand rather than
-//! through a generator, for the reason `docs/adr/0004-c-header-authorship-and-abi-verification.md`
-//! records for the public C header: a hand-written declaration is reviewable, and
-//! a test asserts that the two sides agree on version and structure sizes rather
-//! than trusting that they do.
+//! Hand-written declarations mirror `native/madopilot_macos_shim.h` for review.
+//! A test checks agreement on version and structure sizes.
 
 use std::ffi::{OsString, c_char, c_void};
 use std::fmt;
@@ -141,7 +138,7 @@ pub(crate) const MAX_SURFACE_EXTENT: u32 = 32768;
 /// reason the extent is — the Adapter does not ask for what would be refused.
 pub(crate) const MAX_SURFACE_BYTES: u64 = 268_435_456;
 
-/// Test seams the shim exposes for the ADR 0012 injection positions.
+/// Native exception injection positions exposed only for tests.
 #[cfg(test)]
 pub(crate) const RAISE_AT_START: u32 = 1;
 /// See [`RAISE_AT_START`].
@@ -1581,8 +1578,7 @@ pub(crate) fn monotonic_nanos() -> Option<u64> {
 
 /// Reports how many native objects the shim owns process-wide.
 ///
-/// Only the ownership cases ADR 0012 requires read this, so it is compiled for
-/// tests alone rather than left as an operation the Adapter could come to rely on.
+/// Compiled only for failure-path ownership tests, not adapter operations.
 #[cfg(test)]
 pub(crate) fn live_objects() -> u64 {
     let mut live = 0;
@@ -2656,7 +2652,7 @@ fn nanos(wait: Duration) -> u64 {
 /// Ordinary incomplete framework samples do not invoke this callback.
 ///
 /// The implementation must contain its own panics: a panic escaping an
-/// `extern "C"` callback aborts the process, which ADR 0012 measured.
+/// `extern "C"` callback aborts the process.
 pub(crate) type FrameCallback =
     unsafe extern "C" fn(*mut c_void, *mut OpaqueFrame, *const FrameInfo) -> u32;
 

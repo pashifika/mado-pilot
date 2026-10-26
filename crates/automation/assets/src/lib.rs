@@ -28,19 +28,15 @@
 //!
 //! # Safety ceilings
 //!
-//! The six ceilings on [`AssetLimits`] come from the adversarial and
-//! representative measurements in `docs/evidence/g-014` and are fixed by
-//! [ADR 0001]. A host may configure any limit at or below its ceiling; a limit
-//! above one is rejected rather than clamped.
+//! The six safety ceilings on [`AssetLimits`] are supported by the adversarial
+//! and representative measurements in `docs/evidence/g-014`. A host may
+//! configure any limit at or below its ceiling; higher limits are rejected.
 //!
 //! Three of them describe archive structure — the recorded entry count, the
 //! total source bytes, and the expansion ratio — and an archive is the only
 //! source that has them. The other three bound allocation the loader performs
 //! whatever the source is, so directory and memory sources are held to the
-//! manifest-byte, per-entry-byte, and total-expansion limits as well. That is
-//! an implementation decision this package documents, not a widening of
-//! ADR 0001, which fixes the ceilings for archives and leaves directory and
-//! memory containment to their own rules.
+//! manifest-byte, per-entry-byte, and total-expansion limits as well.
 //!
 //! # Implementation status
 //!
@@ -50,10 +46,9 @@
 //! and OCR model sources through the same `G-014`-bounded pipeline.
 //!
 //! **The public names here are reviewed, not yet stable.**
-//! `docs/adr/0006-public-rust-names-and-compatibility-policy.md` records the
-//! review that settled them and the policy that now applies: renaming or
-//! removing one is a breaking change needing an ADR and a version bump, while
-//! adding is free. The stability promise itself begins at 1.0.
+//! Renaming or removing a public name is a breaking change requiring a version
+//! bump; additions are allowed. The stability promise begins at 1.0.
+//! Current naming and compatibility policy lives in `docs/architecture.md`.
 //!
 //! # Where to start
 //!
@@ -76,8 +71,6 @@
 //! assert_eq!(template.id().as_str(), "start-button");
 //! # Ok::<(), mado_pilot_assets::AssetFault>(())
 //! ```
-//!
-//! [ADR 0001]: https://github.com/pashifika/mado-pilot/blob/main/docs/adr/0001-asset-archive-container-and-safety-ceilings.md
 
 mod archive;
 mod directory;

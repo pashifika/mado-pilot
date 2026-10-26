@@ -41,11 +41,11 @@ each analysis or change skip, the selected provider and prepared backend
 descriptors are rechecked against the captured identities; drift fails instead
 of substituting another selection.
 
-[ADR 0091](adr/0091-ocr-watch-caller-selection.md) extends
-[ADR 0084](adr/0084-ocr-model-choices-and-test-results.md)'s caller-choice policy
-to watching. Model-quality and timing results inform the caller, independently
-of enforced runtime safety. Earlier native failures and qualification gates
-remain source-bound evidence, not selection filters or accelerator qualification.
+Watching follows the same caller-choice rule as one-shot OCR and the
+[model catalog](ocr-model-catalog.md): model-quality and timing results inform
+the caller, independently of enforced runtime safety. Earlier native failures and
+qualification gates remain source-bound evidence, not selection filters or
+accelerator qualification.
 
 ### CPU execution options
 
@@ -89,8 +89,7 @@ gate. More workers can change contention and memory; spinning can trade idle
 CPU for wake-up latency.
 
 One inter-op thread, sequential native execution, disabled memory patterns and
-one physical OCR analysis remain unchanged. See
-[ADR 0092](adr/0092-ocr-cpu-execution-options.md).
+one physical OCR analysis remain unchanged.
 
 ### Model-specific trade-offs
 
@@ -196,8 +195,9 @@ consume eligible residence. OCR analyses are not coalesced; template coalescing
 and template-only scheduling remain unchanged.
 
 OCR reuses one BGRA mapping for exact visible-row comparison and inference.
-[ADR 0070](adr/0070-ocr-watch-exact-bgra-change-evidence.md) proves the equality
-preserving channel permutation; row padding is ignored and confirmation forces
+BGRA and RGBA differ only by a channel permutation, so exact BGRA row equality is
+exactly the RGBA equality the change policy defines; row padding is ignored and
+confirmation forces
 new analysis even for unchanged pixels. A full source envelope and returned
 mapping are checked against the 256 MiB OCR-watch safety limit.
 
@@ -290,10 +290,9 @@ limit on unrelated writes. Whole-process timing includes the collector; Rust
 memory rows describe the native candidate, excluding the Python collector.
 System shared-cache paths are removed before applying the256-entry Apple bound.
 Neither an unchanged executable nor a version string replaces actual identity.
-[ADR 0072](adr/0072-separate-bounded-loader-image-evidence.md) retains the earlier
-output-limit failure and global-limit mechanism.
-[ADR 0074](adr/0074-isolate-darwin-loader-image-budget.md) records its replacement
-after an unrelated-write failure; neither decision promotes old failed runs.
+Diagnostic loader images go through the dedicated bounded pipe rather than a
+process-wide output limit, because a global limit also stopped unrelated writes;
+earlier failed runs under the global limit are not promoted.
 Windows snapshots do not establish the history of transient unloaded images;
 the required OpenCV and ORT dependencies remain loaded for this procedure.
 
@@ -388,7 +387,8 @@ the next template turn, and account for missing resource reads after teardown.
 Structured per-invocation rows keep backend-input view traffic, caller-accessor
 mapping traffic, logical cache/result extents and OS memory separate. They do
 not claim unique allocations or a total opaque native-mapping ledger.
-[ADR 0071](adr/0071-ocr-watch-observable-measurement-scopes.md) defines the scopes.
+The [OCR-watch measurement method](performance/methods/ocr-watch.md) defines the
+scopes.
 
 `tools/ocr-text-watch/workloads.py` requires a clean committed candidate, a
 reviewed native image manifest under the presence policy above and a private host
@@ -405,19 +405,73 @@ Observed detector/recognizer creation counts are not live-session counts.
 The supervisor's whole-process cleanup remains separate from internal timestamps
 and ORT process-global residency. Ambient `MADO_PILOT_ORT_PROFILE_DIR` is refused.
 
-Report schema4 separates complete measurements from numerical acceptance. Every
-controlled invocation now retains its exact ordered endpoint durations, including
-the mapping/inference cancellation pair, from the existing producer output.
-Missing/duplicate/malformed records stop later processes; no missing value becomes
-zero. A numeric failure does not erase otherwise complete measurement facts.
+Report schema 5 separates execution outcome, descriptive observations and any
+explicitly requested numerical enforcement. Every controlled invocation retains
+its exact ordered endpoint durations, including the mapping/inference
+cancellation pair. Missing, duplicate or malformed records stop later processes;
+no missing value becomes zero. An optional OS memory value (RSS, peak, footprint
+or private bytes) that the platform reports as unavailable is retained as `null`
+without failing ordinary observation, and the run's other safe observations are
+kept; malformed, miscounted, misordered or logically inconsistent values, and an
+invalid zero, still fail. Binding and replay parsing stay strict. A numeric miss
+does not erase otherwise complete
+measurement facts, and semantic, identity, dependency or cleanup failure is never
+downgraded to an observation.
 
-`--enforce-budgets` requires accepted target-specific limits and their accepted
-ADR, the exact approved host and executable, and unchanged profile/ADR/source/input
-identities before every process and finally. An unaccepted profile always refuses.
-Each process is compared independently; a first numeric failure stops the rest.
-`passed` applies only to that complete target/mode cohort. Without the flag, the
-runner collects measurements but cannot qualify a budget. Native capture and
-whole-Change acceptance are never inferred from a single cohort result.
+- `execution_passed` judges the nonempty prefix of processes actually attempted:
+  admission and unchanged identities held, and every attempted row passed its
+  semantic, cleanup, dependency and required-measurement checks with no
+  non-budget failure. It does not require the full planned cohort.
+- `semantic_cohort_passed` and `required_measurements_complete` stay `false`
+  until every planned row has run. `required_measurements_complete` covers the
+  mandatory semantic, stage and logical records only; optional OS memory gaps do
+  not make it `false`. `observation_completed` is `true` only when a run without
+  `--enforce-budgets` completed every planned row with its required measurements.
+- `measurement_gaps` lists every unavailable value independently of any profile:
+  each process row carries its parser's list, and the result repeats the entries
+  with their process. An entry names `target`, `field`, the zero-based
+  `record_index` of the parsed record and `reason`, plus the workload, phase and
+  iteration for controlled runs or the stage for real startup. The list is
+  bounded at 399 entries per controlled process and 36 per real-startup process,
+  including entries for invalid extra-stage input. Only fields that apply to the
+  release target appear, so the other platform's memory fields are never
+  reported as gaps. Raw `null` values stay in the rows.
+- Top-level `passed` and `numeric_budgets` describe enforcement only: `passed` is
+  `true` only for a complete `--enforce-budgets` cohort with every budget met;
+  without the flag `numeric_budgets` is `not-enforced` and `passed` is `false`.
+- `stopped_by_enforcement` is `true` only when `--enforce-budgets` ended the run
+  early because a selected budget was exceeded or its metric was unavailable.
+- `empirical_targets.requested` is `true` whenever `--profile` was supplied, even
+  if that input is malformed or a historical format. `empirical_targets.misses`
+  lists every known miss, and `empirical_targets.unavailable` lists each
+  comparison that could not be made, with its process, workload, measure and
+  reason. `empirical_targets.passed` is `false` when any known miss exists, even
+  beside unavailable comparisons or in an incomplete run; `null` when a required
+  comparison is unavailable and no miss is known; and `true` only when every
+  comparison is complete and passing.
+
+Ordinary observation needs no profile: omit `--profile` to measure a new
+candidate on a new host with the fixed bounded settings and the run's own strict
+identity bindings. Current target-specific
+[Apple](benchmarks/ocr-text-watch-v3-aarch64-apple-darwin.toml) and
+[Windows](benchmarks/ocr-text-watch-v3-x86_64-pc-windows-msvc.toml) profiles use
+`format_version = 3`. Their `[bindings]` name the exact `host_id` and controlled
+and real executable SHA-256 values; their `[review].tuning_record` is a reference
+for human review, never opened or parsed. A supplied profile always enforces its
+host and executable scope, and its numerical misses are reported descriptively.
+`--enforce-budgets` requires `--profile`, compares each process independently,
+and stops with non-success at the first exceeded or unavailable selected metric
+(`budget-exceeded` or `budget-unavailable`). `execution_passed` can still be
+`true` for the safe attempted prefix.
+Native capture and whole-Change acceptance are never inferred from a single
+cohort result.
+
+Format-2 profiles are read-only history. Supplying one for execution refuses with
+a migration diagnostic; inspect it without executing:
+
+```sh
+python3 tools/ocr-text-watch/workloads.py --inspect-profile docs/benchmarks/ocr-text-watch-aarch64-apple-darwin.toml
+```
 
 Admission under the Windows presence-only policy requires a new, separately
 authorized three-process controlled cohort. Diagnostic rows are not precursor
@@ -434,13 +488,14 @@ Recording decision, never Accessibility. Permission refusal, unsupported-system
 refusal and absence of an acknowledged matching frame are distinct non-passes.
 Compilation in hosted CI is not evidence that either capture path ran.
 
-The [Apple workload](benchmarks/ocr-text-watch-aarch64-apple-darwin.toml) and
-[Windows workload](benchmarks/ocr-text-watch-x86_64-pc-windows-msvc.toml) have
-complete controlled3 and real-startup5 precursors. The
-[G-013 budget decision](adr/0075-ocr-text-watch-workload-profiles.md) accepts
-target-specific ceilings for these fixed CPU bounded-v2 workloads. All eight
-workload blocks use process-local observations, not pooled samples or substituted
-diagnostic rows.
+The format-2 [Apple workload](benchmarks/ocr-text-watch-aarch64-apple-darwin.toml)
+and [Windows workload](benchmarks/ocr-text-watch-x86_64-pc-windows-msvc.toml)
+profiles record complete controlled3 and real-startup5 precursors and the
+target-specific ceilings derived from them for these fixed CPU bounded-v2
+workloads. All eight workload blocks use process-local observations, not pooled
+samples or substituted diagnostic rows. Their format-3 successors carry the same
+targets prospectively; see
+[the profile-authority tuning record](performance/tuning/2026-10-26-ocr-watch-profile-authority.md).
 
 Historical final enforcement recorded Apple controlled3/real5 and Windows
 controlled3 passes, but Windows real process1 measured 1.4887 ms against the

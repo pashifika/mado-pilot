@@ -10,9 +10,8 @@
  * ABI 1.5. COMPLETE RELEASED ABI 1.0, 1.2, 1.3, AND 1.4 PREFIXES FROZEN.
  *
  * Every ABI 1.0 numeric value, structure prefix, field offset, and
- * function-table position is frozen for ABI major 1 by
- * ADR 0007. ABI 1.2 replaces the unreleased
- * 1.1 draft after that boundary with explicit input-submission evidence and
+ * function-table position is frozen for ABI major 1. ABI 1.2 replaces the
+ * unreleased 1.1 draft after that boundary with explicit input-submission evidence and
  * bounded caller-owned diagnostics. ABI 1.3 appends one-shot OCR execution and
  * immutable owned OCR results after the complete ABI 1.2 extent. ABI 1.4
  * appends explicit profile construction and grouped zone OCR after the complete

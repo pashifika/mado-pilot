@@ -28,8 +28,7 @@ const PLANTED: [(i32, i32); 2] = [(20, 12), (60, 40)];
 /// How far two scores may differ and still be the same answer.
 ///
 /// OpenCV normalizes through integral images, so a score carries rounding from
-/// arithmetic outside its own window; see
-/// `docs/adr/0003-opencv-matching-profile-and-public-score.md`.
+/// arithmetic outside its own window.
 const TOLERANCE: f64 = 1e-5;
 
 fn scene_source(frames: usize) -> ReplaySource {

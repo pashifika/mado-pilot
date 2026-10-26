@@ -6,9 +6,8 @@
 //! a lease on a finite resource. Those are what the rules in this file are about,
 //! so a test that used CPU storage would pass without exercising any of them.
 //!
-//! The producer is modelled after the accepted Windows ownership rule
-//! (`docs/adr/0013-windows-capture-frame-detachment.md`): a capture takes a
-//! producer slot, copies into a detached slot, and releases the producer slot
+//! The producer models Windows capture ownership: it takes a producer slot,
+//! copies into a detached slot, and releases the producer slot
 //! before publishing. The point of that order is that a caller retaining frames
 //! consumes detached capacity and never producer capacity, and the tests here
 //! observe exactly that.

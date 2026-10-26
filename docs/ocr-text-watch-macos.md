@@ -2,13 +2,17 @@
 
 ## Current v3 contract — verified native cohort
 
-`ocr-text-watch-apple-v3` follows
-[ADR 0093](adr/0093-ocr-native-target-rediscovery.md). It separates controlled
-window disappearance, exact process-generation disappearance, SDK notification,
-explicit caller close, and fresh-session capture/OCR. The private topology is one
-consumer and two sequential owned fixture generations, with at most two native
-children alive at once. No production API, macOS adapter behavior or automatic
-recovery is added.
+`ocr-text-watch-apple-v3` keeps actual SDK/query termination separate from
+independently established exact window or process disappearance. It separates
+controlled window disappearance, exact process-generation disappearance, SDK
+notification, explicit caller close, and fresh-session capture/OCR. After loss is
+established, the caller cancels and closes through existing APIs before fresh
+discovery/open; an old session is never rebound and immediate loss is never
+invented. The private topology is one consumer and at most two sequential owned
+fixture generations, with at most two native children alive at once, all direct
+`Popen` children of the same bounded supervisor. No production API, macOS adapter
+behavior, background poller, restart engine, automatic recovery or platform
+fallback is added.
 
 The source-bound `86a482d074e691c74aba8280c0ad42de31fead7a` execution passed all
 nine semantic rows and the separate resource/cleanup endpoints on Apple M1 Pro,
@@ -102,12 +106,12 @@ Resumption requires already-granted permission for the actual execution context,
 outside this procedure, plus fresh applicability review and one-attempt authority.
 No permission request/settings change or automatic retry was performed.
 
-The historical `ocr-text-watch-apple-v2` channel contract follows
-[ADR 0076](adr/0076-bound-native-ocr-evidence-channels.md). ADR 0093 changes only
-its child-count and role-list restriction for v3; other channel, authority,
-resource and cleanup obligations remain. Historical grants, binaries and verdicts
-are not reused or regraded. The inert pre-main loader probe is apparatus evidence
-only, not an OCR result or a failed native qualification attempt.
+The historical `ocr-text-watch-apple-v2` procedure allowed exactly two native
+children; v3 changes only that child-count and role-list restriction. Every other
+channel, authority, resource and cleanup obligation below applies to both.
+Historical grants, binaries and verdicts are not reused or regraded. The inert
+pre-main loader probe is apparatus evidence only, not an OCR result or a failed
+native qualification attempt.
 
 ## Scope and fixed oracle
 
@@ -299,10 +303,12 @@ with nonblocking parent reads into exclusive mode-0600 private files.
 to that child's inherited image descriptor. `consumer.native-images`,
 `fixture-1.native-images` and `fixture-2.native-images` contain complete loader
 streams, including system images; only these three files are excluded from
-ordinary-output accounting. The pipe mechanism of
-[ADR 0074](adr/0074-isolate-darwin-loader-image-budget.md) and channel contract of
-ADR 0076 remain, under ADR 0093's sequential-generation topology; no replay
-collector or changed replay evidence is involved.
+ordinary-output accounting. No collector process or new process-wide file-size
+limit is used: `RLIMIT_CORE=0` and inherited `RLIMIT_FSIZE` stay unchanged and
+are never raised. Ordinary stdout/stderr keep their own per-file and total
+budgets, and loader bytes, including system images, count toward the separate
+native-image budgets in `BOUNDS`. No replay collector or changed replay evidence
+is involved.
 
 The supervisor bounds work per loop and drains every channel during execution
 and graceful/terminate/kill cleanup, including final exit tails. It never waits
@@ -441,9 +447,9 @@ stays in private evidence; it is neither a permission probe nor a permission gra
 `source_head`, `source_tree`, `consumer_sha256`, `fixture_sha256`,
 `runtime_sha256`, `detector_sha256`, `recognizer_sha256`, and
 `build_record_sha256`; `procedure_sha256` maps the root-relative `Cargo.lock`,
-`rust-toolchain.toml`, Rust consumer, fixture, runner, this document,
-`docs/adr/0093-ocr-native-target-rediscovery.md` and generic process-runner paths
-to their SHA-256 values. The candidate must be committed and clean, including
+`rust-toolchain.toml`, Rust consumer, fixture, runner, this document and generic
+process-runner paths to their SHA-256 values. The candidate must be committed and
+clean, including
 no untracked product/procedure source.
 
 The v3 procedure, role roster, complete bounds and updated procedure hashes require

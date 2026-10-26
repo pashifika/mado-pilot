@@ -15,10 +15,6 @@
 //! package is tracked on disk, because what package loading has to be shown
 //! doing — reading a manifest, normalizing paths, verifying content digests —
 //! is only exercised by real bytes.
-//!
-//! Reviewing the names this program uses is part of what it is for, and that
-//! review has happened: see
-//! `docs/adr/0006-public-rust-names-and-compatibility-policy.md`.
 
 use std::path::PathBuf;
 

@@ -25,7 +25,7 @@ fn main() {
             "--test" | "--bench" | "--semantic" => {}
             "--enforce-budgets" => {
                 eprintln!(
-                    "OCR numeric enforcement refused: no accepted target-specific budget ADR exists"
+                    "OCR numeric enforcement refused: this model-free scheduler benchmark has no target-specific budget profile"
                 );
                 std::process::exit(2);
             }

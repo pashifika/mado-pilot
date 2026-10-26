@@ -1935,7 +1935,7 @@ pub const PHASE2_2_TRANSITION_LATENCY_BUDGETS: [LatencyBudget; 1] = [LatencyBudg
     Duration::from_secs(1),
 )];
 
-/// Phase 2 macOS production-capture latency ceilings accepted by ADR 0030.
+/// Historical Phase 2 macOS production-capture empirical latency targets.
 pub const PHASE2_PRODUCTION_CAPTURE_LATENCY_BUDGETS: [LatencyBudget; 5] = [
     LatencyBudget::new(
         "publication_age",
@@ -1969,7 +1969,7 @@ pub const PHASE2_PRODUCTION_CAPTURE_LATENCY_BUDGETS: [LatencyBudget; 5] = [
     ),
 ];
 
-/// Phase 2 macOS production-transition latency ceilings accepted by ADR 0030.
+/// Historical Phase 2 macOS production-transition empirical latency targets.
 pub const PHASE2_PRODUCTION_TRANSITION_LATENCY_BUDGETS: [LatencyBudget; 3] = [
     LatencyBudget::new(
         "open_first_frame",
@@ -2000,7 +2000,7 @@ pub const PHASE2_PRODUCTION_TRANSITION_HEAP_LIMIT_BYTES: usize = 16 * 1_024 * 1_
 /// Maximum mapped bytes for one macOS production fixture frame.
 pub const PHASE2_PRODUCTION_MAPPED_BYTES_LIMIT: u64 = 4_628_480;
 
-/// Phase 2 Windows 1280x720 production-capture ceilings accepted by ADR 0031.
+/// Historical Phase 2 Windows 1280x720 production-capture empirical targets.
 pub const PHASE2_WINDOWS_PRODUCTION_1280_LATENCY_BUDGETS: [LatencyBudget; 4] = [
     LatencyBudget::new(
         "steady_frame_acquisition",
@@ -2028,7 +2028,7 @@ pub const PHASE2_WINDOWS_PRODUCTION_1280_LATENCY_BUDGETS: [LatencyBudget; 4] = [
     ),
 ];
 
-/// Phase 2 Windows 1280x720 production-transition ceilings accepted by ADR 0031.
+/// Historical Phase 2 Windows 1280x720 production-transition empirical targets.
 pub const PHASE2_WINDOWS_PRODUCTION_TRANSITION_1280_LATENCY_BUDGETS: [LatencyBudget; 5] = [
     LatencyBudget::new(
         "open_first_frame",
@@ -2086,7 +2086,7 @@ pub const PHASE2_WINDOWS_PRODUCTION_1280_GPU_RESOURCES_LIMIT: u64 = 5;
 /// Maximum sustained stale work in the Windows 1280x720 capture profile.
 pub const PHASE2_WINDOWS_PRODUCTION_1280_STALE_WORK_LIMIT: f64 = 0.02;
 
-/// Phase 2 Windows dual-4K production-capture ceilings accepted by ADR 0032.
+/// Historical Phase 2 Windows dual-4K production-capture empirical targets.
 pub const PHASE2_WINDOWS_PRODUCTION_DUAL_4K_LATENCY_BUDGETS: [LatencyBudget; 3] = [
     LatencyBudget::new(
         "dual_display_frame_arrival",
@@ -2203,7 +2203,7 @@ pub const PHASE2_2_PROCESS_DIAGNOSTIC_LATENCY_BUDGETS: [LatencyBudget; 4] = [
 /// Frozen Phase 2.2 live-Rust-heap ceiling for every process-directed workload.
 pub const PHASE2_2_PROCESS_HEAP_LIMIT_BYTES: usize = 16 * 1024 * 1024;
 
-/// Phase 3 Apple Silicon accepted-profile OCR inference ceilings from ADR 0037.
+/// Historical Phase 3 Apple Silicon accepted-profile OCR empirical latency targets.
 pub const PHASE3_APPLE_OCR_LATENCY_BUDGETS: [LatencyBudget; 3] = [
     LatencyBudget::new(
         "onnx_cpu_hud_full",
@@ -2240,7 +2240,7 @@ pub const PHASE3_APPLE_OCR_CLOSE_LIMIT: Duration = Duration::from_millis(2);
 /// Maximum accepted-model reopen and close cycle.
 pub const PHASE3_APPLE_OCR_REOPEN_CLOSE_LIMIT: Duration = Duration::from_millis(100);
 
-/// Phase 3 Windows accepted-profile OCR inference ceilings from ADR 0037.
+/// Historical Phase 3 Windows accepted-profile OCR empirical latency targets.
 pub const PHASE3_WINDOWS_OCR_LATENCY_BUDGETS: [LatencyBudget; 3] = [
     LatencyBudget::new(
         "onnx_cpu_hud_full",
@@ -2292,7 +2292,7 @@ pub const PHASE3_OCR_REGION_MAPPED_BYTES: u64 = 180 * 90 * 4;
 /// Exact mapped BGRA bytes for the accepted 64 by 64 empty frame.
 pub const PHASE3_OCR_EMPTY_MAPPED_BYTES: u64 = 64 * 64 * 4;
 
-/// Phase 3.1 Apple Silicon bounded-detector latency ceilings from ADR 0041.
+/// Historical Phase 3.1 Apple Silicon bounded-detector empirical latency targets.
 pub const PHASE3_1_APPLE_BOUNDED_OCR_LATENCY_BUDGETS: [LatencyBudget; 8] = [
     LatencyBudget::new(
         "bounded_hud_4k",
@@ -2344,7 +2344,7 @@ pub const PHASE3_1_APPLE_BOUNDED_OCR_LATENCY_BUDGETS: [LatencyBudget; 8] = [
     ),
 ];
 
-/// Phase 3.1 Windows bounded-detector latency ceilings from ADR 0041.
+/// Historical Phase 3.1 Windows bounded-detector empirical latency targets.
 pub const PHASE3_1_WINDOWS_BOUNDED_OCR_LATENCY_BUDGETS: [LatencyBudget; 8] = [
     LatencyBudget::new(
         "bounded_hud_4k",
@@ -2396,7 +2396,7 @@ pub const PHASE3_1_WINDOWS_BOUNDED_OCR_LATENCY_BUDGETS: [LatencyBudget; 8] = [
     ),
 ];
 
-/// Phase 3.1 Apple Silicon integrated-zone latency ceilings from ADR 0044.
+/// Historical Phase 3.1 Apple Silicon integrated-zone empirical latency targets.
 pub const PHASE3_1_APPLE_GROUPED_OCR_LATENCY_BUDGETS: [LatencyBudget; 5] = [
     LatencyBudget::new(
         "zone_one_full",
@@ -2430,7 +2430,7 @@ pub const PHASE3_1_APPLE_GROUPED_OCR_LATENCY_BUDGETS: [LatencyBudget; 5] = [
     ),
 ];
 
-/// Phase 3.1 Windows integrated-zone latency ceilings from ADR 0044.
+/// Historical Phase 3.1 Windows integrated-zone empirical latency targets.
 pub const PHASE3_1_WINDOWS_GROUPED_OCR_LATENCY_BUDGETS: [LatencyBudget; 5] = [
     LatencyBudget::new(
         "zone_one_full",
@@ -2464,7 +2464,7 @@ pub const PHASE3_1_WINDOWS_GROUPED_OCR_LATENCY_BUDGETS: [LatencyBudget; 5] = [
     ),
 ];
 
-/// Phase 3.1 preferred-CUDA initialization-fallback grouped latency ceilings from ADR 0048.
+/// Historical Phase 3.1 preferred-CUDA initialization-fallback grouped latency targets.
 ///
 /// These preserve every accepted CPU profile and bound the separate mixed-provider
 /// qualification sequence after its retained interleaved CPU tail observation.
@@ -2501,7 +2501,7 @@ pub const PHASE3_1_WINDOWS_CUDA_FALLBACK_GROUPED_OCR_LATENCY_BUDGETS: [LatencyBu
     ),
 ];
 
-/// Phase 3.1 Windows CUDA OCR latency ceilings from ADR 0048.
+/// Historical Phase 3.1 Windows CUDA OCR empirical latency targets.
 pub const PHASE3_1_WINDOWS_CUDA_OCR_LATENCY_BUDGETS: [LatencyBudget; 8] = [
     LatencyBudget::new(
         "bounded_hud_4k",
@@ -2553,7 +2553,7 @@ pub const PHASE3_1_WINDOWS_CUDA_OCR_LATENCY_BUDGETS: [LatencyBudget; 8] = [
     ),
 ];
 
-/// Phase 3.1 Windows CUDA grouped OCR ceilings from ADR 0048 and successor ADR 0049.
+/// Historical Phase 3.1 Windows CUDA grouped OCR empirical latency targets.
 pub const PHASE3_1_WINDOWS_CUDA_GROUPED_OCR_LATENCY_BUDGETS: [LatencyBudget; 5] = [
     LatencyBudget::new(
         "zone_one_full",
@@ -2587,28 +2587,28 @@ pub const PHASE3_1_WINDOWS_CUDA_GROUPED_OCR_LATENCY_BUDGETS: [LatencyBudget; 5] 
     ),
 ];
 
-/// Phase 3.1 Windows CUDA cache-cold startup ceiling from ADR 0048.
+/// Historical Phase 3.1 Windows CUDA cache-cold startup empirical target.
 pub const PHASE3_1_WINDOWS_CUDA_OCR_COLD_LOAD_LIMIT: Duration = Duration::from_millis(425);
 
-/// Phase 3.1 Windows CUDA first-close ceiling from ADR 0048.
+/// Historical Phase 3.1 Windows CUDA first-close empirical target.
 pub const PHASE3_1_WINDOWS_CUDA_OCR_CLOSE_LIMIT: Duration = Duration::from_millis(25);
 
-/// Phase 3.1 Windows CUDA reopen-close ceiling from ADR 0048.
+/// Historical Phase 3.1 Windows CUDA reopen-close empirical target.
 pub const PHASE3_1_WINDOWS_CUDA_OCR_REOPEN_CLOSE_LIMIT: Duration = Duration::from_millis(175);
 
-/// Phase 3.1 Windows CUDA process peak-RSS ceiling from ADR 0048.
+/// Historical Phase 3.1 Windows CUDA process peak-RSS empirical target.
 pub const PHASE3_1_WINDOWS_CUDA_OCR_RESIDENT_LIMIT_BYTES: u64 = 1_426_063_360;
 
-/// Phase 3.1 Windows CUDA active-cancellation ceiling from ADR 0048.
+/// Historical Phase 3.1 Windows CUDA active-cancellation empirical target.
 pub const PHASE3_1_WINDOWS_CUDA_OCR_CANCELLATION_LIMIT: Duration = Duration::from_millis(25);
 
-/// Phase 3.1 Windows CUDA retained-result completion ceiling from ADR 0048.
+/// Historical Phase 3.1 Windows CUDA retained-result completion empirical target.
 pub const PHASE3_1_WINDOWS_CUDA_OCR_RETAINED_RESULT_LIMIT: Duration = Duration::from_millis(175);
 
-/// Phase 3.1 Apple integrated-zone cache-cold startup ceiling from ADR 0045.
+/// Historical Phase 3.1 Apple integrated-zone cache-cold startup empirical target.
 pub const PHASE3_1_APPLE_GROUPED_OCR_COLD_LOAD_LIMIT: Duration = Duration::from_millis(200);
 
-/// Phase 3.1 Windows integrated-zone startup ceiling from ADR 0044.
+/// Historical Phase 3.1 Windows integrated-zone startup empirical target.
 pub const PHASE3_1_WINDOWS_GROUPED_OCR_COLD_LOAD_LIMIT: Duration = Duration::from_millis(250);
 
 /// Phase 3.1 Apple integrated-zone active-cancellation ceiling.
@@ -2653,7 +2653,7 @@ pub const PHASE3_1_WINDOWS_BOUNDED_OCR_REOPEN_CLOSE_LIMIT: Duration = Duration::
 /// Phase 3.1 bounded profile's absolute rectangular detector tensor fact.
 pub const PHASE3_1_BOUNDED_OCR_MAX_DETECTOR_TENSOR_BYTES: u64 = 11_587_584;
 
-/// Phase 4 Apple deterministic template-watch latency ceilings from ADR 0051.
+/// Historical Phase 4 Apple deterministic template-watch empirical latency targets.
 pub const PHASE4_APPLE_TEMPLATE_WATCH_LATENCY_BUDGETS: [LatencyBudget; 10] = [
     LatencyBudget::new(
         "current_match",
@@ -2717,7 +2717,7 @@ pub const PHASE4_APPLE_TEMPLATE_WATCH_LATENCY_BUDGETS: [LatencyBudget; 10] = [
     ),
 ];
 
-/// Phase 4 Windows deterministic template-watch latency ceilings from ADR 0051.
+/// Historical Phase 4 Windows deterministic template-watch empirical latency targets.
 pub const PHASE4_WINDOWS_TEMPLATE_WATCH_LATENCY_BUDGETS: [LatencyBudget; 10] = [
     LatencyBudget::new(
         "current_match",
@@ -2783,8 +2783,8 @@ pub const PHASE4_WINDOWS_TEMPLATE_WATCH_LATENCY_BUDGETS: [LatencyBudget; 10] = [
 
 /// Phase 4 independently remediated Windows template-watch latency ceilings.
 ///
-/// ADR 0052 supersedes only the ROI maximum; the predecessor array remains
-/// revision-bound to the original ADR 0051 profile.
+/// Only the ROI maximum differs; the predecessor array retains the original
+/// revision-bound profile.
 pub const PHASE4_WINDOWS_REMEDIATED_TEMPLATE_WATCH_LATENCY_BUDGETS: [LatencyBudget; 10] = {
     let mut budgets = PHASE4_WINDOWS_TEMPLATE_WATCH_LATENCY_BUDGETS;
     budgets[3] = LatencyBudget::new(
@@ -2823,7 +2823,7 @@ pub const PHASE4_TEMPLATE_WATCH_MAPPED_BYTES_BUDGETS: [MappedBytesBudget; 11] = 
     MappedBytesBudget::new("close_and_retain", 3_072),
 ];
 
-/// Phase 4 Apple native template-watch latency ceilings from ADR 0053.
+/// Historical Phase 4 Apple native template-watch empirical latency targets.
 pub const PHASE4_APPLE_NATIVE_TEMPLATE_WATCH_LATENCY_BUDGETS: [LatencyBudget; 16] = [
     LatencyBudget::new(
         "window_absent_current",
@@ -2923,7 +2923,7 @@ pub const PHASE4_APPLE_NATIVE_TEMPLATE_WATCH_LATENCY_BUDGETS: [LatencyBudget; 16
     ),
 ];
 
-/// Phase 4 Windows native template-watch latency ceilings from ADR 0053.
+/// Historical Phase 4 Windows native template-watch empirical latency targets.
 pub const PHASE4_WINDOWS_NATIVE_TEMPLATE_WATCH_LATENCY_BUDGETS: [LatencyBudget; 16] = [
     LatencyBudget::new(
         "window_absent_current",

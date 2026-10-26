@@ -4,6 +4,7 @@ import contextlib
 import copy
 import importlib.util
 import hashlib
+import io
 import json
 import os
 from pathlib import Path, PurePosixPath
@@ -1828,6 +1829,138 @@ class ProtocolTwoTests(unittest.TestCase):
                 collector.collect(args, "smoke")
             launch.assert_not_called()
 
+    def test_current_smoke_cli_keeps_unavailable_accounting_descriptive(self):
+        args = self.arguments()
+        args.protocol_version = 4
+        value = v4_payload(warmups=1, count=3)
+        value["cpu_timer_resolution_ns"] = None
+        row = value["workloads"][0]
+        for sample in row["warmup_samples"] + row["samples"]:
+            sample["cpu_ns"] = None
+        row["metrics"].update(cpu_ns=None, cpu_reason="optional accounting unavailable")
+        row["retained_loop_cpu"].update(start_ns=None, end_ns=None, cpu_ns=None,
+                                        reason="optional accounting unavailable")
+        argv = ["smoke", "--protocol-version", "4", "--build-mode", "normal", "--target", TARGET,
+                "--baseline", "baseline", "--baseline-metadata", "build.json", "--output", args.output,
+                "--workload", "single-small96x64"]
+        with self.smoke_context(args, [process_record(v4_manifest()), process_record(value)],
+                                binding=v4_identity(self.root)) as launch, \
+                mock.patch.object(collector, "reviewed_method", side_effect=AssertionError("no method admission")), \
+                mock.patch.object(collector, "runtime_closure_admission", side_effect=AssertionError("no qualification closure")):
+            stream = io.StringIO()
+            with contextlib.redirect_stdout(stream):
+                code = collector.main(argv)
+        self.assertEqual((code, launch.call_count), (0, 2))
+        result = json.loads(stream.getvalue())
+        self.assertEqual((result["report_format"], result["execution_status"], result["qualification_status"]),
+                         ("component-measurement-report-v1", "completed", "not-requested"))
+        self.assertFalse(result["performance_qualified"])
+        self.assertEqual(result["issues"], [])
+        observation = result["process_observations"]["baseline"]["single-small96x64"][0]
+        self.assertIsNone(observation["cpu_ns"])
+        self.assertIsNone(observation["retained_loop_cpu_ns"])
+        self.assertIsNone(observation["peak_heap_bytes"])
+        self.assertTrue(observation["unavailable"])
+        self.assertTrue(all(call.kwargs["timeout_seconds"] <= 90
+                            and call.kwargs["cleanup_seconds"] == 5 for call in launch.call_args_list))
+        retained = {path: path.read_bytes() for path in Path(args.output).rglob("*.json")}
+        with contextlib.redirect_stdout(io.StringIO()):
+            self.assertEqual(collector.main(["report", args.output]), 0)
+        self.assertEqual(retained, {path: path.read_bytes() for path in retained})
+
+    def test_numerical_control_report_does_not_admit_claim_or_block_separate_smoke(self):
+        calibration = v2_parsed_evidence(self.root, "calibration")
+        control = v2_parsed_evidence(self.root, "control")
+        control["plan"]["report_format"] = collector.REPORT_FORMAT
+        for row in control["observations"]["control"]["single-small96x64"]:
+            row["p95_ns"] *= 2
+        original = copy.deepcopy(control)
+        with mock.patch.object(collector, "evaluate", side_effect=[control, calibration]), \
+                contextlib.redirect_stdout(io.StringIO()) as output:
+            code = collector.main(["report", str(self.root / "control")])
+        self.assertEqual(code, 1)
+        failed = json.loads(output.getvalue())
+        self.assertEqual((failed["status"], failed["execution_status"], failed["qualification_status"]),
+                         ("failed", "completed", "failed"))
+        self.assertFalse(failed["performance_qualified"])
+        self.assertEqual(control, original)
+        args = self.arguments()
+        lock = collector.exclusive_collector
+        with self.smoke_context(args, [process_record(v2_manifest()),
+                                      process_record(v2_payload("single-small96x64", smoke=True))]) as launch, \
+                mock.patch.object(collector, "exclusive_collector", lock), \
+                mock.patch.object(collector.tempfile, "gettempdir", return_value=str(self.root)):
+            result = collector.collect(args, "smoke")
+        self.assertEqual((launch.call_count, result["status"]), (2, "passed"))
+        self.assertFalse((self.root / "mado-template-matching-efficiency.lock").exists())
+        self.assertFalse(result["performance_qualified"])
+        self.assertEqual(control, original)
+
+    def test_cleanup_identity_and_unknown_launch_keep_lock_across_new_output(self):
+        lock = collector.exclusive_collector
+        for failure in ("cleanup", "unknown-cleanup", "identity", "unknown-launch"):
+            with self.subTest(failure=failure):
+                lock_root = self.root / failure
+                lock_root.mkdir()
+                args = self.arguments()
+                args.output = str(lock_root / "first")
+                record = process_record(v2_manifest())
+                if failure in ("cleanup", "unknown-cleanup"):
+                    record["cleanup_ok"] = False if failure == "cleanup" else None
+                records = [KeyboardInterrupt("unknown launch")] if failure == "unknown-launch" else [record]
+                with self.smoke_context(args, records) as launch, \
+                        mock.patch.object(collector, "exclusive_collector", lock), \
+                        mock.patch.object(collector.tempfile, "gettempdir", return_value=str(lock_root)), \
+                        mock.patch.object(collector, "check_files", side_effect=(
+                            [None, ValueError("binary changed")] if failure == "identity" else None)):
+                    if failure == "unknown-launch":
+                        with self.assertRaises(KeyboardInterrupt):
+                            collector.collect(args, "smoke")
+                    else:
+                        result = collector.collect(args, "smoke")
+                        self.assertEqual(result["status"], "failed")
+                    self.assertEqual(launch.call_count, 1)
+                    path = lock_root / "mado-template-matching-efficiency.lock"
+                    retained = path.read_bytes()
+                    owner = json.loads(retained)
+                    self.assertEqual(owner["pid"], os.getpid())
+                    self.assertEqual(owner["evidence"], str(lock_root / "first"))
+                    args.output = str(lock_root / "second")
+                    with self.assertRaises(ValueError):
+                        collector.collect(args, "smoke")
+                    self.assertEqual(launch.call_count, 1)
+                    self.assertEqual(path.read_bytes(), retained)
+                    self.assertFalse(Path(args.output).exists())
+
+    def test_safe_prelaunch_failure_releases_lock_without_claiming_execution(self):
+        lock = collector.exclusive_collector
+        args = self.arguments()
+        Path(args.output).mkdir()
+        with self.smoke_context(args, []) as launch, \
+                mock.patch.object(collector, "exclusive_collector", lock), \
+                mock.patch.object(collector.tempfile, "gettempdir", return_value=str(self.root)):
+            with self.assertRaises(FileExistsError):
+                collector.collect(args, "smoke")
+        launch.assert_not_called()
+        self.assertFalse((self.root / "mado-template-matching-efficiency.lock").exists())
+
+    def test_ordinary_semantic_failure_is_non_success_but_clean_owner_releases_lock(self):
+        args = self.arguments()
+        bad = v2_payload("single-small96x64", smoke=True)
+        bad["workloads"][0]["samples"][0]["correct"] = False
+        lock = collector.exclusive_collector
+        records = [process_record(v2_manifest()), process_record(bad),
+                   process_record(v2_manifest()), process_record(v2_payload("single-small96x64", smoke=True))]
+        with self.smoke_context(args, records) as launch, \
+                mock.patch.object(collector, "exclusive_collector", lock), \
+                mock.patch.object(collector.tempfile, "gettempdir", return_value=str(self.root)):
+            failed = collector.collect(args, "smoke")
+            self.assertEqual((failed["status"], failed["execution_status"]), ("failed", "failed"))
+            self.assertFalse((self.root / "mado-template-matching-efficiency.lock").exists())
+            args.output = str(self.root / "next-diagnostic")
+            completed = collector.collect(args, "smoke")
+        self.assertEqual((launch.call_count, completed["status"]), (4, "passed"))
+
 
 def save_method_review(root, specification, campaign_seconds=None):
     version = specification["format_version"]
@@ -2691,6 +2824,128 @@ class RuntimePreflightTests(unittest.TestCase):
         with self.assertRaisesRegex(ValueError, "runtime preflight file identity"):
             collector.runtime_closure_admission(identity, TARGET, "normal")
 
+    def test_failed_preflight_with_complete_safety_facts_allows_independent_smoke(self):
+        self.enable_timing()
+        metadata = self.root / "original-build.json"
+        collector.save(metadata, self.identity["build"])
+        for failure in ("nonzero-exit", "semantic"):
+            with self.subTest(failure=failure):
+                lock_root = self.root / failure
+                lock_root.mkdir()
+                destination = lock_root / "preflight"
+                args = collector.parser().parse_args([
+                    "runtime-preflight", "--protocol-version", "2", "--build-mode", "normal", "--target", TARGET,
+                    "--binary", str(self.run.main), "--build-metadata", str(metadata), "--output", str(destination)])
+                template = self.bundle["attempts"][1]["receipt"]
+                value = collector.strict_json(template["record"]["stdout"])
+                if failure == "semantic":
+                    value["workloads"][0]["samples"][0]["correct"] = False
+                failed = self.run.discovery(
+                    template["record"]["stderr"], stdout=json.dumps(value),
+                    exit_code=23 if failure == "nonzero-exit" else 0)
+                failed["duration_seconds"] = 0.2
+                original = copy.deepcopy(failed)
+                smoke = collector.parser().parse_args([
+                    "smoke", "--protocol-version", "2", "--build-mode", "normal", "--target", TARGET,
+                    "--baseline", str(self.run.main), "--baseline-metadata", str(metadata),
+                    "--output", str(lock_root / "diagnostic"), "--workload", "single-small96x64"])
+                payload = v2_payload("single-small96x64", smoke=True)
+                payload.update(loaded_native_runtime=self.runtime,
+                               timing_boundary_protocol="mado-component-timing-v1", timing_boundaries_enabled=False)
+                records = [self.identity["build"]["provenance_commands"][0]["record"], process_record(payload)]
+                with (mock.patch.object(collector.tempfile, "gettempdir", return_value=str(lock_root)),
+                      mock.patch.object(collector, "host_identity", return_value=self.bundle["plan"]["host"]),
+                      mock.patch.object(collector, "environment", return_value=self.bundle["plan"]["environment"]),
+                      mock.patch.object(collector.macos_images, "discover", side_effect=[
+                          self.bundle["attempts"][0]["receipt"], failed]) as discover):
+                    result = collector.runtime_preflight(args)
+                    self.assertEqual((result["status"], discover.call_count), ("incomplete", 2))
+                    self.assertFalse((destination / "bundle.json").exists())
+                    self.assertFalse((lock_root / "mado-template-matching-efficiency.lock").exists())
+                    attempt = collector.load(destination / "attempts/0001.json")
+                    self.assertTrue(attempt["provenance_complete"])
+                    self.assertEqual(attempt["identity_before"], attempt["identity_after"])
+                    self.assertEqual(attempt["identity_before"]["sha256"], self.identity["sha256"])
+                    self.assertIsNone(attempt["identity_error"])
+                    self.assertIsNone(attempt["provenance_error"])
+                    self.assertIsNone(attempt["cleanup_error"])
+                    field = "execution_error" if failure == "nonzero-exit" else "semantic_error"
+                    self.assertIsNotNone(attempt[field])
+                    self.assertEqual(attempt["receipt"], original)
+                    retained = {path: path.read_bytes() for path in destination.rglob("*.json")}
+                    with (mock.patch.object(collector, "run_process", side_effect=records) as launch,
+                          mock.patch.object(collector, "reviewed_method", side_effect=AssertionError("no qualification"))):
+                        diagnostic = collector.collect(smoke, "smoke")
+                    self.assertEqual((diagnostic["status"], launch.call_count), ("passed", 2))
+                    self.assertEqual(diagnostic["qualification_status"], "not-requested")
+                    self.assertFalse(diagnostic["performance_qualified"])
+                    self.assertEqual(retained, {path: path.read_bytes() for path in retained})
+                    self.assertFalse((lock_root / "mado-template-matching-efficiency.lock").exists())
+                self.assertEqual(failed, original)
+                if failure == "nonzero-exit":
+                    closure = collector.macos_images.validate_closure(failed)
+                    self.assertFalse(closure["ok"])
+                    self.assertIsNone(closure["closure"])
+
+    def test_preflight_with_missing_safety_facts_keeps_fence_across_new_smoke_output(self):
+        self.enable_timing()
+        metadata = self.root / "original-build.json"
+        collector.save(metadata, self.identity["build"])
+        for failure in ("cleanup", "unknown-cleanup", "source", "foreign-process", "output", "identity", "host-change"):
+            with self.subTest(failure=failure):
+                lock_root = self.root / failure
+                lock_root.mkdir()
+                destination = lock_root / "preflight"
+                args = collector.parser().parse_args([
+                    "runtime-preflight", "--protocol-version", "2", "--build-mode", "normal", "--target", TARGET,
+                    "--binary", str(self.run.main), "--build-metadata", str(metadata), "--output", str(destination)])
+                index = 1 if failure == "host-change" else 0
+                failed = copy.deepcopy(self.bundle["attempts"][index]["receipt"])
+                if failure in ("cleanup", "unknown-cleanup"):
+                    failed["record"]["cleanup_ok"] = False if failure == "cleanup" else None
+                elif failure == "source":
+                    failed["images"][0]["sha256"] = "f" * 64
+                elif failure == "foreign-process":
+                    failed["record"]["process_id"] = 8
+                elif failure == "output":
+                    failed["record"]["output_limited"] = True
+                elif failure == "host-change":
+                    failed["record"]["exit_code"] = 23
+                    failed["system"]["os_build"] = "26A435"
+                else:
+                    value = collector.strict_json(failed["record"]["stdout"])
+                    value["target"] = "x86_64-pc-windows-msvc"
+                    failed["record"]["stdout"] = json.dumps(value)
+                receipts = [self.bundle["attempts"][0]["receipt"], failed] if index else [failed]
+                smoke = collector.parser().parse_args([
+                    "smoke", "--protocol-version", "2", "--build-mode", "normal", "--target", TARGET,
+                    "--baseline", str(self.run.main), "--baseline-metadata", str(metadata),
+                    "--output", str(lock_root / "diagnostic"), "--workload", "single-small96x64"])
+                with (mock.patch.object(collector.tempfile, "gettempdir", return_value=str(lock_root)),
+                      mock.patch.object(collector, "host_identity", return_value=self.bundle["plan"]["host"]),
+                      mock.patch.object(collector, "environment", return_value=self.bundle["plan"]["environment"]),
+                      mock.patch.object(collector.macos_images, "discover", side_effect=receipts) as discover):
+                    result = collector.runtime_preflight(args)
+                    self.assertEqual((result["status"], discover.call_count), ("incomplete", len(receipts)))
+                    self.assertFalse((destination / "bundle.json").exists())
+                    attempt = collector.load(destination / f"attempts/{index:04d}.json")
+                    self.assertEqual(attempt["receipt"], failed)
+                    if failure == "cleanup":
+                        self.assertTrue(attempt["provenance_complete"])
+                        self.assertIsNotNone(attempt["cleanup_error"])
+                    else:
+                        self.assertFalse(attempt["provenance_complete"])
+                        self.assertIsNotNone(attempt["provenance_error"])
+                    if failure == "host-change":
+                        self.assertIn("system_differs", attempt["provenance_error"])
+                    lock = lock_root / "mado-template-matching-efficiency.lock"
+                    retained = lock.read_bytes()
+                    with mock.patch.object(collector, "run_process") as launch, self.assertRaises(ValueError):
+                        collector.collect(smoke, "smoke")
+                    launch.assert_not_called()
+                    self.assertFalse(Path(smoke.output).exists())
+                    self.assertEqual(lock.read_bytes(), retained)
+
     def test_checkout_admission_refuses_consistently_attested_dirty_source(self):
         path = self.root / "dirty-bundle.json"
         collector.save(path, self.bundle)
@@ -2795,7 +3050,7 @@ class RuntimePreflightTests(unittest.TestCase):
                 self.assertFalse((destination / "bundle.json").exists())
                 attempt = collector.load(destination / "attempts/0001.json")
                 self.assertEqual(attempt["receipt"]["record"], failed["record"])
-                self.assertIn("timing boundary evidence refused", attempt["identity_error"])
+                self.assertIn("timing boundary evidence refused", attempt["provenance_error"])
 
     def test_interruption_survives_failed_receipt_persistence(self):
         self.enable_timing()

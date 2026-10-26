@@ -67,8 +67,8 @@ The script does not download, install, elevate, or edit global shell settings.
 macOS setup links only the workspace's required shared OpenCV modules: `core`,
 `imgproc`, and `imgcodecs`. It does not inherit every library from `opencv4.pc`.
 Windows retains the versioned `opencv_world` import library and DLL. Transitive
-shared dependencies remain required; see
-[ADR 0073](docs/adr/0073-link-only-required-apple-opencv-modules.md).
+shared dependencies remain required; link selection changes no Rust feature,
+dependency ownership or qualification limit.
 
 On macOS, command mode keeps inherited `DYLD_LIBRARY_PATH` entries after the
 selected OpenCV library directory. Relative entries resolve from the caller's
@@ -85,16 +85,17 @@ workaround is promised. Existing caller-selected ORT/model canonical-path,
 length/hash, and typed runtime-refusal checks remain mandatory, as do platform
 capability checks. Product runtime never acquires dependencies.
 See [the dependency policy](docs/third-party-dependencies.md#opencv) and
-[ADR 0066](docs/adr/0066-developer-owned-native-prerequisites.md).
+[native development prerequisite ownership](docs/architecture.md#native-development-prerequisite-ownership).
 This is not an installable profile or a clean/minimum-host/signing qualification;
 `G-007` and `G-012` remain open.
 
 Historical Apple platform qualification uses macOS 26.6.2 (25G83), SDK 26.5.
 The operator-selected current CPU OCR verification host is Apple M1 Pro, 32 GiB,
-macOS 27.0.1 (26A434), under
-[ADR 0081](docs/adr/0081-current-apple-ocr-verification-cohort.md). Its exact frozen
-cohort policy, prospective budgets and source-bound reports are required; an OS
-upgrade or an earlier debug run does not confer qualification. Capture/input
+macOS 27.0.1 (26A434), limited to its exact frozen cohort in
+[`tools/ocr-models/host-policy-v1.json`](tools/ocr-models/host-policy-v1.json).
+Its cohort policy applies to complete OCR model evaluations published in the catalog
+and to explicit performance claims; an OS upgrade or an earlier debug run does
+not confer qualification. Capture/input
 verification on the upgraded host remains separate. The deployment floor is
 macOS 26.5.2; earlier versions remain unsupported investigation targets.
 `.cargo/config.toml` sets the final artifact deployment metadata to 26.5.2 and
@@ -108,10 +109,10 @@ the finished adapter what the `G-003` prototype had suggested on the same setup,
 the measurements are in [docs/evidence/g-003/](docs/evidence/g-003/README.md). Full
 Xcode is still not evaluated, so this remains a positive result about the smaller
 installation rather than a statement that the two are interchangeable. The shim is
-compiled with `-fobjc-arc-exceptions`, which
-[docs/adr/0012-macos-shim-language-and-containment.md](docs/adr/0012-macos-shim-language-and-containment.md)
-records as a correctness requirement rather than a style choice: without it, an
-exception unwinding out of a scope that holds a native object leaks it.
+compiled with `-fobjc-arc-exceptions`, a correctness requirement rather than a
+style choice: without it, an exception unwinding out of a scope that holds a
+native object leaks it. See
+[the macOS native boundary](docs/architecture.md#the-macos-native-boundary).
 
 The four frame-callback boundary cases feed owned CoreMedia samples to the real
 callback. They cover successful commit, native exceptions before/after delivery,
@@ -265,44 +266,27 @@ retained original mapping changes. The accepted qualified-host record is
 [`docs/evidence/g-001/macos-owned-window-replacement.md`](docs/evidence/g-001/macos-owned-window-replacement.md).
 
 The minimum supported Windows boundary is Windows 11 25H2 build family 26200 on
-a currently serviced x64 desktop installation, accepted by
-[ADR 0019](docs/adr/0019-windows-qualified-system-and-controlled-availability.md).
+a currently serviced x64 desktop installation, fixed under gate
+[`G-001`](docs/validation-gates.md#g-001).
 Windows SDK 10.0.26100.0 is the supported build input, not the runtime floor.
 Earlier Windows versions are unsupported and unqualified.
 
 Windows 11 and later serviced desktop releases are the supported OS family,
 subject to that exact floor. Current CPU OCR verification uses `win-worker` on
-Windows 11 Pro 26H2 build 26300.9550, under
-[ADR 0082](docs/adr/0082-current-windows-ocr-reference-precursor.md). Earlier 25H2
-platform qualifications remain revision-bound; no feature result is transferred
-to the upgraded host. A failed or unexecuted feature/workload row is not an OS
-non-support decision. See the [OS support policy](docs/architecture.md#os-support-policy).
+Windows 11 Pro 26H2 build 26300.9550. Earlier 25H2 platform qualifications remain
+revision-bound; no feature result is transferred to the upgraded host. A failed
+or unexecuted feature/workload row is not an OS non-support decision. See the
+[OS support policy](docs/architecture.md#os-support-policy).
 
-The Windows OCR reference calibration at source `0cb9fc0` completed three
-processes and 1,452 observations with zero shared validation failures. Use its
-independently calibrated numerical policy,
-[`tools/ocr-models/windows-i7-12700kf-26300-budgets-v1.json`](tools/ocr-models/windows-i7-12700kf-26300-budgets-v1.json),
-derived under ADR 0082. Calibration never qualifies either model.
-
-[ADR 0083](docs/adr/0083-platform-aware-ocr-calibration-and-percent-equivalence.md)
-binds that separately frozen source/binary-bound campaign to exactly three fresh
-serial G-004 processes, with 900 seconds per process and 3,300 seconds whole
-(3,285 seconds primary plus 15 seconds cleanup). Retain the 33,554,432-byte
-per-process output limit and 2,000-ms lifecycle bound; reserve the full
-process/cleanup allowances plus 30 seconds for validation before each launch.
-Stop later launches on
-operational, input/source, collector or lifecycle failure. Do not increment
-deadlines, automatically retry or change security software. Apple limits and
-evidence stay unchanged. This is reference calibration, not candidate execution,
-acquisition or qualification.
-
-Prospective benchmark quality and repeated-text stability equate only `%` and
-`％` after NFC and trim on both observed and expected text. Bind the exact
-criteria SHA-256 and ADR 0083; preserve fixture authoring, raw observations,
-original failures and all geometry/confidence/order/group gates. Do not apply
-broad NFKC or change SDK normalization. Both final target procedures and reports
-on a common final source/build, plus a reviewed candidate-attempt disposition,
-remain required before qualification.
+Complete OCR model evaluations published in the catalog, and explicit performance
+claims, use the frozen cohort, numerical policy and bounded campaign rules in
+[the OCR model catalog](docs/ocr-model-catalog.md#repeatable-rust-measurements),
+and the text-comparison rules in
+[rule interpretation](docs/ocr-model-catalog.md#rule-interpretation). Ordinary
+bounded investigation can run `tools/ocr-models/run.py run --diagnostic` without a
+qualifying host policy or budgets; it retains missing prerequisites and failures
+and is never a complete evaluation. Calibration never qualifies a model, and a
+reference campaign is not candidate execution, acquisition or qualification.
 
 The Windows capture adapter adds no prerequisite beyond that environment. The
 production adapter uses the target-gated `windows` crate for Windows Graphics
@@ -311,8 +295,8 @@ vcpkg, vendored sample, or redistributable. The preceding `G-002` prototype used
 the same native stack with the MSVC toolchain, a Windows SDK, and CMake; its
 review is in
 [docs/evidence/g-002/dependency-review.md](docs/evidence/g-002/dependency-review.md).
-[docs/adr/0013-windows-capture-frame-detachment.md](docs/adr/0013-windows-capture-frame-detachment.md)
-records the ownership decision that the production implementation follows.
+[Windows native capture ownership](docs/architecture.md#windows-native-capture-ownership)
+states the ownership contract the production implementation follows.
 
 The Windows input implementation adds no external prerequisite or production
 helper process. It uses target-gated Win32 bindings, does not elevate, and does
@@ -428,7 +412,8 @@ permitted.
 ## Rust OCR text-query verification
 
 The [OCR text-query guide](docs/ocr-text-watch.md) separates controlled contracts,
-real CPU replay, target-owned native capture, accepted workload ceilings and their separate final enforcement.
+real CPU replay, target-owned native capture, descriptive workload observation and
+explicitly requested numerical enforcement.
 Use a fresh purpose-specific `CARGO_TARGET_DIR`; never reuse a hash-pinned
 qualification root for ordinary tests, examples or other feature/profile builds.
 
@@ -512,14 +497,14 @@ cargo clippy --locked --target x86_64-pc-windows-msvc \
   -p mado-pilot-platform-macos --all-targets -- -D warnings
 
 # 10. macOS host only: the capture scenarios with the native shim instrumented.
-#     Run on the current 27.0.1 (26A434) Apple Silicon host under ADR 0101.
+#     Run on the current 27.0.1 (26A434) Apple Silicon host.
 #     Needs Screen Recording granted, and fails rather than skips without it.
 MADO_PILOT_MACOS_ASAN=1 python3 tools/setup-native.py -- cargo test --locked \
   -p mado-pilot-platform-macos --target-dir target/asan --lib -- --test-threads=1
 ```
 
-Step 10's host selection and source-bound scope are recorded in
-[ADR 0101](docs/adr/0101-current-apple-native-sanitizer-host.md). The ASan library
+Step 10's host and source-bound scope are stated under the
+[OS support policy](docs/architecture.md#os-support-policy). The ASan library
 suite does not replace native input, display-topology or watcher qualification.
 Its recorded run kept no passing-test output, so it establishes none of the
 branches that note an absent subject and pass: window-subject, multi-display,
@@ -529,8 +514,7 @@ Use a fresh target directory for a new proof; do not rebuild a hash-pinned one.
 The opt-in `--release-scope` check validates the immutable v0.4.0 source-release
 tree, not later development changes. Run it separately from a checkout of the
 source-release candidate. Its historical tree/blob identities remain frozen;
-never refresh them to make a feature branch pass. See
-[ADR 0065](docs/adr/0065-historical-source-release-gate-scope.md).
+never refresh them to make a feature branch pass.
 
 Both platform adapters are workspace members on both targets, so step 3 lints each of
 them with the *other* platform's code compiled away — which is a configuration neither
@@ -556,7 +540,7 @@ On the historical qualified 26.6.2 host, the same run was also the permissioned
 coordinate/selection acceptance gate. It compared frame-attached `screenRect`
 origin, logical size, and effective scale with that host's display inventory and
 checked that a fresh discovery does not terminate an already-open retained filter.
-An ADR 0101 run on the current host does not satisfy that gate, because it records
+A current-host ASan run does not satisfy that gate, because it records
 no qualified display inventory or topology. A run that fails because Screen
 Recording is not granted is useful denial evidence, but passes neither that live
 gate nor the
@@ -718,6 +702,37 @@ not necessarily right about the others, and a verification is worth only as much
 as the freshness of what it compiled — so if a run needed this, say so alongside
 its result, or `cargo clean` and take the run again.
 
+## Documentation, decisions and tuning
+
+Start at the [documentation index](docs/README.md); every current rule has one
+purpose-based home. Update the affected guide in the same pull request as the
+change, following
+[documentation governance](docs/architecture.md#documentation-governance).
+
+- **Decision records.** Write a short [ADR](docs/adr/README.md) only for a
+  consequential choice: package responsibility or dependency direction,
+  technology or backend choice, public naming or compatibility policy, platform
+  or toolchain policy, or a security/trust boundary. Put commands, measurement
+  tables and history in their guides or evidence instead.
+- **Benchmarks and tuning.** Measure to investigate and tune. A focused, bounded
+  measurement needs no decision record, calibration campaign, quiet-host
+  threshold or prior qualification; see [performance](docs/performance.md).
+  Changing an empirical target, sample count or tuning parameter adds or extends
+  a [tuning record](docs/performance/tuning/README.md) with the reason and the
+  observed or explicitly missing effect. A new target applies prospectively and
+  never regrades an earlier run.
+- **Mandatory checks stay mandatory.** Correctness, memory and resource limits,
+  ownership and cleanup, identity, privacy, cancellation, ABI compatibility,
+  required native semantics and CI are never relaxed by a tuning record. Raising
+  an enforced limit or changing a public guarantee is a contract change.
+- **Claims need matching evidence.** A performance or support claim needs
+  evidence for its stated scope. A missing or failed numerical qualification
+  leaves that claim unsupported; it does not block unrelated implementation or
+  tuning.
+- **History stays history.** Evidence, released notes and earlier profiles keep
+  their bytes and verdicts. Records from before source `646369f` may cite retired
+  decision records by path; read those at that source, never as current rules.
+
 ## Branch strategy
 
 `main` contains released, production-ready code. Development for each release
@@ -762,10 +777,11 @@ tag, public notes, and native verification identify one final source revision:
    `docs/releases/vx.y.z.md` notes. Confirm that the workspace version, public
    behavior, prerequisites, compatibility, artifact list, limitations, security
    boundaries, and retained evidence all agree.
-2. Run the complete [verification](#verification) sequence. Retained benchmark
-   or ABI evidence from an earlier revision needs a reviewed applicability record
-   covering the complete intervening diff; otherwise rerun it on its named native
-   host.
+2. Run the complete [verification](#verification) sequence. Retained ABI, native
+   semantic or support evidence from an earlier revision, and any benchmark
+   evidence cited for a performance claim in the notes, needs a reviewed
+   applicability record covering the complete intervening diff; otherwise rerun
+   it on its named native host.
 3. Merge the release-readiness topic branch to `dev/x.y.z` through its protected
    pull request and wait for every required check.
 4. Open the release pull request from `dev/x.y.z` to `main`. Verify that its head
@@ -872,7 +888,7 @@ compiled files. Earlier successful checks retain their original attempt
 attribution. CI timing acceptance uses complete attempts, reports initial queue
 delay separately, and includes setup, compilation, execution and downstream
 scheduling in the critical path. More parallel jobs can increase total runner
-time. See [ADR 0107](docs/adr/0107-clean-build-native-ci-lanes.md).
+time. See the [verification baseline](docs/architecture.md#verification-baseline).
 
 A check is activated as a live required status only after that check has produced
 its first successful run on the branch it will guard, and only with separate

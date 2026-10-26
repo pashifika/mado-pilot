@@ -56,8 +56,6 @@ impl fmt::Debug for TemplateMatrix {
 ///
 /// The Phase 1 profile is normalized correlation coefficient over three-channel
 /// BGR, with the negative half of the correlation range clamped to "no match".
-/// Both the profile and the clamp are decisions with recorded reasons; see
-/// `docs/adr/0003-opencv-matching-profile-and-public-score.md`.
 ///
 /// # What it decides, and what it does not
 ///

@@ -61,7 +61,7 @@ def execute(args: argparse.Namespace) -> bool:
             )
         else:
             selected, profile_identity = workloads.profile(
-                ROOT / "docs/benchmarks" / f"ocr-text-watch-{target}.toml"
+                ROOT / "docs/benchmarks" / f"ocr-text-watch-v3-{target}.toml"
             )
             entry = run_replay.identity(executable)
             required_images = {entry["path"]: entry["sha256"]}

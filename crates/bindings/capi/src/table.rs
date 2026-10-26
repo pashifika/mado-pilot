@@ -17,9 +17,8 @@
 //! order of everything it could then do; ABI 1.2 replaces the unreleased 1.1
 //! draft with the native input and bounded diagnostic slice.
 //!
-//! **The order is frozen for ABI major 1** by ADR 0007 for the complete 1.0
-//! prefix and ADR 0023 for the additive 1.2 suffix. No entry moves and none is
-//! removed; a later minor appends to the end and raises `MADOPILOT_ABI_MINOR`.
+//! **The order is frozen for ABI major 1.** No entry moves or is removed;
+//! a later minor appends to the end and raises `MADOPILOT_ABI_MINOR`.
 //!
 //! # Where the unsafe boundary is
 //!

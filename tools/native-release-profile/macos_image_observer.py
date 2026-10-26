@@ -817,8 +817,8 @@ def _check_dyld(dyld):
     return {"path": DYLD_PATH, "slices": slices}
 
 
-def _reparse_receipt(receipt):
-    """Re-derives the load inventory from the retained raw stderr of one discovery receipt."""
+def _reparse_receipt(receipt, *, require_success=True):
+    """Re-derive discovery provenance; qualification also requires a successful exit."""
     _require(isinstance(receipt, dict), "receipt_invalid")
     _require(receipt.get("format_version") == FORMAT_VERSION
              and receipt.get("kind") == "macos-runtime-image-discovery"
@@ -829,7 +829,7 @@ def _reparse_receipt(receipt):
     _require(isinstance(record, dict), "record_invalid")
     _require("launch_error" in record and record["launch_error"] is None
              and record.get("timed_out") is False and record.get("output_limited") is False
-             and type(record.get("exit_code")) is int and record["exit_code"] == 0,
+             and type(record.get("exit_code")) is int and (not require_success or record["exit_code"] == 0),
              "record_not_successful")
     _require(isinstance(record.get("stderr"), str), "record_stderr_missing")
     _require(type(record.get("cleanup_ok")) is bool, "record_cleanup_invalid")
@@ -876,6 +876,21 @@ def _reparse_receipt(receipt):
                    "events": len(parsed["events"]), "cleanup_ok": record["cleanup_ok"],
                    "record_duration_seconds": record.get("duration_seconds")},
     }
+
+
+def validate_discovery(receipt, *, preceding=()):
+    """Read-only provenance and cleanup verdict, including an owned nonzero exit; no qualification."""
+    try:
+        identity = _reparse_receipt(receipt, require_success=False)
+        identities = [*(_reparse_receipt(item) for item in preceding), identity]
+        _union(identities)
+    except _Refusal as exc:
+        return {"provenance_complete": False, "reason": str(exc), "identity": None,
+                "cleanup_ok": None, "exit_code": None}
+    record = receipt["record"]
+    return {"provenance_complete": True, "reason": None, "identity": identity,
+            "cleanup_ok": all(item["origin"]["cleanup_ok"] for item in identities),
+            "exit_code": record["exit_code"]}
 
 
 def _union(derived):

@@ -444,6 +444,52 @@ class ClosureTests(unittest.TestCase):
         self.assertFalse(receipt["provenance"]["complete"])
         self.assertFalse(receipt["images"][0]["bound"])
 
+    def test_nonzero_exit_has_read_only_discovery_verdict_but_no_qualified_closure(self):
+        receipt = self.run.discovery(exit_code=23)
+        retained = json.dumps(receipt, sort_keys=True)
+        verdict = observer.validate_discovery(receipt)
+        self.assertTrue(verdict["provenance_complete"], verdict["reason"])
+        self.assertTrue(verdict["cleanup_ok"])
+        self.assertEqual(verdict["exit_code"], 23)
+        self.assertEqual(verdict["identity"]["main_executable"], str(self.run.main))
+        strict = observer.validate_closure(receipt)
+        self.assertFalse(strict["ok"])
+        self.assertEqual(strict["reason"], "record_not_successful")
+        self.assertIsNone(strict["closure"])
+        self.assertEqual(json.dumps(receipt, sort_keys=True), retained)
+
+    def test_nonzero_discovery_cannot_bypass_cross_attempt_identity(self):
+        preceding = self.run.discovery()
+        receipt = self.run.discovery(exit_code=23)
+        verdict = observer.validate_discovery(receipt, preceding=[preceding])
+        self.assertTrue(verdict["provenance_complete"])
+        receipt["system"]["os_build"] = "26A435"
+        retained = json.dumps([preceding, receipt], sort_keys=True)
+        verdict = observer.validate_discovery(receipt, preceding=[preceding])
+        self.assertFalse(verdict["provenance_complete"])
+        self.assertEqual(verdict["reason"], "system_differs")
+        self.assertIsNone(verdict["identity"])
+        self.assertEqual(json.dumps([preceding, receipt], sort_keys=True), retained)
+
+    def test_discovery_verdict_keeps_cleanup_and_provenance_independent(self):
+        receipt = self.run.discovery(exit_code=23, cleanup_ok=False)
+        verdict = observer.validate_discovery(receipt)
+        self.assertTrue(verdict["provenance_complete"])
+        self.assertFalse(verdict["cleanup_ok"])
+        for key, value in (("cleanup_ok", None), ("exit_code", None), ("timed_out", True),
+                           ("output_limited", True), ("launch_error", "unknown launch"), ("process_id", 8)):
+            with self.subTest(key=key):
+                changed = json.loads(json.dumps(receipt))
+                changed["record"][key] = value
+                verdict = observer.validate_discovery(changed)
+                self.assertFalse(verdict["provenance_complete"])
+                self.assertIsNone(verdict["identity"])
+        changed = json.loads(json.dumps(receipt))
+        changed["images"][0]["bound"] = False
+        verdict = observer.validate_discovery(changed)
+        self.assertFalse(verdict["provenance_complete"])
+        self.assertIsNone(verdict["identity"])
+
     def test_missing_transient_file_leaves_discovery_incomplete(self):
         receipt = self.run.discovery(self.run.log(extra=True, tail=""))
         self.assertEqual(receipt["result"]["status"], "complete")

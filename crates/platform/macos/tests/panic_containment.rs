@@ -2,11 +2,9 @@
 #![cfg(target_os = "macos")]
 //! Asserts why the callback trampolines contain their own panics.
 //!
-//! ADR 0012 measured that an unguarded Rust panic at the callback boundary stops
-//! the process, and records that containment therefore has to be on the Rust side
-//! of the call. The contained form is asserted in the package's own unit tests; the
-//! unguarded form cannot be asserted in-process, because observing it ends the
-//! process observing it. This test runs it in a child.
+//! An unguarded Rust panic at the callback boundary aborts the process, so Rust
+//! must contain it before returning to native code. Unit tests cover containment;
+//! this test uses a child process to observe the unguarded form.
 
 use std::os::unix::process::ExitStatusExt;
 use std::process::Command;

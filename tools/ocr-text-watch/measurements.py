@@ -106,22 +106,50 @@ def _record(line: str, prefix: str, integers: frozenset[str], memory: tuple[str,
     return fields
 
 
-def _memory(record: dict, target: str, fields: tuple[str, ...]) -> None:
+def _memory(record: dict, target: str, fields: tuple[str, ...], allow_unavailable: bool) -> None:
     current, peak, private, footprint = fields
     required = (current, peak, footprint if target == _TARGETS[0] else private)
     for key in required:
         value = record[key]
         if value is None:
+            if allow_unavailable:
+                continue
             raise ValueError(f"required {key} is unavailable")
         if key != private and value == 0:
             raise ValueError(f"required {key} is zero")
 
 
-def _result(scope: str, records: list, failures: list[str]) -> dict:
-    return {"complete": not failures, "scope": scope, "records": records, "failures": failures}
+def _result(scope: str, records: list, failures: list[str], target: str) -> dict:
+    controlled = scope == "controlled-workload-invocations"
+    memory = _CONTROLLED_MEMORY if controlled else _REAL_MEMORY
+    applicable = (
+        (*memory[:2], memory[3] if target == _TARGETS[0] else memory[2])
+        if target in _TARGETS else ()
+    )
+    maximum = len(_INVOCATIONS) if controlled else len(_STAGES)
+    gaps = []
+    for index, record in enumerate(records):
+        if index >= maximum:
+            break
+        if controlled:
+            location = {key: record[key] for key in ("workload", "phase", "iteration")}
+        elif record.get("kind") == "stage":
+            location = {"stage": record["stage"]}
+        else:
+            continue
+        for field in applicable:
+            if record[field] is None:
+                gaps.append({
+                    "target": target, "field": field, **location, "record_index": index,
+                    "reason": "OS memory observation is unavailable; raw null retained, not zero or a complete maximum",
+                })
+    return {
+        "complete": not failures, "scope": scope, "records": records,
+        "failures": failures, "measurement_gaps": gaps,
+    }
 
 
-def controlled_measurements(stdout: str, target: str) -> dict:
+def controlled_measurements(stdout: str, target: str, *, allow_unavailable_memory: bool = False) -> dict:
     """Require all 133 invocations and their semantic markers, not workload ceilings.
 
     Extents are logical views, not a deduplicated allocation total. OS high-water
@@ -129,6 +157,8 @@ def controlled_measurements(stdout: str, target: str) -> dict:
     at the invocation boundary. Process supervision remains the runner's job.
     Endpoint durations are observed only inside their invocation's start/raw
     boundary; partial observations remain evidence, not zero-filled measurements.
+    Observation callers may retain valid null OS-memory values; malformed or
+    zero required counters and all invocation/logical-resource checks still fail.
     """
     records = []
     failures = []
@@ -196,7 +226,7 @@ def controlled_measurements(stdout: str, target: str) -> dict:
                     records.append(record)
                     if (record["workload"], record["phase"], record["iteration"]) != (name, phase, index):
                         raise ValueError("measurement does not match its ordered invocation")
-                    _memory(record, target, _CONTROLLED_MEMORY)
+                    _memory(record, target, _CONTROLLED_MEMORY, allow_unavailable_memory)
                     if record["memory_samples"] == 0:
                         raise ValueError("memory sampling was not observed")
                     if record["backend_input_max_bytes"] > record["backend_input_mapped_bytes"]:
@@ -214,15 +244,17 @@ def controlled_measurements(stdout: str, target: str) -> dict:
         failures.append("required 133 ordered start/raw/measurement invocations are incomplete")
     if summaries != len(_CONTROLLED_SUMMARIES):
         failures.append("required controlled semantic summaries are incomplete")
-    return _result("controlled-workload-invocations", records, failures)
+    return _result("controlled-workload-invocations", records, failures, target)
 
 
-def real_measurements(stdout: str, target: str) -> dict:
+def real_measurements(stdout: str, target: str, *, allow_unavailable_memory: bool = False) -> dict:
     """Require the transition's common-clock stages and observed native constructions.
 
     Session creation counts do not imply native quiescence. Physical OCR zero
     covers this engine's work, not ORT process-global resource release; the
     supervisor must independently confirm bounded whole-process cleanup.
+    Observation callers may retain valid null OS-memory values without changing
+    stage, clock, construction or logical-resource validation.
     """
     records = []
     failures = []
@@ -249,7 +281,7 @@ def real_measurements(stdout: str, target: str) -> dict:
                 if previous_elapsed is not None and elapsed < previous_elapsed:
                     raise ValueError("common-clock elapsed_ns decreased")
                 previous_elapsed = elapsed
-                _memory(record, target, _REAL_MEMORY)
+                _memory(record, target, _REAL_MEMORY, allow_unavailable_memory)
             elif candidate.startswith("# ocr-real-summary"):
                 summaries += 1
                 record = _record(
@@ -283,4 +315,4 @@ def real_measurements(stdout: str, target: str) -> dict:
         failures.append("required 12 stages and one measurement summary are incomplete")
     if semantics != 1:
         failures.append("required transition semantic success is missing or duplicate")
-    return _result("real-cpu-cold-startup", records, failures)
+    return _result("real-cpu-cold-startup", records, failures, target)

@@ -1,15 +1,11 @@
 //! The evidence-backed ceilings, and the caller-configured limits below them.
 //!
-//! Every value here comes from the measurements in `docs/evidence/g-014` and is
-//! fixed by [ADR 0001]. A caller may set any limit at or below its ceiling; a
-//! limit above one is rejected as an invalid argument rather than silently
-//! clamped, because a host that asked for a weaker guard needs to be told it did
-//! not get one.
+//! Measurements supporting these safety ceilings are in `docs/evidence/g-014`.
+//! A caller may tighten a limit; values above a ceiling are rejected rather than
+//! clamped so the caller knows its requested policy was not applied.
 //!
-//! Raising a ceiling is a superseding ADR with fresh measurements on both
-//! release targets, not an edit to this file.
-//!
-//! [ADR 0001]: https://github.com/pashifika/mado-pilot/blob/main/docs/adr/0001-asset-archive-container-and-safety-ceilings.md
+//! Raising a ceiling changes the safety contract and requires review, supporting
+//! measurements on both release targets, and synchronized current documentation.
 
 use crate::fault::{AssetFault, AssetFaultKind, LoadStage};
 

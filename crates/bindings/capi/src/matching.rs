@@ -241,11 +241,8 @@ fn run_session_find(
         return Err(Fault::abi("`session` is null"));
     };
 
-    // A closed session starts no further work. The Rust contract now makes the
-    // same check for every frame choice — aligning the two was part of
-    // `docs/adr/0006-public-rust-names-and-compatibility-policy.md` — and this
-    // one stays because it refuses before any pointer below is dereferenced and
-    // reports the boundary's own message and category.
+    // A closed session starts no further work. Refuse before dereferencing the
+    // request and report the C boundary's own message and category.
     if session.session().is_closed() {
         return Err(Fault::closed(SESSION_CLOSED));
     }

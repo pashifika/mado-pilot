@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Run an explicitly selected OCR workload cohort; never enforce unaccepted budgets."""
+"""Collect bounded OCR observations or explicitly enforce a scoped numeric profile."""
 
 from __future__ import annotations
 
@@ -40,15 +40,23 @@ HARNESS = (
     "tools/native-release-profile/_process_group.py",
     "tools/native-release-profile/_windows_process.py",
 )
+SETTINGS = {
+    "source_width": 960, "source_height": 540, "source_bytes": 2073600,
+    "source_format": "bgra8", "roi": [0, 0, 960, 540],
+    "query_minimum_interval_ms": 50, "capture_period_ms": 16,
+    "process_count": 3, "warmup_iterations": 2, "sample_count": 20,
+    "process_timeout_seconds": 300, "cleanup_timeout_seconds": 15,
+    "output_limit_bytes": 1048576,
+    "native_image_report_limit_bytes": 1048576,
+}
 
 
 def profile(path: Path) -> tuple[dict, dict]:
     data, document_identity = run_replay.read_document(path)
     value = tomllib.loads(data.decode("utf-8"))
-    if type(value.get("format_version")) is not int or value["format_version"] != 2:
-        raise ValueError("unsupported workload measurement profile version")
     expected_target = run_replay.selected_target()
-    canonical = ROOT / "docs/benchmarks" / f"ocr-text-watch-{expected_target}.toml"
+    budgets.validate_profile(value, expected_target)
+    canonical = ROOT / "docs/benchmarks" / f"ocr-text-watch-v3-{expected_target}.toml"
     canonical_bytes, _ = run_replay.read_document(canonical)
     if data != canonical_bytes:
         raise ValueError("profile differs from the reviewed source-bound workload")
@@ -57,17 +65,8 @@ def profile(path: Path) -> tuple[dict, dict]:
         raise ValueError("profile facts must be a table")
     if facts["release_target"] != expected_target:
         raise ValueError("profile and execution host target differ")
-    expected = {
-        "source_width": 960, "source_height": 540, "source_bytes": 2073600,
-        "source_format": "bgra8", "roi": [0, 0, 960, 540],
-        "query_minimum_interval_ms": 50, "capture_period_ms": 16,
-        "process_count": 3, "warmup_iterations": 2, "sample_count": 20,
-        "process_timeout_seconds": 300, "cleanup_timeout_seconds": 15,
-        "output_limit_bytes": 1048576,
-        "native_image_report_limit_bytes": 1048576,
-    }
     if any(type(facts.get(key)) is not type(setting) or facts[key] != setting
-           for key, setting in expected.items()):
+           for key, setting in SETTINGS.items()):
         raise ValueError("prospective controlled workload bounds changed; review apparatus applicability")
     workloads = value["workload"]
     if (not isinstance(workloads, list) or len(workloads) != len(WORKLOADS)
@@ -190,9 +189,8 @@ def execute(args: argparse.Namespace) -> bool:
         raise ValueError("private Windows evidence directories require Python 3.13 or newer")
     real = args.mode == "real-cpu-cold-startup"
     selected = profile_identity = None
-    if args.enforce_budgets:
-        selected, profile_identity = profile(args.profile)
-        budgets.validate_profile(selected, selected["profile"]["release_target"])
+    if args.enforce_budgets and args.profile is None:
+        raise ValueError("--enforce-budgets requires a scoped --profile")
     count = 5 if real else 3
     output = args.output.resolve()
     output.mkdir(mode=0o700, parents=True, exist_ok=False)
@@ -213,6 +211,8 @@ def execute(args: argparse.Namespace) -> bool:
         if first_apparatus_failure is None:
             first_apparatus_failure = failure
             run_replay.write_record(output / "apparatus-invalid.json", failure)
+        if stage in ("preflight-profile", "preflight-profile-bindings"):
+            print(f"OCR profile refused: {failure['reason']}", file=sys.stderr)
         return failure
 
     stage = "preflight-inputs"
@@ -224,19 +224,20 @@ def execute(args: argparse.Namespace) -> bool:
         executable = args.executable.resolve(strict=True)
         corpus = args.corpus.resolve(strict=True) if real else None
         stage = "preflight-profile"
-        if selected is None:
+        if args.profile is not None:
             selected, profile_identity = profile(args.profile)
-        facts = selected["profile"]
+        facts = selected["profile"] if selected is not None else {
+            **SETTINGS, "release_target": run_replay.selected_target(),
+        }
         stage = "preflight-host"
         host_facts, host_identity = host(args.host_record, facts["release_target"])
         stage = "preflight-source"
         original_source = source()
         stage = "preflight-native-manifest"
         approved_images, manifest_identity = run_replay.native_manifest(args.native_images)
-        documents = {
-            "profile": profile_identity, "host_record": host_identity,
-            "native_manifest": manifest_identity,
-        }
+        documents = {"host_record": host_identity, "native_manifest": manifest_identity}
+        if profile_identity is not None:
+            documents["profile"] = profile_identity
         stage = "preflight-environment"
         environment = run_replay.canonical_environment() if real else dict(os.environ)
         if real and environment.get("MADO_PILOT_ORT_PROFILE_DIR"):
@@ -250,30 +251,20 @@ def execute(args: argparse.Namespace) -> bool:
             "documents": documents,
             "artifacts": bindings(executable, corpus, environment, approved_images),
         }
-        if args.enforce_budgets:
-            stage = "preflight-budget-bindings"
-            acceptance = selected["acceptance"]
-            if acceptance["host_id"] != host_facts["observed"]["host_id"]:
-                raise ValueError("execution host differs from the accepted budget host")
+        if selected is not None:
+            stage = "preflight-profile-bindings"
+            scoped = selected["bindings"]
+            if scoped["host_id"] != host_facts["observed"]["host_id"]:
+                raise ValueError("execution host differs from the scoped profile host")
             artifact_key = "real_executable_sha256" if real else "controlled_executable_sha256"
-            if acceptance[artifact_key] != before["artifacts"]["executable"]["sha256"]:
-                raise ValueError("executable differs from the accepted budget candidate")
-            adr = (ROOT / acceptance["adr"]).resolve(strict=True)
-            if adr.parent != (ROOT / "docs/adr").resolve(strict=True):
-                raise ValueError("accepting ADR must remain within the tracked ADR directory")
-            adr_bytes, adr_identity = run_replay.read_document(adr)
-            status_lines = [
-                line for line in adr_bytes.decode("utf-8").splitlines()
-                if line.startswith("- **Status:**")
-            ]
-            if status_lines != ["- **Status:** Accepted"]:
-                raise ValueError("numeric profile requires an accepted ADR")
-            documents["accepting_adr"] = adr_identity
+            if scoped[artifact_key] != before["artifacts"]["executable"]["sha256"]:
+                raise ValueError("executable differs from the scoped profile candidate")
         argv = run_replay.observed_command([str(executable), str(corpus), "transition"] if real else [str(executable), "--semantic"])
         stage = "plan-evidence"
         run_replay.write_record(output / "plan.json", {
-            "schema_version": 4, "mode": args.mode, "authority": "explicit --execute; this exact cohort requires operator authorization",
+            "schema_version": 5, "mode": args.mode, "authority": "explicit --execute; bounded observation is not performance qualification",
             "target": facts["release_target"], "host": host_facts, "source": original_source,
+            "workload_settings": facts,
             "bindings": before, "argv": argv, "process_count": count,
             "child_selection_environments": [selection_environment(child) for child in child_environments],
             "dependency_report_paths": [str(path) for path in report_paths],
@@ -296,7 +287,7 @@ def execute(args: argparse.Namespace) -> bool:
             "cold_startup_scope": "five fresh processes with qualification-only internal Instant/RSS stages; no OS cache flush; ready-hook session creations are not live-session counts",
             "real_example_overrides": {"query_interval_ms": 1, "confirmation_count": 1} if real else None,
             "resource_scope": "backend-input and caller-accessor view traffic, logical cache/result extents and OS memory are distinct; no opaque total native-allocation ledger",
-            "numeric_enforcement": "approved-target-profile" if args.enforce_budgets else "not-requested",
+            "numeric_enforcement": "scoped-target-profile" if args.enforce_budgets else "not-requested",
             "native_capture": "unexecuted-separate-target-procedure",
             "private_record": "Contains declared and observed host facts, controlled path/digest identities, loader-selection environment and complete raw process output",
         })
@@ -328,7 +319,9 @@ def execute(args: argparse.Namespace) -> bool:
                 "selection_environment": selection_environment(child_environments[index]),
                 "elapsed_scope": "whole fresh process including driver and teardown; never held-double OCR performance",
                 "measurements": None,
+                "measurement_gaps": [],
                 "required_measurements_complete": False, "budget_passed": False,
+                "empirical_targets_passed": None,
                 "budget_comparison": None,
             }
             stage = "before-process-bindings"
@@ -360,7 +353,10 @@ def execute(args: argparse.Namespace) -> bool:
                     })
                 stage = "measurement-observation"
                 measure = measurements.real_measurements if real else measurements.controlled_measurements
-                row["measurements"] = measure(observed["stdout"], facts["release_target"])
+                row["measurements"] = measure(
+                    observed["stdout"], facts["release_target"], allow_unavailable_memory=True,
+                )
+                row["measurement_gaps"] = row["measurements"]["measurement_gaps"]
                 row["required_measurements_complete"] = row["measurements"]["complete"] is True
                 if not row["required_measurements_complete"]:
                     failures.append({
@@ -373,19 +369,27 @@ def execute(args: argparse.Namespace) -> bool:
                 row["dependencies_passed"] = dependencies["matched"] is True
                 if not row["dependencies_passed"]:
                     raise ValueError("actual loaded native images do not match the approved manifest")
-                if args.enforce_budgets and not failures:
+                if selected is not None and not failures:
                     stage = "numeric-comparison"
                     comparison = budgets.evaluate_process(
                         selected, facts["release_target"], args.mode,
                         row["measurements"], observed["duration_seconds"],
+                        allow_unavailable_memory=True,
                     )
                     row["budget_comparison"] = comparison
-                    row["budget_passed"] = comparison["passed"]
-                    if not row["budget_passed"]:
-                        failures.append({
-                            "kind": "budget-exceeded", "stage": stage, "process": index + 1,
-                            "comparison": comparison["first_failure"],
-                        })
+                    row["empirical_targets_passed"] = comparison["passed"]
+                    row["budget_passed"] = args.enforce_budgets and comparison["passed"] is True
+                    if args.enforce_budgets:
+                        if comparison["first_failure"] is not None:
+                            failures.append({
+                                "kind": "budget-exceeded", "stage": stage, "process": index + 1,
+                                "comparison": comparison["first_failure"],
+                            })
+                        if comparison["unavailable"]:
+                            failures.append({
+                                "kind": "budget-unavailable", "stage": stage, "process": index + 1,
+                                "unavailable": comparison["unavailable"],
+                            })
             except (Exception, KeyboardInterrupt) as error:
                 row["apparatus_failure"] = retain_failure(stage, index + 1, error)
             run_replay.write_record(output / f"process-{index + 1}.json", row)
@@ -406,13 +410,31 @@ def execute(args: argparse.Namespace) -> bool:
     measurement_complete = semantic_complete and all(
         row["required_measurements_complete"] for row in rows
     )
+    execution_passed = (
+        admitted and unchanged and bool(rows)
+        and all(
+            row["semantic_passed"] and row["cleanup_passed"] and row["dependencies_passed"]
+            and row["required_measurements_complete"] for row in rows
+        )
+        and all(failure["kind"] in ("budget-exceeded", "budget-unavailable") for failure in failures)
+    )
+    stopped_by_enforcement = (
+        args.enforce_budgets and len(rows) < count
+        and any(failure["kind"] in ("budget-exceeded", "budget-unavailable") for failure in failures)
+    )
+    empirical_targets_passed = None
+    if any(row["empirical_targets_passed"] is False for row in rows):
+        empirical_targets_passed = False
+    elif (selected is not None and measurement_complete
+          and all(row["empirical_targets_passed"] is True for row in rows)):
+        empirical_targets_passed = True
     numerical_complete = (
         args.enforce_budgets and measurement_complete
         and all(row["budget_passed"] for row in rows)
     )
     states = {row["process"]: row["execution_state"] for row in rows}
     run_replay.write_record(output / "result.json", {
-        "schema_version": 4, "mode": args.mode, "admitted": admitted, "process_count": count,
+        "schema_version": 5, "mode": args.mode, "admitted": admitted, "process_count": count,
         "identity_unchanged": unchanged, "semantic_cohort_passed": semantic_complete,
         "executed_processes": sum(state == "started" for state in states.values()),
         "attempted_processes": sum(state != "not-attempted" for state in states.values()),
@@ -425,12 +447,33 @@ def execute(args: argparse.Namespace) -> bool:
         "apparatus_invalid": first_apparatus_failure is not None,
         "final_binding_check": {"performed": admitted, "matched": unchanged, "failure": final_failure},
         "required_measurements_complete": measurement_complete, "passed": numerical_complete,
+        "execution_passed": execution_passed,
+        "stopped_by_enforcement": stopped_by_enforcement,
+        "observation_completed": measurement_complete and not args.enforce_budgets,
+        "measurement_gaps": [
+            {"process": row["process"], **gap}
+            for row in rows for gap in row["measurement_gaps"]
+        ],
+        "empirical_targets": {
+            "requested": args.profile is not None,
+            "passed": empirical_targets_passed,
+            "unavailable": [
+                {"process": row["process"], **entry}
+                for row in rows if row["budget_comparison"] is not None
+                for entry in row["budget_comparison"]["unavailable"]
+            ],
+            "misses": [
+                {"process": row["process"], **comparison}
+                for row in rows if row["budget_comparison"] is not None
+                for comparison in row["budget_comparison"]["comparisons"] if not comparison["passed"]
+            ],
+        },
         "numeric_budgets": (
             "passed" if numerical_complete else "not-passed"
             if args.enforce_budgets else "not-enforced"
         ),
         "qualification_scope": {
-            "target": selected["profile"]["release_target"] if selected is not None else None,
+            "target": facts["release_target"] if admitted else None,
             "mode": args.mode,
         },
         "native_scope": "unexecuted; no fixture, capture, signature, permission or input operation is delegated",
@@ -440,22 +483,45 @@ def execute(args: argparse.Namespace) -> bool:
 
 def main() -> int:
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument("--mode", required=True, choices=("controlled", "real-cpu-cold-startup"))
-    parser.add_argument("--executable", required=True, type=Path, help="bench executable for controlled mode; public example built with ocr-text-watch-qualification for real CPU mode")
-    parser.add_argument("--profile", required=True, type=Path)
-    parser.add_argument("--host-record", required=True, type=Path, help="private JSON containing release_target, host_id matching platform.node(), cpu, os_version, memory_bytes; CPU/OS/memory declarations remain unverified")
-    parser.add_argument("--native-images", required=True, type=Path, help="independently approved canonical native-image path to SHA-256 JSON; never derived from this execution")
+    parser.add_argument("--inspect-profile", type=Path, help="read-only JSON inspection of a historical or current profile; never executes")
+    parser.add_argument("--mode", choices=("controlled", "real-cpu-cold-startup"))
+    parser.add_argument("--executable", type=Path, help="bench executable for controlled mode; public example built with ocr-text-watch-qualification for real CPU mode")
+    parser.add_argument("--profile", type=Path, help="optional v3 scoped targets; required for --enforce-budgets")
+    parser.add_argument("--host-record", type=Path, help="private JSON containing release_target, host_id matching platform.node(), cpu, os_version, memory_bytes; CPU/OS/memory declarations remain unverified")
+    parser.add_argument("--native-images", type=Path, help="independently approved canonical native-image path to SHA-256 JSON; never derived from this execution")
     parser.add_argument("--corpus", type=Path)
-    parser.add_argument("--output", required=True, type=Path, help="new private evidence directory outside tracked source or under an ignored output path, never overwritten")
+    parser.add_argument("--output", type=Path, help="new private evidence directory outside tracked source or under an ignored output path, never overwritten")
     parser.add_argument("--execute", action="store_true")
-    parser.add_argument("--enforce-budgets", action="store_true", help="enforce the accepted target profile and ADR after fresh authorization of this exact cohort")
+    parser.add_argument("--enforce-budgets", action="store_true", help="fail when the scoped v3 profile's numerical targets are exceeded")
     args = parser.parse_args()
+    if args.inspect_profile is not None:
+        if any((args.execute, args.enforce_budgets, args.mode, args.executable, args.profile,
+                args.host_record, args.native_images, args.corpus, args.output)):
+            parser.error("--inspect-profile cannot be combined with execution options")
+        try:
+            data, document_identity = run_replay.read_document(args.inspect_profile)
+            value = tomllib.loads(data.decode("utf-8"))
+            if type(value.get("format_version")) is not int or value["format_version"] not in (2, 3):
+                raise ValueError("read-only inspection supports OCR workload profile versions 2 and 3")
+            print(json.dumps({
+                "schema_version": 1, "operation": "read-only-profile-inspection",
+                "execution_requested": False, "identity": document_identity, "profile": value,
+            }, ensure_ascii=False, indent=2))
+            return 0
+        except (OSError, ValueError, UnicodeError) as error:
+            print(f"OCR profile inspection failed: {error}", file=sys.stderr)
+            return 1
+    for name in ("mode", "executable", "host_record", "native_images", "output"):
+        if getattr(args, name) is None:
+            parser.error(f"--{name.replace('_', '-')} is required for execution")
+    if args.enforce_budgets and args.profile is None:
+        parser.error("--enforce-budgets requires a scoped --profile")
     if not args.execute:
         parser.error("--execute is required after authorization of the exact prospective cohort")
     try:
         complete = execute(args)
-    except (OSError, ValueError, KeyError, TypeError, subprocess.SubprocessError):
-        print("OCR workload procedure failed; retain and inspect private evidence without retry", file=sys.stderr)
+    except (OSError, ValueError, KeyError, TypeError, subprocess.SubprocessError) as error:
+        print(f"OCR workload procedure failed: {error}; retain and inspect private evidence", file=sys.stderr)
         return 1
     if args.enforce_budgets:
         print("OCR target/mode budget cohort passed" if complete else "OCR budget cohort failed; retain all evidence without retry", file=sys.stdout if complete else sys.stderr)

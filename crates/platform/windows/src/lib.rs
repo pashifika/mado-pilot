@@ -16,9 +16,7 @@
 //!
 //! # Ownership
 //!
-//! The capture path implements
-//! [ADR 0013](../../../docs/adr/0013-windows-capture-frame-detachment.md):
-//! the WGC producer pool contains exactly two frames, and a callback copies a
+//! The WGC producer pool contains exactly two frames, and a callback copies a
 //! publishable surface into finite, Adapter-owned D3D11 storage before releasing
 //! the WGC frame. CPU mapping, consumer work, and host callbacks never run in the
 //! WGC callback.

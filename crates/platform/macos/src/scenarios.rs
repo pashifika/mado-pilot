@@ -1,8 +1,7 @@
 //! Real-target capture and controlled native callback-boundary scenarios.
 //!
-//! These live inside the package rather than in `tests/` because the containment
-//! and failure-path ownership cases ADR 0012 requires use internal raise sites and
-//! callback seams, which are not part of any public surface.
+//! These live inside the package because containment and failure-path ownership
+//! cases use internal raise sites and callback seams, not public surfaces.
 //!
 //! # What a skip means
 //!
@@ -1508,16 +1507,9 @@ fn a_start_submission_exception_settles_once_without_framework_ownership() {
 
 /// The capture-start completion block, which the start site above cannot reach.
 ///
-/// That block is invoked by the framework, so an exception leaving it unwinds into a
-/// frame with no handler above it anywhere — an abort rather than a status, which is
-/// what ADR 0012 rule 1 exists to prevent. It went in without the `@try` every other
-/// trampoline in the shim carries, and nothing could observe that: the block's own
-/// stop message is the thing that can raise there, and it is reached only when a start
-/// succeeds after teardown has already run.
-///
-/// So the seam raises at that position instead. Without the containment this case does
-/// not fail, it aborts the test process — which is the observable, and the reason the
-/// assertion below is about the session rather than about the exception.
+/// An exception escaping a framework-invoked completion aborts the process.
+/// The seam raises in the completion's stop path after capture starts during
+/// teardown, independently of the entry point's exception handler.
 #[test]
 fn a_contained_exception_in_the_start_completion_leaves_no_native_object_alive() {
     let _serial = serialized();

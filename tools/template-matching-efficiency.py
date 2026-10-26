@@ -11,6 +11,10 @@ ceilings; benefits must exceed that budget independently for wall p95 and CPU.
 Protocol three adds Session rows and source-independent logical corpus identity.
 Historical readers retain their original numerical policies. Partial workload
 coverage never qualifies the full corpus.
+Smoke is descriptive and needs no qualification review. Missing optional accounting
+stays unavailable. Identity or unresolved cleanup retains the host collector lock;
+inspect its owner and retained evidence before explicit recovery.
+Current methods: docs/performance/methods/component.md.
 """
 from __future__ import annotations
 
@@ -125,6 +129,7 @@ MEMORY = ("peak_rss_bytes", "rss_before_bytes", "rss_after_bytes", "rss_after_dr
 # Diagnostic execution bounds do not alter the frozen v1 numerical policy.
 SMOKE_LIMITS = {"child_timeout_seconds": 90, "campaign_timeout_seconds": 900,
                 "cleanup_seconds": 5, "output_limit_bytes": 8 * MIB}
+REPORT_FORMAT = "component-measurement-report-v1"
 
 # Prospective component apparatus only; this never regrades format-one evidence.
 V2_POLICY = {**POLICY, "id": "template-efficiency-v2-prospective-r2", "processes": 6,
@@ -439,7 +444,8 @@ def validate_runtime_bundle(bundle, identity, target, build_mode):
                 "runtime preflight path/order mismatch")
         require(attempt.get("identity_before") == boundary_identity
                 and attempt.get("identity_after") == boundary_identity
-                and attempt.get("identity_error") is None and attempt.get("interruption") is None,
+                and all(attempt.get(key) is None for key in (
+                    "identity_error", "provenance_error", "execution_error", "cleanup_error", "semantic_error", "interruption")),
                 "runtime preflight file identity or completion failed")
         before, after = attempt.get("campaign_elapsed_before"), attempt.get("campaign_elapsed_after")
         timeout = attempt.get("timeout_seconds")
@@ -1437,9 +1443,8 @@ def manifest_identity(value, target, opencv_version, protocol_version=1, build_m
             "workloads": frozen, **mode_fields}
 
 
-def observations(value, manifest, workload, smoke, *, timing_boundaries=False, sampling=None):
+def observation_identity(value, manifest, workload, *, timing_boundaries=False):
     version = manifest.get("format_version", 1)
-    normal = version >= 2 and manifest["build_mode"] == "normal"
     require(isinstance(value, dict), "invalid observation protocol")
     if version == 4:
         require(exact_value(sampling_capability(value), sampling_capability(manifest)),
@@ -1472,6 +1477,13 @@ def observations(value, manifest, workload, smoke, *, timing_boundaries=False, s
     if version >= 3:
         require(all(exact_value(row.get(key), want) for key, want in expected.items()
                     if key not in ("warmups", "sample_count")), "observation semantic row changed")
+    return row, expected
+
+
+def observations(value, manifest, workload, smoke, *, timing_boundaries=False, sampling=None):
+    version = manifest.get("format_version", 1)
+    normal = version >= 2 and manifest["build_mode"] == "normal"
+    row, expected = observation_identity(value, manifest, workload, timing_boundaries=timing_boundaries)
     short = smoke or not expected["statistical"]
     if version == 4 and not short and sampling is not None:
         warmups, count = sampling["warmups"], sampling["samples"]
@@ -1795,6 +1807,7 @@ def validate_plan(plan):
     require(version in (1, 2, 3, 4) and plan.get("kind") == "campaign", "invalid campaign")
     if version >= 3:
         integer(version, "campaign format_version")
+    require(plan.get("report_format") in (None, REPORT_FORMAT), "unsupported measurement report format")
     timing_policy = runtime_observer_policy(plan)
     require(timing_policy is None or (version >= 2 and plan.get("target") == TARGETS[0]
                                      and plan.get("mode") != "smoke"), "invalid runtime observer policy lane")
@@ -2406,7 +2419,13 @@ def report(directory):
     target_status = "incomplete" if version >= 3 and omitted and status == "passed" else status
     qualified = mode == "comparison" and status == "passed" and (version < 3 or coverage["complete"]) and (
         version == 1 or evidence["plan"]["build_mode"] == "normal")
-    return {"format_version": version, "mode": mode, "target": target, "status": status,
+    outcome = {
+        "report_format": REPORT_FORMAT,
+        "execution_status": ("failed" if any(item["status"] == "failed" for item in evidence["issues"])
+                             else "incomplete" if evidence["issues"] else "completed"),
+        "qualification_status": "not-requested" if mode == "smoke" else status,
+    } if evidence["plan"].get("report_format") == REPORT_FORMAT else {}
+    return {"format_version": version, **outcome, "mode": mode, "target": target, "status": status,
             **({"workload_coverage": coverage} if version >= 3 else {}),
             "performance_qualified": qualified, "whole_change_acceptance": "incomplete",
             "targets": {name: (target_status if mode == "comparison" else "incomplete") if name == target else "not-run"
@@ -2441,7 +2460,7 @@ def command(binary, task, mode, protocol_version=1, *, timing_boundaries=False, 
 
 
 @contextlib.contextmanager
-def exclusive_collector():
+def exclusive_collector(state):
     path = Path(tempfile.gettempdir()) / "mado-template-matching-efficiency.lock"
     try:
         stream = path.open("x", encoding="utf-8")
@@ -2449,10 +2468,12 @@ def exclusive_collector():
         raise ValueError(f"collector lock exists: {path}; inspect its owner before removal") from error
     try:
         with stream:
-            stream.write(f"pid={os.getpid()}\n")
+            stream.write(document({"pid": os.getpid(), "host": platform.node(),
+                                   "evidence": state["evidence"]}).decode("utf-8"))
         yield
     finally:
-        path.unlink()
+        if state["safe"]:
+            path.unlink()
 
 
 def runtime_preflight(args):
@@ -2475,7 +2496,8 @@ def runtime_preflight(args):
             "runtime_observer_policy": RUNTIME_OBSERVER_POLICY}
     boundary_identity = preflight_identity(identity, version)
     destination = Path(args.output).resolve()
-    with exclusive_collector():
+    ownership = {"safe": True, "evidence": str(destination)}
+    with exclusive_collector(ownership):
         destination.mkdir(parents=True, exist_ok=False)
         (destination / "attempts").mkdir()
         (destination / "started").mkdir()
@@ -2491,13 +2513,17 @@ def runtime_preflight(args):
                 break
             argv = command(identity, task, "smoke", version, timing_boundaries=True)
             attempt = {"task": task, "argv": argv, "identity_before": None, "identity_after": None,
-                       "identity_error": None, "receipt": None, "campaign_elapsed_before": before,
-                       "timeout_seconds": timeout}
+                       "identity_error": None, "provenance_error": None, "execution_error": None,
+                       "cleanup_error": None, "semantic_error": None, "provenance_complete": False,
+                       "receipt": None, "campaign_elapsed_before": before, "timeout_seconds": timeout}
             attempt_path = destination / "attempts" / f"{task['id']}.json"
             save(destination / "started" / f"{task['id']}.json", attempt)
+            ownership["safe"] = False
+            stage = "identity"
             try:
                 check_files(identity)
                 attempt["identity_before"] = boundary_identity
+                stage = "execution"
                 timeout = min(timeout, deadline - time.monotonic()
                               - limits["cleanup_seconds"] - limits["runtime_binding_seconds"])
                 require(timeout > 0, "preflight deadline reached before child launch")
@@ -2507,11 +2533,34 @@ def runtime_preflight(args):
                     output_limit_bytes=limits["output_limit_bytes"], cleanup_seconds=limits["cleanup_seconds"],
                     binding_seconds=limits["runtime_binding_seconds"])
                 attempt["receipt"] = receipt
+                stage = "identity"
                 check_files(identity)
                 attempt["identity_after"] = boundary_identity
-                require(successful(receipt["record"]), "preflight process or owned cleanup failed")
-                closed = macos_images.validate_closure(receipt)
-                require(closed["ok"], "preflight image binding failed: " + str(closed["reason"]))
+                record = receipt["record"]
+                for category, reason in execution_failures(record):
+                    field = "cleanup_error" if category == "cleanup" else "execution_error"
+                    attempt[field] = reason
+                    issues.append(reason)
+                stage = "provenance"
+                discovered = macos_images.validate_discovery(
+                    receipt, preceding=[attempt["receipt"] for attempt in attempts])
+                require(discovered["provenance_complete"], "preflight image binding failed: " + str(discovered["reason"]))
+                derived = discovered["identity"]
+                require(receipt.get("method_identity") == plan["observer"]
+                        and derived["target"] == args.target and derived["main_executable"] == identity["path"],
+                        "preflight observer/main identity mismatch")
+                expected_env = {key: value for key, value in plan["environment"].items() if key.startswith("DYLD_")}
+                expected_env["DYLD_PRINT_LIBRARIES"] = "1"
+                require(derived["loader_env"] == expected_env, "preflight loader environment mismatch")
+                files = {native_path(row["path"], args.target): row["sha256"]
+                         for row in derived["images"] if row["class"] == "file"}
+                require(all(files.get(native_path(row["path"], args.target)) == row["sha256"]
+                            for row in [identity, *identity["build"]["dependencies"]]),
+                        "preflight attested executable/dependency bytes missing")
+                duration = receipt.get("duration_seconds")
+                require(type(duration) in (int, float) and math.isfinite(duration) and 0 <= duration
+                        <= timeout + limits["cleanup_seconds"] + limits["runtime_binding_seconds"],
+                        "preflight observer exceeded reserved execution budget")
                 value = strict_json(receipt["record"]["stdout"])
                 loaded_runtime(value, identity, verify_files=True)
                 require(effective_threads(value) == threads, "preflight native thread setting changed")
@@ -2520,10 +2569,14 @@ def runtime_preflight(args):
                     require(manifest_identity(value, args.target, identity["build"]["opencv_version"],
                                               version, args.build_mode, timing_boundaries=True) == manifest,
                             "preflight manifest changed")
+                    attempt["provenance_complete"] = True
                 else:
+                    observation_identity(value, manifest, task["workload"], timing_boundaries=True)
+                    attempt["provenance_complete"] = True
+                    stage = "semantic"
                     observations(value, manifest, task["workload"], True, timing_boundaries=True)
             except (OSError, ValueError, KeyError, TypeError) as error:
-                attempt["identity_error"] = str(error)
+                attempt[stage + "_error"] = str(error)
                 issues.append(str(error))
             except BaseException as error:
                 attempt["interruption"] = type(error).__name__
@@ -2535,6 +2588,10 @@ def runtime_preflight(args):
                 raise
             attempt["campaign_elapsed_after"] = time.monotonic() - started
             save(attempt_path, attempt)
+            ownership["safe"] = (attempt["identity_before"] == boundary_identity and attempt["identity_after"] == boundary_identity
+                                 and attempt["identity_error"] is None and attempt["provenance_error"] is None
+                                 and attempt["provenance_complete"] is True and attempt["receipt"] is not None
+                                 and attempt["receipt"].get("record", {}).get("cleanup_ok") is True)
             attempts.append(attempt)
             retained_bytes += attempt_path.stat().st_size
             if retained_bytes > 64 * MIB:
@@ -2670,14 +2727,15 @@ def collection_steps(args, mode):
         calibration_path = Path(calibration_binding["path"])
         require(destination != calibration_path and calibration_path not in destination.parents,
                 "control must not write into calibration")
-    with exclusive_collector():
+    ownership = {"safe": True, "evidence": str(destination)}
+    with exclusive_collector(ownership):
         destination.mkdir(parents=True, exist_ok=False)
         (destination / "attempts").mkdir()
         (destination / "started").mkdir()
         if profile_bytes is not None:
             with (destination / "profile.json").open("xb") as stream:
                 stream.write(profile_bytes)
-        plan = {"format_version": version, "kind": "campaign", "mode": mode, "target": args.target,
+        plan = {"format_version": version, "report_format": REPORT_FORMAT, "kind": "campaign", "mode": mode, "target": args.target,
                 "host": host, "collector": collector_identity(), "binaries": binaries,
                 "environment": environment(), "policy": policy_for(version), "workloads": selected,
                 "schedule": schedule(mode, selected, version), "exclusive_host": args.exclusive_host,
@@ -2719,6 +2777,7 @@ def collection_steps(args, mode):
                 attempt.update(output_limit_bytes=limits["output_limit_bytes"], cleanup_seconds=limits["cleanup_seconds"],
                                runtime_binding_seconds=binding_seconds)
             save(destination / "started" / f"{task['id']}.json", attempt)
+            ownership["safe"] = False
             stage = "identity"
             try:
                 check_files(identity)
@@ -2780,6 +2839,9 @@ def collection_steps(args, mode):
             if version >= 2:
                 attempt["campaign_elapsed_after"] = time.monotonic() - campaign_started
             save(destination / "attempts" / f"{task['id']}.json", attempt)
+            ownership["safe"] = (attempt["identity_before"] == identity and attempt["identity_after"] == identity
+                                 and attempt["identity_error"] is None and attempt.get("provenance_error") is None
+                                 and attempt["record"] is not None and attempt["record"].get("cleanup_ok") is True)
             yield {"attempt": task["id"],
                    "path": str(destination / "attempts" / f"{task['id']}.json"),
                    "campaign_deadline_monotonic": deadline}

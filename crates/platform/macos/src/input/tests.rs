@@ -1006,7 +1006,7 @@ fn a_cancellation_between_events_preserves_the_count_already_submitted() {
 
 #[test]
 fn a_native_effect_before_any_event_completed_is_partial_and_not_unexecuted() {
-    // ADR 0015: a caller that retries an `Unexecuted` sequence must be able to
+    // A caller that retries an `Unexecuted` sequence must be able to
     // trust that nothing happened. Native effect with no completed event is
     // therefore reported as partial with a zero count.
     let target = target();

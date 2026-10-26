@@ -45,9 +45,9 @@
 //! package. See `docs/architecture.md`.
 //!
 //! **The public names here are reviewed, not yet stable.**
-//! `docs/adr/0006-public-rust-names-and-compatibility-policy.md` records the
-//! policy that applies: renaming or removing one is a breaking change needing an
-//! ADR and a version bump, while adding is free.
+//! Renaming or removing a public name is a breaking change requiring a version
+//! bump; additions are allowed. The stability promise begins at 1.0.
+//! Current naming and compatibility policy lives in `docs/architecture.md`.
 
 pub mod cleanup;
 pub mod controller;
