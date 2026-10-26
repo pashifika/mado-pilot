@@ -5,7 +5,7 @@
 //! Suppression mutates the score map without a dense copy. Scanning and
 //! suppression check caller authority in bounded chunks, including final commit.
 
-use std::cmp::Ordering;
+use std::cmp::{Ordering, Reverse};
 use std::collections::BinaryHeap;
 
 use mado_pilot_core::operation::Operation;
@@ -100,12 +100,41 @@ pub(crate) fn peaks(
             found = vec![winner.peak(search.width)];
         }
     } else {
-        let mut rows = BinaryHeap::new();
-        for (row, values) in remaining.chunks_exact(search.width).enumerate() {
-            if let Some(winner) = work.greatest(values, row * search.width, search.min_score)? {
-                rows.push(winner);
+        let mut rows = if search.suppression == Suppression::KeepAll
+            && search.candidate_budget < search.height
+        {
+            let mut best_rows: BinaryHeap<Reverse<RowWinner>> = BinaryHeap::new();
+            for (row, values) in remaining.chunks_exact(search.width).enumerate() {
+                if let Some(winner) = work.greatest(values, row * search.width, search.min_score)? {
+                    if best_rows.len() < search.candidate_budget {
+                        best_rows.push(Reverse(winner));
+                    } else if let Some(mut weakest) = best_rows.peek_mut()
+                        && winner > weakest.0
+                    {
+                        *weakest = Reverse(winner);
+                    }
+                }
             }
-        }
+            // Every omitted row has k surviving winners ahead of it under KeepAll.
+            // Reuse the allocation while changing from weakest-first to greatest-first.
+            work.operation.checkpoint()?;
+            let winners = best_rows
+                .into_vec()
+                .into_iter()
+                .map(|Reverse(winner)| winner)
+                .collect::<Vec<_>>();
+            let rows = BinaryHeap::from(winners);
+            work.operation.checkpoint()?;
+            rows
+        } else {
+            let mut rows = BinaryHeap::new();
+            for (row, values) in remaining.chunks_exact(search.width).enumerate() {
+                if let Some(winner) = work.greatest(values, row * search.width, search.min_score)? {
+                    rows.push(winner);
+                }
+            }
+            rows
+        };
 
         if !rows.is_empty() && matches!(search.suppression, Suppression::KeepAll) {
             // Each live row guarantees a result; preserve geometric capacity growth.
@@ -841,6 +870,42 @@ mod tests {
                         }
                     }
                 }
+            }
+        }
+    }
+
+    #[test]
+    fn bounded_keep_all_rows_preserve_repeated_winners_and_late_better_rows() {
+        for scores in [
+            [0.6, 0.6, 0.6, 0.7, 0.7, 0.7, 0.8, 0.8, 0.8, 1.0, 1.25, 1.0],
+            [
+                1.25, 1.0, 1.0, 1.0, 1.25, 1.0, 1.0, 1.0, 1.25, 1.0, 1.0, 1.0,
+            ],
+            [
+                0.0,
+                0.0,
+                0.0,
+                f32::NAN,
+                0.0,
+                0.0,
+                0.9,
+                0.8,
+                0.0,
+                0.0,
+                0.0,
+                0.0,
+            ],
+            [0.0; 12],
+        ] {
+            for suppression in [Suppression::KeepAll, Suppression::DropOverlapping] {
+                assert_canonical(
+                    &scores,
+                    PeakSearch {
+                        candidate_budget: 2,
+                        suppression,
+                        ..search(3, 4)
+                    },
+                );
             }
         }
     }

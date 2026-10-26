@@ -2612,7 +2612,10 @@ their readers. Diagnostics omit matrices and pixel content.
 
 Selection consumes the mutable score matrix without a dense copy. One result
 uses one scan; larger budgets use at most one winner/upper bound per row with
-lazy repair. Each scan may stop at its first finite public maximum (`1.0`),
+lazy repair. `KeepAll` retains at most the result limit's number of row winners:
+every omitted row has that many unsuppressed winners ahead of it. Overlap
+suppression retains all qualifying rows because one result can remove other
+row winners. Each scan may stop at its first finite public maximum (`1.0`),
 preserving row-major ties and accounting only for visited offsets. Suppression
 runs only when another selection is needed. Bounded checkpoints and each caller's
 final commit preserve cancellation/deadline authority independently of reusable
