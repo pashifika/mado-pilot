@@ -982,9 +982,9 @@ fn a_refusal_reports_a_message_a_reader_can_use() {
 
 /// The mandatory prefix of every size-versioned structure, in both directions.
 ///
-/// These are the numbers `src/` declares as `Versioned::MANDATORY` and
-/// `Input::MANDATORY`, and ADR 0007 froze. They are written out here rather than
-/// read from the crate because `Versioned` and `Input` are internal: what a
+/// These frozen values match `src/`'s `Versioned::MANDATORY` and
+/// `Input::MANDATORY`. They are written out here rather than read from the
+/// crate because those constants are internal: what a
 /// caller can observe is the refusal, so that is what is asserted, from both
 /// sides. One byte below the prefix must be refused, and the prefix itself must
 /// be accepted — without the second half, raising a prefix would go unnoticed;
@@ -1064,9 +1064,8 @@ fn every_versioned_output_holds_a_declared_size_to_its_own_field_boundaries() {
         40,
         |out| unsafe { (api.result_stamp)(result, out) },
     );
-    // The one structure with two prefixes: 8 bytes as the options a caller
-    // supplies, 24 as the report of what the search ran under. Only ADR 0007
-    // records the asymmetry, so only a test keeps it.
+    // This structure has two prefixes: 8 bytes as caller-supplied options,
+    // 24 as the report of the options the search used.
     assert_output_prefixes(
         "result_options",
         "madopilot_match_options_t",
@@ -1969,9 +1968,8 @@ fn a_null_archive_view_carrying_a_length_is_a_malformed_request_whatever_the_len
     let flow = support::Flow::open();
     let operation = operation();
 
-    // A null pointer with a length is a view that cannot exist, and ADR 0007
-    // freezes that as an invalid argument of the boundary's own category. The
-    // length here is one byte past the source ceiling this ABI's engines apply,
+    // A null pointer with a length is an invalid argument of the boundary's
+    // own category. The length here is one byte past the source ceiling,
     // which is what makes the case worth a test: the boundary also refuses an
     // oversized archive length before it copies anything, and that refusal
     // carries an asset status. It may not answer first. A caller that passed a
@@ -2117,11 +2115,8 @@ fn an_expired_operation_refuses_a_lent_archive_at_admission() {
     let detail = support::describe_and_release(api, error);
     assert_eq!(detail.status, MADOPILOT_STATUS_DEADLINE_EXCEEDED);
 
-    // The same request with a view that cannot exist. A null pointer carrying a
-    // length is the refusal ADR 0007 freezes as an invalid argument, so answering
-    // the deadline here is what says admission ran *before* the source structure
-    // was read rather than after it — which is what this test's name claims and
-    // what the assertions above cannot tell apart on their own.
+    // A null pointer carrying a length would otherwise be an invalid argument.
+    // Reporting the deadline proves admission precedes source-shape validation.
     let malformed = madopilot_package_source_t {
         archive: madopilot_bytes_t {
             data: ptr::null(),

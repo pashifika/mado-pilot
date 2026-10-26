@@ -1,22 +1,24 @@
 # OCR model choices and test results
 
 The SDK exposes all three implemented catalog profiles through ordinary Rust
-selection, without opening models or loading ONNX Runtime. Failed or missing
-quality/performance results do not hide a choice, require an experimental opt-in,
-change the default, or trigger fallback. [ADR 0084](adr/0084-ocr-model-choices-and-test-results.md)
-separates model choices from named, scoped test outcomes.
+selection, without opening models or loading ONNX Runtime. Model choice belongs
+to the caller: failed or missing quality/performance results do not hide a
+choice, require an experimental opt-in, change the default, or trigger fallback.
+Named test outcomes are reported per rule, separately from the choices, while
+technical validation of resources, graph, vocabulary and execution bounds always
+applies.
 
 The native G-004 default and all execution/resource identities are unchanged.
 `ppocrv6-tiny-det-small-rec-max736-v1` is an ordinary CPU choice with recorded
 text and negative-image failures, not a promise of accuracy on the caller's images.
-[ADR 0080](adr/0080-ocr-model-catalog-and-admission.md) still fixes its execution
-contract and mandatory pinned YAML vocabulary.
+Its execution contract requires the official tiny detector, small recognizer and
+mandatory pinned YAML vocabulary.
 
 Package manifest v1/v2, the C/C++ ABI and provider capabilities are unchanged.
-Text watching reuses the caller's compatible initialized OCR selection under
-[ADR 0091](adr/0091-ocr-watch-caller-selection.md); its fixed bounded-v2
-qualification workloads remain revision-bound. A manifest that cannot express
-the required auxiliary resource is refused; no ambient dictionary is supplied.
+Text watching reuses the caller's compatible initialized OCR selection; its fixed
+bounded-v2 qualification workloads remain revision-bound. A manifest that cannot
+express the required auxiliary resource is refused; no ambient dictionary is
+supplied.
 
 ## Rust integration
 
@@ -149,8 +151,9 @@ OpenCV requirements.
 
 1. Pin original resources, licenses, graph metadata and vocabulary strategy.
    Declare a distinct execution identity; do not mutate an existing tuple.
-2. Use implemented algorithms and finite bounds. An algorithm change requires
-   implementation and a focused ADR before evaluating the new configuration.
+2. Use implemented algorithms and finite bounds. Implement an algorithm change
+   before evaluating the new configuration, and record a short
+   [decision record](adr/README.md) when it changes a backend or technology choice.
 3. Freeze independent licensed inputs and exact oracles before inference. Keep
    every unchanged G-004 v3 row, including the adverse dense-tooltip case.
    Never import private pixels/labels/digests into public fixtures.
@@ -178,8 +181,7 @@ CARGO_TARGET_DIR=target/ocr-model-evaluation \
 ```
 
 The build-only strip override avoids rustc 1.97.1's macOS dylib alignment bug;
-it does not change benchmark optimization. Windows may omit it. See
-[ADR 0081](adr/0081-current-apple-ocr-verification-cohort.md).
+it does not change benchmark optimization. Windows may omit it.
 
 Use the emitted executable path as `OCR_BENCH`. Record its exact digest, source
 revision/tree and controlled runtime identity. The command surface is:
@@ -276,12 +278,13 @@ Use `--preflight-only` to check execution prerequisites without inference.
 Explicit `--diagnostic` retains missing prerequisites and partial observations;
 it cannot turn invalid or incomplete evidence into passing rules.
 Hosted CI is not a final performance cohort.
-[ADR 0081](adr/0081-current-apple-ocr-verification-cohort.md) approves the current
-macOS 27.0.1 Apple M1 Pro cohort through
-[`host-policy-v1.json`](../tools/ocr-models/host-policy-v1.json), without relabeling
-earlier failed diagnostics. [ADR 0082](adr/0082-current-windows-ocr-reference-precursor.md)
-adds the independently identified Windows 11 Pro 26H2 CPU cohort. These host
-policies constrain measurement attribution and execution, not model selection.
+The current macOS 27.0.1 Apple M1 Pro cohort and the independently identified
+Windows 11 Pro 26H2 CPU cohort are the approved entries in
+[`host-policy-v1.json`](../tools/ocr-models/host-policy-v1.json); its `approval`
+strings are frozen identifiers inside that hash-bound file, not references a
+reader must resolve. The policy does not relabel earlier failed diagnostics.
+These host policies constrain measurement attribution and execution, not model
+selection.
 Inspect completion and individual outcomes rather than treating exit 0 as an
 accuracy or performance approval.
 
@@ -289,20 +292,19 @@ Absolute budgets have no implicit defaults. They name the exact cohort and
 approval, per-process cold-open/close/RSS ceilings, every workload's p50/p95/max,
 Rust peak/steady/growth, mapped bytes and detector tensor bytes. Required collectors
 are `rust-accounting`, `native-peak-rss` and `onnx-stage-clocks`. The host policy
-must independently allow the exact cohort. ADR 0081 fixes the reference-only
-precursor and derives the complete Apple policy in
+must independently allow the exact cohort. The Apple reference-only precursor
+derived the complete Apple policy in
 [`apple-m1-pro-macos27-budgets-v1.json`](../tools/ocr-models/apple-m1-pro-macos27-budgets-v1.json).
 The precursor retains 132 exact-text failures and does not qualify the reference
 or candidate. The Windows calibration at source `0cb9fc0` completed three
 processes and 1,452 observations with zero shared validation failures. Its
 independently calibrated numerical policy is
-[`windows-i7-12700kf-26300-budgets-v1.json`](../tools/ocr-models/windows-i7-12700kf-26300-budgets-v1.json),
-derived under ADR 0082. Calibration does not authorize another model run.
+[`windows-i7-12700kf-26300-budgets-v1.json`](../tools/ocr-models/windows-i7-12700kf-26300-budgets-v1.json).
+Calibration does not authorize another model run.
 The final common-source comparisons completed with quality failures on both
 targets; their original source-bound disposition is preserved below.
-[ADR 0083](adr/0083-platform-aware-ocr-calibration-and-percent-equivalence.md)
-supersedes only ADR 0082's reference operational allowance for the separately frozen
-campaign: exactly three fresh serial processes, 900 seconds and 33,554,432 output
+The separately frozen Windows reference campaign uses exactly three fresh serial
+processes, 900 seconds and 33,554,432 output
 bytes each, 15-second cleanup, 2,000-ms lifecycle bound and 3,300 seconds whole
 (3,285 seconds primary plus 15 seconds cleanup). Before each launch reserve the
 full process/cleanup allowances and 30 seconds for validation within primary time.
@@ -325,7 +327,10 @@ committed into the source revision it identifies.
 ## Rule interpretation
 
 The frozen suite compares NFC/trimmed text with only U+0025 `%` and U+FF05 `％`
-treated as equivalent on observed and expected text, under ADR 0083.
+treated as equivalent on observed and expected text, because the two render the
+same percent sign in UI text; no broader NFKC or character folding is permitted,
+and raw output, fixture authoring and SDK normalization are unchanged. Revised
+criteria are bound by their exact SHA-256; old failures are not rerated.
 Same-implementation stability uses that equivalence while retaining exact
 geometry, confidence, region order and grouped membership/order. Separate rules
 cover text/order, region count, IoU >= 0.50 and normalized center deltas <= 0.025,

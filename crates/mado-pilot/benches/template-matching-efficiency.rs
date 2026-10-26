@@ -4,6 +4,7 @@
 //! counters. `template-matching-benchmark` builds the instrumented mode with
 //! counted Rust allocation and backend/mapping work. Protocol4 adds explicit
 //! sampling plans and retained-loop CPU; historical artifacts keep their readers.
+//! Smoke retains unavailable CPU as diagnostics; numerical collection requires it.
 
 #[cfg(not(feature = "template-matching-benchmark"))]
 const _: () = assert!(
@@ -1310,31 +1311,72 @@ fn run(arguments: Arguments) -> Result<Value, String> {
     }))
 }
 
+fn retained_cpu_failed(row: &Value, smoke: bool) -> bool {
+    let cpu = &row["retained_loop_cpu"];
+    let start = cpu["start_ns"].as_u64();
+    let end = cpu["end_ns"].as_u64();
+    let endpoints_valid = ["start_ns", "end_ns"].iter().all(|key| {
+        cpu.get(*key)
+            .is_some_and(|value| value.is_null() || value.as_u64().is_some())
+    });
+    if !endpoints_valid {
+        return true;
+    }
+    match cpu["cpu_ns"].as_u64() {
+        Some(value) => {
+            cpu.get("reason") != Some(&Value::Null)
+                || start
+                    .zip(end)
+                    .and_then(|(start, end)| end.checked_sub(start))
+                    != Some(value)
+                || row["metrics"]["cpu_ns"]
+                    .as_u64()
+                    .is_some_and(|operations| operations > value)
+        }
+        None => {
+            !(smoke
+                && cpu.get("cpu_ns") == Some(&Value::Null)
+                && cpu["reason"]
+                    .as_str()
+                    .is_some_and(|reason| !reason.is_empty())
+                && start.zip(end).is_none_or(|(start, end)| end < start))
+        }
+    }
+}
+
+pub(crate) fn report_failed(report: &Value, smoke: bool) -> bool {
+    let observations = report["kind"] == "observations";
+    let failed = report["workloads"].as_array().is_none_or(|rows| {
+        rows.iter().any(|row| {
+            row["oracle_failures"]
+                .as_u64()
+                .is_some_and(|count| count != 0)
+                || (observations
+                    && (row["oracle_failures"].as_u64().is_none()
+                        || retained_cpu_failed(row, smoke)))
+        })
+    });
+    let threads = &report["opencv_parallel_threads"];
+    let thread_failure = threads["changed"].as_bool() != Some(false)
+        || ["before", "after"].iter().any(|point| {
+            let observed = &threads[*point];
+            !observed["reason"].is_null()
+                || observed["threads"].as_i64().is_none_or(|count| count <= 0)
+                || observed["framework"].as_str().is_none_or(str::is_empty)
+        });
+    failed || thread_failure
+}
+
 fn main() {
     let arguments = arguments();
     let timing_boundaries_enabled = arguments
         .as_ref()
         .is_ok_and(|arguments| arguments.timing_boundaries);
+    let smoke = arguments.as_ref().is_ok_and(|arguments| arguments.smoke);
     let (report, failed) = match arguments.and_then(run) {
         Ok(report) => {
-            let failed = report["workloads"].as_array().is_some_and(|rows| {
-                rows.iter().any(|row| {
-                    row["oracle_failures"]
-                        .as_u64()
-                        .is_some_and(|count| count != 0)
-                        || (report["kind"] == "observations"
-                            && row["retained_loop_cpu"]["cpu_ns"].as_u64().is_none())
-                })
-            });
-            let threads = &report["opencv_parallel_threads"];
-            let thread_failure = threads["changed"].as_bool() != Some(false)
-                || ["before", "after"].iter().any(|point| {
-                    let observed = &threads[*point];
-                    !observed["reason"].is_null()
-                        || observed["threads"].as_i64().is_none_or(|count| count <= 0)
-                        || observed["framework"].as_str().is_none_or(str::is_empty)
-                });
-            (report, failed || thread_failure)
+            let failed = report_failed(&report, smoke);
+            (report, failed)
         }
         Err(error) => {
             let report = json!({"format_version": PROTOCOL_VERSION, "kind": "observations",

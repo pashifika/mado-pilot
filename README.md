@@ -8,7 +8,7 @@ Use one API to automate on-screen controls across Windows and macOS. MadoPilot h
 
 - **Frame-linked results:** Locate images or read text and keep the exact frame that produced each result.
 - **Template watching:** Wait for an image to remain visible, with a deadline and cancellation. Available through Rust on replayed frames and supported native sessions.
-- **Rust OCR text queries:** Wait for literal text with exact source retention. The Rust API and both-target real CPU replay are verified; workload ceilings are accepted, while native capture and final workload qualification remain open. See [OCR text queries](docs/ocr-text-watch.md).
+- **Rust OCR text queries:** Wait for literal text with exact source retention. The Rust API and both-target real CPU replay are verified; native capture qualification remains open, and workload measurements are scoped observations rather than general guarantees. See [OCR text queries](docs/ocr-text-watch.md).
 - **Explicit input control:** Choose the target and delivery mode, then inspect what was submitted. Platform permission and capability failures are reported without prompting or elevation.
 - **Reproducible workflows:** Replay supplied frames without capturing the desktop or injecting input. Ordinary diagnostics exclude images, recognized text, and input payloads.
 
@@ -25,9 +25,9 @@ Use a checkout of this revision. Install **Rust 1.97.1** through rustup, **Pytho
 
 Current verification uses Windows 11 and Apple Silicon macOS 27.0.1. Historical
 platform qualifications retain their exact host and source. On macOS 27.0.1, CPU
-OCR verification keeps its ADR 0081 scope. ASan provides native-shim memory-safety
-evidence for its recorded source only; it does not qualify capture/input topology
-or performance.
+OCR verification is limited to its recorded cohort. ASan provides native-shim
+memory-safety evidence for its recorded source only; it does not qualify
+capture/input topology or performance.
 See the separate [OS support and qualification policy](docs/architecture.md#os-support-policy).
 
 Follow [native development setup](CONTRIBUTING.md#native-development-prerequisites) to acquire these dependencies and select their paths. `tools/setup-native.py` checks existing installations and configures only the command it launches. Missing or incompatible dependencies fail setup or build; the script installs nothing and leaves the calling shell unchanged.
@@ -97,16 +97,18 @@ Open `target/doc/mado_pilot/index.html`. Rust API stability begins at 1.0; the C
 
 ## Documentation
 
+Start at the [documentation index](docs/README.md), which groups every current guide by purpose.
+
 | Guide | Read it for |
 |---|---|
-| [Architecture](docs/architecture.md) | Package layout, dependency boundaries, public naming, and implementation status |
+| [Architecture](docs/architecture.md) | Package layout, dependency boundaries, public naming, current contracts, and implementation status |
 | [Platform support](docs/architecture.md#release-targets) | Supported systems and the distinction between deployment floors and verified hosts |
 | [Windows input](docs/windows-input-verification.md) / [macOS input](docs/macos-input-verification.md) | Delivery modes, permissions, focus behavior, and native verification |
 | [Native dependencies](docs/third-party-dependencies.md) | OpenCV, ONNX Runtime, models, licenses, and deployment requirements |
 | [OCR model catalog](docs/ocr-model-catalog.md) | Model choices, exact resources, schema, and independent test results |
-| [Performance](docs/performance.md) | Workload-specific budgets and measurements |
-| [Validation gates](docs/validation-gates.md) | Remaining version-one decisions and acceptance criteria |
-| [Decisions](docs/adr/) / [Evidence](docs/evidence/) | Design rationale and revision-bound verification records |
+| [Performance](docs/performance.md) / [Tuning history](docs/performance/tuning/README.md) | Focused measurement, workload profiles, and why tuning choices were made |
+| [Validation gates](docs/validation-gates.md) | Remaining version-one decisions and which checks are mandatory |
+| [Decisions](docs/adr/README.md) / [Evidence](docs/evidence/) | Short decision records and revision-bound verification records |
 | [Release notes](docs/releases/) | Changes, compatibility, and artifact availability for each source release |
 
 ## Contributing

@@ -296,7 +296,6 @@ class MeasurementProtocol(unittest.TestCase):
         lines[endpoint] = field(lines[endpoint], "duration_ns", str((1 << 64) - 1))
         result = measurements.controlled_measurements("\n".join(lines), APPLE)
         self.assertTrue(result["complete"], result)
-        self.assertEqual(set(result), {"complete", "scope", "records", "failures"})
         self.assertEqual(result["records"][0]["elapsed_ns"], (1 << 64) - 1)
         self.assertEqual(result["records"][0]["endpoints"][0]["duration_ns"] + 1, 1 << 64)
         for index, key in ((measured, "elapsed_ns"), (endpoint, "duration_ns")):
@@ -333,6 +332,79 @@ class MeasurementProtocol(unittest.TestCase):
                         changed[index] = field(changed[index], key, value)
                         self.assert_incomplete(parser, changed, target)
                 self.assert_incomplete(parser, lines, "x86_64-unknown-linux-gnu")
+
+    def test_observation_opt_in_retains_nullable_os_memory_but_default_remains_strict(self):
+        for target, specific in ((APPLE, "physical_footprint"), (WINDOWS, "private")):
+            for parser, fixture, marker, current, native in (
+                (measurements.controlled_measurements, controlled_lines,
+                 "# ocr-measurement workload=cold-startup",
+                 "resident_current_high_water_bytes", specific + "_high_water_bytes"),
+                (measurements.real_measurements, real_lines,
+                 "# ocr-real-stage stage=retained-results-dropped",
+                 "resident_current_bytes", specific + "_bytes"),
+            ):
+                for name in (current, "resident_process_peak_bytes", native):
+                    with self.subTest(target=target, parser=parser.__name__, name=name):
+                        lines = fixture(target)
+                        self.assertEqual(parser("\n".join(lines), target)["measurement_gaps"], [])
+                        index = record_index(lines, marker)
+                        lines[index] = field(lines[index], name, "None")
+                        self.assertFalse(parser("\n".join(lines), target)["complete"])
+                        observed = parser("\n".join(lines), target, allow_unavailable_memory=True)
+                        self.assertTrue(observed["complete"], observed)
+                        record = observed["records"][-2 if parser is measurements.real_measurements else -1]
+                        self.assertIsNone(record[name])
+                        self.assertEqual(len(observed["measurement_gaps"]), 1)
+                        gap = observed["measurement_gaps"][0]
+                        self.assertEqual(gap["target"], target)
+                        self.assertEqual(gap["field"], name)
+                        self.assertTrue(gap["reason"].strip())
+                        if parser is measurements.controlled_measurements:
+                            self.assertEqual((gap["workload"], gap["phase"], gap["iteration"]),
+                                             ("cold-startup", "sample", 0))
+                            self.assertEqual(gap["record_index"], 132)
+                        else:
+                            self.assertEqual(gap["stage"], "retained-results-dropped")
+                            self.assertEqual(gap["record_index"], 11)
+
+    def test_nullable_observation_opt_in_does_not_accept_malformed_zero_or_logical_errors(self):
+        for target in (APPLE, WINDOWS):
+            for parser, fixture, marker, current in (
+                (measurements.controlled_measurements, controlled_lines,
+                 "# ocr-measurement workload=cold-startup", "resident_current_high_water_bytes"),
+                (measurements.real_measurements, real_lines,
+                 "# ocr-real-stage stage=retained-results-dropped", "resident_current_bytes"),
+            ):
+                lines = fixture(target)
+                index = record_index(lines, marker)
+                for value in ("Some(0)", "Some(NaN)", f"Some({1 << 64})", "0", None):
+                    with self.subTest(target=target, parser=parser.__name__, value=value):
+                        changed = lines.copy()
+                        changed[index] = field(changed[index], current, value)
+                        observed = parser("\n".join(changed), target, allow_unavailable_memory=True)
+                        self.assertFalse(observed["complete"], observed)
+                changed = lines.copy()
+                changed[index] = field(changed[index], current, "None")
+                if parser is measurements.controlled_measurements:
+                    changed[index] = field(changed[index], "memory_samples", "0")
+                else:
+                    changed[-1] = field(changed[-1], "physical_ocr_final", "1")
+                observed = parser("\n".join(changed), target, allow_unavailable_memory=True)
+                self.assertFalse(observed["complete"], observed)
+
+    def test_gap_summary_stays_bounded_when_stage_protocol_is_invalid(self):
+        lines = real_lines()
+        repeated = lines[1]
+        for name in ("resident_current_bytes", "resident_process_peak_bytes", "physical_footprint_bytes"):
+            repeated = field(repeated, name, "None")
+        result = measurements.real_measurements(
+            "\n".join([lines[0], *([repeated] * (2 * len(STAGES))), lines[-1]]),
+            APPLE, allow_unavailable_memory=True,
+        )
+        self.assertFalse(result["complete"])
+        self.assertEqual(len(result["measurement_gaps"]), 3 * len(STAGES))
+        self.assertTrue(all(gap["record_index"] < len(STAGES) for gap in result["measurement_gaps"]))
+        self.assertGreater(len(result["records"]), len(STAGES))
 
     def test_real_requires_all_stages_and_summary_once_in_order(self):
         lines = real_lines()

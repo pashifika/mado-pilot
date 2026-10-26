@@ -46,15 +46,17 @@ CPU retains raw partial/null fields; source-closed eligibility and the prospecti
 margin are separate, never physical-resolution claims. Native reachable process
 paths need case/source/artifact evidence, not library-wide guesses or dyld EOF.
 Development smoke remains runnable without qualification gates and retains all
-missing reasons. Windows runtime/CPU method admission remains unavailable.
+missing reasons. Its numerical misses are descriptive, not execution failures.
+Windows runtime/CPU method admission remains unavailable.
 
 All JSON receipts/profiles use exclusive creation. A two-attempt checkpoint can
 pause the same live generator; the original monotonic deadline keeps running.
 Closing or interrupting it finalizes an incomplete phase, not a resumable cursor.
 Campaign registrations outlive phase owners; an unfinished registration, identity
-or cleanup failure fences later launches. Failed controls fence every case in
-this target's actual-consumer lane. This collector never clears fences; an
-explicit source-bound cleanup/applicability disposition belongs to the owner.
+or cleanup failure fences later launches. Failed controls prevent qualification;
+sealed, purely numerical failures permit separately registered diagnostics.
+This collector never clears fences or retries a qualification cohort.
+Current methods: docs/performance/methods/actual-consumer.md.
 """
 from __future__ import annotations
 
@@ -1244,6 +1246,62 @@ def admission_room(now, deadline, attempts, bounds):
     return now + attempts * per_attempt + LIMITS["final_retention_seconds"] <= deadline
 
 
+def observation_findings(issues):
+    return [problem for problem in issues if problem["category"] in ("numerical", "clock")]
+
+
+def phase_outcomes(summary):
+    qualification_only = {"numerical", "inconclusive", "clock", "unavailable", "admission", "prerequisite", "incomplete"}
+    execution = [problem for problem in summary["issues"] if problem["category"] not in qualification_only]
+    incomplete = summary["unrun"] or any(problem["category"] == "incomplete" for problem in summary["issues"])
+    return {
+        "execution_status": "failed" if execution else "incomplete" if incomplete else "completed",
+        "qualification_status": ("not-requested" if summary["stage"] == "smoke" else
+                                 "failed" if summary["issues"] else "passed"),
+    }
+
+
+def numerical_control_only(summary, entry):
+    """Admit diagnostics from sealed original facts, never by regrading a control."""
+    categories = {problem["category"] for problem in summary["issues"]}
+    if (summary.get("format") not in ("consumer-phase-v1", "consumer-phase-v2")
+            or summary.get("stage") != "control" or summary.get("admission_issues") != []
+            or not categories & {"numerical", "inconclusive"}
+            or categories - {"numerical", "inconclusive", "incomplete"}):
+        return False
+    require(summary["plan_sha256"] == entry["plan_sha256"], "control registration plan changed")
+    tasks = schedule("control")
+    attempts = summary["attempts"]
+    require(attempts and summary["schedule"] == tasks
+            and summary["unrun"] == tasks[len(attempts):], "control schedule lineage changed")
+    directory = Path(entry["output"])
+    for index, attempt in enumerate(attempts):
+        slot = tasks[index]
+        require(attempt["slot"] == slot, "control attempt slot changed")
+        receipts = {}
+        for kind, maximum in (("started", 64 * 1024), ("raw", 25 * MIB), ("validation", 256 * 1024)):
+            binding = attempt.get(kind)
+            require(isinstance(binding, dict) and binding["name"] == slot["id"] + "." + kind + ".json",
+                    "control attempt has unresolved " + kind)
+            receipts[kind] = read_reference(
+                {"path": str(directory / binding["name"]), "sha256": binding["sha256"]}, maximum)
+            require(receipts[kind]["slot"] == slot, "control receipt slot changed")
+        require(all(receipts[kind]["plan_sha256"] == summary["plan_sha256"] for kind in ("started", "raw")),
+                "control receipt plan changed")
+        record = receipts["raw"]["record"]
+        require(record.get("cleanup_ok") is True and record.get("launch_error") is None
+                and record.get("timed_out") is False and record.get("output_limited") is False,
+                "control execution or cleanup unresolved")
+        validation = receipts["validation"]
+        require(type(record.get("exit_code")) is int
+                and record["exit_code"] == int(summary["case"].startswith("deadline-"))
+                and record["exit_code"] == validation["original_exit_code"],
+                "control terminal status changed")
+        if any(problem["category"] not in ("numerical", "inconclusive") for problem in validation["issues"]):
+            return False
+    return True
+
+
 class Campaign:
     def __init__(self, plan):
         self.root = Path(plan["campaign"])
@@ -1260,11 +1318,8 @@ class Campaign:
         else:
             save(path, binding)
 
-    def fences(self, *, ignore_phase=None):
-        failures = []
-        for path in sorted((self.root / "fences").glob("*.json")):
-            entry = load(path)
-            failures.append({**entry, "fence": reference(path)})
+    def fences(self, *, ignore_phase=None, diagnostic=False):
+        failures, numerical_controls = [], set()
         for path in sorted((self.root / "phases").glob("*.json")):
             if path.stem == ignore_phase:
                 continue
@@ -1278,13 +1333,21 @@ class Campaign:
             else:
                 try:
                     seal = load(completion)
-                    require(seal["path"] == str(summary) and sha256(summary) == seal["sha256"], "phase summary changed")
-                    prior = load(summary)
+                    require(seal["path"] == str(summary), "phase summary path changed")
+                    prior = read_reference(seal)
+                    numerical = diagnostic and entry["stage"] == "control" and numerical_control_only(prior, entry)
+                    if numerical:
+                        numerical_controls.add(path.stem)
                     for failure in prior["issues"]:
-                        if failure["category"] in ("identity", "cleanup") or entry["stage"] == "control":
+                        if failure["category"] in ("identity", "cleanup") or (entry["stage"] == "control" and not numerical):
                             failures.append(failure)
-                except (KeyError, ValueError, OSError) as error:
+                except (KeyError, IndexError, TypeError, ValueError, OSError) as error:
                     failures.append(issue("identity", "prior receipt: " + str(error)))
+        for path in sorted((self.root / "fences").glob("*.json")):
+            entry = load(path)
+            if diagnostic and entry.get("category") == "control" and entry.get("phase") in numerical_controls:
+                continue
+            failures.append({**entry, "fence": reference(path)})
         return failures
 
     def fence(self, category, reason, phase):
@@ -1311,23 +1374,34 @@ class Campaign:
 
 def load_cohort(directory):
     directory = Path(directory).resolve(strict=True)
-    plan = load(directory / "plan.json")
+    require((directory / "plan.json").stat().st_size <= 4 * MIB, "phase plan exceeds retained bound")
+    plan_bytes = (directory / "plan.json").read_bytes()
+    require(len(plan_bytes) <= 4 * MIB, "phase plan exceeds retained bound")
+    plan = strict_json(plan_bytes.decode("utf-8"))
     validate_plan(plan)
-    summary = load(directory / "summary.json")
-    require(summary["format"] == "consumer-phase-v1" and summary["plan_sha256"] == sha256(directory / "plan.json"),
-            "phase plan binding changed")
+    summary_path = directory / "summary.json"
+    require(summary_path.stat().st_size <= 4 * MIB, "phase summary exceeds retained bound")
+    summary_bytes = summary_path.read_bytes()
+    require(len(summary_bytes) <= 4 * MIB, "phase summary exceeds retained bound")
+    summary = strict_json(summary_bytes.decode("utf-8"))
+    summary_binding = {"path": str(summary_path), "sha256": hashlib.sha256(summary_bytes).hexdigest()}
+    require(summary["format"] in ("consumer-phase-v1", "consumer-phase-v2")
+            and summary["plan_sha256"] == hashlib.sha256(plan_bytes).hexdigest(), "phase plan binding changed")
     require(summary["schedule"] == schedule(summary["stage"]), "phase schedule changed")
     review, admission_issues = admission(plan)
     rows, failures = [], list(summary["issues"])
     try:
-        registration = Path(plan["campaign"]) / "phases" / (plan["case"] + "-" + summary["stage"] + ".json")
+        phase = plan["case"] + "-" + summary["stage"]
+        if summary["format"] == "consumer-phase-v2" and summary["stage"] == "smoke":
+            phase += "-" + hashed(str(directory))
+        registration = Path(plan["campaign"]) / "phases" / (phase + ".json")
         require(summary.get("registration") == reference(registration), "phase registration binding changed")
         registered = read_reference(summary["registration"])
         require(registered == {"output": str(directory), "stage": summary["stage"],
                                "plan_sha256": summary["plan_sha256"]}, "phase registration lineage changed")
         seal = load(registration.with_suffix(".complete"))
-        require(seal["path"] == str(directory / "summary.json") and
-                seal["sha256"] == sha256(directory / "summary.json"), "phase completion seal changed")
+        require(seal["path"] == summary_binding["path"] and seal["sha256"] == summary_binding["sha256"],
+                "phase completion seal changed")
     except (KeyError, ValueError, OSError) as error:
         failures.append(issue("identity", "cohort lineage: " + str(error)))
     if summary["stage"] != "smoke":
@@ -1336,9 +1410,8 @@ def load_cohort(directory):
     for index, attempt in enumerate(summary["attempts"]):
         require(attempt["slot"] == expected[index], "attempt order changed")
         start_path = directory / attempt["started"]["name"]
-        require(start_path.parent == directory and sha256(start_path) == attempt["started"]["sha256"],
-                "started receipt identity changed")
-        start = load(start_path, 64 * 1024)
+        require(start_path.parent == directory, "started receipt path changed")
+        start = read_reference({"path": str(start_path), "sha256": attempt["started"]["sha256"]}, 64 * 1024)
         require(start["slot"] == attempt["slot"] and start["plan_sha256"] == summary["plan_sha256"],
                 "started receipt slot binding changed")
         if attempt.get("raw") is None:
@@ -1346,8 +1419,8 @@ def load_cohort(directory):
             continue
         binding = attempt["raw"]
         path = directory / binding["name"]
-        require(path.parent == directory and sha256(path) == binding["sha256"], "raw identity changed")
-        raw = load(path, 25 * MIB)
+        require(path.parent == directory, "raw receipt path changed")
+        raw = read_reference({"path": str(path), "sha256": binding["sha256"]}, 25 * MIB)
         require(raw["slot"] == attempt["slot"] and raw["plan_sha256"] == summary["plan_sha256"], "raw slot binding changed")
         require(raw["execution_limits"] == {
             "timeout_seconds": plan["bounds"]["primary_seconds"],
@@ -1356,25 +1429,27 @@ def load_cohort(directory):
         runtime_observation = None
         if attempt.get("runtime") is not None:
             runtime_path = directory / attempt["runtime"]["name"]
-            require(runtime_path.parent == directory and sha256(runtime_path) == attempt["runtime"]["sha256"],
-                    "runtime observation identity changed")
-            runtime_observation = load(runtime_path, 2 * MIB)
+            require(runtime_path.parent == directory, "runtime observation path changed")
+            runtime_observation = read_reference(
+                {"path": str(runtime_path), "sha256": attempt["runtime"]["sha256"]}, 2 * MIB)
             require(runtime_observation["slot"] == raw["slot"] and
                     runtime_observation["plan_sha256"] == summary["plan_sha256"], "runtime observation slot changed")
         result = reconcile(plan, raw["slot"], raw["record"], review, directory / (raw["slot"]["id"] + "-sinks"), runtime_observation)
         if attempt.get("validation") is not None:
             saved = directory / attempt["validation"]["name"]
-            require(saved.parent == directory and sha256(saved) == attempt["validation"]["sha256"],
-                    "validation receipt changed")
-            require(load(saved) == {"slot": raw["slot"], **result}, "retained raw/validation disagree")
+            require(saved.parent == directory, "validation receipt path changed")
+            validation = read_reference({"path": str(saved), "sha256": attempt["validation"]["sha256"]}, 256 * 1024)
+            require(validation == {"slot": raw["slot"], **result}, "retained raw/validation disagree")
         rows.append({"slot": raw["slot"], **result})
-        failures.extend(result["issues"])
+        descriptive = (observation_findings(result["issues"])
+                       if summary["format"] == "consumer-phase-v2" and summary["stage"] == "smoke" else [])
+        failures.extend(problem for problem in result["issues"] if problem not in descriptive)
         if summary["stage"] != "smoke":
             failures.extend(result["unavailable"])
     if summary["unrun"] != expected[len(summary["attempts"]):] or len(rows) != len(expected):
         failures.append(issue("incomplete", "unrun or incomplete original slots"))
     return {"plan": plan, "summary": summary, "rows": rows, "issues": failures,
-            "review": review, "binding": reference(directory / "summary.json"), "directory": str(directory)}
+            "review": review, "binding": summary_binding, "directory": str(directory)}
 
 
 def compatible(first, second):
@@ -1443,12 +1518,14 @@ def collect_steps(plan, stage, output):
     plan_ref = save(output / "plan.json", plan)
     campaign = Campaign(plan)
     tasks = schedule(stage)
-    summary = {"format": "consumer-phase-v1", "stage": stage, "case": plan["case"],
+    summary = {"format": "consumer-phase-v2", "stage": stage, "case": plan["case"],
                "plan_sha256": plan_ref["sha256"], "schedule": tasks, "attempts": [], "unrun": tasks.copy(),
                "issues": [], "qualification": False, "admission_issues": [], "envelopes": {},
-               "elapsed_seconds": None, "evidence_bytes": plan_ref["bytes"]}
+               "observation_issues": [], "elapsed_seconds": None, "evidence_bytes": plan_ref["bytes"]}
     rows = []
     phase = plan["case"] + "-" + stage
+    if stage == "smoke":
+        phase += "-" + hashed(str(output))
     registration = None
     active_runtime = None
     review = None
@@ -1460,13 +1537,13 @@ def collect_steps(plan, stage, output):
             summary["admission_issues"] = missing
             summary["issues"].extend(lock_issues)
             if not lock_issues:
-                summary["issues"].extend(campaign.fences())
+                summary["issues"].extend(campaign.fences(diagnostic=stage == "smoke"))
             if summary["issues"]:
                 return summary
             registration_path = campaign.root / "phases" / (phase + ".json")
-            save(registration_path, {"output": str(output), "stage": stage,
-                                    "plan_sha256": plan_ref["sha256"]}, 64 * 1024)
-            summary["registration"] = reference(registration_path)
+            registered = save(registration_path, {"output": str(output), "stage": stage,
+                                                "plan_sha256": plan_ref["sha256"]}, 64 * 1024)
+            summary["registration"] = {key: registered[key] for key in ("path", "sha256")}
             registration = registration_path
             if stage != "smoke":
                 summary["issues"].extend(missing)
@@ -1550,7 +1627,9 @@ def collect_steps(plan, stage, output):
                     result = reconcile(plan, slot, record, review, sinks, observed)
                     result["slot"] = slot
                     rows.append(result)
-                    summary["issues"].extend(result["issues"])
+                    descriptive = observation_findings(result["issues"]) if stage == "smoke" else []
+                    summary["observation_issues"].extend(descriptive)
+                    summary["issues"].extend(problem for problem in result["issues"] if problem not in descriptive)
                     summary["issues"].extend(invocation_limits(result, envelopes))
                     if stage != "smoke":
                         summary["issues"].extend(result["unavailable"])
@@ -1567,7 +1646,8 @@ def collect_steps(plan, stage, output):
                     validation_path = output / (slot["id"] + ".validation.json")
                     valid_ref = save(validation_path, result, 256 * 1024)
                     attempt["validation"] = {"name": validation_path.name, "sha256": valid_ref["sha256"]}
-                    attempt["state"] = "failed" if result["issues"] else "semantic_contract_passed"
+                    attempt["state"] = ("failed" if any(problem not in descriptive for problem in result["issues"])
+                                        else "semantic_contract_passed")
                     summary["evidence_bytes"] += raw_ref["bytes"] + valid_ref["bytes"] + sink_bytes
                     summary["issues"].extend(verify_inputs(
                         plan, retention_deadline))
@@ -1621,6 +1701,7 @@ def collect_steps(plan, stage, output):
             summary["elapsed_seconds"] = time.monotonic() - started
             summary["statistics"] = cohort_statistics(rows, plan["case"], central_four=review is not None)
             summary["qualification"] = stage == "comparison" and not summary["issues"] and not summary["admission_issues"]
+            summary.update(phase_outcomes(summary))
             seal = save(output / "summary.json", summary)
             if registration is not None and registration.exists():
                 save(registration.with_suffix(".complete"), seal, 64 * 1024)
@@ -1688,7 +1769,7 @@ def discover_runtime(plan, role_name, output):
         try:
             result["issues"].extend(lock_issues)
             if not lock_issues:
-                result["issues"].extend(campaign.fences())
+                result["issues"].extend(campaign.fences(diagnostic=True))
             result["issues"].extend(verify_inputs(plan, min(deadline, started + 60)))
             require(not result["issues"], "discovery input/campaign admission failed")
             path = campaign.root / "phases" / (phase + ".json")
@@ -1909,6 +1990,10 @@ def main(argv=None):
                      "statistics": cohort_statistics(evidence["rows"], evidence["plan"]["case"],
                                                      central_four=evidence["review"] is not None),
                      "qualification": evidence["summary"]["qualification"] and not evidence["issues"]}
+            if evidence["summary"]["format"] == "consumer-phase-v2":
+                value.update(format="consumer-phase-v2",
+                             observation_issues=evidence["summary"]["observation_issues"],
+                             **phase_outcomes({**evidence["summary"], "issues": evidence["issues"]}))
         else:
             stage = {"calibrate": "calibration", "compare": "comparison"}.get(args.command, args.command)
             value = collect(load(args.plan), stage, args.output)

@@ -452,13 +452,16 @@ jobs:
           feature = {"normal": "template-matching-timing", "instrumented": "template-matching-benchmark"}[mode]
           mode_root = root / mode
           mode_root.mkdir()
+          test = ["cargo", "test", "--locked", "--package", "mado-pilot", "--features", feature,
+                  "--test", "template_matching_efficiency_exit",
+                  "--target-dir", str(Path(os.environ["CARGO_TARGET_DIR"]) / f"{mode}-exit-tests")]
           common = ["--locked", "--package", "mado-pilot", "--features", feature, "--bench", "template-matching-efficiency",
                     "--target-dir", str(Path(os.environ["CARGO_TARGET_DIR"]) / mode)]
           lint = ["cargo", "clippy", *common, "--", "-D", "warnings"]
           build = ["cargo", "bench", "--config", 'profile.bench.build-override.strip="none"', *common, "--no-run", "--message-format=json"]
-          commands = [lint, build]
+          commands = [test, lint, build]
           (mode_root / "commands.json").write_text(json.dumps(commands, indent=2) + "\n")
-          for label, argv in (("lint", lint), ("build", build)):
+          for label, argv in (("test", test), ("lint", lint), ("build", build)):
               with (mode_root / f"{label}.stdout").open("wb") as out, (mode_root / f"{label}.stderr").open("wb") as err:
                   subprocess.run(argv, stdout=out, stderr=err, check=True, timeout=1200)
           artifacts = [json.loads(line) for line in (mode_root / "build.stdout").read_text().splitlines()]
@@ -893,13 +896,16 @@ jobs:
           feature = {"normal": "template-matching-timing", "instrumented": "template-matching-benchmark"}[mode]
           mode_root = root / mode
           mode_root.mkdir()
+          test = ["cargo", "test", "--locked", "--package", "mado-pilot", "--features", feature,
+                  "--test", "template_matching_efficiency_exit",
+                  "--target-dir", str(Path(os.environ["CARGO_TARGET_DIR"]) / f"{mode}-exit-tests")]
           common = ["--locked", "--package", "mado-pilot", "--features", feature, "--bench", "template-matching-efficiency",
                     "--target-dir", str(Path(os.environ["CARGO_TARGET_DIR"]) / mode)]
           lint = ["cargo", "clippy", *common, "--", "-D", "warnings"]
           build = ["cargo", "bench", "--config", 'profile.bench.build-override.strip="none"', *common, "--no-run", "--message-format=json"]
-          commands = [lint, build]
+          commands = [test, lint, build]
           (mode_root / "commands.json").write_text(json.dumps(commands, indent=2) + "\n")
-          for label, argv in (("lint", lint), ("build", build)):
+          for label, argv in (("test", test), ("lint", lint), ("build", build)):
               with (mode_root / f"{label}.stdout").open("wb") as out, (mode_root / f"{label}.stderr").open("wb") as err:
                   subprocess.run(argv, stdout=out, stderr=err, check=True, timeout=1200)
           artifacts = [json.loads(line) for line in (mode_root / "build.stdout").read_text().splitlines()]

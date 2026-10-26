@@ -116,7 +116,7 @@
 //! Phase 1 capture/matching, Phase 2 native input, Phase 3 singular/grouped
 //! OCR, and the Phase 4 Rust template watcher are reachable here. The watcher
 //! is supported over replay/OpenCV and qualified native WGC/ScreenCaptureKit
-//! sessions on the release targets recorded by ADR 0064.
+//! sessions on the release targets listed in `docs/architecture.md#release-targets`.
 //! Replay and native engine requests accept an injected `Arc<dyn OcrBackend>`;
 //! ordinary constructors without one expose no OCR. Separate
 //! `*_engine_with_default_ocr` constructors preserve native G-004;
@@ -137,23 +137,17 @@
 //!
 //! # Names, and what may change
 //!
-//! **The names here are reviewed, not yet stable.** Every one of them was
-//! exercised by this package's example, its contract suite, the C ABI, and the
-//! C++ wrapper before being settled;
-//! `docs/adr/0006-public-rust-names-and-compatibility-policy.md` records the
-//! review and the six renames it produced.
-//!
-//! What that policy means for a caller: adding an item, a method, or an
-//! enumeration variant is free, and every public enumeration a later phase may
-//! extend is already `#[non_exhaustive]`, so keep a fallback arm. Renaming or
-//! removing one of these names is a breaking change and needs an ADR and a
-//! version bump. The stability promise itself begins at 1.0; this package is
-//! at 0.5.0.
+//! **The names here are reviewed, not yet stable.** Adding an item, method, or
+//! enumeration variant is allowed. Extensible public enumerations are
+//! `#[non_exhaustive]`, so keep a fallback arm. Renaming or removing a public
+//! name is a breaking change requiring a version bump. The stability promise
+//! begins at 1.0; this package is at 0.5.0. Current naming and compatibility
+//! policy lives in `docs/architecture.md`.
 //!
 //! The C ABI beneath this one is versioned separately. ABI 1.0, 1.2, and 1.3
 //! are frozen complete prefixes; ABI 1.4 appends explicit profile construction,
 //! grouped scan ownership, and two-dimensional access without moving them.
-//! ADRs 0035, 0036, and 0043 record those ownership and negotiation boundaries.
+//! `docs/c-abi.md` defines those ownership and negotiation boundaries.
 //! A Rust rename does not propagate to the C ABI.
 //!
 //! # Where to start
@@ -282,7 +276,7 @@ impl DefaultOcrConfig {
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 #[non_exhaustive]
 pub enum OcrProfile {
-    /// ADR 0040/0041 bounded-detector preprocessing over the accepted model pair.
+    /// Bounded-detector preprocessing over the accepted model pair.
     BoundedDetector,
     /// A repository catalog ID, revalidated during construction.
     Catalog(&'static str),
@@ -381,7 +375,7 @@ impl OcrProfileConfig {
 pub enum OcrProviderProfile {
     /// Released native G-004 preprocessing and model identity.
     NativeG004,
-    /// ADR 0040 bounded-detector preprocessing and model identity.
+    /// Bounded-detector preprocessing and model identity.
     BoundedDetector,
 }
 

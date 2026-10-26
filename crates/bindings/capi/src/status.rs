@@ -4,10 +4,8 @@
 //! outcome that has no Rust counterpart because it is the boundary's own: a
 //! contained panic. A caller never has to parse a message to decide what to do.
 //!
-//! Status values 0 through 12 are frozen by
-//! `docs/adr/0007-phase-1-c-abi-freeze.md`. ABI 1.2 appends input status 13
-//! under `docs/adr/0023-input-submission-observation-and-abi-1-2.md`. `Status`
-//! is `#[non_exhaustive]`, so any later status reports as
+//! Status values 0 through 12 are frozen for ABI major 1; ABI 1.2 appends input
+//! status 13. `Status` is `#[non_exhaustive]`, so any later status reports as
 //! `MADOPILOT_STATUS_INTERNAL` until an ABI minor gives it a value of its own.
 //! Reusing the nearest existing status instead would tell a C caller something
 //! specific and wrong.

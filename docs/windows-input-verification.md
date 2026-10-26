@@ -39,16 +39,15 @@ flowchart TD
     I --> H
 ```
 
-[ADR 0022](adr/0022-windows-ordinary-background-input-qualification.md)
-remains the evidence for the stronger claim it tested. Its ordinary/game-like
-consumers observed legacy messages, while Raw Input and asynchronous
-state-polling consumers did not; queue admission and a generic procedure return
-could not establish application consumption. [ADR 0027](adr/0027-windows-window-message-queue-submission.md)
-therefore supersedes only ADR 0022's system-only consequence. The current
-contract reports ordinary compatibility as `Unknown`, caps evidence at
-`TargetQueueAdmission`, and requires a separate newer-frame observation when a
-caller needs effect evidence. It makes no Raw Input, DirectInput, XInput,
-asynchronous-state, raw-HID, helper, hook, anti-cheat, or arbitrary-game claim.
+Ordinary compatibility is reported as `Unknown` because the stronger
+application-acknowledged claim was tested and not established: ordinary and
+game-like consumers observed legacy messages, while Raw Input and asynchronous
+state-polling consumers did not, and queue admission or a generic procedure
+return cannot establish application consumption. The contract therefore caps
+evidence at `TargetQueueAdmission` and requires a separate newer-frame
+observation when a caller needs effect evidence. It makes no Raw Input,
+DirectInput, XInput, asynchronous-state, raw-HID, helper, hook, anti-cheat, or
+arbitrary-game claim.
 
 ### Exact target authority
 

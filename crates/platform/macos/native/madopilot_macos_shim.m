@@ -2,11 +2,8 @@
  * MadoPilot macOS native shim.
  *
  * Objective-C with Automatic Reference Counting, compiled with
- * -fobjc-arc-exceptions. Both are requirements of
- * docs/adr/0012-macos-shim-language-and-containment.md rather than preferences:
- * without the exception flag, ARC emits no release on an unwind edge, so an
- * exception raised where a failing stream start would raise one leaves the
- * native object the session had already retained alive.
+ * -fobjc-arc-exceptions. Without the exception flag, ARC emits no release on an
+ * unwind edge, leaking native objects retained before a failing stream start.
  *
  * # Why ScreenCaptureKit is not imported
  *
@@ -19,9 +16,8 @@
  * binary that consumes the dependency, so a build script here cannot own that
  * flag. This file therefore loads the framework from its absolute system
  * location, resolves its classes by name and its exported attachment keys by
- * symbol, and gates every use behind an availability check. The observable
- * property ADR 0012 asked for is unchanged: an unsupported host reports
- * MP_SHIM_UNSUPPORTED and the library still loads.
+ * symbol, and gates every use behind an availability check. An unsupported host
+ * reports MP_SHIM_UNSUPPORTED and the library still loads.
  *
  * # Why discovery preflights authorization
  *
@@ -62,7 +58,7 @@
  * stops holding once the flag is dropped.
  */
 #ifndef MP_SHIM_ARC_EXCEPTIONS
-#error "the MadoPilot macOS shim requires -fobjc-arc-exceptions (ADR 0012)"
+#error "the MadoPilot macOS shim requires -fobjc-arc-exceptions"
 #endif
 
 /* Bounds on what a caller may ask for, so a request cannot size the producer. */
@@ -125,7 +121,7 @@ static uint64_t mp_shim_nanos_from_ticks(uint64_t ticks) {
     return nanos > UINT64_MAX ? UINT64_MAX : (uint64_t)nanos;
 }
 
-/* Count of native objects this shim owns, for the ADR 0012 ownership tests. */
+/* Count of native objects this shim owns, for failure-path ownership tests. */
 static atomic_ullong mp_shim_owned_objects = 0;
 static atomic_ullong mp_shim_fixture_owned_objects = 0;
 static atomic_ullong mp_shim_testing_start_submissions = 0;

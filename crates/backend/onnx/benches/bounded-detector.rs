@@ -1,4 +1,4 @@
-//! Revision-bound quality and resource qualification for ADRs 0038–0044.
+//! Revision-bound quality and resource qualification for bounded-detector profiles.
 
 use std::mem::size_of;
 use std::path::{Path, PathBuf};

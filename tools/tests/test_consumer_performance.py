@@ -555,6 +555,7 @@ class ImmutableCampaign(unittest.TestCase):
         self.plan["host"]["target"] = self.plan["target"]
         self.enterContext(mock.patch.object(collector, "host_identity", return_value=self.plan["host"]))
         self.campaign = collector.Campaign(self.plan)
+        self.output = trial_output(self.plan)
         self.campaign.initialize()
 
     def test_receipt_creation_never_replaces_failed_evidence(self):
@@ -703,6 +704,224 @@ class ImmutableCampaign(unittest.TestCase):
         bad["roles"]["baseline"]["engine"]["cargo_artifact"]["profile"]["opt_level"] = "3"
         with self.assertRaisesRegex(ValueError, "dev build"):
             collector.validate_plan(bad)
+
+    def failed_control(self, *, early=False):
+        self.plan["roles"]["candidate"] = copy.deepcopy(self.plan["roles"]["baseline"])
+        review = {"metrics": {OP: trial_contract()}}
+        slots = iter(collector.schedule("control"))
+        original_reconcile = collector.reconcile
+
+        def launch(*args, **kwargs):
+            slot = next(slots)
+            output = copy.deepcopy(self.output)
+            output["operation"]["total_duration_us"] = (TRIAL_CEILING + 1 if early else
+                1000 if slot["role"] == "baseline" else 1000 + TRIAL_REGRESSION + 1)
+            return record_for(output)
+
+        def reconcile(*args, **kwargs):
+            result = original_reconcile(*args, **kwargs)
+            # Only optional qualification accounting is substituted; semantics and grading are real.
+            result["unavailable"] = []
+            return result
+
+        with mock.patch.object(collector, "admission", return_value=(review, [])), \
+                mock.patch.object(collector, "prerequisites", return_value=({OP: calibrated_trial()}, [])), \
+                mock.patch.object(collector, "reconcile", side_effect=reconcile), \
+                mock.patch.object(collector, "run_process", side_effect=launch) as process, \
+                contextlib.redirect_stdout(io.StringIO()):
+            result = collector.collect(self.plan, "control", self.root / "control")
+        self.assertEqual(process.call_count, 1 if early else 12)
+        self.assertTrue(result["issues"])
+        self.assertFalse(result["qualification"])
+        self.assertEqual(result["qualification_status"], "failed")
+        return result
+
+    def test_numerical_control_preserves_failed_evidence_but_allows_distinct_smokes(self):
+        self.failed_control()
+        paths = [*self.campaign.root.rglob("*"), *(self.root / "control").rglob("*")]
+        retained = {path: path.read_bytes() for path in paths if path.is_file()}
+        with mock.patch.object(collector, "run_process", return_value=record_for(self.output)) as launch, \
+                contextlib.redirect_stdout(io.StringIO()):
+            first = collector.collect(self.plan, "smoke", self.root / "diagnostic-one")
+            second = collector.collect(self.plan, "smoke", self.root / "diagnostic-two")
+        self.assertEqual(launch.call_count, 2)
+        for result in (first, second):
+            self.assertEqual((result["issues"], result["unrun"]), ([], []))
+            self.assertEqual((result["execution_status"], result["qualification_status"]),
+                             ("completed", "not-requested"))
+            self.assertFalse(result["qualification"])
+        self.assertNotEqual(first["registration"], second["registration"])
+        self.assertEqual(retained, {path: path.read_bytes() for path in retained})
+        self.assertTrue(self.campaign.fences())
+        self.assertEqual(self.campaign.fences(diagnostic=True), [])
+        with mock.patch.object(collector, "run_process") as launch, contextlib.redirect_stdout(io.StringIO()):
+            refused = collector.collect(self.plan, "comparison", self.root / "comparison")
+        launch.assert_not_called()
+        self.assertTrue(refused["issues"])
+
+    def test_numerical_early_stop_allows_smoke_without_resuming_unrun_control(self):
+        control = self.failed_control(early=True)
+        retained = (self.root / "control/summary.json").read_bytes()
+        self.assertEqual(len(control["unrun"]), 11)
+        with mock.patch.object(collector, "run_process", return_value=record_for(self.output)) as launch, \
+                contextlib.redirect_stdout(io.StringIO()):
+            result = collector.collect(self.plan, "smoke", self.root / "diagnostic")
+        self.assertEqual((launch.call_count, result["issues"]), (1, []))
+        self.assertEqual((self.root / "control/summary.json").read_bytes(), retained)
+
+    def test_unbound_or_changed_control_cannot_bypass_fence(self):
+        self.failed_control()
+        path = self.root / "control/00.raw.json"
+        value = collector.load(path)
+        value["record"]["cleanup_ok"] = False
+        path.write_bytes(collector.document(value))
+        with mock.patch.object(collector, "run_process") as launch, contextlib.redirect_stdout(io.StringIO()):
+            result = collector.collect(self.plan, "smoke", self.root / "diagnostic")
+        launch.assert_not_called()
+        self.assertIn("identity", {problem["category"] for problem in result["issues"]})
+
+    def test_unknown_identity_and_cleanup_fences_refuse_new_smoke_output(self):
+        for category in ("control", "identity", "cleanup", "unknown"):
+            with self.subTest(category=category):
+                plan = {**self.plan, "campaign": str(self.root / (category + "-campaign"))}
+                owner = collector.Campaign(plan)
+                owner.initialize()
+                owner.fence(category, "unresolved original state", "unregistered")
+                with mock.patch.object(collector, "run_process") as launch, contextlib.redirect_stdout(io.StringIO()):
+                    result = collector.collect(plan, "smoke", self.root / category)
+                launch.assert_not_called()
+                self.assertEqual(result["attempts"], [])
+                self.assertTrue(result["issues"])
+
+    def test_unfinished_smoke_registration_refuses_an_independent_diagnostic(self):
+        collector.save(self.campaign.root / "phases" / "unfinished-smoke.json",
+                       {"stage": "smoke", "output": str(self.root / "unknown")})
+        with mock.patch.object(collector, "run_process") as launch, contextlib.redirect_stdout(io.StringIO()):
+            result = collector.collect(self.plan, "smoke", self.root / "diagnostic")
+        launch.assert_not_called()
+        self.assertIn("cleanup", {problem["category"] for problem in result["issues"]})
+
+    def test_smoke_cli_describes_numeric_misses_and_report_keeps_original_validation(self):
+        review = {"metrics": {OP: trial_contract(hard_ceiling_us=999),
+                              RSS: resident_contract(hard_ceiling_bytes=99 * collector.MIB)}}
+        plan_path = self.root / "selected-plan.json"
+        collector.save(plan_path, self.plan)
+        directory = self.root / "diagnostic"
+        with mock.patch.object(collector, "admission", return_value=(review, [])), \
+                mock.patch.object(collector, "run_process", return_value=record_for(self.output)) as launch:
+            output = io.StringIO()
+            with contextlib.redirect_stdout(output):
+                code = collector.main(["smoke", "--plan", str(plan_path), "--output", str(directory)])
+            self.assertEqual((code, launch.call_count), (0, 1))
+            result = collector.load(directory / "summary.json")
+            self.assertEqual(result["format"], "consumer-phase-v2")
+            self.assertEqual(result["issues"], [])
+            self.assertEqual(len(result["observation_issues"]), 2)
+            validation = collector.load(directory / "00.validation.json")
+            self.assertEqual(result["observation_issues"], validation["issues"])
+            self.assertIsNone(validation["metrics"]["lifetime_cpu_seconds"])
+            self.assertTrue(validation["unavailable"])
+            original = {path: path.read_bytes() for path in directory.iterdir() if path.is_file()}
+            output = io.StringIO()
+            with contextlib.redirect_stdout(output):
+                self.assertEqual(collector.main(["report", str(directory)]), 0)
+            report = collector.strict_json(output.getvalue())
+            self.assertEqual(report["observation_issues"], result["observation_issues"])
+            self.assertEqual(report["rows"][0]["issues"], validation["issues"])
+            self.assertEqual(report["qualification_status"], "not-requested")
+            self.assertEqual(original, {path: path.read_bytes() for path in original})
+            self.assertEqual(launch.call_count, 1)
+
+    def test_explicit_calibration_cli_still_fails_numeric_limit_without_retry(self):
+        self.plan["roles"]["candidate"] = copy.deepcopy(self.plan["roles"]["baseline"])
+        plan_path = self.root / "selected-plan.json"
+        collector.save(plan_path, self.plan)
+        review = {"metrics": {OP: trial_contract(hard_ceiling_us=999)}}
+        with mock.patch.object(collector, "admission", return_value=(review, [])), \
+                mock.patch.object(collector, "run_process", return_value=record_for(self.output)) as launch:
+            output = io.StringIO()
+            with contextlib.redirect_stdout(output):
+                code = collector.main(["calibrate", "--plan", str(plan_path), "--output", str(self.root / "calibration")])
+        self.assertEqual((code, launch.call_count), (1, 1))
+        result = collector.load(self.root / "calibration" / "summary.json")
+        self.assertIn("numerical", {problem["category"] for problem in result["issues"]})
+        self.assertEqual(result["observation_issues"], [])
+        self.assertEqual(len(result["unrun"]), 5)
+        self.assertEqual(result["qualification_status"], "failed")
+
+    def test_smoke_numeric_findings_never_hide_semantic_or_cleanup_failure(self):
+        review = {"metrics": {OP: trial_contract(hard_ceiling_us=999)}}
+        self.output["oracle"]["passed"] = False
+        record = record_for(self.output)
+        record["cleanup_ok"] = False
+        with mock.patch.object(collector, "admission", return_value=(review, [])), \
+                mock.patch.object(collector, "run_process", return_value=record), \
+                contextlib.redirect_stdout(io.StringIO()):
+            result = collector.collect(self.plan, "smoke", self.root / "unsafe")
+        self.assertEqual(result["execution_status"], "failed")
+        self.assertTrue({"cleanup", "semantics"} <= {problem["category"] for problem in result["issues"]})
+        with mock.patch.object(collector, "run_process") as launch, contextlib.redirect_stdout(io.StringIO()):
+            refused = collector.collect(self.plan, "smoke", self.root / "new-output")
+        launch.assert_not_called()
+        self.assertTrue(refused["issues"])
+
+    def test_historical_smoke_numeric_failure_is_not_regraded_as_current_observation(self):
+        directory = self.root / "historical"
+        directory.mkdir()
+        review = {"metrics": {OP: trial_contract(hard_ceiling_us=999)}}
+        plan_binding = collector.save(directory / "plan.json", self.plan)
+        slot = collector.schedule("smoke")[0]
+        record = record_for(self.output)
+        validation = {"slot": slot, **collector.reconcile(self.plan, slot, record, review)}
+        attempt = {"slot": slot}
+        for kind, payload in (
+                ("started", {"slot": slot, "plan_sha256": plan_binding["sha256"]}),
+                ("raw", {"slot": slot, "plan_sha256": plan_binding["sha256"], "record": record,
+                         "execution_limits": {"timeout_seconds": self.plan["bounds"]["primary_seconds"],
+                                              "cleanup_seconds": self.plan["bounds"]["cleanup_seconds"],
+                                              "output_limit_bytes": self.plan["bounds"]["output_limit_bytes"]}}),
+                ("validation", validation)):
+            name = slot["id"] + "." + kind + ".json"
+            binding = collector.save(directory / name, payload)
+            attempt[kind] = {"name": name, "sha256": binding["sha256"]}
+        registration = self.campaign.root / "phases" / (self.plan["case"] + "-smoke.json")
+        collector.save(registration, {"output": str(directory), "stage": "smoke",
+                                      "plan_sha256": plan_binding["sha256"]})
+        summary = {"format": "consumer-phase-v1", "stage": "smoke", "case": self.plan["case"],
+                   "plan_sha256": plan_binding["sha256"], "registration": collector.reference(registration),
+                   "schedule": [slot], "attempts": [attempt], "unrun": [], "issues": validation["issues"],
+                   "admission_issues": [], "qualification": False}
+        seal = collector.save(directory / "summary.json", summary)
+        collector.save(registration.with_suffix(".complete"), seal)
+        before = {path: path.read_bytes() for path in directory.iterdir()}
+        with mock.patch.object(collector, "admission", return_value=(review, [])), \
+                mock.patch.object(collector, "run_process") as launch, \
+                contextlib.redirect_stdout(io.StringIO()) as output:
+            self.assertEqual(collector.main(["report", str(directory)]), 1)
+        launch.assert_not_called()
+        result = collector.strict_json(output.getvalue())
+        self.assertIn("numerical", {problem["category"] for problem in result["issues"]})
+        self.assertNotIn("observation_issues", result)
+        self.assertEqual(before, {path: path.read_bytes() for path in before})
+
+    def test_windows_smoke_keeps_missing_optional_runtime_and_cpu_accounting(self):
+        self.plan["target"] = collector.component.TARGETS[1]
+        self.plan["host"]["target"] = self.plan["target"]
+        record = record_for(trial_output(self.plan))
+        record["cpu"] = {"status": "unavailable", "final": True, "reason": "job accounting unavailable",
+                         "user_seconds": None, "system_seconds": None}
+        # A distinct host has its own campaign; no foreign target/host fence is bypassed.
+        self.plan["campaign"] = str(self.root / "windows-campaign")
+        with mock.patch.object(collector, "run_process", return_value=record) as launch, \
+                contextlib.redirect_stdout(io.StringIO()):
+            result = collector.collect(self.plan, "smoke", self.root / "windows-smoke")
+        self.assertEqual((launch.call_count, result["issues"]), (1, []))
+        self.assertFalse(result["qualification"])
+        validation = collector.load(self.root / "windows-smoke/00.validation.json")
+        self.assertIsNone(validation["metrics"]["lifetime_cpu_seconds"])
+        self.assertIsNone(validation["raw_cpu_observation"]["user_plus_system_seconds"])
+        self.assertEqual(validation["cpu"], record["cpu"])
+        self.assertTrue(validation["unavailable"])
 
 
 class DiscoveryFailures(unittest.TestCase):

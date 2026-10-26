@@ -3,8 +3,7 @@
  *
  * This surface is internal to `mado-pilot-platform-macos`. It is not a public
  * MadoPilot ABI, is not installed, and is not covered by the C ABI compatibility
- * policy in docs/c-abi.md. Its rules come from
- * docs/adr/0012-macos-shim-language-and-containment.md:
+ * policy in docs/c-abi.md. Its internal boundary requires:
  *
  *   - opaque handles, size-versioned request and report structures, a status
  *     return on every entry point, and output values written through validated
@@ -62,10 +61,9 @@ extern "C" {
 /*
  * Session-scoped test seams.
  *
- * A caller may ask a session to raise a native exception at one of the boundary
- * positions ADR 0012 measured, which is how the containment and failure-path
- * ownership cases become testable. Nothing in the product sets them, and a session
- * that leaves them zero behaves as if they did not exist.
+ * A caller may ask a session to raise a native exception at a boundary position
+ * to test containment and failure-path ownership. Product sessions leave these
+ * seams zero and never inject exceptions.
  *
  * The completion seams cover callback trampolines the framework invokes after the
  * registering entry point has returned. A catch around that entry point cannot
@@ -485,8 +483,7 @@ mp_shim_status mp_shim_monotonic_nanos(uint64_t *out_nanos);
 /*
  * Reports how many native objects this shim owns process-wide.
  *
- * This exists for the ownership cases ADR 0012 requires: a contained failure
- * must leave none of the objects it had taken alive.
+ * A contained failure must release every object it acquired.
  */
 mp_shim_status mp_shim_live_objects(uint64_t *out_live);
 
@@ -951,8 +948,7 @@ mp_shim_status mp_shim_session_leased(const mp_shim_session *session, uint64_t *
 /*
  * Reports how many native objects the session still owns.
  *
- * This exists for the ownership tests ADR 0012 requires: a contained failure
- * must leave none of them alive.
+ * A contained failure must release every object it acquired.
  */
 mp_shim_status mp_shim_session_live_objects(const mp_shim_session *session, uint64_t *out_live);
 

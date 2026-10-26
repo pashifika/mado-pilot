@@ -3,30 +3,30 @@
 MadoPilot can wait for stable template presence on maintained Windows Graphics Capture or ScreenCaptureKit sessions through the Rust facade. The caller starts one bounded query and receives one immutable terminal outcome; no caller frame-polling loop, target activation, input injection, host callback, or permission prompt is involved.
 
 This page documents a Rust native boundary supported on the named release
-targets. [ADR 0064](adr/0064-token-driven-native-template-watch-qualification-v2.md)
-defines token-driven Qualification V2 without rewriting the historical two-host
-evidence or the consumed builders retained by ADRs 0057 and 0060–0063. Source
-`318ad1c` passed the required Apple Silicon Lane B contract, Windows execution
-source `3e3079f` passed the required approved-host contract, and test-only
-successor `53608af` pins the earlier-deadline clamp. Reviewed target-isolated
-applicability joins those results at the current V2 boundary.
+targets. Support rests on the token-driven Qualification V2 contract below:
+source `318ad1c` passed the required Apple Silicon Lane B contract, Windows
+execution source `3e3079f` passed the required approved-host contract, and
+test-only successor `53608af` pins the earlier-deadline clamp. Reviewed
+target-isolated applicability joins those results at the current boundary.
+Earlier qualification attempts keep their recorded results and are not part of
+the current support decision.
 
 ## Current boundary
 
 | Surface | State |
 |---|---|
-| Rust `Session::start_template_watch` over replay/OpenCV | Supported and budget-qualified |
+| Rust `Session::start_template_watch` over replay/OpenCV | Supported |
 | Rust `Session::start_template_watch` over Windows WGC window/display sessions | Supported on the qualified Windows 11 25H2 floor; V2 execution source `3e3079f` passed all eight semantic and cleanup scenarios on the approved mixed-DPI host, including exact-token geometry progress and acknowledged `TargetLost` termination; test-only successor `53608af` pins the earlier caller deadline |
 | Rust `Session::start_template_watch` over macOS ScreenCaptureKit window/display sessions | Supported on the qualified macOS floor; V2 source `318ad1c` passed all eight semantic and cleanup scenarios on the approved Apple M1 Pro, macOS 26.6.2, SDK 26.5 host, including captured 2× token scale and exact fixture finalization, and reviewed Windows-only runtime-diff applicability carries the result through `53608af` |
 | Non-blocking `TemplateQuery::poll`, blocking `wait`, explicit `cancel`, and immutable terminal results | Supported for replay/OpenCV and the qualified native sessions |
-| OCR predicates or wait-for-text | Not implemented |
+| OCR predicates inside template queries | Not implemented; use [OCR text queries](ocr-text-watch.md) to wait for text |
 | Watcher callbacks or subscriptions | Not implemented |
 | C ABI or C++ watcher start/query APIs | Not implemented; ABI 1.5 remains unchanged |
 | Automatic input, target activation, or watcher-triggered actions | Not implemented |
 | Tokio/futures integration or real-time guarantees | Not implemented |
 | `v0.4.0` distribution | Source-only release; packaged libraries, crates.io publication, static artifacts, installers, and bundled native dependencies are not provided |
 
-The V2 native matrices use repository-owned token fixtures to prove exact producer progress, source/frame correlation, geometry generation, retained ownership, lifecycle outcomes, and bounded cleanup. The current Apple report is bound to commit `318ad1c49102d9fcd33448d12ee75d739bf04336`, tree `00fe097cb4b1ea4eaf58abc87f496584f50d3ae8`, runner SHA-256 `7a4720f3ca8b756b0f2757988921c901983a13ef6e67fd86926860e3d5e6ea87`, fixture SHA-256 `d7fe848cccaf2db829dafd538b36460d1c015d33d666ac4158e015d4e700e307`, codec SHA-256 `8b59a9cbc375e21ca39514a6c2f2ca16ebdaec47b82126d7c7d36c7809dc8f10`, and report SHA-256 `9518c00ec118b1e2f21027fd1c7bd811a3f176f79ef89752714ef27c65ce6289`. Earlier V1 Windows passes, Apple terminal failures, repairs, and consumed builders remain historical facts only; V2 neither relabels them nor claims a cause for the historical ScreenCaptureKit suspension. These fixtures are qualification apparatus, not a compatibility claim for arbitrary applications or caller content.
+The V2 native matrices use repository-owned token fixtures to prove exact producer progress, source/frame correlation, geometry generation, retained ownership, lifecycle outcomes, and bounded cleanup. The current Apple report is bound to commit `318ad1c49102d9fcd33448d12ee75d739bf04336`, tree `00fe097cb4b1ea4eaf58abc87f496584f50d3ae8`, runner SHA-256 `7a4720f3ca8b756b0f2757988921c901983a13ef6e67fd86926860e3d5e6ea87`, fixture SHA-256 `d7fe848cccaf2db829dafd538b36460d1c015d33d666ac4158e015d4e700e307`, codec SHA-256 `8b59a9cbc375e21ca39514a6c2f2ca16ebdaec47b82126d7c7d36c7809dc8f10`, and report SHA-256 `9518c00ec118b1e2f21027fd1c7bd811a3f176f79ef89752714ef27c65ce6289`. Earlier V1 Windows passes, Apple terminal failures, repairs, and consumed builders are summarized under [Earlier qualification attempts](#earlier-qualification-attempts); V2 neither relabels them nor claims a cause for the historical ScreenCaptureKit suspension. These fixtures are qualification apparatus, not a compatibility claim for arbitrary applications or caller content.
 
 The accepted Windows report is bound to commit
 `3e3079f2d71243d1b25d5bda79e3672c0cd3df07`, tree
@@ -172,24 +172,34 @@ Other terminal outcomes are explicit: `Cancelled`, `DeadlineExceeded`, `SessionC
 
 The production watcher uses fixed finite engine/session/query limits, two engine-wide analysis slots with at most one admitted generation per query, one latest pending frame per query, a bounded shared mapping cache, and a 30-second eligible-queue residence bound. Capture publication never waits for OpenCV matching. Superseded, coalesced, deferred, rejected, expired, completed, and failed work remains observable through query results or bounded diagnostics.
 
-[ADR 0053](adr/0053-native-template-watch-budgets.md) fixes independent Windows and Apple Silicon regression ceilings. Replacement source `f16591f` corrected the engine-close and Windows cross-DPI semantics rejected by independent review. Its Windows cohort passed five fresh processes. Its Apple cohort passed processes 1–4, then process 5 terminated red at `retained_result_mapping` after ScreenCaptureKit suspended the newly opened stream. That revision-bound failure remains attributed only to the observed suspension; later results do not assign it a cleanup cause.
+The native target profiles are independent Windows and Apple Silicon regression
+targets for repository fixtures. They are not service-level objectives or Lane B
+pass criteria, and new statistical enforcement belongs only to optional Lane C,
+which cannot relabel a compact semantic result. No cross-target limit, automatic
+retry, dynamic capacity tuning, or real-time guarantee is implied.
 
-Current-source revision `030398e` produced a distinct `retained_result_mapping` terminal red: bounded fixture finalization failed and p95 and maximum latency exceeded their unchanged limits. ADR 0060 retains that result without assigning a cause. Cleanup localization and exact-sample correlation bound to `030398e` then selected ADR 0062's exact retained-lifetime and typed-finalization repair without changing deadlines, delayed-reaper bounds, or accepted limits.
+### Earlier qualification attempts
 
-Qualification V2 replaces the monolithic required campaign with the compact
-token-driven contract. Source `318ad1c` passed the Apple Lane B integration and
-cleanup boundary, and Windows execution source `3e3079f` passed the compact
-contract, the deterministic liveness precedence suite and mutation proof, and
-the hosted post-acknowledgement latency check. Test-only successor `53608af`
-pins the earlier caller deadline and passes all six focused tests and required
-CI. Reviewed target-isolated applicability carries the Apple result through that
-successor, so the named cross-target Rust native boundary is supported. The
-historical target-specific
-numbers remain repository-fixture regression evidence, not service-level
-objectives or Lane B pass criteria. New statistical enforcement belongs only to
-optional Lane C and cannot relabel a compact semantic result. No cross-target
-limit, automatic retry, dynamic capacity tuning, or real-time guarantee is
-implied.
+These results are history; they keep their sources and verdicts and do not
+affect the current support decision.
+
+- Replacement source `f16591f` corrected engine-close and Windows cross-DPI
+  semantics rejected by independent review. Its Windows cohort passed five fresh
+  processes; its Apple cohort passed processes 1–4, then process 5 terminated red
+  at `retained_result_mapping` after ScreenCaptureKit suspended the newly opened
+  stream. That failure remains attributed only to the observed suspension.
+- Source `030398e` produced a distinct `retained_result_mapping` terminal red:
+  bounded fixture finalization failed and p95 and maximum latency exceeded their
+  unchanged limits. Cleanup localization then selected the exact
+  retained-lifetime and typed-finalization repair described below, without
+  changing deadlines, delayed-reaper bounds, or limits.
+- Integrated candidate `9cf746f` contained both private repairs, but its sole
+  authorized builders terminated at apparatus controls before process 1; those
+  attempts were retained without retry.
+
+The decision records behind these steps are readable at the
+[historical source revision](https://github.com/pashifika/mado-pilot/tree/646369fad6c922ac7b064367817337a18e572d8c/docs/adr)
+(ADRs 0053, 0057 and 0059–0064).
 
 ## Diagnostics and privacy
 
@@ -200,14 +210,27 @@ retaining evidence. V2 Lane B emits one typed JSON object no larger than 64 KiB;
 unknown fields are rejected recursively, so pixels, hashes, titles, paths,
 credentials, unrelated process data, and free-form native payloads cannot be
 admitted. Its bounded scale, frame ordinal, status, timing, count, and resource
-facts contain no target name or native identifier. The separate Lane C profile
-validator retains ADR 0061's distinction between fixed privacy/schema admission
-and typed environment incompatibility. Windows 11 Pro 25H2 build family 26200
-remains required, while a canonical unsigned 32-bit UBR and bounded hardware
-representation are diagnostic provenance rather than exact-update admission
-keys.
+facts contain no target name or native identifier.
 
-On Apple, ADR 0062 keeps fixture finalization facts separate: Stop
+Tracked native-watch reports pass two ordered checks behind one validator.
+Privacy and schema validation runs first and admits only fixed report fields,
+canonical identities and finite bounded platform grammars; it rejects paths,
+credentials, captured/template content, OCR/input text, native identifiers,
+process inventories, free-form payloads, malformed or overflowing numbers, extra
+delimiters and trailing data. Environment compatibility then independently
+checks the approved host class, platform family, deployment target, SDK,
+toolchain and backend, and returns a typed incompatibility distinct from schema
+and privacy failures. The caller maps the three outcomes to distinct bounded
+failure classes, publishes no tracked report after any rejection, and publishes
+exactly one report only after semantic, privacy and environment checks all pass.
+For Windows host class `windows-i7-12700kf-32g`, Windows 11 Pro 25H2 build family
+26200 and Windows SDK 10.0.26100.0 remain required; a canonical unsigned 32-bit
+UBR and bounded hardware text (the fixed processor description with either
+`32 GiB` or a canonical unsigned 64-bit byte count) are diagnostic provenance,
+not exact-update or hardware admission keys. Apple allowlists and rejection rules
+stay exact.
+
+On Apple, fixture finalization facts stay separate: Stop
 acknowledgement, authenticated and retained launched lifetime, bounded
 containment, output drain, executable identity, and cleanup debt. Failure output
 uses fixed state vocabulary, booleans, and bounded counts rather than paths,

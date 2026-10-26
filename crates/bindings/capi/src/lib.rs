@@ -45,10 +45,9 @@
 //! request storage, and higher-level policy; no official C++ wrapper is provided.
 //!
 //! **Every released numeric value, structure prefix, field offset, and table
-//! position is frozen for ABI major 1.** ADR 0007 froze ABI 1.0, ADR 0023 froze
-//! ABI 1.2, ADR 0035 records ABI 1.3, ADR 0043 records ABI 1.4, and ADR 0046
-//! records the additive ABI 1.5 provider boundary. Within this major nothing
-//! moves; a later minor appends. `tests/abi-compat/` compiles and runs every
+//! position is frozen for ABI major 1.** Within this major nothing moves; a later
+//! minor appends. `docs/c-abi.md` defines the compatibility contract.
+//! `tests/abi-compat/` compiles and runs every
 //! released header against later builds. The unreleased 1.1 draft has no fixture
 //! or compatibility surface.
 //!

@@ -2,16 +2,13 @@
 //!
 //! Sources differ in what they can record and what can go wrong while reading
 //! them. They do not differ in what makes a package valid, so the stages below
-//! run once, in one order, for all three of them. That order is the contract
-//! recorded in [ADR 0001] and reproduced in `docs/evidence/g-014/probe.md`:
-//! every ceiling is checked before the allocation or expansion it bounds, and
-//! recorded metadata may reject but never authorise.
+//! run once, in one order, for all three of them. Every ceiling is checked before
+//! the allocation or expansion it bounds; recorded metadata may reject but never
+//! authorise. Supporting measurements are in `docs/evidence/g-014/probe.md`.
 //!
 //! Nothing is observable until the last step. A failure at any stage — a hash
 //! that does not match, a source that moved, a deadline that passed — discards
 //! everything read so far, so no entry from a refused attempt is ever trusted.
-//!
-//! [ADR 0001]: https://github.com/pashifika/mado-pilot/blob/main/docs/adr/0001-asset-archive-container-and-safety-ceilings.md
 
 use std::collections::BTreeMap;
 use std::io::Cursor;
@@ -232,16 +229,13 @@ fn open(
     }
 }
 
-/// Stage D. Applies the per-entry rules in the order [ADR 0001] fixes, then the
-/// aggregate ratio.
+/// Stage D. Applies the per-entry rules before the aggregate ratio.
 ///
 /// The ratio is checked last of the metadata rules rather than first. Both
 /// positions are before any expansion, so safety is identical, but a package
 /// that crosses one absolute ceiling is far more likely to be a
 /// misconfiguration than an attack, and naming that ceiling is the more
 /// actionable diagnostic.
-///
-/// [ADR 0001]: https://github.com/pashifika/mado-pilot/blob/main/docs/adr/0001-asset-archive-container-and-safety-ceilings.md
 fn validate_entries(
     raw: &[RawEntry],
     limits: AssetLimits,

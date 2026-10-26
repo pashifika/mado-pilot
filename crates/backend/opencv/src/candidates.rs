@@ -36,10 +36,8 @@ pub(crate) struct Peak {
 /// one the clamp is only a rounding guard, because normalized correlation cannot
 /// exceed one except by floating-point error.
 ///
-/// Rescaling the full range onto `0.0..=1.0` instead was rejected: it would make
-/// a public score of `0.5` mean "no correlation", so every caller's threshold
-/// would quietly mean something weaker than it reads. See
-/// `docs/adr/0003-opencv-matching-profile-and-public-score.md`.
+/// Rescaling the full range onto `0.0..=1.0` would make a public score of `0.5`
+/// mean "no correlation", weakening the meaning of callers' thresholds.
 ///
 /// A non-finite raw value is not this function's concern; [`peaks`] skips those
 /// offsets before mapping them.

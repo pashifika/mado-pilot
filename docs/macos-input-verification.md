@@ -53,7 +53,7 @@ focus a window the caller asked not to disturb.
 
 `ProcessDirected` release publication is gated per operation pair: a source may
 call a pair qualified only when its mandatory revision-bound native rows in the
-[ADR 0029](adr/0029-macos-process-directed-input.md) qualification matrix pass.
+process-directed qualification matrix pass.
 `CapabilitySupport::Unknown` is the strongest publishable compatibility claim,
 and a failed or unexecuted route-wide row blocks every dependent pair. The
 negotiated target descriptor remains the runtime admission authority, but its
@@ -145,7 +145,7 @@ cursor position were unchanged, and no activation or Space-change notification
 was recorded. Sampling is not atomic continuous evidence; concurrent ordinary
 typing was not exercised.
 
-This is one application's observed workflow, not the ADR 0029 qualification
+This is one application's observed workflow, not the process-directed qualification
 matrix, generic macOS 27 support, or repeated-run reliability. Route compatibility
 remains `Unknown`; receipts remain `InvocationOnly`. Windows and foreign-language
 native scenarios were not rerun. Private target identity, images, plans, and raw
@@ -233,9 +233,9 @@ observations. Its returned bounds are reused for geometry without another
 blocking inventory read after accepted focus. Missing required attributes make
 focus unobservable; a complete unequal or ambiguous observation establishes that
 the retained window is not focused. Both outcomes deliver nothing. This is a
-last observation, not an OS-atomic focus/post guarantee;
-[ADR 0090](adr/0090-final-macos-focus-observation-order.md) supersedes only
-ADR 0016's final observation order.
+last observation, not an OS-atomic focus/post guarantee: the final retained-window
+inventory precedes the final frontmost, focused-window and focused-window-bounds
+observations, and no further blocking read follows accepted focus.
 Titles and private Accessibility window identifiers are not read, and a same-PID
 replacement that recycles numeric metadata still makes the old `TargetId`
 report `TargetLost`. Every native observation is bounded by the caller's
@@ -273,8 +273,8 @@ Their evidence is `InvocationOnly` on both routes: it proves neither
 operating-system admission nor application consumption. A text event that may
 have had partial native effect before a later chunk failed is `Partial` even
 when no logical event completed, never `Unexecuted`, and no fallback route is
-tried after possible effect. ADR 0023 records why receipt evidence and a later
-visual observation remain separate.
+tried after possible effect. Receipt evidence and a later visual observation stay
+separate because a returned invocation cannot observe an application effect.
 
 ## Process-directed delivery
 
@@ -953,9 +953,7 @@ desktop payload.
 
 The revision-bound native input and public-language profile at
 [`benchmarks/phase-2-native-input-aarch64-apple-darwin.toml`](benchmarks/phase-2-native-input-aarch64-apple-darwin.toml)
-is normative under
-[ADR 0025](adr/0025-macos-native-input-performance-budgets.md) and measured
-at final candidate `dec43d7`. Its six workloads retain 300 correct samples
+was measured at final candidate `dec43d7`. Its six workloads retain 300 correct samples
 with maximum allocation growth 64 bytes under the 4,096-byte hard gate and
 exact frame-mapping and fixture-event oracles. The harness provisions each C
 and C++ sample's fresh approved fixture outside its timed span and retains
@@ -968,11 +966,10 @@ replace the full current-display, shared-display, retained-frame, or
 AddressSanitizer acceptance matrices named below.
 
 The process-directed route, fixture-controlled capture stimulus, and their
-budgets form a separate profile lineage whose pre-measurement ceilings were
-frozen in [ADR 0029](adr/0029-macos-process-directed-input.md). Controlled
-capture, controlled transitions, and process diagnostics remain bound to their
-named pre-optimization revision. The two authority-timing-sensitive current
-profiles are measured and normative at source
+targets form a separate profile lineage whose ceilings were frozen before
+measurement. Controlled capture, controlled transitions, and process diagnostics
+remain bound to their named pre-optimization revision. The two
+authority-timing-sensitive current profiles were measured at source
 `dec43d7b6c91d415f2028e188e89fa289cb9c1c9` (tree
 `109f77df9ef9f40b515245ab60a6036822ee7d78`):
 
@@ -1027,8 +1024,8 @@ The one-display qualified-host matrix for commit
 `a1faf04505c8471deb4de8c136fddcc7f76105e7`, including the AddressSanitizer
 run and full Rust, C, and C++ flows, is retained in
 [`evidence/phase-2-native/macos-current-display.md`](evidence/phase-2-native/macos-current-display.md).
-ADR 0021 invalidated its former acceptance status after source, oracle, profile,
-and toolchain drift. It is historical evidence, not authorization for the
+Its former acceptance status was invalidated after source, oracle, profile, and
+toolchain drift. It is historical evidence, not authorization for the
 current release candidate. The exact owned-window replacement oracle remains
 retained separately in
 [`evidence/g-001/macos-owned-window-replacement.md`](evidence/g-001/macos-owned-window-replacement.md).

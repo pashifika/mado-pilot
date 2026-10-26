@@ -7,9 +7,8 @@
 //! has all three properties, which is what makes the rules about retention,
 //! conversion, and release reachable without a platform.
 //!
-//! The producer is modelled after the accepted Windows ownership rule in
-//! `docs/adr/0013-windows-capture-frame-detachment.md`: a capture takes a producer
-//! slot, copies into a detached slot, and releases the producer slot before it
+//! The producer models Windows capture ownership: it takes a producer slot,
+//! copies into a detached slot, and releases the producer slot before it
 //! publishes. Retention therefore costs detached capacity and never producer
 //! capacity, and a test can observe both.
 

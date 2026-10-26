@@ -209,7 +209,7 @@ pub(crate) enum DetectorNormalization {
 enum DetectorSampling {
     /// Released DB736 short-side expansion without a final ceiling.
     ShortSide,
-    /// ADR 0040 rectangular fit followed by a conditional tensor ceiling.
+    /// Rectangular fit followed by a conditional tensor ceiling.
     BoundedRectangular {
         max_width: u32,
         max_height: u32,

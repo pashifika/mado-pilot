@@ -8,8 +8,7 @@
 //!
 //! The conversion to three-channel BGR happens here too, because it is the only
 //! preprocessing the Phase 1 matching profile performs and it is what makes the
-//! image and the template comparable. See
-//! `docs/adr/0003-opencv-matching-profile-and-public-score.md`.
+//! image and the template comparable.
 
 use std::ffi::c_void;
 

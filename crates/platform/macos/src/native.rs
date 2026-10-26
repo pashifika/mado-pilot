@@ -608,8 +608,7 @@ impl NativeSession {
 
     /// Opens a session that raises a contained native exception at `sites`.
     ///
-    /// This is how the containment and failure-path ownership cases ADR 0012
-    /// requires become reachable; nothing in the product asks for a raise site.
+    /// Exposes containment and failure-path ownership cases to tests only.
     #[cfg(test)]
     pub(crate) fn open_with_raise_sites(
         selected: SessionTarget,

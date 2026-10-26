@@ -300,7 +300,6 @@ pub(crate) fn open<'r, R: Read + Seek + 'r>(
     let mut archive = ZipArchive::new(reader).map_err(|_| malformed())?;
     ensure_unchanged(source.as_ref(), LoadStage::DirectoryOpen)?;
     // Reject fallback to a directory that the pre-parse never counted.
-    // ADR 0001 records the required trailer-search and reservation review.
     if archive.central_directory_start() != directory.start {
         return Err(malformed());
     }

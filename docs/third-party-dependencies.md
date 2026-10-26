@@ -27,8 +27,8 @@ licenses`:
 `BSD-3-Clause`, `ISC`, `Unicode-3.0`, and `Zlib`.
 
 Any other license — including weak or strong copyleft, source-available, and
-dual-license offers that require choosing a non-approved term — requires an
-architecture decision record before the dependency is added. The ADR states why
+dual-license offers that require choosing a non-approved term — requires a short
+[decision record](adr/README.md) before the dependency is added. It states why
 the dependency is necessary, what the license obligates integrators to do, and
 what the alternative was.
 
@@ -45,9 +45,10 @@ rule: the architecture checker rejects any path dependency that does not resolve
 a workspace member, and rejects a dependency that carries a member's name but
 resolves from a registry or Git source instead of the member itself.
 
-Adding a Git dependency requires an ADR that records the reviewed revision, why a
-published release is unavailable, and the condition for returning to a published
-release. The revision is pinned; a branch or tag reference is not sufficient.
+Adding a Git dependency requires a decision record that records the reviewed
+revision, why a published release is unavailable, and the condition for
+returning to a published release. The revision is pinned; a branch or tag
+reference is not sufficient.
 
 ## Security advisories
 
@@ -118,7 +119,7 @@ dependency surface over a framework that pulls in unrelated features.
 | `yaml-rust2` 0.13.0 | `mado-pilot-backend-onnx` | Exact-pinned bounded event parsing of the verified Paddle inference-YAML vocabulary during construction. Default features **off**; no encoding detection, general YAML tree, alias expansion, native dependency or downloader | MIT OR Apache-2.0 |
 | `libc` 0.2.189 | `mado-pilot-backend-onnx` (macOS benchmark dev-only) | Supplies the target `rusage` layout and `getrusage` declaration used to enforce the Apple OCR process peak-RSS ceiling. The target-gated direct edge adds no crate to the lockfile and is absent from product dependencies | MIT OR Apache-2.0 |
 | `windows` 0.62.2 | `mado-pilot-platform-windows` | Supplies Microsoft-maintained Rust bindings for the picker-free Win32 target inventory, WGC/WinRT interop, D3D11/DXGI ownership, DPI, system input, window messaging, and token-integrity APIs. Default features **off**; only the reviewed namespaces listed in the workspace manifest are enabled, and the dependency is `cfg(windows)`-gated | MIT OR Apache-2.0 |
-| `cc` 1.4 | `mado-pilot-platform-macos` (build); `mado-pilot-backend-opencv` (optional benchmark-only build) | Compiles the target-gated macOS Objective-C shim and, only with `benchmark-selection`, the C++17 scalar/exception boundary for OpenCV runtime thread observation. The latter changes no production default or public C ABI. Both edges reuse the OpenCV binding generator's existing build dependency; see ADR 0012 and ADR 0094 | MIT OR Apache-2.0 |
+| `cc` 1.4 | `mado-pilot-platform-macos` (build); `mado-pilot-backend-opencv` (optional benchmark-only build) | Compiles the target-gated macOS Objective-C shim and, only with `benchmark-selection`, the C++17 scalar/exception boundary for OpenCV runtime thread observation. The latter changes no production default or public C ABI. Both edges reuse the OpenCV binding generator's existing build dependency; see [the macOS native boundary](architecture.md#the-macos-native-boundary) | MIT OR Apache-2.0 |
 
 A replay manifest is caller-supplied data. It is parsed into a typed schema that
 rejects unknown fields, and the pixel paths it declares are validated the same
@@ -130,7 +131,8 @@ An asset archive is caller-supplied data of a stronger kind: its metadata is rea
 before anything is known about its content. Three consequences of that are
 recorded here rather than left to the implementation.
 
-Disabling the `zip` crate's default features is part of ADR 0001, not a tuning
+Disabling the `zip` crate's default features is part of the archive contract
+fixed under gate [`G-014`](validation-gates.md#g-014), not a tuning
 preference. The defaults pull in bzip2, LZMA, PPMd, XZ, Zstd, and AES support for
 compression methods the archive contract does not accept, which would add
 unreviewed parsers to a boundary that reads untrusted input. A test that needed a
@@ -144,9 +146,16 @@ selecting a zlib backend, so the workspace selects one. `flate2`'s default
 C library on both release targets and adds no build-time toolchain requirement.
 
 `zip` 9.0.3 replaces the yanked 8.6.0 release. The archive contract, ceilings and
-compression feature set are unchanged; the
-[ADR 0001 compatibility review](adr/0001-asset-archive-container-and-safety-ceilings.md#zip-903-compatibility-review)
-records the upstream parser checks and the bounded reader adaptation.
+compression feature set are unchanged, and its Rust 1.88 minimum is below the
+workspace toolchain. Four upstream parser behaviors were reverified against
+9.0.3 and are the baseline for the next upgrade: the backward EOCD search to
+offset zero, acceptance of a comment ending before EOF, the forward search from
+the advertised ZIP64 offset to its locator, and fallback to an earlier EOCD after
+metadata rejection with reservation from the declared count. The exact-suffix,
+zero-offset ZIP64, pre-parse count/header and post-open directory/count guards
+therefore remain required. Because the 9.0.3 decoder reports an expansion
+overrun as an untyped I/O error, the adapter reads bounded raw entry views and
+decodes DEFLATE through the existing `flate2` backend.
 `crc32fast` was already in the resolved closure; using it directly preserves CRC
 validation while `read_capped` keeps size mismatches distinct from read failures.
 On macOS/BSD, upstream additionally requires `nix` 0.31.3 (`fs` only),
@@ -188,8 +197,8 @@ thirteen OpenCV modules the matching profile never calls, and every one of them
 becomes a module the host installation must provide: a build against an OpenCV
 that omits `videoio` would fail for a package that does no video. Turning defaults
 off and enabling `imgcodecs` and `imgproc` narrows both the generated bindings and
-the installation requirement to what
-[adr/0003-opencv-matching-profile-and-public-score.md](adr/0003-opencv-matching-profile-and-public-score.md)
+the installation requirement to what the
+[OpenCV matching profile](architecture.md#template-matching)
 uses. `clang-runtime` is separate and not optional in practice; the OpenCV section
 below records why.
 
@@ -200,8 +209,9 @@ download. API 17 contains every session, tensor, metadata, and run-termination
 entry this adapter needs and omits newer automatic device-selection policy. The
 active `ort` closure is only exact-version `ort-sys` and `smallvec`; both are
 `MIT OR Apache-2.0`. `libloading` reuses the existing 0.8.9 resolution and its
-existing `cfg-if` / target `windows-link` closure. ADR 0034 records the exact
-source, feature, maintenance, MSRV, license, and native compatibility review.
+existing `cfg-if` / target `windows-link` closure. The exact source, feature,
+maintenance, MSRV, license, and native compatibility review is recorded with
+the loading boundary below.
 
 The lockfile also records `ort`'s disabled optional `ndarray` and `tracing`
 families: `matrixmultiply`, `ndarray`, `num-complex`, `num-integer`,
@@ -212,7 +222,7 @@ backend, but lockfile-wide advisory and license policy still reviews them. Every
 recorded package is MIT, Apache-2.0, or a permitted dual-license expression, so
 no policy exception is required.
 
-ADR 0080 reviews the YAML parser's pure-Rust, Rust 1.85 minimum, no-build-script
+The YAML parser was reviewed as pure Rust, Rust 1.85 minimum, with no build script. Its
 boundary. Its newly resolved closure is `arraydeque` 0.5.1 and `hashlink` 0.12.2
 (MIT OR Apache-2.0), plus `foldhash` 0.2.0 (Zlib) through the already resolved
 `hashbrown`. These licenses need no exception. Catalog build/maintainer validation
@@ -228,7 +238,7 @@ can see the license position was checked when the choice was made.
 
 | Decision | Crates the implementation will need | License position | Recorded in |
 |---|---|---|---|
-| The macOS shim boundary, `G-003` | Implemented with `cc` alone; the `objc2` family was reviewed and not needed | `cc` is `MIT OR Apache-2.0` and is now recorded above. The reviewed `objc2`, `objc2-foundation`, `objc2-core-*`, and `objc2-screen-capture-kit` positions stand unused and are kept below for the next Change that might need them | [adr/0012-macos-shim-language-and-containment.md](adr/0012-macos-shim-language-and-containment.md) |
+| The macOS shim boundary, `G-003` | Implemented with `cc` alone; the `objc2` family was reviewed and not needed | `cc` is `MIT OR Apache-2.0` and is now recorded above. The reviewed `objc2`, `objc2-foundation`, `objc2-core-*`, and `objc2-screen-capture-kit` positions stand unused and are kept below for the next Change that might need them | [The macOS native boundary](architecture.md#the-macos-native-boundary) |
 
 The exact versions are pinned by the change that adds them, against the
 lockfile and the advisory database as they stand at that time.
@@ -237,14 +247,14 @@ lockfile and the advisory database as they stand at that time.
 
 The tiny-detector/small-recognizer profile uses two original ONNX files and
 the recognizer's original `inference.yml`, all pinned to official PaddlePaddle
-Hugging Face revisions under Apache-2.0. [ADR 0080](adr/0080-ocr-model-catalog-and-admission.md)
-records exact lengths/hashes and the dictionary's canonical identity.
+Hugging Face revisions under Apache-2.0, with exact lengths/hashes and the
+dictionary's canonical identity in the [model catalog](ocr-model-catalog.md).
 The [catalog command](ocr-model-catalog.md#source-schema) emits validated source
 URLs and relative paths; the SDK neither acquires nor redistributes the files.
 This export has no embedded `character` metadata. Substituting the older graph,
 deriving an untracked dictionary or omitting the YAML is not a supported fallback.
-It is an ordinary CPU catalog choice under [ADR 0084](adr/0084-ocr-model-choices-and-test-results.md);
-its recorded quality failures remain visible and do not waive resource validation.
+It is an ordinary CPU catalog choice; its recorded quality failures remain
+visible and do not waive resource validation.
 
 ### G-004 accepted OCR profile
 
@@ -277,11 +287,10 @@ actual native and Rust closure against the then-current advisory database.
 
 ### Implemented ONNX Runtime prerequisite
 
-`mado-pilot-backend-onnx` implements the two exact closed profiles from ADRs
-0033 and 0038 over the accepted G-004 detector, recognizer, vocabulary, and
-decoder through ONNX Runtime 1.29.0's CPU provider and C API 17. Native G-004
-keeps released preprocessing; bounded preprocessing is explicit and non-default.
-[ADR 0034](adr/0034-onnx-runtime-cpu-loading-boundary.md) fixes the loading boundary:
+`mado-pilot-backend-onnx` implements every closed catalog profile over its exact
+detector, recognizer, vocabulary, and decoder through ONNX Runtime 1.29.0's CPU
+provider and C API 17. Native G-004 keeps released preprocessing; bounded
+preprocessing is explicit and non-default. The loading boundary is:
 
 - the host supplies one regular file at a caller-selected canonical absolute
   path: `libonnxruntime.1.29.0.dylib` on `aarch64-apple-darwin` or
@@ -291,9 +300,22 @@ keeps released preprocessing; bounded preprocessing is explicit and non-default.
 - macOS uses `RTLD_NOW | RTLD_LOCAL`; Windows uses
   `LOAD_LIBRARY_SEARCH_DLL_LOAD_DIR | LOAD_LIBRARY_SEARCH_SYSTEM32`;
 - MadoPilot does not install, bundle, download, search `PATH`, accept an
-  environment override, or fall back to another runtime/provider; and
+  environment override, or fall back to another runtime/provider;
 - the runtime handle remains loaded for process life because the installed API
-  table contains pointers into it.
+  table contains pointers into it; and
+- one runtime path and one ONNX environment serve the whole process. A later
+  initialization with a different canonical path, or after another API or
+  environment was installed first, fails with `RuntimeConflict`
+  (`Status::Unsupported`); switching runtimes requires a new process.
+
+`ort` is exact-pinned at `=2.0.0-rc.13` with only `std`, `alternative-backend`
+and `api-17`, behind a private adapter. Updating it requires source review,
+conformance and native-load reruns on both release targets, dependency and
+license review, and confirmation that CPU provider selection and API 17 are
+unchanged. Changing the required ONNX Runtime version from 1.29.0 needs new
+loading and compatibility evidence; it is not a silent pin bump. Every replacement
+macOS runtime artifact must repeat the check that its dependency closure contains
+only system libraries and frameworks.
 
 The Phase 3 reviewed Apple runtime observation remains 33,332,888 bytes at its
 original revision. It declares minimum macOS 14.0 and depends only on system
@@ -304,7 +326,7 @@ SDK 26.2, and only system framework/library load commands. These are distinct
 revision-bound observations, not interchangeable hashes. ONNX Runtime is
 MIT-licensed and is not redistributed.
 
-Provider-policy construction under ADR 0046 does not change redistribution:
+Provider-policy construction does not change redistribution:
 
 - CoreML registration uses the explicit ONNX Runtime dylib and macOS system
   CoreML/Metal frameworks. No framework or provider asset is bundled.
@@ -314,7 +336,7 @@ Provider-policy construction under ADR 0046 does not change redistribution:
   includes `onnxruntime.dll`, `onnxruntime_providers_shared.dll`,
   `onnxruntime_providers_cuda.dll`, CUDA runtime/math DLLs, cuDNN component
   DLLs, `nvrtc64_130_0.dll`, and `nvrtc-builtins64_130.dll`.
-- ADR 0049 revalidates the exact 18-DLL projection. Product loading still
+- The exact 18-DLL projection is revalidated. Product loading still
   validates every member, eagerly retains the existing 16 dependency handles,
   and defers `onnxruntime_providers_cuda.dll` until ONNX Runtime initializes.
   Offline PE imports contained no external name but omitted known dynamic NVRTC
@@ -329,12 +351,11 @@ The source-only `v0.4.0` release preserves this boundary and adds no bundled
 native payload.
 
 Qualification does not turn every compiled provider feature into support.
-[ADR 0047](adr/0047-coreml-ocr-provider-qualification.md) rejects CoreML after
-geometry and cancellation hard-gate failures. ADR 0048 remains historical CUDA
-evidence; [ADR 0049](adr/0049-cuda-ocr-memory-remediation.md) accepts only the
-exact successor explicit Windows CUDA source over the same controlled
-dependency set. Automatic selection remains CPU because CUDA still exceeds the
-fixed RSS ratio.
+CoreML is not release-qualified after geometry and cancellation hard-gate
+failures. Explicit Windows CUDA is supported only for its qualified source and
+controlled dependency set. Automatic selection remains CPU because CUDA still
+exceeds the fixed resident-memory ratio; see
+[OCR recognition](architecture.md#ocr-recognition).
 
 The accepted detector and recognizer remain caller-supplied Apache-2.0 model
 bytes. Both `OnnxOcrBackend::open_accepted` and explicit
@@ -348,9 +369,9 @@ composition does not create a duplicate 25,979,900-byte package allocation.
 
 The two native CI jobs provision these inputs only inside an ephemeral runner.
 They download the official ONNX Runtime 1.29.0 target archive and obtain each
-model through [ADR 0054](adr/0054-g004-model-download-fallback.md)'s ordered,
-revision- or tag-pinned source allowlist. Every candidate has bounded connect
-and transfer time and must pass the existing reviewed model SHA-256 before its
+model through an ordered, revision- or tag-pinned source allowlist. Every
+candidate has bounded connect and transfer time and must pass the existing
+reviewed model SHA-256 before its
 bytes become the canonical test path. Download failure or digest mismatch
 advances to the next source; exhaustion fails the job. The original ModelScope
 paths remain allowlisted, while revision-pinned Hugging Face and
@@ -368,17 +389,14 @@ records remain bound to their original ModelScope-only procedure. The fallback
 changes no model/runtime byte, accepted digest, profile, production dependency,
 or license family.
 
-ADR 0036 keeps the default an explicit native G-004 composition choice: ordinary
-engine constructors remain unchanged. Rust `*_engine_with_default_ocr` and the
-shared C/C++ entry `engine_create_with_default_ocr` require both controlled paths.
-ADR 0040 adds only the explicit Rust candidate-v2 backend selection; no dependency
-changes. ADR 0037's native G-004 budgets remain accepted, and ADRs 0039/0041 fix
-the bounded procedure and target budgets.
-The rejected rectangular and accepted candidate-v2 precursors remain
-separate evidence. Both approved-host precursors and strict final enforcement
-pass; the explicit profile is qualified without changing dependency,
-provisioning, bundling, or default-selection policy. Hosted Windows Server smoke
-remains supporting hard-contract evidence only.
+The default remains an explicit native G-004 composition choice: ordinary engine
+constructors remain unchanged. Rust `*_engine_with_default_ocr` and the shared
+C/C++ entry `engine_create_with_default_ocr` require both controlled paths. The
+explicit Rust candidate-v2 backend selection adds no dependency. The rejected
+rectangular and accepted candidate-v2 precursors remain separate evidence;
+the explicit profile was qualified without changing dependency, provisioning,
+bundling, or default-selection policy. Hosted Windows Server smoke remains
+supporting hard-contract evidence only.
 
 ### G-003 macOS shim boundary
 
@@ -404,11 +422,10 @@ smallest dependency that satisfies the boundary is therefore one build-time crat
 and the reviewed `objc2` positions remain recorded above for a later Change that
 finds a use for them. The shim also does not link the capture framework at all: it
 loads it at runtime from an absolute system path, which is the same eager-link
-failure being avoided, reached without a link-time dependency of either kind. See
-the amendment in
-[adr/0012-macos-shim-language-and-containment.md](adr/0012-macos-shim-language-and-containment.md)
-for why the weak load command the review anticipated is not available to a Cargo
-dependency's build script.
+failure being avoided, reached without a link-time dependency of either kind. A
+weak load command is not available to a Cargo dependency's build script, because
+Cargo does not propagate a dependency's `rustc-link-arg` to the final link; see
+[the macOS native boundary](architecture.md#the-macos-native-boundary).
 
 macOS input keeps the same arrangement and adds no crate. `CGEvent`,
 `CGWindowList`, and the legacy Accessibility observation all come from
@@ -480,8 +497,8 @@ MSVC 19.44.35228, Windows SDK 10.0.26100.0, CMake 3.29.5, C++/WinRT, WGC,
 D3D11, DXGI, and Win32 import libraries. It vendors no sample, header, runtime,
 framework, JSON library, DLL, or redistributable.
 
-The accepted ownership decision is
-[ADR 0013](adr/0013-windows-capture-frame-detachment.md). The exact
+The ownership decision is stated in
+[Windows native capture ownership](architecture.md#windows-native-capture-ownership). The exact
 prototype-only component, license, compatibility, and advisory review is in
 [evidence/g-002/dependency-review.md](evidence/g-002/dependency-review.md).
 Microsoft's SDK and Visual Studio terms apply to the development tools; the
@@ -537,8 +554,9 @@ redistribution decision must collect the required notices in its release package
 Native deployment profiles, published build profiles, and static-link feasibility
 remain open under `G-007`, `G-012`, and `G-008` in
 [validation-gates.md](validation-gates.md).
-[ADR 0066](adr/0066-developer-owned-native-prerequisites.md) fixes development
-prerequisite ownership without closing those gates.
+Development prerequisite ownership — developers acquire OpenCV, libclang and their
+toolchain; the project redistributes nothing — does not close those gates; see
+[native development prerequisite ownership](architecture.md#native-development-prerequisite-ownership).
 
 ## OpenCV
 
@@ -660,8 +678,8 @@ OpenCV is eagerly dynamically linked. Missing or incompatible OpenCV, libclang,
 or toolchain inputs may fail setup or the build. If a developer removes a required
 OpenCV library after setup, process loading may stop before any MadoPilot code
 runs. That is an invalid development environment, not a supported typed-recovery
-path. ADR 0066 does not require a private deferred-load bridge or a static-link
-workaround to change that behavior.
+path. No private deferred-load bridge or static-link workaround is required to
+change that behavior.
 
 When the process can load, `OpenCvBackend::new` still refuses an unsupported
 runtime version with `VisionFault::BackendUnavailable`. The ownership decision

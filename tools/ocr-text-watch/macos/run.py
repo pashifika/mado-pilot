@@ -843,7 +843,6 @@ def main() -> int:
                        ROOT / "crates/mado-pilot/examples/ocr-text-watch-native-macos.rs",
                        ROOT / "tools/ocr-text-watch/macos/fixture.m", Path(__file__),
                        ROOT / "docs/ocr-text-watch-macos.md",
-                       ROOT / "docs/adr/0093-ocr-native-target-rediscovery.md",
                        ROOT / "tools/native-release-profile/process_runner.py"]
         record["files"] = [digest(path) for path in bound_files]
         if digest(hud)["sha256"] != HUD_SHA256:

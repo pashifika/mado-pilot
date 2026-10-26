@@ -17,12 +17,12 @@ nothing to write down and is easy to break by accident; a fixture that fails to
 compile, fails to negotiate, or answers differently is the rule enforcing
 itself.
 
-| Version | Frozen by | Header | Fixture |
+| Version | Historical freeze record | Header | Fixture |
 |---|---|---|---|
-| [`v1`](v1/) | [ADR 0007](../../../../../docs/adr/0007-phase-1-c-abi-freeze.md), resolving [`G-010`](../../../../../docs/validation-gates.md#g-010) | [`v1/madopilot/madopilot.h`](v1/madopilot/madopilot.h) | [`v1/old-prefix.c`](v1/old-prefix.c) |
-| [`v1_2`](v1_2/) | [ADR 0023](../../../../../docs/adr/0023-input-submission-observation-and-abi-1-2.md) | [`v1_2/madopilot/madopilot.h`](v1_2/madopilot/madopilot.h) | [`v1_2/old-prefix.c`](v1_2/old-prefix.c) |
-| [`v1_3`](v1_3/) | [ADR 0043](../../../../../docs/adr/0043-ocr-profile-and-zone-public-surfaces.md) | [`v1_3/madopilot/madopilot.h`](v1_3/madopilot/madopilot.h) | [`v1_3/old-prefix.c`](v1_3/old-prefix.c) |
-| [`v1_4`](v1_4/) | [ADR 0043](../../../../../docs/adr/0043-ocr-profile-and-zone-public-surfaces.md) | [`v1_4/madopilot/madopilot.h`](v1_4/madopilot/madopilot.h) | [`v1_4/old-prefix.c`](v1_4/old-prefix.c) |
+| [`v1`](v1/) | [Phase 1 ABI freeze](https://github.com/pashifika/mado-pilot/blob/646369fad6c922ac7b064367817337a18e572d8c/docs/adr/0007-phase-1-c-abi-freeze.md) | [`v1/madopilot/madopilot.h`](v1/madopilot/madopilot.h) | [`v1/old-prefix.c`](v1/old-prefix.c) |
+| [`v1_2`](v1_2/) | [Input-submission ABI](https://github.com/pashifika/mado-pilot/blob/646369fad6c922ac7b064367817337a18e572d8c/docs/adr/0023-input-submission-observation-and-abi-1-2.md) | [`v1_2/madopilot/madopilot.h`](v1_2/madopilot/madopilot.h) | [`v1_2/old-prefix.c`](v1_2/old-prefix.c) |
+| [`v1_3`](v1_3/) | [OCR public surfaces](https://github.com/pashifika/mado-pilot/blob/646369fad6c922ac7b064367817337a18e572d8c/docs/adr/0043-ocr-profile-and-zone-public-surfaces.md) | [`v1_3/madopilot/madopilot.h`](v1_3/madopilot/madopilot.h) | [`v1_3/old-prefix.c`](v1_3/old-prefix.c) |
+| [`v1_4`](v1_4/) | [OCR public surfaces](https://github.com/pashifika/mado-pilot/blob/646369fad6c922ac7b064367817337a18e572d8c/docs/adr/0043-ocr-profile-and-zone-public-surfaces.md) | [`v1_4/madopilot/madopilot.h`](v1_4/madopilot/madopilot.h) | [`v1_4/old-prefix.c`](v1_4/old-prefix.c) |
 
 ## How a fixture is compiled
 
@@ -50,9 +50,10 @@ Each fixture checks four verbs, and each is a step of the run:
 
 ## Adding a fixture
 
-Freeze a header when an ADR freezes it, not when it changes. Copy the header
-into a new version directory, write a program against every entry it declares,
-and add the version to `FROZEN_HEADERS` in
+Freeze a header when its ABI prefix becomes a compatibility commitment under
+[the current C ABI contract](../../../../../docs/c-abi.md), not for comment-only
+changes. Copy it into a new version directory, write a program against every
+entry it declares, and add the version to `FROZEN_HEADERS` in
 [`examples/c-abi-check.rs`](../../examples/c-abi-check.rs).
 
 **Do not edit a fixture that already exists.** Its value is that it is a

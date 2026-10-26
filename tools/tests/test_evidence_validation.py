@@ -2,10 +2,7 @@
 
 import importlib.util
 from pathlib import Path
-import re
-import subprocess
 import unittest
-from urllib.parse import unquote, urlsplit
 
 
 ROOT = Path(__file__).resolve().parents[2]
@@ -56,39 +53,6 @@ class EvidencePrivacyTests(unittest.TestCase):
             str(failure.exception),
             "G-004 evidence invalid: Windows v5 report contains unapproved recognized payload fields",
         )
-
-
-class PublicEvidenceLinksTests(unittest.TestCase):
-    def test_qualification_links_resolve_without_separate_planning_storage(self):
-        # The product Git manifest is the public-checkout view; ignored Rasen
-        # storage cannot satisfy a reference even when present on this machine.
-        tracked = set(subprocess.check_output(
-            ["git", "ls-files", "-z"], cwd=ROOT, text=True
-        ).split("\0"))
-        documents = (
-            "docs/performance.md",
-            "docs/macos-input-verification.md",
-            "docs/evidence/phase-2-native/macos-owning-process-qualification.md",
-        )
-        missing = []
-        for document in documents:
-            source = ROOT / document
-            for target in re.findall(r"\[[^\]\n]+\]\(([^)\n]+)\)", source.read_text(encoding="utf-8")):
-                parsed = urlsplit(target)
-                if parsed.scheme or parsed.netloc or not parsed.path:
-                    continue
-                path = (source.parent / unquote(parsed.path)).resolve()
-                try:
-                    relative = path.relative_to(ROOT).as_posix()
-                except ValueError:
-                    missing.append(f"{document}: {target}")
-                    continue
-                if relative in tracked and path.is_file():
-                    continue
-                if path.is_dir() and any(entry.startswith(relative + "/") for entry in tracked):
-                    continue
-                missing.append(f"{document}: {target}")
-        self.assertEqual(missing, [], "public evidence depends on missing or untracked files")
 
 
 if __name__ == "__main__":

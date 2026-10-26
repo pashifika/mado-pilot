@@ -571,7 +571,7 @@ pub struct PermissionDiagnostic {
 pub enum OcrDiagnosticProfile {
     /// Accepted G-004 RapidOCR PP-OCRv4 detector / PP-OCRv6 small recognizer profile.
     AcceptedG004,
-    /// Accepted ADR 0040/0041 bounded-detector profile.
+    /// Bounded-detector profile with compound sampling and original-source recognition.
     BoundedDetector,
     /// No accepted public profile claim is made, as for a deterministic test double.
     Unspecified,

@@ -1,7 +1,7 @@
 """Wholly synthetic numeric/protocol tests, not OCR measurements or budget evidence.
 
-Every host, digest, ADR path, observation and ceiling below is fabricated solely
-for deterministic tests. No fixture grants execution or production acceptance.
+Every host, digest, review reference, observation and ceiling is fabricated solely
+for deterministic tests. No fixture grants execution or production qualification.
 """
 
 from __future__ import annotations
@@ -89,11 +89,11 @@ def synthetic_profile(target: str = APPLE) -> dict:
             })
         blocks.append({"workload": workload, "budget": limits})
     return {
-        "format_version": 2,
-        "benchmark": {"normative": True, "measurements_recorded": True, "id": "synthetic-not-evidence"},
+        "format_version": 3,
+        "benchmark": {"id": "synthetic-not-evidence"},
         "profile": {"release_target": target},
-        "acceptance": {
-            "status": "accepted", "adr": "docs/adr/9999-ocr-text-watch-workload-profiles.md",
+        "review": {"tuning_record": "synthetic explanatory reference; never opened"},
+        "bindings": {
             "host_id": "synthetic-not-evidence-host",
             "controlled_executable_sha256": "a" * 64, "real_executable_sha256": "b" * 64,
         },
@@ -122,7 +122,10 @@ def synthetic_controlled(target: str = APPLE) -> dict:
                 "endpoints": [{"stage": stage, "duration_ns": (offset + 1) * NS_PER_MS}
                               for offset, stage in enumerate(ENDPOINTS[workload])],
             })
-    return {"complete": True, "scope": "controlled-workload-invocations", "records": records, "failures": []}
+    return {
+        "complete": True, "scope": "controlled-workload-invocations", "records": records,
+        "failures": [], "measurement_gaps": [],
+    }
 
 
 def synthetic_real(target: str = APPLE) -> dict:
@@ -142,7 +145,10 @@ def synthetic_real(target: str = APPLE) -> dict:
         "retained_index_extent_bytes": 2, "retained_read_mapped_bytes": 4147200,
         "physical_ocr_after_close": 1, "physical_ocr_final": 0,
     })
-    return {"complete": True, "scope": REAL, "records": records, "failures": []}
+    return {
+        "complete": True, "scope": REAL, "records": records,
+        "failures": [], "measurement_gaps": [],
+    }
 
 
 def observations(measurement: dict, workload: str, phase: str | None = None) -> list[dict]:
@@ -382,6 +388,86 @@ class BudgetComparisons(unittest.TestCase):
                 with self.assertRaises(ValueError):
                     budgets.evaluate_process(synthetic_profile(WINDOWS), WINDOWS, mode, fixture(APPLE), 1)
 
+    def test_opt_in_null_memory_is_unavailable_not_zero_or_a_partial_maximum(self):
+        for target in (APPLE, WINDOWS):
+            for mode, fixture, workload, memory in (
+                ("controlled", synthetic_controlled, "steady-nonmatch", "resident_current_high_water_bytes"),
+                (REAL, synthetic_real, REAL, "resident_current_bytes"),
+            ):
+                with self.subTest(target=target, mode=mode):
+                    measurement = fixture(target)
+                    measurement["records"][0][memory] = None
+                    with self.assertRaises(ValueError):
+                        budgets.summarize_process(mode, measurement, 1)
+                    result = budgets.evaluate_process(
+                        synthetic_profile(target), target, mode, measurement, 1,
+                        allow_unavailable_memory=True,
+                    )
+                    self.assertIsNone(result["passed"])
+                    self.assertFalse(result["complete"])
+                    self.assertIsNone(result["first_failure"])
+                    self.assertNotIn(memory, result["metrics"][workload])
+                    self.assertEqual([(entry["workload"], entry["measure"]) for entry in result["unavailable"]],
+                                     [(workload, memory)])
+                    self.assertFalse(any(row["workload"] == workload and row["measure"] == memory
+                                         for row in result["comparisons"]))
+                    self.assertIsNone(measurement["records"][0][memory])
+                    if mode == "controlled":
+                        self.assertIn(memory, result["metrics"]["positive-consecutive"])
+
+    def test_available_target_misses_are_retained_alongside_unavailable_os_memory(self):
+        for target in (APPLE, WINDOWS):
+            for mode, fixture, workload, memory, latency in (
+                ("controlled", synthetic_controlled, "steady-nonmatch",
+                 "resident_current_high_water_bytes", "latency_p95_ms"),
+                (REAL, synthetic_real, REAL, "resident_current_bytes", "process_elapsed_ms"),
+            ):
+                with self.subTest(target=target, mode=mode):
+                    measurement = fixture(target)
+                    measurement["records"][0][memory] = None
+                    profile = synthetic_profile(target)
+                    ceiling(profile, workload, latency)["limit"] = 0
+                    result = budgets.evaluate_process(
+                        profile, target, mode, measurement, 1, allow_unavailable_memory=True,
+                    )
+                    self.assertIs(result["passed"], False)
+                    self.assertFalse(result["complete"])
+                    self.assertEqual(result["first_failure"]["measure"], latency)
+                    self.assertTrue(result["unavailable"])
+
+    def test_nullable_summary_still_rejects_malformed_memory_and_logical_inputs(self):
+        for mode, fixture, memory, logical in (
+            ("controlled", synthetic_controlled, "resident_current_high_water_bytes", "backend_input_max_bytes"),
+            (REAL, synthetic_real, "resident_current_bytes", "elapsed_ns"),
+        ):
+            for value in (True, -1, 0, "None"):
+                with self.subTest(mode=mode, invalid=value):
+                    measurement = fixture()
+                    measurement["records"][0][memory] = None
+                    measurement["records"][1][memory] = value
+                    with self.assertRaises(ValueError):
+                        budgets.summarize_process(mode, measurement, 1, allow_unavailable_memory=True)
+            measurement = fixture()
+            measurement["records"][0][memory] = None
+            measurement["records"][0][logical] = None
+            with self.assertRaises(ValueError):
+                budgets.summarize_process(mode, measurement, 1, allow_unavailable_memory=True)
+
+    def test_zero_windows_private_memory_remains_an_observed_number(self):
+        for mode, fixture, workload, memory in (
+            ("controlled", synthetic_controlled, "steady-nonmatch", "private_high_water_bytes"),
+            (REAL, synthetic_real, REAL, "private_bytes"),
+        ):
+            with self.subTest(mode=mode):
+                result = budgets.evaluate_process(
+                    synthetic_profile(WINDOWS), WINDOWS, mode, fixture(WINDOWS), 1,
+                    allow_unavailable_memory=True,
+                )
+                self.assertTrue(result["passed"])
+                self.assertTrue(result["complete"])
+                self.assertEqual(result["metrics"][workload][memory], 0)
+                self.assertEqual(result["unavailable"], [])
+
 
 class InvalidObservations(unittest.TestCase):
     def test_incomplete_wrong_scope_and_pooled_processes_are_rejected(self):
@@ -518,15 +604,13 @@ class InvalidObservations(unittest.TestCase):
 
 
 class ProfileSchema(unittest.TestCase):
-    def test_acceptance_and_target_are_mandatory_before_numeric_comparison(self):
+    def test_bindings_and_target_are_mandatory_before_numeric_comparison(self):
         variants = (
             (("format_version",), True), (("format_version",), 1),
-            (("benchmark", "normative"), False), (("benchmark", "normative"), 1),
-            (("benchmark", "measurements_recorded"), False),
-            (("benchmark", "measurements_recorded"), "true"),
             (("profile", "release_target"), WINDOWS),
-            (("acceptance", "status"), "prospective"), (("acceptance", "host_id"), " "),
-            (("acceptance", "host_id"), None), (("acceptance",), []),
+            (("bindings", "host_id"), " "), (("bindings", "host_id"), None),
+            (("bindings",), []), (("review",), None),
+            (("review", "tuning_record"), " "), (("review", "tuning_record"), None),
         )
         for path, value in variants:
             with self.subTest(path=path, value=value):
@@ -537,10 +621,10 @@ class ProfileSchema(unittest.TestCase):
                 table[path[-1]] = value
                 with self.assertRaises(ValueError):
                     budgets.evaluate_process(profile, APPLE, "controlled", synthetic_controlled(), 1)
-        for key in synthetic_profile()["acceptance"]:
+        for key in synthetic_profile()["bindings"]:
             with self.subTest(missing=key):
                 profile = synthetic_profile()
-                del profile["acceptance"][key]
+                del profile["bindings"][key]
                 with self.assertRaises(ValueError):
                     budgets.validate_profile(profile, APPLE)
         with self.assertRaises(ValueError):
@@ -548,30 +632,41 @@ class ProfileSchema(unittest.TestCase):
         with self.assertRaises(ValueError):
             budgets.validate_profile(None, APPLE)
 
-    def test_acceptance_paths_and_digests_are_canonical_not_binding_substitutes(self):
-        for path in ("", "docs/adr", "/docs/adr/9999.md", "docs/adr/../9999.md",
-                     "docs/adr//9999.md", "docs/adr/./9999.md", "other/9999.md",
-                     "docs\\adr\\9999.md", "docs/adr/9999.md/", "docs/adr/9999.md\n",
-                     "docs/adr/9999-unrelated-accepted-profile.md",
-                     "docs/adr/999-ocr-text-watch-workload-profiles.md",
-                     "docs/adr/99999-ocr-text-watch-workload-profiles.md",
-                     "docs/adr/9999-ocr-text-watch-workload-profiles.md\n"):
-            with self.subTest(path=path):
+    def test_review_is_explanatory_and_digests_are_canonical_not_binding_substitutes(self):
+        for reference in ("a renamed tuning note", "missing-record.md", "- **Status:** Proposed"):
+            with self.subTest(reference=reference):
                 profile = synthetic_profile()
-                profile["acceptance"]["adr"] = path
-                with self.assertRaises(ValueError):
-                    budgets.validate_profile(profile, APPLE)
+                profile["review"]["tuning_record"] = reference
+                budgets.validate_profile(profile, APPLE)
         for field in ("controlled_executable_sha256", "real_executable_sha256"):
             for value in ("A" * 64, "g" * 64, "a" * 63, "a" * 65, "a" * 64 + "\n", "", True):
                 with self.subTest(field=field, value=value):
                     profile = synthetic_profile()
-                    profile["acceptance"][field] = value
+                    profile["bindings"][field] = value
                     with self.assertRaises(ValueError):
                         budgets.validate_profile(profile, APPLE)
         profile = synthetic_profile()
-        profile["acceptance"]["approved"] = True
+        profile["bindings"]["approved"] = True
         with self.assertRaises(ValueError):
             budgets.validate_profile(profile, APPLE)
+
+    def test_historical_profile_is_read_only_and_not_silently_reinterpreted(self):
+        profile = synthetic_profile()
+        profile["format_version"] = 2
+        with self.assertRaisesRegex(ValueError, "read-only.*format_version = 3.*--inspect-profile"):
+            budgets.validate_profile(profile, APPLE)
+        profile["format_version"] = 3
+        profile["acceptance"] = {"status": "accepted", "adr": "historical-only"}
+        with self.assertRaisesRegex(ValueError, "historical acceptance"):
+            budgets.validate_profile(profile, APPLE)
+
+    def test_missing_review_reference_and_missing_numeric_blocks_are_refused(self):
+        for key in ("review", "measurement"):
+            with self.subTest(missing=key):
+                profile = synthetic_profile()
+                del profile[key]
+                with self.assertRaises(ValueError):
+                    budgets.validate_profile(profile, APPLE)
 
     def test_exact_eight_workload_blocks_are_required_even_for_one_mode(self):
         for variant in ("missing-real", "extra", "duplicate", "unknown", "reordered", "not-list", "not-table"):
