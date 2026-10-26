@@ -68,3 +68,42 @@ effective resolution; nominal units are not a precision guarantee. Private
 Windows plans/configs are retained locally with explicit redacted projections;
 transported projection hashes do not verify omitted original bytes. All raw
 attempts remain attributable; no host-idle admission or numerical retry is used.
+
+## Source reconciliation, 2026-10-26
+
+The cold-ROI investigation reconciles the observed allocation deltas without
+changing the cache design. This is source-level accounting against completed
+rows, not sampled allocation stacks or proof of unique runtime causality.
+
+Cold rows construct nine backends: one template compiler, four search matchers
+and four replay-engine defaults. Each current backend adds one
+`Arc<PreparedImages>`; four first conversions add four `Arc<CachedImage>`.
+The `run()` version-probe backend precedes the allocation snapshot and is not
+a tenth counted constructor. Warm-full constructs three backends and one
+cached-image owner.
+
+Both revisions already allocate a boxed pixel buffer and `Arc<CpuPixels>` for
+each copied mapping. Removing 32 copies saves 64 counted allocations; cold ROI
+removes none. Rust 1.97.1 uses lazy pinned pthread mutex storage on Apple,
+initialized at first lock, versus inline futex storage on Windows. Accessed
+cache locks add four/eight/eight/one Apple allocations respectively.
+
+| Row | Mapping allocation delta | Backend-cache allocations | Cached-image owner allocations | Apple first-use mutex allocations | Reconciled Windows delta | Reconciled Apple delta |
+| --- | ---: | ---: | ---: | ---: | ---: | ---: |
+| Cold full | -64 | 9 | 4 | 4 | -51 | -47 |
+| Cold ROI | 0 | 9 | 4 | 8 | +13 | +21 |
+| Live-owner ROI | -64 | 9 | 4 | 8 | -51 | -43 |
+| Warm full | -80 | 3 | 1 | 1 | -76 | -75 |
+
+All eight deltas match the retained observations. The relevant paths are
+`SearchFixture::{new,prepare_iteration}`, `replay_frame_with_descriptor`,
+`replay_engine_inner`, `OpenCvBackend::new`, `PreparedRegion::new` and
+`map_region`; the pinned standard-library paths are
+`sys/sync/mutex/{mod,pthread,futex}.rs`. Independent Windows source/data review
+agrees, without claiming a new Apple execution.
+
+Retain the ownership and synchronization costs. Rewriting fixture setup,
+retaining strong mappings or adding custom locks solely to lower these counts
+would change the question or contract. The next selected observation uses the
+normal allocator and preserves the separate selector/preparation comparisons;
+instrumented allocation accounting does not predict its timing or CPU result.
