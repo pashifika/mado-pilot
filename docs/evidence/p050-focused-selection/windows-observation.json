@@ -1,0 +1,310 @@
+{
+  "observation": "2026-10-26 dense KeepAll selection",
+  "target": "x86_64-pc-windows-msvc",
+  "host_os": "Windows11 10.0.26300 AMD64",
+  "qualification_status": "not-requested",
+  "whole_change_acceptance": "incomplete",
+  "protocol_version": 4,
+  "build_mode": "instrumented",
+  "workload": "selection-k16-dense1080p-keepall",
+  "warmups": 1,
+  "retained_samples": 3,
+  "independent_row_processes_per_role": 1,
+  "order": [
+    "baseline",
+    "inspect baseline semantic/identity/cleanup results",
+    "current"
+  ],
+  "fixture_sha256": "0128b4b4e1e9dce98a69ef615972afd9211c9e85db221c4bdc96da6d9fbd9fa6",
+  "collector": {
+    "source_revision": "36f0cafb02b5e350ea77a6570e68171d44674655",
+    "sha256": "1815e45c3960639eb4157dc5a6a509393b6d516da8a5f01b2558dc2abf155d9c"
+  },
+  "rustc": "rustc 1.97.1 (8bab26f4f 2026-07-14)\nbinary: rustc\ncommit-hash: 8bab26f4f68e0e26f0bb7960be334d5b520ea452\ncommit-date: 2026-07-14\nhost: x86_64-pc-windows-msvc\nrelease: 1.97.1\nLLVM version: 22.1.6\n",
+  "loaded_opencv_dependencies": [
+    {
+      "path": "\\\\?\\D:\\oss_libs\\opencv\\build\\x64\\vc16\\bin\\opencv_world4140.dll",
+      "sha256": "a192cbf006faf48c054468fa2a2e56e3f680b401c23b8f7fb24373ff75654c46"
+    }
+  ],
+  "runtime_observation_scope": "One OpenCV endpoint and ms-concurrency thread settings; no full image closure or PID-role census",
+  "roles": {
+    "baseline": {
+      "source_revision": "8cc67f5a20a1e4726913cf4da6963b5d658c9e84",
+      "source_tree": "ffb72950ce4d63d82d453aa129f6148672cf6e71",
+      "cargo_lock_sha256": "88d814ee29a8212b53f568144cc699bc447eeca422640d45a9c2d7b5830235bc",
+      "binary": {
+        "path": "D:\\Work\\pashifika.github\\game-tools\\mado-pilot\\target\\p050-pr112-selection-60e15c54-baseline-instrumented\\release\\deps\\template_matching_efficiency-928c931a14593eb7.exe",
+        "bytes": 2363392,
+        "sha256": "05f8f257a4b0fe6a658833d47dc0dc31bf85e74876b04872f17a6cf8d9c9c6f2",
+        "build_argv": [
+          "C:\\Users\\pashifika\\.cargo\\bin\\cargo.EXE",
+          "+1.97.1",
+          "bench",
+          "--locked",
+          "--offline",
+          "--package",
+          "mado-pilot",
+          "--features",
+          "template-matching-benchmark",
+          "--bench",
+          "template-matching-efficiency",
+          "--target-dir",
+          "D:\\Work\\pashifika.github\\game-tools\\mado-pilot\\target\\p050-pr112-selection-60e15c54-baseline-instrumented",
+          "--message-format=json",
+          "--no-run"
+        ],
+        "build_cwd": "D:\\Work\\pashifika.github\\game-tools\\mado-pilot\\.omp\\exports\\p050-pr112-selection-60e15c54\\baseline"
+      },
+      "smoke_command": {
+        "name": "smoke-baseline",
+        "argv": [
+          "C:\\Users\\pashifika\\AppData\\Local\\Programs\\Python\\Python314\\python.exe",
+          "-B",
+          "D:\\Work\\pashifika.github\\game-tools\\mado-pilot\\tools\\template-matching-efficiency.py",
+          "smoke",
+          "--protocol-version",
+          "4",
+          "--build-mode",
+          "instrumented",
+          "--target",
+          "x86_64-pc-windows-msvc",
+          "--baseline",
+          "D:\\Work\\pashifika.github\\game-tools\\mado-pilot\\target\\p050-pr112-selection-60e15c54-baseline-instrumented\\release\\deps\\template_matching_efficiency-928c931a14593eb7.exe",
+          "--baseline-metadata",
+          "D:\\Work\\pashifika.github\\game-tools\\mado-pilot\\.omp\\evidence\\p050-pr112-role-contract-60e15c54\\owner\\attest-baseline\\metadata.json",
+          "--workload",
+          "selection-k16-dense1080p-keepall",
+          "--output",
+          "D:\\Work\\pashifika.github\\game-tools\\mado-pilot\\.omp\\evidence\\p050-pr112-role-contract-60e15c54\\owner\\smoke-baseline\\output"
+        ],
+        "cwd": "D:\\Work\\pashifika.github\\game-tools\\mado-pilot",
+        "seconds": 900,
+        "output_limit_bytes": 8388608
+      },
+      "producer_argv": [
+        "D:\\Work\\pashifika.github\\game-tools\\mado-pilot\\target\\p050-pr112-selection-60e15c54-baseline-instrumented\\release\\deps\\template_matching_efficiency-928c931a14593eb7.exe",
+        "--protocol-version",
+        "4",
+        "--workload",
+        "selection-k16-dense1080p-keepall",
+        "--smoke"
+      ],
+      "process_id": 2884,
+      "producer_stdout": "windows-baseline-producer.json",
+      "producer_stdout_sha256": "00bcdda7f945de993ed7f7d6b659fd6422a8c0aee471093cef19213bb7b2836f",
+      "exit_code": 0,
+      "cleanup_ok": true,
+      "process_cpu": {
+        "accounting_resolution_seconds": null,
+        "final": true,
+        "reason": null,
+        "scope": "owned-job-including-nested-jobs",
+        "source": "windows-job-basic-accounting",
+        "source_unit_seconds": 1e-07,
+        "status": "complete",
+        "system_seconds": 0.25,
+        "user_seconds": 0.34375
+      },
+      "process_accounting": {
+        "active": 0,
+        "checkpoint": "after-root-reap-before-job-close",
+        "final": true,
+        "query_succeeded": true,
+        "reason": null,
+        "scope": "owned-job-including-nested-jobs",
+        "source": "windows-job-basic-accounting",
+        "status": "complete",
+        "terminated": 0,
+        "total": 1
+      },
+      "attestation_sha256": "a2bcff280427ef5876e663c26cf1b68b6d1a5cb0375e2fa12adea04f222c07e0",
+      "collector_report_sha256": "a7c35f3b96ad34eb1d5070f5ba9697d9df36dcce0bf6fc704fd32947c118b477"
+    },
+    "current": {
+      "source_revision": "36f0cafb02b5e350ea77a6570e68171d44674655",
+      "source_tree": "d3bd22f576b1f744ab1f1e90df7104a01300291d",
+      "cargo_lock_sha256": "82acf779928beb1a61683baf667695f0667dffa16be8b0c4e1662d0cec517dc1",
+      "binary": {
+        "path": "D:\\Work\\pashifika.github\\game-tools\\mado-pilot\\target\\p050-pr112-selection-60e15c54-current-instrumented\\release\\deps\\template_matching_efficiency-cefe850dfbd6d1e5.exe",
+        "bytes": 2408960,
+        "sha256": "19f1c72c403bc38f94d41ba3449bbf68e7cd0fcb43f16c62f30eb47ff988dc57",
+        "build_argv": [
+          "C:\\Users\\pashifika\\.cargo\\bin\\cargo.EXE",
+          "+1.97.1",
+          "bench",
+          "--locked",
+          "--offline",
+          "--package",
+          "mado-pilot",
+          "--features",
+          "template-matching-benchmark",
+          "--bench",
+          "template-matching-efficiency",
+          "--target-dir",
+          "D:\\Work\\pashifika.github\\game-tools\\mado-pilot\\target\\p050-pr112-selection-60e15c54-current-instrumented",
+          "--message-format=json",
+          "--no-run"
+        ],
+        "build_cwd": "D:\\Work\\pashifika.github\\game-tools\\mado-pilot\\.omp\\exports\\p050-pr112-selection-60e15c54\\current"
+      },
+      "smoke_command": {
+        "name": "smoke-current",
+        "argv": [
+          "C:\\Users\\pashifika\\AppData\\Local\\Programs\\Python\\Python314\\python.exe",
+          "-B",
+          "D:\\Work\\pashifika.github\\game-tools\\mado-pilot\\tools\\template-matching-efficiency.py",
+          "smoke",
+          "--protocol-version",
+          "4",
+          "--build-mode",
+          "instrumented",
+          "--target",
+          "x86_64-pc-windows-msvc",
+          "--baseline",
+          "D:\\Work\\pashifika.github\\game-tools\\mado-pilot\\target\\p050-pr112-selection-60e15c54-current-instrumented\\release\\deps\\template_matching_efficiency-cefe850dfbd6d1e5.exe",
+          "--baseline-metadata",
+          "D:\\Work\\pashifika.github\\game-tools\\mado-pilot\\.omp\\evidence\\p050-pr112-role-contract-60e15c54\\owner\\attest-current\\metadata.json",
+          "--workload",
+          "selection-k16-dense1080p-keepall",
+          "--output",
+          "D:\\Work\\pashifika.github\\game-tools\\mado-pilot\\.omp\\evidence\\p050-pr112-role-contract-60e15c54\\owner\\smoke-current\\output"
+        ],
+        "cwd": "D:\\Work\\pashifika.github\\game-tools\\mado-pilot",
+        "seconds": 900,
+        "output_limit_bytes": 8388608
+      },
+      "producer_argv": [
+        "D:\\Work\\pashifika.github\\game-tools\\mado-pilot\\target\\p050-pr112-selection-60e15c54-current-instrumented\\release\\deps\\template_matching_efficiency-cefe850dfbd6d1e5.exe",
+        "--protocol-version",
+        "4",
+        "--workload",
+        "selection-k16-dense1080p-keepall",
+        "--smoke"
+      ],
+      "process_id": 20732,
+      "producer_stdout": "windows-current-producer.json",
+      "producer_stdout_sha256": "f804a03b98c88a58ce7cd01d0c3c1e3378a3c3551b2f06138cb4118a1626bfb3",
+      "exit_code": 0,
+      "cleanup_ok": true,
+      "process_cpu": {
+        "accounting_resolution_seconds": null,
+        "final": true,
+        "reason": null,
+        "scope": "owned-job-including-nested-jobs",
+        "source": "windows-job-basic-accounting",
+        "source_unit_seconds": 1e-07,
+        "status": "complete",
+        "system_seconds": 0.078125,
+        "user_seconds": 0.375
+      },
+      "process_accounting": {
+        "active": 0,
+        "checkpoint": "after-root-reap-before-job-close",
+        "final": true,
+        "query_succeeded": true,
+        "reason": null,
+        "scope": "owned-job-including-nested-jobs",
+        "source": "windows-job-basic-accounting",
+        "status": "complete",
+        "terminated": 0,
+        "total": 1
+      },
+      "attestation_sha256": "e896fc5843fef5ffed75fe65fb1dd75ca9a937d000d629823411051ccddf2a96",
+      "collector_report_sha256": "433508cec50e5df7e693d37b1ee2ee21b75095b5579438895bf102ca60261186"
+    }
+  },
+  "verification": {
+    "baseline_exit_tests": {
+      "passed": 3,
+      "failed": 0
+    },
+    "phase_checks": [
+      {
+        "phase": "test-baseline",
+        "actual_inner_outer_exit": 0,
+        "cleanup": true,
+        "owner_state": "PASS",
+        "management_restored": true,
+        "final_hashes_valid": true
+      },
+      {
+        "phase": "build-baseline",
+        "actual_inner_outer_exit": 0,
+        "cleanup": true,
+        "owner_state": "PASS",
+        "management_restored": true,
+        "final_hashes_valid": true
+      },
+      {
+        "phase": "build-current",
+        "actual_inner_outer_exit": 0,
+        "cleanup": true,
+        "owner_state": "PASS",
+        "management_restored": true,
+        "final_hashes_valid": true
+      },
+      {
+        "phase": "attest-baseline",
+        "actual_inner_outer_exit": 0,
+        "cleanup": true,
+        "owner_state": "PASS",
+        "management_restored": true,
+        "final_hashes_valid": true
+      },
+      {
+        "phase": "attest-current",
+        "actual_inner_outer_exit": 0,
+        "cleanup": true,
+        "owner_state": "PASS",
+        "management_restored": true,
+        "final_hashes_valid": true
+      },
+      {
+        "phase": "smoke-baseline",
+        "actual_inner_outer_exit": 0,
+        "cleanup": true,
+        "owner_state": "PASS",
+        "management_restored": true,
+        "final_hashes_valid": true
+      },
+      {
+        "phase": "smoke-current",
+        "actual_inner_outer_exit": 0,
+        "cleanup": true,
+        "owner_state": "PASS",
+        "management_restored": true,
+        "final_hashes_valid": true
+      }
+    ],
+    "actual_provenance_probes": 10,
+    "smoke_benchmark_children": 4
+  },
+  "private_packet": {
+    "sha256": "b9cc35ef9ce7614200375da383175e816417d49addd87ee070076cdc18933c4b",
+    "bytes": 4989268,
+    "payloads": 240,
+    "local_locator": ".rasen/changes/v0-5-0-pre-release-performance-measurement-and-adjustment/ephemera/focused-selection-pr112-v1/windows-final-evidence.zip",
+    "private_omissions": "Nine original environment-bearing configs/plans remain on Windows; exact reference hashes and explicitly redacted projections are retained in the packet, not represented as original bytes"
+  },
+  "cpu_limit": "Zero current operation CPU is an observed quantized delta, not CPU-free work. Job accounting resolution is null; source unit is not effective resolution.",
+  "phase_limits": {
+    "test/build": {
+      "whole_seconds": 1800,
+      "owner_seconds_including_retention": 1560,
+      "outer_seconds": 1680,
+      "native_seconds": 1200,
+      "native_output_bytes": 33554432
+    },
+    "attest/smoke": {
+      "whole_seconds": 1560,
+      "owner_seconds_including_retention": 1260,
+      "outer_seconds": 1440,
+      "collector_seconds": 900,
+      "native_probe_seconds": 90,
+      "native_output_bytes": 8388608
+    },
+    "cleanup_seconds": 5,
+    "management_retention_reserve_seconds": 60
+  }
+}
