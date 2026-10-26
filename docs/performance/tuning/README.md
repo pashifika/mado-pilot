@@ -38,5 +38,6 @@ new platform support or release approval.
 | 2026-10-26 | [Focused normal observations](2026-10-26-focused-normal-observations.md) | System-allocator selected-path observations preserve raw timing/CPU, explicit null counters and unqualified scope |
 | 2026-10-26 | [Actual-consumer group observation](2026-10-26-actual-consumer-group-observation.md) | Fresh Apple and retained Windows group intervals are descriptive; adverse RSS, unavailable CPU/steady windows and frozen producer identities remain explicit |
 | 2026-10-27 | [Actual-consumer query observations](2026-10-27-actual-consumer-query-observations.md) | Matched/new-frame and expected-deadline contracts pass with known cleanup; individual waits, deadline overshoot and adverse resource values remain unqualified |
+| 2026-10-27 | [Actual-consumer trial observations](2026-10-27-actual-consumer-trial-observations.md) | Saved-frame hit/miss, OCR resource initialization and full settlement pass; search intervals, adverse whole-operation/RSS values and independent clocks remain descriptive |
 
 Start a measurement from the [performance guide](../../performance.md).
