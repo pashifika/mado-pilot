@@ -2,7 +2,8 @@
 """Run one source-bound actual-consumer case, never a chained campaign.
 
 CLI: prepare --source-plan FILE --case ID --campaign DIR --output FILE
-     {smoke,calibrate,control,compare} --plan FILE --output NEW_DIR
+     smoke --plan FILE --output NEW_DIR [--role {baseline,candidate}]
+     {calibrate,control,compare} --plan FILE --output NEW_DIR
      freeze --calibration DIR --control DIR --review FILE --output NEW_FILE
      report DIR
      inspect --plan FILE --raw RETAINED_RECORD [--sink-root DIR]
@@ -223,10 +224,13 @@ def collector_identity():
     return {str(path.relative_to(ROOT)): sha256(path) for path in paths}
 
 
-def schedule(stage):
+def schedule(stage, *, smoke_role="baseline"):
     require(stage in STAGES, "unknown phase")
+    require(smoke_role in ("baseline", "candidate"), "unknown smoke role")
+    require(stage == "smoke" or smoke_role == "baseline", "role selection is smoke-only")
     if stage in ("smoke", "calibration"):
-        return [{"id": f"{index:02d}", "role": "baseline", "pair": index // 2,
+        role = smoke_role if stage == "smoke" else "baseline"
+        return [{"id": f"{index:02d}", "role": role, "pair": index // 2,
                  "position": index % 2, "process": index} for index in range(STAGES[stage])]
     roles = ("baseline", "control" if stage == "control" else "candidate")
     rows = []
@@ -1387,7 +1391,15 @@ def load_cohort(directory):
     summary_binding = {"path": str(summary_path), "sha256": hashlib.sha256(summary_bytes).hexdigest()}
     require(summary["format"] in ("consumer-phase-v1", "consumer-phase-v2")
             and summary["plan_sha256"] == hashlib.sha256(plan_bytes).hexdigest(), "phase plan binding changed")
-    require(summary["schedule"] == schedule(summary["stage"]), "phase schedule changed")
+    smoke_role = "baseline"
+    if summary["format"] == "consumer-phase-v2" and summary["stage"] == "smoke":
+        require(isinstance(summary["schedule"], list) and len(summary["schedule"]) == 1,
+                "phase schedule changed")
+        smoke_role = summary["schedule"][0]["role"]
+    expected = schedule(summary["stage"], smoke_role=smoke_role)
+    require(summary["schedule"] == expected, "phase schedule changed")
+    require(not any(slot["role"] == "candidate" for slot in expected)
+            or "candidate" in plan["roles"], "explicit candidate source/binary required")
     review, admission_issues = admission(plan)
     rows, failures = [], list(summary["issues"])
     try:
@@ -1406,7 +1418,6 @@ def load_cohort(directory):
         failures.append(issue("identity", "cohort lineage: " + str(error)))
     if summary["stage"] != "smoke":
         failures.extend(admission_issues)
-    expected = schedule(summary["stage"])
     for index, attempt in enumerate(summary["attempts"]):
         require(attempt["slot"] == expected[index], "attempt order changed")
         start_path = directory / attempt["started"]["name"]
@@ -1505,19 +1516,18 @@ def prerequisites(plan, stage):
     return envelopes, failures
 
 
-def collect_steps(plan, stage, output):
+def collect_steps(plan, stage, output, *, smoke_role="baseline"):
     """One live iterator; caller inspection time consumes the same absolute deadline."""
     started = time.monotonic()
     validate_plan(plan)
-    require(stage in STAGES, "unknown phase")
+    tasks = schedule(stage, smoke_role=smoke_role)
     deadline = started + TOTAL_SECONDS[stage]
-    if stage == "comparison":
+    if stage == "comparison" or smoke_role == "candidate":
         require("candidate" in plan["roles"], "explicit candidate source/binary required")
     output = Path(output).resolve()
     output.mkdir(parents=False, exist_ok=False)
     plan_ref = save(output / "plan.json", plan)
     campaign = Campaign(plan)
-    tasks = schedule(stage)
     summary = {"format": "consumer-phase-v2", "stage": stage, "case": plan["case"],
                "plan_sha256": plan_ref["sha256"], "schedule": tasks, "attempts": [], "unrun": tasks.copy(),
                "issues": [], "qualification": False, "admission_issues": [], "envelopes": {},
@@ -1708,8 +1718,8 @@ def collect_steps(plan, stage, output):
     return summary
 
 
-def collect(plan, stage, output):
-    with contextlib.closing(collect_steps(plan, stage, output)) as steps:
+def collect(plan, stage, output, *, smoke_role="baseline"):
+    with contextlib.closing(collect_steps(plan, stage, output, smoke_role=smoke_role)) as steps:
         while True:
             try:
                 checkpoint = next(steps)
@@ -1949,6 +1959,9 @@ def parser():
         sub = commands.add_parser(command)
         sub.add_argument("--plan", required=True)
         sub.add_argument("--output", required=True)
+        if command == "smoke":
+            sub.add_argument("--role", choices=("baseline", "candidate"), default="baseline",
+                             help="one explicitly bound role; default: baseline, never qualification")
     frozen = commands.add_parser("freeze")
     frozen.add_argument("--calibration", required=True)
     frozen.add_argument("--control", required=True)
@@ -1996,7 +2009,8 @@ def main(argv=None):
                              **phase_outcomes({**evidence["summary"], "issues": evidence["issues"]}))
         else:
             stage = {"calibrate": "calibration", "compare": "comparison"}.get(args.command, args.command)
-            value = collect(load(args.plan), stage, args.output)
+            value = collect(load(args.plan), stage, args.output,
+                            smoke_role=args.role if stage == "smoke" else "baseline")
         print(document(value).decode(), end="")
         return int(bool(value.get("issues")))
     except (KeyError, IndexError, TypeError, ValueError, OSError, runtime.images._Refusal) as error:
