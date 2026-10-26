@@ -1,0 +1,347 @@
+{
+  "adverse_observations": {
+    "current_minus_baseline": {
+      "child_sampled_rss_bytes": 708608,
+      "preflight_us": 2935,
+      "startup_us": 12290
+    },
+    "interpretation": "Observed increases retained; one invocation per role establishes no reliable speedup, regression, causality or qualification."
+  },
+  "authored_contract": {
+    "max_results": 8,
+    "min_score": 0.9,
+    "pr114_keepall_branch_applicable": false,
+    "roi": {
+      "height": 180,
+      "width": 320,
+      "x": 64,
+      "y": 48
+    },
+    "suppression": "DropOverlapping"
+  },
+  "case": "group-roi",
+  "completion": {
+    "error_mode_restored": true,
+    "final_aggregate": {
+      "archive_member": "COMPLETION.json",
+      "sha256": "416c2aa792ef955944f0a5e4b0a595fa89121f74e3dbc805627067030a398cb9",
+      "state": "DEVELOPMENT_SEMANTICS_PASS"
+    },
+    "full_content_guards": 673,
+    "guard_vectors_equal": true,
+    "inspection_write_completed_monotonic": 391180.1658482,
+    "live_post_retention_completed_monotonic": 391180.167258,
+    "original_inspection_state": "PROVISIONAL_PASS",
+    "original_pair_summary_state": "PROVISIONAL_PASS",
+    "original_phase_end": 391775.8112872,
+    "postwrite_seal": {
+      "archive_member": "inspections/group-roi-completion.json",
+      "sha256": "99be7cb3afb9cd9197ddf2745bffc8f11ebb0fb686bc4a3f1aec5699fd581241"
+    },
+    "postwrite_seal_state": "PASS",
+    "producer_metadata_only_guards": 1520,
+    "sealed_inspection_sha256": "d7b067441c9009ddadc0bceef3ca5a23dd4ce6989a569f911c8b83186c2a28da"
+  },
+  "format": "p050-retained-group-roi-allowlisted-v1",
+  "limitations": [
+    "Effective producer roles remain beb064f/dd320. Neither binary is c305, and this retained pair does not exercise the PR116 fa5d6e3 smoke-role collector.",
+    "Both raw build.engine_revision fields retain f61a57f661c0314ea0a1d860d9298fbff86d903d, the authored Cargo.toml Git pin. Local producer patches/graph and Cargo receipts establish effective roles; this field is not rewritten.",
+    "Group span is neither an individual recognize-call duration nor whole operation elapsed time; no cross-process epoch arithmetic.",
+    "Raw complete Job CPU is distinct from source-closed comparable CPU; reconciled lifetime CPU and effective resolution remain null.",
+    "Sampled RSS maxima are not bracketed group-only points, allocator bytes, OS peaks or post-owner residual/leak proof; both steady windows unavailable.",
+    "Job5/0/0 does not identify every process generation or prove image closure.",
+    "Private original plan bytes and whole producer content are not reverified by this projection; historical metadata-only/source-content distinctions remain.",
+    "Data-only derivation of existing evidence; no rerun, binary rehash, regrade or new registration."
+  ],
+  "new_execution_count": 0,
+  "observation_kind": "historical development semantic pair; one invocation per role",
+  "original_archive_sha256": "d3731f1d8012656e6fb87c32d8aef5ecda475b4aededba15ef309924b2b737c3",
+  "privacy": {
+    "construction": "Explicit field allowlist from decoded retained raw and hash-bound receipt chain; no full report copies",
+    "excluded": [
+      "absolute local paths",
+      "environment values",
+      "host hardware and kernel identity",
+      "arbitrary stdout/stderr or logs",
+      "run/session/observation identifiers",
+      "process identifiers",
+      "binary bytes",
+      "private plans"
+    ]
+  },
+  "qualification": false,
+  "roles": [
+    {
+      "binary": {
+        "bytes": 19448320,
+        "sha256": "e9762674be2a8fb9ab2ca7fe43a7f9f835495d6af5436869c736836efa2ffc7f"
+      },
+      "cpu": {
+        "raw_lifetime_job": {
+          "accounting_resolution_seconds": null,
+          "final": true,
+          "scope": "owned-job-including-nested-jobs",
+          "source": "windows-job-basic-accounting",
+          "source_unit_seconds": 1e-07,
+          "status": "complete",
+          "system_seconds": 0.65625,
+          "user_seconds": 0.765625
+        },
+        "reconciled_lifetime_cpu_seconds": null
+      },
+      "effective_producer_revision": "beb064f0c652648f92df5bfb65aaf05384a18b8d",
+      "native_thread_point": {
+        "active_concurrency": null,
+        "configured_threads": 20,
+        "during_workload_invariance_observed": false,
+        "framework": "ms-concurrency",
+        "method": "opencv-parallel-framework-and-num-threads-v1",
+        "point": "after_replay_runner_release",
+        "reported_threads": 20,
+        "scope": "post-workload-point-only",
+        "supported": true
+      },
+      "original_receipt_role": "baseline",
+      "process_accounting": {
+        "active": 0,
+        "checkpoint": "after-root-reap-before-job-close",
+        "final": true,
+        "query_succeeded": true,
+        "scope": "owned-job-including-nested-jobs",
+        "source": "windows-job-basic-accounting",
+        "status": "complete",
+        "terminated": 0,
+        "total": 5
+      },
+      "raw_build_identity": {
+        "cargo_lock_sha256": "19430ce2eb872383acdf429c9964e9b35bd97934e83745796f2a2e459e128f60",
+        "engine_revision": "f61a57f661c0314ea0a1d860d9298fbff86d903d",
+        "executable_sha256": "e9762674be2a8fb9ab2ca7fe43a7f9f835495d6af5436869c736836efa2ffc7f",
+        "profile": "debug",
+        "rustc": "rustc 1.98.1 (48a229cea 2026-09-01)",
+        "source_sha256": "4e23452bc363002f87aa554839fba72796d33b087da1711c39dbff128da50fff",
+        "target": "x86_64-pc-windows-msvc"
+      },
+      "raw_reference": {
+        "archive_member": "cases/group-roi/baseline-raw.json",
+        "bytes": 42248,
+        "sha256": "4b6f3f50bdc1ea4e81ce47671caef257105b244ebd52641ee5a9f35df2a6a0b7"
+      },
+      "role": "baseline",
+      "rss": {
+        "child_sampled_max_bytes": 211415040,
+        "child_steady_summary": null,
+        "method": "5ms periodic samples, observed maximum not OS peak",
+        "steady_unavailable_reason": "workflow ended before the declared steady window completed",
+        "supervisor_sampled_max_bytes": 43597824,
+        "supervisor_steady_summary": null
+      },
+      "semantic": {
+        "all_operation_failures": 0,
+        "application_status": "PASS",
+        "dropped_host_call_records": 0,
+        "engine_cleanup_clean": true,
+        "engine_session_closed": true,
+        "group_operations": 16,
+        "handles_released": true,
+        "matched": 9,
+        "native_cleanup_ok": true,
+        "native_exit_code": 0,
+        "no_match": 1,
+        "observations": 5,
+        "operation_counts": {
+          "log": 6,
+          "observe": 5,
+          "recognize": 10,
+          "release": 14
+        },
+        "recognitions": 10,
+        "recorded_host_calls": 35,
+        "remaining_native_owners": 0,
+        "retained_group_results": 8,
+        "searches": 10
+      },
+      "timing": {
+        "application_us": {
+          "cleanup_us": 542,
+          "elapsed_us": 885529,
+          "preflight_us": 388946,
+          "startup_us": 112757,
+          "workflow_us": 357353
+        },
+        "group_end_ns": 744510000,
+        "group_span_ns": 49654500,
+        "group_start_ns": 694855500,
+        "native_invocation_seconds": 1.0929782000021078,
+        "recognize_ns": [
+          6479600,
+          6018400,
+          6104900,
+          5934600,
+          6008100,
+          6043600,
+          5994400,
+          5988000
+        ],
+        "release_ns": [
+          14600,
+          8900,
+          11200,
+          10600,
+          10100,
+          12500,
+          10200,
+          7100
+        ]
+      }
+    },
+    {
+      "binary": {
+        "bytes": 19538944,
+        "sha256": "b4690fc3faf5e8232f3b7f758656e64e2afa0451fae0177ac430951eeeeab4ef"
+      },
+      "cpu": {
+        "raw_lifetime_job": {
+          "accounting_resolution_seconds": null,
+          "final": true,
+          "scope": "owned-job-including-nested-jobs",
+          "source": "windows-job-basic-accounting",
+          "source_unit_seconds": 1e-07,
+          "status": "complete",
+          "system_seconds": 0.625,
+          "user_seconds": 0.6875
+        },
+        "reconciled_lifetime_cpu_seconds": null
+      },
+      "effective_producer_revision": "dd320044cdd390ee662117c69e865391f72ed996",
+      "native_thread_point": {
+        "active_concurrency": null,
+        "configured_threads": 20,
+        "during_workload_invariance_observed": false,
+        "framework": "ms-concurrency",
+        "method": "opencv-parallel-framework-and-num-threads-v1",
+        "point": "after_replay_runner_release",
+        "reported_threads": 20,
+        "scope": "post-workload-point-only",
+        "supported": true
+      },
+      "original_receipt_role": "candidate",
+      "process_accounting": {
+        "active": 0,
+        "checkpoint": "after-root-reap-before-job-close",
+        "final": true,
+        "query_succeeded": true,
+        "scope": "owned-job-including-nested-jobs",
+        "source": "windows-job-basic-accounting",
+        "status": "complete",
+        "terminated": 0,
+        "total": 5
+      },
+      "raw_build_identity": {
+        "cargo_lock_sha256": "eee958a894639ca3c7a3ccd99c8bc3a99a0dea303dfdbb737d88573ab6190dbf",
+        "engine_revision": "f61a57f661c0314ea0a1d860d9298fbff86d903d",
+        "executable_sha256": "b4690fc3faf5e8232f3b7f758656e64e2afa0451fae0177ac430951eeeeab4ef",
+        "profile": "debug",
+        "rustc": "rustc 1.98.1 (48a229cea 2026-09-01)",
+        "source_sha256": "e4aec1f731804974ebe4b269014b05fd232e98d36322945617e25a6e2feaa6eb",
+        "target": "x86_64-pc-windows-msvc"
+      },
+      "raw_reference": {
+        "archive_member": "cases/group-roi/candidate-raw.json",
+        "bytes": 42244,
+        "sha256": "cf65da36f5383cf5f5dd4f4e4378366ee68201e6c0621ba20473c243c320c418"
+      },
+      "role": "current",
+      "rss": {
+        "child_sampled_max_bytes": 212123648,
+        "child_steady_summary": null,
+        "method": "5ms periodic samples, observed maximum not OS peak",
+        "steady_unavailable_reason": "workflow ended before the declared steady window completed",
+        "supervisor_sampled_max_bytes": 43511808,
+        "supervisor_steady_summary": null
+      },
+      "semantic": {
+        "all_operation_failures": 0,
+        "application_status": "PASS",
+        "dropped_host_call_records": 0,
+        "engine_cleanup_clean": true,
+        "engine_session_closed": true,
+        "group_operations": 16,
+        "handles_released": true,
+        "matched": 9,
+        "native_cleanup_ok": true,
+        "native_exit_code": 0,
+        "no_match": 1,
+        "observations": 5,
+        "operation_counts": {
+          "log": 6,
+          "observe": 5,
+          "recognize": 10,
+          "release": 14
+        },
+        "recognitions": 10,
+        "recorded_host_calls": 35,
+        "remaining_native_owners": 0,
+        "retained_group_results": 8,
+        "searches": 10
+      },
+      "timing": {
+        "application_us": {
+          "cleanup_us": 498,
+          "elapsed_us": 861750,
+          "preflight_us": 391881,
+          "startup_us": 125047,
+          "workflow_us": 324284
+        },
+        "group_end_ns": 721620900,
+        "group_span_ns": 26164800,
+        "group_start_ns": 695456100,
+        "native_invocation_seconds": 1.013529300049413,
+        "recognize_ns": [
+          3608200,
+          3152800,
+          3070500,
+          3035200,
+          3035700,
+          3035700,
+          3028100,
+          3039100
+        ],
+        "release_ns": [
+          14300,
+          12500,
+          14500,
+          9200,
+          11400,
+          7700,
+          9000,
+          13300
+        ]
+      }
+    }
+  ],
+  "source_provenance": {
+    "common_manifest_sha256": "8133cab722c7c23dbf8bd652055b39d00b577cb4319c366b4ca315b4f9e0b0a8",
+    "effective_producer_binding": "Retained Windows offline metadata graph, 14 local producer path patches and Cargo-selected executable receipts; not raw build.engine_revision",
+    "inspector_sha256": "b659fffa7e1ab212c0ce9b142972296dac24b18dc4d046c55ae85a059584515a",
+    "outer_owner_sha256": "c82d485eb45c0aa7359980a716bca8745cb5d8cbb653d5fc95acbe8d97b0e65e",
+    "pair_owner_sha256": "fc5105232d27853c3287e2b736ad686739438d1bf722143d931cff4711a2e562",
+    "private_plan_bytes_included": false,
+    "private_plan_original_sha256": "3600e7bc45c5e41b0befd2835f7cc1826ddef7f6a4828ea8fbd28b5787fecba4",
+    "retained_collector_sha256": "7b0932a644e0469b6d58da66bfc9aca393342b18d4cf264cba3100ce8233a2fa",
+    "role_patch_sha256": {
+      "baseline": "1e98c6797f386eb1cf69f90b5177a82051c89d7ed818bab596e510e53dffe73c",
+      "current": "c156a6a03e4658a0036ac79a6111c2e3c102311b716ddc184db41e43e9623745"
+    }
+  },
+  "span_scope": {
+    "clock_epoch": "control.started",
+    "cross_process_clock_subtraction": false,
+    "end": "eighth paired release host call: end_ns",
+    "excludes": "readiness, request-array preparation, later result-oracle assertions, newer miss/hit operations, overall startup and cleanup",
+    "includes": "16 recognize/release calls and inter-call handoff gaps on one retained observation",
+    "start": "first of eight retained-group recognize host calls: start_ns",
+    "unit": "ns"
+  },
+  "target": "x86_64-pc-windows-msvc"
+}
