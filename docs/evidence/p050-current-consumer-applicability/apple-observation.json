@@ -1,0 +1,263 @@
+{
+  "authored_producer_pin": "f61a57f661c0314ea0a1d860d9298fbff86d903d",
+  "baseline_executions": 0,
+  "candidate_executables": {
+    "candidate-consumer": {
+      "bytes": 33426120,
+      "sha256": "4df96a0d31ed337ce46065c2f517ce58ad4c19461f8d01e903a9d95ec30bebab"
+    },
+    "candidate-trial": {
+      "bytes": 5204744,
+      "sha256": "d6d5109f400c6f05240f5190ec4556049aa88bce310f7588d80d1134d2cb5b38"
+    }
+  },
+  "cases": [
+    {
+      "application_status": "PASS",
+      "case": "group-roi",
+      "cleanup_ok": true,
+      "metrics": {
+        "child_sampled_rss_bytes": 245317632,
+        "cleanup_us": 55,
+        "elapsed_us": 840103,
+        "group_span_ns": 33805792,
+        "invocation_elapsed_seconds": "7822509164980147/5000000000000000",
+        "lifetime_cpu_seconds": null,
+        "preflight_us": 280252,
+        "recognize_0_ns": 5381125,
+        "recognize_1_ns": 3961667,
+        "recognize_2_ns": 4071542,
+        "recognize_3_ns": 3960041,
+        "recognize_4_ns": 3941708,
+        "recognize_5_ns": 3937875,
+        "recognize_6_ns": 3926417,
+        "recognize_7_ns": 3926125,
+        "release_0_ns": 7084,
+        "release_1_ns": 4041,
+        "release_2_ns": 5500,
+        "release_3_ns": 4250,
+        "release_4_ns": 4083,
+        "release_5_ns": 3833,
+        "release_6_ns": 3750,
+        "release_7_ns": 5292,
+        "startup_us": 248875,
+        "supervisor_sampled_rss_bytes": 53116928,
+        "workflow_us": 299966
+      },
+      "native_exit_code": 0,
+      "primary_category": null,
+      "raw_lifetime_cpu": {
+        "accounting_resolution_seconds": null,
+        "final": true,
+        "reason": "descendant_rollup_unproven",
+        "scope": "root-and-native-descendant-rollup",
+        "source": "posix-wait4",
+        "source_unit_seconds": 1e-06,
+        "status": "partial",
+        "system_seconds": 0.32187099999999996,
+        "user_seconds": 0.77616
+      },
+      "raw_process_accounting": null,
+      "raw_receipt_sha256": "67a0803f1d049196767bcdfa09725022dcd0cc4f6997f3216fe86d913255d481",
+      "role": "candidate",
+      "selected_native_root_bounds": {
+        "cleanup_seconds": 5,
+        "output_bytes": 4194304,
+        "seconds": 90
+      },
+      "semantic_contract_pass": true,
+      "summary_sha256": "a574a027408e75e71cea0eed1dc950964101fbf24e6213369304a0698cb5f486",
+      "trial_driver_declared_bounds": null
+    },
+    {
+      "application_status": "PASS",
+      "case": "matched-roi",
+      "cleanup_ok": true,
+      "metrics": {
+        "child_sampled_rss_bytes": 231882752,
+        "cleanup_us": 32,
+        "elapsed_us": 654789,
+        "invocation_elapsed_seconds": "3592428335105069/5000000000000000",
+        "lifetime_cpu_seconds": null,
+        "preflight_us": 241348,
+        "query_wait_ns": 8342833,
+        "startup_us": 189255,
+        "supervisor_sampled_rss_bytes": 53035008,
+        "workflow_us": 220806
+      },
+      "native_exit_code": 0,
+      "primary_category": null,
+      "raw_lifetime_cpu": {
+        "accounting_resolution_seconds": null,
+        "final": true,
+        "reason": "descendant_rollup_unproven",
+        "scope": "root-and-native-descendant-rollup",
+        "source": "posix-wait4",
+        "source_unit_seconds": 1e-06,
+        "status": "partial",
+        "system_seconds": 0.14019199999999998,
+        "user_seconds": 0.6673239999999999
+      },
+      "raw_process_accounting": null,
+      "raw_receipt_sha256": "faf4049165a09ac26750e18521ae55eb4843854afecefdf8f0dd773d16d2a52e",
+      "role": "candidate",
+      "selected_native_root_bounds": {
+        "cleanup_seconds": 5,
+        "output_bytes": 4194304,
+        "seconds": 90
+      },
+      "semantic_contract_pass": true,
+      "summary_sha256": "b31b386b1b7e48e692eeff5f1e4bff53fae925dbd985d07a197bc8c4b8494b73",
+      "trial_driver_declared_bounds": null
+    },
+    {
+      "application_status": "FAIL",
+      "case": "deadline-roi",
+      "cleanup_ok": true,
+      "metrics": {
+        "child_sampled_rss_bytes": 295206912,
+        "cleanup_us": 38,
+        "elapsed_us": 653809,
+        "invocation_elapsed_seconds": "7154967910028063/10000000000000000",
+        "lifetime_cpu_seconds": null,
+        "preflight_us": 246941,
+        "query_wait_ns": 3555083,
+        "startup_us": 189777,
+        "supervisor_sampled_rss_bytes": 53100544,
+        "workflow_us": 211924
+      },
+      "native_exit_code": 1,
+      "primary_category": "Timeout",
+      "raw_lifetime_cpu": {
+        "accounting_resolution_seconds": null,
+        "final": true,
+        "reason": "descendant_rollup_unproven",
+        "scope": "root-and-native-descendant-rollup",
+        "source": "posix-wait4",
+        "source_unit_seconds": 1e-06,
+        "status": "partial",
+        "system_seconds": 0.134743,
+        "user_seconds": 0.658341
+      },
+      "raw_process_accounting": null,
+      "raw_receipt_sha256": "475c7d51741baa9652229358e2c664038db5bfb96f752f433ea6af00219b364f",
+      "role": "candidate",
+      "selected_native_root_bounds": {
+        "cleanup_seconds": 5,
+        "output_bytes": 4194304,
+        "seconds": 90
+      },
+      "semantic_contract_pass": true,
+      "summary_sha256": "417b4f0220534ab00fa2f79cf0f043bc3f960670400b4e1bb35f0c4fb59a6f86",
+      "trial_driver_declared_bounds": null
+    },
+    {
+      "application_status": "semantic_pass",
+      "case": "trial-hit-roi",
+      "cleanup_ok": true,
+      "metrics": {
+        "invocation_elapsed_seconds": "7774075000197627/10000000000000000",
+        "lifetime_cpu_seconds": null,
+        "operation_us": 481097,
+        "recognition_child_rss_bytes": 150339584
+      },
+      "native_exit_code": 0,
+      "primary_category": null,
+      "raw_lifetime_cpu": {
+        "accounting_resolution_seconds": null,
+        "final": true,
+        "reason": "descendant_rollup_unproven",
+        "scope": "root-and-native-descendant-rollup",
+        "source": "posix-wait4",
+        "source_unit_seconds": 1e-06,
+        "status": "partial",
+        "system_seconds": 0.09504699999999999,
+        "user_seconds": 0.41941
+      },
+      "raw_process_accounting": null,
+      "raw_receipt_sha256": "940ba9bbdf5762b06a7cb3a769a460d5ae77957fde1a3e3088993531bccdd7c1",
+      "role": "candidate",
+      "selected_native_root_bounds": {
+        "cleanup_seconds": 5,
+        "output_bytes": 4194304,
+        "seconds": 90
+      },
+      "semantic_contract_pass": true,
+      "summary_sha256": "2ad6a6c7d5f32efcea949db73a9f5da3a0062298bfc431b3246af40158e39834",
+      "trial_driver_declared_bounds": {
+        "environment_bytes": 524288,
+        "fixture_bytes": 65536,
+        "frame_bytes": 8294400,
+        "operation_ms": 30000,
+        "outer_cleanup_ms": 5000,
+        "outer_output_bytes": 1048576,
+        "outer_owned_tree_fence_required": true,
+        "outer_primary_ms": 60000,
+        "png_bytes": 65536,
+        "preflight_ms": 10000,
+        "public_shutdown_ms": 14000,
+        "receipt_bytes": 1048575
+      }
+    },
+    {
+      "application_status": "semantic_pass",
+      "case": "trial-miss-roi",
+      "cleanup_ok": true,
+      "metrics": {
+        "invocation_elapsed_seconds": "4794747920241207/10000000000000000",
+        "lifetime_cpu_seconds": null,
+        "operation_us": 458114,
+        "recognition_child_rss_bytes": 150110208
+      },
+      "native_exit_code": 0,
+      "primary_category": null,
+      "raw_lifetime_cpu": {
+        "accounting_resolution_seconds": null,
+        "final": true,
+        "reason": "descendant_rollup_unproven",
+        "scope": "root-and-native-descendant-rollup",
+        "source": "posix-wait4",
+        "source_unit_seconds": 1e-06,
+        "status": "partial",
+        "system_seconds": 0.084516,
+        "user_seconds": 0.388664
+      },
+      "raw_process_accounting": null,
+      "raw_receipt_sha256": "787d5ad3e60494d9216bb8e14a4aa5033987ee76bc49a356826f75539a167a05",
+      "role": "candidate",
+      "selected_native_root_bounds": {
+        "cleanup_seconds": 5,
+        "output_bytes": 4194304,
+        "seconds": 90
+      },
+      "semantic_contract_pass": true,
+      "summary_sha256": "e53328427286fac66108bf30ffda2c9e66cf661cdcde5f1870545236cd2fdfbb",
+      "trial_driver_declared_bounds": {
+        "environment_bytes": 524288,
+        "fixture_bytes": 65536,
+        "frame_bytes": 8294400,
+        "operation_ms": 30000,
+        "outer_cleanup_ms": 5000,
+        "outer_output_bytes": 1048576,
+        "outer_owned_tree_fence_required": true,
+        "outer_primary_ms": 60000,
+        "png_bytes": 65536,
+        "preflight_ms": 10000,
+        "public_shutdown_ms": 14000,
+        "receipt_bytes": 1048575
+      }
+    }
+  ],
+  "compiled_common": {
+    "cargo_lock_sha256": "eee958a894639ca3c7a3ccd99c8bc3a99a0dea303dfdbb737d88573ab6190dbf",
+    "profile": "debug",
+    "rustc": "rustc 1.98.1 (48a229cea 2026-09-01)",
+    "source_sha256": "e4aec1f731804974ebe4b269014b05fd232e98d36322945617e25a6e2feaa6eb",
+    "target": "aarch64-apple-darwin"
+  },
+  "format": "ac5-current-only-semantic-projection-v1",
+  "limits": "Single development invocation per case; no numerical comparison, normal image closure, PID-generation census or effective CPU resolution claim.",
+  "producer_revision": "ac5fdda72c098342ed728ffa1fbeaea21000c15b",
+  "producer_tree": "7c49a13c927de8180547ced29809e059f3913264",
+  "qualification": false
+}
