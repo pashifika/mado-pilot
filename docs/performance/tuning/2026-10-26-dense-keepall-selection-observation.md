@@ -33,8 +33,8 @@ The comparison spans whole source revisions; it does not isolate one commit.
   result limit 16 and `KeepAll`. The independent oracle includes nonfinite values,
   clamping and row-major ties, and compares the full ordered result.
 - No capture/input, preparation-cache, `matchTemplate`, actual-consumer,
-  normal-build, calibration, A/A or full-corpus measurement. Windows results are
-  not included in this Apple record.
+  normal-build, calibration, A/A or full-corpus measurement. The original Apple
+  results are retained separately from the dated Windows follow-up below.
 
 ## Evidence and effect
 
@@ -92,3 +92,49 @@ costs; this score-map-only row cannot answer it. Any allocation tuning needs a
 separately scoped observation that also covers sparse/empty rows, rather than
 preallocating for dense input based on this one result. The original p050
 preparation, consumer and explicit qualification obligations remain open.
+
+## 2026-10-26 Windows follow-up
+
+An independent Windows 11 `10.0.26300` AMD64 run used the same source revisions,
+selected fixture, options and instrumented sampling. Its three baseline
+exit-contract tests, two fresh builds, two real export attestations and ordered
+baseline/current smokes passed once. Both row processes passed all four
+warmup/retained oracles and exited with known successful cleanup. The original
+Apple evidence is unchanged; observations are not pooled across targets.
+
+The [Windows manifest](../../evidence/p050-focused-selection/windows-observation.json)
+binds commands, source/executable identities, cleanup, raw output and private
+packet references. Unmodified producer output:
+[baseline](../../evidence/p050-focused-selection/windows-baseline-producer.json),
+[current](../../evidence/p050-focused-selection/windows-current-producer.json).
+Windows independently reproduced the Apple table's scan/copy/allocation counts,
+including the allocation increase. Its target-specific observations are:
+
+| Windows observation | Baseline | Current |
+| --- | ---: | ---: |
+| Peak counted Rust heap, bytes | 24,885,106 | 16,639,282 |
+| Counted Rust heap residual after owner drop, bytes | 0 | 0 |
+| Process peak RSS, bytes | 37,609,472 | 29,343,744 |
+| RSS residual after owner drop, bytes | 81,920 | 122,880 |
+| Private commit after retained samples, bytes | 21,295,104 | 21,360,640 |
+| Operation p95 from three retained samples, ns | 28,537,800 | 199,100 |
+| Retained operation CPU sum, ns | 93,750,000 | 0 |
+| Retained-loop CPU, ns | 93,750,000 | 15,625,000 |
+
+The current operation CPU value is an observed quantized delta, not CPU-free
+work. The wider retained-loop delta is nonzero. Job accounting is complete/final
+with effective resolution unavailable (`null`); its nominal source unit is not
+an effective-resolution proof. No CPU speedup or normal-timing qualification is
+inferred. Current RSS residual and private commit are higher despite lower peak
+counted heap; those cross-metric costs remain visible.
+
+Both roles observe the same OpenCV world DLL and `ms-concurrency` setting of
+20 threads before/after. These are endpoint/thread-setting observations, not
+complete image closure or a PID-role census. All seven bounded execution phases
+have successful inner/outer cleanup and restored ErrorMode. The worker's private
+environment-bearing plans remain private with explicit reference hashes and
+redacted projections; they are not presented as verified original bytes in this
+compact publication.
+
+The retained-current decision and preparation/consumer/qualification limitations
+above remain unchanged. No follow-on native run was started.
