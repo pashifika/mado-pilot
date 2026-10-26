@@ -32,5 +32,6 @@ new platform support or release approval.
 | --- | --- | --- |
 | 2026-10-26 | [Focused measurements and tuning documentation](2026-10-26-focused-measurements-and-tuning-history.md) | Performance not measured; development observation and optional qualification have explicit separate contracts |
 | 2026-10-26 | [OCR workload profile authority](2026-10-26-ocr-watch-profile-authority.md) | Performance not measured; successor profile identity removes Markdown-status admission without changing numerical ceilings |
+| 2026-10-26 | [Dense KeepAll selection](2026-10-26-dense-keepall-selection-observation.md) | Apple instrumented observation: fewer visited offsets and no selector dense copy; 28 more counted allocations, no performance qualification |
 
 Start a measurement from the [performance guide](../../performance.md).

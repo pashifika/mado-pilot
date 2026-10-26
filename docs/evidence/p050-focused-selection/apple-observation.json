@@ -1,0 +1,216 @@
+{
+  "observation": "2026-10-26 dense KeepAll selection",
+  "target": "aarch64-apple-darwin",
+  "host_os": "macOS27.0.1",
+  "qualification_status": "not-requested",
+  "whole_change_acceptance": "incomplete",
+  "protocol_version": 4,
+  "build_mode": "instrumented",
+  "workload": "selection-k16-dense1080p-keepall",
+  "warmups": 1,
+  "retained_samples": 3,
+  "independent_row_processes_per_role": 1,
+  "order": [
+    "baseline",
+    "inspect baseline semantic/identity/cleanup results",
+    "current"
+  ],
+  "fixture_sha256": "0128b4b4e1e9dce98a69ef615972afd9211c9e85db221c4bdc96da6d9fbd9fa6",
+  "collector": {
+    "source_revision": "36f0cafb02b5e350ea77a6570e68171d44674655",
+    "sha256": "1815e45c3960639eb4157dc5a6a509393b6d516da8a5f01b2558dc2abf155d9c"
+  },
+  "rustc": "rustc 1.97.1 (8bab26f4f 2026-07-14)\nbinary: rustc\ncommit-hash: 8bab26f4f68e0e26f0bb7960be334d5b520ea452\ncommit-date: 2026-07-14\nhost: aarch64-apple-darwin\nrelease: 1.97.1\nLLVM version: 22.1.6\n",
+  "loaded_opencv_dependencies": [
+    {
+      "path": "/opt/homebrew/Cellar/opencv@4/4.14.0_11/lib/libopencv_core.4.14.0.dylib",
+      "sha256": "0043bbecacc56d5adb47e3fe8d7e6f5ff8c242edbc5861ae33f39aabe92cee0b"
+    },
+    {
+      "path": "/opt/homebrew/Cellar/opencv@4/4.14.0_11/lib/libopencv_imgcodecs.4.14.0.dylib",
+      "sha256": "fc0b6882bb629279c29a6dfdaf523787d27b8791710481261999bd6804d0b05b"
+    },
+    {
+      "path": "/opt/homebrew/Cellar/opencv@4/4.14.0_11/lib/libopencv_imgproc.4.14.0.dylib",
+      "sha256": "68167c43c1072817d75d8499a93022152c165924c8c57d02722a1ed3df91adb4"
+    }
+  ],
+  "runtime_observation_scope": "OpenCV endpoints and TBB thread settings; not complete image closure, short-lived image history or process-role census",
+  "measurement_limits": {
+    "child_seconds": 90,
+    "output_bytes": 8388608,
+    "cleanup_seconds": 5,
+    "collector_seconds": 900,
+    "owner_seconds": 1200,
+    "retention_seconds": 60
+  },
+  "roles": {
+    "baseline": {
+      "source_revision": "8cc67f5a20a1e4726913cf4da6963b5d658c9e84",
+      "source_tree": "ffb72950ce4d63d82d453aa129f6148672cf6e71",
+      "cargo_lock_sha256": "88d814ee29a8212b53f568144cc699bc447eeca422640d45a9c2d7b5830235bc",
+      "binary": {
+        "path": "/Users/pashifika/Work/pashifika.github/game-tools/mado-pilot/target/p050-pr112-baseline-instrumented-v1/release/deps/template_matching_efficiency-fb11f54b6e65e2b5",
+        "sha256": "5646cf4ee5964f7d76b1320078f1c4762b7b3a09939e107a0dd7c84f69cd0d4f",
+        "bytes": 2784288,
+        "source_revision": "8cc67f5a20a1e4726913cf4da6963b5d658c9e84",
+        "build_argv": [
+          "/Users/pashifika/.cargo/bin/cargo",
+          "+1.97.1",
+          "bench",
+          "--locked",
+          "--offline",
+          "--package",
+          "mado-pilot",
+          "--features",
+          "template-matching-benchmark",
+          "--bench",
+          "template-matching-efficiency",
+          "--config",
+          "profile.bench.build-override.strip=\"none\"",
+          "--target-dir",
+          "/Users/pashifika/Work/pashifika.github/game-tools/mado-pilot/target/p050-pr112-baseline-instrumented-v1",
+          "--message-format=json",
+          "--no-run"
+        ],
+        "terminal": "baseline-build-reviewed.terminal.json"
+      },
+      "smoke_argv": [
+        "smoke",
+        "--protocol-version",
+        "4",
+        "--build-mode",
+        "instrumented",
+        "--target",
+        "aarch64-apple-darwin",
+        "--baseline",
+        "/Users/pashifika/Work/pashifika.github/game-tools/mado-pilot/target/p050-pr112-baseline-instrumented-v1/release/deps/template_matching_efficiency-fb11f54b6e65e2b5",
+        "--baseline-metadata",
+        "/Users/pashifika/Work/pashifika.github/game-tools/mado-pilot/.rasen/changes/v0-5-0-pre-release-performance-measurement-and-adjustment/ephemera/focused-selection-pr112-v1/apple/baseline.metadata.json",
+        "--workload",
+        "selection-k16-dense1080p-keepall",
+        "--output",
+        "/Users/pashifika/Work/pashifika.github/game-tools/mado-pilot/.rasen/changes/v0-5-0-pre-release-performance-measurement-and-adjustment/ephemera/focused-selection-pr112-v1/apple/baseline-observation"
+      ],
+      "producer_argv": [
+        "/Users/pashifika/Work/pashifika.github/game-tools/mado-pilot/target/p050-pr112-baseline-instrumented-v1/release/deps/template_matching_efficiency-fb11f54b6e65e2b5",
+        "--protocol-version",
+        "4",
+        "--workload",
+        "selection-k16-dense1080p-keepall",
+        "--smoke"
+      ],
+      "process_id": 60632,
+      "producer_stdout": "apple-baseline-producer.json",
+      "producer_stdout_sha256": "3f65193730944c2be0cd38b52f2d6d1746c894aeb310fbe4ffe9af75a734b696",
+      "exit_code": 0,
+      "cleanup_ok": true,
+      "owner_status": "passed",
+      "owner_cleanup_counts": {
+        "false": 0,
+        "true": 3,
+        "unknown": 0
+      },
+      "attestation_sha256": "5366c782cd32e5d3b67ccd11a56b9991e96739d54dd13ab619b8c6134ada021a",
+      "collector_report_sha256": "3575d64a0b48b12c9f4757d9ea13f01c3f2edcfb371dcfe776ee6135c14dcde9"
+    },
+    "current": {
+      "source_revision": "36f0cafb02b5e350ea77a6570e68171d44674655",
+      "source_tree": "d3bd22f576b1f744ab1f1e90df7104a01300291d",
+      "cargo_lock_sha256": "82acf779928beb1a61683baf667695f0667dffa16be8b0c4e1662d0cec517dc1",
+      "binary": {
+        "path": "/Users/pashifika/Work/pashifika.github/game-tools/mado-pilot/target/p050-pr112-current-instrumented-v1/release/deps/template_matching_efficiency-b3f436b772ca71dc",
+        "sha256": "ac1bde0708020e90f630e30c461d10e801b1334031631de676d8c17f4a0dc8c0",
+        "bytes": 2849904,
+        "source_revision": "36f0cafb02b5e350ea77a6570e68171d44674655",
+        "build_argv": [
+          "/Users/pashifika/.cargo/bin/cargo",
+          "+1.97.1",
+          "bench",
+          "--locked",
+          "--offline",
+          "--package",
+          "mado-pilot",
+          "--features",
+          "template-matching-benchmark",
+          "--bench",
+          "template-matching-efficiency",
+          "--config",
+          "profile.bench.build-override.strip=\"none\"",
+          "--target-dir",
+          "/Users/pashifika/Work/pashifika.github/game-tools/mado-pilot/target/p050-pr112-current-instrumented-v1",
+          "--message-format=json",
+          "--no-run"
+        ],
+        "terminal": "current-build.terminal.json"
+      },
+      "smoke_argv": [
+        "smoke",
+        "--protocol-version",
+        "4",
+        "--build-mode",
+        "instrumented",
+        "--target",
+        "aarch64-apple-darwin",
+        "--baseline",
+        "/Users/pashifika/Work/pashifika.github/game-tools/mado-pilot/target/p050-pr112-current-instrumented-v1/release/deps/template_matching_efficiency-b3f436b772ca71dc",
+        "--baseline-metadata",
+        "/Users/pashifika/Work/pashifika.github/game-tools/mado-pilot/.rasen/changes/v0-5-0-pre-release-performance-measurement-and-adjustment/ephemera/focused-selection-pr112-v1/apple/current.metadata.json",
+        "--workload",
+        "selection-k16-dense1080p-keepall",
+        "--output",
+        "/Users/pashifika/Work/pashifika.github/game-tools/mado-pilot/.rasen/changes/v0-5-0-pre-release-performance-measurement-and-adjustment/ephemera/focused-selection-pr112-v1/apple/current-observation"
+      ],
+      "producer_argv": [
+        "/Users/pashifika/Work/pashifika.github/game-tools/mado-pilot/target/p050-pr112-current-instrumented-v1/release/deps/template_matching_efficiency-b3f436b772ca71dc",
+        "--protocol-version",
+        "4",
+        "--workload",
+        "selection-k16-dense1080p-keepall",
+        "--smoke"
+      ],
+      "process_id": 60858,
+      "producer_stdout": "apple-current-producer.json",
+      "producer_stdout_sha256": "4d00ae50308db53e83ccfe373234f0b75234fee431110b97092086454f0330fa",
+      "exit_code": 0,
+      "cleanup_ok": true,
+      "owner_status": "passed",
+      "owner_cleanup_counts": {
+        "false": 0,
+        "true": 3,
+        "unknown": 0
+      },
+      "attestation_sha256": "e2fdae2768abd616d1e32c6f7abd3f014a6400c74f0b7b1d6323d5f07043e00a",
+      "collector_report_sha256": "ba8fe168d2d0073aaa3f2685bce13673babab69cde80affc0e15a672a0e9531e"
+    }
+  },
+  "verification": {
+    "baseline_exit_tests": {
+      "passed": 3,
+      "failed": 0,
+      "argv": [
+        "/Users/pashifika/.cargo/bin/cargo",
+        "+1.97.1",
+        "test",
+        "--locked",
+        "--offline",
+        "--package",
+        "mado-pilot",
+        "--features",
+        "template-matching-benchmark",
+        "--test",
+        "template_matching_efficiency_exit",
+        "--target-dir",
+        "/Users/pashifika/Work/pashifika.github/game-tools/mado-pilot/target/p050-pr112-baseline-exit-v1"
+      ]
+    },
+    "current_ci": "https://github.com/pashifika/mado-pilot/actions/runs/40285129179"
+  },
+  "private_full_evidence": ".rasen/changes/v0-5-0-pre-release-performance-measurement-and-adjustment/ephemera/focused-selection-pr112-v1/",
+  "scope_limits": [
+    "No capture, input, matchTemplate, prepared-cache or actual consumer measurement",
+    "Counters/allocation include row setup and warmup; operation times exclude scratch restoration and oracle",
+    "One instrumented process per role; no normal timing or statistical/target qualification",
+    "Source-only baseline bundle and full owner/attestation evidence retained privately, not included in this compact public evidence"
+  ]
+}
