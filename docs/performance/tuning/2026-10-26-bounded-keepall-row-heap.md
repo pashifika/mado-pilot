@@ -45,14 +45,51 @@ coverage. No timing or OpenCV matching call is measured by this probe. Full raw
 execution and probe sources remain at the private evidence locator; the compact
 record is not a standalone reproducibility packet.
 
-The affected OpenCV backend suite passes 62 unit tests, 27 algorithm tests and
-two documentation tests in an isolated Cargo root. Existing canonical-reference,
-suppression, cancellation/deadline and preparation ownership tests remain active.
+The affected OpenCV backend suite passes 62 unit tests, 27 algorithm tests,
+one vision-contract integration test and one documentation test in an isolated
+Cargo root. Canonical-reference, suppression, cancellation/deadline and
+preparation ownership tests remain active.
 Independent implementation and observation-scope reviews report no findings.
+
+## Native component observation
+
+On Apple Silicon and Windows x64 MSVC, retained `36f0caf` and freshly
+built/attested `9dd20c55` execute five existing selector rows once per role,
+with one warmup and three retained units. The
+[Apple record](../../evidence/p050-selector-allocation/apple-observation.json)
+and [Windows record](../../evidence/p050-selector-allocation/windows-selector-observation.json)
+link raw producer output and inspections. All ten row processes and ten
+separate manifest processes per target complete with zero oracle failures and
+successful cleanup. Before-role inspection precedes the after role. Windows
+also passes the same 91-test backend suite and five actual provenance probes.
+
+| Workload | Both targets' row allocations, before → after | Apple peak counted Rust heap, bytes, before → after | Windows peak counted Rust heap, bytes, before → after |
+| --- | ---: | ---: | ---: |
+| `selection-k16-dense1080p-keepall` | 54 → 26 | 16,639,883 → 16,591,371 | 16,639,282 → 16,590,770 |
+| `selection-k16-dense1080p-dropoverlapping` | 62 → 62 | 16,639,891 → 16,639,891 | 16,639,290 → 16,639,290 |
+| `selection-k256-small-dense-tied` | 46 → 46 | 67,082 → 67,082 | 66,481 → 66,481 |
+| `selection-k256-large-sparse` | 16 → 16 | 66,356,998 → 66,356,998 | 66,356,397 → 66,356,397 |
+| `selection-k1-large` | 12 → 12 | 66,356,853 → 66,356,853 | 66,356,252 → 66,356,252 |
+
+Dense KeepAll retains 610,044 visited score offsets and zero score-copy bytes
+in both roles. Row counters include setup and warmup; they are not the direct
+probe's single-call counters. No normal latency/CPU benefit is inferred.
+Candidates use standard Git-checkout attestation. An Apple export-mode attempt
+against the checkout is retained separately as a failed source-applicability
+attempt, with no numerical row or binary rebuild. Windows retains data-only
+publication/packaging failures separately; no native retry follows from them.
+
+Adverse OS-resource observations remain in the raw records: Windows candidate
+peak RSS/private-after increase for overlap, small-tied and sparse rows; k1
+peak RSS increases while private-after decreases. The sparse operation CPU
+delta of 15,625,000 to zero nanoseconds is quantization, not CPU-free work.
+Complete lifetime Job CPU with unavailable effective resolution is not a
+normal timing benefit or process/image census. Counted Rust post-drop residual
+is zero for both selector roles on each target; this is not native leak proof.
 
 ## Trade-offs and disposition
 
-Retain the implementation for source-bound component verification. Building the
+Retain the implementation after both-target source-bound verification. Building the
 bounded initial heap adds comparisons, and conversion to a greatest-first heap
 has `O(k)` work checked for interruption before and after, not inside the standard
 library heapify operation. Normal latency/CPU and large-budget interruption
@@ -60,12 +97,12 @@ latency are not established by allocation counts. The five existing selector
 smoke rows provide changed-path and unchanged-path observations; sparse/empty
 KeepAll behavior is separately exercised by the direct probe and contract tests.
 
-Preparation is a separate observation: the four existing eight-template batch
-rows compare retained `8cc67f5` with retained `36f0caf`, not this selector change.
-Templates are prepared outside each timed search operation. No image-preparation
-implementation or two-entry/33,554,432-byte bound changes in this adjustment.
+Preparation is a [separate both-target observation](2026-10-26-preparation-reuse-observation.md):
+the four existing eight-template batch rows compare retained `8cc67f5` with
+retained `36f0caf`, not this selector change. Templates are prepared outside each
+timed search operation. No image-preparation implementation or
+two-entry/33,554,432-byte bound changes in this adjustment.
 
-Both-target component results, actual-consumer work, normal-build benefit and
-explicit qualification retain their own evidence requirements. No host-idle
-admission, automatic calibration, historical regrading or release approval is
-introduced.
+Actual-consumer work, normal-build benefit and explicit qualification retain
+their own evidence requirements. No host-idle admission, automatic calibration,
+historical regrading or release approval is introduced.
