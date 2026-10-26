@@ -36,5 +36,6 @@ new platform support or release approval.
 | 2026-10-26 | [Bounded KeepAll row heap](2026-10-26-bounded-keepall-row-heap.md) | Direct selector verification reduces dense allocations and counted heap without increasing sparse/empty allocation; preparation and performance qualification remain separate |
 | 2026-10-26 | [Preparation reuse](2026-10-26-preparation-reuse-observation.md) | Both targets reduce BGR conversion and live-owner mapping work; cold-ROI allocations increase, with ownership and qualification scopes retained |
 | 2026-10-26 | [Focused normal observations](2026-10-26-focused-normal-observations.md) | System-allocator selected-path observations preserve raw timing/CPU, explicit null counters and unqualified scope |
+| 2026-10-26 | [Actual-consumer group observation](2026-10-26-actual-consumer-group-observation.md) | Fresh Apple and retained Windows group intervals are descriptive; adverse RSS, unavailable CPU/steady windows and frozen producer identities remain explicit |
 
 Start a measurement from the [performance guide](../../performance.md).

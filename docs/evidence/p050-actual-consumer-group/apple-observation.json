@@ -1,0 +1,325 @@
+{
+  "adverse_observations": {
+    "current_minus_baseline": {
+      "supervisor_sampled_rss_bytes": 163840
+    },
+    "interpretation": "Observed increase retained; one invocation does not establish a regression or leak."
+  },
+  "authored_contract": {
+    "max_results": 8,
+    "min_score": 0.9,
+    "pr114_keepall_branch_applicable": false,
+    "roi": {
+      "height": 180,
+      "width": 320,
+      "x": 64,
+      "y": 48
+    },
+    "suppression": "DropOverlapping"
+  },
+  "case": "group-roi",
+  "completion": {
+    "all_native_call_cleanup_known_true": true,
+    "all_outer_exit_codes": [
+      0,
+      0,
+      0
+    ],
+    "application_invocations": 2,
+    "baseline_inspected_before_candidate_start": true,
+    "builds": 0,
+    "guard_mode": "full-content SHA256 in each smoke pre/post/final verification",
+    "loader": false,
+    "owned_processor_metadata_calls": 3,
+    "prepare_stages": 1,
+    "report_exit_codes": [
+      0,
+      0
+    ],
+    "retries": 0,
+    "runtime_closure": null,
+    "smoke_stages": 2,
+    "source_input_guards": 2208
+  },
+  "format": "p050-focused-group-roi-observation-v1",
+  "limitations": [
+    "Effective producer roles are beb064f/dd320; neither binary was rebuilt or relabeled with fa5d6e3, c305 or a merge/publication revision.",
+    "Raw build.engine_revision remains the authored f61a57f Cargo Git pin. Effective local producer identities are separately bound.",
+    "One invocation per role is descriptive, not robust speedup, p95, regression, unique causal attribution or numerical qualification.",
+    "Raw posix-wait4 CPU remains partial with descendant_rollup_unproven; reconciled lifetime CPU and effective resolution are null.",
+    "Periodic sampled RSS maxima are not group-only bracketed values, OS peaks, allocator bytes or leak proof; steady windows are unavailable.",
+    "Native thread getters are post-workload points, not observed worker activity or invariance.",
+    "No image closure, process-role census, capture/input/UI or OCR qualification is claimed.",
+    "Windows historical and fresh Apple invocations are separate cohorts and are not pooled."
+  ],
+  "new_execution_count": 2,
+  "observation_kind": "fresh loader-off development smoke; one invocation per frozen role",
+  "privacy": {
+    "construction": "Explicit field allowlist from decoded retained raw and hash-bound receipt chain; no full report copies",
+    "excluded": [
+      "absolute local paths",
+      "environment values",
+      "host hardware and kernel identity",
+      "arbitrary stdout/stderr or logs",
+      "run/session/observation identifiers",
+      "process identifiers",
+      "binary bytes",
+      "private plans"
+    ]
+  },
+  "qualification": false,
+  "roles": [
+    {
+      "binary": {
+        "bytes": 33188296,
+        "sha256": "3e8f29fba8350a76cca491c6fffc04d509afdee2c52bd223d0f61308d2448bda"
+      },
+      "cpu": {
+        "raw_lifetime_observation": {
+          "accounting_resolution_seconds": null,
+          "final": true,
+          "reason": "descendant_rollup_unproven",
+          "scope": "root-and-native-descendant-rollup",
+          "source": "posix-wait4",
+          "source_unit_seconds": 1e-06,
+          "status": "partial",
+          "system_seconds": 0.305712,
+          "user_seconds": 0.81111
+        },
+        "reconciled_lifetime_cpu_seconds": null
+      },
+      "effective_producer_revision": "beb064f0c652648f92df5bfb65aaf05384a18b8d",
+      "native_thread_point": {
+        "active_concurrency": null,
+        "configured_threads": 10,
+        "during_workload_invariance_observed": false,
+        "framework": "tbb",
+        "method": "opencv-parallel-framework-and-num-threads-v1",
+        "point": "after_replay_runner_release",
+        "reported_threads": 10,
+        "scope": "post-workload-point-only",
+        "supported": true
+      },
+      "original_receipt_role": "baseline",
+      "process_accounting": null,
+      "raw_build_identity": {
+        "cargo_lock_sha256": "19430ce2eb872383acdf429c9964e9b35bd97934e83745796f2a2e459e128f60",
+        "engine_revision": "f61a57f661c0314ea0a1d860d9298fbff86d903d",
+        "executable_sha256": "3e8f29fba8350a76cca491c6fffc04d509afdee2c52bd223d0f61308d2448bda",
+        "profile": "debug",
+        "rustc": "rustc 1.98.1 (48a229cea 2026-09-01)",
+        "source_sha256": "4e23452bc363002f87aa554839fba72796d33b087da1711c39dbff128da50fff",
+        "target": "aarch64-apple-darwin"
+      },
+      "raw_reference": {
+        "bytes": 43143,
+        "private_artifact": "apple/baseline-smoke/00.raw.json",
+        "sha256": "98b54e52373cfa60c44574a4f727f402a66e7afb3c36d0f0455ac68b488e5f5c"
+      },
+      "role": "baseline",
+      "rss": {
+        "child_sampled_max_bytes": 251789312,
+        "child_steady_summary": null,
+        "method": "5ms periodic samples, observed maximum not OS peak",
+        "steady_unavailable_reason": "workflow ended before the declared steady window completed",
+        "supervisor_sampled_max_bytes": 52953088,
+        "supervisor_steady_summary": null
+      },
+      "semantic": {
+        "all_operation_failures": 0,
+        "application_status": "PASS",
+        "dropped_host_call_records": 0,
+        "engine_cleanup_clean": true,
+        "engine_session_closed": true,
+        "group_operations": 16,
+        "handles_released": true,
+        "matched": 9,
+        "native_cleanup_ok": true,
+        "native_exit_code": 0,
+        "no_match": 1,
+        "observations": 5,
+        "operation_counts": {
+          "log": 6,
+          "observe": 5,
+          "recognize": 10,
+          "release": 14
+        },
+        "recognitions": 10,
+        "recorded_host_calls": 35,
+        "remaining_native_owners": 0,
+        "retained_group_results": 8,
+        "searches": 10
+      },
+      "timing": {
+        "application_us": {
+          "cleanup_us": 57,
+          "elapsed_us": 883528,
+          "preflight_us": 301612,
+          "startup_us": 206542,
+          "workflow_us": 362267
+        },
+        "group_end_ns": 666498375,
+        "group_span_ns": 66844333,
+        "group_start_ns": 599654042,
+        "native_invocation_seconds": 1.1231607919908129,
+        "recognize_ns": [
+          9871875,
+          8125625,
+          8124834,
+          8066375,
+          7976250,
+          8018833,
+          7942375,
+          7971166
+        ],
+        "release_ns": [
+          10292,
+          5417,
+          4042,
+          8209,
+          4917,
+          7042,
+          3541,
+          3500
+        ]
+      }
+    },
+    {
+      "binary": {
+        "bytes": 33433112,
+        "sha256": "6b93818f4cae0c1819a89b38249d0185480aed444da6d030cce79c893e598037"
+      },
+      "cpu": {
+        "raw_lifetime_observation": {
+          "accounting_resolution_seconds": null,
+          "final": true,
+          "reason": "descendant_rollup_unproven",
+          "scope": "root-and-native-descendant-rollup",
+          "source": "posix-wait4",
+          "source_unit_seconds": 1e-06,
+          "status": "partial",
+          "system_seconds": 0.242445,
+          "user_seconds": 0.748458
+        },
+        "reconciled_lifetime_cpu_seconds": null
+      },
+      "effective_producer_revision": "dd320044cdd390ee662117c69e865391f72ed996",
+      "native_thread_point": {
+        "active_concurrency": null,
+        "configured_threads": 10,
+        "during_workload_invariance_observed": false,
+        "framework": "tbb",
+        "method": "opencv-parallel-framework-and-num-threads-v1",
+        "point": "after_replay_runner_release",
+        "reported_threads": 10,
+        "scope": "post-workload-point-only",
+        "supported": true
+      },
+      "original_receipt_role": "candidate",
+      "process_accounting": null,
+      "raw_build_identity": {
+        "cargo_lock_sha256": "eee958a894639ca3c7a3ccd99c8bc3a99a0dea303dfdbb737d88573ab6190dbf",
+        "engine_revision": "f61a57f661c0314ea0a1d860d9298fbff86d903d",
+        "executable_sha256": "6b93818f4cae0c1819a89b38249d0185480aed444da6d030cce79c893e598037",
+        "profile": "debug",
+        "rustc": "rustc 1.98.1 (48a229cea 2026-09-01)",
+        "source_sha256": "e4aec1f731804974ebe4b269014b05fd232e98d36322945617e25a6e2feaa6eb",
+        "target": "aarch64-apple-darwin"
+      },
+      "raw_reference": {
+        "bytes": 43143,
+        "private_artifact": "apple/candidate-smoke/00.raw.json",
+        "sha256": "7cdc1f304d4be24655002918ba49be437eecacdd24ab937c4d1d3df31de7e9e6"
+      },
+      "role": "current",
+      "rss": {
+        "child_sampled_max_bytes": 245399552,
+        "child_steady_summary": null,
+        "method": "5ms periodic samples, observed maximum not OS peak",
+        "steady_unavailable_reason": "workflow ended before the declared steady window completed",
+        "supervisor_sampled_max_bytes": 53116928,
+        "supervisor_steady_summary": null
+      },
+      "semantic": {
+        "all_operation_failures": 0,
+        "application_status": "PASS",
+        "dropped_host_call_records": 0,
+        "engine_cleanup_clean": true,
+        "engine_session_closed": true,
+        "group_operations": 16,
+        "handles_released": true,
+        "matched": 9,
+        "native_cleanup_ok": true,
+        "native_exit_code": 0,
+        "no_match": 1,
+        "observations": 5,
+        "operation_counts": {
+          "log": 6,
+          "observe": 5,
+          "recognize": 10,
+          "release": 14
+        },
+        "recognitions": 10,
+        "recorded_host_calls": 35,
+        "remaining_native_owners": 0,
+        "retained_group_results": 8,
+        "searches": 10
+      },
+      "timing": {
+        "application_us": {
+          "cleanup_us": 28,
+          "elapsed_us": 710969,
+          "preflight_us": 250452,
+          "startup_us": 191487,
+          "workflow_us": 257843
+        },
+        "group_end_ns": 517864750,
+        "group_span_ns": 34444917,
+        "group_start_ns": 483419833,
+        "native_invocation_seconds": 0.7849259169888683,
+        "recognize_ns": [
+          5156750,
+          4044916,
+          4047250,
+          4098042,
+          4062500,
+          4157167,
+          4043292,
+          3988083
+        ],
+        "release_ns": [
+          9834,
+          11042,
+          5375,
+          11375,
+          5875,
+          6958,
+          3875,
+          3500
+        ]
+      }
+    }
+  ],
+  "source_provenance": {
+    "adapter_sha256": "cf6b50b2e228ec2ef07d3a7df3684ef5bc39836a18e4dbdc46e6783bb17e93aa",
+    "collector_revision": "fa5d6e3e0a575ce2cef67ff4479588e52fc278b7",
+    "collector_sha256": "afe6f24bb12bb8df2b21481d83eced7ad677957b03a2d00cb46ef37a0b8d8122",
+    "effective_producer_binding": "Retained Cargo receipts, effective source graphs and14 local producer path patches; not raw build.engine_revision",
+    "effective_source_graph_sha256": "a21aa6c3bd77f72429c8342e37afabbd88bdb181c27a6e1e7ed2b4612d7864fc",
+    "node_executable_sha256": "ee6fb0e015284d83a91e8ec5213f43a157f8a392b58555301682892ba928c04a",
+    "prepared_plan_sha256": "2922d4ef47f704a98056bac8283a2dd494e7ccd9bfc2c51325156d190f6ad6b2",
+    "private_originals_included": false,
+    "retained_owner_sha256": "fc39d027564516ae1ee5b729b31a1c709db529a1eb9154439a1ff399190791eb",
+    "source_plan_sha256": "9dfe2c6701cd3576082902d4ffcd083efecac4c9200a23fb8de7a8fb878e55cf"
+  },
+  "span_scope": {
+    "clock_epoch": "control.started",
+    "cross_process_clock_subtraction": false,
+    "end": "eighth paired release host call: end_ns",
+    "excludes": "readiness, request-array preparation, later result-oracle assertions, newer miss/hit operations, overall startup and cleanup",
+    "includes": "16 recognize/release calls and inter-call handoff gaps on one retained observation",
+    "start": "first of eight retained-group recognize host calls: start_ns",
+    "unit": "ns"
+  },
+  "target": "aarch64-apple-darwin"
+}
