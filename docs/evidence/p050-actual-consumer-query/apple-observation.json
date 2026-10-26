@@ -1,0 +1,630 @@
+{
+  "cases": [
+    {
+      "authored_options": {
+        "max_results": 8,
+        "min_score": 0.9,
+        "overlap": "DropOverlapping",
+        "roi": [
+          64,
+          48,
+          320,
+          180
+        ]
+      },
+      "case": "matched-roi",
+      "current_minus_baseline": {
+        "child_sampled_max_bytes": 7389184,
+        "cleanup_us": -31,
+        "elapsed_us": -152843,
+        "preflight_us": -31640,
+        "query_wait_ns": -6804916,
+        "startup_us": -54435,
+        "supervisor_sampled_max_bytes": 98304,
+        "workflow_us": -64886
+      },
+      "input_count": 2208,
+      "prepared_plan_sha256": "88fa846bb28bfecb5fd263eca08c830ce2fc0ab9236ce8910fa6cb888e3337ac",
+      "rows": [
+        {
+          "application_stage_us": {
+            "cleanup_us": 57,
+            "elapsed_us": 835794,
+            "preflight_us": 281572,
+            "startup_us": 252025,
+            "workflow_us": 291806
+          },
+          "binary": {
+            "bytes": 33188296,
+            "sha256": "3e8f29fba8350a76cca491c6fffc04d509afdee2c52bd223d0f61308d2448bda"
+          },
+          "cpu": {
+            "raw_lifetime_observation": {
+              "accounting_resolution_seconds": null,
+              "final": true,
+              "reason": "descendant_rollup_unproven",
+              "scope": "root-and-native-descendant-rollup",
+              "source": "posix-wait4",
+              "source_unit_seconds": 1e-06,
+              "status": "partial",
+              "system_seconds": 0.201293,
+              "user_seconds": 0.694908
+            },
+            "reconciled_lifetime_cpu_seconds": null
+          },
+          "effective_producer_revision": "beb064f0c652648f92df5bfb65aaf05384a18b8d",
+          "inspection_sha256": "c6e6cff6a20a001ce29f30208a5176954db3ee73a9e9d3c9cf574ebacac54edc",
+          "native_cleanup_ok": true,
+          "native_thread_point": {
+            "active_concurrency": null,
+            "configured_threads": 10,
+            "during_workload_invariance_observed": false,
+            "finished_us": 594186,
+            "framework": "tbb",
+            "method": "opencv-parallel-framework-and-num-threads-v1",
+            "native_status": 0,
+            "point": "after_replay_runner_release",
+            "reason": null,
+            "reported_threads": 10,
+            "scope": "post-workload-point-only",
+            "started_us": 594185,
+            "supported": true
+          },
+          "native_timed_out": false,
+          "oracle": {
+            "caller_observation_released": true,
+            "child_reaped": true,
+            "confirmed_matched": false,
+            "confirmed_no_match_frame": 2,
+            "dropped_records": 0,
+            "forced": false,
+            "host_records": 17,
+            "observations": 3,
+            "operation_counts": {
+              "asset": 0,
+              "fixture": 0,
+              "log": 5,
+              "observe": 3,
+              "postcondition": 0,
+              "query": 1,
+              "query_wait": 1,
+              "recognize": 1,
+              "release": 6,
+              "scan_ocr_zones": 0,
+              "settle": 0,
+              "submit": 0,
+              "target_start": 0,
+              "target_status": 0,
+              "unknown": 0,
+              "wait": 0
+            },
+            "physical_cleanup_confirmed": true,
+            "query_source_frame": 2,
+            "readiness_frame": 1,
+            "recognitions": 2,
+            "remaining": {
+              "active_sequences": 0,
+              "held_buttons": 0,
+              "held_keys": 0,
+              "in_flight_native": 0,
+              "live_handles": 0,
+              "queued": 0
+            },
+            "result_bounds": [
+              83,
+              66,
+              12,
+              10
+            ],
+            "result_frame": 3
+          },
+          "original_cohort_unchanged": true,
+          "original_receipt_role": "baseline",
+          "outcome": {
+            "application_status": "PASS",
+            "cause_status": null,
+            "engine_child_exit_code": 0,
+            "native_exit_code": 0,
+            "primary_category": null
+          },
+          "process_accounting": null,
+          "raw_build_identity": {
+            "cargo_lock_sha256": "19430ce2eb872383acdf429c9964e9b35bd97934e83745796f2a2e459e128f60",
+            "engine_revision": "f61a57f661c0314ea0a1d860d9298fbff86d903d",
+            "executable_sha256": "3e8f29fba8350a76cca491c6fffc04d509afdee2c52bd223d0f61308d2448bda",
+            "profile": "debug",
+            "rustc": "rustc 1.98.1 (48a229cea 2026-09-01)",
+            "source_sha256": "4e23452bc363002f87aa554839fba72796d33b087da1711c39dbff128da50fff",
+            "target": "aarch64-apple-darwin"
+          },
+          "raw_reference": {
+            "path": "apple/matched-roi/baseline-smoke/00.raw.json",
+            "sha256": "1bbd443e0cef471e5bd0dbbf6356925c02ec54e0a40e60c748eeff9f5e04b483"
+          },
+          "report_sha256": "b38eea3ef229619a2bd3619d014ac9cfbd1632d37664a13541bd0b9c05ad1c49",
+          "role": "baseline",
+          "rss": {
+            "child_sampled_max_bytes": 228261888,
+            "child_steady_summary": null,
+            "method": "5ms sampled maxima, not OS high-water",
+            "supervisor_sampled_max_bytes": 53051392,
+            "supervisor_steady_summary": null
+          },
+          "wait": {
+            "caller_overrun_ns": null,
+            "duration_ns": 15040375,
+            "end_ns": 591692542,
+            "ok": true,
+            "requested_timeout_ms": 5000,
+            "start_ns": 576652167
+          }
+        },
+        {
+          "application_stage_us": {
+            "cleanup_us": 26,
+            "elapsed_us": 682951,
+            "preflight_us": 249932,
+            "startup_us": 197590,
+            "workflow_us": 226920
+          },
+          "binary": {
+            "bytes": 33433112,
+            "sha256": "6b93818f4cae0c1819a89b38249d0185480aed444da6d030cce79c893e598037"
+          },
+          "cpu": {
+            "raw_lifetime_observation": {
+              "accounting_resolution_seconds": null,
+              "final": true,
+              "reason": "descendant_rollup_unproven",
+              "scope": "root-and-native-descendant-rollup",
+              "source": "posix-wait4",
+              "source_unit_seconds": 1e-06,
+              "status": "partial",
+              "system_seconds": 0.160652,
+              "user_seconds": 0.6800579999999999
+            },
+            "reconciled_lifetime_cpu_seconds": null
+          },
+          "effective_producer_revision": "dd320044cdd390ee662117c69e865391f72ed996",
+          "inspection_sha256": "fa39d6d54646001e0d78217e446271f9072c02c4fbef00bd2362827d2b92d75e",
+          "native_cleanup_ok": true,
+          "native_thread_point": {
+            "active_concurrency": null,
+            "configured_threads": 10,
+            "during_workload_invariance_observed": false,
+            "finished_us": 497745,
+            "framework": "tbb",
+            "method": "opencv-parallel-framework-and-num-threads-v1",
+            "native_status": 0,
+            "point": "after_replay_runner_release",
+            "reason": null,
+            "reported_threads": 10,
+            "scope": "post-workload-point-only",
+            "started_us": 497745,
+            "supported": true
+          },
+          "native_timed_out": false,
+          "oracle": {
+            "caller_observation_released": true,
+            "child_reaped": true,
+            "confirmed_matched": false,
+            "confirmed_no_match_frame": 2,
+            "dropped_records": 0,
+            "forced": false,
+            "host_records": 17,
+            "observations": 3,
+            "operation_counts": {
+              "asset": 0,
+              "fixture": 0,
+              "log": 5,
+              "observe": 3,
+              "postcondition": 0,
+              "query": 1,
+              "query_wait": 1,
+              "recognize": 1,
+              "release": 6,
+              "scan_ocr_zones": 0,
+              "settle": 0,
+              "submit": 0,
+              "target_start": 0,
+              "target_status": 0,
+              "unknown": 0,
+              "wait": 0
+            },
+            "physical_cleanup_confirmed": true,
+            "query_source_frame": 2,
+            "readiness_frame": 1,
+            "recognitions": 2,
+            "remaining": {
+              "active_sequences": 0,
+              "held_buttons": 0,
+              "held_keys": 0,
+              "in_flight_native": 0,
+              "live_handles": 0,
+              "queued": 0
+            },
+            "result_bounds": [
+              83,
+              66,
+              12,
+              10
+            ],
+            "result_frame": 3
+          },
+          "original_cohort_unchanged": true,
+          "original_receipt_role": "candidate",
+          "outcome": {
+            "application_status": "PASS",
+            "cause_status": null,
+            "engine_child_exit_code": 0,
+            "native_exit_code": 0,
+            "primary_category": null
+          },
+          "process_accounting": null,
+          "raw_build_identity": {
+            "cargo_lock_sha256": "eee958a894639ca3c7a3ccd99c8bc3a99a0dea303dfdbb737d88573ab6190dbf",
+            "engine_revision": "f61a57f661c0314ea0a1d860d9298fbff86d903d",
+            "executable_sha256": "6b93818f4cae0c1819a89b38249d0185480aed444da6d030cce79c893e598037",
+            "profile": "debug",
+            "rustc": "rustc 1.98.1 (48a229cea 2026-09-01)",
+            "source_sha256": "e4aec1f731804974ebe4b269014b05fd232e98d36322945617e25a6e2feaa6eb",
+            "target": "aarch64-apple-darwin"
+          },
+          "raw_reference": {
+            "path": "apple/matched-roi/candidate-smoke/00.raw.json",
+            "sha256": "786f8161b0ad1f275baaf1f1540d9dad1fd26f4f29cef34f3c5ac196c0ed7005"
+          },
+          "report_sha256": "ae5a362b8b1ff5f877ff4d1708b74abfbbe70c0eb90f886b5169ed3b58dbba4f",
+          "role": "current",
+          "rss": {
+            "child_sampled_max_bytes": 235651072,
+            "child_steady_summary": null,
+            "method": "5ms sampled maxima, not OS high-water",
+            "supervisor_sampled_max_bytes": 53149696,
+            "supervisor_steady_summary": null
+          },
+          "wait": {
+            "caller_overrun_ns": null,
+            "duration_ns": 8235459,
+            "end_ns": 495241500,
+            "ok": true,
+            "requested_timeout_ms": 5000,
+            "start_ns": 487006041
+          }
+        }
+      ]
+    },
+    {
+      "authored_options": {
+        "max_results": 8,
+        "min_score": 0.9,
+        "overlap": "DropOverlapping",
+        "roi": [
+          64,
+          48,
+          320,
+          180
+        ]
+      },
+      "case": "deadline-roi",
+      "current_minus_baseline": {
+        "child_sampled_max_bytes": 753664,
+        "cleanup_us": -7,
+        "elapsed_us": 277,
+        "preflight_us": 6395,
+        "query_wait_ns": 966292,
+        "startup_us": 2143,
+        "supervisor_sampled_max_bytes": 114688,
+        "workflow_us": -1962
+      },
+      "input_count": 2208,
+      "prepared_plan_sha256": "48582a1e310a618f248b02ebe1faabd5deca4a226cf17dddc6db73ba7dccbd64",
+      "rows": [
+        {
+          "application_stage_us": {
+            "cleanup_us": 47,
+            "elapsed_us": 685867,
+            "preflight_us": 252460,
+            "startup_us": 195473,
+            "workflow_us": 227401
+          },
+          "binary": {
+            "bytes": 33188296,
+            "sha256": "3e8f29fba8350a76cca491c6fffc04d509afdee2c52bd223d0f61308d2448bda"
+          },
+          "cpu": {
+            "raw_lifetime_observation": {
+              "accounting_resolution_seconds": null,
+              "final": true,
+              "reason": "descendant_rollup_unproven",
+              "scope": "root-and-native-descendant-rollup",
+              "source": "posix-wait4",
+              "source_unit_seconds": 1e-06,
+              "status": "partial",
+              "system_seconds": 0.134824,
+              "user_seconds": 0.6688959999999999
+            },
+            "reconciled_lifetime_cpu_seconds": null
+          },
+          "effective_producer_revision": "beb064f0c652648f92df5bfb65aaf05384a18b8d",
+          "inspection_sha256": "1d9cb16e5e4e4d2d1949484e85b8f1b330716a7e702f645faef7681db7ba0c9b",
+          "native_cleanup_ok": true,
+          "native_thread_point": {
+            "active_concurrency": null,
+            "configured_threads": 10,
+            "during_workload_invariance_observed": false,
+            "finished_us": 500724,
+            "framework": "tbb",
+            "method": "opencv-parallel-framework-and-num-threads-v1",
+            "native_status": 0,
+            "point": "after_replay_runner_release",
+            "reason": null,
+            "reported_threads": 10,
+            "scope": "post-workload-point-only",
+            "started_us": 500722,
+            "supported": true
+          },
+          "native_timed_out": false,
+          "oracle": {
+            "caller_observation_released": true,
+            "child_reaped": true,
+            "confirmed_matched": false,
+            "confirmed_no_match_frame": 2,
+            "dropped_records": 0,
+            "forced": false,
+            "host_records": 12,
+            "observations": 3,
+            "operation_counts": {
+              "asset": 0,
+              "fixture": 0,
+              "log": 3,
+              "observe": 3,
+              "postcondition": 0,
+              "query": 1,
+              "query_wait": 1,
+              "recognize": 1,
+              "release": 3,
+              "scan_ocr_zones": 0,
+              "settle": 0,
+              "submit": 0,
+              "target_start": 0,
+              "target_status": 0,
+              "unknown": 0,
+              "wait": 0
+            },
+            "physical_cleanup_confirmed": true,
+            "query_source_frame": 2,
+            "readiness_frame": 1,
+            "recognitions": 1,
+            "remaining": {
+              "active_sequences": 0,
+              "held_buttons": 0,
+              "held_keys": 0,
+              "in_flight_native": 0,
+              "live_handles": 0,
+              "queued": 0
+            },
+            "result_bounds": null,
+            "result_frame": null
+          },
+          "original_cohort_unchanged": true,
+          "original_receipt_role": "baseline",
+          "outcome": {
+            "application_status": "FAIL",
+            "cause_status": "deadline_exceeded",
+            "engine_child_exit_code": 0,
+            "native_exit_code": 1,
+            "primary_category": "Timeout"
+          },
+          "process_accounting": null,
+          "raw_build_identity": {
+            "cargo_lock_sha256": "19430ce2eb872383acdf429c9964e9b35bd97934e83745796f2a2e459e128f60",
+            "engine_revision": "f61a57f661c0314ea0a1d860d9298fbff86d903d",
+            "executable_sha256": "3e8f29fba8350a76cca491c6fffc04d509afdee2c52bd223d0f61308d2448bda",
+            "profile": "debug",
+            "rustc": "rustc 1.98.1 (48a229cea 2026-09-01)",
+            "source_sha256": "4e23452bc363002f87aa554839fba72796d33b087da1711c39dbff128da50fff",
+            "target": "aarch64-apple-darwin"
+          },
+          "raw_reference": {
+            "path": "apple/deadline-roi/baseline-smoke/00.raw.json",
+            "sha256": "3a5eecbd1ea80d93bf251b7ebe74350645f94e35381d33181f42c48474f1f16d"
+          },
+          "report_sha256": "144488bec5bffa9d81b07a9ad9216a0c0841369755a0be6de06092503894d88d",
+          "role": "baseline",
+          "rss": {
+            "child_sampled_max_bytes": 294895616,
+            "child_steady_summary": null,
+            "method": "5ms sampled maxima, not OS high-water",
+            "supervisor_sampled_max_bytes": 53051392,
+            "supervisor_steady_summary": null
+          },
+          "wait": {
+            "caller_overrun_ns": 1664792,
+            "duration_ns": 2664792,
+            "end_ns": 498253375,
+            "ok": false,
+            "requested_timeout_ms": 1,
+            "start_ns": 495588583
+          }
+        },
+        {
+          "application_stage_us": {
+            "cleanup_us": 40,
+            "elapsed_us": 686144,
+            "preflight_us": 258855,
+            "startup_us": 197616,
+            "workflow_us": 225439
+          },
+          "binary": {
+            "bytes": 33433112,
+            "sha256": "6b93818f4cae0c1819a89b38249d0185480aed444da6d030cce79c893e598037"
+          },
+          "cpu": {
+            "raw_lifetime_observation": {
+              "accounting_resolution_seconds": null,
+              "final": true,
+              "reason": "descendant_rollup_unproven",
+              "scope": "root-and-native-descendant-rollup",
+              "source": "posix-wait4",
+              "source_unit_seconds": 1e-06,
+              "status": "partial",
+              "system_seconds": 0.141068,
+              "user_seconds": 0.675982
+            },
+            "reconciled_lifetime_cpu_seconds": null
+          },
+          "effective_producer_revision": "dd320044cdd390ee662117c69e865391f72ed996",
+          "inspection_sha256": "dc9869d332e78cf83c71bad74c60b69186ee4c54800a8dedbc18cb8d19c3fb3f",
+          "native_cleanup_ok": true,
+          "native_thread_point": {
+            "active_concurrency": null,
+            "configured_threads": 10,
+            "during_workload_invariance_observed": false,
+            "finished_us": 504659,
+            "framework": "tbb",
+            "method": "opencv-parallel-framework-and-num-threads-v1",
+            "native_status": 0,
+            "point": "after_replay_runner_release",
+            "reason": null,
+            "reported_threads": 10,
+            "scope": "post-workload-point-only",
+            "started_us": 504658,
+            "supported": true
+          },
+          "native_timed_out": false,
+          "oracle": {
+            "caller_observation_released": true,
+            "child_reaped": true,
+            "confirmed_matched": false,
+            "confirmed_no_match_frame": 2,
+            "dropped_records": 0,
+            "forced": false,
+            "host_records": 12,
+            "observations": 3,
+            "operation_counts": {
+              "asset": 0,
+              "fixture": 0,
+              "log": 3,
+              "observe": 3,
+              "postcondition": 0,
+              "query": 1,
+              "query_wait": 1,
+              "recognize": 1,
+              "release": 3,
+              "scan_ocr_zones": 0,
+              "settle": 0,
+              "submit": 0,
+              "target_start": 0,
+              "target_status": 0,
+              "unknown": 0,
+              "wait": 0
+            },
+            "physical_cleanup_confirmed": true,
+            "query_source_frame": 2,
+            "readiness_frame": 1,
+            "recognitions": 1,
+            "remaining": {
+              "active_sequences": 0,
+              "held_buttons": 0,
+              "held_keys": 0,
+              "in_flight_native": 0,
+              "live_handles": 0,
+              "queued": 0
+            },
+            "result_bounds": null,
+            "result_frame": null
+          },
+          "original_cohort_unchanged": true,
+          "original_receipt_role": "candidate",
+          "outcome": {
+            "application_status": "FAIL",
+            "cause_status": "deadline_exceeded",
+            "engine_child_exit_code": 0,
+            "native_exit_code": 1,
+            "primary_category": "Timeout"
+          },
+          "process_accounting": null,
+          "raw_build_identity": {
+            "cargo_lock_sha256": "eee958a894639ca3c7a3ccd99c8bc3a99a0dea303dfdbb737d88573ab6190dbf",
+            "engine_revision": "f61a57f661c0314ea0a1d860d9298fbff86d903d",
+            "executable_sha256": "6b93818f4cae0c1819a89b38249d0185480aed444da6d030cce79c893e598037",
+            "profile": "debug",
+            "rustc": "rustc 1.98.1 (48a229cea 2026-09-01)",
+            "source_sha256": "e4aec1f731804974ebe4b269014b05fd232e98d36322945617e25a6e2feaa6eb",
+            "target": "aarch64-apple-darwin"
+          },
+          "raw_reference": {
+            "path": "apple/deadline-roi/candidate-smoke/00.raw.json",
+            "sha256": "439099674b642338d0e30466733da1feb45c97236443f794a303abff735c3eec"
+          },
+          "report_sha256": "33e5e19ab2b47f3dce1e2d4337ce3f63b12345875aec638e08174537e43efcec",
+          "role": "current",
+          "rss": {
+            "child_sampled_max_bytes": 295649280,
+            "child_steady_summary": null,
+            "method": "5ms sampled maxima, not OS high-water",
+            "supervisor_sampled_max_bytes": 53166080,
+            "supervisor_steady_summary": null
+          },
+          "wait": {
+            "caller_overrun_ns": 2631084,
+            "duration_ns": 3631084,
+            "end_ns": 502324584,
+            "ok": false,
+            "requested_timeout_ms": 1,
+            "start_ns": 498693500
+          }
+        }
+      ]
+    }
+  ],
+  "completion": {
+    "actual_consumer_root_calls": 4,
+    "all_owned_cleanup_known": true,
+    "all_owner_exit_zero": true,
+    "baseline_inspection_before_candidate_start": true,
+    "matched_inspection_before_deadline_start": true,
+    "no_native_retries": true,
+    "no_qualification": true,
+    "owned_processor_metadata_calls": 6,
+    "owner_stages": 6,
+    "private_completion_sha256": "350d153617fa4aea1068516f4acbf83a40f3c7ecf760a0cc4a3932f9255e61a0"
+  },
+  "format": "p050-actual-consumer-query-observation-v1",
+  "limitations": [
+    "One baseline/candidate pair per case is descriptive evidence, not qualified speedup/regression statistics.",
+    "Effective frozen beb064f/dd320 producers are not c305 or final release builds; the authored Cargo Git pin remains distinct.",
+    "Deadline native exit1/application FAIL/Timeout/deadline_exceeded is expected; owner/collector exit0 does not change the application outcome.",
+    "A requested1ms deadline is not a guarantee that scheduling and error delivery complete within1ms.",
+    "Matched returns a newer frame3 result after confirmed frame2 no-match; deadline returns no result, not successful terminal no-match.",
+    "Reconciled lifetime CPU and effective resolution remain unavailable; sampled RSS is not an allocation-domain measurement or OS high-water.",
+    "Native thread metadata is a post-workload point, not worker/PID-role census or invariance.",
+    "Private original receipts and environments are retained locally, not included or asserted as receiver-verified bytes."
+  ],
+  "new_consumer_invocations": 4,
+  "observation_kind": "fresh finite loader-off development smoke",
+  "privacy": {
+    "absolute_private_paths": false,
+    "arbitrary_logs": false,
+    "environment_values": false,
+    "originals_included": false,
+    "pids": false
+  },
+  "qualification": false,
+  "source_provenance": {
+    "adapter_sha256": "af3096cde9e0b027dfb11edfbf0b26ed0596993d27657b32a9071e289536038b",
+    "collector_revision": "fa5d6e3e0a575ce2cef67ff4479588e52fc278b7",
+    "collector_sha256": "afe6f24bb12bb8df2b21481d83eced7ad677957b03a2d00cb46ef37a0b8d8122",
+    "descriptor_sha256": "eaf3919951f549702260aa2236508e3bf11fad404da1f3c00ea8c3848bb7f0a3",
+    "effective_producer_binding": "Retained Cargo receipts, effective source graphs and14 local producer path patches; not raw build.engine_revision",
+    "effective_source_graph_sha256": "a21aa6c3bd77f72429c8342e37afabbd88bdb181c27a6e1e7ed2b4612d7864fc",
+    "inspector_sha256": "b72f852257dbd9c8edb5745ae4ee0f37b782de4a9039d04a447a717f706bc881",
+    "launcher_sha256": "9e6316407134835fee227bd021f035ee4a999e9c2e4eba06cf2f130f718b925b",
+    "node_executable_sha256": "ee6fb0e015284d83a91e8ec5213f43a157f8a392b58555301682892ba928c04a",
+    "private_originals_included": false,
+    "retained_owner_sha256": "fc39d027564516ae1ee5b729b31a1c709db529a1eb9154439a1ff399190791eb",
+    "source_plan_sha256": "9dfe2c6701cd3576082902d4ffcd083efecac4c9200a23fb8de7a8fb878e55cf"
+  },
+  "target": "aarch64-apple-darwin"
+}
