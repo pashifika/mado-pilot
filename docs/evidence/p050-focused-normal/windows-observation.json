@@ -1,0 +1,669 @@
+{
+  "target": "x86_64-pc-windows-msvc",
+  "mode": "normal",
+  "qualification": "not-requested",
+  "packet": {
+    "sha256": "2d139198b4589653781ef343d7274f5a716592fa304624e224bfbd1977ebb702",
+    "bytes": 441868,
+    "verified_payloads": 352,
+    "private_originals_omitted": 15,
+    "private_original_bytes_verified": false
+  },
+  "verification": {
+    "fresh_builds": 3,
+    "actual_attestations": 3,
+    "provenance_probes": 15,
+    "selected_rows": 4,
+    "manifest_children": 4,
+    "normal_unobserved_fields": [
+      "allocations",
+      "heap_before_bytes",
+      "heap_after_bytes",
+      "heap_after_drop_bytes",
+      "heap_steady_before_bytes",
+      "heap_steady_after_bytes",
+      "peak_heap_bytes",
+      "peak_heap_scope",
+      "score_copied_bytes",
+      "score_offsets_scanned",
+      "bgr_conversions",
+      "bgr_converted_bytes",
+      "bgr_retained_bytes",
+      "bgr_retained_peak_bytes",
+      "bgr_retained_after_drop_bytes",
+      "bgr_evicted_bytes",
+      "bgr_evicted_peak_bytes",
+      "bgr_evicted_after_drop_bytes",
+      "mapping_copies",
+      "mapping_copied_bytes",
+      "logical_mapped_bytes",
+      "backend_find_calls",
+      "backend_find_failures",
+      "peak_active_finds",
+      "peak_active_finds_scope",
+      "final_owner_correct"
+    ],
+    "cleanup_ok": true,
+    "error_mode_restored": true
+  },
+  "roles": {
+    "baseline": {
+      "source_revision": "8cc67f5a20a1e4726913cf4da6963b5d658c9e84",
+      "source_tree": "ffb72950ce4d63d82d453aa129f6148672cf6e71",
+      "binary_sha256": "f031534977c37d371ffcecc59aad4322fff7287d5abee9b93e869cc7ae254e0e",
+      "build_argv": [
+        "C:\\Users\\pashifika\\.cargo\\bin\\cargo.EXE",
+        "+1.97.1",
+        "bench",
+        "--locked",
+        "--offline",
+        "--package",
+        "mado-pilot",
+        "--features",
+        "template-matching-timing",
+        "--bench",
+        "template-matching-efficiency",
+        "--target-dir",
+        "D:\\Work\\pashifika.github\\game-tools\\mado-pilot\\target\\p050-normal-53fd521a-baseline",
+        "--message-format=json",
+        "--no-run"
+      ],
+      "metadata_sha256": "e63c8b16a865e8b16db6abebb6e2989f46fdf7e7c8a616ad2842a6784ebe119d",
+      "source_attestation": "exact exported Git commit/tree bytes; operator-supplied build command; not a review, reproducible build or loaded-image closure proof"
+    },
+    "candidate": {
+      "source_revision": "c3050a805280c4315fba854d6984a2645b0ca0ba",
+      "source_tree": "044e61086466448e28dc49a1a40975f5c401f493",
+      "binary_sha256": "06a04e8fb4fec124cf94be28737cc599abad036e33418330d07749e9486eca0b",
+      "build_argv": [
+        "C:\\Users\\pashifika\\.cargo\\bin\\cargo.EXE",
+        "+1.97.1",
+        "bench",
+        "--locked",
+        "--offline",
+        "--package",
+        "mado-pilot",
+        "--features",
+        "template-matching-timing",
+        "--bench",
+        "template-matching-efficiency",
+        "--target-dir",
+        "D:\\Work\\pashifika.github\\game-tools\\mado-pilot\\target\\p050-normal-53fd521a-candidate",
+        "--message-format=json",
+        "--no-run"
+      ],
+      "metadata_sha256": "23d3492d24d85b044a4b3320106037f5b3567c2ac5e8064d822438da5c7eaa12",
+      "source_attestation": "operator-supplied build command; source commit/tree and dirty status observed, not a reproducible build proof"
+    },
+    "current": {
+      "source_revision": "36f0cafb02b5e350ea77a6570e68171d44674655",
+      "source_tree": "d3bd22f576b1f744ab1f1e90df7104a01300291d",
+      "binary_sha256": "382a95aeb55d5862757c963a3bdb30239c909918442097bfb8bd31261d710f82",
+      "build_argv": [
+        "C:\\Users\\pashifika\\.cargo\\bin\\cargo.EXE",
+        "+1.97.1",
+        "bench",
+        "--locked",
+        "--offline",
+        "--package",
+        "mado-pilot",
+        "--features",
+        "template-matching-timing",
+        "--bench",
+        "template-matching-efficiency",
+        "--target-dir",
+        "D:\\Work\\pashifika.github\\game-tools\\mado-pilot\\target\\p050-normal-53fd521a-current",
+        "--message-format=json",
+        "--no-run"
+      ],
+      "metadata_sha256": "5bc658761a8d5a255566ab31383a7811b727f1c2fa2eb3e47585687e5129d5dd",
+      "source_attestation": "exact exported Git commit/tree bytes; operator-supplied build command; not a review, reproducible build or loaded-image closure proof"
+    }
+  },
+  "pairs": [
+    {
+      "family": "selector",
+      "workload": "selection-k16-dense1080p-keepall",
+      "before": {
+        "role": "current",
+        "source_revision": "36f0cafb02b5e350ea77a6570e68171d44674655",
+        "binary_sha256": "382a95aeb55d5862757c963a3bdb30239c909918442097bfb8bd31261d710f82",
+        "metadata_sha256": "5bc658761a8d5a255566ab31383a7811b727f1c2fa2eb3e47585687e5129d5dd",
+        "producer_output": "windows-current-selection-k16-dense1080p-keepall.json",
+        "raw_sha256": "9d0e9d1e0d5483b1501d3908fac57066ad67cedca093ad98c72dd28a69597bff",
+        "fixture_sha256": "0128b4b4e1e9dce98a69ef615972afd9211c9e85db221c4bdc96da6d9fbd9fa6",
+        "samples": [
+          {
+            "correct": true,
+            "cpu_ns": 0,
+            "elapsed_ns": 195900,
+            "error": null
+          },
+          {
+            "correct": true,
+            "cpu_ns": 0,
+            "elapsed_ns": 191800,
+            "error": null
+          },
+          {
+            "correct": true,
+            "cpu_ns": 0,
+            "elapsed_ns": 194000,
+            "error": null
+          }
+        ],
+        "warmup_samples": [
+          {
+            "correct": true,
+            "cpu_ns": 0,
+            "elapsed_ns": 224500,
+            "error": null
+          }
+        ],
+        "metrics": {
+          "allocations": null,
+          "backend_find_calls": null,
+          "backend_find_failures": null,
+          "bgr_conversions": null,
+          "bgr_converted_bytes": null,
+          "bgr_evicted_after_drop_bytes": null,
+          "bgr_evicted_bytes": null,
+          "bgr_evicted_peak_bytes": null,
+          "bgr_retained_after_drop_bytes": null,
+          "bgr_retained_bytes": null,
+          "bgr_retained_peak_bytes": null,
+          "cpu_ns": 0,
+          "cpu_reason": null,
+          "final_owner_correct": null,
+          "footprint_after_bytes": null,
+          "footprint_reason": "not exposed by this target resource helper",
+          "heap_after_bytes": null,
+          "heap_after_drop_bytes": null,
+          "heap_before_bytes": null,
+          "heap_steady_after_bytes": null,
+          "heap_steady_before_bytes": null,
+          "iterations": 4,
+          "logical_mapped_bytes": null,
+          "mapping_copied_bytes": null,
+          "mapping_copies": null,
+          "mapping_owner_live_before_drop": false,
+          "native_allocation_scope": "process RSS only; no cache-payload gauges or native allocation tracking",
+          "native_resource_reason": null,
+          "peak_active_finds": null,
+          "peak_active_finds_scope": null,
+          "peak_heap_bytes": null,
+          "peak_heap_scope": null,
+          "peak_rss_bytes": 29343744,
+          "peak_rss_scope": "process-high-water",
+          "private_after_bytes": 21368832,
+          "private_reason": null,
+          "rss_after_bytes": 29343744,
+          "rss_after_drop_bytes": 12750848,
+          "rss_before_bytes": 12640256,
+          "rss_steady_after_bytes": 29343744,
+          "rss_steady_before_bytes": 29343744,
+          "score_copied_bytes": null,
+          "score_offsets_scanned": null
+        },
+        "retained_loop_cpu": {
+          "cpu_ns": 0,
+          "end_ns": 140625000,
+          "protocol": "mado-component-retained-loop-cpu-v1",
+          "reason": null,
+          "sample_count": 3,
+          "scope": "current-process-retained-loop-including-preparation-oracles-and-storage",
+          "source": "GetProcessTimes-current-process",
+          "source_unit_ns": 100,
+          "start_ns": 140625000
+        },
+        "native_threads": {
+          "after": {
+            "framework": "ms-concurrency",
+            "reason": null,
+            "threads": 20
+          },
+          "before": {
+            "framework": "ms-concurrency",
+            "reason": null,
+            "threads": 20
+          },
+          "changed": false,
+          "method": "opencv-runtime-backend-and-thread-setting-v1"
+        },
+        "native_cpu": {
+          "accounting_resolution_seconds": null,
+          "final": true,
+          "reason": null,
+          "scope": "owned-job-including-nested-jobs",
+          "source": "windows-job-basic-accounting",
+          "source_unit_seconds": 1e-07,
+          "status": "complete",
+          "system_seconds": 0.15625,
+          "user_seconds": 0.296875
+        },
+        "process_accounting": {
+          "active": 0,
+          "checkpoint": "after-root-reap-before-job-close",
+          "final": true,
+          "query_succeeded": true,
+          "reason": null,
+          "scope": "owned-job-including-nested-jobs",
+          "source": "windows-job-basic-accounting",
+          "status": "complete",
+          "terminated": 0,
+          "total": 1
+        },
+        "oracle_failures": 0,
+        "cleanup_ok": true,
+        "phase_started_monotonic": 13653.7871698,
+        "inspected_monotonic": 13660.9829258
+      },
+      "after": {
+        "role": "candidate",
+        "source_revision": "c3050a805280c4315fba854d6984a2645b0ca0ba",
+        "binary_sha256": "06a04e8fb4fec124cf94be28737cc599abad036e33418330d07749e9486eca0b",
+        "metadata_sha256": "23d3492d24d85b044a4b3320106037f5b3567c2ac5e8064d822438da5c7eaa12",
+        "producer_output": "windows-candidate-selection-k16-dense1080p-keepall.json",
+        "raw_sha256": "61b62ce57b0dcb517e53177c49af47db42b232bd186c0c3a0305546eed8294c5",
+        "fixture_sha256": "0128b4b4e1e9dce98a69ef615972afd9211c9e85db221c4bdc96da6d9fbd9fa6",
+        "samples": [
+          {
+            "correct": true,
+            "cpu_ns": 0,
+            "elapsed_ns": 198800,
+            "error": null
+          },
+          {
+            "correct": true,
+            "cpu_ns": 0,
+            "elapsed_ns": 191200,
+            "error": null
+          },
+          {
+            "correct": true,
+            "cpu_ns": 0,
+            "elapsed_ns": 191200,
+            "error": null
+          }
+        ],
+        "warmup_samples": [
+          {
+            "correct": true,
+            "cpu_ns": 0,
+            "elapsed_ns": 210900,
+            "error": null
+          }
+        ],
+        "metrics": {
+          "allocations": null,
+          "backend_find_calls": null,
+          "backend_find_failures": null,
+          "bgr_conversions": null,
+          "bgr_converted_bytes": null,
+          "bgr_evicted_after_drop_bytes": null,
+          "bgr_evicted_bytes": null,
+          "bgr_evicted_peak_bytes": null,
+          "bgr_retained_after_drop_bytes": null,
+          "bgr_retained_bytes": null,
+          "bgr_retained_peak_bytes": null,
+          "cpu_ns": 0,
+          "cpu_reason": null,
+          "final_owner_correct": null,
+          "footprint_after_bytes": null,
+          "footprint_reason": "not exposed by this target resource helper",
+          "heap_after_bytes": null,
+          "heap_after_drop_bytes": null,
+          "heap_before_bytes": null,
+          "heap_steady_after_bytes": null,
+          "heap_steady_before_bytes": null,
+          "iterations": 4,
+          "logical_mapped_bytes": null,
+          "mapping_copied_bytes": null,
+          "mapping_copies": null,
+          "mapping_owner_live_before_drop": false,
+          "native_allocation_scope": "process RSS only; no cache-payload gauges or native allocation tracking",
+          "native_resource_reason": null,
+          "peak_active_finds": null,
+          "peak_active_finds_scope": null,
+          "peak_heap_bytes": null,
+          "peak_heap_scope": null,
+          "peak_rss_bytes": 29290496,
+          "peak_rss_scope": "process-high-water",
+          "private_after_bytes": 21299200,
+          "private_reason": null,
+          "rss_after_bytes": 29290496,
+          "rss_after_drop_bytes": 12697600,
+          "rss_before_bytes": 12640256,
+          "rss_steady_after_bytes": 29290496,
+          "rss_steady_before_bytes": 29290496,
+          "score_copied_bytes": null,
+          "score_offsets_scanned": null
+        },
+        "retained_loop_cpu": {
+          "cpu_ns": 0,
+          "end_ns": 156250000,
+          "protocol": "mado-component-retained-loop-cpu-v1",
+          "reason": null,
+          "sample_count": 3,
+          "scope": "current-process-retained-loop-including-preparation-oracles-and-storage",
+          "source": "GetProcessTimes-current-process",
+          "source_unit_ns": 100,
+          "start_ns": 156250000
+        },
+        "native_threads": {
+          "after": {
+            "framework": "ms-concurrency",
+            "reason": null,
+            "threads": 20
+          },
+          "before": {
+            "framework": "ms-concurrency",
+            "reason": null,
+            "threads": 20
+          },
+          "changed": false,
+          "method": "opencv-runtime-backend-and-thread-setting-v1"
+        },
+        "native_cpu": {
+          "accounting_resolution_seconds": null,
+          "final": true,
+          "reason": null,
+          "scope": "owned-job-including-nested-jobs",
+          "source": "windows-job-basic-accounting",
+          "source_unit_seconds": 1e-07,
+          "status": "complete",
+          "system_seconds": 0.109375,
+          "user_seconds": 0.34375
+        },
+        "process_accounting": {
+          "active": 0,
+          "checkpoint": "after-root-reap-before-job-close",
+          "final": true,
+          "query_succeeded": true,
+          "reason": null,
+          "scope": "owned-job-including-nested-jobs",
+          "source": "windows-job-basic-accounting",
+          "status": "complete",
+          "terminated": 0,
+          "total": 1
+        },
+        "oracle_failures": 0,
+        "cleanup_ok": true,
+        "phase_started_monotonic": 13673.4615854,
+        "inspected_monotonic": 13680.4854119
+      }
+    },
+    {
+      "family": "preparation",
+      "workload": "batch8-cold-roi320x180",
+      "before": {
+        "role": "baseline",
+        "source_revision": "8cc67f5a20a1e4726913cf4da6963b5d658c9e84",
+        "binary_sha256": "f031534977c37d371ffcecc59aad4322fff7287d5abee9b93e869cc7ae254e0e",
+        "metadata_sha256": "e63c8b16a865e8b16db6abebb6e2989f46fdf7e7c8a616ad2842a6784ebe119d",
+        "producer_output": "windows-baseline-batch8-cold-roi320x180.json",
+        "raw_sha256": "bc430ece6c0b306e1d6e2c5712320b81f6e65756972d02bae2b175670145fef8",
+        "fixture_sha256": "0128b4b4e1e9dce98a69ef615972afd9211c9e85db221c4bdc96da6d9fbd9fa6",
+        "samples": [
+          {
+            "correct": true,
+            "cpu_ns": 31250000,
+            "elapsed_ns": 25762600,
+            "error": null
+          },
+          {
+            "correct": true,
+            "cpu_ns": 15625000,
+            "elapsed_ns": 20769300,
+            "error": null
+          },
+          {
+            "correct": true,
+            "cpu_ns": 15625000,
+            "elapsed_ns": 21204900,
+            "error": null
+          }
+        ],
+        "warmup_samples": [
+          {
+            "correct": true,
+            "cpu_ns": 15625000,
+            "elapsed_ns": 22045000,
+            "error": null
+          }
+        ],
+        "metrics": {
+          "allocations": null,
+          "backend_find_calls": null,
+          "backend_find_failures": null,
+          "bgr_conversions": null,
+          "bgr_converted_bytes": null,
+          "bgr_evicted_after_drop_bytes": null,
+          "bgr_evicted_bytes": null,
+          "bgr_evicted_peak_bytes": null,
+          "bgr_retained_after_drop_bytes": null,
+          "bgr_retained_bytes": null,
+          "bgr_retained_peak_bytes": null,
+          "cpu_ns": 62500000,
+          "cpu_reason": null,
+          "final_owner_correct": null,
+          "footprint_after_bytes": null,
+          "footprint_reason": "not exposed by this target resource helper",
+          "heap_after_bytes": null,
+          "heap_after_drop_bytes": null,
+          "heap_before_bytes": null,
+          "heap_steady_after_bytes": null,
+          "heap_steady_before_bytes": null,
+          "iterations": 4,
+          "logical_mapped_bytes": null,
+          "mapping_copied_bytes": null,
+          "mapping_copies": null,
+          "mapping_owner_live_before_drop": false,
+          "native_allocation_scope": "process RSS only; no cache-payload gauges or native allocation tracking",
+          "native_resource_reason": null,
+          "peak_active_finds": null,
+          "peak_active_finds_scope": null,
+          "peak_heap_bytes": null,
+          "peak_heap_scope": null,
+          "peak_rss_bytes": 39239680,
+          "peak_rss_scope": "process-high-water",
+          "private_after_bytes": 21598208,
+          "private_reason": null,
+          "rss_after_bytes": 30937088,
+          "rss_after_drop_bytes": 14114816,
+          "rss_before_bytes": 12607488,
+          "rss_steady_after_bytes": 30937088,
+          "rss_steady_before_bytes": 30941184,
+          "score_copied_bytes": null,
+          "score_offsets_scanned": null
+        },
+        "retained_loop_cpu": {
+          "cpu_ns": 78125000,
+          "end_ns": 218750000,
+          "protocol": "mado-component-retained-loop-cpu-v1",
+          "reason": null,
+          "sample_count": 3,
+          "scope": "current-process-retained-loop-including-preparation-oracles-and-storage",
+          "source": "GetProcessTimes-current-process",
+          "source_unit_ns": 100,
+          "start_ns": 140625000
+        },
+        "native_threads": {
+          "after": {
+            "framework": "ms-concurrency",
+            "reason": null,
+            "threads": 20
+          },
+          "before": {
+            "framework": "ms-concurrency",
+            "reason": null,
+            "threads": 20
+          },
+          "changed": false,
+          "method": "opencv-runtime-backend-and-thread-setting-v1"
+        },
+        "native_cpu": {
+          "accounting_resolution_seconds": null,
+          "final": true,
+          "reason": null,
+          "scope": "owned-job-including-nested-jobs",
+          "source": "windows-job-basic-accounting",
+          "source_unit_seconds": 1e-07,
+          "status": "complete",
+          "system_seconds": 0.140625,
+          "user_seconds": 0.390625
+        },
+        "process_accounting": {
+          "active": 0,
+          "checkpoint": "after-root-reap-before-job-close",
+          "final": true,
+          "query_succeeded": true,
+          "reason": null,
+          "scope": "owned-job-including-nested-jobs",
+          "source": "windows-job-basic-accounting",
+          "status": "complete",
+          "terminated": 0,
+          "total": 1
+        },
+        "oracle_failures": 0,
+        "cleanup_ok": true,
+        "phase_started_monotonic": 13690.1339731,
+        "inspected_monotonic": 13697.4483029
+      },
+      "after": {
+        "role": "current",
+        "source_revision": "36f0cafb02b5e350ea77a6570e68171d44674655",
+        "binary_sha256": "382a95aeb55d5862757c963a3bdb30239c909918442097bfb8bd31261d710f82",
+        "metadata_sha256": "5bc658761a8d5a255566ab31383a7811b727f1c2fa2eb3e47585687e5129d5dd",
+        "producer_output": "windows-current-batch8-cold-roi320x180.json",
+        "raw_sha256": "b4ff808a02985be39c1c96f23e822b693ab459cb9c2f2087cac4ade4d8d38520",
+        "fixture_sha256": "0128b4b4e1e9dce98a69ef615972afd9211c9e85db221c4bdc96da6d9fbd9fa6",
+        "samples": [
+          {
+            "correct": true,
+            "cpu_ns": 15625000,
+            "elapsed_ns": 20722200,
+            "error": null
+          },
+          {
+            "correct": true,
+            "cpu_ns": 15625000,
+            "elapsed_ns": 20615900,
+            "error": null
+          },
+          {
+            "correct": true,
+            "cpu_ns": 15625000,
+            "elapsed_ns": 21192200,
+            "error": null
+          }
+        ],
+        "warmup_samples": [
+          {
+            "correct": true,
+            "cpu_ns": 31250000,
+            "elapsed_ns": 21544400,
+            "error": null
+          }
+        ],
+        "metrics": {
+          "allocations": null,
+          "backend_find_calls": null,
+          "backend_find_failures": null,
+          "bgr_conversions": null,
+          "bgr_converted_bytes": null,
+          "bgr_evicted_after_drop_bytes": null,
+          "bgr_evicted_bytes": null,
+          "bgr_evicted_peak_bytes": null,
+          "bgr_retained_after_drop_bytes": null,
+          "bgr_retained_bytes": null,
+          "bgr_retained_peak_bytes": null,
+          "cpu_ns": 46875000,
+          "cpu_reason": null,
+          "final_owner_correct": null,
+          "footprint_after_bytes": null,
+          "footprint_reason": "not exposed by this target resource helper",
+          "heap_after_bytes": null,
+          "heap_after_drop_bytes": null,
+          "heap_before_bytes": null,
+          "heap_steady_after_bytes": null,
+          "heap_steady_before_bytes": null,
+          "iterations": 4,
+          "logical_mapped_bytes": null,
+          "mapping_copied_bytes": null,
+          "mapping_copies": null,
+          "mapping_owner_live_before_drop": false,
+          "native_allocation_scope": "process RSS only; no cache-payload gauges or native allocation tracking",
+          "native_resource_reason": null,
+          "peak_active_finds": null,
+          "peak_active_finds_scope": null,
+          "peak_heap_bytes": null,
+          "peak_heap_scope": null,
+          "peak_rss_bytes": 39022592,
+          "peak_rss_scope": "process-high-water",
+          "private_after_bytes": 21557248,
+          "private_reason": null,
+          "rss_after_bytes": 30896128,
+          "rss_after_drop_bytes": 14123008,
+          "rss_before_bytes": 12648448,
+          "rss_steady_after_bytes": 30896128,
+          "rss_steady_before_bytes": 30896128,
+          "score_copied_bytes": null,
+          "score_offsets_scanned": null
+        },
+        "retained_loop_cpu": {
+          "cpu_ns": 62500000,
+          "end_ns": 187500000,
+          "protocol": "mado-component-retained-loop-cpu-v1",
+          "reason": null,
+          "sample_count": 3,
+          "scope": "current-process-retained-loop-including-preparation-oracles-and-storage",
+          "source": "GetProcessTimes-current-process",
+          "source_unit_ns": 100,
+          "start_ns": 125000000
+        },
+        "native_threads": {
+          "after": {
+            "framework": "ms-concurrency",
+            "reason": null,
+            "threads": 20
+          },
+          "before": {
+            "framework": "ms-concurrency",
+            "reason": null,
+            "threads": 20
+          },
+          "changed": false,
+          "method": "opencv-runtime-backend-and-thread-setting-v1"
+        },
+        "native_cpu": {
+          "accounting_resolution_seconds": null,
+          "final": true,
+          "reason": null,
+          "scope": "owned-job-including-nested-jobs",
+          "source": "windows-job-basic-accounting",
+          "source_unit_seconds": 1e-07,
+          "status": "complete",
+          "system_seconds": 0.140625,
+          "user_seconds": 0.375
+        },
+        "process_accounting": {
+          "active": 0,
+          "checkpoint": "after-root-reap-before-job-close",
+          "final": true,
+          "query_succeeded": true,
+          "reason": null,
+          "scope": "owned-job-including-nested-jobs",
+          "source": "windows-job-basic-accounting",
+          "status": "complete",
+          "terminated": 0,
+          "total": 1
+        },
+        "oracle_failures": 0,
+        "cleanup_ok": true,
+        "phase_started_monotonic": 13705.4755475,
+        "inspected_monotonic": 13712.6557301
+      }
+    }
+  ]
+}
