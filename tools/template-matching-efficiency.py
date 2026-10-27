@@ -837,6 +837,8 @@ def environment():
              "TMPDIR", "TEMP", "TMP", "DYLD_LIBRARY_PATH", "LD_LIBRARY_PATH",
              "OMP_NUM_THREADS", "OPENCV_FOR_THREADS_NUM", "OPENBLAS_NUM_THREADS",
              "MKL_NUM_THREADS", "VECLIB_MAXIMUM_THREADS")
+    if sys.platform == "win32":
+        names = dict.fromkeys(name.upper() for name in names)
     return {name: os.environ[name] for name in names if name in os.environ}
 
 
@@ -3298,7 +3300,7 @@ def parser():
     binding.add_argument("--output", required=True, help="new build metadata JSON")
     binding.add_argument("--source-root", help="exact exported source directory; requires --source-revision")
     binding.add_argument("--source-revision", help="exact retained measurement Git commit; requires --source-root")
-    discovery = commands.add_parser("runtime-preflight", help="protocol 2+ macOS only: bind all representative image loads; non-acceptance")
+    discovery = commands.add_parser("runtime-preflight", help="protocol 2+ native targets: bind all representative image loads; non-acceptance")
     protocol_arguments(discovery)
     discovery.add_argument("--target", choices=TARGETS, required=True)
     discovery.add_argument("--binary", required=True)

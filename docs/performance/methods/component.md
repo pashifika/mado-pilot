@@ -275,6 +275,9 @@ Full runtime preflight exercises every actual mode workload. Windows does not
 add a redundant manifest discovery; numerical manifest children remain owned,
 attested metadata-only runs and cannot claim runtime observation. The child
 environment is retained privately in full with case-insensitive key identity.
+The collector keeps its environment allowlist and canonicalizes Windows names
+before selection, so `SystemRoot`/`SYSTEMROOT` produce one unchanged value.
+The observer still refuses duplicate aliases in externally supplied mappings.
 No debugger, second supervisor, quiet-host probe or observer-cost subtraction is
 introduced.
 

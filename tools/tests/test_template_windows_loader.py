@@ -3,9 +3,12 @@
 import copy
 import hashlib
 import json
+import os
 from pathlib import Path
+import sys
 import tempfile
 import unittest
+from unittest import mock
 
 from tools.tests import test_template_matching_efficiency as fixtures
 from tools.tests import test_windows_loader_callback as linked
@@ -40,6 +43,28 @@ def windows(value, *, enabled=False):
 
 def manifest(value):
     return collector.manifest_identity(value, value["target"], "4.12.0", 4, "normal")
+
+
+class EnvironmentTests(unittest.TestCase):
+    @unittest.skipUnless(sys.platform == "win32", "Windows case-insensitive process environment")
+    def test_windows_environment_reaches_strict_loader_binding(self):
+        with mock.patch.dict(os.environ, {
+            "SystemRoot": r"C:\Windows", "Path": r"C:\Tools", "SECRET_TOKEN": "excluded",
+        }, clear=True):
+            environment = collector.environment()
+        self.assertEqual(environment, {"SYSTEMROOT": r"C:\Windows", "PATH": r"C:\Tools"})
+        self.assertEqual(collector.windows_images.loader_environment(environment), environment)
+
+    @unittest.skipIf(sys.platform == "win32", "POSIX case-sensitive process environment")
+    def test_posix_environment_preserves_distinct_authored_names(self):
+        with mock.patch.dict(os.environ, {
+            "SystemRoot": "mixed", "SYSTEMROOT": "upper", "PATH": "/usr/bin",
+            "SECRET_TOKEN": "excluded",
+        }, clear=True):
+            environment = collector.environment()
+        self.assertEqual(environment, {
+            "SystemRoot": "mixed", "SYSTEMROOT": "upper", "PATH": "/usr/bin",
+        })
 
 
 class ManifestTests(unittest.TestCase):
