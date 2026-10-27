@@ -188,14 +188,14 @@ unsafe fn copy_notification_name(source: *const UnicodeString, target: *mut u16)
         }
         i += 1;
     }
-    units as u32
+    u32::from(length) / 2
 }
 
 /// # Safety
 /// Only the Windows loader may call this with its documented notification data.
 /// This executable and every static above must remain mapped until process exit.
 #[unsafe(no_mangle)]
-pub unsafe extern "system" fn p050_window_notification(
+unsafe extern "system" fn p050_window_notification(
     reason: u32,
     data: *const c_void,
     context: *mut c_void,
@@ -212,6 +212,11 @@ pub unsafe extern "system" fn p050_window_notification(
         );
         return;
     }
+    // The existing MAX_EVENTS bound fits usize; conversion never truncates.
+    let Ok(index) = usize::try_from(sequence) else {
+        P050_WINDOW_INCOMPLETE.fetch_or(OVERFLOW, Ordering::SeqCst);
+        return;
+    };
     // One strong CAS, never a retry/spin/wait. A competing writer makes the
     // observation incomplete, rather than silently assuming loader serialization.
     if P050_WINDOW_SEQUENCE
@@ -222,7 +227,7 @@ pub unsafe extern "system" fn p050_window_notification(
         return;
     }
     // SAFETY: sequence < MAX_EVENTS and unique monotonic CAS reservation.
-    let slot = unsafe { &*P050_WINDOW_RECORDS.as_ptr().add(sequence as usize) };
+    let slot = unsafe { &*P050_WINDOW_RECORDS.as_ptr().add(index) };
     let output = slot.payload.get();
     let mut invalid = 0;
     // SAFETY: exclusive slot writer, no reader accesses unpublished payload.
@@ -554,9 +559,9 @@ fn refuse(operation: Operation, detail: u64) -> Failure {
     }
 }
 fn last_error(operation: Operation) -> Failure {
-    // SAFETY: scalar query; capture before any subsequent native call.
     Failure {
         operation,
+        // SAFETY: scalar query; capture before any subsequent native call.
         code: unsafe { GetLastError() },
         detail: 0,
         has_code: true,
@@ -637,10 +642,8 @@ impl Counter {
 fn counter(out: &mut Counter) {
     out.first = P050_WINDOW_SEQUENCE.load(Ordering::SeqCst);
     out.pending_len = 0;
-    for (i, slot) in P050_WINDOW_RECORDS[..out.first.min(MAX_EVENTS as u64) as usize]
-        .iter()
-        .enumerate()
-    {
+    let count = usize::try_from(out.first).map_or(MAX_EVENTS, |n| n.min(MAX_EVENTS));
+    for (i, slot) in P050_WINDOW_RECORDS[..count].iter().enumerate() {
         if !slot.complete.load(Ordering::Acquire) {
             out.pending[out.pending_len as usize] = i as u64 + 1;
             out.pending_len += 1;
@@ -833,7 +836,7 @@ struct Scratch {
 // Tracks an existing immutable counter, not a request to acquire a newer one.
 // Zero is valid before the first native counter (e.g. registration failure).
 #[repr(u32)]
-#[derive(Clone, Copy)]
+#[derive(Clone, Copy, PartialEq, Eq)]
 enum SnapshotSource {
     None = 0,
     Initial,
@@ -918,7 +921,7 @@ pub(super) fn capability() -> Result<Value, String> {
         let end = delta
             .checked_add(bytes)
             .ok_or_else(|| "observer RVA range overflow".to_owned())?;
-        if end > u64::from(u32::MAX) as usize + 1 {
+        if end as u64 > u64::from(u32::MAX) + 1 {
             return Err("observer RVA range exceeds image address space".to_owned());
         }
         Ok(rva)
@@ -1067,9 +1070,7 @@ impl WindowObserver {
             // Missing end freezes the last captured cut, never a substitute
             // counter or a newer publication read. Registration failures already
             // captured their snapshot before accounting began.
-            if !state.final_counter_present
-                && !matches!(state.snapshot_source, SnapshotSource::None)
-            {
+            if !state.final_counter_present && state.snapshot_source != SnapshotSource::None {
                 capture_snapshot(state);
             }
         }
@@ -1100,7 +1101,7 @@ fn register(state: &mut Storage) -> Result<()> {
     if status != 0 || cookie.is_null() {
         return Err(Failure {
             operation: Operation::RegisterNotification,
-            code: status as u32,
+            code: status.cast_unsigned(),
             detail: cookie as usize as u64,
             has_code: true,
         });
@@ -1108,41 +1109,41 @@ fn register(state: &mut Storage) -> Result<()> {
     Ok(())
 }
 
-fn take_cut(state: &mut Storage, stage: usize) -> Result<()> {
+fn take_cut(state: &mut Storage, stage: u32) -> Result<()> {
     if state.census_len as usize > MAX_CENSUSES - 2 {
         return Err(refuse(
             Operation::CensusCountCap,
             u64::from(state.census_len),
         ));
     }
-    let first = state.census_len as usize;
+    let first = state.census_len;
     for position in 0..2 {
-        let index = state.census_len as usize;
+        let index = state.census_len;
         // Reserve first so all partial raw fields survive a native failure.
         state.census_len += 1;
-        state.cuts[stage][position] = index as u32;
+        state.cuts[stage as usize][position] = index;
         census(
-            &mut state.censuses[index],
+            &mut state.censuses[index as usize],
             &mut state.paths,
             &mut state.budget,
             &mut state.scratch,
         );
         state.snapshot_source = SnapshotSource::CensusAfter;
-        state.snapshot_census = index as u32;
-        let sample = &state.censuses[index];
+        state.snapshot_census = index;
+        let sample = &state.censuses[index as usize];
         if sample.error.present() {
             return Err(sample.error);
         }
     }
-    let a = &state.censuses[first];
-    let b = &state.censuses[first + 1];
+    let a = &state.censuses[first as usize];
+    let b = &state.censuses[(first + 1) as usize];
     if !same_modules(a, b, &state.paths) || a.after.last != b.before.first {
-        return Err(refuse(Operation::DoubleCensusMismatch, first as u64));
+        return Err(refuse(Operation::DoubleCensusMismatch, u64::from(first)));
     }
     if stage == 2 && state.end_counter.last != a.before.first {
         return Err(refuse(Operation::BridgeObservationChanged, a.before.first));
     }
-    for module_index in 0..b.module_len as usize {
+    for module_index in 0..b.module_len {
         if state.bridge_len as usize == MAX_BRIDGES {
             return Err(refuse(
                 Operation::BridgeCountCap,
@@ -1152,11 +1153,11 @@ fn take_cut(state: &mut Storage, stage: usize) -> Result<()> {
         let index = state.bridge_len as usize;
         state.bridge_len += 1;
         let row = &mut state.bridges[index];
-        row.stage = stage as u32;
-        row.census_index = (first + 1) as u32;
-        row.module_index = module_index as u32;
+        row.stage = stage;
+        row.census_index = first + 1;
+        row.module_index = module_index;
         bridge(
-            &b.modules[module_index],
+            &b.modules[module_index as usize],
             &state.paths,
             row,
             &mut state.budget,
@@ -1214,7 +1215,8 @@ fn capture_snapshot(state: &mut Storage) {
     state.final_counter_present = true;
     let c = &state.final_counter;
     let mut pending_index = 0;
-    for i in 0..c.first.min(MAX_EVENTS as u64) as usize {
+    let count = usize::try_from(c.first).map_or(MAX_EVENTS, |n| n.min(MAX_EVENTS));
+    for (i, slot) in P050_WINDOW_RECORDS[..count].iter().enumerate() {
         // counter() already performed the Acquire. Never re-read completion here
         // or in serialization: a slot pending at this cut may not be healed.
         let complete =
@@ -1225,7 +1227,7 @@ fn capture_snapshot(state: &mut Storage) {
         state.event_complete[i] = complete;
         if complete {
             // SAFETY: the earlier Acquire observed immutable one-time publication.
-            let payload = unsafe { &*P050_WINDOW_RECORDS[i].payload.get() };
+            let payload = unsafe { &*slot.payload.get() };
             if !published_payload_valid(payload) {
                 state
                     .primary
@@ -1269,7 +1271,12 @@ fn census(
             K32EnumProcessModules(
                 GetCurrentProcess(),
                 scratch.handles.as_mut_ptr(),
-                size_of_val(&scratch.handles) as u32,
+                u32::try_from(size_of_val(&scratch.handles)).map_err(|_| {
+                    refuse(
+                        Operation::ModuleCapacity,
+                        size_of_val(&scratch.handles) as u64,
+                    )
+                })?,
                 &mut out.needed,
             )
         } == 0
@@ -1278,7 +1285,7 @@ fn census(
         }
         if out.needed == 0
             || out.needed as usize > size_of_val(&scratch.handles)
-            || out.needed as usize % size_of::<Handle>() != 0
+            || !(out.needed as usize).is_multiple_of(size_of::<Handle>())
         {
             return Err(refuse(Operation::ModuleCapacity, u64::from(out.needed)));
         }
@@ -1298,7 +1305,9 @@ fn census(
                     GetCurrentProcess(),
                     handle,
                     &mut info,
-                    size_of::<ModuleInfo>() as u32,
+                    u32::try_from(size_of::<ModuleInfo>()).map_err(|_| {
+                        refuse(Operation::ModuleInformation, size_of::<ModuleInfo>() as u64)
+                    })?,
                 )
             } == 0
             {
@@ -1309,7 +1318,12 @@ fn census(
             }
             // SAFETY: fixed name destination; never dereference the module in Rust.
             let units = unsafe {
-                GetModuleFileNameW(handle, scratch.name.units.as_mut_ptr(), NAME_UNITS as u32)
+                GetModuleFileNameW(
+                    handle,
+                    scratch.name.units.as_mut_ptr(),
+                    u32::try_from(NAME_UNITS)
+                        .map_err(|_| refuse(Operation::ModulePathCapacity, NAME_UNITS as u64))?,
+                )
             };
             if units == 0 {
                 return Err(last_error(Operation::ModuleFileName));
@@ -1324,7 +1338,8 @@ fn census(
             out.modules[out.module_len as usize] = Module {
                 base: handle as usize,
                 size: info.size,
-                path_start: start as u32,
+                path_start: u32::try_from(start)
+                    .map_err(|_| refuse(Operation::CensusPathBudget, start as u64))?,
                 path_len: units,
             };
             out.module_len += 1;
@@ -1354,10 +1369,12 @@ fn memory_read(
     out: &mut [u8],
     budget: &mut Budget,
 ) -> Result<()> {
+    let offset_usize =
+        usize::try_from(offset).map_err(|_| refuse(Operation::MemoryRange, offset))?;
     if offset > limit
         || out.len() as u64 > limit - offset
         || base
-            .checked_add(offset as usize)
+            .checked_add(offset_usize)
             .and_then(|p| p.checked_add(out.len()))
             .is_none()
     {
@@ -1370,7 +1387,7 @@ fn memory_read(
     let ok = unsafe {
         ReadProcessMemory(
             GetCurrentProcess(),
-            (base + offset as usize) as *const c_void,
+            (base + offset_usize) as *const c_void,
             out.as_mut_ptr().cast(),
             out.len(),
             &mut read,
@@ -1416,6 +1433,7 @@ enum Reader {
     },
     // Test-only owned bytes exercise the same file-layout parser without FFI.
     #[cfg(test)]
+    #[allow(dead_code, reason = "harness = false benchmarks omit test bodies")]
     Bytes(Vec<u8>),
 }
 impl Reader {
@@ -1434,13 +1452,15 @@ impl Reader {
             Self::Memory { base, size } => memory_read(*base, *size, offset, out, budget),
             Self::File { handle, .. } => {
                 budget.read(out.len())?;
+                let file_offset =
+                    i64::try_from(offset).map_err(|_| refuse(Operation::ImageReadRange, offset))?;
                 let mut position = -1;
                 // SAFETY: live synchronous handle, bounded nonnegative offset.
-                if unsafe { SetFilePointerEx(*handle, offset as i64, &mut position, 0) } == 0 {
+                if unsafe { SetFilePointerEx(*handle, file_offset, &mut position, 0) } == 0 {
                     return Err(last_error(Operation::SetFilePointer));
                 }
-                if position != offset as i64 {
-                    return Err(refuse(Operation::FilePosition, position as u64));
+                if position != file_offset {
+                    return Err(refuse(Operation::FilePosition, position.cast_unsigned()));
                 }
                 let mut read = 0;
                 // SAFETY: exact owned destination, synchronous read (no OVERLAPPED).
@@ -1448,7 +1468,8 @@ impl Reader {
                     ReadFile(
                         *handle,
                         out.as_mut_ptr().cast(),
-                        out.len() as u32,
+                        u32::try_from(out.len())
+                            .map_err(|_| refuse(Operation::ReadBudget, out.len() as u64))?,
                         &mut read,
                         null_mut(),
                     )
@@ -1466,7 +1487,9 @@ impl Reader {
             #[cfg(test)]
             Self::Bytes(bytes) => {
                 budget.read(out.len())?;
-                out.copy_from_slice(&bytes[offset as usize..offset as usize + out.len()]);
+                let offset = usize::try_from(offset)
+                    .map_err(|_| refuse(Operation::ImageReadRange, offset))?;
+                out.copy_from_slice(&bytes[offset..offset + out.len()]);
                 Ok(())
             }
         }
@@ -1517,7 +1540,7 @@ fn parse_pe(
         return Err(refuse(Operation::DosSignature, 0));
     }
     let nt = u64::from(u32le(&scratch.dos, 60));
-    if nt < 64 || nt > MAX_HEADER_BYTES - 24 {
+    if !(64..=MAX_HEADER_BYTES - 24).contains(&nt) {
         return Err(refuse(Operation::PeOffset, nt));
     }
     reader.read(nt, &mut scratch.coff, budget)?;
@@ -1606,7 +1629,7 @@ fn parse_pe(
     }
     if debug_rva == 0
         || debug_size == 0
-        || debug_size % 28 != 0
+        || !debug_size.is_multiple_of(28)
         || debug_size as usize / 28 > MAX_DEBUG_ENTRIES
     {
         return Err(refuse(Operation::DebugExtent, u64::from(debug_size)));
@@ -1662,7 +1685,7 @@ fn parse_pe(
             ));
         }
         let output = &mut pe.codeview[pe.codeview_len as usize];
-        output.debug_index = i as u32;
+        output.debug_index = pe.debug_len - 1;
         output.guid.copy_from_slice(&cv[4..20]);
         output.age = u32le(cv, 20);
         pe.codeview_len += 1;
@@ -1689,7 +1712,8 @@ fn file_facts(handle: Handle, facts: &mut FileFacts) -> Result<()> {
             handle,
             18,
             (&raw mut facts.id).cast(),
-            size_of::<FileId>() as u32,
+            u32::try_from(size_of::<FileId>())
+                .map_err(|_| refuse(Operation::FileIdInfo, size_of::<FileId>() as u64))?,
         ) == 0
         {
             return Err(last_error(Operation::FileIdInfo));
@@ -1698,7 +1722,8 @@ fn file_facts(handle: Handle, facts: &mut FileFacts) -> Result<()> {
             handle,
             0,
             (&raw mut facts.basic).cast(),
-            size_of::<FileBasic>() as u32,
+            u32::try_from(size_of::<FileBasic>())
+                .map_err(|_| refuse(Operation::FileBasicInfo, size_of::<FileBasic>() as u64))?,
         ) == 0
         {
             return Err(last_error(Operation::FileBasicInfo));
@@ -1707,26 +1732,35 @@ fn file_facts(handle: Handle, facts: &mut FileFacts) -> Result<()> {
             handle,
             1,
             (&raw mut facts.standard).cast(),
-            size_of::<FileStandard>() as u32,
+            u32::try_from(size_of::<FileStandard>()).map_err(|_| {
+                refuse(
+                    Operation::FileStandardInfo,
+                    size_of::<FileStandard>() as u64,
+                )
+            })?,
         ) == 0
         {
             return Err(last_error(Operation::FileStandardInfo));
         }
     }
     if facts.standard.eof <= 0
-        || facts.standard.eof as u64 > MAX_IMAGE_BYTES
+        || facts.standard.eof.cast_unsigned() > MAX_IMAGE_BYTES
         || facts.standard.directory != 0
         || facts.standard.delete_pending != 0
         || facts.basic.attributes & 0x410 != 0
     {
-        return Err(refuse(Operation::FileState, facts.standard.eof as u64));
+        return Err(refuse(
+            Operation::FileState,
+            facts.standard.eof.cast_unsigned(),
+        ));
     }
     // SAFETY: VOLUME_NAME_NT (2), normalized-name default; fixed output buffer.
     let count = unsafe {
         GetFinalPathNameByHandleW(
             handle,
             facts.final_path.units.as_mut_ptr(),
-            NAME_UNITS as u32,
+            u32::try_from(NAME_UNITS)
+                .map_err(|_| refuse(Operation::FinalPathCapacity, NAME_UNITS as u64))?,
             2,
         )
     };
@@ -1752,7 +1786,8 @@ fn mapped_path(base: usize, path: &mut Name) -> Result<()> {
             GetCurrentProcess(),
             base as Handle,
             path.units.as_mut_ptr(),
-            NAME_UNITS as u32,
+            u32::try_from(NAME_UNITS)
+                .map_err(|_| refuse(Operation::MappedPathCapacity, NAME_UNITS as u64))?,
         )
     };
     if count == 0 {
@@ -1814,7 +1849,7 @@ fn bridge(
         parse_pe(
             &Reader::File {
                 handle,
-                size: row.before.standard.eof as u64,
+                size: row.before.standard.eof.cast_unsigned(),
             },
             &mut row.file_pe,
             budget,
@@ -2094,7 +2129,8 @@ fn render(owner: &WindowObserver) -> Value {
     let records_complete = state.is_some_and(|state| {
         state.final_counter_present
             && state.final_counter.clean()
-            && state.event_complete[..state.final_counter.first.min(MAX_EVENTS as u64) as usize]
+            && state.event_complete[..usize::try_from(state.final_counter.first)
+                .map_or(MAX_EVENTS, |n| n.min(MAX_EVENTS))]
                 .iter()
                 .all(|c| *c)
     });
@@ -2108,7 +2144,9 @@ fn render(owner: &WindowObserver) -> Value {
         }
         // Keep reservations that raced the snapshot as explicit pending events,
         // not newer publication reads. snapshot_n still refers to first only.
-        (0..state.final_counter.last.min(MAX_EVENTS as u64) as usize)
+        let count =
+            usize::try_from(state.final_counter.last).map_or(MAX_EVENTS, |n| n.min(MAX_EVENTS));
+        (0..count)
             .map(|i| event_json(i, state.event_complete[i]))
             .collect()
     });
@@ -2196,6 +2234,10 @@ const _: () = {
 mod tests {
     use super::*;
 
+    // cfg(test) is also set for the harness-free benchmark. Only its omitted
+    // test bodies leave these helpers unused; the exit-contract harness uses them.
+
+    #[allow(dead_code, reason = "harness = false benchmarks omit test bodies")]
     fn image() -> Vec<u8> {
         let mut bytes = vec![0u8; 1024];
         bytes[..2].copy_from_slice(b"MZ");
@@ -2232,12 +2274,15 @@ mod tests {
         put32(&mut bytes, 560, 3);
         bytes
     }
+    #[allow(dead_code, reason = "harness = false benchmarks omit test bodies")]
     fn put16(bytes: &mut [u8], at: usize, value: u16) {
         bytes[at..at + 2].copy_from_slice(&value.to_le_bytes());
     }
+    #[allow(dead_code, reason = "harness = false benchmarks omit test bodies")]
     fn put32(bytes: &mut [u8], at: usize, value: u32) {
         bytes[at..at + 4].copy_from_slice(&value.to_le_bytes());
     }
+    #[allow(dead_code, reason = "harness = false benchmarks omit test bodies")]
     fn parse_test(bytes: Vec<u8>) -> (Pe, Budget, Result<()>) {
         // SAFETY: these three bounded POD types contain only zero-valid scalar
         // fields, raw pointers and arrays. No process storage or FFI is used.
@@ -2246,6 +2291,7 @@ mod tests {
         let result = parse_pe(&Reader::Bytes(bytes), &mut pe, &mut budget, &mut scratch);
         (pe, budget, result)
     }
+    #[allow(dead_code, reason = "harness = false benchmarks omit test bodies")]
     fn parsed() -> Pe {
         let (pe, _, result) = parse_test(image());
         assert!(result.is_ok());
