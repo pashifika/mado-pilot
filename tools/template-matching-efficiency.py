@@ -565,9 +565,9 @@ def validate_runtime_attempt(attempt, runtime):
         {**receipt, "record": attempt["record"]}, runtime["closure"])
     require(verdict["provenance_complete"],
             "measurement-time runtime observation incomplete: " + str(verdict["reason"]))
-    expected_paths = {row["path"] for row in runtime["plan"]["binary"]["build"]["dependencies"]}
-    expected_paths.add(runtime["plan"]["binary"]["path"])
-    require(expected_paths <= {row["path"] for row in receipt["images"]},
+    expected_paths = {native_path(row["path"], target) for row in runtime["plan"]["binary"]["build"]["dependencies"]}
+    expected_paths.add(native_path(runtime["plan"]["binary"]["path"], target))
+    require(expected_paths <= {native_path(row["path"], target) for row in receipt["images"]},
             "measurement-time loader inventory omits an attested image")
     duration = receipt.get("duration_seconds")
     require(type(duration) in (int, float) and math.isfinite(duration) and 0 <= duration
