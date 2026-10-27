@@ -3059,10 +3059,10 @@ class RuntimePreflightTests(unittest.TestCase):
             "--binary", "fixture", "--build-metadata", "fixture.json", "--output", str(self.root / "out")])
         original_save = collector.save
 
-        def save(path, value):
+        def save(path, value, **options):
             if Path(path).parent.name == "attempts":
                 raise OSError("receipt storage failed")
-            original_save(path, value)
+            original_save(path, value, **options)
 
         with (mock.patch.object(collector, "host_identity", return_value={"target": TARGET}),
               mock.patch.object(collector, "binary_identity", return_value=self.identity),
@@ -5475,6 +5475,31 @@ class ProtocolThreeRuntimePreflightTests(unittest.TestCase):
                 self.assertEqual(admitted["closure"], bundle["closure"])
                 self.assertEqual(admitted["threads"], {"threads": 4, "framework": "fixture-runtime", "reason": None})
 
+    def test_preflight_transport_budget_preserves_identity_and_refuses_oversize(self):
+        self.prepare()
+        sizing = self.preflight("sizing")
+        self.assertEqual(sizing["status"], "passed", sizing["issues"])
+        original = collector.load(self.root / "sizing/bundle.json")
+        pretty_bytes = len((json.dumps(original, sort_keys=True, indent=2, allow_nan=False) + "\n").encode())
+        compact_bytes = len((json.dumps(original, sort_keys=True, separators=(",", ":"),
+                                       allow_nan=False) + "\n").encode())
+        budget_unit = (pretty_bytes + compact_bytes) // 128
+        self.assertLess(compact_bytes, 64 * budget_unit)
+        self.assertLess(64 * budget_unit, pretty_bytes)
+        with mock.patch.object(collector, "MIB", budget_unit):
+            result = self.preflight("bounded")
+            self.assertEqual(result["status"], "passed", result["issues"])
+            self.assertEqual((result["attempts"], result["scheduled"]), (55, 55))
+            self.assertLessEqual((self.root / "bounded/bundle.json").stat().st_size, 64 * budget_unit)
+            augmented = collector.binary_identity(self.run.main, result["metadata"], TARGET)
+            collector.runtime_closure_admission(augmented, TARGET, self.build_mode)
+        with mock.patch.object(collector, "MIB", compact_bytes // 128):
+            oversized = self.preflight("oversized")
+        self.assertEqual(oversized["status"], "incomplete")
+        self.assertIn("runtime preflight bundle exceeds 64 MiB", oversized["issues"])
+        self.assertFalse((self.root / "oversized/bundle.json").exists())
+        self.assertFalse((self.root / "oversized/build.json").exists())
+
     def test_export_admission_requires_complete_exact_and_unmixed_provenance(self):
         self.prepare()
         result = self.preflight("valid")
@@ -5575,8 +5600,8 @@ class ProtocolThreeRuntimePreflightTests(unittest.TestCase):
                 save = collector.save
                 self.launched.clear()
 
-                def save_started(path, value):
-                    save(path, value)
+                def save_started(path, value, **options):
+                    save(path, value, **options)
                     if Path(path).parent.name == "started" and stage == "before":
                         victim.write_bytes(original + b"changed at the boundary")
 
