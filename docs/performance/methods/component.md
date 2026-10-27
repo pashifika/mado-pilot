@@ -199,6 +199,11 @@ exits nonzero. Host/process identity mismatch remains fenced.
 complete provenance, before/after attested identity and confirmed cleanup;
 failed provenance, identity or unknown cleanup retains it.
 
+Attempt records and the final preflight bundle use compact JSON without changing
+values, raw stdout/stderr strings or canonical identity encoding. The64MiB
+retained-attempt and bundle limits apply to stored bytes; oversized evidence
+remains incomplete. Existing formatted receipts remain readable and unchanged.
+
 For macOS preflight, use the same absolute Python on both sides of setup:
 
 ```sh

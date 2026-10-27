@@ -793,18 +793,19 @@ def strict_json(text):
     return json.loads(text, object_pairs_hook=pairs, parse_constant=invalid)
 
 
-def document(value):
-    return (json.dumps(value, sort_keys=True, indent=2, allow_nan=False) + "\n").encode("utf-8")
+def document(value, *, compact=False):
+    return (json.dumps(value, sort_keys=True, indent=None if compact else 2,
+                       separators=(",", ":") if compact else None, allow_nan=False) + "\n").encode("utf-8")
 
 
 def load(path):
     return strict_json(Path(path).read_text(encoding="utf-8"))
 
 
-def save(path, value):
+def save(path, value, *, compact=False):
     # Exclusive creation preserves every prior campaign and failed attempt.
     with Path(path).open("xb") as stream:
-        stream.write(document(value))
+        stream.write(document(value, compact=compact))
 
 
 def sha256(path):
@@ -2682,12 +2683,12 @@ def runtime_preflight(args):
                 attempt["interruption"] = type(error).__name__
                 attempt["campaign_elapsed_after"] = time.monotonic() - started
                 try:
-                    save(attempt_path, attempt)
+                    save(attempt_path, attempt, compact=True)
                 except (OSError, ValueError):
                     pass  # Preserve the primary interruption after best-effort receipt retention.
                 raise
             attempt["campaign_elapsed_after"] = time.monotonic() - started
-            save(attempt_path, attempt)
+            save(attempt_path, attempt, compact=True)
             ownership["safe"] = (attempt["identity_before"] == boundary_identity and attempt["identity_after"] == boundary_identity
                                  and attempt["identity_error"] is None and attempt["provenance_error"] is None
                                  and attempt["provenance_complete"] is True and attempt["receipt"] is not None
@@ -2705,13 +2706,13 @@ def runtime_preflight(args):
             bundle["closure"] = derived["closure"]
             try:
                 validate_runtime_bundle(bundle, identity, args.target, args.build_mode)
-                require(len(document(bundle)) <= 64 * MIB, "runtime preflight bundle exceeds 64 MiB")
+                require(len(document(bundle, compact=True)) <= 64 * MIB, "runtime preflight bundle exceeds 64 MiB")
             except (ValueError, KeyError, TypeError) as error:
                 issues.append(str(error))
         result = {"status": "incomplete" if issues else "passed", "issues": issues,
                   "attempts": len(attempts), "scheduled": len(tasks), "performance_qualified": False}
         if not issues:
-            save(destination / "bundle.json", bundle)
+            save(destination / "bundle.json", bundle, compact=True)
             build = {**identity["build"], "runtime_image_preflight": {
                 "path": str(destination / "bundle.json"), "sha256": sha256(destination / "bundle.json")}}
             save(destination / "build.json", build)
