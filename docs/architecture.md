@@ -2632,6 +2632,12 @@ numerical results are empirical observations; a performance claim needs its own
 applicable evidence, while semantic, ownership, bounded-resource, provenance and
 compatibility verification stay mandatory for every change.
 
+The Windows component benchmark's opt-in loader observer is confined to benchmark
+support code and the external collector. Its fixed process-lifetime callback and
+parent-held file correlation change neither SDK adapters nor default execution;
+[ADR0108](adr/0108-windows-component-loader-observation.md) records its scope and
+trust limits.
+
 Public scores are compared against a tolerance rather than exactly, on one host as
 well as across the two. OpenCV normalizes through integral images and correlates a
 whole region at once, so a score carries rounding from arithmetic involving pixels

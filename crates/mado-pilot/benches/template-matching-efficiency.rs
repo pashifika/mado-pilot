@@ -60,12 +60,22 @@ mod sessions;
 #[cfg(feature = "template-matching-benchmark")]
 #[path = "support/template_efficiency_watch.rs"]
 mod watch;
+#[cfg(all(target_os = "windows", target_arch = "x86_64", target_env = "msvc"))]
+#[path = "support/windows_loader_observer.rs"]
+mod windows_loader_observer;
 use fixtures::{Kind, PATCH, ROI, SCORE_TOLERANCE, WORKLOADS, Workload};
 
 const INSTRUMENTED: bool = cfg!(feature = "template-matching-benchmark");
 const TIMING_BOUNDARY_PROTOCOL: &str = "mado-component-timing-v1";
 const SAMPLING_PROTOCOL: &str = "mado-component-sampling-v1";
 const RETAINED_LOOP_CPU_PROTOCOL: &str = "mado-component-retained-loop-cpu-v1";
+const WINDOWS_LOADER_PROTOCOL: &str = "mado-component-windows-loader-v1";
+const WINDOWS_LOADER_METHOD: &str = "windows-ldr-observer-on-warm-v1";
+const WINDOWS_LOADER_SUPPORTED: bool = cfg!(all(
+    target_os = "windows",
+    target_arch = "x86_64",
+    target_env = "msvc"
+));
 const MAX_WARMUPS: usize = 1_000;
 const MAX_SAMPLES: usize = 40_000;
 const BUILD_MODE: &str = if INSTRUMENTED {
@@ -720,13 +730,25 @@ fn observe(
     row: Workload,
     smoke: bool,
     timing_boundaries: bool,
+    windows_loader_observer_enabled: bool,
     sampling: Option<Sampling>,
 ) -> Result<Value, String> {
+    if windows_loader_observer_enabled && !WINDOWS_LOADER_SUPPORTED {
+        return Err("--windows-loader-observer requires x86_64-pc-windows-msvc".into());
+    }
     emit_timing_boundary(timing_boundaries, row.id, "row-start")?;
     let (warmups, count) =
         sampling.map_or_else(|| row.plan(smoke), |plan| (plan.warmups, plan.samples));
     let mut warmup_samples = Vec::with_capacity(warmups);
     let mut samples = Vec::with_capacity(count);
+    // Native storage/registration and the initial cut precede all row accounting.
+    #[cfg(all(target_os = "windows", target_arch = "x86_64", target_env = "msvc"))]
+    let mut observer = windows_loader_observer_enabled
+        .then(|| windows_loader_observer::WindowObserver::initialize(row.id, row.statistical));
+    #[cfg(all(target_os = "windows", target_arch = "x86_64", target_env = "msvc"))]
+    let observer_init_failed = observer.as_ref().is_some_and(|observer| observer.failed());
+    #[cfg(not(all(target_os = "windows", target_arch = "x86_64", target_env = "msvc")))]
+    let observer_init_failed = false;
     let before = Memory::observe();
     #[cfg(feature = "template-matching-benchmark")]
     let (allocations_before, work_before, backend_before) = {
@@ -739,7 +761,8 @@ fn observe(
     };
     let mut steady_before = before;
     let mut setup_error = None;
-    let mut selection = matches!(row.kind, Kind::Selection).then(|| SelectionFixture::new(row));
+    let mut selection = (!observer_init_failed && matches!(row.kind, Kind::Selection))
+        .then(|| SelectionFixture::new(row));
     let is_contract = counter_oracle(row);
     let is_session = matches!(row.kind, Kind::Session(_));
     let mut format_observations =
@@ -749,7 +772,7 @@ fn observe(
             0
         });
     let mut unit_observations = Vec::with_capacity(if is_session { warmups + count } else { 0 });
-    let mut session = if is_session {
+    let mut session = if !observer_init_failed && is_session {
         match sessions::Fixture::new(row) {
             Ok(fixture) => Some(fixture),
             Err(error) => {
@@ -760,7 +783,8 @@ fn observe(
     } else {
         None
     };
-    let mut search = if selection.is_none() && !is_contract && !is_session {
+    let mut search = if !observer_init_failed && selection.is_none() && !is_contract && !is_session
+    {
         match SearchFixture::new(row) {
             Ok(fixture) => Some(fixture),
             Err(error) => {
@@ -773,10 +797,27 @@ fn observe(
     };
     let mut loop_cpu_start = None;
     let mut loop_cpu_end = None;
-    if setup_error.is_none() {
+    let mut samples_started = false;
+    let mut timing_boundary_error = None;
+    if !observer_init_failed && setup_error.is_none() {
         for iteration in 0..warmups + count {
             if iteration == warmups {
-                emit_timing_boundary(timing_boundaries, row.id, "samples-begin")?;
+                #[cfg(all(target_os = "windows", target_arch = "x86_64", target_env = "msvc"))]
+                if let Some(observer) = &mut observer {
+                    observer.begin();
+                    if observer.failed() {
+                        break;
+                    }
+                }
+                if let Err(error) = emit_timing_boundary(timing_boundaries, row.id, "samples-begin")
+                {
+                    if !windows_loader_observer_enabled {
+                        return Err(error);
+                    }
+                    timing_boundary_error = Some(error);
+                    break;
+                }
+                samples_started = true;
                 loop_cpu_start = cpu::process_cpu_ns();
             }
             let sample = if let Some(fixture) = &mut selection {
@@ -826,8 +867,20 @@ fn observe(
                 steady_before = Memory::observe();
             }
         }
-        loop_cpu_end = cpu::process_cpu_ns();
-        emit_timing_boundary(timing_boundaries, row.id, "samples-end")?;
+        // A missing CPU endpoint is diagnostic, not evidence that the loop did not start.
+        if samples_started {
+            loop_cpu_end = cpu::process_cpu_ns();
+            #[cfg(all(target_os = "windows", target_arch = "x86_64", target_env = "msvc"))]
+            if let Some(observer) = &mut observer {
+                observer.end();
+            }
+            if let Err(error) = emit_timing_boundary(timing_boundaries, row.id, "samples-end") {
+                if !windows_loader_observer_enabled {
+                    return Err(error);
+                }
+                timing_boundary_error = Some(error);
+            }
+        }
     }
     if let Some(fixture) = &mut session {
         fixture.checkpoint("after-samples");
@@ -871,6 +924,11 @@ fn observe(
             .saturating_sub(allocations_before),
         backend::work_snapshot(),
     );
+    // Observer JSON allocation is excluded from every allocation/work snapshot above.
+    #[cfg(all(target_os = "windows", target_arch = "x86_64", target_env = "msvc"))]
+    let observer_report = observer.map_or(Value::Null, |observer| observer.into_report());
+    #[cfg(not(all(target_os = "windows", target_arch = "x86_64", target_env = "msvc")))]
+    let observer_report = Value::Null;
     let cpu_ns = samples
         .iter()
         .try_fold(0_u64, |sum, sample| sum.checked_add(sample.cpu_ns?));
@@ -989,6 +1047,10 @@ fn observe(
     object.insert("warmup_samples".into(), json!(warmup_samples));
     object.insert("oracle_failures".into(), json!(oracle_failures));
     object.insert("setup_error".into(), json!(setup_error));
+    object.insert("windows_loader_observer".into(), observer_report);
+    if windows_loader_observer_enabled {
+        object.insert("timing_boundary_error".into(), json!(timing_boundary_error));
+    }
     if matches!(row.kind, Kind::RoiFormatTransition) {
         object.insert("format_observations".into(), json!(format_observations));
     }
@@ -1037,31 +1099,39 @@ struct Sampling {
     samples: usize,
 }
 
-struct Arguments {
+pub(crate) struct Arguments {
     list: bool,
     smoke: bool,
     timing_boundaries: bool,
+    windows_loader_observer: bool,
     workload: Option<String>,
     sampling: Option<Sampling>,
 }
 
 fn arguments() -> Result<Arguments, String> {
+    parse_arguments(std::env::args().skip(1))
+}
+
+pub(crate) fn parse_arguments(
+    mut values: impl Iterator<Item = String>,
+) -> Result<Arguments, String> {
     let mut parsed = Arguments {
         list: false,
         smoke: false,
         timing_boundaries: false,
+        windows_loader_observer: false,
         workload: None,
         sampling: None,
     };
     let mut protocol_given = false;
     let mut warmups = None;
     let mut samples = None;
-    let mut values = std::env::args().skip(1);
     while let Some(value) = values.next() {
         match value.as_str() {
             "--list" => parsed.list = true,
             "--smoke" => parsed.smoke = true,
             "--timing-boundaries" => parsed.timing_boundaries = true,
+            "--windows-loader-observer" => parsed.windows_loader_observer = true,
             "--bench" => {}
             "--workload" => {
                 if parsed.workload.is_some() {
@@ -1098,6 +1168,17 @@ fn arguments() -> Result<Arguments, String> {
                 }
             }
             _ => return Err(format!("unsupported argument: {value}")),
+        }
+    }
+    if parsed.windows_loader_observer {
+        if !WINDOWS_LOADER_SUPPORTED {
+            return Err("--windows-loader-observer requires x86_64-pc-windows-msvc".into());
+        }
+        if !parsed.list && (!parsed.timing_boundaries || parsed.workload.is_none()) {
+            return Err(
+                "--windows-loader-observer requires --timing-boundaries and one --workload unless --list"
+                    .into(),
+            );
         }
     }
     parsed.sampling = match (warmups, samples) {
@@ -1194,7 +1275,7 @@ fn target() -> String {
 }
 
 fn apparatus() -> Value {
-    let sources: [(&str, &[u8]); 11] = [
+    let sources: &[(&str, &[u8])] = &[
         (
             "crates/mado-pilot/benches/template-matching-efficiency.rs",
             include_bytes!("template-matching-efficiency.rs"),
@@ -1235,14 +1316,19 @@ fn apparatus() -> Value {
             "crates/mado-pilot/benches/support/ocr_text_watch_resources.rs",
             include_bytes!("support/ocr_text_watch_resources.rs"),
         ),
+        #[cfg(all(target_os = "windows", target_arch = "x86_64", target_env = "msvc"))]
+        (
+            "crates/mado-pilot/benches/support/windows_loader_observer.rs",
+            include_bytes!("support/windows_loader_observer.rs"),
+        ),
         (
             "crates/support/testkit/src/match_fixtures.rs",
             include_bytes!("../../support/testkit/src/match_fixtures.rs"),
         ),
     ];
     let source_files: serde_json::Map<_, _> = sources
-        .into_iter()
-        .map(|(path, bytes)| {
+        .iter()
+        .map(|&(path, bytes)| {
             (
                 path.to_owned(),
                 mado_pilot::ContentDigest::of(bytes).to_string().into(),
@@ -1253,6 +1339,10 @@ fn apparatus() -> Value {
 }
 
 fn run(arguments: Arguments) -> Result<Value, String> {
+    #[cfg(all(target_os = "windows", target_arch = "x86_64", target_env = "msvc"))]
+    let observer_capability = windows_loader_observer::capability()?;
+    #[cfg(not(all(target_os = "windows", target_arch = "x86_64", target_env = "msvc")))]
+    let observer_capability = Value::Null;
     let backend = OpenCvBackend::new().map_err(|error| error.to_string())?;
     let version = backend.descriptor().version().to_owned();
     drop(backend);
@@ -1263,12 +1353,15 @@ fn run(arguments: Arguments) -> Result<Value, String> {
         .filter(|row| arguments.workload.as_deref().is_none_or(|id| row.id == id))
         .map(|row| {
             if arguments.list {
-                Ok(row.manifest(arguments.smoke))
+                let mut manifest = row.manifest(arguments.smoke);
+                manifest["windows_loader_observer"] = Value::Null;
+                Ok(manifest)
             } else {
                 observe(
                     row,
                     arguments.smoke,
                     arguments.timing_boundaries,
+                    arguments.windows_loader_observer,
                     arguments.sampling,
                 )
             }
@@ -1279,7 +1372,12 @@ fn run(arguments: Arguments) -> Result<Value, String> {
     let (fixture_sha256, fixture) = fixtures::manifest();
     let short = arguments.smoke
         || (!arguments.list && workloads.len() == 1 && workloads[0]["statistical"] == false);
-    Ok(json!({
+    let (loaded_native_runtime, runtime_error) = match runtime::observe() {
+        Ok(value) => (value, None),
+        Err(error) if arguments.windows_loader_observer => (Value::Null, Some(error)),
+        Err(error) => return Err(error),
+    };
+    let mut report = json!({
         "format_version": PROTOCOL_VERSION, "kind": if arguments.list { "manifest" } else { "observations" },
         "timing_boundary_protocol": TIMING_BOUNDARY_PROTOCOL,
         "sampling_protocol": SAMPLING_PROTOCOL,
@@ -1289,8 +1387,11 @@ fn run(arguments: Arguments) -> Result<Value, String> {
         },
         "retained_loop_cpu_protocol": RETAINED_LOOP_CPU_PROTOCOL,
         "timing_boundaries_enabled": arguments.timing_boundaries,
+        "process_id": std::process::id(),
+        "windows_loader_observer_enabled": arguments.windows_loader_observer,
+        "windows_loader_observer": observer_capability,
         "target": target(), "opencv_version": version, "fixture_sha256": fixture_sha256,
-        "loaded_native_runtime": runtime::observe()?,
+        "loaded_native_runtime": loaded_native_runtime,
         "fixture": fixture, "apparatus": apparatus(),
         "warmups": arguments.sampling.map_or(if short { 1 } else { 20 }, |plan| plan.warmups),
         "sample_count": arguments.sampling.map_or(if short { 3 } else { 200 }, |plan| plan.samples),
@@ -1308,7 +1409,12 @@ fn run(arguments: Arguments) -> Result<Value, String> {
             "before": threads_before, "after": threads_after,
             "changed": threads_before != threads_after,
         },
-    }))
+    });
+    if let Some(error) = runtime_error {
+        // Post-row diagnostics must not discard the retained native failure/cuts.
+        report["error"] = json!(error);
+    }
+    Ok(report)
 }
 
 fn retained_cpu_failed(row: &Value, smoke: bool) -> bool {
@@ -1344,6 +1450,324 @@ fn retained_cpu_failed(row: &Value, smoke: bool) -> bool {
     }
 }
 
+/// Producer integrity only. Held-file identity and event-to-bridge eligibility
+/// remain the collector's responsibility, including for contract rows.
+fn observer_counter(value: &Value) -> Option<u64> {
+    let sequence = value["first"].as_u64()?;
+    (sequence <= 256
+        && value["last"].as_u64() == Some(sequence)
+        && value["incomplete_bits"].as_u64() == Some(0)
+        && value["pending_sequences"]
+            .as_array()
+            .is_some_and(Vec::is_empty)
+        && value["clean"].as_bool() == Some(true))
+    .then_some(sequence)
+}
+
+fn observer_wide(value: &Value, maximum_units: usize) -> bool {
+    value.as_str().is_some_and(|text| {
+        !text.is_empty()
+            && text.len() <= maximum_units * 4
+            && text.len() % 4 == 0
+            && text
+                .bytes()
+                .all(|byte| byte.is_ascii_digit() || (b'a'..=b'f').contains(&byte))
+    })
+}
+
+fn observer_census_valid(census: &Value) -> bool {
+    let Some(modules) = census["modules"].as_array() else {
+        return false;
+    };
+    let before = observer_counter(&census["before"]);
+    before.is_some()
+        && before == observer_counter(&census["after"])
+        && census.get("failure") == Some(&Value::Null)
+        && !modules.is_empty()
+        && modules.len() <= 128
+        && census["needed_bytes"].as_u64() == Some(modules.len() as u64 * 8)
+        && modules.iter().all(|module| {
+            module["base"].as_u64().is_some_and(|base| base != 0)
+                && module["size"]
+                    .as_u64()
+                    .is_some_and(|size| (1..=536_870_912).contains(&size))
+                && observer_wide(&module["path_utf16_hex"], 1023)
+        })
+        && modules
+            .windows(2)
+            .all(|pair| pair[0]["base"].as_u64() < pair[1]["base"].as_u64())
+}
+
+fn observer_capability_valid(capability: &Value) -> bool {
+    let rva = |value: &Value| {
+        value
+            .as_u64()
+            .is_some_and(|rva| (1..=u64::from(u32::MAX)).contains(&rva))
+    };
+    let callback = &capability["callback"];
+    capability["protocol"] == WINDOWS_LOADER_PROTOCOL
+        && capability
+            .as_object()
+            .is_some_and(|object| object.len() == 2)
+        && callback.as_object().is_some_and(|object| object.len() == 2)
+        && rva(&callback["rva"])
+        && callback["statics"]
+            .as_object()
+            .is_some_and(|object| object.len() == 3)
+        && [("sequence", 8), ("incomplete", 4), ("records", 1_058_816)]
+            .iter()
+            .all(|(name, bytes)| {
+                let field = &callback["statics"][*name];
+                field.as_object().is_some_and(|object| object.len() == 2)
+                    && rva(&field["rva"])
+                    && field["bytes"].as_u64() == Some(*bytes)
+            })
+}
+
+fn observer_row_failed(row: &Value, pid: u64) -> bool {
+    let observer = &row["windows_loader_observer"];
+    let Some(statistical) = row["statistical"].as_bool() else {
+        return true;
+    };
+    if observer["protocol"] != WINDOWS_LOADER_PROTOCOL
+        || observer["method"] != WINDOWS_LOADER_METHOD
+        || observer["pid"].as_u64() != Some(pid)
+        || row["id"].as_str().is_none_or(str::is_empty)
+        || workload_rows()
+            .find(|workload| Some(workload.id) == row["id"].as_str())
+            .is_none_or(|workload| workload.statistical != statistical)
+        || observer["workload_id"] != row["id"]
+        || observer["statistical"].as_bool() != Some(statistical)
+        || observer["complete"].as_bool() != Some(true)
+        || observer.get("primary_failure") != Some(&Value::Null)
+        || row.get("timing_boundary_error") != Some(&Value::Null)
+        || observer["records_complete"].as_bool() != Some(true)
+        || observer["records_complete_scope"] != "snapshot_n_only"
+        || observer["claim"] != "conditional_observed_window_and_path_header_correlation_only"
+        || observer["callback_lifetime"] != "process_exit_no_unregister_no_drain"
+        || observer["owned_cleanup_scope"] != "file_handles_only"
+        || observer["outer_process_cleanup"] != "supervisor_only"
+        || [
+            "qualification",
+            "backing_object_proof",
+            "code_bytes_proof",
+            "serialization_exit_observed",
+        ]
+        .iter()
+        .any(|key| observer[*key].as_bool() != Some(false))
+    {
+        return true;
+    }
+    let registration = &observer["registration"];
+    if registration["ntstatus"].as_i64() != Some(0)
+        || registration["unregister_called"].as_bool() != Some(false)
+        || ["module", "export", "cookie"].iter().any(|key| {
+            registration[*key]
+                .as_u64()
+                .is_none_or(|address| address == 0)
+        })
+    {
+        return true;
+    }
+    let Some(censuses) = observer["censuses"]
+        .as_array()
+        .filter(|censuses| censuses.len() == 6)
+    else {
+        return true;
+    };
+    if !censuses.iter().all(observer_census_valid) {
+        return true;
+    }
+    for (stage, first) in [("initial", 0), ("begin", 2), ("end", 4)] {
+        let Some(cut) = observer["cuts"][stage].as_array() else {
+            return true;
+        };
+        if cut.len() != 2
+            || cut[0].as_u64() != Some(first as u64)
+            || cut[1].as_u64() != Some(first as u64 + 1)
+            || censuses[first]["after"] != censuses[first + 1]["before"]
+            || censuses[first]["modules"] != censuses[first + 1]["modules"]
+            || observer_counter(&observer["cut_counters"][stage]).is_none()
+            || observer["cut_counters"][stage] != censuses[first + 1]["after"]
+        {
+            return true;
+        }
+    }
+    let begin = observer_counter(&observer["window_counter"]["begin"]);
+    let end = observer_counter(&observer["window_counter"]["end"]);
+    let final_sequence = observer_counter(&observer["final_counter"]);
+    let Some((begin, end, final_sequence)) = begin
+        .zip(end)
+        .zip(final_sequence)
+        .map(|((begin, end), final_sequence)| (begin, end, final_sequence))
+    else {
+        return true;
+    };
+    if observer["window_counter"]["begin"] != observer["cut_counters"]["begin"]
+        || observer["window_counter"]["end"] != censuses[4]["before"]
+        || observer["final_counter"] != observer["cut_counters"]["end"]
+        || observer_counter(&observer["cut_counters"]["initial"])
+            .is_none_or(|initial| initial > begin)
+        || begin > end
+        || end > final_sequence
+        || observer["snapshot_n"].as_u64() != Some(final_sequence)
+    {
+        return true;
+    }
+    let unchanged = begin == end && censuses[3]["modules"] == censuses[4]["modules"];
+    if observer["window_unchanged"].as_bool() != Some(unchanged) || (statistical && !unchanged) {
+        return true;
+    }
+    let Some(events) = observer["events"].as_array() else {
+        return true;
+    };
+    if events.len() as u64 != final_sequence
+        || events.iter().enumerate().any(|(index, event)| {
+            event["sequence"].as_u64() != Some(index as u64 + 1)
+                || event["complete"].as_bool() != Some(true)
+                || !matches!(event["reason"].as_u64(), Some(1 | 2))
+                || event["flags"].as_u64() != Some(0)
+                || event["invalid_bits"].as_u64() != Some(0)
+                || event["base"].as_u64().is_none_or(|base| base == 0)
+                || event["size"]
+                    .as_u64()
+                    .is_none_or(|size| !(1..=536_870_912).contains(&size))
+                || !observer_wide(&event["full_name_utf16_hex"], 1024)
+                || !observer_wide(&event["base_name_utf16_hex"], 1024)
+        })
+    {
+        return true;
+    }
+    let Some(bridges) = observer["bridges"]
+        .as_array()
+        .filter(|bridges| bridges.len() <= 129)
+    else {
+        return true;
+    };
+    let mut offset = 0;
+    for (stage, index) in [("initial", 1), ("begin", 3), ("end", 5)] {
+        let modules = censuses[index]["modules"]
+            .as_array()
+            .expect("validated census modules");
+        for (module_index, module) in modules.iter().enumerate() {
+            let Some(bridge) = bridges.get(offset) else {
+                return true;
+            };
+            if bridge["stage"] != stage
+                || bridge["census_index"].as_u64() != Some(index as u64)
+                || bridge["module_index"].as_u64() != Some(module_index as u64)
+                || bridge["base"] != module["base"]
+                || bridge.get("failure") != Some(&Value::Null)
+                || bridge["close_success"].as_bool() != Some(true)
+                || !observer_wide(&bridge["mapped_nt_path_utf16_hex"], 1024)
+                || bridge["mapped_nt_path_utf16_hex"] != bridge["mapped_nt_path_after_utf16_hex"]
+                || [
+                    "file_before_complete",
+                    "file_after_complete",
+                    "memory_pe_complete",
+                    "file_pe_complete",
+                ]
+                .iter()
+                .any(|key| bridge[*key].as_bool() != Some(true))
+                || ["file_before", "file_after", "memory_pe", "file_pe"]
+                    .iter()
+                    .any(|key| {
+                        bridge[*key]
+                            .as_object()
+                            .is_none_or(serde_json::Map::is_empty)
+                    })
+            {
+                return true;
+            }
+            offset += 1;
+        }
+    }
+    if offset != bridges.len()
+        || observer["cleanup"].as_array().is_none_or(|cleanup| {
+            cleanup.len() != bridges.len()
+                || cleanup.iter().any(|entry| {
+                    entry["operation"] != "CloseHandle"
+                        || entry["handle"].as_u64().is_none_or(|handle| handle == 0)
+                        || entry["success"].as_bool() != Some(true)
+                        || entry.get("failure") != Some(&Value::Null)
+                })
+        })
+        || observer["final_owned_cleanup"]["ok"].as_bool() != Some(true)
+        || observer["final_owned_cleanup"]["remaining_owned_dll"].as_u64() != Some(0)
+        || observer["final_owned_cleanup"]["failed_close_handles"]
+            .as_array()
+            .is_none_or(|handles| !handles.is_empty())
+    {
+        return true;
+    }
+    if [
+        ("modules", 128),
+        ("events", 256),
+        ("name_utf16_units", 1024),
+        ("censuses", 20),
+        ("total_census_path_units", 131_072),
+        ("image_file_bytes", 536_870_912),
+        ("header_bytes", 65_536),
+        ("sections", 96),
+        ("debug_entries", 32),
+        ("total_sections", 4096),
+        ("total_debug_entries", 4096),
+        ("codeview_bytes", 4096),
+        ("read_bytes", 67_108_864),
+        ("read_calls", 32_768),
+        ("bridges", 129),
+        ("stdout_bytes", 8_388_608),
+    ]
+    .iter()
+    .any(|(key, expected)| observer["limits"][*key].as_u64() != Some(*expected))
+    {
+        return true;
+    }
+    [
+        ("read_bytes", 67_108_864),
+        ("read_calls", 32_768),
+        ("census_path_units", 131_072),
+        ("total_sections_reserved", 4096),
+        ("total_debug_entries_reserved", 4096),
+    ]
+    .iter()
+    .any(|(key, maximum)| observer[*key].as_u64().is_none_or(|value| value > *maximum))
+}
+
+fn observer_report_failed(report: &Value) -> bool {
+    let Some(enabled) = report["windows_loader_observer_enabled"].as_bool() else {
+        return true;
+    };
+    let Some(rows) = report["workloads"].as_array() else {
+        return true;
+    };
+    if !enabled {
+        return rows
+            .iter()
+            .any(|row| row.get("windows_loader_observer") != Some(&Value::Null));
+    }
+    let Some(pid) = report["process_id"]
+        .as_u64()
+        .filter(|pid| (1..=u64::from(u32::MAX)).contains(pid))
+    else {
+        return true;
+    };
+    if report["target"] != "x86_64-pc-windows-msvc"
+        || !observer_capability_valid(&report["windows_loader_observer"])
+    {
+        return true;
+    }
+    if report["kind"] == "manifest" {
+        return rows
+            .iter()
+            .any(|row| row.get("windows_loader_observer") != Some(&Value::Null));
+    }
+    report["kind"] != "observations"
+        || report["timing_boundaries_enabled"].as_bool() != Some(true)
+        || rows.len() != 1
+        || rows.iter().any(|row| observer_row_failed(row, pid))
+}
+
 pub(crate) fn report_failed(report: &Value, smoke: bool) -> bool {
     let observations = report["kind"] == "observations";
     let failed = report["workloads"].as_array().is_none_or(|rows| {
@@ -1364,7 +1788,7 @@ pub(crate) fn report_failed(report: &Value, smoke: bool) -> bool {
                 || observed["threads"].as_i64().is_none_or(|count| count <= 0)
                 || observed["framework"].as_str().is_none_or(str::is_empty)
         });
-    failed || thread_failure
+    !report["error"].is_null() || failed || thread_failure || observer_report_failed(report)
 }
 
 fn main() {
@@ -1373,6 +1797,9 @@ fn main() {
         .as_ref()
         .is_ok_and(|arguments| arguments.timing_boundaries);
     let smoke = arguments.as_ref().is_ok_and(|arguments| arguments.smoke);
+    let windows_loader_observer_enabled = arguments
+        .as_ref()
+        .is_ok_and(|arguments| arguments.windows_loader_observer);
     let (report, failed) = match arguments.and_then(run) {
         Ok(report) => {
             let failed = report_failed(&report, smoke);
@@ -1382,7 +1809,9 @@ fn main() {
             let report = json!({"format_version": PROTOCOL_VERSION, "kind": "observations",
                 "target": target(), "build_mode": BUILD_MODE, "error": error, "workloads": [],
                 "timing_boundary_protocol": TIMING_BOUNDARY_PROTOCOL,
-                "timing_boundaries_enabled": timing_boundaries_enabled});
+                "timing_boundaries_enabled": timing_boundaries_enabled,
+                "process_id": std::process::id(),
+                "windows_loader_observer_enabled": windows_loader_observer_enabled});
             (report, true)
         }
     };

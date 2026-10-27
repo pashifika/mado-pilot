@@ -183,8 +183,9 @@ Mach-O UUIDs, file identities/hashes and observed shared-cache membership.
 Unknown, truncated, foreign or unbound records refuse closure; path prefixes do
 not establish cache membership. The observer's OS/cache identity and installed
 loader documentation matter; a public dyld source tag need not match the host.
-Unload chronology and manual mappings are outside this method. Windows held-file
-debugger discovery remains preflight-only, not an eligible normal timing observer.
+Unload chronology and manual mappings are outside this method. Windows component
+observation uses the bounded method below; historical debugger discovery is not
+a normal timing observer and supplies no certificate for this method.
 
 Preflight retains separate identity, provenance, execution, cleanup and semantic
 findings. A semantic failure or owned nonzero exit remains unsuccessful and
@@ -231,6 +232,60 @@ This proves byte-order positions, not no loader activity, zero observer cost or
 observer-off equivalence. Prehash/cache warming, initialization, startup logging,
 pipe scheduling and stable-file/OS assumptions need prospective review. Endpoint
 hashes cannot prove absence of mutation-and-reversion during child execution.
+
+### Windows bounded observer
+
+On `x86_64-pc-windows-msvc`, protocol4 supports the explicit
+`windows-ldr-observer-on-warm-v1` method. The benchmark flag
+`--windows-loader-observer` requires `--timing-boundaries` and one workload
+unless listing. Default-off and list runs never register the observer. Other
+targets refuse the flag. The SDK and its capture/input adapters are unchanged.
+
+The manifest publishes the actual callback RVA and three static ranges; these
+addresses belong to each executable, not the common baseline/candidate workload
+contract. Windows includes the observer as its twelfth apparatus source; Apple
+retains eleven. Manifest row observations are `null`, not fixture semantics.
+The collector inspects the exact executable's bounded PE function/unwind data
+and callback instructions before preflight and checks the proof again against
+the actual executable before numerical admission. Indirect transfers, calls,
+unknown instructions, out-of-function branches and unbound RIP-relative anchors
+refuse admission. This gate does not prove callback memory/loop semantics or
+loader identity; those still require source and method review.
+
+The process-lifetime callback records only into fixed, pre-touched storage.
+Initial, begin and end cuts each contain two censuses and mapped-name/PE/open-file
+bridges. Their cumulative bridge limit is 129, allowing at most 43 unchanged
+modules across all three cuts, with 128 modules per census and 256 events.
+Exhaustion, pending publication, ambiguous instance identity or failed native
+cleanup refuses success. Failure serialization preserves the last captured
+counter; it cannot heal a pending observation by reading again.
+
+Discovery binds observed files for prospective use. Measurement opens every
+closure file before launching the child, with read sharing only, and retains
+the handles through child termination. FileIdInfo128, final NT path, SHA256 and
+non-address PE fields are read from those same handles before and after.
+Mapped names and PE fields correlate each observed instance to its held file;
+only relocation-sensitive `ImageBase` is excluded from PE equality, with both
+raw values retained. Unknown or unbridged instances fail statistical and
+contract rows alike. Only statistical rows require zero callback events between
+the source-ordered window counters. Stderr markers bind PID/row/boundaries;
+their byte order is not used to order a separate loader-event stream.
+
+Full runtime preflight exercises every actual mode workload. Windows does not
+add a redundant manifest discovery; numerical manifest children remain owned,
+attested metadata-only runs and cannot claim runtime observation. The child
+environment is retained privately in full with case-insensitive key identity.
+No debugger, second supervisor, quiet-host probe or observer-cost subtraction is
+introduced.
+
+This is conditional observed-window and file/header correlation, not
+backing-object, running-code-byte or KnownDLL membership proof. Registration
+history is absent and earlier effects may persist. Delayed callbacks,
+non-atomic census, lack of final callback drain, serialization-to-exit activity
+and observer-on costs remain limitations. Pre-touch does not guarantee
+residency. Fresh source/build/linked proof and an applicable external method
+review remain prerequisites for any numerical cohort; a smoke pass is not
+qualification. See [ADR0108](../../adr/0108-windows-component-loader-observation.md).
 
 ## Optional qualification
 
@@ -303,8 +358,9 @@ A complete selected cohort may pass its `status` while whole-target verdicts
 remain `incomplete` and `performance_qualified=false`. Known failures remain
 failed. A whole-target or all-target claim still needs every required case,
 both selected normal joint p95/CPU goals, per-process/resource checks, both
-build modes/targets and separate actual-consumer evidence. Windows normal image
-closure remains unresolved; Apple evidence cannot qualify it. The current
+build modes/targets and separate actual-consumer evidence. The Windows bounded
+observer alone grants no numerical or general image-closure claim, and Apple
+evidence cannot qualify Windows. The current
 [release disposition](../../releases/v0.5.0.md) is not changed by a scoped pass.
 
 ## Finite execution and retention

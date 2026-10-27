@@ -42,6 +42,12 @@ use the next unused four-digit ID, and never reuse an ID. A superseding decision
 links its predecessor and updates the current contract; readers must not traverse
 a status chain to discover supported behavior.
 
+## Current decisions
+
+| ADR | Decision |
+| --- | --- |
+| [0108](0108-windows-component-loader-observation.md) | Bounded observer-on Windows component measurement; held-file correlation, not full backing identity |
+
 ## Legacy history
 
 The former ADR corpus and template are preserved byte-for-byte in the independent
