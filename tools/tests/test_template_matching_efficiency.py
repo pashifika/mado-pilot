@@ -2539,6 +2539,48 @@ class NativeThreadObservationTests(unittest.TestCase):
                     collector.effective_threads(value)
 
 
+class WindowsRuntimeAttemptTests(unittest.TestCase):
+    def setUp(self):
+        from tools.tests import test_windows_loader_observer as native
+        threads = {"framework": "ms-concurrency", "threads": 20, "reason": None}
+        record = native.raw_record()
+        value = json.loads(record["stdout"])
+        value["opencv_parallel_threads"] = {
+            "method": collector.OPENCV_THREAD_METHOD, "before": threads, "after": threads, "changed": False}
+        record["stdout"] = json.dumps(value)
+        discovery, _, _ = native.run_observer(record=record)
+        closure = native.observer.validate_closure([discovery])["closure"]
+        receipt, _, _ = native.run_observer(closure=closure, record=record)
+        self.attempt = {"task": {"workload": "hit-full"}, "record": receipt["record"],
+                        "runtime_observation": {key: item for key, item in receipt.items() if key != "record"},
+                        "timeout_seconds": 300, "cleanup_seconds": 5, "runtime_binding_seconds": 120}
+        self.runtime = {"plan": {"target": collector.TARGETS[1], "observer": receipt["method_identity"],
+                                "binary": {"path": native.MAIN, "build": {
+                                    "dependencies": [{"path": native.NTDLL}]}}},
+                        "closure": closure, "threads": threads}
+
+    def test_equivalent_windows_paths_pass_but_other_images_refuse(self):
+        binary = self.runtime["plan"]["binary"]
+        binary["path"] = r"\\?\c:\APP\BENCH.EXE"
+        binary["build"]["dependencies"][0]["path"] = r"\\?\c:\WINDOWS\SYSTEM32\NTDLL.DLL"
+        original = copy.deepcopy(self.attempt)
+        collector.validate_runtime_attempt(self.attempt, self.runtime)
+        self.assertEqual(self.attempt, original)
+        for field in ("executable", "dependency"):
+            with self.subTest(field=field):
+                other = copy.deepcopy(self.runtime)
+                selected = other["plan"]["binary"]
+                if field == "dependency":
+                    selected = selected["build"]["dependencies"][0]
+                selected["path"] = r"\\?\C:\unobserved\other.dll"
+                with self.assertRaisesRegex(ValueError, "omits an attested image"):
+                    collector.validate_runtime_attempt(self.attempt, other)
+        tampered = copy.deepcopy(self.attempt)
+        tampered["runtime_observation"]["images"][0]["sha256"] = "f" * 64
+        with self.assertRaisesRegex(ValueError, "runtime observation incomplete"):
+            collector.validate_runtime_attempt(tampered, self.runtime)
+
+
 @unittest.skipIf(sys.platform == "win32", "retained Mach-O fixture uses POSIX image paths")
 class RuntimePreflightTests(unittest.TestCase):
     def setUp(self):
@@ -3023,6 +3065,17 @@ class RuntimePreflightTests(unittest.TestCase):
                     broken["runtime_observation"]["duration_seconds"] = 546
                 with self.assertRaises(ValueError):
                     collector.validate_runtime_attempt(broken, runtime)
+
+    def test_measurement_image_paths_remain_case_sensitive_on_macos(self):
+        runtime = self.validate()
+        stdout = self.bundle["attempts"][1]["receipt"]["record"]["stdout"]
+        receipt = self.run.observation(runtime["closure"], stdout=stdout)
+        attempt = {"record": receipt["record"],
+                   "runtime_observation": {key: value for key, value in receipt.items() if key != "record"},
+                   "timeout_seconds": 300, "cleanup_seconds": 5, "runtime_binding_seconds": 120}
+        runtime["plan"]["binary"]["path"] = runtime["plan"]["binary"]["path"].upper()
+        with self.assertRaisesRegex(ValueError, "omits an attested image"):
+            collector.validate_runtime_attempt(attempt, runtime)
 
     def test_preflight_stops_at_first_missing_or_nonzero_statistical_window(self):
         self.enable_timing()
