@@ -40,6 +40,8 @@ RUNNER_DIR = ROOT / "tools/native-release-profile"
 sys.path.insert(0, str(RUNNER_DIR))
 from process_runner import run_process  # noqa: E402
 import macos_image_observer as macos_images  # noqa: E402
+import windows_loader_callback as windows_callback  # noqa: E402
+import windows_loader_observer as windows_images  # noqa: E402
 
 TARGETS = ("aarch64-apple-darwin", "x86_64-pc-windows-msvc")
 # This ordered corpus remains required for whole-target qualification.
@@ -326,7 +328,55 @@ def validate_v2_build(identity, target, build_mode, protocol_version=2):
 
 
 OPENCV_THREAD_METHOD = "opencv-runtime-backend-and-thread-setting-v1"
-RUNTIME_OBSERVER_POLICY = "macos-dyld-observer-on-warm-v1"
+RUNTIME_OBSERVER_POLICIES = {
+    TARGETS[0]: "macos-dyld-observer-on-warm-v1",
+    TARGETS[1]: "windows-ldr-observer-on-warm-v1",
+}
+
+
+def image_observer(target):
+    require(target in TARGETS, "unsupported runtime observer target")
+    return macos_images if target == TARGETS[0] else windows_images
+
+
+def runtime_loader_environment(target, environment):
+    if target == TARGETS[1]:
+        return windows_images.loader_environment(environment)
+    require(target == TARGETS[0], "unsupported runtime observer target")
+    return {**{key: value for key, value in environment.items() if key.startswith("DYLD_")},
+            "DYLD_PRINT_LIBRARIES": "1"}
+
+
+def runtime_observed_task(target, task):
+    return target != TARGETS[1] or task["workload"] is not None
+
+
+def runtime_schedule(target, build_mode, version):
+    return [task for task in schedule("smoke", list(definitions_for(build_mode, version)), version)
+            if runtime_observed_task(target, task)]
+
+
+def windows_capability(value, target, *, enabled=False):
+    capability = value.get("windows_loader_observer")
+    require(value.get("windows_loader_observer_enabled", False) is enabled,
+            "Windows observer invocation enablement mismatch")
+    if capability is None:
+        require(not enabled, "Windows loader capability required; zero qualifying launches")
+        return {}
+    require(target == TARGETS[1] and value.get("format_version") == 4,
+            "Windows loader capability requires native Windows protocol4")
+    windows_callback.validate_capability(capability)
+    integer(value.get("process_id"), "observer process_id", 1)
+    return {"windows_loader_observer": capability}
+
+
+def inspect_windows_callback(identity):
+    capability = identity["build"]["benchmark_manifest"].get("windows_loader_observer")
+    with Path(identity["path"]).open("rb") as stream:
+        data = stream.read(windows_callback.IMAGE_CAP + 1)
+    require(hashlib.sha256(data).hexdigest() == identity["sha256"],
+            "callback executable identity changed")
+    return windows_callback.inspect_callback(data, capability)
 
 
 def timing_capability(value, *, enabled=False):
@@ -357,7 +407,7 @@ def validate_timing_attempt(attempt, manifest, record, *, retain=False):
                 and all(isinstance(row, dict) for row in value["workloads"])
                 and [row.get("id") for row in value["workloads"]] == expected,
                 "timing boundary output row mismatch")
-    derived = macos_images.validate_timing_boundaries(record, expected)
+    derived = image_observer(manifest["target"]).validate_timing_boundaries(record, expected)
     if retain:
         attempt["timing_observation"] = derived
     require(exact_value(attempt.get("timing_observation"), derived), "timing observation summary mismatch")
@@ -369,7 +419,8 @@ def validate_timing_attempt(attempt, manifest, record, *, retain=False):
 
 def runtime_observer_policy(plan):
     policy = plan.get("runtime_observer_policy")
-    require(policy is None or policy == RUNTIME_OBSERVER_POLICY, "unsupported runtime observer policy")
+    require(policy is None or policy == RUNTIME_OBSERVER_POLICIES.get(plan.get("target")),
+            "unsupported or wrong-target runtime observer policy")
     return policy
 
 
@@ -421,13 +472,12 @@ def validate_runtime_bundle(bundle, identity, target, build_mode):
             and base.get("build") == {key: value for key, value in identity["build"].items()
                                      if key != "runtime_image_preflight"},
             "runtime preflight executable/source binding mismatch")
-    selected = list(definitions_for(build_mode, version))
-    expected_schedule = schedule("smoke", selected, version)
+    expected_schedule = runtime_schedule(target, build_mode, version)
     limits = {**execution_limits("smoke", len(expected_schedule)), "runtime_binding_seconds": 120}
     require(plan.get("schedule") == expected_schedule and plan.get("execution_limits") == limits,
             "runtime preflight selected paths or bounds differ")
     require(plan.get("collector") == collector_identity()
-            and plan.get("observer") == macos_images.method_identity(),
+            and plan.get("observer") == image_observer(target).method_identity(),
             "runtime preflight observer/source changed")
     require(isinstance(plan.get("environment"), dict) and isinstance(plan.get("host"), dict)
             and plan["host"].get("target") == target, "runtime preflight host/environment missing")
@@ -435,6 +485,9 @@ def validate_runtime_bundle(bundle, identity, target, build_mode):
     require(isinstance(runs, list) and len(runs) == len(expected_schedule),
             "runtime preflight has unrun paths")
     manifest = validate_v2_build(base, target, build_mode, version)
+    if target == TARGETS[1]:
+        windows_callback.validate_proof(plan.get("callback_proof"),
+                                        manifest.get("windows_loader_observer"), identity["sha256"])
     threads = effective_threads(strict_json(base["build"]["provenance_commands"][0]["record"]["stdout"]))
     boundary_identity = preflight_identity(base, version)
     receipts = []
@@ -478,7 +531,7 @@ def validate_runtime_bundle(bundle, identity, target, build_mode):
         else:
             observations(value, manifest, task["workload"], True, timing_boundaries=timing)
         receipts.append(receipt)
-    derived = macos_images.validate_closure(receipts)
+    derived = image_observer(target).validate_closure(receipts)
     require(derived["ok"], "runtime preflight closure incomplete: " + str(derived["reason"]))
     require(bundle.get("closure") == derived["closure"] and bundle.get("threads") == threads,
             "runtime preflight closure/thread summary mismatch")
@@ -492,18 +545,24 @@ def validate_runtime_bundle(bundle, identity, target, build_mode):
                  for row in receipt["images"] if row["class"] == "file"}
         require(all(files.get(path) == digest for path, digest in required_files.items()),
                 "runtime preflight path lacks the attested executable/dependency bytes")
-    expected_loader_env = {key: value for key, value in plan["environment"].items() if key.startswith("DYLD_")}
-    expected_loader_env["DYLD_PRINT_LIBRARIES"] = "1"
+    expected_loader_env = runtime_loader_environment(target, plan["environment"])
     require(derived["closure"]["loader_env"] == expected_loader_env, "runtime preflight loader environment differs")
     return {"closure": derived["closure"], "threads": threads, "plan": plan}
 
 
 def validate_runtime_attempt(attempt, runtime):
+    target = runtime["plan"]["target"]
+    if target == TARGETS[1] and not runtime_observed_task(target, attempt["task"]):
+        require("runtime_observation" not in attempt and "timing_observation" not in attempt
+                and "--windows-loader-observer" not in attempt["argv"],
+                "metadata-only manifest cannot claim a Windows runtime observation")
+        return
     receipt = attempt.get("runtime_observation")
     require(isinstance(receipt, dict) and "record" not in receipt
             and receipt.get("method_identity") == runtime["plan"]["observer"],
             "measurement-time runtime observation missing or changed")
-    verdict = macos_images.validate_observation({**receipt, "record": attempt["record"]}, runtime["closure"])
+    verdict = image_observer(target).validate_observation(
+        {**receipt, "record": attempt["record"]}, runtime["closure"])
     require(verdict["provenance_complete"],
             "measurement-time runtime observation incomplete: " + str(verdict["reason"]))
     expected_paths = {row["path"] for row in runtime["plan"]["binary"]["build"]["dependencies"]}
@@ -528,11 +587,12 @@ def validate_runtime_attempt(attempt, runtime):
 def runtime_closure_admission(identity, target, build_mode, bundle_path=None, *, timing_policy=None):
     manifest = validate_v2_build(identity, target, build_mode, identity["build"].get("protocol_version", 2))
     if timing_policy is not None:
-        require(timing_policy == RUNTIME_OBSERVER_POLICY, "unsupported runtime observer policy")
+        require(timing_policy == RUNTIME_OBSERVER_POLICIES.get(target),
+                "unsupported or wrong-target runtime observer policy")
         require(manifest.get("timing_boundary_protocol") == macos_images.TIMING_PROTOCOL,
                 "timing boundary capability required; zero qualifying launches")
     reference = identity["build"].get("runtime_image_preflight")
-    require(target == TARGETS[0] and isinstance(reference, dict),
+    require(target in TARGETS and isinstance(reference, dict),
             "missing runtime closure prerequisite: full native image preflight required; zero launches")
     if "source_binding" not in identity["build"]:
         require(identity["build"].get("source_status_porcelain") == "",
@@ -546,6 +606,9 @@ def runtime_closure_admission(identity, target, build_mode, bundle_path=None, *,
     result = validate_runtime_bundle(strict_json(raw.decode("utf-8")), identity, target, build_mode)
     require(timing_policy is None or runtime_observer_policy(result["plan"]) == timing_policy,
             "timing boundary preflight policy required; zero qualifying launches")
+    if target == TARGETS[1]:
+        require(exact_value(inspect_windows_callback(identity), result["plan"]["callback_proof"]),
+                "current executable callback proof differs from preflight")
     return {**result, "raw": raw}
 
 
@@ -752,7 +815,8 @@ def sha256(path):
 def collector_identity():
     paths = (Path(__file__).resolve(), RUNNER_DIR / "process_runner.py",
              RUNNER_DIR / "_process_group.py", RUNNER_DIR / "_windows_process.py",
-             RUNNER_DIR / "macos_image_observer.py")
+             RUNNER_DIR / "macos_image_observer.py", RUNNER_DIR / "windows_loader_observer.py",
+             RUNNER_DIR / "windows_loader_callback.py")
     return {path.relative_to(ROOT).as_posix(): sha256(path) for path in paths}
 
 
@@ -857,6 +921,7 @@ APPARATUS_SOURCES = (
     "crates/mado-pilot/benches/support/ocr_text_watch_resources.rs",
     "crates/support/testkit/src/match_fixtures.rs",
 )
+WINDOWS_OBSERVER_SOURCE = "crates/mado-pilot/benches/support/windows_loader_observer.rs"
 OWNER_ORDER = ("before-setup", "after-warmups", "after-samples", "frame-and-result-released",
                "session-closed", "runtime-and-source-released", "final-backend-released")
 SESSION_OWNER_ORDER = ("before-setup", "live-outcome", "caller-frame-released", "session-closed",
@@ -873,7 +938,8 @@ def apparatus_identity(value):
             and value["accounting_contract"] in (ACCOUNTING_CONTRACT, BASELINE_ACCOUNTING_CONTRACT),
             "unsupported or missing role apparatus accounting contract")
     sources = value["source_files"]
-    require(isinstance(sources, dict) and set(sources) == set(APPARATUS_SOURCES),
+    require(isinstance(sources, dict) and set(sources) in (
+        set(APPARATUS_SOURCES), set(APPARATUS_SOURCES) | {WINDOWS_OBSERVER_SOURCE}),
             "complete authored apparatus source set required")
     for path, checksum in sources.items():
         digest(checksum, f"apparatus source {path}")
@@ -892,8 +958,16 @@ def common_manifest(value):
                     "unvalidated role format contract")
             row = {key: item for key, item in row.items() if key != "format_contract"}
         rows.append(row)
-    return {**{key: item for key, item in value.items() if key not in ("apparatus", "workloads")},
-            "workloads": rows}
+    common = {**{key: item for key, item in value.items() if key not in ("apparatus", "workloads")},
+              "workloads": rows}
+    if "windows_loader_observer" in common:
+        capability = common["windows_loader_observer"]
+        callback = windows_callback.validate_capability(capability)
+        # Addresses belong to each frozen executable, not the shared workload contract.
+        common["windows_loader_observer"] = {
+            "protocol": capability["protocol"],
+            "statics": {name: fact["bytes"] for name, fact in callback["statics"].items()}}
+    return common
 
 
 def exact_value(actual, expected):
@@ -1392,6 +1466,7 @@ def manifest_identity(value, target, opencv_version, protocol_version=1, build_m
     require(isinstance(value, dict) and value.get("format_version") == protocol_version, "invalid protocol version")
     mode_fields = mode_identity(value, build_mode, protocol_version) if protocol_version >= 2 else {}
     mode_fields.update(timing_capability(value, enabled=timing_boundaries))
+    mode_fields.update(windows_capability(value, target))
     if protocol_version == 4:
         mode_fields.update(sampling_capability(value))
     if protocol_version >= 2:
@@ -1413,6 +1488,9 @@ def manifest_identity(value, target, opencv_version, protocol_version=1, build_m
         else:
             validate_session_fixture(corpus)
             mode_fields["apparatus"] = apparatus_identity(value.get("apparatus"))
+            require((WINDOWS_OBSERVER_SOURCE in mode_fields["apparatus"]["source_files"])
+                    is ("windows_loader_observer" in mode_fields),
+                    "Windows loader capability and compiled source set differ")
         mode_fields["fixture"] = corpus
     rows = value.get("workloads")
     definitions = definitions_for(build_mode, protocol_version) if protocol_version >= 2 else DEFINITIONS
@@ -1420,6 +1498,11 @@ def manifest_identity(value, target, opencv_version, protocol_version=1, build_m
     frozen = []
     for row, expected in zip(rows, definitions.values()):
         require(isinstance(row, dict), "invalid manifest row")
+        require(row.get("windows_loader_observer") is None,
+                "manifest cannot contain a runtime loader observation")
+        if "windows_loader_observer" in mode_fields:
+            require("windows_loader_observer" in row, "Windows manifest observer field missing")
+        row = {key: item for key, item in row.items() if key != "windows_loader_observer"}
         require(all(type(row.get(key)) is type(want) and row.get(key) == want
                     for key, want in expected.items()), f"manifest row mismatch: {expected['id']}")
         nonempty(row.get("cache_state"), "cache_state")
@@ -1452,6 +1535,10 @@ def observation_identity(value, manifest, workload, *, timing_boundaries=False):
     require(timing_capability(value, enabled=timing_boundaries) == {
         key: manifest[key] for key in ("timing_boundary_protocol",) if key in manifest},
         "observation timing capability changed")
+    require(windows_capability(value, manifest["target"],
+                               enabled=timing_boundaries and manifest["target"] == TARGETS[1]) == {
+        key: manifest[key] for key in ("windows_loader_observer",) if key in manifest},
+        "observation Windows loader capability changed")
     if version >= 2:
         require(mode_identity(value, manifest["build_mode"], version) == {
             key: manifest[key] for key in ("format_version", "build_mode", "global_allocator", "unavailable")},
@@ -1470,6 +1557,11 @@ def observation_identity(value, manifest, workload, *, timing_boundaries=False):
     rows = value.get("workloads")
     require(isinstance(rows, list) and len(rows) == 1, "one fresh process must report exactly one workload")
     row = rows[0]
+    require(isinstance(row, dict), "invalid observation row")
+    enabled = timing_boundaries and manifest["target"] == TARGETS[1]
+    require(isinstance(row.get("windows_loader_observer"), dict) if enabled
+            else row.get("windows_loader_observer") is None,
+            "observation Windows loader report presence mismatch")
     expected = next(item for item in manifest["workloads"] if item["id"] == workload)
     require(isinstance(row, dict) and all(type(row.get(key)) is type(want) and row.get(key) == want
                                         for key, want in expected.items()
@@ -1809,8 +1901,9 @@ def validate_plan(plan):
         integer(version, "campaign format_version")
     require(plan.get("report_format") in (None, REPORT_FORMAT), "unsupported measurement report format")
     timing_policy = runtime_observer_policy(plan)
-    require(timing_policy is None or (version >= 2 and plan.get("target") == TARGETS[0]
-                                     and plan.get("mode") != "smoke"), "invalid runtime observer policy lane")
+    require(timing_policy is None or (plan.get("mode") != "smoke" and (
+        (version >= 2 and plan.get("target") == TARGETS[0])
+        or (version == 4 and plan.get("target") == TARGETS[1]))), "invalid runtime observer policy lane")
     modes = ("calibration", "comparison", "smoke", "control") if version >= 2 else ("calibration", "comparison", "smoke")
     require(plan.get("mode") in modes, "invalid cohort")
     require(plan.get("policy") == policy_for(version),
@@ -2450,6 +2543,10 @@ def command(binary, task, mode, protocol_version=1, *, timing_boundaries=False, 
         prefix.append("--timing-boundaries")
     if task["workload"] is None:
         return prefix + ["--list"]
+    if timing_boundaries and binary["build"]["target"] == TARGETS[1]:
+        windows_callback.validate_capability(
+            binary["build"]["benchmark_manifest"].get("windows_loader_observer"))
+        prefix.append("--windows-loader-observer")
     result = prefix + ["--workload", task["workload"]]
     if mode == "smoke":
         result.append("--smoke")
@@ -2479,21 +2576,23 @@ def exclusive_collector(state):
 def runtime_preflight(args):
     """Discover every selected component path without collecting acceptance samples."""
     version = args.protocol_version
-    require(version in (2, 3, 4) and args.target == TARGETS[0]
+    require(version in (2, 3, 4) and args.target in TARGETS
             and host_identity()["target"] == args.target,
-            "runtime preflight requires protocol 2+ on native Apple Silicon; Windows remains incomplete")
+            "runtime preflight requires protocol 2+ on its native supported target")
     identity = binary_identity(args.binary, args.build_metadata, args.target)
     require("runtime_image_preflight" not in identity["build"], "preflight requires the original build attestation")
     manifest = validate_v2_build(identity, args.target, args.build_mode, version)
     require(manifest.get("timing_boundary_protocol") == macos_images.TIMING_PROTOCOL,
             "timing boundary capability required; zero qualifying launches")
     threads = effective_threads(strict_json(identity["build"]["provenance_commands"][0]["record"]["stdout"]))
-    tasks = schedule("smoke", list(definitions_for(args.build_mode, version)), version)
+    tasks = runtime_schedule(args.target, args.build_mode, version)
     limits = {**execution_limits("smoke", len(tasks)), "runtime_binding_seconds": 120}
     plan = {"target": args.target, "build_mode": args.build_mode, "binary": identity,
             "host": host_identity(), "environment": environment(), "collector": collector_identity(),
-            "observer": macos_images.method_identity(), "schedule": tasks, "execution_limits": limits,
-            "runtime_observer_policy": RUNTIME_OBSERVER_POLICY}
+            "observer": image_observer(args.target).method_identity(), "schedule": tasks, "execution_limits": limits,
+            "runtime_observer_policy": RUNTIME_OBSERVER_POLICIES[args.target]}
+    if args.target == TARGETS[1]:
+        plan["callback_proof"] = inspect_windows_callback(identity)
     boundary_identity = preflight_identity(identity, version)
     destination = Path(args.output).resolve()
     ownership = {"safe": True, "evidence": str(destination)}
@@ -2528,7 +2627,7 @@ def runtime_preflight(args):
                               - limits["cleanup_seconds"] - limits["runtime_binding_seconds"])
                 require(timeout > 0, "preflight deadline reached before child launch")
                 attempt["timeout_seconds"] = timeout
-                receipt = macos_images.discover(
+                receipt = image_observer(args.target).discover(
                     argv, cwd=ROOT, env=plan["environment"], timeout_seconds=timeout,
                     output_limit_bytes=limits["output_limit_bytes"], cleanup_seconds=limits["cleanup_seconds"],
                     binding_seconds=limits["runtime_binding_seconds"])
@@ -2542,15 +2641,14 @@ def runtime_preflight(args):
                     attempt[field] = reason
                     issues.append(reason)
                 stage = "provenance"
-                discovered = macos_images.validate_discovery(
+                discovered = image_observer(args.target).validate_discovery(
                     receipt, preceding=[attempt["receipt"] for attempt in attempts])
                 require(discovered["provenance_complete"], "preflight image binding failed: " + str(discovered["reason"]))
                 derived = discovered["identity"]
                 require(receipt.get("method_identity") == plan["observer"]
                         and derived["target"] == args.target and derived["main_executable"] == identity["path"],
                         "preflight observer/main identity mismatch")
-                expected_env = {key: value for key, value in plan["environment"].items() if key.startswith("DYLD_")}
-                expected_env["DYLD_PRINT_LIBRARIES"] = "1"
+                expected_env = runtime_loader_environment(args.target, plan["environment"])
                 require(derived["loader_env"] == expected_env, "preflight loader environment mismatch")
                 files = {native_path(row["path"], args.target): row["sha256"]
                          for row in derived["images"] if row["class"] == "file"}
@@ -2601,7 +2699,7 @@ def runtime_preflight(args):
         bundle = {"format_version": version, "kind": "component-runtime-preflight", "plan": plan,
                   "attempts": attempts, "threads": threads, "closure": None}
         if not issues:
-            derived = macos_images.validate_closure([attempt["receipt"] for attempt in attempts])
+            derived = image_observer(args.target).validate_closure([attempt["receipt"] for attempt in attempts])
             bundle["closure"] = derived["closure"]
             try:
                 validate_runtime_bundle(bundle, identity, args.target, args.build_mode)
@@ -2649,9 +2747,9 @@ def collection_steps(args, mode):
     else:
         require(requested_sampling is None and requested_sampling_hash is None,
                 "custom sampling requires protocol4 qualification")
-    timing_policy = RUNTIME_OBSERVER_POLICY if args.target == TARGETS[0] and mode != "smoke" else None
+    timing_policy = RUNTIME_OBSERVER_POLICIES[args.target] if mode != "smoke" else None
     require(timing_policy is None or version >= 2,
-            "new macOS qualification requires timing-capable protocol 2+; zero qualifying launches")
+            "qualification requires timing-capable protocol 2+; zero qualifying launches")
     host = host_identity()
     require(host["target"] == args.target, "actual host cannot execute the selected qualification target")
     baseline = binary_identity(args.baseline, args.baseline_metadata, args.target)
@@ -2788,8 +2886,8 @@ def collection_steps(args, mode):
                     require(remaining > 0, "campaign deadline reached before child launch or runtime binding")
                 timeout = POLICY["timeout_seconds"] if remaining is None else min(limits["child_timeout_seconds"], remaining)
                 attempt["timeout_seconds"] = timeout
-                if task["role"] in runtimes:
-                    receipt = macos_images.observe(
+                if task["role"] in runtimes and runtime_observed_task(args.target, task):
+                    receipt = image_observer(args.target).observe(
                         argv, cwd=ROOT, env=plan["environment"], closure=runtimes[task["role"]]["closure"],
                         timeout_seconds=timeout, output_limit_bytes=limits["output_limit_bytes"],
                         cleanup_seconds=limits["cleanup_seconds"], binding_seconds=binding_seconds)
@@ -2805,7 +2903,7 @@ def collection_steps(args, mode):
                 attempt["identity_after"] = identity
                 if task["role"] in runtimes:
                     stage = "provenance"
-                    if timing_policy is not None:
+                    if timing_policy is not None and runtime_observed_task(args.target, task):
                         validate_timing_attempt(attempt, identity["build"]["benchmark_manifest"], attempt["record"], retain=True)
                     validate_runtime_attempt(attempt, runtimes[task["role"]])
                 if successful(attempt["record"]) or version >= 2:
