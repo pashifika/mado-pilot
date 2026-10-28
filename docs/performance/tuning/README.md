@@ -41,5 +41,6 @@ new platform support or release approval.
 | 2026-10-27 | [Actual-consumer trial observations](2026-10-27-actual-consumer-trial-observations.md) | Saved-frame hit/miss, OCR resource initialization and full settlement pass; search intervals, adverse whole-operation/RSS values and independent clocks remain descriptive |
 | 2026-10-27 | [Current-producer consumer applicability](2026-10-27-current-consumer-source-applicability.md) | Fresh source-bound engine/driver builds pass five candidate-only semantic cases on each target; historical comparisons and qualification limits remain separate |
 | 2026-10-29 | [Independent positive-goal observations](2026-10-29-positive-goal-observations.md) | Apple selection passes and preparation A/A fails its ceiling; Windows instrumented work decreases, while normal selection fails repeatability and preparation fails its frozen benefit margin |
+| 2026-10-29 | [Current Apple consumer calibration](2026-10-29-current-consumer-calibration.md) | Six loader-on baseline group invocations complete with known cleanup; the first release interval fails fixed repeatability, so A/A, profile and candidate comparison remain unrun |
 
 Start a measurement from the [performance guide](../../performance.md).
