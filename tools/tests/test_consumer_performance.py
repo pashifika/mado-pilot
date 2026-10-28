@@ -1022,6 +1022,32 @@ class DiscoveryFailures(unittest.TestCase):
         self.enterContext(mock.patch.object(collector, "host_identity", return_value=self.plan["host"]))
         self.enterContext(mock.patch.object(collector.runtime, "system_snapshot", return_value={}))
 
+    def test_fresh_discovery_preserves_legacy_registration_and_failure_fences(self):
+        campaign = collector.Campaign(self.plan)
+        campaign.initialize()
+        previous = self.root / "previous"
+        previous.mkdir()
+        summary = collector.save(previous / "discovery.json", {"issues": []})
+        registration = campaign.root / "phases" / (self.plan["case"] + "-discovery-baseline.json")
+        collector.save(registration, {
+            "output": str(previous), "stage": "discovery", "summary_name": "discovery.json",
+            "plan_sha256": collector.hashed(self.plan)})
+        collector.save(registration.with_suffix(".complete"), summary)
+        retained = {path: path.read_bytes() for path in (registration, registration.with_suffix(".complete"))}
+        self.plan["env"]["CONSUMER_DISCOVERY_TEST"] = "new-context"
+
+        with mock.patch.object(collector, "run_process", side_effect=RuntimeError("launch outcome unknown")) as launch:
+            result = collector.discover_runtime(self.plan, "baseline", self.root / "fresh")
+        launch.assert_called_once()
+        self.assertNotEqual(result["registration"]["path"], str(registration))
+        self.assertIn("cleanup", {row["category"] for row in result["issues"]})
+        for path, content in retained.items():
+            self.assertEqual(path.read_bytes(), content)
+        with mock.patch.object(collector, "run_process") as launch:
+            refused = collector.discover_runtime(self.plan, "baseline", self.root / "after-failure")
+        launch.assert_not_called()
+        self.assertIn("cleanup", {row["category"] for row in refused["issues"]})
+
     def test_raw_persistence_failure_preserves_cleanup_fence_for_other_case(self):
         durable_save = collector.save
         first = self.root / "first"
