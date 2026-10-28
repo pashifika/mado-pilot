@@ -2632,6 +2632,14 @@ numerical results are empirical observations; a performance claim needs its own
 applicable evidence, while semantic, ownership, bounded-resource, provenance and
 compatibility verification stay mandatory for every change.
 
+Matching performance decisions use normal operation latency and separately
+observed physical work, memory and owner release. Process CPU remains a scoped
+diagnostic, not a required speedup, repeatability or admission score. Valid
+unavailable CPU never becomes zero; malformed accounting still fails validation.
+This changes measurement policy, not runtime deadlines, resource caps or
+platform ownership. [ADR0109](adr/0109-purpose-driven-performance-metrics.md)
+records the rationale and prospective migration.
+
 The Windows component benchmark's opt-in loader observer is confined to benchmark
 support code and the external collector. Its fixed process-lifetime callback and
 parent-held file correlation change neither SDK adapters nor default execution;

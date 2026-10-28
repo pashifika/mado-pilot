@@ -59,7 +59,7 @@ profile, runtime-closure approval or quiet-host reading. Optional accounting or
 qualification-eligibility gaps remain visible rather than preventing otherwise
 safe diagnostics, including on Windows.
 
-Current phase reports use `consumer-phase-v2`. `execution_status` is
+Current phase reports use `consumer-phase-v3`. `execution_status` is
 `completed`, `incomplete` or `failed`; `qualification_status` is `not-requested`
 for smoke and `passed`/`failed` for an explicit numerical stage. The existing
 `qualification` boolean stays false except for an accepted comparison. In
@@ -85,10 +85,10 @@ Never overwrite, clear or reinterpret a failed control to obtain a pass.
 | Cases | Primary decision for explicit qualification | Independent observations |
 | --- | --- | --- |
 | Replay full/ROI | Non-regression | Exported startup, child preflight/workflow, cleanup and lifetime elapsed/CPU |
-| Retained eight-template group full/ROI | `group_span_ns` scalar benefit | Each fixed call position/outcome, lifecycle and lifetime CPU non-regression |
-| Matched query full/ROI | `query_wait_ns` scalar benefit | Complete source/result correlation, settlement and lifetime CPU non-regression |
-| Deadline query full/ROI | Semantics and non-regression, not speed benefit | Application `FAIL`/`Timeout`/`deadline_exceeded`/exit 1 remains its actual outcome; retain return/settlement overrun and clean teardown |
-| Fresh trial hit/miss × full/ROI | `operation_us` responsiveness and observed non-regression, not positive whole-trial benefit | Real selected OCR initialization, stages/settlement and lifetime CPU non-regression |
+| Retained eight-template group full/ROI | `group_span_ns` scalar benefit | Each fixed call position/outcome, lifecycle and diagnostic lifetime CPU |
+| Matched query full/ROI | `query_wait_ns` scalar benefit | Complete source/result correlation, settlement and diagnostic lifetime CPU |
+| Deadline query full/ROI | Semantics and `query_wait_ns` non-regression, not speed benefit | Application `FAIL`/`Timeout`/`deadline_exceeded`/exit 1 remains its actual outcome; retain return/settlement overrun and clean teardown |
+| Fresh trial hit/miss × full/ROI | `operation_us` responsiveness and observed non-regression, not positive whole-trial benefit | Real selected OCR initialization, stages/settlement and diagnostic lifetime CPU |
 
 One invocation yields one scalar. Report six same-case cross-process values,
 median, minimum and maximum for a numerical cohort, not a process-local p95.
@@ -109,35 +109,45 @@ subtract across them, infer pre-main time from their difference, or add
 overlapping stages. Observation-off integer-us aggregates cannot reconstruct
 raw call records, group spans, child stages or capability identity.
 
-Before numerical calibration bind each metric's API, unit, PID/owner,
-interval/checkpoint and missing reason. Timing/CPU also need reporting quantum
-and reviewed resolution or accounting allowance. Ns/us, QPC frequency or Job
-100-ns source units alone establish neither accuracy nor effective resolution;
-requested 1/5-ms polling sleeps are not clock resolution or detection-lag bounds.
-Do not subtract polling cadence or observer cost.
+Before numerical calibration bind each graded metric's API, unit, PID/owner,
+interval/checkpoint and missing reason. Wall timing also needs reporting quantum
+and reviewed resolution. Ns/us or QPC frequency alone establishes neither
+accuracy nor effective resolution; requested 1/5-ms polling sleeps are not clock
+resolution or detection-lag bounds. Do not subtract polling or observer cost.
 
-POSIX root `wait4` CPU remains raw `partial` with null resolution, even after
-reap; it is not a full process-tree census. Windows final zero-active Job
-accounting can be complete but its effective resolution remains unavailable.
-Source-closed descendant/reap evidence, actual terminal witnesses and separately
-reviewed accounting margins are numerical-admission evidence, not rewritten raw
-coverage or physical-accuracy claims. Windows numerical runtime/CPU admission
-remains unavailable; development observations do not qualify it.
+CPU is diagnostic, not a selectable graded metric. POSIX root `wait4` CPU
+remains raw `partial` with null resolution even after reap; it is not a full
+process-tree census. Windows final zero-active Job accounting can be complete
+while its effective resolution remains unavailable. Keep raw status, source,
+scope, values and missing reasons. Do not promote partial accounting to a complete
+lifetime total or treat Job 100-ns units as effective accuracy. Missing CPU
+certificates or CPU variation alone cannot refuse a latency/resource claim.
+Actual source-bound process ownership and terminal cleanup remain mandatory,
+independent of CPU accounting. Windows numerical runtime admission remains
+unavailable; changing CPU policy does not implement that separate capability.
 
 ## Optional qualification
 
-The current review identity is `consumer-method-review-v4`. v1/v2/v3 reviews
+The current review identity is `consumer-method-review-v5`. v1/v2/v3/v4 reviews
 and old profiles cannot admit new numerical collection. The
 `consumer-profile-v1` container binds the current review and recomputed envelope;
 its unchanged name does not make older policy/context bindings transferable.
 
 A method review binds the exact context digest, accepted reviewer/rationale,
 metric contracts and hash-bound evidence for `source`, `runtime_images`,
-`owned_processes`, `observer_cost`, `clocks_cpu`, `resources`, `retention` and
-`exclusive_host`. Unknown or missing required evidence is not passed. The last
+`owned_processes`, `observer_cost`, `clocks`, `resources`, `retention` and
+`exclusive_host`. The clock gate covers graded wall timing, not a CPU-resolution
+certificate. Unknown or missing required evidence is not passed. The last
 gate concerns owned-work scheduling and context, not a CPU-idle/transient-load
 threshold. Optional host readings or their absence cannot refuse launch or
 trigger quiet-host resampling.
+
+`review.owned_processes` references a `source-owned-processes-v1` certificate;
+the `owned_processes` gate's `source_certificate` binds that same reference.
+It retains the source/native spawn inventory and terminal ownership witnesses,
+without requiring a kernel CPU rollup or accounting-allowance certificate.
+This is not permission to omit child cleanup or invent a full process census.
+Reports name graded metrics and retain per-slot CPU diagnostics separately.
 
 For each case/target/configuration retain six fresh baseline calibrations,
 six independent unchanged A/A pairs, then six fresh baseline/candidate pairs.
@@ -148,9 +158,9 @@ A passing calibration and A/A plus separate numerical-profile review precede
 candidate collection. `profile-proposal` prints the proposal for review;
 `freeze` checks accepted bindings. No candidate result widens its own envelope.
 
-For timing/CPU metrics other than trial `operation_us`, let B be six calibration
-values, q the reporting quantum, and r the maximum effective calibration
-resolution or separately reviewed accounting allowance in the same unit:
+For graded wall-time metrics other than trial `operation_us`, let B be six
+calibration values, q the reporting quantum, and r the maximum effective
+calibration resolution in the same unit:
 
 - Freeze `s=max(B)-min(B)`, `a=max(s,2*r)`,
   `ceiling=q*ceil((max(B)+a)/q)` using exact ticks/lossless decimal arithmetic.
@@ -162,9 +172,9 @@ resolution or separately reviewed accounting allowance in the same unit:
   first/second-position and chronological first/last-three median differences
   are `<=a`.
 - A declared group/matched scalar benefit requires
-  `median(comparison-baseline)-median(candidate)>a` strictly. Lifetime CPU and
-  other endpoints independently retain their ceilings/non-regression checks;
-  a separately requested lifetime-CPU benefit is not operation-local attribution.
+  `median(comparison-baseline)-median(candidate)>a` strictly. Other graded
+  endpoints independently retain their ceilings/non-regression checks.
+  CPU values remain diagnostics and supply neither a benefit nor a veto.
 
 Keep known failures alongside missing prerequisites and unrun slots. A numerical
 control failure blocks that target/lane's profile/candidate qualification, not
@@ -258,7 +268,7 @@ medians are valid. Each six-value later role retains that repeatability rule and
 first/second-position and first/last-three median differences `<=a`. A/A absolute
 role-median difference is `<=a`; comparison requires
 `median(candidate)<=median(baseline)+a`. A good median cannot excuse a per-row
-ceiling violation. This is resource non-regression, not a latency/CPU benefit.
+ceiling violation. This is resource non-regression, not a latency benefit.
 
 Only Apple `trial-hit-roi`, the bound 32 GiB host, dev-normal/observation-on has
 the prospective `hard_ceiling_bytes=268435456` (256 MiB) and

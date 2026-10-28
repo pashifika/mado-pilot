@@ -33,22 +33,42 @@ mod exit_tests {
     }
 
     #[test]
-    fn optional_cpu_is_nonfatal_only_for_smoke() {
+    fn optional_cpu_is_nonfatal_for_all_observations() {
         let mut value = report();
-        assert!(!report_failed(&value, true));
-        assert!(report_failed(&value, false));
+        assert!(!report_failed(&value));
         value["workloads"][0]["retained_loop_cpu"] =
             json!({"start_ns": 20, "end_ns": 10, "cpu_ns": null, "reason": "nonmonotonic"});
-        assert!(!report_failed(&value, true));
-        assert!(report_failed(&value, false));
+        assert!(!report_failed(&value));
         value["workloads"][0]["retained_loop_cpu"] =
             json!({"start_ns": 10, "end_ns": 20, "cpu_ns": 10, "reason": null});
-        assert!(!report_failed(&value, true));
-        assert!(!report_failed(&value, false));
+        assert!(!report_failed(&value));
     }
 
     #[test]
-    fn malformed_cpu_accounting_never_passes_smoke() {
+    fn session_interval_cpu_missing_requires_reason_with_complete_primary_samples() {
+        let unit = json!({
+            "setup": {"elapsed_ns": 10, "cpu_ns": 1},
+            "teardown": {"elapsed_ns": 10, "cpu_ns": 1},
+            "strata": {
+                "hit": [{"elapsed_ns": 10, "cpu_ns": 1}],
+                "miss": [{"elapsed_ns": 10, "cpu_ns": 1}]
+            }
+        });
+        assert!(!benchmark::session_cpu_missing(std::slice::from_ref(&unit)));
+        for pointer in [
+            "/setup/cpu_ns",
+            "/teardown/cpu_ns",
+            "/strata/hit/0/cpu_ns",
+            "/strata/miss/0/cpu_ns",
+        ] {
+            let mut missing = unit.clone();
+            *missing.pointer_mut(pointer).unwrap() = Value::Null;
+            assert!(benchmark::session_cpu_missing(&[unit.clone(), missing]));
+        }
+    }
+
+    #[test]
+    fn malformed_cpu_accounting_never_passes() {
         for cpu in [
             json!({"start_ns": null, "end_ns": null, "cpu_ns": null, "reason": null}),
             json!({"start_ns": "unknown", "end_ns": null, "cpu_ns": null, "reason": "missing"}),
@@ -61,14 +81,13 @@ mod exit_tests {
         ] {
             let mut value = report();
             value["workloads"][0]["retained_loop_cpu"] = cpu;
-            assert!(report_failed(&value, true));
-            assert!(report_failed(&value, false));
+            assert!(report_failed(&value));
         }
         let mut value = report();
         value["workloads"][0]["retained_loop_cpu"] =
             json!({"start_ns": 10, "end_ns": 20, "cpu_ns": 10, "reason": null});
         value["workloads"][0]["metrics"]["cpu_ns"] = json!(11);
-        assert!(report_failed(&value, true));
+        assert!(report_failed(&value));
     }
 
     #[test]
@@ -77,18 +96,18 @@ mod exit_tests {
             let mut value = report();
             value["workloads"][0][error] = json!("failed");
             value["workloads"][0]["oracle_failures"] = json!(1);
-            assert!(report_failed(&value, true));
+            assert!(report_failed(&value));
         }
         let mut value = report();
         value["workloads"][0]["metrics"]["final_owner_correct"] = json!(false);
         value["workloads"][0]["oracle_failures"] = json!(1);
-        assert!(report_failed(&value, true));
+        assert!(report_failed(&value));
         let mut value = report();
         value["opencv_parallel_threads"]["changed"] = json!(true);
-        assert!(report_failed(&value, true));
+        assert!(report_failed(&value));
         let mut value = report();
         value["workloads"][0]["oracle_failures"] = Value::Null;
-        assert!(report_failed(&value, true));
+        assert!(report_failed(&value));
     }
 
     fn counter(sequence: u64) -> Value {
@@ -305,32 +324,32 @@ mod exit_tests {
     fn observer_off_and_manifest_never_accept_observation_payloads() {
         let mut value = observer_report(true);
         value["windows_loader_observer_enabled"] = json!(false);
-        assert!(report_failed(&value, true));
+        assert!(report_failed(&value));
         value["workloads"][0]["windows_loader_observer"] = Value::Null;
-        assert!(!report_failed(&value, true));
+        assert!(!report_failed(&value));
         value["target"] = json!("aarch64-apple-darwin");
         value["windows_loader_observer"] = Value::Null;
-        assert!(!report_failed(&value, true));
+        assert!(!report_failed(&value));
 
         let mut value = observer_report(true);
         value["kind"] = json!("manifest");
-        assert!(report_failed(&value, true));
+        assert!(report_failed(&value));
         value["workloads"][0]["windows_loader_observer"] = Value::Null;
         value["timing_boundaries_enabled"] = json!(false);
-        assert!(!report_failed(&value, true));
+        assert!(!report_failed(&value));
         value["target"] = json!("aarch64-apple-darwin");
-        assert!(report_failed(&value, true));
+        assert!(report_failed(&value));
     }
 
     #[test]
     fn observer_missing_or_malformed_never_passes_smoke_or_contract() {
         for statistical in [false, true] {
             let value = observer_report(statistical);
-            assert!(!report_failed(&value, true));
+            assert!(!report_failed(&value));
             for replacement in [Value::Null, json!({}), json!(true), json!([])] {
                 let mut invalid = value.clone();
                 invalid["workloads"][0]["windows_loader_observer"] = replacement;
-                assert!(report_failed(&invalid, true));
+                assert!(report_failed(&invalid));
             }
             for field in [
                 "protocol",
@@ -370,17 +389,17 @@ mod exit_tests {
                     .as_object_mut()
                     .unwrap()
                     .remove(field);
-                assert!(report_failed(&invalid, true), "{field}");
+                assert!(report_failed(&invalid), "{field}");
             }
             let mut invalid = value.clone();
             invalid["workloads"][0]
                 .as_object_mut()
                 .unwrap()
                 .remove("windows_loader_observer");
-            assert!(report_failed(&invalid, true));
+            assert!(report_failed(&invalid));
             let mut invalid = value.clone();
             invalid["workloads"][0]["windows_loader_observer"]["complete"] = json!("true");
-            assert!(report_failed(&invalid, true));
+            assert!(report_failed(&invalid));
         }
     }
 
@@ -417,21 +436,21 @@ mod exit_tests {
         ] {
             let mut value = observer_report(true);
             *value.pointer_mut(pointer).unwrap() = replacement;
-            assert!(report_failed(&value, true), "{pointer}");
+            assert!(report_failed(&value), "{pointer}");
         }
         let mut value = observer_report(true);
         value["workloads"][0]["statistical"] = json!(false);
         value["workloads"][0]["windows_loader_observer"]["statistical"] = json!(false);
         assert!(
-            report_failed(&value, true),
+            report_failed(&value),
             "authored statistical policy cannot be downgraded"
         );
         let mut value = observer_report(true);
         let duplicate = value["workloads"][0].clone();
         value["workloads"].as_array_mut().unwrap().push(duplicate);
-        assert!(report_failed(&value, true));
+        assert!(report_failed(&value));
         value["workloads"] = json!([]);
-        assert!(report_failed(&value, true));
+        assert!(report_failed(&value));
     }
 
     #[test]
@@ -474,7 +493,7 @@ mod exit_tests {
                 *value["workloads"][0]["windows_loader_observer"]
                     .pointer_mut(pointer)
                     .unwrap() = replacement.clone();
-                assert!(report_failed(&value, true), "{pointer}");
+                assert!(report_failed(&value), "{pointer}");
             }
         }
         let mut value = observer_report(false);
@@ -482,7 +501,7 @@ mod exit_tests {
             .as_array_mut()
             .unwrap()
             .pop();
-        assert!(report_failed(&value, true));
+        assert!(report_failed(&value));
     }
 
     #[test]
@@ -496,14 +515,14 @@ mod exit_tests {
             for replacement in [Value::Null, json!(false), json!("true")] {
                 let mut value = observer_report(false);
                 value["workloads"][0]["windows_loader_observer"]["bridges"][0][key] = replacement;
-                assert!(report_failed(&value, true), "{key}");
+                assert!(report_failed(&value), "{key}");
             }
             let mut value = observer_report(false);
             value["workloads"][0]["windows_loader_observer"]["bridges"][0]
                 .as_object_mut()
                 .unwrap()
                 .remove(key);
-            assert!(report_failed(&value, true), "{key}");
+            assert!(report_failed(&value), "{key}");
         }
     }
 
@@ -517,7 +536,7 @@ mod exit_tests {
             {
                 census["modules"][0]["path_utf16_hex"] = json!("0061".repeat(units));
             }
-            assert_eq!(!report_failed(&value, true), valid);
+            assert_eq!(!report_failed(&value), valid);
         }
         for (units, valid) in [(1024, true), (1025, false)] {
             for key in ["full_name_utf16_hex", "base_name_utf16_hex"] {
@@ -525,13 +544,13 @@ mod exit_tests {
                 changed_window(&mut value);
                 value["workloads"][0]["windows_loader_observer"]["events"][0][key] =
                     json!("0061".repeat(units));
-                assert_eq!(!report_failed(&value, true), valid, "{key}");
+                assert_eq!(!report_failed(&value), valid, "{key}");
             }
             let mut value = observer_report(true);
             let bridge = &mut value["workloads"][0]["windows_loader_observer"]["bridges"][0];
             bridge["mapped_nt_path_utf16_hex"] = json!("0061".repeat(units));
             bridge["mapped_nt_path_after_utf16_hex"] = bridge["mapped_nt_path_utf16_hex"].clone();
-            assert_eq!(!report_failed(&value, true), valid);
+            assert_eq!(!report_failed(&value), valid);
         }
     }
 
@@ -539,10 +558,10 @@ mod exit_tests {
     fn changed_contract_window_is_not_a_qualification_or_identity_claim() {
         let mut contract = observer_report(false);
         changed_window(&mut contract);
-        assert!(!report_failed(&contract, true));
+        assert!(!report_failed(&contract));
         let mut statistical = observer_report(true);
         changed_window(&mut statistical);
-        assert!(report_failed(&statistical, true));
+        assert!(report_failed(&statistical));
         for field in [
             "qualification",
             "backing_object_proof",
@@ -551,7 +570,7 @@ mod exit_tests {
         ] {
             let mut value = contract.clone();
             value["workloads"][0]["windows_loader_observer"][field] = json!(true);
-            assert!(report_failed(&value, true), "{field}");
+            assert!(report_failed(&value), "{field}");
         }
         for (field, replacement) in [
             ("claim", "backing_object_identity"),
@@ -562,7 +581,7 @@ mod exit_tests {
         ] {
             let mut value = contract.clone();
             value["workloads"][0]["windows_loader_observer"][field] = json!(replacement);
-            assert!(report_failed(&value, true), "{field}");
+            assert!(report_failed(&value), "{field}");
         }
         for (field, replacement) in [
             ("complete", json!(false)),
@@ -573,7 +592,7 @@ mod exit_tests {
         ] {
             let mut value = contract.clone();
             value["workloads"][0]["windows_loader_observer"]["events"][0][field] = replacement;
-            assert!(report_failed(&value, true), "{field}");
+            assert!(report_failed(&value), "{field}");
         }
     }
 
@@ -584,23 +603,22 @@ mod exit_tests {
             let failure = json!({"operation": operation, "raw_code": 5, "detail": 129});
             value["workloads"][0]["windows_loader_observer"]["primary_failure"] = failure.clone();
             value["workloads"][0]["windows_loader_observer"]["complete"] = json!(false);
-            assert!(report_failed(&value, true));
+            assert!(report_failed(&value));
             assert_eq!(
                 value["workloads"][0]["windows_loader_observer"]["primary_failure"],
                 failure
             );
         }
         let mut value = observer_report(true);
-        assert!(!report_failed(&value, true));
-        assert!(report_failed(&value, false));
+        assert!(!report_failed(&value));
         value["workloads"][0]["retained_loop_cpu"] =
             json!({"start_ns": 10, "end_ns": 20, "cpu_ns": 10, "reason": null});
-        assert!(!report_failed(&value, false));
+        assert!(!report_failed(&value));
         value["workloads"][0]["timing_boundary_error"] = json!("short marker write");
-        assert!(report_failed(&value, true));
+        assert!(report_failed(&value));
         value["workloads"][0]["timing_boundary_error"] = Value::Null;
         value["workloads"][0]["oracle_failures"] = json!(1);
-        assert!(report_failed(&value, true));
+        assert!(report_failed(&value));
     }
 
     #[test]
@@ -609,7 +627,7 @@ mod exit_tests {
         let retained = value["workloads"][0]["windows_loader_observer"].clone();
         value["loaded_native_runtime"] = Value::Null;
         value["error"] = json!("loaded module path unavailable or truncated");
-        assert!(report_failed(&value, true));
+        assert!(report_failed(&value));
         assert_eq!(value["workloads"][0]["windows_loader_observer"], retained);
     }
 }

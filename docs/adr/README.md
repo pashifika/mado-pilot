@@ -47,6 +47,7 @@ a status chain to discover supported behavior.
 | ADR | Decision |
 | --- | --- |
 | [0108](0108-windows-component-loader-observation.md) | Bounded observer-on Windows component measurement; held-file correlation, not full backing identity |
+| [0109](0109-purpose-driven-performance-metrics.md) | Matching latency, physical work and resources drive performance decisions; CPU remains diagnostic |
 
 ## Legacy history
 

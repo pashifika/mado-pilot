@@ -20,12 +20,12 @@ calibration as {"directory": "...", "binding": {"path": ".../summary.json",
 "sha256": "..."}}; comparison names profile as {"path": "...", "sha256": "..."}.
 profile-proposal prints the exact proposal digest for the independent freeze review.
 
-Numerical admission is a hash-bound review (kind consumer-method-review-v4),
+Numerical admission is a hash-bound review (kind consumer-method-review-v5),
 with context_sha256=context_digest(plan), accepted=true, reviewer/rationale,
 metric contracts, and evidence for source, runtime_images, owned_processes,
-observer_cost, clocks_cpu, resources, retention and exclusive_host. Each gate
+observer_cost, clocks, resources, retention and exclusive_host. Each gate
 names its remaining issues and hash-bound evidence files; unknown is not passed.
-v1/v2/v3 reviews are refused, never reinterpreted.
+Earlier reviews are refused, never reinterpreted.
 Each selected resident bytes metric declares exact hard_ceiling_bytes and
 comparison_allowance_floor_bytes; bound resources evidence repeats them under
 resident_policies with a justification. Every invocation obeys that fixed point
@@ -42,13 +42,14 @@ prepare --loader [--node ABSOLUTE_BINARY] enables actual Apple dyld logging.
 discover invokes one selected real command; close-runtime unions only its explicit
 hash-bound raw/sink discoveries and rechecks images/cache. Neither grants numerical
 approval. Bind its immutable output as plan.runtime_closure before method review.
-The review also binds source_closed_cpu and accounting_allowance evidence references.
-CPU retains raw partial/null fields; source-closed eligibility and the prospective
-margin are separate, never physical-resolution claims. Native reachable process
-paths need case/source/artifact evidence, not library-wide guesses or dyld EOF.
+The review binds owned_processes to source-owned-processes-v1 evidence for the
+existing finite spawn/terminal ownership contract. CPU retains raw partial/null
+fields, scope and reasons as diagnostics only: it is not selectable for grading,
+and latency/resource qualification needs no CPU rollup or resolution certificate.
+Native reachable process paths still need case/source/artifact evidence.
 Development smoke remains runnable without qualification gates and retains all
 missing reasons. Its numerical misses are descriptive, not execution failures.
-Windows runtime/CPU method admission remains unavailable.
+Windows runtime method admission remains unavailable.
 
 All JSON receipts/profiles use exclusive creation. A two-attempt checkpoint can
 pause the same live generator; the original monotonic deadline keeps running.
@@ -100,9 +101,10 @@ TOTAL_SECONDS = {"smoke": 900, "calibration": 900, "control": 1680, "comparison"
 LIMITS = {"primary_seconds": 90, "cleanup_seconds": 5, "retention_seconds": 10,
           "output_limit_bytes": 4 * MIB, "child_sink_bytes": 8 * MIB,
           "admission_seconds": 60, "final_retention_seconds": 60}
-GATES = ("source", "runtime_images", "owned_processes", "observer_cost", "clocks_cpu",
+GATES = ("source", "runtime_images", "owned_processes", "observer_cost", "clocks",
          "resources", "retention", "exclusive_host")
-METHOD_REVIEW = "consumer-method-review-v4"
+METHOD_REVIEW = "consumer-method-review-v5"
+PHASE_FORMAT = "consumer-phase-v3"
 TRIAL_POLICY = "fresh-trial-central-four-v1"
 TRIAL_POPULATION = "fresh-process-first-operation"
 TRIAL_FIELDS = ("policy", "population", "hard_ceiling_us", "max_regression_us")
@@ -328,7 +330,7 @@ def verify_inputs(plan, deadline):
 
 
 def required_metrics(case):
-    metrics = {"lifetime_cpu_seconds": "s"}
+    metrics = {}
     kind = case.split("-")[0]
     if kind == "trial":
         metrics["operation_us"] = "us"
@@ -341,7 +343,7 @@ def required_metrics(case):
         for index in range(8):
             metrics[f"recognize_{index}_ns"] = "ns"
             metrics[f"release_{index}_ns"] = "ns"
-    elif kind == "matched":
+    elif kind in ("matched", "deadline"):
         metrics["query_wait_ns"] = "ns"
     return metrics
 
@@ -357,6 +359,13 @@ def selectable_metrics(case):
     else:
         metrics["recognition_child_rss_bytes"] = "bytes"
     return metrics
+
+
+def metric_roles(case, review=None):
+    selected = set(required_metrics(case)) | set((review or {}).get("metrics", {}))
+    return {"graded": sorted(selected & set(selectable_metrics(case))),
+            "diagnostic": ["lifetime_cpu_seconds", "raw_cpu_observation", "cpu", "cpu_coverage",
+                           "process_accounting"]}
 
 
 def benefit_metric(case):
@@ -393,14 +402,12 @@ def runtime_bundle(plan):
     return runtime.validate_bundle(plan, bundle, read_reference, semantic_output)
 
 
-def accounting_method(plan, review, bundle):
-    require(review is not None and review.get("accepted") is True
-            and review.get("context_sha256") == context_digest(plan), "accepted source-closed method review missing")
-    certificate = read_reference(review.get("source_closed_cpu"))
-    runtime.validate_certificate(plan, certificate, bundle, context_digest(plan), read_reference)
-    allowance = read_reference(review.get("accounting_allowance"))
-    value = runtime.validate_allowance(plan, allowance, review["source_closed_cpu"], context_digest(plan), read_reference)
-    return certificate, value
+def ownership_method(plan, review, bundle):
+    require(review is not None and review.get("kind") == METHOD_REVIEW
+            and review.get("accepted") is True
+            and review.get("context_sha256") == context_digest(plan), "accepted ownership method review missing")
+    certificate = read_reference(review.get("owned_processes"))
+    return runtime.validate_process_certificate(plan, certificate, bundle, context_digest(plan), read_reference)
 
 
 def capture_runtime(plan, bundle, role, deadline):
@@ -496,13 +503,9 @@ def admission(plan):
                     require(evidence.get("closure") == plan.get("runtime_closure") and evidence.get("closure") is not None,
                             "exact actual runtime closure reference required")
                 if name == "owned_processes":
-                    require(evidence.get("source_certificate") == review.get("source_closed_cpu")
+                    require(evidence.get("source_certificate") == review.get("owned_processes")
                             and evidence.get("source_certificate") is not None,
-                            "actual source-closed owned roles required; Job totals are not an identified census")
-                if name == "clocks_cpu":
-                    require(evidence.get("accounting_allowance") == review.get("accounting_allowance")
-                            and evidence.get("accounting_allowance") is not None,
-                            "prospective source/host/API-bound accounting allowance missing")
+                            "source-bound owned roles required; Job totals are not an identified census")
                 if name == "resources" and "resident_policies" in evidence:
                     policies.append(resident_policies(evidence["resident_policies"], resident))
                 if name == "resources" and "trial_responsiveness" in evidence:
@@ -537,13 +540,6 @@ def admission(plan):
                 bounds = resident_bounds(contract)
                 require(policies and all(policy[metric] == bounds for policy in policies),
                         "bound resources evidence must declare the same resident ceiling/floor")
-            elif metric == "lifetime_cpu_seconds":
-                require(contract.get("api") == "posix-wait4"
-                        and contract.get("accounting_allowance") == (review or {}).get("accounting_allowance")
-                        and contract.get("accounting_allowance") is not None
-                        and exact(contract.get("quantum")) == exact("1/1000000")
-                        and "resolution" not in contract and "resolution_method" not in contract,
-                        "CPU grading margin must remain distinct from raw resolution")
             else:
                 nonempty(contract.get("resolution_method"), "resolution_method")
                 require(exact(contract.get("quantum")) > 0 and exact(contract.get("resolution")) > 0,
@@ -556,9 +552,9 @@ def admission(plan):
         failures.append(issue("unavailable", "runtime_images: " + str(error)))
     else:
         try:
-            accounting_method(plan, review, bundle)
+            ownership_method(plan, review, bundle)
         except (KeyError, IndexError, TypeError, ValueError, OSError, runtime.images._Refusal) as error:
-            failures.append(issue("unavailable", "owned_processes/clocks_cpu: " + str(error)))
+            failures.append(issue("unavailable", "owned_processes: " + str(error)))
     return review, failures
 
 
@@ -802,17 +798,40 @@ def replay_check(plan, role, output):
 
 
 def cpu_observation(record):
-    cpu = record.get("cpu") or {}
-    failures = []
-    value = None
-    if cpu.get("user_seconds") is not None and cpu.get("system_seconds") is not None:
-        value = str(exact(cpu["user_seconds"]) + exact(cpu["system_seconds"]))
-    if cpu.get("status") != "complete" or cpu.get("final") is not True or value is None:
-        failures.append(issue("unavailable", "complete final owned-invocation CPU coverage unavailable"))
-    resolution = cpu.get("accounting_resolution_seconds")
-    if resolution is None or exact(resolution) <= 0:
-        failures.append(issue("unavailable", "effective lifetime CPU accounting resolution unavailable"))
-    return value, resolution, failures
+    """Validate raw diagnostics without inferring rollup coverage or effective resolution."""
+    cpu = record.get("cpu")
+    require(isinstance(cpu, dict), "CPU observation object required")
+    require(cpu.get("status") in ("complete", "partial", "unknown") and type(cpu.get("final")) is bool,
+            "CPU status/finality malformed")
+    for name in ("source", "scope"):
+        nonempty(cpu.get(name), "CPU " + name)
+    scopes = {"posix-wait4": "root-and-native-descendant-rollup",
+              "windows-job-basic-accounting": "owned-job-including-nested-jobs"}
+    require(cpu["source"] in scopes and cpu["scope"] == scopes[cpu["source"]],
+            "CPU source/scope mismatch")
+    values = [cpu.get(name) for name in ("user_seconds", "system_seconds")]
+    require(all(value is None for value in values) or all(value is not None for value in values),
+            "CPU counters must be available or unavailable together")
+    value = str(sum(exact(point) for point in values)) if values[0] is not None else None
+    if cpu["status"] == "unknown":
+        require(value is None, "unknown CPU accounting cannot contain counters")
+    else:
+        require(value is not None, "available CPU status requires counters")
+    if cpu["status"] == "complete":
+        require(cpu["final"] is True and cpu.get("reason") is None, "complete CPU accounting must be final")
+        require(cpu["source"] == "windows-job-basic-accounting",
+                "POSIX descendant rollup cannot be complete")
+    else:
+        nonempty(cpu.get("reason"), "unavailable/partial CPU reason")
+    unit, resolution = cpu.get("source_unit_seconds"), cpu.get("accounting_resolution_seconds")
+    require(unit is None or exact(unit) > 0, "CPU source unit must be positive")
+    require(resolution is None or exact(resolution) > 0, "CPU resolution must be positive when available")
+    diagnostics = []
+    if cpu["status"] != "complete":
+        diagnostics.append(issue("unavailable", "complete final owned-invocation CPU coverage unavailable"))
+    if resolution is None:
+        diagnostics.append(issue("unavailable", "effective lifetime CPU accounting resolution unavailable"))
+    return value, resolution, diagnostics
 
 
 def loader_check(plan, output, record, sink_root):
@@ -944,38 +963,41 @@ def reconcile(plan, slot, record, review=None, sink_root=None, runtime_observati
                 or embedded.get("outer_cleanup_ms") != actual["cleanup_seconds"] * 1000
                 or embedded.get("outer_output_bytes", math.inf) > actual["output_limit_bytes"]):
             failures.append(issue("execution", "invoking envelope is smaller than driver-declared outer contract"))
-    value, resolution, margin = None, None, None
-    cpu_issues = []
-    coverage = {"source_closed_children": {"eligible": False, "status": "unavailable"}}
+    value, resolution, cpu_issues = None, None, []
     try:
         value, resolution, cpu_issues = cpu_observation(record)
-        details["raw_cpu_observation"] = {"user_plus_system_seconds": value,
-                                         "status": (record.get("cpu") or {}).get("status"),
-                                         "scope": (record.get("cpu") or {}).get("scope"),
-                                         "reason": (record.get("cpu") or {}).get("reason")}
+    except (KeyError, TypeError, ValueError, ZeroDivisionError) as error:
+        failures.append(issue("semantics", "CPU observation: " + str(error)))
+    cpu = record.get("cpu") if isinstance(record.get("cpu"), dict) else {}
+    details["raw_cpu_observation"] = {
+        "user_plus_system_seconds": value, "status": cpu.get("status"), "final": cpu.get("final"),
+        "scope": cpu.get("scope"), "source": cpu.get("source"), "reason": cpu.get("reason")}
+    details["metrics"]["lifetime_cpu_seconds"] = value if cpu.get("status") == "complete" else None
+    details["cpu_coverage"] = {"status": cpu.get("status"), "final": cpu.get("final"),
+                               "scope": cpu.get("scope"), "reason": cpu.get("reason"),
+                               "issues": cpu_issues}
+    try:
         details["metrics"]["invocation_elapsed_seconds"] = str(exact(record["duration_seconds"]))
-    except (KeyError, TypeError, ValueError) as error:
-        cpu_issues.append(issue("unavailable", "CPU/elapsed: " + str(error)))
+    except (KeyError, TypeError, ValueError, ZeroDivisionError) as error:
+        failures.append(issue("semantics", "invocation elapsed: " + str(error)))
     try:
         bundle = runtime_bundle(plan)
         require(runtime_observation is not None, "actual invocation pre/post runtime bindings missing")
         for problem in runtime_observation.get("issues", []):
             (failures if problem["category"] == "identity" else unavailable).append(problem)
         details["runtime_images"] = runtime.observe(plan, bundle, role_name, record, output, sink_root, runtime_observation)
-        certificate, margin = accounting_method(plan, review, bundle)
-        require(not failures, "failed semantic/cleanup path cannot establish source-closed CPU eligibility")
-        coverage["source_closed_children"] = runtime.terminal_witness(plan, role_name, certificate, record, output, details["runtime_images"])
-        coverage["source_closed_children"]["certificate"] = review["source_closed_cpu"]
-        details["metrics"]["lifetime_cpu_seconds"] = value
-        details["accounting_allowance_seconds"] = margin
-        details["accounting_allowance"] = review["accounting_allowance"]
+        certificate = ownership_method(plan, review, bundle)
+        require(not failures, "failed semantic/cleanup path cannot establish owned-process terminal coverage")
+        details["owned_processes"] = runtime.terminal_witness(
+            plan, role_name, certificate, record, output, details["runtime_images"])
+        details["owned_processes"]["certificate"] = review["owned_processes"]
     except (KeyError, IndexError, TypeError, ValueError, OSError, runtime.images._Refusal) as error:
-        failure = issue(getattr(error, "category", "unavailable"), "source-closed CPU/image coverage: " + str(error))
+        failure = issue(getattr(error, "category", "unavailable"), "owned-process/image coverage: " + str(error))
         (failures if failure["category"] == "identity" else unavailable).append(failure)
-        unavailable.extend(cpu_issues)
-        unavailable.append(issue("unavailable", "source-closed owned roles unavailable; no complete identified census inferred"))
-    details["cpu_coverage"] = coverage
     for metric, contract in (review or {}).get("metrics", {}).items():
+        if metric not in selectable_metrics(plan["case"]):
+            unavailable.append(issue("admission", "unsupported graded metric: " + metric))
+            continue
         point = details["metrics"].get(metric)
         if point is None:
             unavailable.append(issue("unavailable", "required metric missing: " + metric))
@@ -997,9 +1019,6 @@ def reconcile(plan, slot, record, review=None, sink_root=None, runtime_observati
             else:
                 if exact(point) > ceiling:
                     failures.append(issue("numerical", metric + " exceeds fixed trial responsiveness ceiling"))
-        if metric == "lifetime_cpu_seconds" and resolution is not None and "resolution" in contract:
-            if exact(resolution) > exact(contract["resolution"]):
-                failures.append(issue("clock", "CPU resolution coarser than frozen method"))
     for metric in required_metrics(plan["case"]):
         details["metrics"].setdefault(metric, None)
     details["ungraded_resource_domains"] = {
@@ -1075,8 +1094,11 @@ def trial_envelope(values, contract):
 
 def derive_envelopes(rows, review, case):
     require(len(rows) == 6, "complete six-invocation calibration required")
+    require(set(required_metrics(case)) <= set(review["metrics"]),
+            "required graded metric missing")
     result = {}
     for name, contract in review["metrics"].items():
+        require(name in selectable_metrics(case), "unsupported graded metric: " + name)
         values = [row["metrics"].get(name) for row in rows]
         require(all(value is not None for value in values), "unavailable calibration: " + name)
         if trial_metric(case, name):
@@ -1084,45 +1106,20 @@ def derive_envelopes(rows, review, case):
         elif contract.get("unit") == "bytes":
             require(contract.get("domain") == "resident", "normal consumer supports resident endpoints only")
             result[name] = resident_envelope(values, *resident_bounds(contract))
-        elif name == "lifetime_cpu_seconds" and contract.get("accounting_allowance") is not None:
-            margins = [row.get("accounting_allowance_seconds") for row in rows]
-            require(all(value is not None for value in margins) and len(set(margins)) == 1,
-                    "source/host/API accounting allowance missing or changed")
-            require(all(row.get("accounting_allowance") == contract["accounting_allowance"] for row in rows),
-                    "CPU allowance evidence changed")
-            envelope = scalar_envelope(values, contract["quantum"], margins[0])
-            envelope["accounting_allowance_seconds"] = envelope.pop("resolution")
-            envelope["margin_kind"] = "prospective-accounting-allowance"
-            envelope["accounting_allowance"] = contract["accounting_allowance"]
-            result[name] = envelope
         else:
-            resolutions = [exact(contract["resolution"])]
-            if name == "lifetime_cpu_seconds":
-                require(all(row.get("cpu_resolution") is not None for row in rows), "CPU resolution unavailable")
-                resolutions.extend(exact(row["cpu_resolution"]) for row in rows)
-            result[name] = scalar_envelope(values, contract["quantum"], max(resolutions))
+            result[name] = scalar_envelope(values, contract["quantum"], contract["resolution"])
     return result
 
 
 def invocation_limits(row, envelopes):
     failures = []
     for name, envelope in envelopes.items():
+        require(name != "lifetime_cpu_seconds", "CPU is diagnostic, not a frozen metric")
         value = row["metrics"].get(name)
         if value is None:
             failures.append(issue("unavailable", row["slot"]["id"] + ": " + name))
         elif exact(value) > exact(envelope["ceiling"]):
             failures.append(issue("numerical", row["slot"]["id"] + ": " + name + " exceeds frozen ceiling"))
-        if name == "lifetime_cpu_seconds" and not envelope.get("resource"):
-            if "accounting_allowance_seconds" in envelope:
-                if (row.get("accounting_allowance") != envelope["accounting_allowance"]
-                        or row.get("accounting_allowance_seconds") != envelope["accounting_allowance_seconds"]):
-                    failures.append(issue("clock", "CPU accounting allowance cannot drift after freeze"))
-            else:
-                resolution = row.get("cpu_resolution")
-                if resolution is None:
-                    failures.append(issue("unavailable", "CPU resolution unavailable"))
-                elif exact(resolution) > exact(envelope["resolution"]):
-                    failures.append(issue("clock", "CPU clock cannot enlarge frozen allowance"))
     return failures
 
 
@@ -1193,7 +1190,7 @@ def grade_rows(rows, stage, envelopes, case):
             if resource:
                 noisy = max(values) - min(values) > median(values) * Fraction(15, 100)
             else:
-                r = exact(envelope.get("accounting_allowance_seconds", envelope.get("resolution")))
+                r = exact(envelope["resolution"])
                 noisy = (max(values) - min(values)) / max(median(values), 2 * r) > Fraction(15, 100)
             if noisy:
                 failures.append(issue("numerical", role + ": " + name + (" repeatability" if resource else " noise")))
@@ -1268,7 +1265,7 @@ def phase_outcomes(summary):
 def numerical_control_only(summary, entry):
     """Admit diagnostics from sealed original facts, never by regrading a control."""
     categories = {problem["category"] for problem in summary["issues"]}
-    if (summary.get("format") not in ("consumer-phase-v1", "consumer-phase-v2")
+    if (summary.get("format") not in ("consumer-phase-v1", "consumer-phase-v2", PHASE_FORMAT)
             or summary.get("stage") != "control" or summary.get("admission_issues") != []
             or not categories & {"numerical", "inconclusive"}
             or categories - {"numerical", "inconclusive", "incomplete"}):
@@ -1389,10 +1386,11 @@ def load_cohort(directory):
     require(len(summary_bytes) <= 4 * MIB, "phase summary exceeds retained bound")
     summary = strict_json(summary_bytes.decode("utf-8"))
     summary_binding = {"path": str(summary_path), "sha256": hashlib.sha256(summary_bytes).hexdigest()}
-    require(summary["format"] in ("consumer-phase-v1", "consumer-phase-v2")
+    require(summary["format"] in ("consumer-phase-v1", "consumer-phase-v2", PHASE_FORMAT)
             and summary["plan_sha256"] == hashlib.sha256(plan_bytes).hexdigest(), "phase plan binding changed")
+    historical = summary["format"] != PHASE_FORMAT
     smoke_role = "baseline"
-    if summary["format"] == "consumer-phase-v2" and summary["stage"] == "smoke":
+    if summary["format"] != "consumer-phase-v1" and summary["stage"] == "smoke":
         require(isinstance(summary["schedule"], list) and len(summary["schedule"]) == 1,
                 "phase schedule changed")
         smoke_role = summary["schedule"][0]["role"]
@@ -1400,11 +1398,11 @@ def load_cohort(directory):
     require(summary["schedule"] == expected, "phase schedule changed")
     require(not any(slot["role"] == "candidate" for slot in expected)
             or "candidate" in plan["roles"], "explicit candidate source/binary required")
-    review, admission_issues = admission(plan)
+    review, admission_issues = (None, []) if historical else admission(plan)
     rows, failures = [], list(summary["issues"])
     try:
         phase = plan["case"] + "-" + summary["stage"]
-        if summary["format"] == "consumer-phase-v2" and summary["stage"] == "smoke":
+        if summary["format"] != "consumer-phase-v1" and summary["stage"] == "smoke":
             phase += "-" + hashed(str(directory))
         registration = Path(plan["campaign"]) / "phases" / (phase + ".json")
         require(summary.get("registration") == reference(registration), "phase registration binding changed")
@@ -1415,6 +1413,8 @@ def load_cohort(directory):
         require(seal["path"] == summary_binding["path"] and seal["sha256"] == summary_binding["sha256"],
                 "phase completion seal changed")
     except (KeyError, ValueError, OSError) as error:
+        if historical:
+            raise ValueError("historical cohort provenance unavailable: " + str(error)) from error
         failures.append(issue("identity", "cohort lineage: " + str(error)))
     if summary["stage"] != "smoke":
         failures.extend(admission_issues)
@@ -1426,6 +1426,8 @@ def load_cohort(directory):
         require(start["slot"] == attempt["slot"] and start["plan_sha256"] == summary["plan_sha256"],
                 "started receipt slot binding changed")
         if attempt.get("raw") is None:
+            if historical:
+                continue
             failures.append(issue("incomplete", "started attempt has no terminal raw receipt"))
             continue
         binding = attempt["raw"]
@@ -1445,19 +1447,27 @@ def load_cohort(directory):
                 {"path": str(runtime_path), "sha256": attempt["runtime"]["sha256"]}, 2 * MIB)
             require(runtime_observation["slot"] == raw["slot"] and
                     runtime_observation["plan_sha256"] == summary["plan_sha256"], "runtime observation slot changed")
-        result = reconcile(plan, raw["slot"], raw["record"], review, directory / (raw["slot"]["id"] + "-sinks"), runtime_observation)
+        if historical:
+            require(attempt.get("validation") is not None, "historical validation provenance unavailable")
+        result = None if historical else reconcile(
+            plan, raw["slot"], raw["record"], review, directory / (raw["slot"]["id"] + "-sinks"), runtime_observation)
         if attempt.get("validation") is not None:
             saved = directory / attempt["validation"]["name"]
             require(saved.parent == directory, "validation receipt path changed")
             validation = read_reference({"path": str(saved), "sha256": attempt["validation"]["sha256"]}, 256 * 1024)
+            require(validation["slot"] == raw["slot"]
+                    and validation["original_exit_code"] == raw["record"]["exit_code"],
+                    "retained validation slot/terminal binding changed")
+            if historical:
+                rows.append(validation)
+                continue
             require(validation == {"slot": raw["slot"], **result}, "retained raw/validation disagree")
         rows.append({"slot": raw["slot"], **result})
-        descriptive = (observation_findings(result["issues"])
-                       if summary["format"] == "consumer-phase-v2" and summary["stage"] == "smoke" else [])
+        descriptive = observation_findings(result["issues"]) if summary["stage"] == "smoke" else []
         failures.extend(problem for problem in result["issues"] if problem not in descriptive)
         if summary["stage"] != "smoke":
             failures.extend(result["unavailable"])
-    if summary["unrun"] != expected[len(summary["attempts"]):] or len(rows) != len(expected):
+    if not historical and (summary["unrun"] != expected[len(summary["attempts"]):] or len(rows) != len(expected)):
         failures.append(issue("incomplete", "unrun or incomplete original slots"))
     return {"plan": plan, "summary": summary, "rows": rows, "issues": failures,
             "review": review, "binding": summary_binding, "directory": str(directory)}
@@ -1528,7 +1538,7 @@ def collect_steps(plan, stage, output, *, smoke_role="baseline"):
     output.mkdir(parents=False, exist_ok=False)
     plan_ref = save(output / "plan.json", plan)
     campaign = Campaign(plan)
-    summary = {"format": "consumer-phase-v2", "stage": stage, "case": plan["case"],
+    summary = {"format": PHASE_FORMAT, "method_review": METHOD_REVIEW, "stage": stage, "case": plan["case"],
                "plan_sha256": plan_ref["sha256"], "schedule": tasks, "attempts": [], "unrun": tasks.copy(),
                "issues": [], "qualification": False, "admission_issues": [], "envelopes": {},
                "observation_issues": [], "elapsed_seconds": None, "evidence_bytes": plan_ref["bytes"]}
@@ -1710,6 +1720,11 @@ def collect_steps(plan, stage, output, *, smoke_role="baseline"):
                 campaign.fence("control", "failed/incomplete unchanged control blocks all candidate cases", phase)
             summary["elapsed_seconds"] = time.monotonic() - started
             summary["statistics"] = cohort_statistics(rows, plan["case"], central_four=review is not None)
+            summary["metric_roles"] = metric_roles(plan["case"], review)
+            summary["cpu_diagnostics"] = [
+                {"slot": row["slot"], **{key: row[key] for key in
+                 ("cpu", "raw_cpu_observation", "cpu_coverage", "cpu_resolution", "process_accounting")}}
+                for row in rows]
             summary["qualification"] = stage == "comparison" and not summary["issues"] and not summary["admission_issues"]
             summary.update(phase_outcomes(summary))
             seal = save(output / "summary.json", summary)
@@ -1730,6 +1745,9 @@ def collect(plan, stage, output, *, smoke_role="baseline"):
 
 def profile_proposal(calibration, control, *, check_fences=True):
     require(calibration["summary"]["stage"] == "calibration" and control["summary"]["stage"] == "control", "calibration/control stages required")
+    require(all(cohort["summary"].get("format") == PHASE_FORMAT
+                and (cohort.get("review") or {}).get("kind") == METHOD_REVIEW
+                for cohort in (calibration, control)), "current method cohorts required; historical evidence cannot qualify")
     require(calibration["plan"]["collector"] == collector_identity(), "collector source applicability changed")
     compatible(calibration, control)
     require(not calibration["issues"] and not control["issues"], "failed/unavailable cohort cannot be frozen")
@@ -1997,16 +2015,21 @@ def main(argv=None):
             value = {"proposal": value, "profile_proposal_sha256": hashed(value)}
         elif args.command == "report":
             evidence = load_cohort(args.directory)
-            value = {"stage": evidence["summary"]["stage"], "case": evidence["plan"]["case"],
-                     "issues": evidence["issues"], "admission_issues": evidence["summary"]["admission_issues"],
-                     "rows": evidence["rows"], "unrun": evidence["summary"]["unrun"],
-                     "statistics": cohort_statistics(evidence["rows"], evidence["plan"]["case"],
-                                                     central_four=evidence["review"] is not None),
-                     "qualification": evidence["summary"]["qualification"] and not evidence["issues"]}
-            if evidence["summary"]["format"] == "consumer-phase-v2":
-                value.update(format="consumer-phase-v2",
-                             observation_issues=evidence["summary"]["observation_issues"],
-                             **phase_outcomes({**evidence["summary"], "issues": evidence["issues"]}))
+            if evidence["summary"]["format"] != PHASE_FORMAT:
+                # Stored outcomes belong to their original collector/method, never this source.
+                value = {**evidence["summary"], "rows": evidence["rows"]}
+            else:
+                value = {"format": PHASE_FORMAT, "method_review": METHOD_REVIEW,
+                         "stage": evidence["summary"]["stage"], "case": evidence["plan"]["case"],
+                         "issues": evidence["issues"], "admission_issues": evidence["summary"]["admission_issues"],
+                         "rows": evidence["rows"], "unrun": evidence["summary"]["unrun"],
+                         "metric_roles": evidence["summary"]["metric_roles"],
+                         "cpu_diagnostics": evidence["summary"]["cpu_diagnostics"],
+                         "statistics": cohort_statistics(evidence["rows"], evidence["plan"]["case"],
+                                                         central_four=evidence["review"] is not None),
+                         "qualification": evidence["summary"]["qualification"] and not evidence["issues"],
+                         "observation_issues": evidence["summary"]["observation_issues"],
+                         **phase_outcomes({**evidence["summary"], "issues": evidence["issues"]})}
         else:
             stage = {"calibrate": "calibration", "compare": "comparison"}.get(args.command, args.command)
             value = collect(load(args.plan), stage, args.output,

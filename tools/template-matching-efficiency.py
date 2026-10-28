@@ -6,8 +6,8 @@ Run ``policy`` before calibration; ``freeze`` reviews a successful calibration;
 Build metadata is an operator-supplied provenance attestation, not a reproducible
 build proof. Keep the calibration directory with its reviewed profile.
 Protocol four binds workload-specific sampling and retained-loop process CPU.
-The proposed protocol-four control budget is separate from empirical timing
-ceilings; benefits must exceed that budget independently for wall p95 and CPU.
+Protocol-four wall p95 benefits must exceed the frozen control budget.
+CPU observations and resolution remain structurally validated diagnostics.
 Protocol three adds Session rows and source-independent logical corpus identity.
 Historical readers retain their original numerical policies. Partial workload
 coverage never qualifies the full corpus.
@@ -131,7 +131,8 @@ MEMORY = ("peak_rss_bytes", "rss_before_bytes", "rss_after_bytes", "rss_after_dr
 # Diagnostic execution bounds do not alter the frozen v1 numerical policy.
 SMOKE_LIMITS = {"child_timeout_seconds": 90, "campaign_timeout_seconds": 900,
                 "cleanup_seconds": 5, "output_limit_bytes": 8 * MIB}
-REPORT_FORMAT = "component-measurement-report-v1"
+HISTORICAL_REPORT_FORMAT = "component-measurement-report-v1"
+REPORT_FORMAT = "component-measurement-report-v2"
 
 # Prospective component apparatus only; this never regrades format-one evidence.
 V2_POLICY = {**POLICY, "id": "template-efficiency-v2-prospective-r2", "processes": 6,
@@ -147,16 +148,22 @@ V3_POLICY = {**V2_POLICY, "id": "template-efficiency-v3-session-prospective-r2",
              "resource_ceiling": "max(calibration6) + max(spread, fixed slack); native RSS peak live cache is row-scoped by simultaneous independent backend count",
              "strata": "turnover hit and miss remain process-local; grade each stratum and the overlapping primary cycle independently",
              "scope": "prospective Session component apparatus; no accepted method, profile or actual-consumer qualification"}
-V4_POLICY = {**V3_POLICY, "id": "template-efficiency-v4-retained-loop-control-budget-prospective-r2",
-             "cpu_metric": "retained-loop current-process CPU including preparation, oracles and storage; operation sum remains diagnostic",
+V4_POLICY = {**V3_POLICY, "id": "template-efficiency-v4-latency-work-resources-v1",
+             "cpu_metric": "diagnostic only: retained-loop current-process CPU including preparation, oracles and storage, operation sums and resolution; unavailable accounting never gates latency qualification",
+             "clock_allowance": "maximum observed calibration wall-clock resolution; CPU resolution and accounting floors are diagnostic only",
+             "metric_roles": {"operation_p95": "graded-normal-only", "turnover_stratum_p95": "graded-normal-only",
+                              "resource_bounds": "graded", "work_and_ownership": "required",
+                              "cpu_time": "diagnostic", "cpu_resolution": "diagnostic",
+                              "instrumented_timing": "diagnostic"},
              "sampling": "explicit source/hash-bound per-workload counts; reference manifest is not an execution plan",
              "instrumented_timing": "descriptive only; independent resource and exact work/ownership gates remain",
-             "empirical_allowance": "e = max(spread(calibration6), 2 * frozen clock_allowance); individual timing ceilings remain ceil(max(calibration6) + e)",
+             "strata": "normal turnover hit and miss wall p95 remain process-local and independently graded alongside the overlapping primary cycle; stratum CPU is diagnostic",
+             "empirical_allowance": "wall p95 only: e = max(spread(calibration6), 2 * frozen clock_allowance); individual timing ceilings remain ceil(max(calibration6) + e)",
              "control_relative_allocation": {"numerator": 15, "denominator": 100},
              "control_allowance": "c = max(e, ceil(own calibration median * 15 / 100)); engineering control-error budget, not clock accuracy or statistical coverage",
-             "control": "all processes within unchanged ceilings; between-role, order and half-cohort median differences <= c; role noise remains <=15%",
-             "comparison": "order and half-cohort median differences <= c; role noise and individual ceilings unchanged",
-             "benefit": "normal median(baseline6) - median(candidate6) > b = max(e, c), jointly p95 and retained-loop CPU",
+             "control": "wall p95 and resource ceilings remain; wall p95 between-role, order and half-cohort median differences <= c; wall p95 role noise remains <=15%",
+             "comparison": "wall p95 order and half-cohort median differences <= c; wall p95 role noise and individual latency/resource ceilings unchanged",
+             "benefit": "normal wall p95 median(baseline6) - median(candidate6) > b = max(e, c); CPU cannot establish or reject a speedup",
              "scope": "prospective component apparatus; no accepted count, profile or runtime eligibility by implementation"}
 SAMPLING_PROTOCOL = "mado-component-sampling-v1"
 SAMPLING_LIMITS = {"warmups_min": 1, "warmups_max": 1000, "samples_min": 1, "samples_max": 40000}
@@ -187,6 +194,10 @@ NORMAL_UNAVAILABLE_WORKLOADS = (
 def policy_for(protocol_version):
     return (V4_POLICY if protocol_version == 4 else V3_POLICY if protocol_version == 3
             else V2_POLICY if protocol_version == 2 else POLICY)
+
+
+def report_format_for(protocol_version):
+    return REPORT_FORMAT if protocol_version == 4 else HISTORICAL_REPORT_FORMAT
 
 
 def definitions_for(build_mode, protocol_version=2):
@@ -1188,13 +1199,21 @@ def validate_session_manifest(row):
 def timing_metrics(workload, version, build_mode=None):
     if version == 4 and build_mode == "instrumented":
         return ()
-    primary = (("p95_ns", "timer_resolution_ns"),
-               ("retained_loop_cpu_ns" if version == 4 else "cpu_ns", "cpu_timer_resolution_ns"))
+    primary = (("p95_ns", "timer_resolution_ns"),)
+    if version != 4:
+        primary += (("cpu_ns", "cpu_timer_resolution_ns"),)
     if version >= 3 and workload.startswith("session-turnover-"):
-        strata = primary[:1] if version == 4 else primary
         return primary + tuple((f"strata.{name}.{metric}", clock)
-                               for name in ("hit", "miss") for metric, clock in strata)
+                               for name in ("hit", "miss") for metric, clock in primary)
     return primary
+
+
+def required_unavailable(summary, version):
+    if version != 4:
+        return summary["unavailable"]
+    return [name for name in summary["unavailable"]
+            if name not in ("cpu_reason", "cpu_timer_resolution_ns", "retained_loop_cpu_ns")
+            and not name.endswith(".cpu_ns")]
 
 
 def validate_stamp(value):
@@ -1609,7 +1628,8 @@ def observations(value, manifest, workload, smoke, *, timing_boundaries=False, s
                 integer(metrics[name], name)
     for reason in ("cpu_reason", "native_resource_reason"):
         if metrics.get(reason) is not None:
-            unavailable.append(nonempty(metrics[reason], reason))
+            detail = nonempty(metrics[reason], reason)
+            unavailable.append(reason if version == 4 else detail)
     require(metrics.get("peak_rss_scope") == "process-high-water"
             and (normal or metrics.get("peak_heap_scope") == "row-including-setup-and-warmup"),
             "peak measurements must include setup and warmup")
@@ -1643,6 +1663,8 @@ def observations(value, manifest, workload, smoke, *, timing_boundaries=False, s
         for index, sample in enumerate(samples):
             require(isinstance(sample, dict), f"invalid {name}[{index}]")
             require(sample.get("correct") is True, f"incorrect {name}[{index}]")
+            if version == 4:
+                require("cpu_ns" in sample, "sample CPU must be explicit, including null")
             if version >= 3:
                 require(sample.get("error") is None, f"failed {name}[{index}]")
             integer(sample.get("elapsed_ns"), "elapsed_ns")
@@ -1656,6 +1678,8 @@ def observations(value, manifest, workload, smoke, *, timing_boundaries=False, s
     timer = integer(value.get("timer_resolution_ns"), "timer_resolution_ns", 1)
     nonempty(value.get("timer_resolution_method"), "timer_resolution_method")
     cpu_resolution = value.get("cpu_timer_resolution_ns")
+    if version == 4:
+        require("cpu_timer_resolution_ns" in value, "CPU resolution must be explicit, including null")
     if cpu_resolution is None:
         unavailable.append("cpu_timer_resolution_ns")
     else:
@@ -1725,6 +1749,9 @@ def observations(value, manifest, workload, smoke, *, timing_boundaries=False, s
     if version == 4:
         summary["retained_loop_cpu_ns"] = loop_cpu
         summary["retained_loop_cpu"] = bracket
+        summary["cpu_observations"] = {
+            "warmup_ns": [sample["cpu_ns"] for sample in row["warmup_samples"]],
+            "retained_ns": [sample["cpu_ns"] for sample in retained]}
     for prefix in ("rss", "heap"):
         summary[f"peak_{prefix}_bytes"] = metrics[f"peak_{prefix}_bytes"]
         for kind, first, last in (("growth", "steady_before", "steady_after"),
@@ -1902,7 +1929,9 @@ def validate_plan(plan):
     require(version in (1, 2, 3, 4) and plan.get("kind") == "campaign", "invalid campaign")
     if version >= 3:
         integer(version, "campaign format_version")
-    require(plan.get("report_format") in (None, REPORT_FORMAT), "unsupported measurement report format")
+    expected_report = report_format_for(version)
+    require(plan.get("report_format") == expected_report if version == 4 else
+            plan.get("report_format") in (None, expected_report), "unsupported measurement report format")
     timing_policy = runtime_observer_policy(plan)
     require(timing_policy is None or (plan.get("mode") != "smoke" and (
         (version >= 2 and plan.get("target") == TARGETS[0])
@@ -2111,9 +2140,10 @@ def evaluate(directory):
                     summary["position"] = task["position"]
                 if successful(record) and not seen_categories:
                     observations_by_role.setdefault(task["role"], {}).setdefault(task["workload"], []).append(summary)
-                if plan["mode"] != "smoke" and summary["unavailable"]:
+                missing = required_unavailable(summary, version)
+                if plan["mode"] != "smoke" and missing:
                     issues.append({"attempt": label, "file": relative, "status": "incomplete",
-                                   "reason": "unavailable observations: " + ", ".join(summary["unavailable"])})
+                                   "reason": "unavailable observations: " + ", ".join(missing)})
         except (OSError, ValueError, TypeError, KeyError, StopIteration) as error:
             if version >= 2:
                 fail(category, f"{relative}: {type(error).__name__}: {error}")
@@ -2239,7 +2269,7 @@ def control_evidence(calibration, control):
                         and all(row.get("position") == (row["process"] % 2 if role == "baseline"
                                                        else 1 - row["process"] % 2) for row in rows))
             missing = any(row.get(metric) is None for row in rows for metric in envelope["limits"])
-            if not complete or missing or any(row["unavailable"] for row in rows):
+            if not complete or missing or any(required_unavailable(row, version) for row in rows):
                 issues.append({"attempt": f"{role}:{workload}", "status": "incomplete",
                                "reason": "six independent complete A/A processes per role required"})
             for row in rows:
@@ -2393,7 +2423,7 @@ def compare_evidence(evidence, profile):
     for workload, definition in definitions.items():
         cohorts = {role: evidence["observations"].get(role, {}).get(workload, [])
                    for role in ("baseline", "candidate")}
-        complete = all(len(rows) == count and all(not row["unavailable"] for row in rows)
+        complete = all(len(rows) == count and all(not required_unavailable(row, version) for row in rows)
                        and (version == 1 or sorted(row["process"] for row in rows) == list(range(count)))
                        for rows in cohorts.values())
         envelope = profile["envelopes"][workload]
@@ -2516,11 +2546,13 @@ def report(directory):
     qualified = mode == "comparison" and status == "passed" and (version < 3 or coverage["complete"]) and (
         version == 1 or evidence["plan"]["build_mode"] == "normal")
     outcome = {
-        "report_format": REPORT_FORMAT,
+        "report_format": report_format_for(version),
         "execution_status": ("failed" if any(item["status"] == "failed" for item in evidence["issues"])
                              else "incomplete" if evidence["issues"] else "completed"),
         "qualification_status": "not-requested" if mode == "smoke" else status,
-    } if evidence["plan"].get("report_format") == REPORT_FORMAT else {}
+    } if evidence["plan"].get("report_format") == report_format_for(version) else {}
+    if version == 4:
+        outcome.update(policy_id=V4_POLICY["id"], metric_roles=V4_POLICY["metric_roles"])
     return {"format_version": version, **outcome, "mode": mode, "target": target, "status": status,
             **({"workload_coverage": coverage} if version >= 3 else {}),
             "performance_qualified": qualified, "whole_change_acceptance": "incomplete",
@@ -2836,7 +2868,7 @@ def collection_steps(args, mode):
         if profile_bytes is not None:
             with (destination / "profile.json").open("xb") as stream:
                 stream.write(profile_bytes)
-        plan = {"format_version": version, "report_format": REPORT_FORMAT, "kind": "campaign", "mode": mode, "target": args.target,
+        plan = {"format_version": version, "report_format": report_format_for(version), "kind": "campaign", "mode": mode, "target": args.target,
                 "host": host, "collector": collector_identity(), "binaries": binaries,
                 "environment": environment(), "policy": policy_for(version), "workloads": selected,
                 "schedule": schedule(mode, selected, version), "exclusive_host": args.exclusive_host,

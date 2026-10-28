@@ -103,11 +103,12 @@ checkout state, executable/dependencies, argv, corpus and raw process outcomes
 remain attributable. Attestation observes loaded OpenCV endpoints, not complete
 transitive runtime closure or reproducible-build equivalence.
 
-New plans identify reports as
-`report_format: component-measurement-report-v1`, independently of protocol
-`format_version` 1–4. `execution_status` is `completed`, `incomplete` or `failed`;
+New protocol-4 plans identify reports as
+`report_format: component-measurement-report-v2`, independently of producer
+`format_version`; `policy_id` and `metric_roles` distinguish graded outcomes
+from CPU diagnostics. `execution_status` is `completed`, `incomplete` or `failed`;
 `qualification_status` is `not-requested` for smoke, otherwise the declared
-scope's original `passed`/`incomplete`/`failed` result. Historical report forms
+scope's `passed`/`incomplete`/`failed` result. Protocol-1/2/3 report-v1 artifacts
 retain their original interpretation.
 
 A fully bound row failure stays a failure even if diagnostic collection can
@@ -148,25 +149,28 @@ Representation units are not accuracy or effective resolution.
 `cpu_ns=end_ns-start_ns` is nonnegative and no smaller than the contained
 summed-operation CPU. Missing or reversed endpoints retain null CPU and an
 explicit reason, never zero. A structurally valid unavailable bracket can
-complete producer `--smoke` with exit 0; a full producer run still exits 1 and
-explicit qualification remains incomplete/non-success. Native protocol stays 4.
-Malformed brackets, hidden availability (increasing endpoints with null CPU),
-wrong source/count or invalid arithmetic remain semantic failures in every mode,
-as do oracle, owner and native-thread-setting failures. Changed producer
-apparatus requires a fresh build and attestation; the smoke CLI is unchanged.
-`metrics.cpu_ns` and turnover-stratum operation CPU remain diagnostics with
-their original summed-operation meaning; no stratum loop bracket is inferred.
+complete either smoke or full producer execution with exit 0 when other required
+checks pass. Native protocol stays 4; CPU availability does not qualify or
+disqualify latency. Malformed brackets, hidden availability (increasing endpoints
+with null CPU), wrong source/count or invalid arithmetic remain semantic failures
+in every mode, as do oracle, owner and native-thread-setting failures. Changed
+producer apparatus requires a fresh build and attestation; the smoke CLI is
+unchanged. `metrics.cpu_ns`, `retained_loop_cpu_ns` and turnover-stratum operation
+CPU remain diagnostics with their original boundaries; no stratum loop bracket
+is inferred. Retain available values, null reasons and resolution rather than
+fabricating complete accounting or zero-cost work.
 
 Windows and macOS CI exercise the producer's actual exit predicate in both build
 modes before building and attesting the smoke executable. Those tests distinguish
 valid unavailable CPU, malformed accounting and semantic failure; their Cargo
 target directories are separate from the attested binaries.
 
-Normal grading uses nearest-rank process p95, `ceil(0.95*N)`, and
-`retained_loop_cpu_ns`; turnover also grades each stratum p95 independently.
-Instrumented timing/CPU are descriptive; resource and exact work/ownership
-checks remain enforced. Instrumented evidence cannot substitute for a normal
-benefit or set `performance_qualified`.
+Normal grading uses nearest-rank process p95, `ceil(0.95*N)`; turnover also grades
+each stratum p95 independently. Median and CPU are descriptive. Instrumented
+timing/CPU are descriptive; resource and exact work/ownership checks remain
+enforced. Neither CPU variation nor a missing valid CPU observation enters
+latency envelopes, noise/control tests or benefit decisions. Instrumented
+evidence cannot substitute for a normal benefit or set `performance_qualified`.
 
 ## Runtime image evidence
 
@@ -332,11 +336,10 @@ and comparison. Changed counts require fresh calibration/control; do not normali
 CPU across counts or choose counts after seeing the qualification result.
 
 The current policy is
-`template-efficiency-v4-retained-loop-control-budget-prospective-r2`. For each
-graded normal metric independently, use six calibration values B:
+`template-efficiency-v4-latency-work-resources-v1`. For each graded normal
+wall-time metric independently, use six calibration values B:
 
-- `m=median(B)`, `s=max(B)-min(B)`, `r=max(calibration clock resolution)`;
-  CPU uses at least 1,000 ns Apple or 15,625,000 ns Windows accounting allowance.
+- `m=median(B)`, `s=max(B)-min(B)`, `r=max(calibration clock resolution)`.
 - Empirical allowance `e=max(s,2r)`; per-process ceiling `max(B)+e`.
 - Control allowance `c=max(e,ceil(m*15/100))`; benefit allowance `b=max(e,c)`.
 - Calibration and each later role require
@@ -345,9 +348,10 @@ graded normal metric independently, use six calibration values B:
   first/second-position and chronological first/last-three median differences,
   must be `<=c`. Timing ceilings and noise remain independent.
 - Improvement rows require `median(comparison-baseline)-median(candidate)>b`
-  strictly and jointly for p95 and retained-loop CPU. Guard rows, including
-  `single-small96x64`, carry no benefit obligation. Turnover stratum p95 uses its
-  own allowance. No metric, count or overlapping interval is pooled.
+  strictly for operation p95. Guard rows, including `single-small96x64`, carry
+  no benefit obligation. Turnover stratum p95 uses its own allowance.
+  No metric, count or overlapping interval is pooled. CPU has no frozen
+  envelope, threshold or benefit obligation.
 
 Keep exact half-nanosecond medians. For sorted `v0..v5`,
 `ceil(m*15/100)=((v2+v3)*3+39)//40`; compare doubled medians rather than round
@@ -370,11 +374,17 @@ management-owner memory is excluded. Endpoint differences are not leak rates.
 A complete selected cohort may pass its `status` while whole-target verdicts
 remain `incomplete` and `performance_qualified=false`. Known failures remain
 failed. A whole-target or all-target claim still needs every required case,
-both selected normal joint p95/CPU goals, per-process/resource checks, both
-build modes/targets and separate actual-consumer evidence. The Windows bounded
+both selected normal latency goals, per-process/resource checks, both
+build modes/targets and separate actual-consumer evidence. Physical-work changes
+explain mechanisms but do not replace latency evidence. The Windows bounded
 observer alone grants no numerical or general image-closure claim, and Apple
 evidence cannot qualify Windows. The current
 [release disposition](../../releases/v0.5.0.md) is not changed by a scoped pass.
+
+The policy and report identities are prospective. Existing joint p95/CPU
+profiles and failed cohorts retain their original collector and verdict;
+they cannot admit a new-policy comparison. New calibration, A/A and profile
+bindings are required for a new numerical claim, not for ordinary safe smoke.
 
 ## Finite execution and retention
 
