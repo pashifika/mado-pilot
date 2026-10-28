@@ -34,6 +34,9 @@ def plan_for(root, case="trial-hit-roi"):
                      "--fixture", str(root / "fixture.json"), "--case", case[6:],
                      "--environment", str(root / "environment.json")],
             "engine": binary("engine"), "root_binary": binary("driver")}
+    if not case.startswith("trial-"):
+        role["argv"] = [str(root / "engine"), "run", str(root / "fixture.json"), str(root / "environment.json")]
+        role["root_binary"] = binary("engine")
     host = collector.host_identity()
     target = host["target"] or collector.component.TARGETS[0]
     return {"format": "actual-consumer-plan-v1", "execution_authorized": True, "case": case,
@@ -52,6 +55,7 @@ def thread_point():
 
 def trial_output(plan, *, role_name="baseline"):
     role = plan["roles"][role_name]
+    hit = plan["case"].startswith("trial-hit-")
     parent = {"format": "trial-supervision-marks-v1", "epoch": "parent-control.started", "unit": "ns",
               "spawn_started_ns": 10, "spawn_returned_ns": 20, "child_started_received_ns": 30,
               "entry_settled_received_ns": 35, "terminal_received_ns": 40,
@@ -62,8 +66,9 @@ def trial_output(plan, *, role_name="baseline"):
              "build": {"executable_sha256": role["engine"]["sha256"], "target": plan["target"]},
              "supervision_observation": parent.copy(), "environment_identity": "a" * 64,
              "identity": {"owner": "saved-frame", "revision": "test"},
-             "result": {"kind": "template", "id": "p050-template-0", "threshold": 0.9, "outcome": "matched",
-                        "matches": [{"bounds": {"x": 80, "y": 64, "width": 12, "height": 10}, "score": 1.0}]},
+             "result": {"kind": "template", "id": "p050-template-0", "threshold": 0.9,
+                        "outcome": "matched" if hit else "no_match",
+                        "matches": [{"bounds": {"x": 80, "y": 64, "width": 12, "height": 10}, "score": 1.0}] if hit else []},
              "measurement": {"format": "trial-stage-marks-v1", "epoch": "control.started", "unit": "ns",
                              "unavailable": [], "names": list(collector.TRIAL_MARKS), "marks": list(range(19)),
                              "native_threads_after": thread_point(),
@@ -75,7 +80,8 @@ def trial_output(plan, *, role_name="baseline"):
                                                    "rss_bytes": 100 * collector.MIB}}}
     probe = copy.deepcopy(child)
     probe.update(child_pid=101, operation="recognition_capabilities", measurement=None, result=None)
-    fixture = {"id": plan["case"][6:], "max_results": 8, "threshold": 0.9, "search_region": [64, 48, 320, 180],
+    fixture = {"id": plan["case"][6:], "max_results": 8, "threshold": 0.9,
+               "search_region": [64, 48, 320, 180] if plan["case"].endswith("roi") else None,
                "frame": {"width": 1920, "height": 1080, "bytes": 1920 * 1080 * 4, "sha256": "b" * 64},
                "template": {"width": 12, "height": 10, "sha256": "c" * 64}}
     return {"version": 1, "scope": "supervised-saved-rgba-template-trial", "case": plan["case"][6:],
@@ -123,7 +129,7 @@ def deadline_output(plan):
          "source_frame": 2, "timeout_ms": 1},
     ]
     for row in logs:
-        row.update(variant="roi", query_kind="deadline", corpus_sha256=plan["fixture"]["corpus_sha256"])
+        row.update(variant=plan["case"].split("-")[-1], query_kind="deadline", corpus_sha256=plan["fixture"]["corpus_sha256"])
     return {"version": 1, "runs": [{
         "status": "FAIL", "exit_code": 0, "forced": False,
         "primary": {"category": "Timeout", "context": {"cause": {"status": "deadline_exceeded"}}},
@@ -141,6 +147,80 @@ def deadline_output(plan):
         "metrics": {name: 1000 for name in ("startup_us", "elapsed_us", "preflight_us", "workflow_us", "cleanup_us")},
         "milestones": [{"event": "ChildStarted", "pid": 102}],
     }]}
+
+
+def replay_output(plan, *, release_ns=1000):
+    """Complete replay/group call records; group span stays fixed as its internal costs move."""
+    output = deadline_output(plan)
+    report = output["runs"][0]
+    report.update(status="PASS", primary=None)
+    grouped = plan["case"].startswith("group-")
+    matches = [{"template": index, "bounds": [80 + index % 4 * 72, 64 + index // 4 * 72, 12, 10], "score": 1.0}
+               for index in range(8)]
+    logs = [{"stage": "readiness"}]
+    names = ["observe", "release", "log", "observe"]
+    durations = [2000] * len(names)
+    if grouped:
+        logs += [{"stage": "retained-group-enter"}, {"stage": "retained-group-settled", "matched": matches}]
+        names.append("log")
+        durations.append(2000)
+    else:
+        logs += [{"stage": "retained-hit", **match} for match in matches]
+    for _ in range(8):
+        names += ["recognize", "release"]
+        durations += [10000 - release_ns, release_ns]
+        if not grouped:
+            names.append("log")
+            durations.append(2000)
+    if grouped:
+        names.append("log")
+        durations.append(2000)
+    suffix = ["observe", "recognize", "release", "release", "log"] * 2 + ["observe", "release", "log"]
+    names += suffix
+    durations += [2000] * len(suffix)
+    logs += [{"stage": "newer-miss", "matched": False, "frame": 3},
+             {"stage": "newer-hit", "bounds": [83, 66, 12, 10], "frame": 4},
+             {"stage": "complete", "searches": 10, "matched": 9, "no_match": 1, "handles_released": True}]
+    for row in logs:
+        row.update(variant=plan["case"].split("-")[-1], corpus_sha256=plan["fixture"]["corpus_sha256"])
+    obs = report["observations"]
+    obs["logs"] = [collector.document(row).decode() for row in logs]
+    cursor, records = 0, []
+    for name, duration in zip(names, durations):
+        records.append([collector.CALL_NAMES.index(name), cursor, cursor + duration, True])
+        cursor += duration
+    obs["operation_samples"]["records"] = records
+    for index, name in enumerate(collector.CALL_NAMES):
+        points = [end - start for method, start, end, _ in records if method == index]
+        obs["operation_metrics"][name] = {
+            "count": len(points), "failures": 0, "total_us": sum(value // 1000 for value in points),
+            "max_us": max((value // 1000 for value in points), default=0)}
+    return output
+
+
+def matched_output(plan):
+    output = deadline_output(plan)
+    report = output["runs"][0]
+    report.update(status="PASS", primary=None)
+    obs = report["observations"]
+    logs = [collector.strict_json(row) for row in obs["logs"]]
+    logs[2]["timeout_ms"] = 5000
+    logs += [{"stage": "query-matched", "bounds": [83, 66, 12, 10], "frame": 3, "score": 1.0,
+              "observation": {"frame": 3, "attempt": 1, "epoch": 0, "geometry": 0,
+                              "coordinate_space": "capture-pixels", "width": 1920, "height": 1080,
+                              "id": "observation", "process_lifetime": "process", "run": "run", "session": "session"}},
+             {"stage": "complete", "handles_released": True}]
+    for row in logs:
+        row.update(query_kind="matched", variant=plan["case"].split("-")[-1],
+                   corpus_sha256=plan["fixture"]["corpus_sha256"])
+    obs["logs"] = [collector.document(row).decode() for row in logs]
+    records = obs["operation_samples"]["records"]
+    records[-1][-1] = True
+    records += [[collector.CALL_NAMES.index("release"), start, start + 2000, True]
+                for start in (120000, 130000, 140000)]
+    obs["operation_metrics"]["release"] = {"count": 6, "failures": 0, "total_us": 12, "max_us": 2}
+    obs["operation_metrics"]["query_wait"]["failures"] = 0
+    return output
 
 
 def cohort_rows(stage, metric="operation_us", baseline=1000, other=1000):
@@ -235,23 +315,52 @@ class ScalarRules(unittest.TestCase):
         with self.assertRaisesRegex(ValueError, "noise"):
             collector.scalar_envelope([924, 1000, 1000, 1000, 1000, 1075], 1, 1)
 
-    def test_historical_apple_trial_values_remain_old_scalar_nonpass(self):
-        # Retained Apple trial-hit-roi calibration (PR #109 dossier): old arithmetic only, never regraded.
-        values = [551859, 471323, 475221, 470318, 469603, 473136]
-        spread, center = max(values) - min(values), collector.median(values)
-        self.assertEqual((spread, center), (82256, collector.Fraction(944459, 2)))
-        self.assertEqual(spread / max(center, 2), collector.Fraction(164512, 944459))
-        with self.assertRaisesRegex(ValueError, "calibration noise exceeds 0.15"):
-            collector.scalar_envelope(values, 1, 1)
-
     def test_single_violation_survives_good_median_and_missing_metric(self):
         envelopes = {"group_span_ns": collector.scalar_envelope([1000] * 6, 1, 1),
-                     "recognize_0_ns": collector.scalar_envelope([1] * 6, 1, 1)}
+                     "child_sampled_rss_bytes": collector.resident_envelope([100] * 6, 160, 2)}
         rows = cohort_rows("comparison", "group_span_ns", baseline=1000, other=900)
         rows[0]["metrics"]["group_span_ns"] = 1003
         issues = collector.grade_rows(rows, "comparison", envelopes, "group-full")
         self.assertTrue(any("exceeds frozen ceiling" in row["reason"] for row in issues))
         self.assertTrue(any(row["category"] == "unavailable" for row in issues))
+
+    def test_comparison_spread_uses_same_frozen_absolute_budget_for_each_role(self):
+        for case, metric in (("replay-full", "invocation_elapsed_seconds"), ("group-roi", "group_span_ns"),
+                             ("matched-full", "query_wait_ns"), ("deadline-roi", "query_wait_ns")):
+            envelopes = {metric: collector.scalar_envelope([1000, 1100, 1050, 1050, 1050, 1050], 1, 1)}
+            for role in ("baseline", "candidate"):
+                for excess in (0, 1):
+                    with self.subTest(case=case, role=role, excess=excess):
+                        rows = cohort_rows("comparison", metric, baseline=1000, other=100)
+                        selected = [row for row in rows if row["slot"]["role"] == role]
+                        selected[0]["metrics"][metric] += 100 + excess
+                        before = copy.deepcopy((rows, envelopes))
+                        issues = collector.grade_rows(rows, "comparison", envelopes, case)
+                        self.assertEqual(issues, [] if excess == 0 else [
+                            collector.issue("numerical", role + ": " + metric + " spread exceeds frozen allowance")])
+                        self.assertEqual((rows, envelopes), before)
+
+    def test_comparison_spread_keeps_the_frozen_resolution_floor(self):
+        metric = "group_span_ns"
+        envelopes = {metric: collector.scalar_envelope([1000] * 6, 1, 5)}
+        rows = cohort_rows("comparison", metric, baseline=1000, other=10)
+        rows[1]["metrics"][metric] = 20
+        self.assertEqual(collector.grade_rows(rows, "comparison", envelopes, "group-full"), [])
+        rows[1]["metrics"][metric] = 21
+        self.assertEqual(collector.grade_rows(rows, "comparison", envelopes, "group-full"),
+                         [collector.issue("numerical", "candidate: " + metric + " spread exceeds frozen allowance")])
+
+    def test_control_repeatability_keeps_relative_boundary_not_comparison_budget(self):
+        metric = "query_wait_ns"
+        envelopes = {metric: collector.scalar_envelope([1000] * 6, 1, 1)}
+        for role in ("baseline", "control"):
+            for excess in (0, 1):
+                with self.subTest(role=role, excess=excess):
+                    rows = cohort_rows("control", metric)
+                    selected = [row for row in rows if row["slot"]["role"] == role]
+                    selected[0]["metrics"][metric] -= 150 + excess
+                    self.assertEqual(collector.grade_rows(rows, "control", envelopes, "deadline-roi"),
+                                     [] if excess == 0 else [collector.issue("numerical", role + ": " + metric + " noise")])
 
     def test_unchanged_role_bias_and_strict_group_and_query_benefit_threshold(self):
         for case, metric in (("group-full", "group_span_ns"), ("matched-roi", "query_wait_ns")):
@@ -308,6 +417,120 @@ class ScalarRules(unittest.TestCase):
         self.assertFalse(collector.admission_room(631, 900, 2, smaller))
         self.assertTrue(collector.admission_room(735, 900, 1, smaller))
         self.assertFalse(collector.admission_room(900, 900, 1, smaller))
+
+
+class UserFacingTiming(unittest.TestCase):
+    def setUp(self):
+        self.temporary = tempfile.TemporaryDirectory()
+        self.addCleanup(self.temporary.cleanup)
+
+    def test_each_case_calibrates_only_its_observed_user_facing_timing(self):
+        cases = {
+            "replay": (replay_output, "invocation_elapsed_seconds", "s", "1/5"),
+            "group": (replay_output, "group_span_ns", "ns", "80000"),
+            "matched": (matched_output, "query_wait_ns", "ns", "2000"),
+            "deadline": (deadline_output, "query_wait_ns", "ns", "2000"),
+            "trial": (trial_output, OP, "us", "1000"),
+        }
+        for case in collector.CASES:
+            with self.subTest(case=case):
+                plan = plan_for(self.temporary.name, case)
+                factory, metric, unit, value = cases[case.split("-")[0]]
+                contract = trial_contract() if unit == "us" else {
+                    "unit": unit, "quantum": "1/1000000" if unit == "s" else 1, "resolution": "1/1000000"}
+                review = {"metrics": {metric: contract}}
+                record = record_for(factory(plan))
+                record["exit_code"] = int(case.startswith("deadline-"))
+                before = copy.deepcopy(record)
+                rows = []
+                for slot in collector.schedule("calibration"):
+                    result = collector.reconcile(plan, slot, record, review)
+                    self.assertEqual(result["issues"], [])
+                    rows.append({"slot": slot, **result})
+                envelopes = collector.derive_envelopes(rows, review, case)
+                self.assertEqual(set(envelopes), {metric})
+                self.assertEqual(envelopes[metric]["median"], value)
+                self.assertEqual(collector.metric_roles(case, review)["graded"], [metric])
+                self.assertEqual(record, before)
+                for row in rows:
+                    row["metrics"].pop(metric)
+                with self.assertRaisesRegex(ValueError, "unavailable calibration"):
+                    collector.derive_envelopes(rows, review, case)
+
+    def test_noisy_internal_costs_are_retained_without_vetoing_group_calibration(self):
+        self.plan = plan_for(self.temporary.name, "group-full")
+        rows = []
+        review = {"metrics": {"group_span_ns": {"unit": "ns", "quantum": 1, "resolution": 1}}}
+        release_values = [1, 2, 50, 500, 5000, 9999]
+        for slot, release in zip(collector.schedule("calibration"), release_values):
+            output = replay_output(self.plan, release_ns=release)
+            output["runs"][0]["metrics"] = {name: 10 ** (slot["process"] + 1)
+                                            for name in output["runs"][0]["metrics"]}
+            record = record_for(output)
+            record["duration_seconds"] = slot["process"] + 1
+            before = copy.deepcopy(record)
+            result = collector.reconcile(self.plan, slot, record, review)
+            self.assertEqual(result["issues"], [])
+            self.assertEqual(record, before)
+            rows.append({"slot": slot, **result})
+        envelopes = collector.derive_envelopes(rows, review, self.plan["case"])
+        self.assertEqual(set(envelopes), {"group_span_ns"})
+        self.assertEqual(envelopes["group_span_ns"]["spread"], "0")
+        statistics = collector.cohort_statistics(rows, self.plan["case"])["baseline"]
+        roles = collector.metric_roles(self.plan["case"], review)
+        for name in ("startup_us", "elapsed_us", "preflight_us", "workflow_us", "cleanup_us",
+                     "invocation_elapsed_seconds"):
+            self.assertIn(name, roles["diagnostic"])
+            self.assertEqual(statistics[name]["count"], 6)
+            self.assertNotEqual(statistics[name]["minimum"], statistics[name]["maximum"])
+        for index in range(8):
+            for name, values in ((f"release_{index}_ns", release_values),
+                                 (f"recognize_{index}_ns", [10000 - value for value in release_values])):
+                self.assertIn(name, roles["diagnostic"])
+                self.assertEqual(statistics[name]["values"], [str(value) for value in values])
+                with self.assertRaisesRegex(ValueError, "unsupported graded metric"):
+                    collector.derive_envelopes(rows, {"metrics": {**review["metrics"], name: {"unit": "ns"}}},
+                                               self.plan["case"])
+                with self.assertRaisesRegex(ValueError, "unsupported graded metric"):
+                    collector.grade_rows(rows, "calibration", {name: envelopes["group_span_ns"]}, self.plan["case"])
+        with self.assertRaisesRegex(ValueError, "calibration noise"):
+            noisy = copy.deepcopy(rows)
+            noisy[0]["metrics"]["group_span_ns"] += 12001
+            collector.derive_envelopes(noisy, review, self.plan["case"])
+
+    def test_diagnostic_calls_still_require_valid_sequence_clocks_and_aggregates(self):
+        self.plan = plan_for(self.temporary.name, "group-full")
+        for defect in ("clock", "aggregate", "sequence", "outcome", "phase"):
+            with self.subTest(defect=defect):
+                output = replay_output(self.plan)
+                report = output["runs"][0]
+                obs = report["observations"]
+                records = obs["operation_samples"]["records"]
+                release = next(row for row in records if row[0] == collector.CALL_NAMES.index("release"))
+                if defect == "clock":
+                    release[2] = release[1] - 1
+                elif defect == "aggregate":
+                    obs["operation_metrics"]["release"]["total_us"] += 1
+                elif defect == "sequence":
+                    first = next(index for index, row in enumerate(records)
+                                 if row[0] == collector.CALL_NAMES.index("recognize"))
+                    records[first][0], records[first + 1][0] = records[first + 1][0], records[first][0]
+                    # Preserve aggregates while changing the semantic call sequence.
+                    for name in ("recognize", "release"):
+                        points = [end - start for method, start, end, _ in records
+                                  if method == collector.CALL_NAMES.index(name)]
+                        obs["operation_metrics"][name].update(
+                            total_us=sum(value // 1000 for value in points), max_us=max(points) // 1000)
+                elif defect == "outcome":
+                    release[-1] = False
+                    obs["operation_metrics"]["release"]["failures"] = 1
+                else:
+                    report["metrics"]["cleanup_us"] = -1
+                record = record_for(output)
+                before = copy.deepcopy(record)
+                result = collector.reconcile(self.plan, collector.schedule("smoke")[0], record)
+                self.assertIn("semantics", {problem["category"] for problem in result["issues"]})
+                self.assertEqual(record, before)
 
 
 class BoundReferences(unittest.TestCase):
@@ -941,7 +1164,12 @@ class ImmutableCampaign(unittest.TestCase):
         self.assertTrue(refused["issues"])
 
     def test_historical_smoke_numeric_failure_is_not_regraded_as_current_observation(self):
-        directory = (self.root / "historical").resolve()
+        for format in ("consumer-phase-v1", "consumer-phase-v2", "consumer-phase-v3"):
+            with self.subTest(format=format):
+                self.assert_historical_smoke_retained(format)
+
+    def assert_historical_smoke_retained(self, format):
+        directory = (self.root / ("historical-" + format)).resolve()
         directory.mkdir()
         review = {"metrics": {OP: trial_contract(hard_ceiling_us=999)}}
         plan_binding = collector.save(directory / "plan.json", self.plan)
@@ -959,10 +1187,13 @@ class ImmutableCampaign(unittest.TestCase):
             name = slot["id"] + "." + kind + ".json"
             binding = collector.save(directory / name, payload)
             attempt[kind] = {"name": name, "sha256": binding["sha256"]}
-        registration = self.campaign.root / "phases" / (self.plan["case"] + "-smoke.json")
+        phase = self.plan["case"] + "-smoke"
+        if format != "consumer-phase-v1":
+            phase += "-" + collector.hashed(str(directory))
+        registration = self.campaign.root / "phases" / (phase + ".json")
         collector.save(registration, {"output": str(directory), "stage": "smoke",
                                       "plan_sha256": plan_binding["sha256"]})
-        summary = {"format": "consumer-phase-v1", "stage": "smoke", "case": self.plan["case"],
+        summary = {"format": format, "stage": "smoke", "case": self.plan["case"],
                    "plan_sha256": plan_binding["sha256"], "registration": collector.reference(registration),
                    "schedule": [slot], "attempts": [attempt], "unrun": [], "issues": validation["issues"],
                    "admission_issues": [], "qualification": False}
@@ -1543,15 +1774,27 @@ class ProfileAcceptance(unittest.TestCase):
 
     def test_historical_cohorts_and_method_reviews_cannot_freeze_current_profile(self):
         for cohort in (self.calibration, self.control):
-            for format in ("consumer-phase-v1", "consumer-phase-v2"):
+            for format in ("consumer-phase-v1", "consumer-phase-v2", "consumer-phase-v3"):
                 current = cohort["summary"]["format"]
                 cohort["summary"]["format"] = format
                 with self.subTest(format=format), self.assertRaises(ValueError):
                     collector.profile_proposal(self.calibration, self.control)
                 cohort["summary"]["format"] = current
-        self.calibration["review"]["kind"] = "consumer-method-review-v4"
-        with self.assertRaises(ValueError):
-            collector.profile_proposal(self.calibration, self.control)
+        for kind in ("consumer-method-review-v4", "consumer-method-review-v5"):
+            self.calibration["review"]["kind"] = kind
+            with self.subTest(kind=kind), self.assertRaises(ValueError):
+                collector.profile_proposal(self.calibration, self.control)
+
+    def test_historical_calibration_cannot_admit_control(self):
+        plan = self.control["plan"]
+        for format in ("consumer-phase-v1", "consumer-phase-v2", "consumer-phase-v3"):
+            self.calibration["summary"]["format"] = format
+            with self.subTest(format=format), mock.patch.object(
+                    collector, "load_cohort", return_value=self.calibration):
+                envelopes, issues = collector.prerequisites(plan, "control")
+            self.assertEqual(envelopes, {})
+            self.assertEqual(issues, [collector.issue(
+                "prerequisite", "current method calibration required; historical evidence cannot qualify")])
 
 
 class BoundReview(unittest.TestCase):
@@ -1584,6 +1827,35 @@ class BoundReview(unittest.TestCase):
             "rationale": "bound policy fixture", "gates": gates, "metrics": metrics})
         return [row for row in collector.admission(self.plan)[1]
                 if row["category"] == "admission" or row["reason"].startswith(("resources:", *prefixes))]
+
+
+class TimingAdmission(BoundReview):
+    def test_internal_timing_cannot_be_selected_by_current_review(self):
+        for case, metric, unit in (("replay-full", "invocation_elapsed_seconds", "s"),
+                                   ("group-full", "group_span_ns", "ns"),
+                                   ("matched-roi", "query_wait_ns", "ns"),
+                                   ("deadline-roi", "query_wait_ns", "ns"),
+                                   ("trial-hit-roi", OP, "us")):
+            self.plan["case"] = case
+            self.context = collector.context_digest(self.plan)
+            primary = trial_contract() if case.startswith("trial-") else {
+                "api": "fixture clock", "owner": "fixture consumer", "interval": "user operation",
+                "unit": unit, "missing_reason": None, "quantum": 1, "resolution": 1,
+                "resolution_method": "source-bound"}
+            resources = {"trial_responsiveness": trial_declaration()} if case.startswith("trial-") else {}
+            with self.subTest(case=case):
+                self.assertEqual(self.review_issues({metric: primary}, resources, prefixes=(metric + ":",)), [])
+            diagnostics = [] if case.startswith("trial-") else [
+                "startup_us", "elapsed_us", "preflight_us", "workflow_us", "cleanup_us"]
+            if not case.startswith("replay-"):
+                diagnostics.append("invocation_elapsed_seconds")
+            if case.startswith("group-"):
+                diagnostics += [f"{name}_{index}_ns" for index in range(8) for name in ("recognize", "release")]
+            for name in diagnostics:
+                with self.subTest(case=case, diagnostic=name):
+                    issues = self.review_issues({metric: primary, name: {"unit": "ns"}}, resources,
+                                               prefixes=(name + ":",))
+                    self.assertIn(collector.issue("unavailable", name + ": unsupported metric"), issues)
 
 
 class ResidentAdmission(BoundReview):
@@ -1719,7 +1991,7 @@ class TrialAdmission(BoundReview):
 
     def test_previous_method_kinds_are_refused_not_reinterpreted(self):
         for kind in ("consumer-method-review-v1", "consumer-method-review-v2",
-                     "consumer-method-review-v3", "consumer-method-review-v4"):
+                     "consumer-method-review-v3", "consumer-method-review-v4", "consumer-method-review-v5"):
             with self.subTest(kind=kind):
                 self.assertIn(collector.issue("admission", "accepted consumer method review required"),
                               self.trial_issues({OP: trial_contract()}, self.declared(), kind=kind))
@@ -1797,7 +2069,11 @@ class ResidentGrading(unittest.TestCase):
     def test_candidate_resident_median_is_non_regression_not_benefit(self):
         def grade(case, metric, envelope, timing, resident):
             rows = paired_rows("comparison", metric, timing, resident)
-            envelopes = {metric: envelope, RSS: calibrated_resident()}
+            resident_metric = RSS if case.startswith("trial-") else "child_sampled_rss_bytes"
+            if resident_metric != RSS:
+                for row in rows:
+                    row["metrics"][resident_metric] = row["metrics"].pop(RSS)
+            envelopes = {metric: envelope, resident_metric: calibrated_resident()}
             return [row["reason"] for row in collector.grade_rows(rows, "comparison", envelopes, case)]
 
         trial = ("trial-hit-roi", OP, calibrated_trial())
@@ -1809,6 +2085,17 @@ class ResidentGrading(unittest.TestCase):
         self.assertEqual(grade(*group, (1000, 997), (self.BASE, self.BASE + FLOOR)), [])
         self.assertEqual(grade(*group, (1000, 1000), (self.BASE, self.BASE - 10 * collector.MIB)),
                          ["group_span_ns: scalar benefit does not exceed allowance"])
+
+    def test_comparison_resident_repeatability_remains_relative(self):
+        envelopes = {RSS: calibrated_resident()}
+        for role in ("baseline", "candidate"):
+            for delta, noisy in ((3 * collector.MIB, False), (16 * collector.MIB, True)):
+                with self.subTest(role=role, delta=delta):
+                    rows = cohort_rows("comparison", RSS, self.BASE, self.BASE)
+                    selected = [row for row in rows if row["slot"]["role"] == role]
+                    selected[0]["metrics"][RSS] += delta
+                    self.assertEqual(collector.grade_rows(rows, "comparison", envelopes, "trial-hit-roi"),
+                                     [collector.issue("numerical", role + ": " + RSS + " repeatability")] if noisy else [])
 
     def test_per_process_hard_ceiling_survives_passing_medians(self):
         rows = cohort_rows("comparison", RSS, self.BASE, self.BASE)

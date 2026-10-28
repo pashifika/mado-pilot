@@ -59,7 +59,7 @@ profile, runtime-closure approval or quiet-host reading. Optional accounting or
 qualification-eligibility gaps remain visible rather than preventing otherwise
 safe diagnostics, including on Windows.
 
-Current phase reports use `consumer-phase-v3`. `execution_status` is
+Current phase reports use `consumer-phase-v4`. `execution_status` is
 `completed`, `incomplete` or `failed`; `qualification_status` is `not-requested`
 for smoke and `passed`/`failed` for an explicit numerical stage. The existing
 `qualification` boolean stays false except for an accepted comparison. In
@@ -84,7 +84,7 @@ Never overwrite, clear or reinterpret a failed control to obtain a pass.
 
 | Cases | Primary decision for explicit qualification | Independent observations |
 | --- | --- | --- |
-| Replay full/ROI | Non-regression | Exported startup, child preflight/workflow, cleanup and lifetime elapsed/CPU |
+| Replay full/ROI | `invocation_elapsed_seconds` non-regression | Exported startup, child preflight/workflow, cleanup and lifetime elapsed/CPU |
 | Retained eight-template group full/ROI | `group_span_ns` scalar benefit | Each fixed call position/outcome, lifecycle and diagnostic lifetime CPU |
 | Matched query full/ROI | `query_wait_ns` scalar benefit | Complete source/result correlation, settlement and diagnostic lifetime CPU |
 | Deadline query full/ROI | Semantics and `query_wait_ns` non-regression, not speed benefit | Application `FAIL`/`Timeout`/`deadline_exceeded`/exit 1 remains its actual outcome; retain return/settlement overrun and clean teardown |
@@ -93,6 +93,13 @@ Never overwrite, clear or reinterpret a failed control to obtain a pass.
 One invocation yields one scalar. Report six same-case cross-process values,
 median, minimum and maximum for a numerical cohort, not a process-local p95.
 Do not pool heterogeneous calls, outcomes, processes, roles, targets or modes.
+
+Only the table's primary timing is selectable for numerical grading, alongside
+the explicitly reviewed resident checkpoints. Internal phase durations and each
+group recognize/release duration remain in raw observations and statistics as
+diagnostics; they cannot veto the enclosing user-facing operation's calibration.
+Their call order, outcome, clock order and aggregate consistency remain mandatory.
+Whole-invocation elapsed time is also diagnostic outside the replay cases.
 
 | Observation | Actual boundary |
 | --- | --- |
@@ -128,7 +135,7 @@ unavailable; changing CPU policy does not implement that separate capability.
 
 ## Optional qualification
 
-The current review identity is `consumer-method-review-v5`. v1/v2/v3/v4 reviews
+The current review identity is `consumer-method-review-v6`. v1–v5 reviews
 and old profiles cannot admit new numerical collection. The
 `consumer-profile-v1` container binds the current review and recomputed envelope;
 its unchanged name does not make older policy/context bindings transferable.
@@ -164,8 +171,11 @@ calibration resolution in the same unit:
 
 - Freeze `s=max(B)-min(B)`, `a=max(s,2*r)`,
   `ceiling=q*ceil((max(B)+a)/q)` using exact ticks/lossless decimal arithmetic.
-- Require `s/max(median(B),2*r)<=0.15`. Each later role independently meets the
-  same noise rule with frozen r; a coarser later clock cannot enlarge it.
+- Calibration and each unchanged A/A role require
+  `spread/max(median(role),2*r)<=0.15`, using frozen r for A/A.
+- Each comparison role, baseline and candidate, requires `spread<=a` in the
+  original metric unit. Candidate speed and later clock readings do not change
+  this pre-candidate absolute budget. Resident and trial policies remain separate.
 - Each invocation meets its ceiling and all semantic/ownership/resource oracles.
   A favorable median cannot cancel one violation.
 - Absolute A/A role-median difference and each control/comparison role's

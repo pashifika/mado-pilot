@@ -20,12 +20,17 @@ calibration as {"directory": "...", "binding": {"path": ".../summary.json",
 "sha256": "..."}}; comparison names profile as {"path": "...", "sha256": "..."}.
 profile-proposal prints the exact proposal digest for the independent freeze review.
 
-Numerical admission is a hash-bound review (kind consumer-method-review-v5),
+Numerical admission is a hash-bound review (kind consumer-method-review-v6),
 with context_sha256=context_digest(plan), accepted=true, reviewer/rationale,
 metric contracts, and evidence for source, runtime_images, owned_processes,
 observer_cost, clocks, resources, retention and exclusive_host. Each gate
 names its remaining issues and hash-bound evidence files; unknown is not passed.
 Earlier reviews are refused, never reinterpreted.
+Primary timing is invocation_elapsed_seconds for replay, group_span_ns for groups,
+query_wait_ns for matched/deadline waits, and operation_us for trials. Internal
+call/phase durations and non-replay invocation time remain validated diagnostics,
+not selectable gates. Non-trial timing comparisons bound each role's full spread
+by its frozen calibration allowance; calibration/control retain the 15% rule.
 Each selected resident bytes metric declares exact hard_ceiling_bytes and
 comparison_allowance_floor_bytes; bound resources evidence repeats them under
 resident_policies with a justification. Every invocation obeys that fixed point
@@ -103,8 +108,8 @@ LIMITS = {"primary_seconds": 90, "cleanup_seconds": 5, "retention_seconds": 10,
           "admission_seconds": 60, "final_retention_seconds": 60}
 GATES = ("source", "runtime_images", "owned_processes", "observer_cost", "clocks",
          "resources", "retention", "exclusive_host")
-METHOD_REVIEW = "consumer-method-review-v5"
-PHASE_FORMAT = "consumer-phase-v3"
+METHOD_REVIEW = "consumer-method-review-v6"
+PHASE_FORMAT = "consumer-phase-v4"
 TRIAL_POLICY = "fresh-trial-central-four-v1"
 TRIAL_POPULATION = "fresh-process-first-operation"
 TRIAL_FIELDS = ("policy", "population", "hard_ceiling_us", "max_regression_us")
@@ -336,26 +341,17 @@ def required_metrics(case):
         metrics["operation_us"] = "us"
     elif kind == "replay":
         metrics["invocation_elapsed_seconds"] = "s"
-        metrics.update({key: "us" for key in
-                        ("startup_us", "elapsed_us", "preflight_us", "workflow_us", "cleanup_us")})
     elif kind == "group":
         metrics["group_span_ns"] = "ns"
-        for index in range(8):
-            metrics[f"recognize_{index}_ns"] = "ns"
-            metrics[f"release_{index}_ns"] = "ns"
     elif kind in ("matched", "deadline"):
         metrics["query_wait_ns"] = "ns"
     return metrics
 
 
 def selectable_metrics(case):
-    metrics = {**required_metrics(case), "invocation_elapsed_seconds": "s"}
+    metrics = required_metrics(case)
     if not case.startswith("trial-"):
-        metrics.update({key: "us" for key in
-                        ("startup_us", "elapsed_us", "preflight_us", "workflow_us", "cleanup_us")})
         metrics.update(child_sampled_rss_bytes="bytes", supervisor_sampled_rss_bytes="bytes")
-        if case.startswith("deadline-"):
-            metrics["query_wait_ns"] = "ns"
     else:
         metrics["recognition_child_rss_bytes"] = "bytes"
     return metrics
@@ -363,9 +359,16 @@ def selectable_metrics(case):
 
 def metric_roles(case, review=None):
     selected = set(required_metrics(case)) | set((review or {}).get("metrics", {}))
+    diagnostic = ["lifetime_cpu_seconds", "raw_cpu_observation", "cpu", "cpu_coverage",
+                  "process_accounting"]
+    if not case.startswith("replay-"):
+        diagnostic.append("invocation_elapsed_seconds")
+    if not case.startswith("trial-"):
+        diagnostic.extend(("startup_us", "elapsed_us", "preflight_us", "workflow_us", "cleanup_us"))
+    if case.startswith("group-"):
+        diagnostic.extend(f"{name}_{index}_ns" for index in range(8) for name in ("recognize", "release"))
     return {"graded": sorted(selected & set(selectable_metrics(case))),
-            "diagnostic": ["lifetime_cpu_seconds", "raw_cpu_observation", "cpu", "cpu_coverage",
-                           "process_accounting"]}
+            "diagnostic": diagnostic}
 
 
 def benefit_metric(case):
@@ -1165,6 +1168,8 @@ def trial_findings(rows, stage, roles, name, envelope):
 
 
 def grade_rows(rows, stage, envelopes, case):
+    for name in envelopes:
+        require(name in selectable_metrics(case), "unsupported graded metric: " + name)
     failures = []
     expected = schedule(stage)
     if [row["slot"] for row in rows] != expected:
@@ -1189,11 +1194,15 @@ def grade_rows(rows, stage, envelopes, case):
             allowance = exact(envelope["allowance"])
             if resource:
                 noisy = max(values) - min(values) > median(values) * Fraction(15, 100)
+            elif stage == "comparison":
+                noisy = max(values) - min(values) > allowance
             else:
                 r = exact(envelope["resolution"])
                 noisy = (max(values) - min(values)) / max(median(values), 2 * r) > Fraction(15, 100)
             if noisy:
-                failures.append(issue("numerical", role + ": " + name + (" repeatability" if resource else " noise")))
+                reason = (" repeatability" if resource else
+                          " spread exceeds frozen allowance" if stage == "comparison" else " noise")
+                failures.append(issue("numerical", role + ": " + name + reason))
             first = [row["metrics"][name] for row in selected if row["slot"]["position"] == 0]
             second = [row["metrics"][name] for row in selected if row["slot"]["position"] == 1]
             if len(first) != 3 or len(second) != 3 or abs(median(first) - median(second)) > allowance:
@@ -1265,7 +1274,7 @@ def phase_outcomes(summary):
 def numerical_control_only(summary, entry):
     """Admit diagnostics from sealed original facts, never by regrading a control."""
     categories = {problem["category"] for problem in summary["issues"]}
-    if (summary.get("format") not in ("consumer-phase-v1", "consumer-phase-v2", PHASE_FORMAT)
+    if (summary.get("format") not in ("consumer-phase-v1", "consumer-phase-v2", "consumer-phase-v3", PHASE_FORMAT)
             or summary.get("stage") != "control" or summary.get("admission_issues") != []
             or not categories & {"numerical", "inconclusive"}
             or categories - {"numerical", "inconclusive", "incomplete"}):
@@ -1386,7 +1395,7 @@ def load_cohort(directory):
     require(len(summary_bytes) <= 4 * MIB, "phase summary exceeds retained bound")
     summary = strict_json(summary_bytes.decode("utf-8"))
     summary_binding = {"path": str(summary_path), "sha256": hashlib.sha256(summary_bytes).hexdigest()}
-    require(summary["format"] in ("consumer-phase-v1", "consumer-phase-v2", PHASE_FORMAT)
+    require(summary["format"] in ("consumer-phase-v1", "consumer-phase-v2", "consumer-phase-v3", PHASE_FORMAT)
             and summary["plan_sha256"] == hashlib.sha256(plan_bytes).hexdigest(), "phase plan binding changed")
     historical = summary["format"] != PHASE_FORMAT
     smoke_role = "baseline"
@@ -1503,6 +1512,9 @@ def prerequisites(plan, stage):
             calibration = load_cohort(plan["calibration"]["directory"])
             require(calibration["binding"] == plan["calibration"]["binding"], "calibration receipt binding changed")
             require(calibration["summary"]["stage"] == "calibration", "fresh calibration stage required; development distributions cannot qualify")
+            require(calibration["summary"].get("format") == PHASE_FORMAT
+                    and (calibration.get("review") or {}).get("kind") == METHOD_REVIEW,
+                    "current method calibration required; historical evidence cannot qualify")
             require(context_digest(plan) == context_digest(calibration["plan"])
                     and plan.get("admission") == calibration["plan"].get("admission"), "calibration context changed")
             require(not calibration["issues"], "calibration failed or unavailable")
