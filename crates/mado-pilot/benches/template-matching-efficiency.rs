@@ -726,6 +726,21 @@ fn emit_timing_boundary(enabled: bool, id: &str, phase: &str) -> Result<(), Stri
     Ok(())
 }
 
+pub(crate) fn session_cpu_missing(units: &[Value]) -> bool {
+    units.iter().any(|unit| {
+        ["setup", "teardown"]
+            .iter()
+            .any(|phase| unit[phase]["cpu_ns"].is_null())
+            || unit["strata"].as_object().is_some_and(|strata| {
+                strata
+                    .values()
+                    .filter_map(Value::as_array)
+                    .flatten()
+                    .any(|interval| interval["cpu_ns"].is_null())
+            })
+    })
+}
+
 fn observe(
     row: Workload,
     smoke: bool,
@@ -935,7 +950,8 @@ fn observe(
     let cpu_missing = warmup_samples
         .iter()
         .chain(&samples)
-        .any(|sample| sample.cpu_ns.is_none());
+        .any(|sample| sample.cpu_ns.is_none())
+        || session_cpu_missing(&unit_observations);
     let native_missing = [
         before.rss,
         before.peak_rss,
@@ -1417,7 +1433,7 @@ fn run(arguments: Arguments) -> Result<Value, String> {
     Ok(report)
 }
 
-fn retained_cpu_failed(row: &Value, smoke: bool) -> bool {
+fn retained_cpu_failed(row: &Value) -> bool {
     let cpu = &row["retained_loop_cpu"];
     let start = cpu["start_ns"].as_u64();
     let end = cpu["end_ns"].as_u64();
@@ -1440,8 +1456,7 @@ fn retained_cpu_failed(row: &Value, smoke: bool) -> bool {
                     .is_some_and(|operations| operations > value)
         }
         None => {
-            !(smoke
-                && cpu.get("cpu_ns") == Some(&Value::Null)
+            !(cpu.get("cpu_ns") == Some(&Value::Null)
                 && cpu["reason"]
                     .as_str()
                     .is_some_and(|reason| !reason.is_empty())
@@ -1768,7 +1783,7 @@ fn observer_report_failed(report: &Value) -> bool {
         || rows.iter().any(|row| observer_row_failed(row, pid))
 }
 
-pub(crate) fn report_failed(report: &Value, smoke: bool) -> bool {
+pub(crate) fn report_failed(report: &Value) -> bool {
     let observations = report["kind"] == "observations";
     let failed = report["workloads"].as_array().is_none_or(|rows| {
         rows.iter().any(|row| {
@@ -1776,8 +1791,7 @@ pub(crate) fn report_failed(report: &Value, smoke: bool) -> bool {
                 .as_u64()
                 .is_some_and(|count| count != 0)
                 || (observations
-                    && (row["oracle_failures"].as_u64().is_none()
-                        || retained_cpu_failed(row, smoke)))
+                    && (row["oracle_failures"].as_u64().is_none() || retained_cpu_failed(row)))
         })
     });
     let threads = &report["opencv_parallel_threads"];
@@ -1796,13 +1810,12 @@ fn main() {
     let timing_boundaries_enabled = arguments
         .as_ref()
         .is_ok_and(|arguments| arguments.timing_boundaries);
-    let smoke = arguments.as_ref().is_ok_and(|arguments| arguments.smoke);
     let windows_loader_observer_enabled = arguments
         .as_ref()
         .is_ok_and(|arguments| arguments.windows_loader_observer);
     let (report, failed) = match arguments.and_then(run) {
         Ok(report) => {
-            let failed = report_failed(&report, smoke);
+            let failed = report_failed(&report);
             (report, failed)
         }
         Err(error) => {

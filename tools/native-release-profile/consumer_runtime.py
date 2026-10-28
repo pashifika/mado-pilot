@@ -1,24 +1,19 @@
-"""Actual-consumer Apple dyld closure and source-closed accounting evidence.
+"""Actual-consumer Apple dyld closure and source-bound process ownership.
 
 This module never launches a process or upgrades process_runner's CPU record.
 It reuses macos_image_observer's parser, Mach-O/file bindings and cache identity.
 Discovery is data, not approval; every qualifying invocation supplies its own
 root and two named child transports, plus pre/post bindings of the frozen union.
 
-Review references are {path, sha256}. A source-closed-children-v1 certificate
-binds context_sha256/target/reviewer/rationale, source_files, kernel_rollup_evidence,
-and roles[baseline|candidate]. Each role binds case, executables, two spawn_sites
+Review references are {path, sha256}. A source-owned-processes-v1 certificate
+binds context_sha256/target/reviewer/rationale, source_files and
+roles[baseline|candidate]. Each role binds case, executables, two spawn_sites
 (source_path/line/parent_role/child_role/maximum_calls), terminal_source_files,
 application_process_cap=3, witness_contract, native_dependency_evidence, and the
 exact compiler_identity for replay. Source files bind their complete bytes plus
 inclusive UTF-8 lines normalized to one trailing LF per line. Native proofs bind
 case/context/artifacts/reachable source sections and must have no open residuals;
-they do not assert anything about unreachable library functions.
-
-prospective-accounting-allowance-v1 binds context/target/host/source_certificate,
-reviewer/rationale, metric/API/raw unit, method/value_seconds, evidence,
-accuracy="unknown", drift_rule="exact-source-host-api-unit", and a null raw
-accounting resolution. The validated value is a grading margin, never resolution.
+they do not assert anything about unreachable library functions or CPU rollup.
 """
 from __future__ import annotations
 
@@ -28,7 +23,6 @@ from pathlib import Path
 import shutil
 import stat
 import time
-from fractions import Fraction
 
 import macos_image_observer as images
 
@@ -342,22 +336,17 @@ def reviewed(value, kind, plan, context):
     require(all(isinstance(value.get(key), str) and value[key].strip() for key in ("reviewer", "rationale")), "named reviewer and rationale required")
 
 
-def validate_certificate(plan, certificate, bundle, context, read_bound):
-    reviewed(certificate, "source-closed-children-v1", plan, context)
-    require(plan["target"] == APPLE, "source-closed CPU mechanism available only for Apple")
+def validate_process_certificate(plan, certificate, bundle, context, read_bound):
+    reviewed(certificate, "source-owned-processes-v1", plan, context)
+    require(plan["target"] == APPLE, "source-bound process ownership available only for Apple")
     require(plan["configuration"]["benchmark_accounting"] is False, "native proof requires normal allocation configuration")
     require(not any((key.startswith("OPENCV_") or key.startswith("ORT_")) and key != "ORT_DISABLE_TELEMETRY"
                     for key in plan["env"]), "native source proof excludes OpenCV/ORT environment overrides")
     require(certificate.get("scope") == {
         "owned_tree_claim": "all descendants of the selected application root",
-        "excluded": ["out-of-process system services", "manual injection", "kernel work outside owned process threads"],
-        "raw_cpu_untouched": True}, "source-closed scope must not exclude native-created owned descendants")
+        "excluded": ["out-of-process system services", "manual injection"]},
+        "owned-process scope must not exclude native-created descendants")
     bound_sources = source_files(certificate["source_files"], plan["inputs"])
-    kernel = read_bound(certificate["kernel_rollup_evidence"])
-    require(kernel.get("kind") == "apple-wait4-rollup-evidence-v1" and kernel.get("host") == plan["host"]
-            and kernel.get("api") == "posix-wait4" and kernel.get("claim") == "ancestor-reap-rollup-before-root-wait4"
-            and isinstance(kernel.get("condition"), str) and kernel["condition"].strip(), "host-bound kernel rollup evidence missing")
-    source_files(kernel["source_files"])
     require(set(certificate["roles"]) == set(plan["roles"]), "every selected source role needs its own certificate")
     for role, selected in certificate["roles"].items():
         argv = plan["roles"][role]["argv"]
@@ -406,29 +395,6 @@ def validate_certificate(plan, certificate, bundle, context, read_bound):
     return certificate
 
 
-def validate_allowance(plan, allowance, certificate_ref, context, read_bound):
-    reviewed(allowance, "prospective-accounting-allowance-v1", plan, context)
-    require(allowance.get("host") == plan["host"] and allowance.get("source_certificate") == certificate_ref,
-            "accounting allowance host/source-certificate drift")
-    require(allowance.get("metric") == "lifetime_cpu_seconds" and allowance.get("api") == "posix-wait4"
-            and allowance.get("method") == "representation-quantum"
-            and allowance.get("accuracy") == "unknown"
-            and allowance.get("drift_rule") == "exact-source-host-api-unit"
-            and "raw_accounting_resolution_seconds" in allowance
-            and allowance["raw_accounting_resolution_seconds"] is None, "accounting allowance is not the reviewed Apple margin contract")
-    unit, value = Fraction(str(allowance["raw_source_unit_seconds"])), Fraction(str(allowance["value_seconds"]))
-    require(unit == Fraction(1, 1_000_000) and value > 0, "positive reviewed allowance and exact raw API unit required")
-    require(isinstance(allowance.get("evidence"), list) and allowance["evidence"], "allowance evidence missing")
-    for ref in allowance["evidence"]:
-        proof = read_bound(ref)
-        require(proof.get("kind") == "accounting-allowance-evidence-v1"
-                and all(proof.get(key) == allowance[key] for key in
-                        ("host", "target", "api", "method", "raw_source_unit_seconds", "value_seconds", "accuracy")),
-                "allowance evidence does not bind actual host/API/margin")
-        source_files(proof["source_files"])
-    return str(value)
-
-
 def terminal_witness(plan, role, certificate, record, output, closure):
     require(closure.get("status") == "complete" and set(closure["processes"]) == set(process_roles(plan)), "actual role/image witnesses incomplete")
     require(record.get("cleanup_ok") is True and record.get("timed_out") is False
@@ -466,14 +432,6 @@ def terminal_witness(plan, role, certificate, record, output, closure):
         require(parser["identity"] == certificate["roles"][role]["compiler_identity"]
                 and parser["loader"]["node_pid"] == closure["processes"]["node"]["pid"],
                 "awaited compiler return/source identity missing")
-    cpu = record["cpu"]
-    require(cpu.get("source") == "posix-wait4" and cpu.get("status") == "partial"
-            and cpu.get("reason") == "descendant_rollup_unproven" and cpu.get("final") is True
-            and cpu.get("scope") == "root-and-native-descendant-rollup"
-            and cpu.get("accounting_resolution_seconds") is None
-            and Fraction(str(cpu["source_unit_seconds"])) == Fraction(1, 1_000_000), "raw CPU source/coverage contract changed")
-    require(all(cpu.get(key) is not None and Fraction(str(cpu[key])) >= 0 for key in ("user_seconds", "system_seconds")), "raw final CPU counters missing")
-    return {"eligible": True, "status": "source-closed-children", "raw_status": cpu["status"],
-            "raw_reason": cpu["reason"], "application_process_cap": 3,
+    return {"status": "complete", "application_process_cap": 3,
             "roles": {name: value["pid"] for name, value in closure["processes"].items()},
             "witness_contract": certificate["roles"][role]["witness_contract"]}

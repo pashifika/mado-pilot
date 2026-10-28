@@ -169,7 +169,9 @@ def calibrated_resident(values=(100 * collector.MIB,) * 6, **changes):
     rows = cohort_rows("calibration", RSS)
     for row, value in zip(rows, values):
         row["metrics"][RSS] = value
-    return collector.derive_envelopes(rows, {"metrics": {RSS: resident_contract(**changes)}}, "trial-hit-roi")[RSS]
+        row["metrics"][OP] = 1000
+    review = {"metrics": {OP: trial_contract(), RSS: resident_contract(**changes)}}
+    return collector.derive_envelopes(rows, review, "trial-hit-roi")[RSS]
 
 
 def paired_rows(stage, metric, timing, resident):
@@ -209,13 +211,19 @@ def calibrated_trial(values=(1000,) * 6, **changes):
 
 
 class ScalarRules(unittest.TestCase):
-    def test_only_case_required_endpoints_are_mandatory(self):
-        self.assertEqual(collector.required_metrics("trial-hit-full"),
-                         {"lifetime_cpu_seconds": "s", "operation_us": "us"})
-        self.assertEqual(collector.required_metrics("deadline-roi"), {"lifetime_cpu_seconds": "s"})
-        self.assertIn("startup_us", collector.required_metrics("replay-full"))
-        self.assertNotIn("startup_us", collector.required_metrics("group-full"))
-        self.assertIn("startup_us", collector.selectable_metrics("group-full"))
+    def test_deadline_requires_query_wait_nonregression_without_speedup(self):
+        rows = cohort_rows("calibration", "query_wait_ns")
+        for case in ("deadline-full", "deadline-roi"):
+            with self.subTest(case=case):
+                with self.assertRaisesRegex(ValueError, "required graded metric missing"):
+                    collector.derive_envelopes(rows, {"metrics": {}}, case)
+                review = {"metrics": {"query_wait_ns": {"unit": "ns", "quantum": 1, "resolution": 1}}}
+                envelopes = collector.derive_envelopes(rows, review, case)
+                equal = cohort_rows("comparison", "query_wait_ns")
+                self.assertEqual(collector.grade_rows(equal, "comparison", envelopes, case), [])
+                slower = cohort_rows("comparison", "query_wait_ns", baseline=1000, other=1003)
+                self.assertTrue(any("exceeds frozen ceiling" in row["reason"] for row in
+                                    collector.grade_rows(slower, "comparison", envelopes, case)))
 
     def test_exact_quantum_rounding_without_float_loss(self):
         envelope = collector.scalar_envelope(["9007199254740993"] * 6, "1/10", "1/100")
@@ -238,7 +246,7 @@ class ScalarRules(unittest.TestCase):
 
     def test_single_violation_survives_good_median_and_missing_metric(self):
         envelopes = {"group_span_ns": collector.scalar_envelope([1000] * 6, 1, 1),
-                     "lifetime_cpu_seconds": collector.scalar_envelope([1] * 6, "1/1000", "1/1000")}
+                     "recognize_0_ns": collector.scalar_envelope([1] * 6, 1, 1)}
         rows = cohort_rows("comparison", "group_span_ns", baseline=1000, other=900)
         rows[0]["metrics"]["group_span_ns"] = 1003
         issues = collector.grade_rows(rows, "comparison", envelopes, "group-full")
@@ -273,12 +281,17 @@ class ScalarRules(unittest.TestCase):
                 row["metrics"]["group_span_ns"] = 990
         self.assertTrue(any("drift" in row["reason"] for row in collector.grade_rows(rows, "control", envelope, "group-full")))
 
-    def test_later_coarser_cpu_does_not_widen_ceiling(self):
-        envelopes = {"lifetime_cpu_seconds": collector.scalar_envelope([1] * 6, "1/1000", "1/1000")}
-        rows = cohort_rows("control", "lifetime_cpu_seconds", 1, 1)
-        rows[0]["cpu_resolution"] = "1/10"
-        self.assertTrue(any(row["category"] == "clock" for row in collector.grade_rows(rows, "control", envelopes, "replay-full")))
-        self.assertEqual(envelopes["lifetime_cpu_seconds"]["ceiling"], "501/500")
+    def test_cpu_cannot_become_a_graded_or_frozen_metric(self):
+        rows = cohort_rows("calibration", "lifetime_cpu_seconds", 1, 1)
+        review = {"metrics": {"lifetime_cpu_seconds": {"unit": "s", "quantum": 1, "resolution": 1}}}
+        with self.assertRaises(ValueError):
+            collector.derive_envelopes(rows, review, "replay-full")
+        with self.assertRaises(ValueError):
+            collector.grade_rows(cohort_rows("control", "lifetime_cpu_seconds"), "control",
+                                 {"lifetime_cpu_seconds": collector.scalar_envelope([1] * 6, 1, 1)},
+                                 "replay-full")
+        for case in collector.CASES:
+            self.assertNotIn("lifetime_cpu_seconds", collector.selectable_metrics(case))
 
     def test_six_twelve_twelve_and_balanced_positions(self):
         self.assertEqual([len(collector.schedule(stage)) for stage in ("calibration", "control", "comparison")], [6, 12, 12])
@@ -352,10 +365,10 @@ class RetainedSchema(unittest.TestCase):
         self.assertEqual(result["metrics"]["operation_us"], 1000)
         self.assertIsNone(result["metrics"]["lifetime_cpu_seconds"])
         self.assertEqual(result["raw_cpu_observation"]["user_plus_system_seconds"], "3/25")
-        self.assertFalse(result["cpu_coverage"]["source_closed_children"]["eligible"])
+        self.assertEqual(result["cpu_coverage"]["status"], "partial")
         self.assertEqual(result["cpu"]["status"], "partial")
         self.assertIsNone(result["cpu_resolution"])
-        self.assertTrue(any("coverage" in row["reason"] for row in result["unavailable"]))
+        self.assertTrue(result["cpu_coverage"]["issues"])
         self.assertEqual(result["driver_declared_outer"], self.output["bounds"])
 
     def test_sampled_rss_absence_is_not_zero_or_semantic_failure(self):
@@ -514,12 +527,41 @@ class RetainedSchema(unittest.TestCase):
 
     def test_cpu_units_and_job_totals_never_imply_resolution_or_census(self):
         record = record_for(self.output)
-        record["cpu"].update(status="complete", source="windows-job", source_unit_seconds=0.0000001)
+        record["cpu"].update(status="complete", reason=None,
+                             source="windows-job-basic-accounting", scope="owned-job-including-nested-jobs",
+                             source_unit_seconds=0.0000001)
         record["process_accounting"] = {"total_processes": 5, "active_processes": 0, "terminated_processes": 0}
         result = collector.reconcile(self.plan, collector.schedule("smoke")[0], record)
         self.assertIsNone(result["cpu_resolution"])
-        self.assertTrue(any("resolution" in row["reason"] for row in result["unavailable"]))
-        self.assertTrue(any("census" in row["reason"] for row in result["unavailable"]))
+        self.assertTrue(result["cpu_coverage"]["issues"])
+        self.assertNotIn("owned_processes", result)
+        self.assertTrue(result["unavailable"])
+
+    def test_malformed_cpu_does_not_hide_wall_observation_or_pass_semantics(self):
+        original = record_for(self.output)["cpu"]
+        cases = [None, [], {**original, "status": "invented"}, {**original, "final": 1},
+                 {**original, "user_seconds": None}, {**original, "user_seconds": -1},
+                 {**original, "system_seconds": True}, {**original, "system_seconds": "NaN"},
+                 {**original, "system_seconds": "1/0"}, {**original, "source_unit_seconds": 0},
+                 {**original, "accounting_resolution_seconds": -1},
+                 {**original, "reason": None}, {**original, "scope": ""},
+                 {**original, "status": "complete", "final": False, "reason": None},
+                 {**original, "status": "complete", "reason": None},
+                 {**original, "source": "windows-job-basic-accounting"},
+                 {**original, "source": "unrecognized-accounting"}]
+        for cpu in cases:
+            with self.subTest(cpu=cpu):
+                result = self.reconcile(cpu=cpu)
+                self.assertEqual(result["metrics"][OP], 1000)
+                self.assertEqual(result["metrics"]["invocation_elapsed_seconds"], "1/5")
+                self.assertIn("semantics", {problem["category"] for problem in result["issues"]})
+
+    def test_malformed_wall_timing_is_independent_of_valid_unknown_cpu(self):
+        cpu = {**record_for(self.output)["cpu"], "status": "unknown", "final": False,
+               "user_seconds": None, "system_seconds": None, "reason": "wait4_unavailable"}
+        result = self.reconcile(cpu=cpu, duration_seconds=-1)
+        self.assertIn("semantics", {problem["category"] for problem in result["issues"]})
+        self.assertEqual(result["cpu"], cpu)
 
     def test_loader_transport_validates_pid_and_owned_path_without_claiming_closure(self):
         self.plan["loader"] = True
@@ -680,10 +722,11 @@ class ImmutableCampaign(unittest.TestCase):
         # Method, launch and per-invocation boundaries are substituted; schedule, receipts and derivation are real.
         self.plan["roles"]["candidate"] = copy.deepcopy(self.plan["roles"]["baseline"])
         review = {"metrics": {OP: trial_contract()}}
+        observation = collector.reconcile(self.plan, collector.schedule("smoke")[0], record_for(self.output))
         values = iter([1000, 1000 + TRIAL_REGRESSION + 1, 1000 + TRIAL_REGRESSION + 1, 1000, 1000, 1000])
 
         def observed(*_):
-            return {"metrics": {OP: next(values)}, "issues": [], "unavailable": []}
+            return {**copy.deepcopy(observation), "metrics": {OP: next(values)}, "issues": [], "unavailable": []}
 
         with mock.patch.object(collector, "admission", side_effect=lambda plan: (review, [])), \
                 mock.patch.object(collector, "reconcile", side_effect=observed), \
@@ -824,8 +867,12 @@ class ImmutableCampaign(unittest.TestCase):
                                        "--output", str(directory)])
             self.assertEqual((code, launch.call_count), (0, 1))
             result = collector.load(directory / "summary.json")
-            self.assertEqual(result["format"], "consumer-phase-v2")
+            self.assertEqual(result["format"], collector.PHASE_FORMAT)
             self.assertEqual(result["schedule"][0]["role"], "candidate")
+            self.assertEqual(set(result["metric_roles"]["graded"]), {OP, RSS})
+            self.assertIn("lifetime_cpu_seconds", result["metric_roles"]["diagnostic"])
+            self.assertNotIn("lifetime_cpu_seconds", result["metric_roles"]["graded"])
+            self.assertEqual(result["cpu_diagnostics"][0]["cpu"], record_for(self.output)["cpu"])
             self.assertEqual(collector.load(directory / "00.started.json")["argv"], candidate["argv"])
             self.assertEqual(result["issues"], [])
             self.assertEqual(len(result["observation_issues"]), 2)
@@ -841,6 +888,8 @@ class ImmutableCampaign(unittest.TestCase):
             self.assertEqual(report["rows"][0]["slot"]["role"], "candidate")
             self.assertEqual(report["observation_issues"], result["observation_issues"])
             self.assertEqual(report["rows"][0]["issues"], validation["issues"])
+            self.assertEqual(report["cpu_diagnostics"], result["cpu_diagnostics"])
+            self.assertEqual(report["metric_roles"], result["metric_roles"])
             self.assertEqual(report["qualification_status"], "not-requested")
             self.assertEqual(original, {path: path.read_bytes() for path in original})
             self.assertEqual(launch.call_count, 1)
@@ -892,7 +941,7 @@ class ImmutableCampaign(unittest.TestCase):
         self.assertTrue(refused["issues"])
 
     def test_historical_smoke_numeric_failure_is_not_regraded_as_current_observation(self):
-        directory = self.root / "historical"
+        directory = (self.root / "historical").resolve()
         directory.mkdir()
         review = {"metrics": {OP: trial_contract(hard_ceiling_us=999)}}
         plan_binding = collector.save(directory / "plan.json", self.plan)
@@ -929,13 +978,23 @@ class ImmutableCampaign(unittest.TestCase):
         self.assertIn("numerical", {problem["category"] for problem in result["issues"]})
         self.assertNotIn("observation_issues", result)
         self.assertEqual(before, {path: path.read_bytes() for path in before})
+        with mock.patch.object(collector, "reconcile", side_effect=AssertionError("historical data is not regraded")), \
+                mock.patch.object(collector, "admission", side_effect=AssertionError("historical review is not upgraded")):
+            retained = collector.load_cohort(directory)
+        self.assertEqual(retained["summary"], summary)
+        self.assertEqual(retained["rows"], [validation])
+        (directory / "00.validation.json").write_text("{}\n")
+        with self.assertRaises(ValueError):
+            collector.load_cohort(directory)
 
     def test_windows_smoke_keeps_missing_optional_runtime_and_cpu_accounting(self):
         self.plan["target"] = collector.component.TARGETS[1]
         self.plan["host"]["target"] = self.plan["target"]
         record = record_for(trial_output(self.plan))
-        record["cpu"] = {"status": "unavailable", "final": True, "reason": "job accounting unavailable",
-                         "user_seconds": None, "system_seconds": None}
+        record["cpu"].update(status="unknown", final=False, reason="job accounting unavailable",
+                             user_seconds=None, system_seconds=None,
+                             source="windows-job-basic-accounting", scope="owned-job-including-nested-jobs",
+                             source_unit_seconds=0.0000001)
         # A distinct host has its own campaign; no foreign target/host fence is bypassed.
         self.plan["campaign"] = str(self.root / "windows-campaign")
         with mock.patch.object(collector, "run_process", return_value=record) as launch, \
@@ -1084,9 +1143,6 @@ class AppleSourceClosedEvidence(unittest.TestCase):
             "sha256": collector.hashlib.sha256(b"fn selected() { spawn(); }\nfn terminal() { wait(); join(); }\n").hexdigest(),
             "purpose": "selected creation and awaited terminal path"}]}
         self.sources = [source]
-        kernel = collector.save(self.root / "kernel-proof.json", {
-            "kind": "apple-wait4-rollup-evidence-v1", "host": self.plan["host"], "api": "posix-wait4",
-            "claim": "ancestor-reap-rollup-before-root-wait4", "condition": "selected awaited child path", "source_files": self.sources})
         self.native = {"kind": "native-process-closure-evidence-v1", "case": self.plan["case"],
                        "context_sha256": self.context, "claim": "no-unwitnessed-owned-descendants",
                        "reviewer": "fixture-reviewer", "rationale": "selected fixture path only", "residuals": [],
@@ -1095,12 +1151,11 @@ class AppleSourceClosedEvidence(unittest.TestCase):
                        "source_files": self.sources}
         native_ref = collector.save(self.root / "native-proof.json", self.native)
         self.certificate = {
-            "kind": "source-closed-children-v1", "accepted": True, "target": self.plan["target"],
+            "kind": "source-owned-processes-v1", "accepted": True, "target": self.plan["target"],
             "context_sha256": self.context, "reviewer": "fixture-reviewer", "rationale": "selected fixture path only",
             "scope": {"owned_tree_claim": "all descendants of the selected application root",
-                      "excluded": ["out-of-process system services", "manual injection", "kernel work outside owned process threads"],
-                      "raw_cpu_untouched": True},
-            "source_files": self.sources, "kernel_rollup_evidence": kernel,
+                      "excluded": ["out-of-process system services", "manual injection"]},
+            "source_files": self.sources,
             "roles": {"baseline": {
                 "case": self.plan["case"], "application_process_cap": 3, "witness_contract": collector.runtime.WITNESS_TRIAL,
                 "executables": {name: {key: value[key] for key in ("path", "sha256")}
@@ -1109,29 +1164,15 @@ class AppleSourceClosedEvidence(unittest.TestCase):
                                 for name in ("capability", "recognition")],
                 "terminal_source_files": [str(self.source)], "native_dependency_evidence": [native_ref]}}}
         certificate_ref = collector.save(self.root / "certificate.json", self.certificate)
-        common = {"host": self.plan["host"], "target": self.plan["target"], "api": "posix-wait4",
-                  "method": "representation-quantum", "raw_source_unit_seconds": 0.000001,
-                  "value_seconds": 0.000001, "accuracy": "unknown"}
-        margin_proof = collector.save(self.root / "allowance-proof.json", {
-            "kind": "accounting-allowance-evidence-v1", **common, "source_files": self.sources})
-        self.allowance = {**common, "kind": "prospective-accounting-allowance-v1", "context_sha256": self.context,
-                          "accepted": True, "reviewer": "fixture-reviewer", "rationale": "test grading margin, not precision",
-                          "source_certificate": certificate_ref, "metric": "lifetime_cpu_seconds",
-                          "drift_rule": "exact-source-host-api-unit", "raw_accounting_resolution_seconds": None,
-                          "evidence": [margin_proof]}
-        allowance_ref = collector.save(self.root / "allowance.json", self.allowance)
         self.review = {"kind": collector.METHOD_REVIEW, "accepted": True, "context_sha256": self.context,
                        "reviewer": "fixture-reviewer", "rationale": "deterministic contract fixture",
-                       "source_closed_cpu": certificate_ref, "accounting_allowance": allowance_ref,
-                       "metrics": {
-                           "operation_us": trial_contract(),
-                           "lifetime_cpu_seconds": {"api": "posix-wait4", "owner": "owned tree", "interval": "whole invocation",
-                                                    "unit": "s", "missing_reason": None, "quantum": "1/1000000", "accounting_allowance": allowance_ref}},
+                       "owned_processes": certificate_ref,
+                       "metrics": {"operation_us": trial_contract()},
                        "gates": {}}
         for gate in collector.GATES:
             evidence = {"gate": gate, "complete": True, "context_sha256": self.context,
                         "source_files": {str(self.source): collector.sha256(self.source)},
-                        "closure": self.plan["runtime_closure"], "source_certificate": certificate_ref, "accounting_allowance": allowance_ref}
+                        "closure": self.plan["runtime_closure"], "source_certificate": certificate_ref}
             if gate == "resources":
                 evidence["trial_responsiveness"] = trial_declaration()
             self.review["gates"][gate] = {"status": "accepted", "issues": [],
@@ -1150,22 +1191,21 @@ class AppleSourceClosedEvidence(unittest.TestCase):
                                    self.sinks, self.observed if observation is None else observation)
 
     def certificate_check(self, value):
-        return collector.runtime.validate_certificate(self.plan, value, self.bundle, self.context, collector.read_reference)
+        return collector.runtime.validate_process_certificate(self.plan, value, self.bundle, self.context, collector.read_reference)
 
-    def test_actual_role_closure_and_source_eligibility_do_not_rewrite_raw_cpu(self):
+    def test_actual_role_closure_and_ownership_do_not_rewrite_raw_cpu(self):
         self.assertEqual(collector.admission(self.plan)[1], [])
         before = (self.root / "discovery-raw.json").read_bytes()
         result = self.reconcile()
         self.assertEqual(result["issues"], [])
         self.assertEqual(result["unavailable"], [])
-        self.assertEqual(result["metrics"]["lifetime_cpu_seconds"], "3/25")
-        self.assertTrue(result["cpu_coverage"]["source_closed_children"]["eligible"])
-        self.assertEqual(result["cpu_coverage"]["source_closed_children"]["roles"],
-                         {"root": 100, "capability": 101, "recognition": 102})
+        self.assertIsNone(result["metrics"]["lifetime_cpu_seconds"])
+        self.assertEqual(result["raw_cpu_observation"]["user_plus_system_seconds"], "3/25")
+        self.assertEqual(result["owned_processes"]["roles"], {"root": 100, "capability": 101, "recognition": 102})
         self.assertEqual(result["cpu"], self.record["cpu"])
         self.assertEqual(result["cpu"]["status"], "partial")
         self.assertIsNone(result["cpu_resolution"])
-        self.assertEqual(result["accounting_allowance_seconds"], "1/1000000")
+        self.assertTrue(result["cpu_coverage"]["issues"])
         self.assertEqual((self.root / "discovery-raw.json").read_bytes(), before)
 
     def test_bound_resident_policy_completes_admission_and_allows_actual_point(self):
@@ -1184,7 +1224,7 @@ class AppleSourceClosedEvidence(unittest.TestCase):
 
     def test_bare_accepted_certificate_and_unproved_native_paths_refuse(self):
         with self.assertRaises((KeyError, ValueError)):
-            self.certificate_check({"kind": "source-closed-children-v1", "accepted": True})
+            self.certificate_check({"kind": "source-owned-processes-v1", "accepted": True})
         bad = copy.deepcopy(self.certificate)
         bad["roles"]["baseline"]["native_dependency_evidence"] = []
         with self.assertRaisesRegex(ValueError, "native/producer"):
@@ -1194,13 +1234,39 @@ class AppleSourceClosedEvidence(unittest.TestCase):
         with self.assertRaisesRegex(ValueError, "case/source"):
             self.certificate_check(bad)
 
+    def test_current_review_cannot_select_cpu_for_grading(self):
+        self.assertEqual(collector.admission(self.plan)[1], [])
+        review = copy.deepcopy(self.review)
+        review["metrics"]["lifetime_cpu_seconds"] = {
+            "unit": "s", "api": "posix-wait4", "owner": "owned tree", "interval": "whole invocation",
+            "missing_reason": None, "quantum": "1/1000000", "resolution": "1/1000000",
+            "resolution_method": "fixture"}
+        self.plan["admission"] = collector.save(self.root / "review-with-cpu.json", review)
+        _, failures = collector.admission(self.plan)
+        self.assertTrue(failures)
+
+    def test_non_cpu_admission_guards_remain_mandatory(self):
+        for gate in ("source", "runtime_images", "owned_processes", "clocks", "resources", "retention"):
+            with self.subTest(gate=gate):
+                review = copy.deepcopy(self.review)
+                review["gates"].pop(gate)
+                self.plan["admission"] = collector.save(self.root / (gate + "-missing-review.json"), review)
+                self.assertTrue(collector.admission(self.plan)[1])
+        review = copy.deepcopy(self.review)
+        review.pop("owned_processes")
+        self.plan["admission"] = collector.save(self.root / "ownership-missing-review.json", review)
+        self.assertTrue(collector.admission(self.plan)[1])
+        windows = {**self.plan, "target": collector.component.TARGETS[1]}
+        with self.assertRaises(ValueError):
+            collector.runtime.validate_bundle(windows, self.bundle, collector.read_reference, collector.semantic_output)
+
     def test_whole_origin_file_change_outside_selected_snippet_invalidates_certificate(self):
         self.source.write_text("fn selected() { spawn(); }\nfn terminal() { wait(); join(); }\nfn extra() { spawn(); }\n")
         with self.assertRaisesRegex(ValueError, "originating file changed"):
             self.certificate_check(self.certificate)
         result = self.reconcile()
         self.assertIsNone(result["metrics"]["lifetime_cpu_seconds"])
-        self.assertFalse(result["cpu_coverage"]["source_closed_children"]["eligible"])
+        self.assertNotIn("owned_processes", result)
 
     def test_constant_reaped_flag_cannot_replace_actual_wait_return_witness(self):
         output = copy.deepcopy(self.output)
@@ -1231,7 +1297,7 @@ class AppleSourceClosedEvidence(unittest.TestCase):
         output["operation"]["controller"]["result"]["stderr_observation"].pop("foreign_pid_entries_dropped")
         result = self.reconcile(output)
         self.assertIsNone(result["metrics"]["lifetime_cpu_seconds"])
-        self.assertFalse(result["cpu_coverage"]["source_closed_children"]["eligible"])
+        self.assertNotIn("owned_processes", result)
 
     def test_discovery_enforcement_and_observed_roles_cannot_be_relabelled(self):
         discovery = collector.load(self.root / "discovery.json")
@@ -1262,40 +1328,88 @@ class AppleSourceClosedEvidence(unittest.TestCase):
         self.assertEqual(result["issues"][0]["category"], "identity")
         self.assertIsNone(result["value"])
 
-    def test_accounting_allowance_rejects_host_api_unit_and_accuracy_drift(self):
-        for key, value in (("host", {}), ("api", "GetProcessTimes"), ("raw_source_unit_seconds", 0.0000001),
-                           ("accuracy", "proven physical precision"), ("raw_accounting_resolution_seconds", 0.000001)):
-            with self.subTest(field=key):
-                bad = {**self.allowance, key: value}
-                with self.assertRaises(ValueError):
-                    collector.runtime.validate_allowance(self.plan, bad, self.review["source_closed_cpu"], self.context, collector.read_reference)
-        for field, value in (("source", "windows-job-basic-accounting"), ("source_unit_seconds", 0.0000001)):
-            record = copy.deepcopy(self.record)
-            record["cpu"][field] = value
-            self.assertIsNone(self.reconcile(record=record)["metrics"]["lifetime_cpu_seconds"])
+    def test_current_ownership_needs_no_cpu_rollup_or_resolution_certificate(self):
+        self.assertNotIn("source_closed_cpu", self.review)
+        self.assertNotIn("accounting_allowance", self.review)
+        self.assertNotIn("kernel_rollup_evidence", self.certificate)
+        self.assertEqual(collector.admission(self.plan)[1], [])
+        variants = [
+            {**self.record["cpu"], "user_seconds": 10**12, "system_seconds": 10**10},
+            {**self.record["cpu"], "status": "unknown", "final": False,
+             "user_seconds": None, "system_seconds": None, "reason": "wait4_unavailable"},
+            {**self.record["cpu"], "status": "complete", "reason": None,
+             "source": "windows-job-basic-accounting", "scope": "owned-job-including-nested-jobs",
+             "source_unit_seconds": 0.0000001},
+        ]
+        for cpu in variants:
+            with self.subTest(cpu=cpu):
+                result = self.reconcile(record={**self.record, "cpu": cpu})
+                self.assertEqual((result["issues"], result["unavailable"]), ([], []))
+                self.assertEqual(result["cpu"], cpu)
+                self.assertEqual(result["cpu_coverage"]["status"], cpu["status"])
+                self.assertEqual(result["owned_processes"]["roles"],
+                                 {"root": 100, "capability": 101, "recognition": 102})
+                if cpu["status"] != "complete":
+                    self.assertIsNone(result["metrics"]["lifetime_cpu_seconds"])
+
+    def test_unknown_cpu_does_not_mask_semantic_cleanup_or_runtime_barriers(self):
+        record = copy.deepcopy(self.record)
+        record["cpu"].update(status="unknown", final=False, reason="wait4_unavailable",
+                             user_seconds=None, system_seconds=None)
+        bad = copy.deepcopy(self.output)
+        bad["oracle"]["passed"] = False
+        result = self.reconcile(output=bad, record=record)
+        self.assertIn("semantics", {problem["category"] for problem in result["issues"]})
+        result = self.reconcile(record={**record, "cleanup_ok": False})
+        self.assertIn("cleanup", {problem["category"] for problem in result["issues"]})
+        result = self.reconcile(record={**record, "process_id": 999})
+        self.assertIn("identity", {problem["category"] for problem in result["issues"]})
+        result = self.reconcile(record=record, observation={**self.observed, "post": None})
+        self.assertTrue(result["unavailable"])
+
+    def test_malformed_cpu_still_fails_with_all_independent_method_evidence(self):
+        record = copy.deepcopy(self.record)
+        record["cpu"]["user_seconds"] = -1
+        result = self.reconcile(record=record)
+        self.assertIn("semantics", {problem["category"] for problem in result["issues"]})
+        self.assertEqual(result["metrics"][OP], 1000)
 
     def test_native_environment_override_is_not_waived_by_certificate_acceptance(self):
         self.plan["env"]["ORT_ADDR2LINE"] = "1"
         context = collector.context_digest(self.plan)
         certificate = {**self.certificate, "context_sha256": context}
         with self.assertRaisesRegex(ValueError, "environment overrides"):
-            collector.runtime.validate_certificate(self.plan, certificate, self.bundle, context, collector.read_reference)
+            collector.runtime.validate_process_certificate(self.plan, certificate, self.bundle, context, collector.read_reference)
 
-    def test_cpu_margin_remains_named_and_cannot_enlarge_frozen_profile(self):
-        result = self.reconcile()
-        rows = [{"slot": slot, **result} for slot in collector.schedule("calibration")]
-        envelope = collector.derive_envelopes(rows, self.review, self.plan["case"])["lifetime_cpu_seconds"]
-        self.assertNotIn("resolution", envelope)
-        self.assertEqual(envelope["margin_kind"], "prospective-accounting-allowance")
-        row = {**rows[0], "accounting_allowance_seconds": "1/100"}
-        self.assertTrue(any(failure["category"] == "clock" for failure in
-                            collector.invocation_limits(row, {"lifetime_cpu_seconds": envelope})))
-        envelopes = collector.derive_envelopes(rows, self.review, self.plan["case"])
-        control = [{**copy.deepcopy(result), "slot": slot} for slot in collector.schedule("control")]
-        self.assertEqual(collector.grade_rows(control, "control", envelopes, self.plan["case"]), [])
-        control[0]["metrics"]["lifetime_cpu_seconds"] = "1"
-        self.assertTrue(any("lifetime_cpu_seconds" in failure["reason"] for failure in
-                            collector.grade_rows(control, "control", envelopes, self.plan["case"])))
+    def test_noisy_and_unavailable_cpu_leave_current_latency_and_resource_grades_unchanged(self):
+        review = {**self.review, "metrics": {OP: trial_contract(), RSS: resident_contract()}}
+
+        def rows(stage):
+            result = []
+            for index, slot in enumerate(collector.schedule(stage)):
+                cpu = {**self.record["cpu"], "user_seconds": 10 ** (index + 1),
+                       "system_seconds": index, "accounting_resolution_seconds": index + 1}
+                if index % 3 == 0:
+                    cpu.update(status="unknown", final=False, reason="wait4_unavailable",
+                               user_seconds=None, system_seconds=None)
+                observation = self.reconcile(record={**self.record, "cpu": cpu})
+                self.assertEqual((observation["issues"], observation["unavailable"]), ([], []))
+                result.append({"slot": slot, **observation})
+            return result
+
+        calibration = rows("calibration")
+        envelopes = collector.derive_envelopes(calibration, review, self.plan["case"])
+        self.assertEqual(set(envelopes), {OP, RSS})
+        for stage in ("control", "comparison"):
+            observations = rows(stage)
+            self.assertEqual(collector.grade_rows(observations, stage, envelopes, self.plan["case"]), [])
+            observations[0]["metrics"][OP] = TRIAL_CEILING + 1
+            self.assertIn("numerical", {problem["category"] for problem in
+                                       collector.grade_rows(observations, stage, envelopes, self.plan["case"])})
+            observations[0]["metrics"][OP] = 1000
+            observations[0]["metrics"][RSS] = HARD + 1
+            self.assertIn("numerical", {problem["category"] for problem in
+                                       collector.grade_rows(observations, stage, envelopes, self.plan["case"])})
 
 
 class ProfileAcceptance(unittest.TestCase):
@@ -1305,13 +1419,13 @@ class ProfileAcceptance(unittest.TestCase):
         self.root = Path(self.temporary.name)
         self.plan = plan_for(self.root)
         collector.Campaign(self.plan).initialize()
-        review = {"metrics": {OP: trial_contract()}}
-        self.calibration = {"plan": copy.deepcopy(self.plan), "summary": {"stage": "calibration", "attempts": []},
+        review = {"kind": collector.METHOD_REVIEW, "metrics": {OP: trial_contract()}}
+        self.calibration = {"plan": copy.deepcopy(self.plan), "summary": {"format": collector.PHASE_FORMAT, "stage": "calibration", "attempts": []},
                             "rows": cohort_rows("calibration"), "review": review, "issues": [],
                             "directory": str(self.root / "calibration"), "binding": {"path": str(self.root / "calibration-summary"), "sha256": "a" * 64}}
         control_plan = copy.deepcopy(self.plan)
         control_plan["calibration"] = {key: self.calibration[key] for key in ("directory", "binding")}
-        self.control = {"plan": control_plan, "summary": {"stage": "control", "attempts": []},
+        self.control = {"plan": control_plan, "summary": {"format": collector.PHASE_FORMAT, "stage": "control", "attempts": []},
                         "rows": cohort_rows("control"), "review": review, "issues": [],
                         "directory": str(self.root / "control"), "binding": {"path": str(self.root / "control-summary"), "sha256": "b" * 64}}
         self.proposal = collector.profile_proposal(self.calibration, self.control)
@@ -1340,7 +1454,7 @@ class ProfileAcceptance(unittest.TestCase):
             collector.profile_proposal(self.calibration, self.control)
 
     def test_unchanged_resident_control_is_graded_before_profile_freeze(self):
-        self.calibration["review"] = {"metrics": {**self.calibration["review"]["metrics"], RSS: resident_contract()}}
+        self.calibration["review"]["metrics"][RSS] = resident_contract()
         for row in self.calibration["rows"] + self.control["rows"]:
             row["metrics"][RSS] = 100 * collector.MIB
         envelope = collector.profile_proposal(self.calibration, self.control)["envelopes"][RSS]
@@ -1365,12 +1479,12 @@ class ProfileAcceptance(unittest.TestCase):
                 collector.accepted_profile(self.proposal, tampered, self.review)
         # A changed declared budget recomputes a proposal that the earlier acceptance does not bind.
         for changes in ({"hard_ceiling_us": TRIAL_CEILING + 1}, {"max_regression_us": TRIAL_REGRESSION + 1}):
-            self.calibration["review"] = {"metrics": {OP: trial_contract(**changes)}}
+            self.calibration["review"]["metrics"] = {OP: trial_contract(**changes)}
             changed = collector.profile_proposal(self.calibration, self.control)
             with self.subTest(changes=changes), self.assertRaisesRegex(ValueError, "contents changed"):
                 collector.accepted_profile(changed, self.profile, self.review)
         # An earlier scalar trial contract carries no policy and is never reinterpreted.
-        self.calibration["review"] = {"metrics": {OP: {"unit": "us", "quantum": 1, "resolution": 1}}}
+        self.calibration["review"]["metrics"] = {OP: {"unit": "us", "quantum": 1, "resolution": 1}}
         with self.assertRaisesRegex(ValueError, "policy/population"):
             collector.profile_proposal(self.calibration, self.control)
 
@@ -1391,9 +1505,31 @@ class ProfileAcceptance(unittest.TestCase):
             collector.profile_proposal(self.calibration, self.control)
         self.assertEqual(caught.exception.category, "inconclusive")
 
+    def test_profile_keeps_noisy_and_missing_cpu_diagnostic_only(self):
+        for cohort in (self.calibration, self.control):
+            for index, row in enumerate(cohort["rows"]):
+                row["metrics"]["lifetime_cpu_seconds"] = None if index % 2 else str(10 ** index)
+                row["cpu_resolution"] = None if index % 2 else str(10 ** index)
+        proposal = collector.profile_proposal(self.calibration, self.control)
+        self.assertEqual(proposal, self.proposal)
+        self.assertEqual(collector.accepted_profile(proposal, self.profile, self.review),
+                         {OP: self.proposal["envelopes"][OP]})
+
+    def test_historical_cohorts_and_method_reviews_cannot_freeze_current_profile(self):
+        for cohort in (self.calibration, self.control):
+            for format in ("consumer-phase-v1", "consumer-phase-v2"):
+                current = cohort["summary"]["format"]
+                cohort["summary"]["format"] = format
+                with self.subTest(format=format), self.assertRaises(ValueError):
+                    collector.profile_proposal(self.calibration, self.control)
+                cohort["summary"]["format"] = current
+        self.calibration["review"]["kind"] = "consumer-method-review-v4"
+        with self.assertRaises(ValueError):
+            collector.profile_proposal(self.calibration, self.control)
+
 
 class BoundReview(unittest.TestCase):
-    """Real hash-bound review/evidence files; unrelated runtime/CPU gates stay unavailable here."""
+    """Real hash-bound review/evidence files; unrelated runtime/ownership gates stay unavailable here."""
 
     def setUp(self):
         self.temporary = tempfile.TemporaryDirectory()
@@ -1556,7 +1692,8 @@ class TrialAdmission(BoundReview):
         self.assertTrue(self.trial_issues({"group_span_ns": group}, self.declared()))
 
     def test_previous_method_kinds_are_refused_not_reinterpreted(self):
-        for kind in ("consumer-method-review-v1", "consumer-method-review-v2", "consumer-method-review-v3"):
+        for kind in ("consumer-method-review-v1", "consumer-method-review-v2",
+                     "consumer-method-review-v3", "consumer-method-review-v4"):
             with self.subTest(kind=kind):
                 self.assertIn(collector.issue("admission", "accepted consumer method review required"),
                               self.trial_issues({OP: trial_contract()}, self.declared(), kind=kind))

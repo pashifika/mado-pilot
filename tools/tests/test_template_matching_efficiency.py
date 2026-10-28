@@ -1853,7 +1853,7 @@ class ProtocolTwoTests(unittest.TestCase):
         self.assertEqual((code, launch.call_count), (0, 2))
         result = json.loads(stream.getvalue())
         self.assertEqual((result["report_format"], result["execution_status"], result["qualification_status"]),
-                         ("component-measurement-report-v1", "completed", "not-requested"))
+                         ("component-measurement-report-v2", "completed", "not-requested"))
         self.assertFalse(result["performance_qualified"])
         self.assertEqual(result["issues"], [])
         observation = result["process_observations"]["baseline"]["single-small96x64"][0]
@@ -1871,7 +1871,7 @@ class ProtocolTwoTests(unittest.TestCase):
     def test_numerical_control_report_does_not_admit_claim_or_block_separate_smoke(self):
         calibration = v2_parsed_evidence(self.root, "calibration")
         control = v2_parsed_evidence(self.root, "control")
-        control["plan"]["report_format"] = collector.REPORT_FORMAT
+        control["plan"]["report_format"] = collector.HISTORICAL_REPORT_FORMAT
         for row in control["observations"]["control"]["single-small96x64"]:
             row["p95_ns"] *= 2
         original = copy.deepcopy(control)
@@ -5730,8 +5730,10 @@ def v4_manifest(build_mode="normal", role="baseline"):
     return {**v3_manifest(build_mode, role), **v4_fields()}
 
 
-def v4_payload(workload="single-small96x64", warmups=2, count=7):
-    value = {**v3_payload(workload, smoke=True), **v4_fields(), "warmups": warmups, "sample_count": count}
+def v4_payload(workload="single-small96x64", warmups=2, count=7, *,
+               build_mode="normal", candidate=False, role="baseline"):
+    value = {**v3_payload(workload, build_mode, candidate=candidate, role=role, smoke=True),
+             **v4_fields(), "warmups": warmups, "sample_count": count}
     row = value["workloads"][0]
     sample = copy.deepcopy(row["samples"][0])
     row.update(warmups=warmups, sample_count=count,
@@ -5739,7 +5741,7 @@ def v4_payload(workload="single-small96x64", warmups=2, count=7):
                samples=[copy.deepcopy(sample) for _ in range(count)])
     row["metrics"].update(iterations=warmups + count, cpu_ns=sample["cpu_ns"] * count)
     if workload in collector.SESSION_DEFINITIONS:
-        row["unit_observations"] = [v3_unit(row, index, "normal") for index in range(warmups + count)]
+        row["unit_observations"] = [v3_unit(row, index, build_mode) for index in range(warmups + count)]
     row["retained_loop_cpu"] = {
         "protocol": "mado-component-retained-loop-cpu-v1", "source": "getrusage-RUSAGE_SELF",
         "source_unit_ns": 1000, "start_ns": 10_000_000,
@@ -5747,6 +5749,22 @@ def v4_payload(workload="single-small96x64", warmups=2, count=7):
         "cpu_ns": row["metrics"]["cpu_ns"] + 100_000, "sample_count": count, "reason": None,
         "scope": "current-process-retained-loop-including-preparation-oracles-and-storage"}
     return value
+
+
+def unavailable_v4_cpu(value):
+    value["cpu_timer_resolution_ns"] = None
+    row = value["workloads"][0]
+    for sample in row["warmup_samples"] + row["samples"]:
+        sample["cpu_ns"] = None
+    row["metrics"].update(cpu_ns=None, cpu_reason="process CPU observation unavailable")
+    row["retained_loop_cpu"].update(start_ns=None, end_ns=None, cpu_ns=None,
+                                    reason="retained-loop process CPU unavailable")
+    for unit in row.get("unit_observations", []):
+        for phase in ("setup", "teardown"):
+            unit[phase]["cpu_ns"] = None
+        for observations in unit["strata"].values():
+            for observation in observations:
+                observation["cpu_ns"] = None
 
 
 def v4_identity(root, build_mode="normal", role="baseline"):
@@ -5764,7 +5782,8 @@ def v4_parsed_evidence(root, mode, build_mode="normal", workload="selection-k16-
     # Synthetic scalar cohorts exercise the frozen arithmetic, not native eligibility.
     evidence = v3_parsed_evidence(root, mode, build_mode, workload)
     plan = evidence["plan"]
-    plan.update(format_version=4, policy=copy.deepcopy(collector.V4_POLICY))
+    plan.update(format_version=4, report_format=collector.REPORT_FORMAT,
+                policy=copy.deepcopy(collector.V4_POLICY))
     plan["binaries"] = {role: v4_identity(root, build_mode, "baseline" if role == "control" else role)
                         for role in plan["binaries"]}
     evidence["manifest"] = plan["binaries"]["baseline"]["build"]["benchmark_manifest"]
@@ -5828,6 +5847,67 @@ class ProtocolFourTests(unittest.TestCase):
         self.assertIsNone(summary["retained_loop_cpu_ns"])
         self.assertIn("retained_loop_cpu_ns", summary["unavailable"])
 
+    def test_optional_cpu_keeps_raw_values_and_required_resource_failures_separate(self):
+        for workload in (self.workload, "session-turnover-rgba-full", "lifecycle-session-rgba-roi"):
+            counts = {"warmups": 1, "samples": 3} if workload.startswith("lifecycle-") else {
+                "warmups": 2, "samples": 7}
+            value = v4_payload(workload, counts["warmups"], counts["samples"])
+            unavailable_v4_cpu(value)
+            value["workloads"][0]["samples"][0]["cpu_ns"] = 123
+            summary = self.parse(value, workload, counts)
+            self.assertEqual(collector.required_unavailable(summary, 4), [])
+            self.assertTrue(summary["unavailable"])
+            self.assertIsNone(summary["cpu_ns"])
+            self.assertEqual(summary["cpu_observations"]["retained_ns"], [123] + [None] * (counts["samples"] - 1))
+            self.assertEqual(summary["cpu_observations"]["warmup_ns"], [None] * counts["warmups"])
+            self.assertEqual(summary["retained_loop_cpu"], value["workloads"][0]["retained_loop_cpu"])
+            value["workloads"][0]["metrics"].update(peak_rss_bytes=None, native_resource_reason="cpu_reason")
+            summary = self.parse(value, workload, counts)
+            self.assertEqual(collector.required_unavailable(summary, 4), ["native_resource_reason", "peak_rss_bytes"])
+
+    def test_diagnostic_cpu_still_requires_explicit_valid_observations(self):
+        for change in ("missing-sample", "missing-resolution", "bad-resolution", "bad-sample", "bad-sum",
+                       "missing-reason", "bad-stratum"):
+            value = v4_payload("session-turnover-rgba-full")
+            row = value["workloads"][0]
+            if change == "missing-sample":
+                del row["warmup_samples"][0]["cpu_ns"]
+            elif change == "missing-resolution":
+                del value["cpu_timer_resolution_ns"]
+            elif change == "bad-resolution":
+                value["cpu_timer_resolution_ns"] = 0
+            elif change == "bad-sample":
+                row["samples"][0]["cpu_ns"] = True
+            elif change == "bad-sum":
+                row["metrics"]["cpu_ns"] += 1
+            elif change == "missing-reason":
+                unavailable_v4_cpu(value)
+                row["metrics"]["cpu_reason"] = None
+            else:
+                row["unit_observations"][0]["strata"]["hit"][0]["cpu_ns"] = -1
+            with self.subTest(change=change), self.assertRaises(ValueError):
+                self.parse(value, "session-turnover-rgba-full")
+
+    def test_instrumented_optional_cpu_cannot_hide_work_or_final_owner_failures(self):
+        workload = "session-retained-rgba-roi-hit"
+        manifest = collector.manifest_identity(v4_manifest("instrumented"), TARGET, "4.12.0", 4, "instrumented")
+        value = v4_payload(workload, 1, 3, build_mode="instrumented")
+        unavailable_v4_cpu(value)
+        summary = collector.observations(value, manifest, workload, False,
+                                         sampling={"warmups": 1, "samples": 3})
+        self.assertEqual(collector.required_unavailable(summary, 4), [])
+        self.assertTrue(summary["metrics"]["final_owner_correct"])
+        for failure in ("work", "owner"):
+            changed = copy.deepcopy(value)
+            row = changed["workloads"][0]
+            if failure == "work":
+                row["unit_observations"][0]["work"]["bgr_conversions"] += 1
+            else:
+                row["metrics"]["final_owner_correct"] = False
+            with self.subTest(failure=failure), self.assertRaises(ValueError):
+                collector.observations(changed, manifest, workload, False,
+                                       sampling={"warmups": 1, "samples": 3})
+
     def test_missing_capability_or_bracket_refuses_new_protocol(self):
         for key in ("sampling_protocol", "sampling_limits", "retained_loop_cpu_protocol"):
             value = v4_payload()
@@ -5888,25 +5968,20 @@ class ProtocolFourTests(unittest.TestCase):
         with self.assertRaises(ValueError):
             collector.comparison_scope(plan, profile)
 
-    def test_normal_loop_cpu_and_instrumented_resource_gates_stay_separate(self):
+    def test_wall_timing_and_instrumented_resource_gates_exclude_cpu(self):
         for mode in ("normal", "instrumented"):
             evidence = v4_parsed_evidence(self.root, "calibration", mode, self.workload)
             for row in evidence["observations"]["baseline"][self.workload]:
-                row["retained_loop_cpu_ns"] = 200_000_000
-                row["cpu_ns"] = row["process"] * 100_000_000
+                row["retained_loop_cpu_ns"] = (row["process"] + 1) * 10**15
+                row["cpu_ns"] = row["process"] * 10**14
             envelope = collector.derive_envelopes(evidence)[self.workload]
             self.assertNotIn("cpu_ns", envelope["benefit_allowances"])
             self.assertEqual(set(envelope["empirical_allowances"]), set(envelope["benefit_allowances"]))
             self.assertEqual(set(envelope["control_allowances"]), set(envelope["benefit_allowances"]))
             self.assertIn("peak_rss_bytes", envelope["limits"])
+            self.assertFalse(any("cpu" in metric for values in envelope.values() for metric in values))
             if mode == "normal":
-                self.assertEqual(set(envelope["benefit_allowances"]), {"p95_ns", "retained_loop_cpu_ns"})
-                self.assertEqual(envelope["empirical_allowances"]["retained_loop_cpu_ns"], 2000)
-                self.assertEqual(envelope["control_allowances"]["retained_loop_cpu_ns"], 30_000_000)
-                self.assertEqual(envelope["limits"]["retained_loop_cpu_ns"], 200_002_000)
-                evidence["observations"]["baseline"][self.workload][0]["retained_loop_cpu_ns"] = 400_000_000
-                with self.assertRaises(ValueError):
-                    collector.derive_envelopes(evidence)
+                self.assertEqual(set(envelope["benefit_allowances"]), {"p95_ns"})
             else:
                 self.assertEqual(envelope["benefit_allowances"], {})
                 self.assertIn("peak_heap_bytes", envelope["limits"])
@@ -5944,10 +6019,154 @@ class ProtocolFourControlBudgetTests(unittest.TestCase):
                 self.calibration, self.root / "calibration", self.control, self.root / "control",
                 "fixture reviewer", "synthetic control-budget arithmetic only", path, collector.sha256(path))
 
+    def test_cpu_noise_high_values_and_unavailability_cannot_gate_any_stage(self):
+        for scenario in ("high", "noisy", "unavailable", "resolution"):
+            cohorts = tuple(copy.deepcopy(evidence) for evidence in (self.calibration, self.control, self.comparison))
+            for evidence in cohorts:
+                for role, workloads in evidence["observations"].items():
+                    manifest = evidence["plan"]["binaries"][role]["build"]["benchmark_manifest"]
+                    for index, previous in enumerate(workloads[self.workload]):
+                        value = v4_payload(self.workload, 20, 200, candidate=role == "candidate",
+                                           role="candidate" if role == "candidate" else "baseline")
+                        row = value["workloads"][0]
+                        if scenario == "unavailable":
+                            unavailable_v4_cpu(value)
+                        else:
+                            sample_cpu = 10**12 * (index + 1 if scenario == "noisy" else 1)
+                            if role in ("control", "candidate"):
+                                sample_cpu *= 100
+                            for sample in row["warmup_samples"] + row["samples"]:
+                                sample["cpu_ns"] = sample_cpu
+                            row["metrics"]["cpu_ns"] = sample_cpu * 200
+                            row["retained_loop_cpu"].update(start_ns=0, end_ns=sample_cpu * 201,
+                                                            cpu_ns=sample_cpu * 201)
+                            if scenario == "resolution":
+                                value["cpu_timer_resolution_ns"] = None
+                        summary = collector.observations(value, manifest, self.workload, False,
+                                                         sampling={"warmups": 20, "samples": 200})
+                        workloads[self.workload][index] = {
+                            **summary, "process": previous["process"], "position": previous["position"]}
+            calibration, control, comparison = cohorts
+            profile = v2_numeric_profile(calibration)
+            with self.subTest(scenario=scenario):
+                self.assertEqual(profile["envelopes"], self.profile["envelopes"])
+                self.assertEqual(collector.control_evidence(calibration, control), [])
+                issues, benefits = collector.compare_evidence(comparison, profile)
+                self.assertEqual(issues, [])
+                self.assertEqual(set(benefits[self.workload]), {"p95_ns"})
+                self.assertTrue(benefits[self.workload]["p95_ns"]["passed"])
+
+    def test_unavailable_cpu_freezes_without_cpu_envelopes_and_reports_scoped_pass(self):
+        for evidence in (self.calibration, self.control, self.comparison):
+            for role, workloads in evidence["observations"].items():
+                manifest = evidence["plan"]["binaries"][role]["build"]["benchmark_manifest"]
+                value = v4_payload(self.workload, 20, 200, candidate=role == "candidate",
+                                   role="candidate" if role == "candidate" else "baseline")
+                unavailable_v4_cpu(value)
+                summary = collector.observations(value, manifest, self.workload, False,
+                                                 sampling={"warmups": 20, "samples": 200})
+                workloads[self.workload] = [
+                    {**summary, "process": row["process"], "position": row["position"]}
+                    for row in workloads[self.workload]]
+        profile = self.freeze()
+        for values in profile["envelopes"][self.workload].values():
+            self.assertFalse(any("cpu" in metric for metric in values))
+        with (mock.patch.object(collector, "evaluate", side_effect=[self.calibration, self.control]),
+              mock.patch.object(collector, "runtime_closure_admission")):
+            self.assertEqual(collector.validate_profile(profile), profile)
+        directory = self.root / "comparison"
+        directory.mkdir()
+        collector.save(directory / "profile.json", profile)
+        self.comparison["plan"]["profile_sha256"] = collector.sha256(directory / "profile.json")
+        with (mock.patch.object(collector, "evaluate", side_effect=[
+                self.comparison, self.calibration, self.control]),
+              mock.patch.object(collector, "runtime_closure_admission")):
+            result = collector.report(directory)
+        self.assertEqual(result["report_format"], "component-measurement-report-v2")
+        self.assertEqual(result["policy_id"], "template-efficiency-v4-latency-work-resources-v1")
+        self.assertEqual(result["metric_roles"]["cpu_time"], "diagnostic")
+        self.assertEqual(result["metric_roles"]["cpu_resolution"], "diagnostic")
+        self.assertEqual(result["metric_roles"]["operation_p95"], "graded-normal-only")
+        self.assertEqual((result["execution_status"], result["qualification_status"]), ("completed", "passed"))
+        self.assertFalse(result["performance_qualified"])
+        self.assertFalse(result["workload_coverage"]["complete"])
+        self.assertEqual(result["targets"][TARGET], "incomplete")
+        self.assertEqual(result["process_observations"], self.comparison["observations"])
+
+    def test_retained_calibration_reports_optional_cpu_without_waiving_real_failures(self):
+        self.freeze()
+        plan = self.calibration["plan"]
+        runtime = {"plan": {"host": plan["host"], "environment": plan["environment"]},
+                   "threads": collector.effective_threads(v4_manifest())}
+        cases = (("cpu", "passed", "completed"), ("resource", "incomplete", "incomplete"),
+                 ("malformed-cpu", "failed", "failed"), ("latency", "failed", "completed"),
+                 ("semantic", "failed", "failed"), ("cleanup", "failed", "failed"))
+        for scenario, expected_status, expected_execution in cases:
+            directory = self.root / scenario
+            directory.mkdir()
+            (directory / "started").mkdir()
+            (directory / "attempts").mkdir()
+            collector.save(directory / "plan.json", plan)
+            for index, task in enumerate(plan["schedule"]):
+                binary = plan["binaries"][task["role"]]
+                attempt = {"task": task, "argv": collector.command(
+                    binary, task, "calibration", 4, sampling=plan["sampling"]["rows"].get(task["workload"])),
+                    "plan_sha256": collector.sha256(directory / "plan.json"), "started_unix_ns": index + 1,
+                    "campaign_elapsed_before": index, "output_limit_bytes": 8 * collector.MIB,
+                    "cleanup_seconds": 5, "runtime_binding_seconds": 120}
+                collector.save(directory / "started" / f"{task['id']}.json", attempt)
+                value = v4_manifest() if task["workload"] is None else v4_payload(self.workload, 20, 200)
+                if task["workload"] is not None:
+                    unavailable_v4_cpu(value)
+                    row = value["workloads"][0]
+                    if task["process"] == 0:
+                        if scenario == "resource":
+                            row["metrics"].update(peak_rss_bytes=None, native_resource_reason="CPU unavailable")
+                        elif scenario == "malformed-cpu":
+                            row["retained_loop_cpu"].update(start_ns=0, end_ns=10, cpu_ns=11, reason=None)
+                        elif scenario == "latency":
+                            for sample in row["samples"]:
+                                sample["elapsed_ns"] *= 2
+                        elif scenario == "semantic":
+                            row["samples"][0]["correct"] = False
+                record = process_record(value)
+                if scenario == "cleanup" and task["workload"] is not None and task["process"] == 0:
+                    record["cleanup_ok"] = False
+                attempt.update(identity_before=binary, identity_after=binary, identity_error=None,
+                               campaign_elapsed_after=index + 0.1, record=record, timeout_seconds=300)
+                collector.save(directory / "attempts" / f"{task['id']}.json", attempt)
+            with (self.subTest(scenario=scenario),
+                  mock.patch.object(collector, "runtime_closure_admission", return_value=runtime),
+                  mock.patch.object(collector, "validate_runtime_attempt")):
+                result = collector.report(directory)
+                self.assertEqual(result["status"], expected_status, result["issues"])
+                self.assertEqual(result["execution_status"], expected_execution)
+                if scenario == "cpu":
+                    self.assertEqual(result["issues"], [])
+                    rows = result["process_observations"]["baseline"][self.workload]
+                    self.assertEqual(len(rows), 6)
+                    self.assertTrue(all(row["cpu_ns"] is None and row["unavailable"] for row in rows))
+                    self.assertTrue(all(row["cpu_observations"]["retained_ns"] == [None] * 200 for row in rows))
+
+    def test_report_identity_cannot_relabel_old_protocol4_or_historical_reports(self):
+        self.freeze()
+        for identifier in (None, collector.HISTORICAL_REPORT_FORMAT):
+            plan = copy.deepcopy(self.calibration["plan"])
+            plan["report_format"] = identifier
+            with self.subTest(identifier=identifier), self.assertRaisesRegex(ValueError, "report format"):
+                collector.validate_plan(plan)
+        for version, fixture in ((1, parsed_evidence), (2, v2_parsed_evidence), (3, v3_parsed_evidence)):
+            evidence = fixture(self.root, "calibration")
+            evidence["plan"]["report_format"] = collector.HISTORICAL_REPORT_FORMAT
+            with mock.patch.object(collector, "evaluate", return_value=evidence):
+                result = collector.report(self.root)
+            self.assertEqual(result["report_format"], "component-measurement-report-v1")
+            self.assertNotIn("metric_roles", result)
+            self.assertNotIn("policy_id", result)
+
     def test_own_metric_half_integer_medians_are_rounded_up_exactly(self):
         cases = (
             ("p95_ns", 100_000, 20, 15_001),
-            ("retained_loop_cpu_ns", 900_000, 2000, 135_001),
             ("p95_ns", 10**18 + 6, 20, 150_000_000_000_000_001),
         )
         for metric, low, empirical, control in cases:
@@ -5962,23 +6181,21 @@ class ProtocolFourControlBudgetTests(unittest.TestCase):
                 self.assertEqual(envelope["benefit_allowances"][metric], control)
                 self.assertIs(type(envelope["control_allowances"][metric]), int)
                 self.assertEqual(envelope["limits"][metric], low + 1 + empirical)
-                other = "retained_loop_cpu_ns" if metric == "p95_ns" else "p95_ns"
-                for field in ("empirical_allowances", "control_allowances", "benefit_allowances", "limits"):
-                    self.assertEqual(envelope[field][other], self.profile["envelopes"][self.workload][field][other])
+                for field in envelope:
+                    self.assertEqual({key: value for key, value in envelope[field].items() if key != metric},
+                                     {key: value for key, value in self.profile["envelopes"][self.workload][field].items()
+                                      if key != metric})
 
     def test_control_budget_does_not_enlarge_individual_timing_or_resource_limits(self):
         historical = copy.deepcopy(self.calibration)
         historical["plan"].update(format_version=3, policy=copy.deepcopy(collector.V3_POLICY))
-        for row in historical["observations"]["baseline"][self.workload]:
-            row["cpu_ns"] = row["retained_loop_cpu_ns"]
         old = collector.derive_envelopes(historical)[self.workload]
         envelope = self.profile["envelopes"][self.workload]
         for field, values in (("limits", old["limits"]), ("empirical_allowances", old["benefit_allowances"]),
                               ("clock_allowances", old["clock_allowances"])):
-            expected = {("retained_loop_cpu_ns" if key == "cpu_ns" else key): value
-                        for key, value in values.items()}
+            expected = {key: value for key, value in values.items() if key != "cpu_ns"}
             self.assertEqual(envelope[field], expected)
-        for metric in ("p95_ns", "retained_loop_cpu_ns"):
+        for metric in ("p95_ns",):
             self.assertGreater(envelope["control_allowances"][metric], envelope["empirical_allowances"][metric])
         for mode, original in (("control", self.control), ("comparison", self.comparison)):
             for role in original["observations"]:
@@ -5991,18 +6208,19 @@ class ProtocolFourControlBudgetTests(unittest.TestCase):
                         self.assertTrue(any(issue["attempt"] == f"{role}:{self.workload}:5"
                                             and f"{metric}=" in issue["reason"] for issue in issues))
 
-    def test_target_cpu_floor_and_zero_clock_aware_guards_are_unchanged(self):
-        for target, floor in ((TARGET, 1000), (collector.TARGETS[1], 15_625_000)):
+    def test_zero_wall_clock_guards_do_not_depend_on_target_cpu_floor(self):
+        for target in collector.TARGETS:
             calibration = copy.deepcopy(self.calibration)
             calibration["plan"]["target"] = target
             for row in calibration["observations"]["baseline"][self.workload]:
-                row.update(p95_ns=0, retained_loop_cpu_ns=0)
+                row.update(p95_ns=0, retained_loop_cpu_ns=None, cpu_timer_resolution_ns=None)
+                row["unavailable"] = ["retained_loop_cpu_ns", "cpu_timer_resolution_ns"]
             envelope = collector.derive_envelopes(calibration)[self.workload]
             with self.subTest(target=target):
-                self.assertEqual(envelope["clock_allowances"]["retained_loop_cpu_ns"], floor)
+                self.assertEqual(envelope["clock_allowances"], {"p95_ns": 10})
                 for field in ("limits", "empirical_allowances", "control_allowances", "benefit_allowances"):
                     self.assertEqual(envelope[field]["p95_ns"], 20)
-                    self.assertEqual(envelope[field]["retained_loop_cpu_ns"], 2 * floor)
+                    self.assertNotIn("retained_loop_cpu_ns", envelope[field])
 
     def test_control_bias_uses_own_frozen_budget_in_both_directions(self):
         envelope = self.profile["envelopes"][self.workload]
@@ -6054,7 +6272,7 @@ class ProtocolFourControlBudgetTests(unittest.TestCase):
                                          and issue["attempt"] == f"{role}:{self.workload}" for issue in issues),
                                      bool(excess))
 
-    def test_joint_benefits_must_strictly_exceed_control_not_just_empirical_error(self):
+    def test_wall_benefit_must_strictly_exceed_control_not_just_empirical_error(self):
         envelope = self.profile["envelopes"][self.workload]
         self.assertEqual(collector.compare_evidence(self.comparison, self.profile)[0], [])
         for metric, control in envelope["control_allowances"].items():
@@ -6068,8 +6286,7 @@ class ProtocolFourControlBudgetTests(unittest.TestCase):
                     self.assertEqual(benefits[self.workload][metric]["allowance"], control)
                     self.assertEqual(benefits[self.workload][metric]["passed"], delta > control)
                     self.assertEqual(bool(issues), delta <= control)
-                    other = "retained_loop_cpu_ns" if metric == "p95_ns" else "p95_ns"
-                    self.assertTrue(benefits[self.workload][other]["passed"])
+                    self.assertEqual(set(benefits[self.workload]), {"p95_ns"})
         calibration = v4_parsed_evidence(self.root, "calibration", workload="single-small96x64")
         comparison = v4_parsed_evidence(self.root, "comparison", workload="single-small96x64")
         self.assertEqual(collector.compare_evidence(comparison, v2_numeric_profile(calibration)), ([], {}))
@@ -6081,11 +6298,13 @@ class ProtocolFourControlBudgetTests(unittest.TestCase):
             self.assertEqual(collector.validate_profile(profile), profile)
         fields = ("empirical_allowances", "control_allowances", "benefit_allowances", "clock_allowances", "limits")
         for field in fields:
-            for mutation in ("increase", "decrease", "float", "remove"):
+            for mutation in ("increase", "decrease", "float", "remove", "cpu"):
                 changed = copy.deepcopy(profile)
                 values = changed["envelopes"][self.workload][field]
                 if mutation == "remove":
                     del changed["envelopes"][self.workload][field]
+                elif mutation == "cpu":
+                    values["retained_loop_cpu_ns"] = 1
                 else:
                     value = values["p95_ns"]
                     values["p95_ns"] = float(value) if mutation == "float" else value + (
@@ -6103,7 +6322,7 @@ class ProtocolFourControlBudgetTests(unittest.TestCase):
         original = collector.load(profile["profile_review"]["path"])
         for field in ("empirical_allowances", "control_allowances", "benefit_allowances", "limits"):
             review = copy.deepcopy(original)
-            review["envelopes"][self.workload][field]["retained_loop_cpu_ns"] += 1
+            review["envelopes"][self.workload][field]["p95_ns"] += 1
             path = self.root / f"review-{field}.json"
             collector.save(path, review)
             with self.subTest(field=field), self.assertRaisesRegex(ValueError, "exact method/cohorts/envelopes"):
@@ -6114,10 +6333,8 @@ class ProtocolFourControlBudgetTests(unittest.TestCase):
     def test_old_policy_method_profile_and_source_references_are_not_admitted(self):
         profile = self.freeze()
         collector.validate_plan(self.calibration["plan"])
-        old_policy = {**copy.deepcopy(collector.V3_POLICY),
-                      "id": "template-efficiency-v4-retained-loop-prospective",
-                      **{key: collector.V4_POLICY[key] for key in
-                         ("cpu_metric", "sampling", "instrumented_timing", "scope")}}
+        old_policy = {**copy.deepcopy(collector.V4_POLICY),
+                      "id": "template-efficiency-v4-retained-loop-control-budget-prospective-r2"}
         changed = copy.deepcopy(self.calibration)
         changed["plan"]["policy"] = old_policy
         for operation in (lambda: collector.validate_plan(changed["plan"]),
@@ -6173,7 +6390,7 @@ class ProtocolFourControlBudgetTests(unittest.TestCase):
         identifiers = {
             1: "template-efficiency-v1", 2: "template-efficiency-v2-prospective-r2",
             3: "template-efficiency-v3-session-prospective-r2",
-            4: "template-efficiency-v4-retained-loop-control-budget-prospective-r2",
+            4: "template-efficiency-v4-latency-work-resources-v1",
         }
         for version, identifier in identifiers.items():
             with self.subTest(version=version), mock.patch("builtins.print") as output:
@@ -6188,7 +6405,7 @@ class ProtocolFourControlBudgetTests(unittest.TestCase):
 
     def test_large_half_ns_medians_cannot_round_control_or_benefit_across_threshold(self):
         reference = 10**18 + 6
-        for metric in ("p95_ns", "retained_loop_cpu_ns"):
+        for metric in ("p95_ns",):
             calibration = copy.deepcopy(self.calibration)
             for row in calibration["observations"]["baseline"][self.workload]:
                 row[metric] = reference + row["process"] % 2
@@ -6233,6 +6450,29 @@ class ProtocolFourControlBudgetTests(unittest.TestCase):
             self.assertEqual(envelope["benefit_allowances"][metric], median * 15 // 100)
             self.assertEqual(envelope["limits"][metric], median + 20)
             self.assertNotIn(f"strata.{name}.cpu_ns", envelope["limits"])
+        self.assertNotIn("retained_loop_cpu_ns", envelope["limits"])
+        control = v4_parsed_evidence(self.root, "control", workload=workload)
+        comparison = v4_parsed_evidence(self.root, "comparison", workload=workload)
+        profile = v2_numeric_profile(calibration)
+        for evidence in (control, comparison):
+            for rows in evidence["observations"].values():
+                for row in rows[workload]:
+                    row.update({"strata.hit.p95_ns": 2_000_000, "strata.miss.p95_ns": 4_000_000,
+                                "strata.hit.cpu_ns": None, "strata.miss.cpu_ns": None,
+                                "retained_loop_cpu_ns": None, "cpu_timer_resolution_ns": None,
+                                "unavailable": ["unit[0].strata.hit.cpu_ns", "unit[0].strata.miss.cpu_ns",
+                                                "retained_loop_cpu_ns", "cpu_timer_resolution_ns"]})
+        self.assertEqual(collector.control_evidence(calibration, control), [])
+        self.assertEqual(collector.compare_evidence(comparison, profile), ([], {}))
+        for metric in ("strata.hit.p95_ns", "strata.miss.p95_ns", "rss_growth_bytes"):
+            for mode, original in (("control", control), ("comparison", comparison)):
+                changed = copy.deepcopy(original)
+                role = "control" if mode == "control" else "candidate"
+                changed["observations"][role][workload][0][metric] = envelope["limits"][metric] + 1
+                issues = (collector.control_evidence(calibration, changed) if mode == "control"
+                          else collector.compare_evidence(changed, profile)[0])
+                with self.subTest(metric=metric, mode=mode):
+                    self.assertTrue(any(f"{metric}=" in issue["reason"] for issue in issues))
 
 
 if __name__ == "__main__":

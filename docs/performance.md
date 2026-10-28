@@ -45,7 +45,10 @@ threshold or quiet-host resampling. Optional CPU-idle, transient host-process CP
 and OS-background observations remain descriptive, including when unavailable.
 Do not intentionally overlap owned builds, tests or independent timing work with
 numerical collection. Host variability alone does not establish OS causality.
-Required owned-invocation CPU accounting is not an optional host-idle reading.
+For matching components and actual consumers, process CPU is diagnostic rather
+than an admission, noise, ceiling or benefit gate. Valid unavailable CPU retains
+its reason; malformed accounting still fails validation. Wall latency, physical
+work, resources and ownership answer the product question independently.
 
 ## Observation, enforcement and safety
 
@@ -67,6 +70,24 @@ operation deadlines, cancellation, ownership fences, privacy, ABI compatibility
 and public guarantees. Those contracts and their required native/CI checks stay
 mandatory. A severe measured regression needs an explicit engineering disposition,
 not concealment through a wider threshold or an obligation to rerun until pass.
+
+### Choose a product outcome, not a CPU score
+
+| Surface | Primary outcome | Supporting evidence |
+| --- | --- | --- |
+| Matching | Normal operation median/p95 and prospective latency non-regression | Instrumented visited scores, mapping/copy/conversion work, allocations and owner release |
+| Actual consumer | Same-clock group/query span or complete trial operation | Startup/settlement, authored deadline outcome and resident checkpoints |
+| Capture or streaming | Capture-to-result latency, frame age and deadline attainment | Produced/processed/dropped/coalesced/superseded counts with reasons and bounded queues |
+
+Use the existing surface's apparatus; a capture-free matching row supplies no
+capture/FPS/freshness claim. Do not combine different metrics into a score.
+Retain process CPU, clock representation/resolution and coverage when observed,
+but do not normalize them into cycles or infer work from zero quantized deltas.
+Hybrid cores, frequency scaling, scheduling and other OS activity are possible
+contributors, not diagnoses from an aggregate CPU counter. Do not change
+affinity, turbo/power settings or sample membership to manufacture stability.
+The rationale and external measurement precedents are in
+[ADR0109](adr/0109-purpose-driven-performance-metrics.md).
 
 ## Profiles and changes to targets
 
