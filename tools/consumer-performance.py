@@ -1791,7 +1791,7 @@ def discover_runtime(plan, role_name, output):
               "role": role_name, "execution_binding": runtime.execution_binding(plan),
               "raw": None, "sink_root": str(sink_root)}
     record, dispatched = None, False
-    phase = plan["case"] + "-discovery-" + role_name
+    phase = plan["case"] + "-discovery-" + role_name + "-" + hashed(str(directory))
     registration = None
     with campaign.locked() as lock_issues:
         try:

@@ -335,6 +335,10 @@ child transports and file/cache bindings, and freezes closure without executing
 or approving a method. Replay pins the actual PATH-selected Node. Foreign PIDs,
 unknown images, incomplete sinks and drift refuse closure. Fresh changed
 contexts require fresh applicable loader discovery, not edited origin bindings.
+Each discovery registers its resolved output directory separately in the same
+Campaign. Prior registrations and seals remain immutable, including historical
+case/role-only registrations. A new output does not bypass Campaign identity,
+owned-cleanup or unfinished-registration fences.
 
 Source/build/runtime, observation policy, owner/checkpoint, workload, host,
 configuration, collector arithmetic or schedule changes invalidate affected
