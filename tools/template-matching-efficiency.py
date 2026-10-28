@@ -148,7 +148,7 @@ V3_POLICY = {**V2_POLICY, "id": "template-efficiency-v3-session-prospective-r2",
              "resource_ceiling": "max(calibration6) + max(spread, fixed slack); native RSS peak live cache is row-scoped by simultaneous independent backend count",
              "strata": "turnover hit and miss remain process-local; grade each stratum and the overlapping primary cycle independently",
              "scope": "prospective Session component apparatus; no accepted method, profile or actual-consumer qualification"}
-V4_POLICY = {**V3_POLICY, "id": "template-efficiency-v4-latency-work-resources-v1",
+V4_POLICY = {**V3_POLICY, "id": "template-efficiency-v4-latency-work-resources-v2",
              "cpu_metric": "diagnostic only: retained-loop current-process CPU including preparation, oracles and storage, operation sums and resolution; unavailable accounting never gates latency qualification",
              "clock_allowance": "maximum observed calibration wall-clock resolution; CPU resolution and accounting floors are diagnostic only",
              "metric_roles": {"operation_p95": "graded-normal-only", "turnover_stratum_p95": "graded-normal-only",
@@ -161,8 +161,9 @@ V4_POLICY = {**V3_POLICY, "id": "template-efficiency-v4-latency-work-resources-v
              "empirical_allowance": "wall p95 only: e = max(spread(calibration6), 2 * frozen clock_allowance); individual timing ceilings remain ceil(max(calibration6) + e)",
              "control_relative_allocation": {"numerator": 15, "denominator": 100},
              "control_allowance": "c = max(e, ceil(own calibration median * 15 / 100)); engineering control-error budget, not clock accuracy or statistical coverage",
+             "noise": "calibration and A/A control: spread / max(median(cohort6), 2 * frozen calibration clock_allowance) <= noise_cap; comparison: role spread <= frozen control_allowances[metric] in nanoseconds",
              "control": "wall p95 and resource ceilings remain; wall p95 between-role, order and half-cohort median differences <= c; wall p95 role noise remains <=15%",
-             "comparison": "wall p95 order and half-cohort median differences <= c; wall p95 role noise and individual latency/resource ceilings unchanged",
+             "comparison": "wall p95 baseline and candidate role spread <= the same pre-candidate frozen control_allowances[metric] in nanoseconds; order and half-cohort median differences <= c; individual latency/resource ceilings unchanged",
              "benefit": "normal wall p95 median(baseline6) - median(candidate6) > b = max(e, c); CPU cannot establish or reject a speedup",
              "scope": "prospective component apparatus; no accepted count, profile or runtime eligibility by implementation"}
 SAMPLING_PROTOCOL = "mado-component-sampling-v1"
@@ -2440,9 +2441,13 @@ def compare_evidence(evidence, profile):
                     if any(row.get(metric) is None for row in rows):
                         continue
                     values = [row[metric] for row in rows]
-                    resolution = envelope["clock_allowances"][metric]
-                    noise = (max(values) - min(values)) / max(statistics.median(values), 2 * resolution)
-                    if noise > V2_POLICY["noise_cap"]:
+                    if version == 4:
+                        noisy = max(values) - min(values) > envelope["control_allowances"][metric]
+                    else:
+                        resolution = envelope["clock_allowances"][metric]
+                        noise = (max(values) - min(values)) / max(statistics.median(values), 2 * resolution)
+                        noisy = noise > V2_POLICY["noise_cap"]
+                    if noisy:
                         issues.append({"attempt": f"{role}:{workload}", "status": "failed",
                                        "reason": f"comparison {metric} noise exceeds frozen cohort tolerance"})
                     if version == 4 and all(

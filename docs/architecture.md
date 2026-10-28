@@ -3317,6 +3317,14 @@ native-input, public-language and production-capture profiles: hosted CI enforce
 correctness, resource and growth checks, while numerical targets apply only to
 their recorded hosts and explicit performance claims.
 
+Actual-consumer timing decisions concern the whole replay invocation,
+group/query span or trial operation; internal stage/call durations remain
+validated diagnostics. Comparison repeatability uses a pre-candidate absolute
+allowance, alongside unchanged individual ceilings and ownership/resource
+checks. Numerical qualification supports a named performance claim and is
+distinct from functional release readiness; see [performance.md](performance.md)
+and [ADR0109](adr/0109-purpose-driven-performance-metrics.md).
+
 ### Phase 0 completion contract
 
 Phase 0 is complete when all of the following hold:

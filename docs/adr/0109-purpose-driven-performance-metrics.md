@@ -33,18 +33,26 @@ measurement precedents, not claims about those projects' complete CI policy.
 ## Decision and rationale
 
 Current matching methods grade normal operation latency and independently check
-physical work, resources, semantics and ownership. Actual consumers grade their
-own same-clock group/query spans or full trial operation and resident checkpoints.
+physical work, resources, semantics and ownership. Actual consumers grade the
+whole replay invocation, same-clock group/query span or full trial operation,
+with independently selected resident checkpoints. Internal phase/call durations
+remain structurally validated diagnostics, not additional timing gates.
 CPU values, coverage, resolution and missing reasons remain visible diagnostics;
 CPU availability, variation, ceilings and benefit do not gate these claims.
 Malformed accounting remains invalid data. Partial CPU never becomes complete
 accounting or zero CPU.
 
-Keep existing fixed schedules, wall-latency rules, resource limits, source/runtime
-identity and finite owned cleanup. Do not change affinity, turbo/power settings,
-raise a threshold after a result, or repeat until passing. Requiring joint CPU
-benefit would answer a different question; hiding CPU would lose useful diagnostic
-evidence. No new capture apparatus or composite performance score is introduced.
+Use the pre-candidate frozen absolute timing allowance for comparison-role
+repeatability. Dividing each role's spread by its own median would tighten the
+budget merely because the candidate is faster. Calibration and unchanged A/A
+retain their relative repeatability rules; individual latency/resource ceilings,
+order/drift and strict benefit margins remain independent.
+
+Keep fixed schedules, source/runtime identity and finite owned cleanup. Do not
+change affinity, turbo/power settings, raise a threshold after a result, or
+repeat until passing. Internal timing and CPU remain useful for investigation
+without defining whether the enclosing operation is usable. No new capture
+apparatus or composite performance score is introduced.
 
 ## Consequences
 
