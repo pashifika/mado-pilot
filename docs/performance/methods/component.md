@@ -336,17 +336,20 @@ and comparison. Changed counts require fresh calibration/control; do not normali
 CPU across counts or choose counts after seeing the qualification result.
 
 The current policy is
-`template-efficiency-v4-latency-work-resources-v1`. For each graded normal
+`template-efficiency-v4-latency-work-resources-v2`. For each graded normal
 wall-time metric independently, use six calibration values B:
 
 - `m=median(B)`, `s=max(B)-min(B)`, `r=max(calibration clock resolution)`.
 - Empirical allowance `e=max(s,2r)`; per-process ceiling `max(B)+e`.
 - Control allowance `c=max(e,ceil(m*15/100))`; benefit allowance `b=max(e,c)`.
-- Calibration and each later role require
-  `spread/max(median(role),2r)<=0.15`, with frozen calibration r for later roles.
+- Calibration and each unchanged A/A role require
+  `spread/max(median(role),2r)<=0.15`, with frozen calibration r for A/A.
+- Each comparison role, baseline and candidate, requires `spread<=c`. The
+  absolute budget is frozen before candidate collection; a faster candidate
+  neither shrinks its own tolerance nor widens it with a later clock reading.
 - Absolute A/A role-median bias, and each control/comparison role's
   first/second-position and chronological first/last-three median differences,
-  must be `<=c`. Timing ceilings and noise remain independent.
+  must be `<=c`. Individual timing and resource ceilings remain independent.
 - Improvement rows require `median(comparison-baseline)-median(candidate)>b`
   strictly for operation p95. Guard rows, including `single-small96x64`, carry
   no benefit obligation. Turnover stratum p95 uses its own allowance.
@@ -358,9 +361,9 @@ Keep exact half-nanosecond medians. For sorted `v0..v5`,
 first. Store/recompute empirical, control and benefit allowances separately;
 caller-edited envelopes cannot authorize a profile. Equality passes rejection
 bounds but not strict benefit. The 15% allowance is engineering sensitivity,
-not statistical coverage or a false-failure probability. Order/drift add no
-independent detection when implied by noise at a role median no larger than
-calibration; effects at or below b remain unclaimable.
+not statistical coverage or a false-failure probability. Effects at or below b
+remain unclaimable. The current policy identity requires prospective evidence;
+earlier policies and their recorded outcomes are not regraded.
 
 Resource ceilings are `max(calibration6)+max(spread,fixed_slack)` plus only the
 applicable RSS-peak live allowance. RSS slack is 1 MiB; instrumented Rust heap

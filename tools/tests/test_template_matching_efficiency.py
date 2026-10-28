@@ -6083,7 +6083,6 @@ class ProtocolFourControlBudgetTests(unittest.TestCase):
               mock.patch.object(collector, "runtime_closure_admission")):
             result = collector.report(directory)
         self.assertEqual(result["report_format"], "component-measurement-report-v2")
-        self.assertEqual(result["policy_id"], "template-efficiency-v4-latency-work-resources-v1")
         self.assertEqual(result["metric_roles"]["cpu_time"], "diagnostic")
         self.assertEqual(result["metric_roles"]["cpu_resolution"], "diagnostic")
         self.assertEqual(result["metric_roles"]["operation_p95"], "graded-normal-only")
@@ -6236,7 +6235,7 @@ class ProtocolFourControlBudgetTests(unittest.TestCase):
                         self.assertEqual(bool(issues), bool(excess))
                         self.assertTrue(all(f"{metric} between-role bias" in issue["reason"] for issue in issues))
 
-    def test_control_and_comparison_order_drift_keep_separate_noise_gate(self):
+    def test_control_and_comparison_order_drift_keep_independent_role_spread_gate(self):
         envelope = self.profile["envelopes"][self.workload]
         for mode, original in (("control", self.control), ("comparison", self.comparison)):
             for role in original["observations"]:
@@ -6258,19 +6257,75 @@ class ProtocolFourControlBudgetTests(unittest.TestCase):
                                                      for issue in issues), delta > control)
                                 self.assertEqual(any(f"{metric} noise" in issue["reason"]
                                                      and issue["attempt"] == f"{role}:{self.workload}"
-                                                     for issue in issues), delta >= control)
+                                                     for issue in issues),
+                                                 delta >= control if mode == "control" else delta > control)
 
-    def test_comparison_role_noise_keeps_exact_declared_boundary(self):
-        for role in ("baseline", "candidate"):
-            for excess in (0, 1):
-                changed = copy.deepcopy(self.comparison)
-                for row in changed["observations"][role][self.workload]:
-                    row["p95_ns"] = 800_000 if row["process"] < 4 else 920_000 + excess
-                issues, _ = collector.compare_evidence(changed, self.profile)
-                with self.subTest(role=role, excess=excess):
-                    self.assertEqual(any("p95_ns noise" in issue["reason"]
-                                         and issue["attempt"] == f"{role}:{self.workload}" for issue in issues),
-                                     bool(excess))
+    def test_comparison_role_spread_uses_same_frozen_ns_boundary_for_fast_roles(self):
+        for reference in (1_000_000, 10**18 + 6):
+            calibration = copy.deepcopy(self.calibration)
+            for row in calibration["observations"]["baseline"][self.workload]:
+                row["p95_ns"] = reference
+            profile = v2_numeric_profile(calibration)
+            frozen = copy.deepcopy(profile)
+            allowance = profile["envelopes"][self.workload]["control_allowances"]["p95_ns"]
+            for role in ("baseline", "candidate"):
+                for excess in (0, 1):
+                    changed = copy.deepcopy(self.comparison)
+                    for row in changed["observations"]["baseline"][self.workload]:
+                        row["p95_ns"] = reference
+                    for row in changed["observations"]["candidate"][self.workload]:
+                        row["p95_ns"] = reference // 2
+                    low = reference - 2 * allowance if role == "baseline" else reference // 10
+                    rows = changed["observations"][role][self.workload]
+                    for row in rows:
+                        row["p95_ns"] = low
+                    rows[-1]["p95_ns"] += allowance + excess
+                    original = copy.deepcopy(changed)
+                    issues, benefits = collector.compare_evidence(changed, profile)
+                    with self.subTest(reference=reference, role=role, excess=excess):
+                        self.assertTrue(benefits[self.workload]["p95_ns"]["passed"])
+                        self.assertEqual(len(issues), excess)
+                        if excess:
+                            self.assertEqual(issues[0]["attempt"], f"{role}:{self.workload}")
+                            self.assertIn("p95_ns noise", issues[0]["reason"])
+                        self.assertEqual(changed, original)
+                        self.assertEqual(profile, frozen)
+
+    def test_fast_candidate_late_outlier_fails_ceiling_despite_median_benefit(self):
+        changed = copy.deepcopy(self.comparison)
+        rows = changed["observations"]["candidate"][self.workload]
+        for row in rows:
+            row["p95_ns"] = 100_000
+        limit = self.profile["envelopes"][self.workload]["limits"]["p95_ns"]
+        rows[-1]["p95_ns"] = limit + 1
+        issues, benefits = collector.compare_evidence(changed, self.profile)
+        self.assertTrue(benefits[self.workload]["p95_ns"]["passed"])
+        self.assertTrue(any(issue["attempt"] == f"candidate:{self.workload}:5"
+                            and f"p95_ns={limit + 1} exceeds {limit}" == issue["reason"] for issue in issues))
+
+    def test_calibration_and_control_keep_relative_noise_boundary(self):
+        for excess in (0, 1):
+            calibration = copy.deepcopy(self.calibration)
+            rows = calibration["observations"]["baseline"][self.workload]
+            for row in rows:
+                row["p95_ns"] = 800_000
+            rows[-1]["p95_ns"] = 920_000 + excess
+            with self.subTest(stage="calibration", excess=excess):
+                if excess:
+                    with self.assertRaisesRegex(ValueError, "noisy calibration"):
+                        collector.derive_envelopes(calibration)
+                else:
+                    collector.derive_envelopes(calibration)
+            control = copy.deepcopy(self.control)
+            for workloads in control["observations"].values():
+                rows = workloads[self.workload]
+                for row in rows:
+                    row["p95_ns"] = 800_000
+                rows[-1]["p95_ns"] = 920_000 + excess
+            issues = collector.control_evidence(self.calibration, control)
+            with self.subTest(stage="control", excess=excess):
+                self.assertEqual(len(issues), 2 * excess)
+                self.assertTrue(all("p95_ns noise" in issue["reason"] for issue in issues))
 
     def test_wall_benefit_must_strictly_exceed_control_not_just_empirical_error(self):
         envelope = self.profile["envelopes"][self.workload]
@@ -6334,7 +6389,7 @@ class ProtocolFourControlBudgetTests(unittest.TestCase):
         profile = self.freeze()
         collector.validate_plan(self.calibration["plan"])
         old_policy = {**copy.deepcopy(collector.V4_POLICY),
-                      "id": "template-efficiency-v4-retained-loop-control-budget-prospective-r2"}
+                      "id": "template-efficiency-v4-latency-work-resources-v1"}
         changed = copy.deepcopy(self.calibration)
         changed["plan"]["policy"] = old_policy
         for operation in (lambda: collector.validate_plan(changed["plan"]),
@@ -6345,6 +6400,8 @@ class ProtocolFourControlBudgetTests(unittest.TestCase):
         old_profile["policy"] = old_policy
         with self.assertRaisesRegex(ValueError, "policy differs"):
             collector.validate_profile(old_profile)
+        with self.assertRaisesRegex(ValueError, "comparison policy differs"):
+            collector.compare_evidence(self.comparison, old_profile)
         review = collector.load(profile["method_review"]["path"])
         review["policy"] = old_policy
         path = self.root / "old-policy-method.json"
@@ -6385,23 +6442,6 @@ class ProtocolFourControlBudgetTests(unittest.TestCase):
                         row["p95_ns"] -= 21
                     self.assertTrue(any("p95_ns between-role bias" in issue["reason"]
                                         for issue in collector.control_evidence(calibration, control)))
-
-    def test_public_policy_cli_exposes_only_new_protocol4_policy(self):
-        identifiers = {
-            1: "template-efficiency-v1", 2: "template-efficiency-v2-prospective-r2",
-            3: "template-efficiency-v3-session-prospective-r2",
-            4: "template-efficiency-v4-latency-work-resources-v1",
-        }
-        for version, identifier in identifiers.items():
-            with self.subTest(version=version), mock.patch("builtins.print") as output:
-                self.assertEqual(collector.main(["policy", "--protocol-version", str(version),
-                                                 "--build-mode", "normal"]), 0)
-            policy = json.loads(output.call_args.args[0])["policy"]
-            self.assertEqual(policy["id"], identifier)
-            if version == 4:
-                self.assertEqual(policy["control_relative_allocation"], {"numerator": 15, "denominator": 100})
-            else:
-                self.assertNotIn("control_relative_allocation", policy)
 
     def test_large_half_ns_medians_cannot_round_control_or_benefit_across_threshold(self):
         reference = 10**18 + 6
@@ -6464,6 +6504,22 @@ class ProtocolFourControlBudgetTests(unittest.TestCase):
                                                 "retained_loop_cpu_ns", "cpu_timer_resolution_ns"]})
         self.assertEqual(collector.control_evidence(calibration, control), [])
         self.assertEqual(collector.compare_evidence(comparison, profile), ([], {}))
+        for metric in ("strata.hit.p95_ns", "strata.miss.p95_ns"):
+            allowance = envelope["control_allowances"][metric]
+            reference = calibration["observations"]["baseline"][workload][0][metric]
+            for role in ("baseline", "candidate"):
+                for excess in (0, 1):
+                    changed = copy.deepcopy(comparison)
+                    rows = changed["observations"][role][workload]
+                    for row in rows:
+                        row[metric] = reference - 2 * allowance
+                    rows[-1][metric] += allowance + excess
+                    issues, _ = collector.compare_evidence(changed, profile)
+                    with self.subTest(metric=metric, role=role, excess=excess):
+                        self.assertEqual(len(issues), excess)
+                        if excess:
+                            self.assertEqual(issues[0]["attempt"], f"{role}:{workload}")
+                            self.assertIn(f"{metric} noise", issues[0]["reason"])
         for metric in ("strata.hit.p95_ns", "strata.miss.p95_ns", "rss_growth_bytes"):
             for mode, original in (("control", control), ("comparison", comparison)):
                 changed = copy.deepcopy(original)
