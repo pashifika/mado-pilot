@@ -71,6 +71,11 @@ and public guarantees. Those contracts and their required native/CI checks stay
 mandatory. A severe measured regression needs an explicit engineering disposition,
 not concealment through a wider threshold or an obligation to rerun until pass.
 
+Use the [release checklist](../CONTRIBUTING.md#release-checklist), not a benchmark
+qualification Boolean, for release readiness. A benefit smaller than measurement
+uncertainty leaves that benefit claim unestablished; it does not erase functional
+improvements or establish a product regression.
+
 ### Choose a product outcome, not a CPU score
 
 | Surface | Primary outcome | Supporting evidence |
@@ -86,6 +91,11 @@ but do not normalize them into cycles or infer work from zero quantized deltas.
 Hybrid cores, frequency scaling, scheduling and other OS activity are possible
 contributors, not diagnoses from an aggregate CPU counter. Do not change
 affinity, turbo/power settings or sample membership to manufacture stability.
+
+Actual-consumer grading uses the whole replay invocation, group/query span or
+trial operation, not each internal release/startup interval. In comparisons,
+both roles use an absolute repeatability allowance frozen before candidate
+collection; candidate speed cannot make that allowance stricter.
 The rationale and external measurement precedents are in
 [ADR0109](adr/0109-purpose-driven-performance-metrics.md).
 

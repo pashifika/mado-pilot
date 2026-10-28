@@ -768,6 +768,12 @@ Emergency fixes follow the same flow: create the next patch-version
 Pull requests directly from topic branches into `main`, or from one version
 development branch into another, are rejected by the branch policy check.
 
+Group related improvements into one coherent pull request per category. Use
+meaningful commits to separate reviewable implementation steps; do not open a
+pull request for each commit, measurement receipt or documentation follow-through,
+and do not collapse a multi-step change into one giant commit. Keep affected
+tests, contracts and evidence with the category they verify.
+
 ## Release checklist
 
 A version branch is not a release by itself. Use this order so that the permanent
@@ -797,6 +803,13 @@ tag, public notes, and native verification identify one final source revision:
    source archives, and public URL.
 8. Create the next `dev/x.y.z` branch from the released `main` commit before
    accepting implementation for that version.
+
+Numerical performance qualification supports a specific published claim, not
+release eligibility by itself. Record an inconclusive benefit or a repeatability
+miss without claiming a speedup or treating it as a product regression. Release
+decisions still require the actual application behavior, applicable native/ABI/CI
+verification, enforced resource and ownership contracts, and disposition of known
+defects or significant observed regressions.
 
 A published version tag is immutable: never move, delete, or reuse it to replace
 a release. Correct a source or documentation defect in a later semantic version.
