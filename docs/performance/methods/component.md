@@ -370,6 +370,19 @@ no live-cache/per-cycle allowance. Checkpoint RSS/peak/private/footprint are not
 all-native allocation or necessarily the process's reporting-to-exit peak;
 management-owner memory is excluded. Endpoint differences are not leak rates.
 
+`rss_growth_bytes` is `max(0, rss_steady_after_bytes - rss_steady_before_bytes)`;
+`rss_residual_bytes` is `max(0, rss_after_drop_bytes - rss_before_bytes)`, not
+absolute post-drop RSS or unreleased owned memory. The `steady` labels identify
+post-warmup endpoints, not proven stationarity. Both differences cover the
+benchmark process, including its retained observations. Session rows accumulate
+per-unit JSON between the endpoints; unit and owner reports remain allocated
+after fixture teardown. Counted Rust heap also includes this harness storage.
+RSS does not replace the instrumented ownership oracles.
+
+Each frozen resource ceiling applies independently: lower absolute RSS does not
+offset a growth-limit failure. Interpret such a failure as nonconformance to the
+fixed apparatus/count budget, not as proof of product-memory growth or its cause.
+
 `workload_coverage` records required/selected/omitted IDs and `complete`.
 A complete selected cohort may pass its `status` while whole-target verdicts
 remain `incomplete` and `performance_qualified=false`. Known failures remain
