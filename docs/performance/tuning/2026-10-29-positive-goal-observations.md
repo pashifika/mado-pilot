@@ -11,9 +11,12 @@ and ownership checks remain independent requirements.
 
 The Apple selected normal comparison passes. Apple preparation's same-baseline
 A/A does not pass its frozen latency ceiling, so no preparation candidate
-comparison follows. The Windows full instrumented corpus passes both roles;
-its counters are descriptive, not normal timing. Prior turnover failures and
-full-target/actual-consumer qualification gaps remain open.
+comparison follows. The Windows full instrumented corpus passes both roles.
+Both Windows normal comparisons complete with numerical failures: selection
+exceeds candidate-p95 repeatability tolerance; preparation does not exceed its
+frozen benefit margin. Instrumented counters are descriptive, not normal timing.
+Prior turnover failures and full-target/actual-consumer qualification gaps
+remain open.
 
 ## Comparable sources and methods
 
@@ -131,6 +134,44 @@ Adverse cold-full observations are retained beside the reduced work:
 | --- | ---: | ---: |
 | Retained-loop CPU, ns | 1,828,125,000 | 2,171,875,000 |
 | Private commit after retained samples, bytes | 26,955,776 | 33,021,952 |
+
+## Windows normal comparisons
+
+Both goals complete independent calibration, A/A and stock profile freeze before
+their separately scoped candidate comparison. Each comparison runs once:
+two manifest processes and twelve measurements, AB/BA repeated three times.
+The [selection projection](../../evidence/p050-positive-goals/windows-selection.json)
+and [preparation projection](../../evidence/p050-positive-goals/windows-preparation.json)
+retain all process scalar/resource observations, including adverse values and
+nullable CPU diagnostics, and their original source/profile/report identities.
+
+| Median process p95 | Baseline, ns | Candidate, ns | Frozen benefit allowance, ns | Complete stock outcome |
+| --- | ---: | ---: | ---: | --- |
+| Selection20/200 | 29,178,600 | 247,900 | 4,426,035 | FAIL: candidate p95 noise |
+| Preparation20/100 | 624,381,750 | 580,155,650 | 95,786,453 | FAIL: benefit below frozen noise |
+
+Selection's candidate p95 range is64,200ns, or25.8975393% of its median, exceeding
+the unchanged15% tolerance. Its benefit predicate passes, but does not override
+the cohort's repeatability failure. Preparation's median difference44,226,100ns
+does not exceed its frozen allowance. Neither outcome establishes an accepted
+Windows speedup, product regression or CPU/OS cause.
+
+Both stock reports have `execution_status=completed`, `status=failed` and
+`performance_qualified=false`. All individual retained latency/resource values
+remain within their frozen process ceilings. CPU is diagnostic and causes
+neither refusal. No repeat, replacement sample or threshold adjustment follows.
+
+All28 benchmark outcomes have exit0/known cleanup; each comparison CLI exits1
+for its numerical result. Storage monitors join, ErrorMode is restored, stock
+locks are absent at the terminal boundary, and retention precedes each original
+whole deadline. Selection preserves329 input checks and preparation397.
+
+Each delivered packet contains21 payloads. Parent verifies manifest sizes/hashes,
+safe paths and CRC, task/attempt/started references, AB/BA order, scalar arithmetic
+and delivered terminal/final bindings. Selection has15 delivered final bindings
+and32 reference-only originals; preparation has16 and32. Original native sample
+arrays and private profile/runtime/plan copies remain Windows-local. Receiver
+arithmetic checks on supplied scalars are not independent sample-byte validation.
 
 ## Verification and limits
 
