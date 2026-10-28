@@ -1,0 +1,546 @@
+{
+  "admission_issues": [],
+  "case": "group-roi",
+  "clock_observation": {
+    "api": "Rust std::time::Instant / CLOCK_UPTIME_RAW",
+    "binary_sha256": "4826fd9b7cd36ac95da3d0a41d064370cf49d4a6a655bb52d4105f913cf829a8",
+    "clock_reads": 16385,
+    "compiler": "1.98.1",
+    "compiler_commit": "48a229ceaefd4985c50990b14116b6d856af0985",
+    "completion_sha256": "54169ba37466efa5e7c68605e28297d673a18d3206c0f91d1f4dc50f5368cd10",
+    "difference_histogram_ns": {
+      "0": 2,
+      "41": 1335,
+      "42": 2695,
+      "83": 2782,
+      "84": 1375,
+      "125": 2,
+      "19958": 1
+    },
+    "effective_resolution_ns": 42,
+    "limits": "Observed current-route distinguishability including call overhead, not accuracy, maximum scheduling gap, application latency or historical std archive equivalence.",
+    "maximum_observed_gap_ns": 19958,
+    "minimum_positive_by_batch_ns": [
+      41,
+      41,
+      41,
+      41,
+      41,
+      41,
+      41,
+      41
+    ],
+    "pairs": 8192,
+    "quantum_ns": 1,
+    "raw_sha256": "96c15ab93546a253edf6df913528fbed4d9b9eaf8c1eb622080847ca18cbf5d6",
+    "rule": "max(eight per-batch positive minima)+1ns reporting margin, declared before observation",
+    "source_sha256": "4b78634b591a17d1739bba99ff399915c89ad2a41ae1e5a0154dd5aa739927b8",
+    "zero_pairs": 2
+  },
+  "collector": {
+    "tools/consumer-performance.py": "48618f7099918bea7aff4520a78452d545132a083f3b7588ebae016ece5bdc4a",
+    "tools/native-release-profile/_process_group.py": "068f537149853e142e738027ea892bbfce8c1fedde90f444b2eef6db14912b3c",
+    "tools/native-release-profile/_windows_process.py": "0d5b63b87fae7880f7f0707c8d8c72d0fe20b350c38af3d4262bbfd813cec090",
+    "tools/native-release-profile/consumer_runtime.py": "30dccdde01c5794697a21fa99666febdf97145f8988f207dff48b6dcb649319b",
+    "tools/native-release-profile/macos_image_observer.py": "d898114ab6b28ae76e3403ea756038c1cd2417ea27e5fdf7ef749bb341764f88",
+    "tools/native-release-profile/process_runner.py": "9a42105e57106b2600de254940932c31ea684af9800d2a589a1cfaf29ca0f0ef",
+    "tools/template-matching-efficiency.py": "5c4012331a3f2cd415c7361f404b9814c81e82d5397f8162a214a08219382793"
+  },
+  "configuration": {
+    "benchmark_accounting": false,
+    "debug_assertions": true,
+    "debuginfo": 2,
+    "observations": true,
+    "opt_level": "0"
+  },
+  "execution_status": "completed",
+  "first_failed_metric": "release_0_ns",
+  "first_failed_metric_arithmetic": {
+    "median": "7000",
+    "metric": "release_0_ns",
+    "repeatability_percent": 85.11428571428571,
+    "repeatability_ratio": "2979/3500",
+    "spread": "5958",
+    "unit": "ns",
+    "values": [
+      "12458",
+      "6500",
+      "7208",
+      "7000",
+      "7000",
+      "6792"
+    ],
+    "within_frozen_15_percent": false
+  },
+  "kind": "p050-current-consumer-calibration-observation-v1",
+  "limits": [
+    "Calibration is baseline-only and establishes no candidate benefit or regression.",
+    "The stock scalar-envelope derivation stops on release_0_ns; empty envelopes remain unchanged. Later conditions are not promoted to passed.",
+    "Sampled RSS is not OS peak, same-owner growth, allocation-domain accounting or leak freedom.",
+    "Reconciled lifetime CPU is unavailable in all6rows and remains diagnostic; original CPU evidence is retained privately.",
+    "Full original raw/started/runtime/validation/owner records and private plans remain local. This allowlisted projection excludes private paths, env, host fingerprints, PIDs and arbitrary logs.",
+    "No A/A, profile or comparison follows this failed calibration; historical outcomes and release coverage remain unchanged."
+  ],
+  "loader_observation": true,
+  "method": {
+    "cpu_role": "diagnostic",
+    "fixed_noise_limit": "3/20",
+    "graded_metrics": [
+      "child_sampled_rss_bytes",
+      "group_span_ns",
+      "recognize_0_ns",
+      "recognize_1_ns",
+      "recognize_2_ns",
+      "recognize_3_ns",
+      "recognize_4_ns",
+      "recognize_5_ns",
+      "recognize_6_ns",
+      "recognize_7_ns",
+      "release_0_ns",
+      "release_1_ns",
+      "release_2_ns",
+      "release_3_ns",
+      "release_4_ns",
+      "release_5_ns",
+      "release_6_ns",
+      "release_7_ns",
+      "supervisor_sampled_rss_bytes"
+    ],
+    "method_sha256": "73208d5e35432d511a49fc391862c82ee65483aff5a01c3ff776f4ae7ff02064",
+    "plan_sha256": "e8359679a495d006dea6dc9cd0d04ea370eb5106c6e3e0d3b0febc33af23b549",
+    "resident_ceiling_bytes": 268435456,
+    "resident_comparison_floor_bytes": 1048576,
+    "sample_policy": "All6 original observations; no trimming. Trial central-four is not applicable."
+  },
+  "observation_issues": [],
+  "original_envelopes": {},
+  "original_issues": [
+    {
+      "category": "numerical",
+      "reason": "calibration noise exceeds 0.15"
+    }
+  ],
+  "original_references": {
+    "attempts": [
+      {
+        "raw": {
+          "name": "00.raw.json",
+          "sha256": "3fb7aabb2bb19f560669d89cd9d531ef43de8da1e59ef9732901e8b541ba511a"
+        },
+        "runtime": {
+          "name": "00.runtime.json",
+          "sha256": "0e25f09db777fdccf24f51702c4882d1bfad777cd1d779da63c17c6f3cf4cac9"
+        },
+        "slot": {
+          "id": "00",
+          "pair": 0,
+          "position": 0,
+          "process": 0,
+          "role": "baseline"
+        },
+        "started": {
+          "name": "00.started.json",
+          "sha256": "861859e764335b44d8653056ffec394062077ea9f05d2b70aac86a5305ebcdab"
+        },
+        "state": "semantic_contract_passed",
+        "validation": {
+          "name": "00.validation.json",
+          "sha256": "ab7d8809b00a0c123dfbec8b47540c955fc5304d00be5e1789ce11b2fa65715e"
+        }
+      },
+      {
+        "raw": {
+          "name": "01.raw.json",
+          "sha256": "0e53ae2122e2b6f2fe63def769125fb8b66eb30b072050e226f7cb8d6eb6369b"
+        },
+        "runtime": {
+          "name": "01.runtime.json",
+          "sha256": "260fa6c309e50201935f405f1e9ff9f5084e3ecbcf0acc1053edea39f924a047"
+        },
+        "slot": {
+          "id": "01",
+          "pair": 0,
+          "position": 1,
+          "process": 1,
+          "role": "baseline"
+        },
+        "started": {
+          "name": "01.started.json",
+          "sha256": "40934c14dc850ef136d8aa837ded5a9f508d4076d5c2b4b13f4d8c0971a18a9b"
+        },
+        "state": "semantic_contract_passed",
+        "validation": {
+          "name": "01.validation.json",
+          "sha256": "6d6130fab3cae3da0b429df4124d701287cf2b494735f8ef15fb8fae51b1bd07"
+        }
+      },
+      {
+        "raw": {
+          "name": "02.raw.json",
+          "sha256": "ceb1c6ecf3f291616a12d708642a760ecb6a93bfd30cfacb2b961a8f3669106e"
+        },
+        "runtime": {
+          "name": "02.runtime.json",
+          "sha256": "8327fdf776f2661d2bc2e042a319b2713da11739d3da9f8a8e6ef298d54008a4"
+        },
+        "slot": {
+          "id": "02",
+          "pair": 1,
+          "position": 0,
+          "process": 2,
+          "role": "baseline"
+        },
+        "started": {
+          "name": "02.started.json",
+          "sha256": "a7dca79c3e55d1c054954dcfad9d62f0c314e4e6f2817abffada07dec68fd136"
+        },
+        "state": "semantic_contract_passed",
+        "validation": {
+          "name": "02.validation.json",
+          "sha256": "6bd3763a6a1fff09d53a5c8baa1a3d4bc75f06505f0a93a6a049054c25663bc7"
+        }
+      },
+      {
+        "raw": {
+          "name": "03.raw.json",
+          "sha256": "61d21b8b7833135fd5bd676fcdbac70ad9220b3413da5eb5dcbb86237009af83"
+        },
+        "runtime": {
+          "name": "03.runtime.json",
+          "sha256": "3dfa6596c7e088a961f815229d7afc189adaeb4658fc22da346051e565b83134"
+        },
+        "slot": {
+          "id": "03",
+          "pair": 1,
+          "position": 1,
+          "process": 3,
+          "role": "baseline"
+        },
+        "started": {
+          "name": "03.started.json",
+          "sha256": "758bd38e120381ad56c3fb05a7aa02592c51158cdfc988c4ea4882475fa2396b"
+        },
+        "state": "semantic_contract_passed",
+        "validation": {
+          "name": "03.validation.json",
+          "sha256": "d70e363522e3d209c6b10a452b7d353305bb10fc32d86b77475ed9319ad19435"
+        }
+      },
+      {
+        "raw": {
+          "name": "04.raw.json",
+          "sha256": "e3cb35561755ccb790f123096f82d089f191910b855557c013c40fc55efb93d7"
+        },
+        "runtime": {
+          "name": "04.runtime.json",
+          "sha256": "a3dc63bf33ade5aa0716477fb376dfa1653159e7b81b35da265ccd586bb5bd41"
+        },
+        "slot": {
+          "id": "04",
+          "pair": 2,
+          "position": 0,
+          "process": 4,
+          "role": "baseline"
+        },
+        "started": {
+          "name": "04.started.json",
+          "sha256": "172b87bba745702619e7dd3fbe445e277e505238181eb6795d3f37af9060f789"
+        },
+        "state": "semantic_contract_passed",
+        "validation": {
+          "name": "04.validation.json",
+          "sha256": "5878da1e26a22f6f4f83ab9dce894abaa761555a6de3f7b2750d6deaee469006"
+        }
+      },
+      {
+        "raw": {
+          "name": "05.raw.json",
+          "sha256": "89d0742cf4b9bbc0d4bfccf9ac67a0a830f822c0f5d8fff94435974bbee3a3a0"
+        },
+        "runtime": {
+          "name": "05.runtime.json",
+          "sha256": "ce4165cf654ed57edc7f61e0289f49132960077dc1a9d14f9094077d567ee8d5"
+        },
+        "slot": {
+          "id": "05",
+          "pair": 2,
+          "position": 1,
+          "process": 5,
+          "role": "baseline"
+        },
+        "started": {
+          "name": "05.started.json",
+          "sha256": "39203eeffefe5e2ae52803fdcf6b7b4f555801865b06d7e44a949c6dd22fba08"
+        },
+        "state": "semantic_contract_passed",
+        "validation": {
+          "name": "05.validation.json",
+          "sha256": "7827fd2d864a8f64f648254fa2337a288631f8612161ed6873b1d85606b4dcb0"
+        }
+      }
+    ],
+    "inspection_sha256": "b7cd6d9741eb4cfa6e583daa92de52d63cc7fe7f6675ad64756a12376978747d",
+    "parent_result_sha256": "028b8c7268b87dc4ee3e27957ae94146d21b84fb34ee1f17a280537b811a42af",
+    "summary_sha256": "ef4084fa544f6959834d89a4e0df2da7146097c2d3b20134cab01286e9df2ea3"
+  },
+  "outcome": "NUMERICAL_NONPASS",
+  "ownership": {
+    "cli_cleanup_ok": true,
+    "cli_exit_code": 1,
+    "parent_outcome": "NUMERICAL_NONPASS",
+    "qualification": false,
+    "six_original_owned_cleanup": "passed",
+    "six_original_semantic_contracts": "passed"
+  },
+  "qualification": false,
+  "roles": {
+    "baseline": {
+      "binary_bytes": 33188296,
+      "binary_sha256": "3e8f29fba8350a76cca491c6fffc04d509afdee2c52bd223d0f61308d2448bda",
+      "executed_in_this_cohort": true,
+      "source_graph_sha256": "a21aa6c3bd77f72429c8342e37afabbd88bdb181c27a6e1e7ed2b4612d7864fc"
+    },
+    "candidate": {
+      "binary_bytes": 33426120,
+      "binary_sha256": "4df96a0d31ed337ce46065c2f517ce58ad4c19461f8d01e903a9d95ec30bebab",
+      "executed_in_this_cohort": false,
+      "source_graph_sha256": "8aaf9162cbe0b2f4ba498531f9d364ec03c52fafdf84feb7c7c11eff2dc34591"
+    }
+  },
+  "rows": [
+    {
+      "diagnostic_metrics": {
+        "cleanup_us": 61,
+        "elapsed_us": 873346,
+        "invocation_elapsed_seconds": "1148790540988557/1000000000000000",
+        "lifetime_cpu_seconds": null,
+        "preflight_us": 282789,
+        "startup_us": 261002,
+        "workflow_us": 318048
+      },
+      "issues": [],
+      "metrics": {
+        "child_sampled_rss_bytes": 249397248,
+        "group_span_ns": 68190916,
+        "recognize_0_ns": 9812916,
+        "recognize_1_ns": 8325083,
+        "recognize_2_ns": 8611667,
+        "recognize_3_ns": 8298542,
+        "recognize_4_ns": 7975250,
+        "recognize_5_ns": 8027125,
+        "recognize_6_ns": 8187792,
+        "recognize_7_ns": 7999458,
+        "release_0_ns": 12458,
+        "release_1_ns": 15416,
+        "release_2_ns": 11292,
+        "release_3_ns": 5333,
+        "release_4_ns": 3916,
+        "release_5_ns": 11458,
+        "release_6_ns": 6125,
+        "release_7_ns": 5041,
+        "supervisor_sampled_rss_bytes": 53166080
+      },
+      "original_exit_code": 0,
+      "role": "baseline",
+      "slot": "00",
+      "unavailable": []
+    },
+    {
+      "diagnostic_metrics": {
+        "cleanup_us": 38,
+        "elapsed_us": 740261,
+        "invocation_elapsed_seconds": "8054762909887359/10000000000000000",
+        "lifetime_cpu_seconds": null,
+        "preflight_us": 245323,
+        "startup_us": 195379,
+        "workflow_us": 292931
+      },
+      "issues": [],
+      "metrics": {
+        "child_sampled_rss_bytes": 248594432,
+        "group_span_ns": 66000875,
+        "recognize_0_ns": 8945958,
+        "recognize_1_ns": 7958958,
+        "recognize_2_ns": 7932917,
+        "recognize_3_ns": 7920708,
+        "recognize_4_ns": 8387000,
+        "recognize_5_ns": 8140750,
+        "recognize_6_ns": 7983500,
+        "recognize_7_ns": 7927750,
+        "release_0_ns": 6500,
+        "release_1_ns": 5458,
+        "release_2_ns": 4208,
+        "release_3_ns": 3916,
+        "release_4_ns": 13417,
+        "release_5_ns": 5542,
+        "release_6_ns": 6584,
+        "release_7_ns": 4292,
+        "supervisor_sampled_rss_bytes": 53116928
+      },
+      "original_exit_code": 0,
+      "role": "baseline",
+      "slot": "01",
+      "unavailable": []
+    },
+    {
+      "diagnostic_metrics": {
+        "cleanup_us": 31,
+        "elapsed_us": 734476,
+        "invocation_elapsed_seconds": "4025771874585189/5000000000000000",
+        "lifetime_cpu_seconds": null,
+        "preflight_us": 245752,
+        "startup_us": 192653,
+        "workflow_us": 289410
+      },
+      "issues": [],
+      "metrics": {
+        "child_sampled_rss_bytes": 248528896,
+        "group_span_ns": 66276583,
+        "recognize_0_ns": 8847375,
+        "recognize_1_ns": 7951292,
+        "recognize_2_ns": 8398083,
+        "recognize_3_ns": 8122083,
+        "recognize_4_ns": 8189000,
+        "recognize_5_ns": 8015000,
+        "recognize_6_ns": 7947709,
+        "recognize_7_ns": 7972000,
+        "release_0_ns": 7208,
+        "release_1_ns": 3833,
+        "release_2_ns": 13625,
+        "release_3_ns": 8291,
+        "release_4_ns": 9541,
+        "release_5_ns": 5458,
+        "release_6_ns": 3875,
+        "release_7_ns": 3916,
+        "supervisor_sampled_rss_bytes": 53084160
+      },
+      "original_exit_code": 0,
+      "role": "baseline",
+      "slot": "02",
+      "unavailable": []
+    },
+    {
+      "diagnostic_metrics": {
+        "cleanup_us": 33,
+        "elapsed_us": 739828,
+        "invocation_elapsed_seconds": "8182548339245841/10000000000000000",
+        "lifetime_cpu_seconds": null,
+        "preflight_us": 245415,
+        "startup_us": 193682,
+        "workflow_us": 291127
+      },
+      "issues": [],
+      "metrics": {
+        "child_sampled_rss_bytes": 248545280,
+        "group_span_ns": 65876084,
+        "recognize_0_ns": 9006167,
+        "recognize_1_ns": 8014209,
+        "recognize_2_ns": 8348041,
+        "recognize_3_ns": 7930167,
+        "recognize_4_ns": 7968166,
+        "recognize_5_ns": 7941125,
+        "recognize_6_ns": 7911250,
+        "recognize_7_ns": 7961166,
+        "release_0_ns": 7000,
+        "release_1_ns": 12500,
+        "release_2_ns": 4541,
+        "release_3_ns": 3709,
+        "release_4_ns": 5167,
+        "release_5_ns": 4000,
+        "release_6_ns": 3458,
+        "release_7_ns": 5042,
+        "supervisor_sampled_rss_bytes": 53100544
+      },
+      "original_exit_code": 0,
+      "role": "baseline",
+      "slot": "03",
+      "unavailable": []
+    },
+    {
+      "diagnostic_metrics": {
+        "cleanup_us": 35,
+        "elapsed_us": 736090,
+        "invocation_elapsed_seconds": "8026605829363689/10000000000000000",
+        "lifetime_cpu_seconds": null,
+        "preflight_us": 246000,
+        "startup_us": 193289,
+        "workflow_us": 291161
+      },
+      "issues": [],
+      "metrics": {
+        "child_sampled_rss_bytes": 248840192,
+        "group_span_ns": 65610458,
+        "recognize_0_ns": 8970375,
+        "recognize_1_ns": 7949250,
+        "recognize_2_ns": 7935125,
+        "recognize_3_ns": 8224375,
+        "recognize_4_ns": 7995709,
+        "recognize_5_ns": 7953458,
+        "recognize_6_ns": 7935042,
+        "recognize_7_ns": 7944250,
+        "release_0_ns": 7000,
+        "release_1_ns": 3958,
+        "release_2_ns": 3709,
+        "release_3_ns": 6167,
+        "release_4_ns": 4041,
+        "release_5_ns": 4041,
+        "release_6_ns": 3625,
+        "release_7_ns": 3500,
+        "supervisor_sampled_rss_bytes": 53133312
+      },
+      "original_exit_code": 0,
+      "role": "baseline",
+      "slot": "04",
+      "unavailable": []
+    },
+    {
+      "diagnostic_metrics": {
+        "cleanup_us": 33,
+        "elapsed_us": 729406,
+        "invocation_elapsed_seconds": "7946684580529109/10000000000000000",
+        "lifetime_cpu_seconds": null,
+        "preflight_us": 244649,
+        "startup_us": 191708,
+        "workflow_us": 288820
+      },
+      "issues": [],
+      "metrics": {
+        "child_sampled_rss_bytes": 245202944,
+        "group_span_ns": 65519292,
+        "recognize_0_ns": 8866625,
+        "recognize_1_ns": 7944166,
+        "recognize_2_ns": 8184500,
+        "recognize_3_ns": 8006083,
+        "recognize_4_ns": 7944833,
+        "recognize_5_ns": 7917000,
+        "recognize_6_ns": 7960292,
+        "recognize_7_ns": 7968208,
+        "release_0_ns": 6792,
+        "release_1_ns": 3750,
+        "release_2_ns": 5625,
+        "release_3_ns": 4792,
+        "release_4_ns": 3834,
+        "release_5_ns": 3667,
+        "release_6_ns": 5375,
+        "release_7_ns": 5084,
+        "supervisor_sampled_rss_bytes": 53116928
+      },
+      "original_exit_code": 0,
+      "role": "baseline",
+      "slot": "05",
+      "unavailable": []
+    }
+  ],
+  "scope": {
+    "baseline_invocations": 6,
+    "candidate_invocations": 0,
+    "comparison_invocations": 0,
+    "control_invocations": 0,
+    "profiles_created": 0,
+    "release_claim": false,
+    "retry": false,
+    "unrun": []
+  },
+  "stage": "calibration",
+  "target": "aarch64-apple-darwin"
+}
