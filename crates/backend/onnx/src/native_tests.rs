@@ -1,8 +1,7 @@
 //! Explicit native-runtime conformance and accepted-fixture smoke coverage.
 
 use std::path::{Path, PathBuf};
-use std::sync::{Arc, Mutex, MutexGuard, mpsc};
-use std::thread;
+use std::sync::{Arc, Mutex, MutexGuard};
 use std::time::{Duration, Instant};
 
 #[cfg(any(target_os = "macos", feature = "coreml-provider"))]
@@ -35,6 +34,10 @@ use mado_pilot_testkit::{
 use opencv::core::{Mat, MatTraitConst, MatTraitConstManual};
 use opencv::imgcodecs::{IMREAD_COLOR, imread};
 use opencv::imgproc::{COLOR_BGR2BGRA, cvt_color_def};
+
+mod lifecycle;
+
+use lifecycle::{NativeRun, run_in_child};
 
 const RUNTIME_ENV: &str = "MADO_PILOT_ONNX_RUNTIME";
 const MODEL_ROOT_ENV: &str = "MADO_PILOT_G004_MODEL_ROOT";
@@ -111,6 +114,9 @@ fn serialize_native_runtime_test() -> MutexGuard<'static, ()> {
 #[ignore = "requires explicit reviewed ONNX Runtime and G-004 model paths"]
 fn accepted_runtime_passes_contract_and_hud_oracle() {
     let _serial = serialize_native_runtime_test();
+    if run_in_child() {
+        return;
+    }
     let runtime = required_path(RUNTIME_ENV);
     let model_root = required_path(MODEL_ROOT_ENV);
     let operation = OperationContext::new();
@@ -146,58 +152,49 @@ fn accepted_runtime_passes_contract_and_hud_oracle() {
             assert_confidence_stable(&first, &repeated);
         }
 
-        let cancellation_gate = crate::inference::test_hook::install();
         let token = CancellationToken::new();
         let worker_token = token.clone();
         let worker_backend = Arc::clone(&backend);
-        let (cancelled_sender, cancelled_receiver) = mpsc::sync_channel(1);
-        let cancelled = thread::spawn(move || {
+        let cancelled = NativeRun::spawn(move || {
             let context = OperationContext::new().with_cancellation(worker_token);
-            let status = recognize_hud_result(worker_backend, &context)
+            recognize_hud_result(worker_backend, &context)
                 .expect_err("cancelled inference cannot publish")
-                .status();
-            cancelled_sender
-                .send(status)
-                .expect("cancellation result receiver remains live");
+                .status()
         });
         assert!(
-            cancellation_gate.wait_until_admitted(NATIVE_GATE_BOUND),
+            cancelled.gate.wait_until_admitted(NATIVE_GATE_BOUND),
             "native run admission timed out"
         );
-        cancellation_gate.release();
+        cancelled.gate.release();
         assert!(
-            cancellation_gate.wait_until_run_started(NATIVE_GATE_BOUND),
+            cancelled.gate.wait_until_run_started(NATIVE_GATE_BOUND),
             "native run start timed out"
         );
         let cancellation_started = Instant::now();
         token.cancel();
         assert!(
-            cancellation_gate.wait_until_termination_issued(NATIVE_TERMINATION_BOUND),
+            cancelled
+                .gate
+                .wait_until_termination_issued(NATIVE_TERMINATION_BOUND),
             "native termination was not issued within the explicit test bound"
         );
         let remaining = NATIVE_TERMINATION_BOUND.saturating_sub(cancellation_started.elapsed());
         assert_eq!(
-            cancelled_receiver
+            cancelled
                 .recv_timeout(remaining)
                 .expect("cancelled native run returns within the explicit test bound"),
             Status::Cancelled
         );
         cancelled.join().expect("cancellation worker joins");
-        drop(cancellation_gate);
         let after_cancellation = recognize_hud(Arc::clone(&backend), &operation);
         assert_hud(&after_cancellation);
         assert_confidence_stable(&first, &after_cancellation);
 
-        let close_gate = crate::inference::test_hook::install();
         let worker_backend = Arc::clone(&backend);
-        let (in_flight_sender, in_flight_receiver) = mpsc::sync_channel(1);
-        let in_flight = thread::spawn(move || {
-            in_flight_sender
-                .send(recognize_hud(worker_backend, &OperationContext::new()))
-                .expect("in-flight result receiver remains live");
-        });
+        let in_flight =
+            NativeRun::spawn(move || recognize_hud(worker_backend, &OperationContext::new()));
         assert!(
-            close_gate.wait_until_admitted(NATIVE_GATE_BOUND),
+            in_flight.gate.wait_until_admitted(NATIVE_GATE_BOUND),
             "close-race admission timed out"
         );
         assert_eq!(
@@ -207,12 +204,8 @@ fn accepted_runtime_passes_contract_and_hud_oracle() {
                 .status(),
             Status::LimitExceeded
         );
-        close_gate.release();
-        let raced = in_flight_receiver
-            .recv_timeout(NATIVE_GATE_BOUND)
-            .expect("in-flight run returns within the native test bound");
-        in_flight.join().expect("inference worker joins");
-        drop(close_gate);
+        in_flight.gate.release();
+        let raced = in_flight.finish();
         assert_hud(&raced);
         assert_confidence_stable(&first, &raced);
         backend.close(&operation).expect("native backend closes");
@@ -282,6 +275,9 @@ fn rejected_coreml_preference_reports_fresh_cpu_fallback() {
 #[ignore = "requires explicit reviewed ONNX Runtime, CUDA provider, and G-004 model paths"]
 fn cuda_provider_opens_without_cpu_initialization_fallback() {
     let _serial = serialize_native_runtime_test();
+    if run_in_child() {
+        return;
+    }
     let runtime = required_path(RUNTIME_ENV);
     let provider_root = required_path(CUDA_PROVIDER_ROOT_ENV);
     let model_root = required_path(MODEL_ROOT_ENV);
@@ -329,37 +325,33 @@ fn assert_provider_survives_cancelled_inference(
     x_tolerance: f64,
     y_tolerance: f64,
 ) {
-    let gate = crate::inference::test_hook::install();
     let token = CancellationToken::new();
     let worker_token = token.clone();
     let worker_backend: Arc<dyn OcrBackend> = backend.clone();
-    let (sender, receiver) = mpsc::sync_channel(1);
-    let cancelled = thread::spawn(move || {
+    let cancelled = NativeRun::spawn(move || {
         let context = OperationContext::new().with_cancellation(worker_token);
-        sender
-            .send(
-                recognize_hud_result(worker_backend, &context)
-                    .expect_err("cancelled provider inference cannot publish")
-                    .status(),
-            )
-            .expect("provider cancellation receiver remains live");
+        recognize_hud_result(worker_backend, &context)
+            .expect_err("cancelled provider inference cannot publish")
+            .status()
     });
     assert!(
-        gate.wait_until_admitted(NATIVE_GATE_BOUND),
+        cancelled.gate.wait_until_admitted(NATIVE_GATE_BOUND),
         "provider run admission timed out"
     );
-    gate.release();
+    cancelled.gate.release();
     assert!(
-        gate.wait_until_run_started(NATIVE_GATE_BOUND),
+        cancelled.gate.wait_until_run_started(NATIVE_GATE_BOUND),
         "provider run start timed out"
     );
     token.cancel();
     assert!(
-        gate.wait_until_termination_issued(NATIVE_TERMINATION_BOUND),
+        cancelled
+            .gate
+            .wait_until_termination_issued(NATIVE_TERMINATION_BOUND),
         "provider termination was not issued within the explicit bound"
     );
     assert_eq!(
-        receiver
+        cancelled
             .recv_timeout(NATIVE_TERMINATION_BOUND)
             .expect("cancelled provider inference returns"),
         Status::Cancelled
@@ -367,7 +359,6 @@ fn assert_provider_survives_cancelled_inference(
     cancelled
         .join()
         .expect("provider cancellation worker joins");
-    drop(gate);
 
     assert_eq!(backend.facts().provider(), expected);
     assert!(!backend.facts().initialization_fell_back());
@@ -515,45 +506,41 @@ fn assert_grouped_hud_contract(
     assert_group_texts(&eight_result, &expected);
     assert_grouped_observation_delta(before, after, 860, 430, 8, 0, 8, 2);
 
-    let cancellation_gate = crate::inference::test_hook::install();
     let token = CancellationToken::new();
     let worker_token = token.clone();
     let worker_backend = backend.clone();
     let worker_zones = eight;
-    let (cancelled_sender, cancelled_receiver) = mpsc::sync_channel(1);
-    let cancelled = thread::spawn(move || {
+    let cancelled = NativeRun::spawn(move || {
         let context = OperationContext::new().with_cancellation(worker_token);
-        let status = scan_hud_zones(&worker_backend, &worker_zones, &context)
+        scan_hud_zones(&worker_backend, &worker_zones, &context)
             .expect_err("cancelled grouped inference cannot publish")
-            .status();
-        cancelled_sender
-            .send(status)
-            .expect("grouped cancellation receiver remains live");
+            .status()
     });
     assert!(
-        cancellation_gate.wait_until_admitted(NATIVE_GATE_BOUND),
+        cancelled.gate.wait_until_admitted(NATIVE_GATE_BOUND),
         "grouped native run admission timed out"
     );
-    cancellation_gate.release();
+    cancelled.gate.release();
     assert!(
-        cancellation_gate.wait_until_run_started(NATIVE_GATE_BOUND),
+        cancelled.gate.wait_until_run_started(NATIVE_GATE_BOUND),
         "grouped native run start timed out"
     );
     let cancellation_started = Instant::now();
     token.cancel();
     assert!(
-        cancellation_gate.wait_until_termination_issued(NATIVE_TERMINATION_BOUND),
+        cancelled
+            .gate
+            .wait_until_termination_issued(NATIVE_TERMINATION_BOUND),
         "grouped native termination was not issued within the explicit test bound"
     );
     let remaining = NATIVE_TERMINATION_BOUND.saturating_sub(cancellation_started.elapsed());
     assert_eq!(
-        cancelled_receiver
+        cancelled
             .recv_timeout(remaining)
             .expect("cancelled grouped run returns within the explicit test bound"),
         Status::Cancelled
     );
     cancelled.join().expect("grouped cancellation worker joins");
-    drop(cancellation_gate);
     let cancelled_observations = backend
         .observations()
         .expect("observations after cancellation");
@@ -562,58 +549,46 @@ fn assert_grouped_hud_contract(
         1
     );
 
-    let deadline_gate = crate::inference::test_hook::install();
     let deadline_clock = Arc::new(ManualClock::new());
     let worker_clock = deadline_clock.clone();
     let worker_backend = backend.clone();
     let worker_zones = eight;
-    let (deadline_sender, deadline_receiver) = mpsc::sync_channel(1);
-    let deadline = thread::spawn(move || {
+    let deadline = NativeRun::spawn(move || {
         let context = OperationContext::new()
             .with_clock(worker_clock)
             .with_timeout(Duration::from_millis(10))
             .unwrap();
-        let status = scan_hud_zones(&worker_backend, &worker_zones, &context)
+        scan_hud_zones(&worker_backend, &worker_zones, &context)
             .expect_err("expired grouped inference cannot publish")
-            .status();
-        deadline_sender
-            .send(status)
-            .expect("grouped deadline receiver remains live");
+            .status()
     });
     assert!(
-        deadline_gate.wait_until_admitted(NATIVE_GATE_BOUND),
+        deadline.gate.wait_until_admitted(NATIVE_GATE_BOUND),
         "grouped deadline admission timed out"
     );
     deadline_clock.advance(Duration::from_millis(10));
     assert!(
-        deadline_gate.wait_until_termination_issued(NATIVE_GATE_BOUND),
+        deadline
+            .gate
+            .wait_until_termination_issued(NATIVE_GATE_BOUND),
         "grouped deadline termination timed out"
     );
-    deadline_gate.release();
+    deadline.gate.release();
     assert_eq!(
-        deadline_receiver
+        deadline
             .recv_timeout(NATIVE_GATE_BOUND)
             .expect("deadline grouped run returns"),
         Status::DeadlineExceeded
     );
     deadline.join().expect("grouped deadline worker joins");
-    drop(deadline_gate);
 
-    let close_gate = crate::inference::test_hook::install();
     let worker_backend = backend.clone();
     let worker_zones = eight;
-    let (raced_sender, raced_receiver) = mpsc::sync_channel(1);
-    let raced = thread::spawn(move || {
-        raced_sender
-            .send(scan_hud_zones(
-                &worker_backend,
-                &worker_zones,
-                &OperationContext::new(),
-            ))
-            .expect("grouped close-race receiver remains live");
+    let raced = NativeRun::spawn(move || {
+        scan_hud_zones(&worker_backend, &worker_zones, &OperationContext::new())
     });
     assert!(
-        close_gate.wait_until_admitted(NATIVE_GATE_BOUND),
+        raced.gate.wait_until_admitted(NATIVE_GATE_BOUND),
         "grouped close-race admission timed out"
     );
     assert_eq!(
@@ -623,13 +598,8 @@ fn assert_grouped_hud_contract(
             .status(),
         Status::LimitExceeded
     );
-    close_gate.release();
-    let raced_result = raced_receiver
-        .recv_timeout(NATIVE_GATE_BOUND)
-        .expect("grouped close-race run returns")
-        .expect("admitted grouped run completes");
-    raced.join().expect("grouped close-race worker joins");
-    drop(close_gate);
+    raced.gate.release();
+    let raced_result = raced.finish().expect("admitted grouped run completes");
     assert_group_texts(&raced_result, &expected);
 
     let recovered = scan_hud_zones(backend, &three, operation).expect("grouped backend recovers");
@@ -915,6 +885,9 @@ mod candidate {
     #[ignore = "requires explicit reviewed ONNX Runtime and declared candidate model paths"]
     fn declared_candidate_runtime_recognizes_with_source_correlation_and_lifecycle() {
         let _serial = serialize_native_runtime_test();
+        if run_in_child() {
+            return;
+        }
         let runtime = required_path(RUNTIME_ENV);
         let model_root = required_path(MODEL_ROOT_ENV);
         let operation = OperationContext::new();
@@ -983,90 +956,74 @@ mod candidate {
             assert_regions_within(&result, f64::from(width), f64::from(height));
         }
 
-        let cancellation_gate = crate::inference::test_hook::install();
         let token = CancellationToken::new();
         let worker_token = token.clone();
         let worker_port = Arc::clone(&port);
-        let (cancelled_sender, cancelled_receiver) = mpsc::sync_channel(1);
-        let cancelled = thread::spawn(move || {
+        let cancelled = NativeRun::spawn(move || {
             let context = OperationContext::new().with_cancellation(worker_token);
-            cancelled_sender
-                .send(
-                    recognize_hud_result(worker_port, &context)
-                        .expect_err("cancelled candidate inference cannot publish")
-                        .status(),
-                )
-                .expect("cancellation receiver remains live");
+            recognize_hud_result(worker_port, &context)
+                .expect_err("cancelled candidate inference cannot publish")
+                .status()
         });
-        assert!(cancellation_gate.wait_until_admitted(NATIVE_GATE_BOUND));
-        cancellation_gate.release();
-        assert!(cancellation_gate.wait_until_run_started(NATIVE_GATE_BOUND));
+        assert!(cancelled.gate.wait_until_admitted(NATIVE_GATE_BOUND));
+        cancelled.gate.release();
+        assert!(cancelled.gate.wait_until_run_started(NATIVE_GATE_BOUND));
         let while_running = backend.observations();
         token.cancel();
-        assert!(cancellation_gate.wait_until_termination_issued(NATIVE_TERMINATION_BOUND));
+        assert!(
+            cancelled
+                .gate
+                .wait_until_termination_issued(NATIVE_TERMINATION_BOUND)
+        );
         assert_eq!(
-            cancelled_receiver
+            cancelled
                 .recv_timeout(NATIVE_GATE_BOUND)
                 .expect("cancelled candidate run returns"),
             Status::Cancelled
         );
         cancelled.join().expect("cancellation worker joins");
-        drop(cancellation_gate);
         assert_eq!(while_running, Err(OnnxBackendFault::Busy));
         assert_same_regions(&first, &recognize_hud(Arc::clone(&port), &operation));
 
-        let deadline_gate = crate::inference::test_hook::install();
         let deadline_clock = Arc::new(ManualClock::new());
         let worker_clock = deadline_clock.clone();
         let worker_port = Arc::clone(&port);
-        let (deadline_sender, deadline_receiver) = mpsc::sync_channel(1);
-        let deadline = thread::spawn(move || {
+        let deadline = NativeRun::spawn(move || {
             let context = OperationContext::new()
                 .with_clock(worker_clock)
                 .with_timeout(Duration::from_millis(10))
                 .unwrap();
-            deadline_sender
-                .send(
-                    recognize_hud_result(worker_port, &context)
-                        .expect_err("expired candidate inference cannot publish")
-                        .status(),
-                )
-                .expect("deadline receiver remains live");
+            recognize_hud_result(worker_port, &context)
+                .expect_err("expired candidate inference cannot publish")
+                .status()
         });
-        assert!(deadline_gate.wait_until_admitted(NATIVE_GATE_BOUND));
+        assert!(deadline.gate.wait_until_admitted(NATIVE_GATE_BOUND));
         deadline_clock.advance(Duration::from_millis(10));
-        assert!(deadline_gate.wait_until_termination_issued(NATIVE_GATE_BOUND));
-        deadline_gate.release();
+        assert!(
+            deadline
+                .gate
+                .wait_until_termination_issued(NATIVE_GATE_BOUND)
+        );
+        deadline.gate.release();
         assert_eq!(
-            deadline_receiver
+            deadline
                 .recv_timeout(NATIVE_GATE_BOUND)
                 .expect("expired candidate run returns"),
             Status::DeadlineExceeded
         );
         deadline.join().expect("deadline worker joins");
-        drop(deadline_gate);
 
-        let close_gate = crate::inference::test_hook::install();
         let worker_port = Arc::clone(&port);
-        let (raced_sender, raced_receiver) = mpsc::sync_channel(1);
-        let raced = thread::spawn(move || {
-            raced_sender
-                .send(recognize_hud(worker_port, &OperationContext::new()))
-                .expect("close-race receiver remains live");
-        });
-        assert!(close_gate.wait_until_admitted(NATIVE_GATE_BOUND));
+        let raced = NativeRun::spawn(move || recognize_hud(worker_port, &OperationContext::new()));
+        assert!(raced.gate.wait_until_admitted(NATIVE_GATE_BOUND));
         assert_eq!(
             port.close(&operation)
                 .expect_err("close does not tear down admitted work")
                 .status(),
             Status::LimitExceeded
         );
-        close_gate.release();
-        let raced_result = raced_receiver
-            .recv_timeout(NATIVE_GATE_BOUND)
-            .expect("admitted candidate run returns");
-        raced.join().expect("close-race worker joins");
-        drop(close_gate);
+        raced.gate.release();
+        let raced_result = raced.finish();
         assert_same_regions(&first, &raced_result);
         port.close(&operation).expect("candidate backend closes");
         port.close(&operation)
