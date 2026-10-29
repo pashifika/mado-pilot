@@ -99,6 +99,25 @@ collection; candidate speed cannot make that allowance stricter.
 The rationale and external measurement precedents are in
 [ADR0109](adr/0109-purpose-driven-performance-metrics.md).
 
+### Attribute version and feature costs separately
+
+Use the actual released tag/commit as a release baseline. A consumer dependency
+with the same package version can name a later Git revision and is not that
+release. Record effective Cargo patches separately from the authored pin.
+
+Compare common work with the same input, options, model, zone count, lifetime,
+build mode and operation boundary. Evaluate added capabilities separately:
+sixteen OCR zones are not an eight-zone regression test, and a maintained watch
+is not interchangeable with one synchronous search. Retained cache occupancy,
+process peak RSS and post-release residuals answer different questions.
+
+Locate cost in initialization, validation, useful work and settlement before
+changing targets. Remove work that the requested operation does not need while
+preserving integrity, deadlines and ownership. An unsuccessful optimization
+attempt does not prove that the remaining cost is inherent to a feature.
+Any justified budget change applies to the explicit feature/workload
+prospectively; it never repairs an old failed result.
+
 ## Profiles and changes to targets
 
 [Benchmark profiles](benchmarks/) bind numbers to a workload, fixture hash,
