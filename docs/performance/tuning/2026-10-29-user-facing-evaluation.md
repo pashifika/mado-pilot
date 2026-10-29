@@ -86,11 +86,9 @@ readiness. Actual MadoMata behavior, documented bounds, supported-platform/ABI
 verification, required CI and known defects retain their independent authority
 in the [release checklist](../../../CONTRIBUTING.md#release-checklist).
 
-Windows native verification is not exercised here: the worker is offline during
-the user's workday and available after 18:00. Its continuation requires actual
-online/fresh execution bindings and applicable functional verification, not an
-automatic repeat of failed calibration or comparison cohorts. No new numerical
-qualification, energy claim, release tag or publication is established.
+Windows follow-through exercises the affected MadoMata engine and saved-frame
+contracts documented below. Numerical qualification, energy claims, UI/live
+capture/input acceptance and release publication remain separate.
 
 ## Equivalent released-version work
 
@@ -171,5 +169,44 @@ real public-controller saved-frame trials, with separate source/executable
 records in `final-artifact.json` and `final-smoke-results.json`
 (`8cd60cdd6dc1725e61e5e5335f910e99d1e0181e80309cb1751811c7eee07ae2`).
 The earlier timing binaries are not relabeled as the final source. Private raw
-receipts are not supplied by a Git clone. Windows actual-host verification
-remains separate, and the existing numerical failures are unchanged.
+receipts are not supplied by a Git clone. These Mac timing receipts are not reused
+as Windows results; the Windows functional coverage below does not change the
+existing numerical failures.
+
+## Windows consumer release-functional verification
+
+MadoMata `b9ad97081efd1cf63a5d7271c67199abbe724068` is exercised on actual Windows
+with two isolated producer roles: its authored `f61a57f` dependency and effective
+MadoPilot `e4ede1b` packages. Rust 1.98.1/debug builds retain separate Cargo,
+source, lock and executable identities. The authored dependency constant is
+unchanged; an effective package override is not a dependency-pin upgrade or a
+formal v0.4.0 release comparison.
+
+| Exercised contract | Authored SDK | Effective v0.5.0 SDK |
+| --- | ---: | ---: |
+| Complete engine library tests passed | 343 | 343 |
+| Full/ROI matched/deadline query cases passed | 4 | 4 |
+| Public-controller Template hit/miss × full/ROI cases passed | 4 | 4 |
+
+Both suites include the ten required caller-deadline/cancellation, OCR
+serialization, retained-frame/publication, Template-only initialization and OCR
+provider regressions. Matched queries return the expected retained result after
+the caller releases its observation. Deadline queries retain application
+`FAIL`/`Timeout`/`deadline_exceeded` and CLI exit 1, while their engine children
+exit 0 with physical cleanup. Template hits return the complete expected bounds;
+misses return no matches. Child reap, session close and controller shutdown are
+checked separately from successful recognition.
+
+All 27 planned top-level commands are executed once: 11 Cargo commands and 16
+functional invocations. Each role freezes its engine and driver after its Cargo
+work, and no subsequent Cargo invocation touches that frozen role. This is
+functional compatibility evidence, not optimized timing or a child-process
+census.
+
+The local `windows-functional-acceptance.json`
+(`facf6ea3f73e58f82331aff7fd880984d7422bbac6bbd52a0803c3edb0e7522a`)
+binds the two original test outputs, all 16 original functional raw outputs,
+source/frozen identities and cleanup records. Bulk/private metadata and
+executable originals remain with their owner; supplied references are not
+receiver verification of omitted bytes. No additional performance cohort,
+threshold adjustment or numerical qualification is established.
