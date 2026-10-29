@@ -1,6 +1,66 @@
 //! Platform-neutral OCR execution-provider selection and observed initialization facts.
 
+use mado_pilot_core::{Error, Result, Status};
+
 use crate::ProviderProfileId;
+
+/// Bounded CPU execution options for each detector and recognizer session.
+///
+/// One through eight intra-op threads are permitted as a finite resource bound,
+/// not a performance or recognition-quality gate. The default is one thread
+/// with spinning enabled; callers choose other settings from their measurements.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub struct OcrCpuOptions {
+    intra_threads: u32,
+    allow_spinning: bool,
+}
+
+impl OcrCpuOptions {
+    /// Selects one through eight intra-op threads per session, with spinning enabled.
+    ///
+    /// # Errors
+    /// Returns [`Status::InvalidArgument`] outside the inclusive range `1..=8`.
+    pub fn new(intra_threads: u32) -> Result<Self> {
+        if !(1..=8).contains(&intra_threads) {
+            return Err(Error::new(
+                Status::InvalidArgument,
+                "OCR CPU intra-op thread count must be between one and eight",
+            ));
+        }
+        Ok(Self {
+            intra_threads,
+            allow_spinning: true,
+        })
+    }
+
+    /// Selects whether intra-op workers may spin briefly before blocking.
+    #[must_use]
+    pub const fn with_spinning(mut self, allow_spinning: bool) -> Self {
+        self.allow_spinning = allow_spinning;
+        self
+    }
+
+    /// Returns the intra-op thread count for each session.
+    #[must_use]
+    pub const fn intra_threads(self) -> u32 {
+        self.intra_threads
+    }
+
+    /// Returns whether intra-op workers may spin before blocking.
+    #[must_use]
+    pub const fn allow_spinning(self) -> bool {
+        self.allow_spinning
+    }
+}
+
+impl Default for OcrCpuOptions {
+    fn default() -> Self {
+        Self {
+            intra_threads: 1,
+            allow_spinning: true,
+        }
+    }
+}
 
 /// Execution provider active for one immutable OCR backend.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
@@ -106,5 +166,27 @@ impl OcrProviderDescriptor {
     #[must_use]
     pub const fn runtime_profile(&self) -> &ProviderProfileId {
         &self.runtime_profile
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use mado_pilot_core::Status;
+
+    use super::OcrCpuOptions;
+
+    #[test]
+    fn cpu_options_enforce_resource_bounds_without_filtering_unmeasured_counts() {
+        for threads in [0, 9, u32::MAX] {
+            assert_eq!(
+                OcrCpuOptions::new(threads)
+                    .expect_err("thread count must remain explicitly bounded")
+                    .status(),
+                Status::InvalidArgument
+            );
+        }
+        for threads in 1..=8 {
+            assert!(OcrCpuOptions::new(threads).is_ok());
+        }
     }
 }

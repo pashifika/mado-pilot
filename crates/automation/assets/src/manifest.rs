@@ -18,10 +18,9 @@ use std::fmt;
 
 use mado_pilot_core::{CoordinateSpace, PixelExtent};
 use mado_pilot_ocr::{
-    ACCEPTED_BOUNDED_MODEL_ID, ACCEPTED_BOUNDED_PROFILE_ID, ACCEPTED_G004_MODEL_ID,
-    ACCEPTED_G004_PROFILE_ID, DecoderId, LanguageProfileId, ModelComponentIdentity, ModelId,
-    ModelVersion, NormalizationId, OcrModelIdentity, OcrProfileMetadata, PreprocessingId,
-    ProfileId,
+    DecoderId, LanguageProfileId, ModelComponentIdentity, ModelId, ModelVersion, NormalizationId,
+    OcrModelIdentity, OcrProfileMetadata, PreprocessingId, ProfileId,
+    catalog_profile_requires_auxiliary, is_catalog_profile,
 };
 use mado_pilot_vision::{MatchDefaults, TemplateId, TemplateSource, VisionFault};
 use serde::Deserialize;
@@ -609,9 +608,10 @@ impl RawOcrModel {
         let id = ModelId::new(required_ocr(self.id)?).map_err(from_ocr_metadata)?;
         let version = ModelVersion::new(required_ocr(self.version)?).map_err(from_ocr_metadata)?;
         let profile = ProfileId::new(required_ocr(self.profile)?).map_err(from_ocr_metadata)?;
-        let claims_accepted = [ACCEPTED_G004_MODEL_ID, ACCEPTED_BOUNDED_MODEL_ID]
-            .contains(&id.as_str())
-            || [ACCEPTED_G004_PROFILE_ID, ACCEPTED_BOUNDED_PROFILE_ID].contains(&profile.as_str());
+        let claims_accepted = is_catalog_profile(id.as_str(), profile.as_str());
+        if catalog_profile_requires_auxiliary(id.as_str(), profile.as_str()) {
+            return Err(fault(AssetFaultKind::InvalidOcrModelMetadata));
+        }
         let language_profile = LanguageProfileId::new(required_ocr(self.language_profile)?)
             .map_err(from_ocr_metadata)?;
         let preprocessing =

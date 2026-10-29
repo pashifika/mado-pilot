@@ -10,11 +10,13 @@
 //! creates free-threaded WGC sessions and explicitly requested input
 //! controllers.
 //!
+//! `WindowsConfig` selects immutable engine defaults. Each session resolves its
+//! own pacing request and negotiates optional WGC controls before callbacks and
+//! capture start. Reports describe native configuration, not measured frame rate.
+//!
 //! # Ownership
 //!
-//! The capture path implements
-//! [ADR 0013](../../../docs/adr/0013-windows-capture-frame-detachment.md):
-//! the WGC producer pool contains exactly two frames, and a callback copies a
+//! The WGC producer pool contains exactly two frames, and a callback copies a
 //! publishable surface into finite, Adapter-owned D3D11 storage before releasing
 //! the WGC frame. CPU mapping, consumer work, and host callbacks never run in the
 //! WGC callback.
@@ -42,6 +44,8 @@
 mod availability;
 #[cfg(windows)]
 mod benchmark_metrics;
+#[cfg(windows)]
+mod config;
 #[cfg(windows)]
 mod discovery;
 #[cfg(all(windows, feature = "benchmark-instrumentation"))]
@@ -71,6 +75,8 @@ mod native_input;
 #[cfg(windows)]
 mod optional_api;
 #[cfg(windows)]
+mod pacing;
+#[cfg(windows)]
 mod provider;
 #[cfg(windows)]
 mod storage;
@@ -79,5 +85,7 @@ mod window_authority;
 #[cfg(windows)]
 mod window_message;
 
+#[cfg(windows)]
+pub use config::WindowsConfig;
 #[cfg(windows)]
 pub use provider::{PROVIDER, WindowsCaptureProvider};

@@ -171,6 +171,36 @@ fn cross_profile_tuples_are_rejected() {
 }
 
 #[test]
+fn closed_auxiliary_profile_cannot_be_declared_by_manifest_v2() {
+    let mut candidate = accepted_g004_manifest_value();
+    let model = &mut candidate["ocr_models"][0];
+    model["id"] = json!("ppocrv6-tiny-det-small-rec-max736-v1");
+    model["profile"] = json!("ppocrv6-tiny-det-small-rec-max736-v1");
+    model["version"] = json!("paddle-ppocrv6-onnx-max736-v1");
+    model["preprocessing"] = json!("ppocrv6-tiny-det-bgr-max736-linear-meanstd-source-rec-v1");
+    model["detector"]["byte_len"] = json!(1_780_590);
+    model["detector"]["content"]["value"] =
+        json!("193bab7a04fca699a6c82e6abb5b81bdb28177f0abd4062552b04908dafb19f8");
+    model["recognizer"]["byte_len"] = json!(21_159_378);
+    model["recognizer"]["content"]["value"] =
+        json!("5435fd747c9e0efe15a96d0b378d5bd157e9492ed8fd80edf08f30d02fa24634");
+
+    for spoofed_field in [None, Some("id"), Some("profile")] {
+        let mut declaration = candidate.clone();
+        if let Some(field) = spoofed_field {
+            declaration["ocr_models"][0][field] = json!("otherwise-generic");
+        }
+        let source = PackageSource::memory(
+            MemoryPackage::new()
+                .with_entry(MANIFEST_PATH, serde_json::to_vec(&declaration).unwrap()),
+        );
+        let error = load(&source).unwrap_err();
+        assert_eq!(error.kind(), AssetFaultKind::InvalidOcrModelMetadata);
+        assert_eq!(error.stage(), mado_pilot_assets::LoadStage::Manifest);
+    }
+}
+
+#[test]
 fn directory_memory_and_archive_resolve_identical_immutable_models() {
     let manifest = manifest(DETECTOR, RECOGNIZER);
     let directory = TempDir::new("ocr-equivalent");

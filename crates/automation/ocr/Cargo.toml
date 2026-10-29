@@ -14,5 +14,14 @@ mado-pilot-capture = { path = "../capture" }
 sha2.workspace = true
 unicode-normalization.workspace = true
 
+[build-dependencies]
+serde.workspace = true
+serde_json.workspace = true
+sha2.workspace = true
+
+[dev-dependencies]
+serde.workspace = true
+serde_json.workspace = true
+
 [lints]
 workspace = true

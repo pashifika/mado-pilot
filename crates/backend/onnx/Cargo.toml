@@ -21,6 +21,7 @@ mado-pilot-ocr = { path = "../../automation/ocr" }
 opencv = { workspace = true }
 ort = { workspace = true }
 sha2 = { workspace = true }
+yaml-rust2 = { workspace = true }
 
 [dev-dependencies]
 mado-pilot-testkit = { path = "../../support/testkit" }

@@ -1,27 +1,24 @@
-# A consumer of the MadoPilot CMake targets, built as its own project.
-#
-# The point is that it is separate. It has its own cache, its own compiler
-# flags, and knows nothing about MadoPilot except the two target names — so if
-# `MadoPilot::Cpp` failed to carry the include directory, or failed to bring
-# `MadoPilot::C` with it, this project would not build.
-#
-# Driven by `cargo run --package mado-pilot-capi --example c-abi-check`:
-#
-#   cmake -S tests/cmake -B <build> \
-#         -DMADOPILOT_SOURCE_DIR=<repo>/crates/bindings/capi \
-#         -DMADOPILOT_ARTIFACT_DIR=<repo>/target/debug
-#   cmake --build <build> --config Release
-#   ctest --test-dir <build> --build-config Release --output-on-failure
+# Independent consumer project driven by c-abi-check.
+# Both languages link only MadoPilot::C; C_ONLY omits CXX entirely.
 
 cmake_minimum_required(VERSION 3.22)
 
-project(MadoPilotCMakeConsumer LANGUAGES C CXX)
+project(MadoPilotCMakeConsumer LANGUAGES C)
+
+option(MADOPILOT_C_ONLY "Enable only C and omit the C++ consumer" OFF)
+option(MADOPILOT_WINDOWS_PATH_ACCEPTANCE "Require controlled Windows OCR instead of skipping" OFF)
+if(MADOPILOT_WINDOWS_PATH_ACCEPTANCE AND NOT WIN32)
+  message(FATAL_ERROR "Windows path acceptance requires Windows")
+endif()
+if(NOT MADOPILOT_C_ONLY)
+  enable_language(CXX)
+endif()
 
 if(NOT DEFINED MADOPILOT_SOURCE_DIR)
   message(
     FATAL_ERROR
     "Pass -DMADOPILOT_SOURCE_DIR=<repo>/crates/bindings/capi so this project can "
-    "find the MadoPilot CMake targets."
+    "find the MadoPilot CMake target."
   )
 endif()
 
@@ -34,42 +31,28 @@ endif()
 
 add_subdirectory("${MADOPILOT_SOURCE_DIR}" madopilot)
 
-# --- The C consumer: the released ABI on its own -----------------------------
+# --- The introductory samples: real handle lifecycle through the C ABI -------
 
-add_executable(consumer-c consumer.c)
+add_executable(consumer-c "${MADOPILOT_SOURCE_DIR}/examples/c/direct-abi.c")
 target_link_libraries(consumer-c PRIVATE MadoPilot::C)
 set_target_properties(consumer-c PROPERTIES C_STANDARD 11 C_STANDARD_REQUIRED ON)
+set(_madopilot_consumer_tests consumer-c)
 
-# --- The C++ consumer: the wrapper, and the C ABI through it -----------------
+if(NOT MADOPILOT_C_ONLY)
+  add_executable(consumer-cpp "${MADOPILOT_SOURCE_DIR}/examples/cpp/direct-abi.cpp")
+  target_link_libraries(consumer-cpp PRIVATE MadoPilot::C)
+  set_target_properties(
+    consumer-cpp
+    PROPERTIES CXX_STANDARD 17 CXX_STANDARD_REQUIRED ON CXX_EXTENSIONS OFF
+  )
+  list(APPEND _madopilot_consumer_tests consumer-cpp)
+endif()
+
+# --- The explicit bounded-profile grouped C example --------------------------
 #
-# It links `MadoPilot::Cpp` and nothing else. The include directory for
-# `madopilot.hpp`, the C header it includes, and the library both resolve
-# against arrive transitively or this does not compile and link.
-
-add_executable(consumer-cpp consumer.cpp)
-target_link_libraries(consumer-cpp PRIVATE MadoPilot::Cpp)
-
-# The tracked native example is also an ordinary consumer of the exported
-# wrapper target. Its `--check` mode creates the real platform adapter but stops
-# before discovery or input, so it is safe to run unattended.
-add_executable(
-  consumer-native-cpp
-  "${MADOPILOT_SOURCE_DIR}/examples/cpp/native-input.cpp"
-)
-target_link_libraries(consumer-native-cpp PRIVATE MadoPilot::Cpp)
-
-# The integrated default OCR example is a normal public C++ consumer. It runs
-# when the surrounding native job supplies the controlled model/runtime paths
+# It runs only when the controlled prerequisites are present in the environment
 # and reports a CTest skip otherwise.
-add_executable(
-  consumer-ocr-default-cpp
-  "${MADOPILOT_SOURCE_DIR}/examples/cpp/ocr-default.cpp"
-)
-target_link_libraries(consumer-ocr-default-cpp PRIVATE MadoPilot::Cpp)
 
-# The explicit bounded-profile grouped examples exercise the ABI 1.4 C and C++
-# surfaces from an independent consumer project. They run only when the
-# controlled prerequisites are present in the environment.
 add_executable(
   consumer-ocr-profile-c
   "${MADOPILOT_SOURCE_DIR}/examples/c/ocr-profile-zones.c"
@@ -79,26 +62,42 @@ set_target_properties(
   consumer-ocr-profile-c
   PROPERTIES C_STANDARD 11 C_STANDARD_REQUIRED ON
 )
+list(APPEND _madopilot_consumer_tests consumer-ocr-profile-c)
 
-add_executable(
-  consumer-ocr-profile-cpp
-  "${MADOPILOT_SOURCE_DIR}/examples/cpp/ocr-profile-zones.cpp"
-)
-target_link_libraries(consumer-ocr-profile-cpp PRIVATE MadoPilot::Cpp)
+if(WIN32)
+  foreach(_sample RANGE 0 5)
+    add_executable(windows-ingress-${_sample} windows-ingress.c)
+    target_compile_definitions(windows-ingress-${_sample} PRIVATE TEST_SAMPLE=${_sample})
+    target_include_directories(
+      windows-ingress-${_sample} PRIVATE
+      "${MADOPILOT_SOURCE_DIR}/include"
+      "${MADOPILOT_SOURCE_DIR}/examples"
+    )
+    set_target_properties(
+      windows-ingress-${_sample} PROPERTIES C_STANDARD 11 C_STANDARD_REQUIRED ON
+    )
+    list(APPEND _madopilot_consumer_tests windows-ingress-${_sample})
+  endforeach()
+endif()
 
 enable_testing()
 
-add_test(NAME consumer-c COMMAND consumer-c)
-add_test(NAME consumer-cpp COMMAND consumer-cpp)
-add_test(NAME consumer-native-cpp COMMAND consumer-native-cpp --check)
-add_test(NAME consumer-ocr-default-cpp COMMAND consumer-ocr-default-cpp)
-set_tests_properties(consumer-ocr-default-cpp PROPERTIES SKIP_RETURN_CODE 77)
-add_test(NAME consumer-ocr-profile-c COMMAND consumer-ocr-profile-c)
-add_test(NAME consumer-ocr-profile-cpp COMMAND consumer-ocr-profile-cpp)
-set_tests_properties(
-  consumer-ocr-profile-c consumer-ocr-profile-cpp
-  PROPERTIES SKIP_RETURN_CODE 77
-)
+foreach(_madopilot_test IN LISTS _madopilot_consumer_tests)
+  add_test(NAME ${_madopilot_test} COMMAND ${_madopilot_test})
+endforeach()
+set_tests_properties(${_madopilot_consumer_tests} PROPERTIES TIMEOUT 60)
+if(MADOPILOT_WINDOWS_PATH_ACCEPTANCE)
+  if(NOT IS_DIRECTORY "${MADOPILOT_ACCEPTANCE_MODEL_ROOT}" OR
+     NOT EXISTS "${MADOPILOT_ACCEPTANCE_RUNTIME}")
+    message(FATAL_ERROR "Windows path acceptance requires controlled model/runtime paths")
+  endif()
+  set_tests_properties(
+    consumer-ocr-profile-c PROPERTIES ENVIRONMENT
+    "MADO_PILOT_G004_MODEL_ROOT=${MADOPILOT_ACCEPTANCE_MODEL_ROOT};MADO_PILOT_ONNX_RUNTIME=${MADOPILOT_ACCEPTANCE_RUNTIME}"
+  )
+else()
+  set_tests_properties(consumer-ocr-profile-c PROPERTIES SKIP_RETURN_CODE 77)
+endif()
 
 if(WIN32)
   # Windows has no run path: the loader searches the executable's directory and
@@ -106,8 +105,7 @@ if(WIN32)
   # process only.
   file(TO_NATIVE_PATH "${MADOPILOT_ARTIFACT_DIR}" _madopilot_native_artifacts)
   set_tests_properties(
-    consumer-c consumer-cpp consumer-native-cpp consumer-ocr-default-cpp
-    consumer-ocr-profile-c consumer-ocr-profile-cpp
+    ${_madopilot_consumer_tests}
     PROPERTIES
       ENVIRONMENT_MODIFICATION "PATH=path_list_prepend:${_madopilot_native_artifacts}"
   )

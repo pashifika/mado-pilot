@@ -38,8 +38,8 @@
 //! introduces a different type instead.
 //!
 //! **Every layout, offset, and numeric value in this module is frozen** for
-//! ABI major 1 by `docs/adr/0007-phase-1-c-abi-freeze.md`. The measured totals
-//! are in that record and the per-field report is in `docs/evidence/c-abi/`.
+//! ABI major 1. The per-field reports are in `docs/evidence/c-abi/`; current
+//! compatibility rules are in `docs/c-abi.md`.
 
 use mado_pilot::{
     AssetFaultKind, ClipPolicy, Continuity, CoordinateSpace, LoadStage, PixelFormat, Suppression,
@@ -625,7 +625,7 @@ pub const MADOPILOT_SEARCH_DIAGNOSTIC_FAILED: madopilot_search_diagnostic_outcom
 
 /// Explicit non-default product OCR profile selection.
 pub type madopilot_ocr_profile_kind_t = i32;
-/// ADR 0040/0041 bounded-detector profile.
+/// Bounded-detector profile with compound sampling and original-source recognition.
 pub const MADOPILOT_OCR_PROFILE_BOUNDED_DETECTOR: madopilot_ocr_profile_kind_t = 1;
 /// ABI 1.5 explicit accepted G-004 profile selection.
 pub const MADOPILOT_OCR_PROFILE_G004: madopilot_ocr_profile_kind_t = 2;
@@ -692,7 +692,7 @@ pub type madopilot_ocr_diagnostic_profile_t = i32;
 pub const MADOPILOT_OCR_DIAGNOSTIC_PROFILE_UNSPECIFIED: madopilot_ocr_diagnostic_profile_t = 0;
 /// Accepted G-004 RapidOCR PP-OCRv4 detector / PP-OCRv6 recognizer profile.
 pub const MADOPILOT_OCR_DIAGNOSTIC_PROFILE_G004: madopilot_ocr_diagnostic_profile_t = 1;
-/// Accepted ADR 0040/0041 bounded-detector profile.
+/// Bounded-detector profile with compound sampling and original-source recognition.
 pub const MADOPILOT_OCR_DIAGNOSTIC_PROFILE_BOUNDED: madopilot_ocr_diagnostic_profile_t = 2;
 
 /// Typed terminal OCR outcome in diagnostics.
@@ -1714,8 +1714,7 @@ impl madopilot_match_options_t {
 
 /// One template search against one session.
 ///
-/// Mandatory prefix: through `tmpl`. The field is not called `template` because
-/// the C++ wrapper includes this header and that word is a keyword there.
+/// Mandatory prefix: through `tmpl`, named to avoid the C++ keyword `template`.
 #[repr(C)]
 #[derive(Debug, Clone, Copy)]
 pub struct madopilot_find_request_t {
@@ -1809,7 +1808,7 @@ pub struct madopilot_ocr_zone_scan_request_t {
     pub reserved: u32,
     /// Caller-owned array of size-versioned zones.
     pub zones: *const madopilot_ocr_zone_t,
-    /// Number of zone elements; must be one through eight.
+    /// Number of zone elements; must be one through sixteen.
     pub zone_count: usize,
     /// Byte stride between zone elements.
     pub zone_stride: usize,

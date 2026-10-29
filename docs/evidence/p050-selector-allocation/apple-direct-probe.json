@@ -1,0 +1,47 @@
+{
+  "scope": "direct-selector-allocator-verification",
+  "target": "aarch64-apple-darwin",
+  "rustc": "1.97.1",
+  "instrumentation": "existing ObservedAccounting over Accounting/System",
+  "before_source_revision": "36f0cafb02b5e350ea77a6570e68171d44674655",
+  "before_selector_sha256": "8383a489b20b7c7e98590a962bb734131b9b34f5bae7606ccdc22f1e38883292",
+  "after_probe_selector_sha256": "30b55731087ad584f2924673bf76ce7829c972651a4d9dcd41cd2f9f3b248fe6",
+  "after_formatted_selector_sha256": "f03fbb5bcf7fb824aad3fe8b53138d87e3967e597fe31c44f77f227d7c0d0beb",
+  "production_prefix_unchanged_by_formatting": true,
+  "probe_source_sha256": "53639d01e8a0a2a54396397c7a8e1253c4683df31366e766cc75a6ac6e06d44e",
+  "probe_lock_sha256": "3ae5c22d274a3341f30854ac986bfa3051d3e6aa9a8d85c906d37d8d1360f9b4",
+  "cases": [
+    {
+      "case": "dense",
+      "before_allocations": 11,
+      "after_allocations": 4,
+      "before_peak_counted_heap_bytes": 49152,
+      "after_peak_counted_heap_bytes": 640,
+      "canonical_results": 16,
+      "pass": true
+    },
+    {
+      "case": "sparse",
+      "before_allocations": 2,
+      "after_allocations": 2,
+      "before_peak_counted_heap_bytes": 160,
+      "after_peak_counted_heap_bytes": 160,
+      "canonical_results": 3,
+      "pass": true
+    },
+    {
+      "case": "empty",
+      "before_allocations": 0,
+      "after_allocations": 0,
+      "before_peak_counted_heap_bytes": 0,
+      "after_peak_counted_heap_bytes": 0,
+      "canonical_results": 0,
+      "pass": true
+    }
+  ],
+  "cleanup_ok": true,
+  "native_opencv_calls": false,
+  "timing_measured": false,
+  "qualification": false,
+  "private_evidence_locator": ".rasen/changes/v0-5-0-pre-release-performance-measurement-and-adjustment/ephemera/selection-allocation-preparation-v1/apple/direct-selector-probe/"
+}

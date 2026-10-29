@@ -861,12 +861,25 @@ mod tests {
 
     #[test]
     fn copied_child_identity_matches_its_valid_static_image() {
+        const CHILD_MODE: &str = "MADO_PILOT_IDENTITY_TEST_CHILD";
+        if std::env::var_os(CHILD_MODE).as_deref() == Some(std::ffi::OsStr::new("1")) {
+            thread::sleep(std::time::Duration::from_secs(5));
+            return;
+        }
+        let current = std::env::current_exe().expect("resolve this single-target test executable");
+        let test_name = concat!(
+            module_path!(),
+            "::copied_child_identity_matches_its_valid_static_image"
+        )
+        .split_once("::")
+        .expect("test module has a crate prefix")
+        .1;
         let nonce = next_fixture_run_nonce().expect("issue a child identity nonce");
         let copy = std::env::temp_dir().join(format!(
             "mado-pilot-identity-child-{}-{nonce}",
             std::process::id()
         ));
-        std::fs::copy("/bin/sleep", &copy).expect("copy one valid system executable");
+        std::fs::copy(current, &copy).expect("copy this valid single-target executable");
         let mut permissions = std::fs::metadata(&copy)
             .expect("read copied executable metadata")
             .permissions();
@@ -874,7 +887,10 @@ mod tests {
         std::fs::set_permissions(&copy, permissions).expect("make the copied image executable");
         let expected = executable_identity(&copy).expect("read the copied static image identity");
         let mut child = Command::new(&copy)
-            .arg("5")
+            .args(["--exact", test_name])
+            .env(CHILD_MODE, "1")
+            .stdout(std::process::Stdio::null())
+            .stderr(std::process::Stdio::null())
             .spawn()
             .expect("launch the copied image");
         let observed = process_executable_identity(child.id());

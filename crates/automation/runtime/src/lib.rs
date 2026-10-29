@@ -56,17 +56,17 @@
 //! no backend storage. Optional finite diagnostics include content-redacted OCR
 //! and template-query records.
 //!
-//! The watcher consumes ADR 0050's closed exact-RGBA default through one owning
+//! The watcher uses the exact-RGBA default through one owning
 //! poll/wait/cancel handle, fixed latest-wins queues, confirmed-only stability,
 //! exact coalescing, fair two-worker progress, and stale-generation rejection.
-//! It adds no OCR predicate, callback, Tokio/future, C/C++, automatic input,
-//! arbitrary capacity, or native watcher support claim.
+//! OCR text presence uses the caller's initialized BGRA OCR backend with complete
+//! provider metadata and exact retained source ownership. Neither watcher adds
+//! callbacks, Tokio/futures, C/C++ entry points, automatic input, or arbitrary capacity.
 //!
 //! **The public names here are reviewed, not yet stable.**
-//! `docs/adr/0006-public-rust-names-and-compatibility-policy.md` records the
-//! review that settled them and the policy that now applies: renaming or
-//! removing one is a breaking change needing an ADR and a version bump, while
-//! adding is free. The stability promise itself begins at 1.0.
+//! Renaming or removing a public name is a breaking change requiring a version
+//! bump; additions are allowed. The stability promise begins at 1.0.
+//! Current naming and compatibility policy lives in `docs/architecture.md`.
 //!
 //! # Where to start
 //!
@@ -154,13 +154,18 @@ pub use diagnostic::{
     DiagnosticRecordSequence, DiagnosticTemplateId, FrameDiagnostic, InputDiagnostic,
     InputOperationSet, LifecycleDiagnostic, MAX_DIAGNOSTIC_CAPACITY, MappingDiagnostic,
     OcrDiagnostic, OcrDiagnosticOutcome, OcrDiagnosticProfile, OcrRequestedRegionDiagnostic,
-    OperationStartedDiagnostic, PermissionDiagnostic, RouteAttemptDiagnostic, SearchDiagnostic,
-    SearchDiagnosticOutcome, TemplateWatchDiagnostic, TemplateWatchDiagnosticOutcome,
+    OcrTextWatchDiagnostic, OcrTextWatchDiagnosticOutcome, OperationStartedDiagnostic,
+    PermissionDiagnostic, RouteAttemptDiagnostic, SearchDiagnostic, SearchDiagnosticOutcome,
+    TemplateWatchDiagnostic, TemplateWatchDiagnosticOutcome,
 };
 pub use engine::{Engine, EngineOptions, EngineWiring, SessionRequest};
 pub use find::{FindOutcome, FindRequest, SearchFrame};
 pub use session::{MappingObserver, Session};
 pub use watch::{
+    OcrTextAnalysisRate, OcrTextOverload, OcrTextQuery, OcrTextQueryId, OcrTextQueryOutcome,
+    OcrTextQueryProgress, OcrTextQueryState, OcrTextRetainedExtent, OcrTextSchedulerDescriptor,
+    OcrTextSchedulerObservation, OcrTextStability, OcrTextStabilityKind, OcrTextTerminalOutcome,
+    OcrTextWatchRequest, OcrTextWatchResult, OcrTextWorkCounts, OcrTextWorkDisposition,
     TemplateAnalysisRate, TemplateOverload, TemplateQuery, TemplateQueryId, TemplateQueryOutcome,
     TemplateQueryProgress, TemplateQueryState, TemplateSchedulerDescriptor, TemplateStability,
     TemplateStabilityKind, TemplateTerminalOutcome, TemplateWatchRequest, TemplateWatchResult,
@@ -173,9 +178,12 @@ pub use mado_pilot_assets::{
     PackageSource, Provenance, SCHEMA_VERSION, TemplateDeclaration,
 };
 pub use mado_pilot_capture::{
-    CaptureFault, CaptureProvider, Continuity, CoordinateSupport, CpuMapping, Frame,
-    FrameDescriptor, FrameRequest, FrameSelection, FrameView, OpenRequest, OverflowPolicy,
-    PixelFormat, QueuePolicy, RetainedStoragePolicy, SessionDescription, TargetDescription,
+    CaptureFault, CapturePacingOutcome, CapturePacingReport, CapturePacingRequest, CaptureProvider,
+    CaptureResourceLimits, Continuity, CoordinateSupport, CpuMapping, Frame, FrameDescriptor,
+    FrameRequest, FrameSelection, FrameView, NativeDesktopUnit, NativeWindowDescription,
+    NativeWindowId, OpenRequest, OverflowPolicy, PacingUnsupportedReason, PixelFormat, QueuePolicy,
+    ResolvedCapturePacing, RetainedStoragePolicy, SessionDescription, TargetDescription,
+    TargetProcessIdentity, WindowCaptureArea, WindowGeometry,
 };
 pub use mado_pilot_core::{
     ActivityTag, CancellationToken, CapabilitySupport, ClipPolicy, Clock, CoordinateSpace,
@@ -199,15 +207,24 @@ pub use mado_pilot_ocr::{
     ACCEPTED_G004_MODEL_ID, ACCEPTED_G004_MODEL_VERSION, ACCEPTED_G004_NORMALIZATION_ID,
     ACCEPTED_G004_PREPROCESSING_ID, ACCEPTED_G004_PROFILE_ID, ACCEPTED_G004_VOCABULARY_ENTRIES,
     BackendCandidate, BackendId as OcrBackendId, BackendRequest as OcrBackendRequest,
-    BackendVersion as OcrBackendVersion, Confidence, DecoderId, LanguageProfileId,
-    MAX_BACKEND_TEXT_BYTES, MAX_CANDIDATES as MAX_OCR_CANDIDATES, MAX_MODEL_COMPONENT_BYTES,
-    MAX_OCR_ZONES, MAX_TEXT_BYTES, ModelComponentIdentity, ModelId, ModelVersion, NormalizationId,
-    OcrBackend, OcrBackendDescriptor, OcrBackendIdentity, OcrCandidateSink, OcrExecutionProvider,
-    OcrExecutionProviderPolicy, OcrFault, OcrModelComponent, OcrModelIdentity, OcrModelSource,
-    OcrModelSourceRequest, OcrProfileMetadata, OcrProviderDescriptor, OcrProviderFallbackReason,
+    BackendVersion as OcrBackendVersion, Confidence, DEFAULT_OCR_PROFILE_ID, DecoderId,
+    DetectorDescriptor as OcrDetectorDescriptor, DetectorResize as OcrDetectorResize,
+    EvaluationEvidence as OcrEvaluationEvidence, EvaluationOutcome as OcrEvaluationOutcome,
+    EvaluationSummary as OcrEvaluationSummary, GraphDescriptor as OcrGraphDescriptor,
+    LanguageProfileId, MAX_BACKEND_TEXT_BYTES, MAX_CANDIDATES as MAX_OCR_CANDIDATES,
+    MAX_MODEL_COMPONENT_BYTES, MAX_OCR_ZONES, MAX_TEXT_BYTES, ModelComponentIdentity, ModelId,
+    ModelVersion, NormalizationId, OcrBackend, OcrBackendDescriptor, OcrBackendIdentity,
+    OcrCandidateSink, OcrCpuOptions, OcrExecutionProvider, OcrExecutionProviderPolicy, OcrFault,
+    OcrModelComponent, OcrModelIdentity, OcrModelSource, OcrModelSourceRequest,
+    OcrProfileDescriptor, OcrProfileMetadata, OcrProviderDescriptor, OcrProviderFallbackReason,
     OcrQuadrilateral, OcrRecognizer, OcrRegion, OcrRequest, OcrResult, OcrZone, OcrZoneGroup,
-    OcrZoneScanRequest, OcrZoneScanResult, PreprocessingId, ProfileId, ProviderProfileId,
-    RecognizedRegion,
+    OcrZoneScanRequest, OcrZoneScanResult, PixelNormalization as OcrPixelNormalization,
+    PreprocessingId, ProfileApplicability as OcrProfileApplicability, ProfileId, ProviderProfileId,
+    RecognitionDescriptor as OcrRecognitionDescriptor, RecognizedRegion,
+    ResourceDescriptor as OcrResourceDescriptor, ResourceLimits as OcrResourceLimits,
+    RuleEvaluation as OcrRuleEvaluation, TensorDescriptor as OcrTensorDescriptor,
+    VocabularyDescriptor as OcrVocabularyDescriptor, VocabularySource as OcrVocabularySource,
+    ocr_profile, ocr_profiles,
 };
 pub use mado_pilot_vision::{
     ANALYSIS_ALWAYS_POLICY_CODE, BackendDescriptor, BackendId, ChangeDetectionDescriptor,

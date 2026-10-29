@@ -1,4 +1,4 @@
-//! Revision-bound quality and resource qualification for ADRs 0038–0044.
+//! Revision-bound quality and resource qualification for bounded-detector profiles.
 
 use std::mem::size_of;
 use std::path::{Path, PathBuf};
@@ -173,6 +173,7 @@ impl WorkloadSpec {
         match profile {
             OnnxOcrProfile::NativeG004 => self.native_detector,
             OnnxOcrProfile::BoundedDetector => self.bounded_detector,
+            OnnxOcrProfile::Catalog => unreachable!("{RELEASED_PROFILES_ONLY}"),
         }
     }
 
@@ -2414,13 +2415,19 @@ fn open_profile(
                 operation,
             )
         }
+        OnnxOcrProfile::Catalog => unreachable!("{RELEASED_PROFILES_ONLY}"),
     }
 }
+
+/// This revision-bound bench qualifies only the two released profiles; newer
+/// catalog profiles use the `onnx-cpu` model-evaluation route.
+const RELEASED_PROFILES_ONLY: &str = "bounded-detector bench selects only native or bounded";
 
 fn profile_name(profile: OnnxOcrProfile) -> &'static str {
     match profile {
         OnnxOcrProfile::NativeG004 => "native-g004",
         OnnxOcrProfile::BoundedDetector => "bounded-detector-fit1312x736-then-tensor6291456b",
+        OnnxOcrProfile::Catalog => unreachable!("{RELEASED_PROFILES_ONLY}"),
     }
 }
 

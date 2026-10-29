@@ -60,7 +60,7 @@
 //! central directory is still the largest thing that has been allocated, before
 //! entry content is read.
 
-use std::io::{Cursor, Read, Seek, SeekFrom};
+use std::io::{self, Cursor, Read, Seek, SeekFrom};
 use std::sync::Arc;
 
 use mado_pilot_core::Operation;
@@ -103,15 +103,71 @@ impl<R: Read + Seek> EntryReader for ArchiveReader<R> {
     ) -> Result<Arc<[u8]>, AssetFault> {
         ensure_unchanged(self.source.as_ref(), stage)?;
         let bytes = {
-            let mut entry = self
+            let entry = self
                 .archive
-                .by_index(index)
+                .by_index_raw(index)
                 .map_err(|_| AssetFault::new(AssetFaultKind::MalformedArchive, stage))?;
-            read_capped(&mut entry, declared, stage, operation)?
+            let checksum = entry.crc32();
+            // Keep size accounting in read_capped: zip's decoder erases an
+            // overrun into an untyped I/O error before returning its byte count.
+            match entry.compression() {
+                CompressionMethod::Stored => {
+                    read_checked(entry, checksum, declared, stage, operation)?
+                }
+                CompressionMethod::Deflated => read_checked(
+                    flate2::read::DeflateDecoder::new(entry),
+                    checksum,
+                    declared,
+                    stage,
+                    operation,
+                )?,
+                _ => {
+                    return Err(AssetFault::new(
+                        AssetFaultKind::UnsupportedCompressionMethod,
+                        stage,
+                    ));
+                }
+            }
         };
         ensure_unchanged(self.source.as_ref(), stage)?;
         Ok(Arc::from(bytes))
     }
+}
+
+struct ChecksumReader<R> {
+    source: R,
+    checksum: crc32fast::Hasher,
+    expected: u32,
+}
+
+impl<R: Read> Read for ChecksumReader<R> {
+    fn read(&mut self, buffer: &mut [u8]) -> io::Result<usize> {
+        let count = self.source.read(buffer)?;
+        if count == 0 && !buffer.is_empty() && self.checksum.clone().finalize() != self.expected {
+            return Err(io::ErrorKind::InvalidData.into());
+        }
+        self.checksum.update(&buffer[..count]);
+        Ok(count)
+    }
+}
+
+fn read_checked<R: Read>(
+    source: R,
+    checksum: u32,
+    declared: u64,
+    stage: LoadStage,
+    operation: &mut Operation<'_>,
+) -> Result<Vec<u8>, AssetFault> {
+    read_capped(
+        &mut ChecksumReader {
+            source,
+            checksum: crc32fast::Hasher::new(),
+            expected: checksum,
+        },
+        declared,
+        stage,
+        operation,
+    )
 }
 
 /// Runs the archive's own stages over one immutable copy of a filesystem
@@ -243,28 +299,12 @@ pub(crate) fn open<'r, R: Read + Seek + 'r>(
     checkpoint(operation, LoadStage::DirectoryOpen)?;
     let mut archive = ZipArchive::new(reader).map_err(|_| malformed())?;
     ensure_unchanged(source.as_ref(), LoadStage::DirectoryOpen)?;
-    // Re-proving the pre-parse against what the reader actually opened, rather
-    // than assuming the two agree. `zip` 8.6.0 searches the whole file backwards
-    // for a trailer (`spec.rs:805`), accepts one whose comment merely fits inside
-    // the file rather than ending it (`spec.rs:823-828`), and falls back to an
-    // earlier record when it rejects the first (`read/zip_archive.rs:167-173`).
-    // The pre-parse refuses every record the fallback would reach first, so a
-    // disagreement here means the reader rejected the validated trailer and
-    // substituted another; that substitute was never counted, and an archive is
-    // not two archives. A `zip` version bump must re-verify those three sites and
-    // the reservation at `read/zip_archive.rs:183-205`.
+    // Reject fallback to a directory that the pre-parse never counted.
     if archive.central_directory_start() != directory.start {
         return Err(malformed());
     }
-    // Unreachable with `zip` 8.6.0, and deliberately kept. `validate_central_directory`
-    // walks exactly `entry_count` headers from `start` and requires the walk to
-    // land on `end`, so the pre-parse has already proved the recorded count is
-    // the number of headers physically in the recorded region; the comparison
-    // above has already proved the reader opened that same region. For this to
-    // fire, `zip` would have to count something else out of bytes both sides
-    // agree on. No fixture can reach it without faking the reader, which is why
-    // there is no test for it — it is the third of the three things a `zip`
-    // version bump has to re-verify, not a gap in coverage.
+    // Keep the count fence even though the validated directory already has
+    // exactly this many headers; dependency updates must preserve that agreement.
     let present = u64::try_from(archive.len()).map_err(|_| overflow())?;
     if present != directory.entry_count {
         return Err(malformed());
@@ -482,18 +522,8 @@ fn zip64_directory<R: Read + Seek>(
     let start = physical_record_offset
         .checked_sub(directory_size)
         .ok_or_else(pre_parse_malformed)?;
-    // A prepended stub is permitted for a zip32 trailer but refused here, and the
-    // asymmetry is the reader's, not a preference. `zip` finds the ZIP64 record by
-    // a *forward* search from the offset the locator advertises
-    // (`spec.rs:939-958`), taking the first record that parses. Any archive offset
-    // therefore opens a `[advertised, physical)` window ahead of the record
-    // validated above, and a decoy planted in that window is reached first: its
-    // entry count is one nothing here counted, and `read/zip_archive.rs:184-200`
-    // reserves for it before the cross-check at the call site can refuse. A zero
-    // archive offset makes the search's own first probe land on this record, so
-    // the window is empty by construction. ZIP64 exists in this profile for
-    // writers that emit the markers unconditionally, not for archives too large
-    // for zip32, so nothing a package needs is lost.
+    // ZIP64's forward search must start at the validated record. A prepended
+    // stub would let an earlier decoy drive allocation before the count fence.
     let advertised_record_offset = read_u64(&locator, 8);
     if start != directory_offset || advertised_record_offset != physical_record_offset {
         return Err(pre_parse_malformed());
@@ -982,9 +1012,8 @@ mod tests {
         let mut bytes = vec![0u8; stub];
 
         if let Some((offset, entries)) = decoy {
-            // `zip` requires a record to end exactly where its locator begins
-            // (`spec.rs:931-932`), which fixes the decoy's record size and makes
-            // everything between the two its extensible data sector.
+            // The record must end at its locator; the intervening bytes are
+            // its extensible data sector.
             let start = u64::try_from(offset).expect("the offset is small");
             let record = zip64_record(locator_offset - start - 12, entries, 0);
             bytes[offset..offset + record.len()].copy_from_slice(&record);

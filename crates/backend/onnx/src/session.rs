@@ -1,4 +1,4 @@
-//! Bounded ownership and validation for the accepted detector/recognizer sessions.
+//! Bounded ownership and validation for one catalog-profile session pair.
 
 use std::sync::{
     Arc,
@@ -6,7 +6,7 @@ use std::sync::{
 };
 
 use mado_pilot_core::OperationContext;
-use mado_pilot_ocr::OcrModelSource;
+use mado_pilot_ocr::{GraphDescriptor, OcrCpuOptions, OcrModelSource, VocabularySource};
 use ort::session::Session;
 use ort::session::builder::GraphOptimizationLevel;
 use ort::value::{TensorElementType, ValueType};
@@ -15,14 +15,11 @@ use crate::fault::{
     OnnxBackendFault, OnnxBackendObservations, OnnxBackendOpenFault, OnnxExecutionProvider,
     OnnxProviderFallbackReason,
 };
-use crate::profile::{DetectorPlan, SelectedProfile};
+use crate::profile::{DetectorPlan, ExecutionProfile};
 use crate::provider::{self, PreparedProvider};
+use crate::stage::RunNanos;
 use crate::vocabulary::Vocabulary;
 
-const DETECTOR_INPUT: &str = "x";
-const DETECTOR_OUTPUT: &str = "sigmoid_0.tmp_0";
-const RECOGNIZER_INPUT: &str = "x";
-const RECOGNIZER_OUTPUT: &str = "fetch_name_0";
 const VOCABULARY_KEY: &str = "character";
 
 static SESSION_PAIR_ACTIVE: AtomicBool = AtomicBool::new(false);
@@ -64,29 +61,46 @@ impl SessionPair {
 
     pub(crate) fn open_with_provider(
         source: OcrModelSource,
+        profile: ExecutionProfile,
         operation: &OperationContext,
         prepared_provider: PreparedProvider,
         lease: Arc<PairLease>,
+        cpu_options: OcrCpuOptions,
     ) -> Result<Self, OnnxBackendOpenFault> {
         let provider = prepared_provider.candidate();
         checkpoint(operation).map_err(OnnxBackendOpenFault::terminal)?;
-        SelectedProfile::from_identity(source.identity())
-            .map_err(OnnxBackendOpenFault::terminal)?;
+        if !profile.admits(source.identity()) {
+            return Err(OnnxBackendOpenFault::terminal(
+                OnnxBackendFault::ProfileMismatch,
+            ));
+        }
+        let declared_vocabulary = profile.vocabulary();
+        // A declared sidecar is parsed from the source's captured, digest-checked
+        // bytes before native work; the source keeps those bytes alive.
+        let sidecar_vocabulary = match declared_vocabulary.source {
+            VocabularySource::OnnxMetadata => None,
+            VocabularySource::PaddleYaml => {
+                let auxiliary = source.auxiliary().ok_or(OnnxBackendOpenFault::terminal(
+                    OnnxBackendFault::ProfileMismatch,
+                ))?;
+                let vocabulary = crate::vocabulary_yaml::vocabulary(
+                    auxiliary.bytes(),
+                    declared_vocabulary.entries,
+                    declared_vocabulary.sha256,
+                )
+                .map_err(OnnxBackendOpenFault::terminal)?;
+                checkpoint(operation).map_err(OnnxBackendOpenFault::terminal)?;
+                Some(vocabulary)
+            }
+        };
 
         debug_assert!(
             Arc::strong_count(&lease) >= 2,
             "the initialization transaction retains its reservation"
         );
-        let detector = build_session(source.detector(), provider, "detector")?;
+        let detector = build_session(source.detector(), provider, "detector", cpu_options)?;
         checkpoint(operation).map_err(OnnxBackendOpenFault::terminal)?;
-        validate_graph(
-            &detector,
-            DETECTOR_INPUT,
-            &[-1, 3, -1, -1],
-            DETECTOR_OUTPUT,
-            &[-1, 1, -1, -1],
-        )
-        .map_err(|fault| {
+        validate_graph(&detector, profile.detector_graph()).map_err(|fault| {
             OnnxBackendOpenFault::provider(
                 provider,
                 fault,
@@ -98,52 +112,19 @@ impl SessionPair {
             crate::benchmark_instrumentation::OpenStage::DetectorSessionReady,
         );
 
-        let recognizer = build_session(source.recognizer(), provider, "recognizer")?;
+        let recognizer = build_session(source.recognizer(), provider, "recognizer", cpu_options)?;
         checkpoint(operation).map_err(OnnxBackendOpenFault::terminal)?;
-        validate_graph(
-            &recognizer,
-            RECOGNIZER_INPUT,
-            &[-1, 3, 48, -1],
-            RECOGNIZER_OUTPUT,
-            &[-1, -1, 18_710],
-        )
-        .map_err(|fault| {
+        validate_graph(&recognizer, profile.recognizer_graph()).map_err(|fault| {
             OnnxBackendOpenFault::provider(
                 provider,
                 fault,
                 OnnxProviderFallbackReason::GraphRejected,
             )
         })?;
-        let raw_vocabulary = recognizer
-            .metadata()
-            .map_err(|_| {
-                OnnxBackendOpenFault::provider(
-                    provider,
-                    OnnxBackendFault::GraphMismatch,
-                    OnnxProviderFallbackReason::GraphRejected,
-                )
-            })?
-            .custom(VOCABULARY_KEY)
-            .ok_or_else(|| {
-                OnnxBackendOpenFault::provider(
-                    provider,
-                    OnnxBackendFault::GraphMismatch,
-                    OnnxProviderFallbackReason::GraphRejected,
-                )
-            })?;
-        let profile = source.profile_metadata();
-        let vocabulary = Vocabulary::parse(
-            raw_vocabulary,
-            profile.vocabulary_entries(),
-            profile.vocabulary_sha256(),
-        )
-        .map_err(|_| {
-            OnnxBackendOpenFault::provider(
-                provider,
-                OnnxBackendFault::GraphMismatch,
-                OnnxProviderFallbackReason::GraphRejected,
-            )
-        })?;
+        let vocabulary = match sidecar_vocabulary {
+            Some(vocabulary) => vocabulary,
+            None => metadata_vocabulary(&recognizer, &source, provider)?,
+        };
         checkpoint(operation).map_err(OnnxBackendOpenFault::terminal)?;
         #[cfg(feature = "benchmark-instrumentation")]
         crate::benchmark_instrumentation::record_open_stage(
@@ -191,6 +172,19 @@ impl SessionPair {
         (&mut self.recognizer, &self.vocabulary)
     }
 
+    #[cfg(feature = "benchmark-instrumentation")]
+    pub(crate) const fn vocabulary(&self) -> &Vocabulary {
+        &self.vocabulary
+    }
+
+    pub(crate) fn record_detector_stages(&mut self, preprocess: u64, run: RunNanos) {
+        self.observations.record_detector_stages(preprocess, run);
+    }
+
+    pub(crate) fn record_recognizer_stages(&mut self, preprocess: u64, run: RunNanos) {
+        self.observations.record_recognizer_stages(preprocess, run);
+    }
+
     pub(crate) fn record_interest_filter(
         &mut self,
         selected: usize,
@@ -225,10 +219,57 @@ impl Drop for SessionPair {
 #[cfg(feature = "benchmark-instrumentation")]
 static PROFILE_SEQUENCE: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(1);
 
+pub(crate) fn runtime_profile_id(
+    provider: OnnxExecutionProvider,
+    cpu_options: OcrCpuOptions,
+) -> &'static str {
+    const CPU_PROFILES: [[&str; 2]; 8] = [
+        [
+            crate::RUNTIME_PROFILE_ID,
+            "onnxruntime-1.29.0-api17-cpu-intra1-nospin",
+        ],
+        [
+            "onnxruntime-1.29.0-api17-cpu-intra2",
+            "onnxruntime-1.29.0-api17-cpu-intra2-nospin",
+        ],
+        [
+            "onnxruntime-1.29.0-api17-cpu-intra3",
+            "onnxruntime-1.29.0-api17-cpu-intra3-nospin",
+        ],
+        [
+            "onnxruntime-1.29.0-api17-cpu-intra4",
+            "onnxruntime-1.29.0-api17-cpu-intra4-nospin",
+        ],
+        [
+            "onnxruntime-1.29.0-api17-cpu-intra5",
+            "onnxruntime-1.29.0-api17-cpu-intra5-nospin",
+        ],
+        [
+            "onnxruntime-1.29.0-api17-cpu-intra6",
+            "onnxruntime-1.29.0-api17-cpu-intra6-nospin",
+        ],
+        [
+            "onnxruntime-1.29.0-api17-cpu-intra7",
+            "onnxruntime-1.29.0-api17-cpu-intra7-nospin",
+        ],
+        [
+            "onnxruntime-1.29.0-api17-cpu-intra8",
+            "onnxruntime-1.29.0-api17-cpu-intra8-nospin",
+        ],
+    ];
+    if provider != OnnxExecutionProvider::Cpu {
+        return provider.runtime_profile_id();
+    }
+    let index =
+        usize::try_from(cpu_options.intra_threads() - 1).expect("bounded thread count fits usize");
+    CPU_PROFILES[index][usize::from(!cpu_options.allow_spinning())]
+}
+
 fn build_session(
     model: &[u8],
     provider_kind: OnnxExecutionProvider,
     role: &str,
+    cpu_options: OcrCpuOptions,
 ) -> Result<Session, OnnxBackendOpenFault> {
     #[cfg(not(feature = "benchmark-instrumentation"))]
     let _ = role;
@@ -253,7 +294,12 @@ fn build_session(
             )
         })?;
     let builder = builder
-        .with_intra_threads(1)
+        .with_intra_threads(
+            usize::try_from(cpu_options.intra_threads()).expect("bounded thread count fits usize"),
+        )
+        .map_err(|_| initialization_fault())?;
+    let builder = builder
+        .with_intra_op_spinning(cpu_options.allow_spinning())
         .map_err(|_| initialization_fault())?;
     let builder = builder
         .with_inter_threads(1)
@@ -293,18 +339,39 @@ fn build_session(
         .map_err(|_| initialization_fault())
 }
 
-fn validate_graph(
-    session: &Session,
-    input_name: &str,
-    input_shape: &[i64],
-    output_name: &str,
-    output_shape: &[i64],
-) -> Result<(), OnnxBackendFault> {
+/// Reads the released ONNX `character` metadata; there is no sidecar fallback.
+fn metadata_vocabulary(
+    recognizer: &Session,
+    source: &OcrModelSource,
+    provider: OnnxExecutionProvider,
+) -> Result<Vocabulary, OnnxBackendOpenFault> {
+    let graph_rejected = || {
+        OnnxBackendOpenFault::provider(
+            provider,
+            OnnxBackendFault::GraphMismatch,
+            OnnxProviderFallbackReason::GraphRejected,
+        )
+    };
+    let raw_vocabulary = recognizer
+        .metadata()
+        .map_err(|_| graph_rejected())?
+        .custom(VOCABULARY_KEY)
+        .ok_or_else(graph_rejected)?;
+    let profile = source.profile_metadata();
+    Vocabulary::parse(
+        raw_vocabulary,
+        profile.vocabulary_entries(),
+        profile.vocabulary_sha256(),
+    )
+    .map_err(|_| graph_rejected())
+}
+
+fn validate_graph(session: &Session, graph: GraphDescriptor) -> Result<(), OnnxBackendFault> {
     if session.inputs().len() != 1 || session.outputs().len() != 1 {
         return Err(OnnxBackendFault::GraphMismatch);
     }
-    validate_outlet(&session.inputs()[0], input_name, input_shape)?;
-    validate_outlet(&session.outputs()[0], output_name, output_shape)
+    validate_outlet(&session.inputs()[0], graph.input.name, graph.input.shape)?;
+    validate_outlet(&session.outputs()[0], graph.output.name, graph.output.shape)
 }
 
 fn validate_outlet(
@@ -338,6 +405,22 @@ mod tests {
 
     use super::{SESSION_PAIR_ACTIVE, SessionPair, validate_outlet};
     use crate::fault::OnnxBackendFault;
+
+    #[test]
+    fn cpu_runtime_profiles_do_not_alias_distinct_execution_options() {
+        let mut profiles = std::collections::HashSet::new();
+        for threads in 1..=8 {
+            for spinning in [true, false] {
+                let options = mado_pilot_ocr::OcrCpuOptions::new(threads)
+                    .expect("bounded thread count")
+                    .with_spinning(spinning);
+                assert!(profiles.insert(super::runtime_profile_id(
+                    crate::OnnxExecutionProvider::Cpu,
+                    options,
+                )));
+            }
+        }
+    }
 
     #[test]
     fn session_pair_reservation_is_shared_across_fallback_candidates() {

@@ -10,7 +10,7 @@
 //! model discovery, download, default wiring, or inference itself.
 //!
 //! [`OcrRecognizer::recognize`] maps one borrowed immutable frame region.
-//! [`OcrRecognizer::scan_zones`] resolves one through eight caller-order zones,
+//! [`OcrRecognizer::scan_zones`] resolves one through sixteen caller-order zones,
 //! maps their smallest capture-pixel envelope once, and carries relative
 //! interests through the unchanged backend trait. Both accept borrowed
 //! candidates through a core-owned bounded sink and commit atomically without
@@ -22,19 +22,37 @@
 //! finite confidence in `0.0..=1.0` to five decimals, and orders by the backend's
 //! unique stable detector order. Grouped results apply exact half-open centroid
 //! membership, own each relevant candidate once, expose explicit empty groups,
-//! and bound one through eight zones to at most 8,000 compact memberships.
+//! and bound one through sixteen zones to at most 16,000 compact memberships.
 
 pub mod backend;
+pub mod catalog;
 pub mod fault;
 pub mod model;
+
+mod normalization;
+mod normalization_bound;
 pub mod provider;
 pub mod recognizer;
 pub mod request;
 pub mod result;
 
+/// Workspace-only composition seam for maintained OCR text watches.
+#[doc(hidden)]
+pub mod watch_support {
+    pub use crate::normalization::normalize_literal;
+    pub use crate::recognizer::{PreparedOcr, prepare};
+}
+
 pub use backend::{
     BackendCandidate, BackendInterests, BackendRequest, OcrBackend, OcrBackendDescriptor,
     OcrBackendIdentity, OcrCandidateSink, candidate_interest_membership,
+};
+pub use catalog::{
+    DEFAULT_OCR_PROFILE_ID, DetectorDescriptor, DetectorResize, EvaluationEvidence,
+    EvaluationOutcome, EvaluationSummary, GraphDescriptor, OcrProfileDescriptor,
+    PixelNormalization, ProfileApplicability, RecognitionDescriptor, ResourceDescriptor,
+    ResourceLimits, RuleEvaluation, TensorDescriptor, VocabularyDescriptor, VocabularySource,
+    catalog_profile_requires_auxiliary, is_catalog_profile, ocr_profile, ocr_profiles,
 };
 pub use fault::OcrFault;
 pub use model::{
@@ -48,7 +66,7 @@ pub use model::{
     ProfileId, ProviderProfileId,
 };
 pub use provider::{
-    OcrExecutionProvider, OcrExecutionProviderPolicy, OcrProviderDescriptor,
+    OcrCpuOptions, OcrExecutionProvider, OcrExecutionProviderPolicy, OcrProviderDescriptor,
     OcrProviderFallbackReason,
 };
 pub use recognizer::{MAX_BACKEND_TEXT_BYTES, MAX_CANDIDATES, MAX_TEXT_BYTES, OcrRecognizer};

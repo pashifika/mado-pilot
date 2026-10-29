@@ -18,13 +18,15 @@ use opencv::imgproc::{INTER_CUBIC, INTER_LINEAR, resize, warp_perspective};
 
 use crate::detect::Quad;
 use crate::fault::OnnxBackendFault;
-use crate::profile::{DetectorPlan, PreprocessingDescriptor};
+use crate::profile::{DetectorNormalization, DetectorPlan, PreprocessingDescriptor};
 
 pub(crate) const MAX_TENSOR_BYTES: usize = 256 * 1024 * 1024;
 pub(crate) const MAX_RECOGNIZER_WIDTH: usize = 4_096;
-const RECOGNIZER_HEIGHT: usize = 48;
-const RECOGNIZER_BASE_WIDTH: usize = 320;
+pub(crate) const RECOGNIZER_HEIGHT: usize = 48;
+pub(crate) const RECOGNIZER_BASE_WIDTH: usize = 320;
 const CHANNELS: usize = 3;
+/// Paddle's float32 reciprocal used by multiply-mean-std normalization.
+const RECIPROCAL_255: f32 = 1.0 / 255.0;
 const BGRA_BYTES: usize = 4;
 
 #[derive(Debug)]
@@ -91,13 +93,14 @@ pub(crate) fn detector_input(
     let source_height = u32::try_from(image.rows()).map_err(|_| OnnxBackendFault::InvalidPixels)?;
     let source_width = u32::try_from(image.cols()).map_err(|_| OnnxBackendFault::InvalidPixels)?;
     let plan = preprocessing.plan(source_width, source_height)?;
-    let tensor = detector_tensor_for_plan(image, plan)?;
+    let tensor = detector_tensor_for_plan(image, plan, preprocessing.normalization())?;
     Ok(DetectorInput { tensor, plan })
 }
 
 fn detector_tensor_for_plan(
     image: &Mat,
     plan: DetectorPlan,
+    normalization: DetectorNormalization,
 ) -> Result<TensorInput, OnnxBackendFault> {
     if u32::try_from(image.cols()).map_err(|_| OnnxBackendFault::InvalidPixels)?
         != plan.source_width()
@@ -139,7 +142,14 @@ fn detector_tensor_for_plan(
         INTER_LINEAR,
     )
     .map_err(|_| OnnxBackendFault::NativeFailure)?;
-    let data = bgra_to_planar(&resized, 1, height, width, plan.tensor_elements())?;
+    let data = bgra_to_planar(
+        &resized,
+        1,
+        height,
+        width,
+        plan.tensor_elements(),
+        normalization,
+    )?;
     drop(resized);
     Ok(TensorInput {
         data,
@@ -235,12 +245,14 @@ pub(crate) fn recognition_input(
             INTER_LINEAR,
         )
         .map_err(|_| OnnxBackendFault::NativeFailure)?;
+        // Recognition keeps the released normalization for every profile.
         fill_bgra_planar_padded(
             &resized,
             &mut data[batch_index * batch_stride..(batch_index + 1) * batch_stride],
             RECOGNIZER_HEIGHT,
             resized_width,
             width,
+            DetectorNormalization::LegacyDivide,
         )?;
     }
 
@@ -341,12 +353,13 @@ fn bgra_to_planar(
     height: usize,
     width: usize,
     elements: usize,
+    normalization: DetectorNormalization,
 ) -> Result<Vec<f32>, OnnxBackendFault> {
     if batch != 1 {
         return Err(OnnxBackendFault::ResourceLimit);
     }
     let mut output = vec![0.0_f32; elements];
-    fill_bgra_planar_padded(image, &mut output, height, width, width)?;
+    fill_bgra_planar_padded(image, &mut output, height, width, width, normalization)?;
     Ok(output)
 }
 
@@ -356,6 +369,7 @@ fn fill_bgra_planar_padded(
     height: usize,
     source_width: usize,
     padded_width: usize,
+    normalization: DetectorNormalization,
 ) -> Result<(), OnnxBackendFault> {
     if image.channels() != 4
         || image.rows() != i32::try_from(height).map_err(|_| OnnxBackendFault::ResourceLimit)?
@@ -386,22 +400,61 @@ fn fill_bgra_planar_padded(
         return Err(OnnxBackendFault::ResourceLimit);
     }
 
+    match normalization {
+        DetectorNormalization::LegacyDivide => fill_planar(
+            bytes,
+            output,
+            plane,
+            height,
+            source_width,
+            padded_width,
+            |_, channel| normalize(channel),
+        ),
+        DetectorNormalization::MultiplyMeanStd { mean, std } => fill_planar(
+            bytes,
+            output,
+            plane,
+            height,
+            source_width,
+            padded_width,
+            |index, channel| normalize_mean_std(channel, mean[index], std[index]),
+        ),
+    }
+    Ok(())
+}
+
+/// Writes BGR planes from BGRA rows; `convert` receives the BGR plane index.
+fn fill_planar(
+    bytes: &[u8],
+    output: &mut [f32],
+    plane: usize,
+    height: usize,
+    source_width: usize,
+    padded_width: usize,
+    convert: impl Fn(usize, u8) -> f32,
+) {
     for row in 0..height {
         for column in 0..source_width {
             let pixel = (row * source_width + column) * BGRA_BYTES;
             let planar = row * padded_width + column;
-            output[planar] = normalize(bytes[pixel]);
-            output[plane + planar] = normalize(bytes[pixel + 1]);
-            output[2 * plane + planar] = normalize(bytes[pixel + 2]);
+            output[planar] = convert(0, bytes[pixel]);
+            output[plane + planar] = convert(1, bytes[pixel + 1]);
+            output[2 * plane + planar] = convert(2, bytes[pixel + 2]);
         }
     }
-    Ok(())
 }
 
 fn normalize(channel: u8) -> f32 {
     let scaled = f32::from(channel) / 255.0;
     let centered = scaled - 0.5;
     centered / 0.5
+}
+
+/// Paddle `NormalizeImage` float32 order: `(x * (1 / 255) - mean) / std`.
+fn normalize_mean_std(channel: u8, mean: f32, std: f32) -> f32 {
+    let scaled = f32::from(channel) * RECIPROCAL_255;
+    let centered = scaled - mean;
+    centered / std
 }
 
 fn f64_to_usize(value: f64) -> Result<usize, OnnxBackendFault> {
@@ -435,7 +488,7 @@ mod tests {
         recognizer_width_for_ratio, tensor_elements,
     };
     use crate::fault::OnnxBackendFault;
-    use crate::profile::DetectorPlan;
+    use crate::profile::{DetectorNormalization, DetectorPlan};
 
     #[test]
     fn direct_resize_matches_the_fixed_bgra_and_planar_oracle() {
@@ -462,13 +515,81 @@ mod tests {
         let image = Mat::from_slice_2d(&source).unwrap();
         let plan = DetectorPlan::for_test(4, 3, 3, 2).unwrap();
 
-        let input = detector_tensor_for_plan(&image, plan).unwrap();
+        let input =
+            detector_tensor_for_plan(&image, plan, DetectorNormalization::LegacyDivide).unwrap();
 
         assert_eq!(input.shape, [1, 3, 2, 3]);
         let expected_bits = [
             0xbf7bfbfc, 0xbf6bebec, 0xbf5bdbdc, 0xbf6feff0, 0xbf5fdfe0, 0xbf4fcfd0, 0xbf53d3d4,
             0xbf43c3c4, 0xbf33b3b4, 0xbf47c7c8, 0xbf37b7b8, 0xbf27a7a8, 0xbf2babac, 0xbf1b9b9c,
             0xbf0b8b8c, 0xbf1f9fa0, 0xbf0f8f90, 0xbefefefe,
+        ];
+        assert_eq!(
+            input
+                .data
+                .iter()
+                .map(|value| value.to_bits())
+                .collect::<Vec<_>>(),
+            expected_bits
+        );
+    }
+
+    #[test]
+    fn mean_std_detector_planes_match_the_numpy_float32_oracle() {
+        // Oracle: numpy `(uint8.astype(float32) * float32(1/255) - mean) / std`
+        // over BGR pixels, then HWC to CHW, as Paddle `NormalizeImage` does.
+        let source = [
+            [
+                Vec4b::from([0, 20, 40, 1]),
+                Vec4b::from([6, 26, 46, 2]),
+                Vec4b::from([128, 200, 255, 3]),
+                Vec4b::from([255, 1, 77, 4]),
+            ],
+            [
+                Vec4b::from([4, 24, 44, 5]),
+                Vec4b::from([10, 30, 50, 6]),
+                Vec4b::from([99, 13, 254, 7]),
+                Vec4b::from([17, 250, 3, 8]),
+            ],
+        ];
+        let image = Mat::from_slice_2d(&source).unwrap();
+        let plan = DetectorPlan::for_test(4, 2, 4, 2).unwrap();
+        let input = detector_tensor_for_plan(
+            &image,
+            plan,
+            DetectorNormalization::MultiplyMeanStd {
+                mean: [0.485, 0.456, 0.406],
+                std: [0.229, 0.224, 0.225],
+            },
+        )
+        .unwrap();
+
+        assert_eq!(input.shape, [1, 3, 2, 4]);
+        let expected_bits = [
+            0xc0078bbd_u32,
+            0xc000f84f,
+            0x3d97af32,
+            0x400fee1d,
+            0xc0032973,
+            0xbff92c0a,
+            0xbed858e5,
+            0xbfe9d408,
+            0xbfd7c0e5,
+            0xbfca4ee0,
+            0x3fbb9b9e,
+            0xc0012a4f,
+            0xbfceca37,
+            0xbfc15832,
+            0xbfe77095,
+            0x4015d38c,
+            0xbf8dbb3e,
+            0xbf805886,
+            0x4028f5c3,
+            0xbeecbf39,
+            0xbf84cec3,
+            0xbf6ed815,
+            0x4027d834,
+            0xbfe046ad,
         ];
         assert_eq!(
             input

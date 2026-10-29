@@ -6,16 +6,15 @@
 //! mandatory prefixes that are real prefixes, thin handle pointers, and a
 //! function-table order that a refactor cannot quietly rearrange.
 //!
-//! **These values are frozen** for ABI major 1 by
-//! `docs/adr/0007-phase-1-c-abi-freeze.md`. What this file protects is that a
-//! change to any of them fails a test rather than a caller.
+//! **These values are frozen for ABI major 1.** A change to any of them must
+//! fail a test rather than a caller.
 
 use std::collections::HashSet;
 
 use madopilot::layout::{HANDLE_POINTERS, LAYOUT, TypeLayout, report};
 use madopilot::*;
 
-/// The layout ADR 0007 froze, on each release target.
+/// The frozen ABI major 1 layout on each release target.
 ///
 /// These are the tracked evidence files, compiled in rather than read at run
 /// time so the comparison needs no working directory and no C toolchain. They
@@ -43,8 +42,7 @@ const FROZEN_LAYOUT: [(&str, &str); 2] = [
 /// `madopilot_match_options_t` appears twice because it is the one structure
 /// used in both directions and the only one with two prefixes: 8 bytes as the
 /// request a caller supplies, 24 as the report `result_options` writes back.
-/// Both have to be real boundaries, and ADR 0007 is the only other place the
-/// asymmetry is recorded.
+/// Both prefixes are compatibility boundaries.
 const MANDATORY: &[(&str, usize)] = &[
     ("madopilot_engine_options_t", 16),
     ("madopilot_default_ocr_options_t", 40),

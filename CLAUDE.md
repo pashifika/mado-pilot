@@ -4,7 +4,7 @@
 
 `docs/architecture.md` is the tracked architecture baseline and the source of truth for package boundaries, dependency directions, public naming, toolchain policy, scope, and implementation status. `docs/validation-gates.md` records the unresolved version-one decisions, and `CONTRIBUTING.md` defines the branch, pull request, and verification policy. Treat the rules in this file as the default project guidance.
 
-When implementation, configuration, packaging, or examples change an architectural decision, keep the relevant documentation synchronized or add a focused architecture decision record (ADR) from `docs/adr/0000-template.md`. The ignored `local_docs/` drafts are proposal material only and are not a repository source of truth; when present, `local_docs/mado-pilot-design-v3.md` is the current local design authority and identifies the decisions it supersedes in `local_docs/mado-pilot-design-v2.md` and `local_docs/mado-pilot-design.md`. Where a `local_docs/` draft and `docs/architecture.md` disagree about what exists today, `docs/architecture.md` wins.
+When implementation, configuration, packaging, or examples change an important architectural or technical choice, update the current contract and record its rationale using `docs/adr/template.md` under `docs/adr/README.md`. Routine implementation and empirical budget tuning do not require an ADR; record tuning reasons and observed effects under `docs/performance/tuning/`. Mandatory safety, ownership and compatibility contracts still apply. Legacy ADRs archived under `rasen/legacy-adrs/` are historical references, never current authority or execution prerequisites. The ignored `local_docs/` drafts are proposal material only and are not a repository source of truth; when present, `local_docs/mado-pilot-design-v3.md` is the current local design authority and identifies the decisions it supersedes in `local_docs/mado-pilot-design-v2.md` and `local_docs/mado-pilot-design.md`. Where a `local_docs/` draft and `docs/architecture.md` disagree about what exists today, `docs/architecture.md` wins.
 
 ## Product definition
 
@@ -13,8 +13,9 @@ MadoPilot is a headless visual automation runtime for applications and agents. I
 The primary implementation is Rust. Public integration surfaces are:
 
 - an idiomatic Rust API through the `mado-pilot` facade crate;
-- a separately versioned C ABI with opaque handles and explicit ownership;
-- a thin C++ RAII wrapper that consumes only the released C ABI.
+- a separately versioned C ABI for C and C++ with opaque handles and explicit ownership.
+
+C and C++ callers use `madopilot.h` and `MadoPilot::C` directly. Applications own handle management, request storage, error handling, and higher-level abstractions; the project provides small samples rather than a C++ wrapper.
 
 The initial release targets are `x86_64-pc-windows-msvc` and `aarch64-apple-darwin`.
 
@@ -39,7 +40,7 @@ Follow ports-and-adapters dependency direction:
 - backend crates implement vision or OCR contracts;
 - the public facade performs default wiring;
 - the C ABI depends on the facade, never the reverse;
-- the C++ wrapper links through the released C ABI only.
+- C and C++ consumers link through the released C ABI only.
 
 Organize modules by responsibility. Do not introduce a general `utils` layer. Do not add empty crates for deferred adapters.
 

@@ -2392,6 +2392,13 @@ fn owned_window_replacement_never_retargets_the_retained_filter() {
         ),
     }
     original_close.expect("the observed original session closes");
+    let cached = first
+        .map(PixelFormat::Bgra8, &bounded(CONTENT_WAIT))
+        .expect("the retained native frame maps again after capture closes");
+    assert!(
+        cached.bytes() == original_mapping.bytes(),
+        "cached native mapping must preserve the retained frame after close"
+    );
 
     let replacement = discover_unique_fixture(&provider, &fixture, CONTENT_WAIT)
         .expect("the same-process successor becomes discoverable exactly once");
@@ -2571,6 +2578,283 @@ fn interactive_system_delivery_targets_only_the_exact_fixture() {
     controller.close(&context()).expect("close");
     capture.close(&context()).expect("capture close");
     assert!(controller.is_closed());
+}
+
+/// Selects an observed effective-1/raw-2 frame during one bounded display circuit.
+#[cfg(feature = "private-fixture")]
+fn downscaled_system_frame(
+    provider: &MacosCaptureProvider,
+    capture: &dyn CaptureSession,
+    fixture: &mut Fixture,
+    target: TargetId,
+    mut after: FrameStamp,
+    display_count: usize,
+) -> Option<Frame> {
+    for _ in 0..display_count {
+        let moved = fixture
+            .command(FixtureCommandKind::MoveToNextDisplay, CONTENT_WAIT)
+            .expect("the owned inter-display move completes");
+        assert_eq!(moved.status, 0);
+        let deadline = Instant::now() + CONTENT_WAIT;
+        while Instant::now() < deadline {
+            let remaining = deadline.saturating_duration_since(Instant::now());
+            let frame = match capture.frame(&FrameRequest::newer_than(after), &bounded(remaining)) {
+                Ok(frame) => frame,
+                Err(error) if error.status() == Status::DeadlineExceeded => break,
+                Err(error) => panic!("downscale observation failed: {error}"),
+            };
+            after = frame.stamp();
+            let effective = qualification_geometry(&frame);
+            if !effective.has_scale(1.0) {
+                continue;
+            }
+            let raw_scale = provider
+                .fixture_source_backing_scale(target, frame.stamp())
+                .expect("the owned source frame retains its raw geometry");
+            if approximately(raw_scale, 2.0) {
+                assert_fixture_frame_content(&frame, false, "downscaled System source");
+                println!(
+                    "downscaled-system-source effective={:?} raw={raw_scale} origin={:?} frame={:?}",
+                    effective.scale,
+                    effective.origin,
+                    frame.stamp()
+                );
+                return Some(frame);
+            }
+        }
+    }
+    None
+}
+
+fn qualify_system_raw_geometry(require_downscaled: bool) {
+    assert!(
+        std::env::var_os("MADO_PILOT_MACOS_FIXTURE_EXECUTABLE").is_some(),
+        "System geometry qualification requires the existing signed fixture bundle"
+    );
+    assert!(
+        post_event_access_granted(),
+        "existing post-event authority is required"
+    );
+    let provider = provider();
+    let display_geometries = if require_downscaled {
+        assert_eq!(
+            QualificationTopology::required(),
+            QualificationTopology::MixedScale
+        );
+        let topology = observe_qualification_topology(&provider, QualificationTopology::MixedScale);
+        assert!(
+            (2..=16).contains(&topology.len()),
+            "the owned display circuit is bounded"
+        );
+        topology
+            .into_iter()
+            .map(|display| display.geometry)
+            .collect::<Vec<_>>()
+    } else {
+        Vec::new()
+    };
+    let mut fixture = Fixture::start_active(FixtureMode::Default)
+        .expect("the owned signed fixture starts in front");
+    assert_eq!(wait_until_frontmost_fixture(&fixture), fixture.process_id);
+    let mut chosen = discover_unique_fixture(&provider, &fixture, CONTENT_WAIT)
+        .expect("one exact owned fixture is selected");
+    if require_downscaled {
+        // Open a fresh 1x surface; a retained 2x surface never shrinks on display moves.
+        for _ in 0..display_geometries.len() {
+            let before = chosen
+                .window()
+                .expect("owned window geometry")
+                .geometry()
+                .placement();
+            if approximately(before.scale().x(), 1.0) && approximately(before.scale().y(), 1.0) {
+                break;
+            }
+            let moved = fixture
+                .command(FixtureCommandKind::MoveToNextDisplay, CONTENT_WAIT)
+                .expect("the owned fixture reaches its next display before capture");
+            assert_eq!(moved.status, 0);
+            // The command acknowledges AppKit movement, not fresh ScreenCaptureKit metadata.
+            let deadline = Instant::now() + CONTENT_WAIT;
+            loop {
+                let remaining = deadline.saturating_duration_since(Instant::now());
+                assert!(
+                    !remaining.is_zero(),
+                    "not-qualified: discovery did not observe the owned display move before capture"
+                );
+                chosen = discover_unique_fixture(&provider, &fixture, remaining)
+                    .expect("the same owned fixture is rediscovered after its move");
+                let geometry = chosen.window().expect("owned window geometry").geometry();
+                let placement = geometry.placement();
+                let observed = QualificationGeometry {
+                    origin: placement.desktop_origin(),
+                    logical: placement.logical_size(),
+                    backing: (geometry.extent().width(), geometry.extent().height()),
+                    scale: (placement.scale().x(), placement.scale().y()),
+                };
+                if observed.origin != before.desktop_origin()
+                    && display_for_window(&display_geometries, observed).is_ok()
+                {
+                    break;
+                }
+                thread::sleep(
+                    Duration::from_millis(25)
+                        .min(deadline.saturating_duration_since(Instant::now())),
+                );
+            }
+        }
+        let scale = chosen
+            .window()
+            .expect("owned window geometry")
+            .geometry()
+            .placement()
+            .scale();
+        assert!(
+            approximately(scale.x(), 1.0) && approximately(scale.y(), 1.0),
+            "not-qualified: the owned fixture did not reach a 1x display before capture"
+        );
+    }
+    let capture = CaptureProvider::open(
+        &provider,
+        chosen.id(),
+        &OpenRequest::new().require_format(PixelFormat::Bgra8),
+        &bounded(CONTENT_WAIT),
+    )
+    .expect("the selected fixture opens for capture");
+    let first = capture
+        .frame(&FrameRequest::latest(), &bounded(CONTENT_WAIT))
+        .expect("the selected fixture publishes");
+    assert_fixture_frame_content(&first, false, "System geometry initial frame");
+    if require_downscaled {
+        assert!(
+            qualification_geometry(&first).has_scale(1.0),
+            "not-qualified: the fresh source did not start with a 1x capture surface"
+        );
+    }
+    let source = if require_downscaled {
+        #[cfg(not(feature = "private-fixture"))]
+        panic!("mixed-scale qualification requires private-fixture");
+        #[cfg(feature = "private-fixture")]
+        {
+            downscaled_system_frame(
+                &provider,
+                capture.as_ref(),
+                &mut fixture,
+                chosen.id(),
+                first.stamp(),
+                display_geometries.len(),
+            )
+        }
+    } else {
+        Some(first)
+    };
+    let Some(mut source) = source else {
+        capture
+            .close(&bounded(CONTENT_WAIT))
+            .expect("unqualified capture closes");
+        let stopped = fixture
+            .command(FixtureCommandKind::Stop, CONTENT_WAIT)
+            .expect("unqualified fixture stops");
+        assert_eq!(stopped.status, 0);
+        fixture.input = None;
+        panic!(
+            "not-qualified: no effective-1/raw-2 frame observed during one bounded display circuit; \
+             no input submitted"
+        );
+    };
+    let input = InputProvider::open(
+        &provider,
+        chosen.id(),
+        &InputOpenRequest::new()
+            .with_requirement(InputRequirement::Required)
+            .requiring(InputOperationKind::Pointer, InputDelivery::System),
+        &bounded(CONTENT_WAIT),
+    )
+    .expect("System pointer input opens only for confirmed fixture content");
+    let centre_for = |frame: &Frame| {
+        let extent = frame.descriptor().extent();
+        Point::new(
+            CoordinateSpace::CapturePixels,
+            f64::from(extent.width()) / 2.0,
+            f64::from(extent.height()) / 2.0,
+        )
+        .expect("finite frame centre")
+    };
+    let request_for = |frame: &Frame| {
+        InputRequest::new(
+            chosen.id(),
+            InputSequence::new(vec![InputEvent::PointerMove(centre_for(frame))])
+                .expect("one bounded pointer move"),
+            DeliveryPlan::require(InputDelivery::System),
+        )
+        .with_focus(FocusPolicy::RequireFocused)
+        .with_pointer_geometry(PointerGeometry::require_unchanged_since(frame.stamp()))
+    };
+    let expected = source
+        .transform()
+        .convert_point(centre_for(&source), CoordinateSpace::DesktopLogical)
+        .expect("the exact source transform determines the System destination");
+    fixture.begin_event_row(CONTENT_WAIT);
+    let receipt = input
+        .execute(&request_for(&source), &bounded(CONTENT_WAIT))
+        .expect("unchanged geometry returns a receipt");
+    assert_eq!(receipt.outcome(), SequenceOutcome::Complete, "{receipt}");
+    assert_eq!(receipt.submitted(), 1);
+    assert_eq!(receipt.selected_route(), Some(InputDelivery::System));
+    assert!(
+        fixture
+            .summaries(Duration::from_secs(2))
+            .contains(&EVENT_POINTER_MOVE),
+        "invocation and owned-fixture arrival are separate required observations"
+    );
+    let observed = pointer_location();
+    assert!(
+        approximately(observed.0, expected.x()) && approximately(observed.1, expected.y()),
+        "System pointer coordinates must use the source transform: {observed:?} vs {expected:?}"
+    );
+    for command in [FixtureCommandKind::Move, FixtureCommandKind::Resize] {
+        let changed = fixture
+            .command(command, CONTENT_WAIT)
+            .expect("owned geometry changes");
+        assert_eq!(changed.status, 0);
+        let next = wait_for_geometry_frame(
+            capture.as_ref(),
+            source.stamp(),
+            false,
+            "System changed target",
+        );
+        fixture.begin_event_row(CONTENT_WAIT);
+        let cursor = pointer_location();
+        let refusal = input
+            .execute(&request_for(&source), &bounded(CONTENT_WAIT))
+            .expect("changed geometry returns a receipt");
+        assert_zero_effect(&refusal, InputFault::GeometryChanged);
+        assert_eq!(pointer_location(), cursor);
+        assert_eq!(fixture.event_totals(CONTENT_WAIT), EventTotals::default());
+        source = next;
+    }
+    input
+        .close(&bounded(CONTENT_WAIT))
+        .expect("System input closes");
+    capture
+        .close(&bounded(CONTENT_WAIT))
+        .expect("System capture closes");
+    let stopped = fixture
+        .command(FixtureCommandKind::Stop, CONTENT_WAIT)
+        .expect("fixture stops");
+    assert_eq!(stopped.status, 0);
+    fixture.input = None;
+}
+
+#[test]
+#[ignore = "moves/resizes the existing signed fixture and submits one System pointer move"]
+fn system_require_unchanged_accepts_raw_geometry_and_refuses_real_changes() {
+    qualify_system_raw_geometry(false);
+}
+
+#[test]
+#[ignore = "requires two mixed-scale displays, observes downscale, and submits one System pointer move"]
+fn system_require_unchanged_accepts_effective_one_raw_two_frame() {
+    qualify_system_raw_geometry(true);
 }
 
 #[test]
@@ -3716,6 +4000,54 @@ fn qualify_process_require_focused_success(mode: FixtureMode) {
         .expect("the focused-row fixture stop is acknowledged");
     assert_eq!(stopped.status, 0);
     fixture.input = None;
+}
+
+#[test]
+#[ignore = "delivers one balanced process-directed key pair to the signed fixture, then tests focus refusal"]
+fn process_directed_require_focused_accepts_only_the_focused_fixture() {
+    assert!(
+        std::env::var_os("MADO_PILOT_MACOS_FIXTURE_EXECUTABLE").is_some()
+            && std::env::var_os("MADO_PILOT_MACOS_FOREGROUND_FIXTURE_EXECUTABLE").is_some(),
+        "focus qualification requires the existing signed target and foreground bundles"
+    );
+    assert!(
+        post_event_access_granted(),
+        "existing post-event authority is required"
+    );
+    qualify_process_require_focused_success(FixtureMode::Default);
+
+    let mut foreground =
+        Fixture::start_foreground().expect("the independent foreground fixture starts");
+    let foreground_before = wait_until_frontmost_fixture(&foreground);
+    let mut fixture = Fixture::start_inactive(FixtureMode::Default)
+        .expect("the owned target starts without taking focus");
+    let provider = provider();
+    let chosen = discover_unique_fixture(&provider, &fixture, CONTENT_WAIT)
+        .expect("one exact owned target is selected");
+    let input = InputProvider::open(
+        &provider,
+        chosen.id(),
+        &InputOpenRequest::new()
+            .with_requirement(InputRequirement::Required)
+            .requiring(InputOperationKind::Keyboard, InputDelivery::ProcessDirected),
+        &bounded(CONTENT_WAIT),
+    )
+    .expect("the retained target admits the requested process route");
+    exercise_process_require_focused_refusal_row(
+        input.as_ref(),
+        chosen.id(),
+        &mut fixture,
+        &mut foreground,
+        &foreground_before,
+    );
+    input.close(&bounded(CONTENT_WAIT)).expect("input closes");
+    for fixture in [&mut fixture, &mut foreground] {
+        let stopped = fixture
+            .command(FixtureCommandKind::Stop, CONTENT_WAIT)
+            .expect("the owned fixture stops");
+        assert_eq!(stopped.status, 0);
+        fixture.input = None;
+    }
 }
 
 fn qualify_process_directed_renderer(

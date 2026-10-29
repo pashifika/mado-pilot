@@ -152,16 +152,21 @@ pub fn frame_with_padded_rows(
 /// Builds a template source of `extent` under `id`.
 ///
 /// The content is a real encoded image rather than a signature, because a
-/// backend that decodes template bytes has to be given bytes that decode. Its
-/// colour is arbitrary and no check here depends on it: what a backend finds
-/// where needs an image fixture with a known answer, which belongs to that
-/// backend's own algorithm tests.
+/// backend that decodes template bytes has to be given bytes that decode. For
+/// extents of at least two pixels it varies spatially, as correlation profiles
+/// may require. No check here depends on its colours.
 ///
 /// # Panics
 ///
 /// Panics for an identity or extent a template cannot have.
 #[must_use]
 pub fn template(id: &str, extent: PixelExtent) -> TemplateSource {
+    let count = usize::try_from(extent.width()).expect("a test template stays small")
+        * usize::try_from(extent.height()).expect("a test template stays small");
+    let mut rgb = [0x40, 0x80, 0xc0].repeat(count);
+    if let Some(red) = rgb.get_mut(3) {
+        *red = 0x41;
+    }
     TemplateSource::new(TemplateSourceRequest {
         id: TemplateId::new(id).expect("a non-empty identity"),
         encoding: TemplateEncoding::Png,
@@ -169,7 +174,7 @@ pub fn template(id: &str, extent: PixelExtent) -> TemplateSource {
         space: CoordinateSpace::CapturePixels,
         defaults: MatchDefaults::new(0.5, 8).expect("valid defaults"),
         content: Arc::from(
-            crate::png::solid_rgb(extent.width(), extent.height(), [0x40, 0x80, 0xc0]).as_slice(),
+            crate::png::encode_rgb(extent.width(), extent.height(), &rgb).as_slice(),
         ),
     })
     .expect("a valid template source")
@@ -195,6 +200,54 @@ pub fn descriptor_is_stable(backend: Arc<dyn MatchBackend>) {
         !first.version().is_empty(),
         "a score must be attributable to a version"
     );
+}
+
+/// Source layouts are preserved only when the snapshotted backend accepts them.
+///
+/// # Panics
+///
+/// Panics when mapping selects an undeclared layout or changes pixel colors.
+pub fn accepted_source_formats_are_selected(backend: Arc<dyn MatchBackend>) {
+    let matcher = Matcher::new(backend);
+    let descriptor = matcher.descriptor();
+    let operation = OperationContext::new();
+    let prepared = matcher
+        .prepare(&template("formats", PixelExtent::new(8, 8)), &operation)
+        .expect("prepares");
+    for source in [PixelFormat::Rgba8, PixelFormat::Bgra8] {
+        let color = if source == PixelFormat::Rgba8 {
+            [0x21, 0x43, 0x87, 0xff]
+        } else {
+            [0x87, 0x43, 0x21, 0xff]
+        };
+        let image = frame_with_pixels(PixelExtent::new(64, 64), source, color.repeat(64 * 64));
+        let request = MatchRequest::new(&image, RegionSelection::FullFrame, &prepared, options());
+        let mapped = matcher.map_match(&request, &operation).expect("mapped");
+        let pixels = mapped.pixels().expect("non-empty search");
+        let selected = if descriptor.accepts_format(source) {
+            source
+        } else {
+            descriptor.format()
+        };
+        assert_eq!(pixels.descriptor().format(), selected);
+        let expected = if selected == PixelFormat::Rgba8 {
+            [0x21, 0x43, 0x87, 0xff]
+        } else {
+            [0x87, 0x43, 0x21, 0xff]
+        };
+        assert!(
+            pixels
+                .bytes()
+                .chunks_exact(4)
+                .all(|pixel| pixel == expected)
+        );
+        assert!(mapped.is_equivalent_request(&request));
+        let result = matcher
+            .find_mapped(&mapped, &prepared, &operation)
+            .expect("accepted mapping is searchable");
+        assert_eq!(result.backend(), &descriptor);
+        assert_eq!(result.stamp(), image.stamp());
+    }
 }
 
 /// Preparation produces a template belonging to this backend.
@@ -405,6 +458,7 @@ pub fn a_result_reports_the_options_it_ran_under(backend: Arc<dyn MatchBackend>)
 /// Panics on the first check the backend does not satisfy.
 pub fn run(backend: &Arc<dyn MatchBackend>) {
     descriptor_is_stable(Arc::clone(backend));
+    accepted_source_formats_are_selected(Arc::clone(backend));
     preparation_belongs_to_its_backend(Arc::clone(backend));
     a_foreign_prepared_template_is_refused(Arc::clone(backend));
     an_already_cancelled_search_is_refused(Arc::clone(backend));

@@ -12,6 +12,15 @@ publish = false
 qualification-unsupported-api = ["mado-pilot-platform-windows/qualification-unsupported-api"]
 coreml-provider = ["mado-pilot-backend-onnx/coreml-provider"]
 cuda-provider = ["mado-pilot-backend-onnx/cuda-provider"]
+ocr-text-watch-qualification = ["mado-pilot-backend-onnx/benchmark-instrumentation"]
+# Normal-allocator timing build of `template-matching-efficiency`: production
+# selection entry only, no allocation or backend/mapping work counters.
+template-matching-timing = ["mado-pilot-backend-opencv/benchmark-selection"]
+# Historical instrumented build: timing plus counted allocation and work.
+template-matching-benchmark = [
+    "template-matching-timing",
+    "mado-pilot-backend-opencv/benchmark-instrumentation",
+]
 native-template-watch-qualification = [
     "mado-pilot-runtime/benchmark-instrumentation",
     "mado-pilot-backend-opencv/benchmark-instrumentation",
@@ -46,6 +55,8 @@ libc.workspace = true
 
 [dev-dependencies]
 mado-pilot-testkit = { path = "../support/testkit" }
+serde.workspace = true
+serde_json.workspace = true
 
 [[bench]]
 name = "deterministic-slice"
@@ -63,6 +74,15 @@ harness = false
 name = "native-template-watch"
 harness = false
 required-features = ["native-template-watch-qualification"]
+
+[[bench]]
+name = "ocr-text-watch-query"
+harness = false
+
+[[bench]]
+name = "template-matching-efficiency"
+harness = false
+required-features = ["template-matching-timing"]
 
 [lints]
 workspace = true

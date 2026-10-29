@@ -22,7 +22,10 @@
 //! Normalization here is the choice not to mix the two rather than arithmetic that
 //! reconciles them, which is why there is no flip to find in this module.
 
-use mado_pilot_capture::{CaptureFault, CoordinateSupport, PixelFormat, TargetDescription};
+use mado_pilot_capture::{
+    CaptureFault, CoordinateSupport, NativeWindowDescription, PixelFormat, TargetDescription,
+    TargetProcessIdentity,
+};
 use mado_pilot_core::{
     CapabilitySupport, GeometryFault, PermissionKind, PermissionState, PixelExtent, Result, Scale,
     TargetCapability, TargetId, TargetKind, TargetPlacement,
@@ -32,11 +35,20 @@ use crate::input::input_capability;
 use crate::shim::{self, FrameInfo, Inventory, KIND_DISPLAY, KIND_WINDOW, ShimStatus, TargetToken};
 
 /// The native descriptive key used for ordering and request validation.
-/// It is never exposed through a public contract or used to re-resolve a filter.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, PartialOrd, Ord)]
+/// It never re-resolves a filter or grants authority.
+#[derive(Clone, Copy, PartialEq, Eq, Hash, PartialOrd, Ord)]
 pub(crate) enum NativeKey {
     Window(u32),
     Display(u32),
+}
+
+impl std::fmt::Debug for NativeKey {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        formatter.write_str(match self {
+            Self::Window(_) => "Window",
+            Self::Display(_) => "Display",
+        })
+    }
 }
 
 impl NativeKey {
@@ -106,13 +118,26 @@ impl Fingerprint {
 }
 
 /// The mutable metadata one discovery pass observed for a target.
-#[derive(Debug, Clone)]
+#[derive(Clone)]
 pub(crate) struct TargetMetadata {
     pub(crate) name: String,
     pub(crate) extent: PixelExtent,
     #[allow(dead_code)] // Read by the authorized-host screenRect acceptance matrix.
     pub(crate) placement: TargetPlacement,
     pub(crate) process_directed: bool,
+    /// Verified once against `Candidate::target`; clones share immutable path storage.
+    pub(crate) process_identity: Option<TargetProcessIdentity>,
+    pub(crate) window: Option<NativeWindowDescription>,
+}
+
+impl std::fmt::Debug for TargetMetadata {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        formatter
+            .debug_struct("TargetMetadata")
+            .field("extent", &self.extent)
+            .field("window", &self.window)
+            .finish_non_exhaustive()
+    }
 }
 
 impl TargetMetadata {
@@ -124,7 +149,7 @@ impl TargetMetadata {
     /// only when this inventory snapshot admitted one ordinary window for the
     /// owning process. Exact-window `WindowMessage` delivery remains absent.
     pub(crate) fn describe(&self, id: TargetId, kind: TargetKind) -> TargetDescription {
-        TargetDescription::new(
+        let description = TargetDescription::new(
             id,
             self.name.clone(),
             self.extent,
@@ -141,7 +166,15 @@ impl TargetMetadata {
                 input_capability(kind, self.process_directed),
             )
             .with_capture_permission(PermissionKind::ScreenCapture),
-        )
+        );
+        let description = match &self.process_identity {
+            Some(identity) => description.with_process_identity(identity.clone()),
+            None => description,
+        };
+        match self.window {
+            Some(window) => description.with_window(window),
+            None => description,
+        }
     }
 }
 
@@ -191,6 +224,29 @@ pub(crate) fn inventory(wait: std::time::Duration) -> Result<Vec<Candidate>> {
         let Ok(target) = inventory.target(index) else {
             continue;
         };
+        let process_identity = match key {
+            NativeKey::Window(_) => target.process_identity().ok(),
+            NativeKey::Display(_) => None,
+        };
+        let window = match key {
+            NativeKey::Window(_) => target.snapshot_window_description().ok(),
+            NativeKey::Display(_) => None,
+        };
+        let (extent, placement) = if let Some(window) = window {
+            let geometry = window.geometry();
+            let raw = geometry.placement();
+            let Ok(placement) = placement_from_points(
+                raw.desktop_origin(),
+                raw.logical_size(),
+                raw.scale().x(),
+                geometry.extent(),
+            ) else {
+                continue;
+            };
+            (geometry.extent(), placement)
+        } else {
+            (extent, placement)
+        };
         candidates.push(Candidate {
             key,
             fingerprint: fingerprint(key, &info, extent),
@@ -200,6 +256,8 @@ pub(crate) fn inventory(wait: std::time::Duration) -> Result<Vec<Candidate>> {
                 extent,
                 placement,
                 process_directed: info.process_directed() && process_post_available,
+                process_identity,
+                window,
             },
         });
     }
@@ -246,6 +304,26 @@ pub(crate) fn placement_from_points(
         return Err(GeometryFault::SpaceMismatch);
     }
     TargetPlacement::new(origin, logical, scale)
+}
+
+/// Preserves exact window points while checking the native nearest-pixel extent.
+pub(crate) fn window_placement_from_points(
+    origin: (f64, f64),
+    size: (f64, f64),
+    scale: f64,
+    extent: PixelExtent,
+) -> std::result::Result<TargetPlacement, GeometryFault> {
+    let scale = Scale::new(scale, scale)?;
+    let placement = TargetPlacement::new(origin, size, scale)?;
+    let pixels = (size.0 * scale.x(), size.1 * scale.y());
+    if pixels.0 < 1.0
+        || pixels.1 < 1.0
+        || pixels.0.round() != f64::from(extent.width())
+        || pixels.1.round() != f64::from(extent.height())
+    {
+        return Err(GeometryFault::SpaceMismatch);
+    }
+    Ok(placement)
 }
 
 /// Builds the only placement a native publication may carry.
@@ -303,6 +381,8 @@ mod tests {
             placement: placement_from_points((0.0, 0.0), (1280.0, 800.0), 2.0, extent)
                 .expect("a doubled backing scale covers the frame"),
             process_directed: true,
+            process_identity: None,
+            window: None,
         }
     }
 
@@ -499,6 +579,23 @@ mod tests {
             frame_placement(&contradictory),
             Err(mado_pilot_capture::CaptureFault::InconsistentDescriptor)
         );
+    }
+
+    #[test]
+    fn a_subpixel_window_keeps_pixel_consistent_default_frame_mapping() {
+        let extent = PixelExtent::new(129, 96);
+        let info =
+            crate::shim::FrameInfo::testing_screen_rect(extent, 2.0, (-64.0, -48.0), (64.25, 48.0));
+        let placement = frame_placement(&info).expect("quantized frame placement");
+        assert_eq!(placement.logical_size(), (64.5, 48.0));
+        let snapshot = TransformSnapshot::with_target(GeometryRevision::FIRST, extent, placement)
+            .expect("pixel-consistent frame transform");
+        let point = Point::new(CoordinateSpace::CapturePixels, 128.0, 94.0).expect("frame point");
+        let desktop = snapshot
+            .convert_point(point, CoordinateSpace::DesktopLogical)
+            .expect("desktop conversion");
+        assert_eq!((desktop.x(), desktop.y()), (0.0, -1.0));
+        assert!(snapshot.covers_target());
     }
 
     #[test]

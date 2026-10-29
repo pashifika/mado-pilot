@@ -7,11 +7,12 @@ use std::thread;
 use std::time::Duration;
 
 use mado_pilot_capture::{
-    CaptureFault, CaptureProvider, CaptureSession, OpenRequest, PixelFormat, TargetDescription,
+    CaptureFault, CapturePacingRequest, CaptureProvider, CaptureSession, OpenRequest, PixelFormat,
+    ResolvedCapturePacing, TargetDescription,
 };
 use mado_pilot_core::{
-    IdentityIssuer, Operation, OperationContext, PermissionKind, ProviderId, Result, TargetId,
-    TargetKind,
+    Error, IdentityIssuer, Operation, OperationContext, PermissionKind, ProviderId, Result, Status,
+    TargetId, TargetKind,
 };
 use mado_pilot_input::{
     InputController, InputDescriptor, InputFault, InputOpenRequest, InputProvider,
@@ -34,6 +35,66 @@ const DISCOVERY_POLL_INTERVAL: Duration = Duration::from_millis(2);
 /// Current and immediately previous discovery selections remain openable.
 const RETAINED_DISCOVERY_GENERATIONS: usize = 2;
 
+/// Construction policy for process-directed mouse movement and button events.
+///
+/// This selection never changes System, keyboard, text, or scroll input.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum MacosProcessPointerMode {
+    /// Uses the existing private-source Core Graphics construction.
+    #[default]
+    CoreGraphics,
+    /// Uses AppKit construction with an event-local Command modifier.
+    ///
+    /// Ordinary pointer input refuses a foreground target or unavailable native
+    /// capability. No Command key is posted and no alternative route is selected.
+    /// Compatibility remains unknown and receipts prove invocation only.
+    AppKitBackground,
+}
+
+/// Declarative macOS defaults, selected before any native capture is opened.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub struct MacosConfig {
+    capture_pacing: CapturePacingRequest,
+    process_pointer_mode: MacosProcessPointerMode,
+}
+
+impl MacosConfig {
+    /// Creates an inheriting configuration.
+    #[must_use]
+    pub const fn new() -> Self {
+        Self {
+            capture_pacing: CapturePacingRequest::inherit(),
+            process_pointer_mode: MacosProcessPointerMode::CoreGraphics,
+        }
+    }
+
+    /// Replaces this configuration's complete capture pacing selection.
+    #[must_use]
+    pub const fn with_capture_pacing(mut self, pacing: CapturePacingRequest) -> Self {
+        self.capture_pacing = pacing;
+        self
+    }
+
+    /// Returns this configuration's capture pacing selection.
+    #[must_use]
+    pub const fn capture_pacing(&self) -> CapturePacingRequest {
+        self.capture_pacing
+    }
+
+    /// Replaces the immutable process-directed pointer construction policy.
+    #[must_use]
+    pub const fn with_process_pointer_mode(mut self, mode: MacosProcessPointerMode) -> Self {
+        self.process_pointer_mode = mode;
+        self
+    }
+
+    /// Returns the process-directed pointer construction policy.
+    #[must_use]
+    pub const fn process_pointer_mode(&self) -> MacosProcessPointerMode {
+        self.process_pointer_mode
+    }
+}
+
 /// Picker-free macOS target discovery and ScreenCaptureKit capture.
 ///
 /// Construction touches no native API and requests no authorization. Discovery
@@ -44,6 +105,8 @@ const RETAINED_DISCOVERY_GENERATIONS: usize = 2;
 /// the user.
 pub struct MacosCaptureProvider {
     issuer: Arc<IdentityIssuer>,
+    capture_pacing: ResolvedCapturePacing,
+    process_pointer_mode: MacosProcessPointerMode,
     discovery_gate: Mutex<()>,
     registry: Mutex<Registry>,
 }
@@ -75,9 +138,58 @@ impl MacosCaptureProvider {
     pub fn new(issuer: Arc<IdentityIssuer>) -> Self {
         Self {
             issuer,
+            capture_pacing: ResolvedCapturePacing::source_default(),
+            process_pointer_mode: MacosProcessPointerMode::CoreGraphics,
             discovery_gate: Mutex::new(()),
             registry: Mutex::new(Registry::default()),
         }
+    }
+
+    /// Creates a provider with an immutable, already-resolved capture default.
+    ///
+    /// # Errors
+    ///
+    /// Returns an invalid argument if the selected interval does not fit signed
+    /// 64-bit nanoseconds. No native API or permission probe is called.
+    pub fn with_capture_pacing(
+        issuer: Arc<IdentityIssuer>,
+        pacing: ResolvedCapturePacing,
+    ) -> Result<Self> {
+        Self::validate_capture_pacing(pacing)?;
+        Ok(Self {
+            capture_pacing: pacing,
+            ..Self::new(issuer)
+        })
+    }
+
+    /// Selects process-directed pointer construction without touching native APIs.
+    #[must_use]
+    pub const fn with_process_pointer_mode(mut self, mode: MacosProcessPointerMode) -> Self {
+        self.process_pointer_mode = mode;
+        self
+    }
+
+    /// Validates only the selected native duration representation.
+    ///
+    /// # Errors
+    ///
+    /// Returns an invalid argument if the interval does not fit positive signed
+    /// 64-bit nanoseconds, including when it is preferred.
+    pub fn validate_capture_pacing(pacing: ResolvedCapturePacing) -> Result<()> {
+        crate::shim::capture_pacing_nanos(pacing)
+            .map(|_| ())
+            .map_err(|_| {
+                Error::new(
+                    Status::InvalidArgument,
+                    "macOS capture pacing interval must fit positive signed 64-bit nanoseconds",
+                )
+            })
+    }
+
+    fn resolve_capture_pacing(&self, request: &OpenRequest) -> Result<ResolvedCapturePacing> {
+        let pacing = request.capture_pacing().resolve(self.capture_pacing);
+        Self::validate_capture_pacing(pacing)?;
+        Ok(pacing)
     }
 
     fn discover_with<F>(
@@ -185,6 +297,22 @@ impl MacosCaptureProvider {
         })
     }
 
+    /// Reads the raw backing scale recorded for a private-fixture source frame.
+    #[cfg(feature = "private-fixture")]
+    #[doc(hidden)]
+    #[must_use]
+    pub fn fixture_source_backing_scale(
+        &self,
+        target: TargetId,
+        source: mado_pilot_core::FrameStamp,
+    ) -> Option<f64> {
+        let record = Arc::clone(self.registry().records.get(&target)?);
+        record
+            .geometry
+            .source_geometry(source)
+            .map(|(_, bounds)| bounds.scale)
+    }
+
     /// Returns the record an input operation names, or why it cannot be used.
     ///
     /// `TargetId` is snapshot-scoped exactly as it is for capture, so an accepted
@@ -246,6 +374,34 @@ impl CaptureProvider for MacosCaptureProvider {
         self.discover_with(operation, || inventory(wait))
     }
 
+    fn describe_window(
+        &self,
+        target: TargetId,
+        operation: &OperationContext,
+    ) -> Result<TargetDescription> {
+        let mut attempt = Operation::admit(operation)?;
+        CaptureProvider::accepts_target(self, target, self.issuer.engine())?;
+        let record = self
+            .registry()
+            .records
+            .get(&target)
+            .cloned()
+            .ok_or(CaptureFault::TargetLost)?;
+        if record.kind() != TargetKind::Window {
+            return Err(CaptureFault::UnsupportedOption.into());
+        }
+        let observed = record
+            .selection
+            .window_description(inventory_wait(operation.remaining()));
+        attempt.checkpoint()?;
+        let window = observed?;
+        let mut metadata = record.metadata.clone();
+        metadata.extent = window.geometry().extent();
+        metadata.placement = window.geometry().placement();
+        metadata.window = Some(window);
+        Ok(attempt.commit(metadata.describe(target, TargetKind::Window))?)
+    }
+
     fn open(
         &self,
         target: TargetId,
@@ -260,6 +416,7 @@ impl CaptureProvider for MacosCaptureProvider {
         {
             return Err(CaptureFault::UnsupportedOption.into());
         }
+        let pacing = self.resolve_capture_pacing(request)?;
 
         // accepts_target established this engine and provider. TargetId is
         // snapshot-scoped, so only the current and previous discovery leases are
@@ -279,8 +436,9 @@ impl CaptureProvider for MacosCaptureProvider {
             record.selection.clone(),
             record.metadata.clone(),
             Arc::clone(&record.geometry),
-        );
-        let session = NativeSession::open(selected, &mut attempt)?;
+        )
+        .with_requirements(request.window_geometry(), request.resource_limits());
+        let session = NativeSession::open(selected, pacing, &mut attempt)?;
         Ok(attempt.commit(session as Arc<dyn CaptureSession>)?)
     }
 }
@@ -334,7 +492,7 @@ impl InputProvider for MacosCaptureProvider {
         let descriptor = record.input_descriptor(inventory_wait(operation.remaining()));
         attempt.checkpoint()?;
         request.check(descriptor.capability())?;
-        let controller = MacosInputController::new(record, descriptor);
+        let controller = MacosInputController::new(record, descriptor, self.process_pointer_mode);
         Ok(attempt.commit(controller as Arc<dyn InputController>)?)
     }
 }
@@ -437,8 +595,11 @@ impl TargetRecord {
             .process_post(event_source, request, operation)
     }
 
-    /// Reads focus for this exact retained selection within `wait`.
-    pub(crate) fn is_focused(&self, wait: Duration) -> std::result::Result<bool, ShimStatus> {
+    /// Reads focus and its final retained-target bounds within `wait`.
+    pub(crate) fn is_focused(
+        &self,
+        wait: Duration,
+    ) -> std::result::Result<(bool, NativeBounds), ShimStatus> {
         self.selection.input_focused(wait)
     }
 
@@ -464,7 +625,9 @@ mod tests {
     use std::thread;
     use std::time::Duration;
 
-    use mado_pilot_capture::{CaptureProvider, OpenRequest, PixelFormat};
+    use mado_pilot_capture::{
+        CapturePacingRequest, CaptureProvider, OpenRequest, PixelFormat, ResolvedCapturePacing,
+    };
     use mado_pilot_core::{
         Clock, IdentityIssuer, MonotonicInstant, OperationContext, PixelExtent, Scale, Status,
         TargetKind, TargetPlacement,
@@ -478,6 +641,82 @@ mod tests {
         RETAINED_DISCOVERY_GENERATIONS, ShimStatus, inventory_wait,
         process_authority_supports_route,
     };
+
+    #[test]
+    fn capture_pacing_defaults_are_isolated_and_session_overrides_replace_the_whole_request() {
+        let source = ResolvedCapturePacing::source_default();
+        let required = CapturePacingRequest::required(Duration::from_millis(200))
+            .expect("positive")
+            .resolve(source);
+        let preferred = CapturePacingRequest::preferred(Duration::from_millis(20))
+            .expect("positive")
+            .resolve(source);
+        let first =
+            MacosCaptureProvider::with_capture_pacing(Arc::new(IdentityIssuer::new()), required)
+                .expect("representable default");
+        let second =
+            MacosCaptureProvider::with_capture_pacing(Arc::new(IdentityIssuer::new()), preferred)
+                .expect("representable default");
+        let override_request = OpenRequest::new().with_capture_pacing(
+            CapturePacingRequest::preferred(Duration::from_millis(60)).expect("positive"),
+        );
+        let selected = first
+            .resolve_capture_pacing(&override_request)
+            .expect("session override");
+        assert!(selected.is_preferred());
+        assert_eq!(selected.interval(), Some(Duration::from_millis(60)));
+        assert_eq!(
+            first
+                .resolve_capture_pacing(
+                    &OpenRequest::new()
+                        .with_capture_pacing(CapturePacingRequest::source_default(),)
+                )
+                .expect("explicit reset"),
+            source,
+        );
+        assert_eq!(
+            first
+                .resolve_capture_pacing(&OpenRequest::new())
+                .expect("inherited"),
+            required
+        );
+        assert_eq!(
+            second
+                .resolve_capture_pacing(&OpenRequest::new())
+                .expect("independent"),
+            preferred
+        );
+    }
+
+    #[test]
+    fn capture_pacing_provider_validation_rejects_unrepresentable_preferences_without_native_work()
+    {
+        let request = CapturePacingRequest::preferred(
+            Duration::from_nanos(i64::MAX.unsigned_abs()) + Duration::from_nanos(1),
+        )
+        .expect("positive neutral interval");
+        let selected = request.resolve(ResolvedCapturePacing::source_default());
+        assert_eq!(
+            MacosCaptureProvider::with_capture_pacing(Arc::new(IdentityIssuer::new()), selected)
+                .expect_err("unrepresentable engine default")
+                .status(),
+            Status::InvalidArgument,
+        );
+        let provider = MacosCaptureProvider::new(Arc::new(IdentityIssuer::new()));
+        assert_eq!(
+            provider
+                .resolve_capture_pacing(&OpenRequest::new().with_capture_pacing(request))
+                .expect_err("unrepresentable session preference")
+                .status(),
+            Status::InvalidArgument,
+        );
+        assert_eq!(
+            provider
+                .resolve_capture_pacing(&OpenRequest::new())
+                .expect("default unchanged"),
+            ResolvedCapturePacing::source_default(),
+        );
+    }
 
     fn window_candidate(incarnation: u64) -> Candidate {
         let extent = PixelExtent::new(64, 48);
@@ -495,6 +734,8 @@ mod tests {
                 )
                 .expect("placement"),
                 process_directed: true,
+                process_identity: None,
+                window: None,
             },
         }
     }
@@ -658,6 +899,10 @@ mod tests {
 
     #[test]
     fn successive_discoveries_mint_fresh_ids_and_keep_the_previous_generation_openable() {
+        // Native scenarios observe the same process-wide lifecycle counters.
+        let _serial = crate::shim::NATIVE_LIFECYCLE_TEST_SERIAL
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
         let provider = MacosCaptureProvider::new(Arc::new(IdentityIssuer::new()));
         let first = match provider.discover(&OperationContext::new()) {
             Ok(first) => first,
@@ -843,5 +1088,92 @@ mod tests {
         assert_eq!(registry.records.len(), RETAINED_DISCOVERY_GENERATIONS);
         assert!(registry.records.contains_key(&first));
         assert!(registry.records.contains_key(&second));
+    }
+
+    #[test]
+    fn retained_window_description_preserves_signed_scaled_geometry_and_rejects_reuse() {
+        let provider = MacosCaptureProvider::new(Arc::new(IdentityIssuer::new()));
+        let candidate = window_candidate(1);
+        let retained = candidate.target.clone();
+        let id = commit_candidates(&provider, vec![candidate])[0].id();
+        let description = provider
+            .describe_window(id, &OperationContext::new())
+            .expect("retained synthetic window");
+        let window = description.window().expect("native metadata");
+        assert_eq!(
+            window.geometry().placement().desktop_origin(),
+            (-64.0, -48.0)
+        );
+        assert_eq!(window.geometry().placement().scale().x(), 2.0);
+        assert_eq!(window.geometry().extent(), PixelExtent::new(128, 96));
+        assert_eq!(description.extent(), window.geometry().extent());
+        retained.mark_synthetic_lost();
+        let replacement = commit_candidates(&provider, vec![window_candidate(2)])[0].id();
+        assert_eq!(
+            provider
+                .describe_window(id, &OperationContext::new())
+                .expect_err("equal native key cannot rebind the retained record")
+                .status(),
+            Status::TargetLost
+        );
+        provider
+            .describe_window(replacement, &OperationContext::new())
+            .expect("new incarnation has independent authority");
+    }
+
+    #[test]
+    fn retained_window_description_rejects_foreign_retired_and_cancelled_requests() {
+        let provider = MacosCaptureProvider::new(Arc::new(IdentityIssuer::new()));
+        let foreign = IdentityIssuer::new()
+            .issue_target(super::PROVIDER)
+            .expect("foreign identity");
+        assert_eq!(
+            provider
+                .describe_window(foreign, &OperationContext::new())
+                .expect_err("foreign")
+                .status(),
+            Status::InvalidArgument
+        );
+        let retired = commit_candidates(&provider, vec![window_candidate(1)])[0].id();
+        commit_candidates(&provider, vec![window_candidate(2)]);
+        commit_candidates(&provider, vec![window_candidate(3)]);
+        assert_eq!(
+            provider
+                .describe_window(retired, &OperationContext::new())
+                .expect_err("retired")
+                .status(),
+            Status::TargetLost
+        );
+        let cancellation = mado_pilot_core::CancellationToken::new();
+        cancellation.cancel();
+        let operation = OperationContext::new().with_cancellation(cancellation);
+        assert_eq!(
+            provider
+                .describe_window(retired, &operation)
+                .expect_err("cancellation precedes stale-record lookup")
+                .status(),
+            Status::Cancelled
+        );
+        let expired = OperationContext::new().with_deadline(MonotonicInstant::ORIGIN);
+        assert_eq!(
+            provider
+                .describe_window(retired, &expired)
+                .expect_err("deadline precedes stale-record lookup")
+                .status(),
+            Status::DeadlineExceeded
+        );
+        let mut display = window_candidate(4);
+        display.key = NativeKey::Display(7);
+        display.fingerprint = Fingerprint::Display {
+            extent: display.metadata.extent,
+        };
+        let display = commit_candidates(&provider, vec![display])[0].id();
+        assert_eq!(
+            provider
+                .describe_window(display, &OperationContext::new())
+                .expect_err("display cannot acquire window metadata")
+                .status(),
+            Status::Unsupported
+        );
     }
 }

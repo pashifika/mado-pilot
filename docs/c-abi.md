@@ -17,23 +17,57 @@ The production default/profile-zone and fixture OCR flows are
 [`examples/c/ocr-profile-zones.c`](../crates/bindings/capi/examples/c/ocr-profile-zones.c),
 and [`examples/c/ocr-fixture.c`](../crates/bindings/capi/examples/c/ocr-fixture.c).
 
-A C++ caller uses the header-only RAII wrapper over this contract rather than
-calling the table directly; see [cpp-wrapper.md](cpp-wrapper.md). Everything
-below still applies to it, because it is the same contract.
+C and C++ callers include `madopilot/madopilot.h` and call the negotiated table
+directly. Both link `MadoPilot::C`; no official C++ wrapper or compatibility shim
+is provided, so one ABI carries one ownership model and one compatibility policy.
 
-## ABI 1.5, with complete released 1.0, 1.2, 1.3, and 1.4 prefixes preserved
+## Direct C and C++ consumption
 
-The current header declares ABI 1.5. ADR 0007 freezes ABI 1.0's 424-byte
-capture/matching table; ADR 0023 freezes ABI 1.2's 592-byte input/diagnostic
-table; ADRs 0035/0036 freeze ABI 1.3's singular OCR/default construction at 648
-bytes; ADR 0043 freezes ABI 1.4's explicit profile/grouped OCR surface at 720
-bytes. ABI 1.5 appends `engine_create_with_ocr_provider` at offset 720 and
-`engine_ocr_provider_descriptor` at offset 728 for a complete 736-byte table
-under [ADR 0046](adr/0046-onnx-accelerator-provider-policy.md).
-The `v0.4.0` product version leaves this separately versioned ABI unchanged and
-adds no watcher entry.
+Start with [`direct-abi.c`](../crates/bindings/capi/examples/c/direct-abi.c) or
+[`direct-abi.cpp`](../crates/bindings/capi/examples/cpp/direct-abi.cpp). Each
+negotiates the table, reads build information, creates a cancellation handle,
+observes its state before and after cancellation, and releases it. These small
+programs need only the built library, not models, capture/input permission, or a
+desktop target.
 
-The unreleased 1.1 draft remains intentionally unsupported. Within ABI major 1:
+Applications choose ownership abstractions, error handling, request storage,
+deadlines, cancellation, and sequencing. Keep pointer-length inputs alive for
+their documented call scope, read borrowed views only while their owner is
+retained, and explicitly release each owned handle. Every status and output
+contract below applies equally to both languages. The larger C workflows and
+external consumers are verification programs, not an additional public API.
+
+On Windows, the argument-consuming C samples convert `wmain` UTF-16 arguments
+into owned UTF-8 before ABI use. The profile OCR sample also converts `_wgetenv`
+fallbacks; explicit arguments win. Storage survives every borrowing call and is
+freed on return. Invalid UTF-16 or allocation failure is an error, not lossy
+replacement or prerequisite skip. This private sample code adds no helper API or
+ABI entry. See [Windows verification](windows-input-verification.md#audit-2-6-and-16-acceptance)
+for conversion-only coverage and the separate real-consumer acceptance gate.
+
+## Released prefixes and compatibility
+
+The current header declares ABI 1.5. Every released minor is a frozen complete
+prefix of the current table:
+
+| ABI | Table extent | What it appended |
+|---|---|---|
+| 1.0 | 424 bytes | Capture and matching: thirteen fixed status values, the forty-byte mandatory prefix ending at `status_text`, every structure's layout, output-state and ownership rules, and the Rust-error-to-C-status mapping |
+| 1.2 | 592 bytes | Native route capability and submission-evidence vocabulary, owned receipt and attempt access, operation activity tags and bounded diagnostics (21 entries) |
+| 1.3 | 648 bytes | Six-entry singular OCR suffix with immutable result/view ownership through offset 640, then `engine_create_with_default_ocr` at offset 640 with standalone default options |
+| 1.4 | 720 bytes | `engine_create_with_ocr_profile`, `session_scan_ocr_zones` and grouped-result owner/accessors at offsets 648–704, then `engine_ocr_descriptor` at 712 |
+| 1.5 | 736 bytes | `engine_create_with_ocr_provider` at 720 and `engine_ocr_provider_descriptor` at 728, with 32-byte provider options and a 40-byte engine-owned descriptor |
+
+Released structures stay fixed: ABI 1.4 kept the 8-byte `madopilot_engine_capabilities_t`
+and 16-byte `madopilot_engine_options_t`, ABI 1.5 kept every ABI 1.4 declaration,
+and the released diagnostic record does not grow. The per-field ABI 1.0 reports
+are under [evidence/c-abi/](evidence/c-abi/). The `v0.4.0` product version left
+this separately versioned ABI unchanged and added no watcher entry. The unreleased
+`v0.5.0` expands grouped OCR to sixteen zones without changing ABI 1.5 or any
+released layout.
+
+The unreleased 1.1 draft was development-only and is intentionally unsupported;
+minimum minor 1 is rejected. Within ABI major 1:
 
 - no released numeric value changes its number;
 - no released structure field moves, and none is removed;
@@ -47,14 +81,14 @@ Use the smaller of caller `sizeof(madopilot_api_t)` and the returned
 720 bytes. ABI 1.5 provider construction requires
 `MADOPILOT_API_SIZE_ENGINE_CREATE_WITH_OCR_PROVIDER` (728 bytes); provider
 descriptor access requires `MADOPILOT_API_SIZE_ENGINE_OCR_PROVIDER_DESCRIPTOR`
-(736 bytes). The C++ wrapper checks both caller-known and returned extents before
-reading either pointer.
+(736 bytes). Every caller checks both caller-known and returned extents before
+reading a function pointer.
 
 The released promise is executable. `tests/abi-compat/v1/`, `v1_2/`, `v1_3/`,
 and `v1_4/` keep exact headers/callers, compile without the working header, link
 to the current library, negotiate only their declared extents, and execute their
-complete flows. Current C++ checks also negotiate partial 1.3, 1.4, and 1.5
-extents and refuse high-level operations before a missing entry is read.
+complete flows. Direct C ABI tests also negotiate an incomplete current input
+suffix without reading an entry outside the caller-known extent.
 
 ## Migrating an ABI 1.4 caller to provider-policy OCR
 
@@ -131,18 +165,24 @@ An existing 1.3 caller remains unchanged. To use ABI 1.4:
    runtime views, then call `engine_create_with_ocr_profile`;
 3. call `engine_ocr_descriptor` and read the exact bounded
    backend/model/profile identity from its engine-borrowed views;
-4. retain one exact frame and supply `1..=8` complete
+4. retain one exact frame and supply `1..=16` complete
    `madopilot_ocr_zone_t` elements through a pointer, `size_t` count, and
    aligned byte stride for the synchronous call;
 5. own the returned `madopilot_ocr_zone_scan_result_t` independently, inspect
    source/envelope/counts, then use zone plus group-relative region indexes; and
 6. retain borrowed descriptor/text views only while that grouped owner lives.
 
-Zero/nine zones, null or misaligned arrays, short/misaligned strides, overflowing
+Zero or seventeen-or-more zones, null or misaligned arrays, short/misaligned strides, overflowing
 final addresses, short elements, non-capture-pixel zones, unknown profile/enums,
 identity mismatches, interruption, close, and backend faults publish no result.
 The caller owns duplicate/adjacent/overlapping-zone reconciliation; ordinary
 exact membership remains deterministic but carries no quality/performance claim.
+
+Sixteen-zone admission requires product version 0.5.0 or later, reported by
+`build_info.library_version`. ABI 1.4 negotiation establishes entry availability,
+not this higher limit: older libraries accept at most eight zones and return
+`MADOPILOT_STATUS_INVALID_ARGUMENT` above that bound. Existing one-through-eight
+requests remain unchanged.
 
 ## One exported symbol
 
@@ -416,8 +456,7 @@ the fault pair — `MADOPILOT_ASSET_FAULT_UNKNOWN_TEMPLATE` at
 `MADOPILOT_ASSET_STAGE_COMMIT` — because `template_prepare_from_package`
 resolves the identity against the package before asking the backend for
 anything. It names no backend, because none ran. The status says whose mistake
-it was and the fault pair says which one; see
-[ADR 0007](adr/0007-phase-1-c-abi-freeze.md), decision 4.
+it was and the fault pair says which one.
 
 **A caller-supplied C region is in capture pixels.** Any other space is
 `MADOPILOT_STATUS_INVALID_ARGUMENT` with `MADOPILOT_ERROR_CATEGORY_ABI`; this
@@ -436,8 +475,7 @@ here, so a target-normalized coordinate and a frame-normalized one address the
 same point; a session advertises the target-normalized bit when its source
 declares that its frames cover the target, and never as a claim that some other
 extent applies. The first phase that captures a sub-region of a target makes the
-two differ, and that is when the distinction begins to carry information. See
-[ADR 0009](adr/0009-phase-1-normalized-coordinate-spaces.md).
+two differ, and that is when the distinction begins to carry information.
 
 There is no global, thread-local, or engine-wide last-error slot. A failure
 belongs to the call that produced it, and a slot would make two threads' failures
@@ -630,6 +668,11 @@ and `COMPLETE` are the only cleanup values proving no sequence-owned state
 remains held; treat `INCOMPLETE`, `EXHAUSTED`, and unknown later values
 conservatively.
 
+Windows partial System text can owe one Unicode key-up even when the Text event
+adds no complete logical event. That release shares the sequence's single cleanup
+event/time budget with held keys/buttons. It neither replaces the original fault
+nor authorizes a retry; existing receipt fields report the combined counts.
+
 A contained boundary panic leaves the receipt handle null but cannot prove no
 native input took effect, so the caller must not automatically retry.
 Windows advertises exact-window `WindowMessage` for ordinary retained
@@ -790,27 +833,47 @@ a compiler.
 
 ### Compiling
 
+On macOS, build the development library and run either small sample:
+
 ```sh
-cargo build --locked --package mado-pilot-capi
+python3 tools/setup-native.py -- cargo build --locked --package mado-pilot-capi
 cc -std=c11 -I crates/bindings/capi/include \
-   -I crates/bindings/capi/examples \
-   -o deterministic-slice \
-   crates/bindings/capi/examples/c/deterministic-slice.c \
-   target/debug/libmadopilot.dylib -Wl,-rpath,target/debug
-./deterministic-slice --package fixtures/assets/phase1-slice
+   crates/bindings/capi/examples/c/direct-abi.c \
+   target/debug/libmadopilot.dylib -Wl,-rpath,"$PWD/target/debug" \
+   -o target/debug/direct-abi-c
+c++ -std=c++17 -I crates/bindings/capi/include \
+   crates/bindings/capi/examples/cpp/direct-abi.cpp \
+   target/debug/libmadopilot.dylib -Wl,-rpath,"$PWD/target/debug" \
+   -o target/debug/direct-abi-cpp
+target/debug/direct-abi-c
+target/debug/direct-abi-cpp
 ```
 
 On Windows, link `target\debug\madopilot.dll.lib` and put `target\debug` on
-`PATH` before running.
+`PATH` before running. Keep ordinary and private-fixture artifacts in separate
+Cargo target directories.
 
-The second include directory is for `deterministic-scene.h`, which holds the
-deterministic scene both the C and C++ examples build their replay frame from. A
-program of your own needs only the first.
+Both languages use the same development-tree CMake import:
 
-CMake targets are available as well, and are what a C++ consumer uses; see
-[cpp-wrapper.md](cpp-wrapper.md#building-against-it).
+```cmake
+cmake_minimum_required(VERSION 3.22)
+project(my_app LANGUAGES CXX)
+set(MADOPILOT_ARTIFACT_DIR "<absolute Cargo profile directory>")
+add_subdirectory("<MadoPilot source>/crates/bindings/capi" madopilot)
+add_executable(my_app main.cpp)
+target_compile_features(my_app PRIVATE cxx_std_17)
+target_link_libraries(my_app PRIVATE MadoPilot::C)
+```
 
-The native C examples have two modes. `--check` creates the real platform
+The import project enables no compiler and imposes no language standard. A
+C-only project uses `LANGUAGES C`, its own `.c` source and C standard, and the
+same target; no C++ compiler is required. `MADOPILOT_ARTIFACT_DIR` defaults to
+the repository's `target/debug`, regardless of `CMAKE_BUILD_TYPE`. Set it
+explicitly for other profiles, target-specific builds, or a custom
+`CARGO_TARGET_DIR`.
+This is a source-tree import, not an installed/exported SDK.
+
+The native C verification programs' `--check` mode creates the real platform
 engine, verifies capability reporting, and reads only non-prompting permission
 state; it stops before discovery and sends no input. That remains the default on
 macOS and for an ordinary local run:
@@ -819,10 +882,9 @@ macOS and for an ordinary local run:
 cargo run --locked --package mado-pilot-capi --example c-abi-check -- --label "<host>"
 ```
 
-On Windows, `--windows-native-fixture` launches both already-built repository
-fixtures, obtains their exact titles, runs the C and C++ common flows once
-against the ordinary contract and once against the acknowledged contract, and
-terminates both fixtures:
+On Windows, `--windows-native-fixture` runs the C default and extended sequences.
+Each gets fresh already-built ordinary and acknowledged repository fixtures,
+uses their exact titles, and terminates them after its flow:
 
 ```bat
 cargo build --locked --package mado-pilot-platform-windows --bin mado-pilot-windows-input-fixture --bin mado-pilot-windows-window-message-fixture
@@ -841,42 +903,55 @@ focus, permit no system-input fallback, and print no title, captured bytes, or
 typed text.
 
 When a caller owns the fixture lifecycle, pass `--ordinary "<full title>"` or
-`--acknowledged "<full title>"` directly to `windows-native-input.exe`; the C++
-counterpart accepts the same flags.
+`--acknowledged "<full title>"` directly to `windows-native-input.exe`. Prefix
+either form with `--extended-sequence` for the sixteen-event pointer, keyboard,
+Unicode-text and delay sequence. The default remains four events. On macOS,
+`macos-native-input --extended-sequence "<full title>"` adds text to the default
+flow for five events. These live flows require separately authorized owned
+fixtures; the small direct-ABI samples perform no native operation.
 
 ## How the header is verified
 
-The header is hand-written and tracked, not generated; the reasoning is in
-[ADR 0004](adr/0004-c-header-authorship-and-abi-verification.md). Its agreement
-with the Rust `#[repr(C)]` definitions is proved rather than asserted:
+The header is hand-written and tracked, not generated: it is a reviewed source
+artifact, and no binding generator enters the workspace. Its agreement with the
+Rust `#[repr(C)]` definitions is proved rather than asserted:
 
 ```sh
 cargo build --locked --package mado-pilot-capi
 cargo run --locked --package mado-pilot-capi --example c-abi-check -- --label "<host>"
-cargo build --locked --package mado-pilot-capi --features private-fixture
+cargo build --locked --package mado-pilot-capi --features private-fixture \
+  --target-dir target/c-abi-private-fixture
 cargo run --locked --package mado-pilot-capi --features private-fixture \
-  --example c-abi-check -- --label "<host>"
+  --target-dir target/c-abi-private-fixture --example c-abi-check -- --label "<host>"
 ```
 
-The checker compares every C and Rust size/alignment/offset, compiles and runs
-the deterministic/native consumers, and then compiles frozen ABI 1.0 and 1.2
-callers only against their own headers. Those callers negotiate 424 and 592
-bytes and run unchanged against ABI 1.3. Current C++ checks negotiate complete
-1.2 and partial 1.3 extents and refuse OCR/default construction before a missing
-function pointer is read.
+The checker compares every current C and Rust size/alignment/offset, as reported
+by two different compilers, so a divergence fails on the host where it matters.
+It also checks the declarations and behavior of frozen ABI 1.0, 1.2, 1.3 and 1.4
+callers, compiled only against their own headers. Their 424-, 592-, 648- and
+720-byte tables run against the current 736-byte ABI 1.5 library. The frozen
+check exists because a coordinated edit — swapping two same-width fields in both
+the working header and the Rust definition — moves no offset and would pass the
+working comparison while breaking every released caller. It checks containment,
+not an exact diff, because a later minor appends.
 
-The ordinary checker also compiles and runs the production C and C++ default OCR
-examples with reviewed prerequisites, requires identical normalized
-backend/model/count output, and runs the independent CMake consumer. The
-`private-fixture` mode separately runs deterministic C/C++ OCR against the
-fixture-only constructor and validates content-redacted diagnostics. Both paths
-exercise ownership, repeated close, and immutable result independence without
-turning the fixture symbol into a release entry.
+Both direct samples must report the real build facts, cancellation transition
+and successful release. The independent CMake project builds and runs those
+same sources in C/C++ mode, then builds and runs C alone in a fresh cache with
+`CXX` and `CMAKE_CXX_COMPILER` set to an unavailable path. CTest reports each
+named consumer separately.
+The Windows C-only probe uses NMake from the same MSVC developer prompt so that
+the unavailable CXX path controls compiler discovery; ordinary C/C++ consumers
+keep the default generator.
 
-The same command continues into the C++ surface: compile-time and runtime
-ownership tests, replay/native/default examples, and the independent CMake
-consumer project. See
-[cpp-wrapper.md](cpp-wrapper.md#how-the-wrapper-is-verified).
+Deterministic/native C workflows retain their observed-result checks. With
+reviewed model/runtime paths, the ordinary checker runs production C default
+and profile-zone OCR and the CMake OCR consumer. Missing prerequisites produce
+explicit skips, not successful OCR coverage. The isolated `private-fixture`
+build runs deterministic C OCR, validates content-redacted diagnostics, sixteen
+groups, shared candidates/membership and the seventeen-zone refusal. Owned
+results remain readable after parent release; the fixture constructor is not a
+release entry.
 
 The invariants that need no C compiler — versioned prefixes, per-event required
 fields, fixed numeric values, thin handles, table order, invalid-input failure
@@ -887,42 +962,7 @@ surface — run under `cargo test`.
 Both native CI jobs run the complete boundary check on every pull request. The
 Ubuntu repository-policy job deliberately compiles no product package.
 
-## What the freezes recorded
-
-[ADR 0007](adr/0007-phase-1-c-abi-freeze.md) records the complete ABI 1.0
-prefix: numeric values, the forty-byte mandatory table prefix, every structure's
-layout and required prefix, output-state and ownership rules, and the
-Rust-error-to-C-status mapping. Its per-field reports are under
-[evidence/c-abi/](evidence/c-abi/).
-
-[ADR 0017](adr/0017-c-abi-1-1-native-input-prefix.md) records the
-superseded, unreleased ABI 1.1 draft. ADR 0023 removed its declarations and
-executable caller from the current tree; repository history retains the
-development record without turning it into a compatibility target.
-
-[ADR 0023](adr/0023-input-submission-observation-and-abi-1-2.md) records ABI 1.2:
-the native route capability and submission-evidence vocabulary, owned receipt
-and attempt access, operation activity tags, bounded diagnostics, the complete
-592-byte table, and the deliberate rejection of minimum minor 1.
-
-[ADR 0035](adr/0035-ocr-public-surfaces-and-private-fixture-boundary.md) records
-ABI 1.3's six-entry OCR suffix, immutable result/view ownership, the 640-byte
-owner/accessor extent, redacted diagnostic append, and isolation of the local
-fixture constructor. [ADR 0036](adr/0036-default-ocr-composition-and-abi-prefix.md)
-records the standalone default options, preserved engine-options layout, and
-`engine_create_with_default_ocr` at offset 640 completing the table at 648 bytes.
-
-[ADR 0043](adr/0043-ocr-profile-and-zone-public-surfaces.md) records ABI 1.4:
-the frozen 648-byte ABI 1.3 prefix, 720-byte current table, explicit profile
-kind/options, grouped pointer/count/stride validation, independent owner and
-two-dimensional access, engine-selected descriptor entry, C++ rebinding,
-build-info append, and aggregate-only diagnostics.
-
-[ADR 0046](adr/0046-onnx-accelerator-provider-policy.md) records ABI 1.5: the
-frozen 720-byte ABI 1.4 prefix, fixed-width provider vocabulary, 32-byte options,
-40-byte engine-owned descriptor, two-entry 720/728 suffix, complete 736-byte
-table, and C++ provider-root rebinding. ADR 0047 records why CoreML qualification
-is rejected without changing this ABI shape.
+## Released header fixtures
 
 Each released header gets an immutable fixture. New coverage goes in the next
 fixture rather than editing an old caller; the rule is in

@@ -10,7 +10,7 @@ use mado_pilot_runtime::{
     EngineOptions, EngineWiring, Frame, FrameRequest, IdentityIssuer, Matcher, OcrBackend,
     OcrBackendDescriptor, OcrDiagnosticOutcome, OcrDiagnosticProfile, OcrModelIdentity,
     OcrRecognizer, OcrRegion, OcrRequest, OcrZone, OcrZoneScanRequest, OpenRequest,
-    OperationContext, PackageLoader, PixelExtent, PixelFormat, Rect, Session, Status,
+    OperationContext, PackageLoader, PixelExtent, PixelFormat, Rect, Result, Session, Status,
 };
 use mado_pilot_testkit::{
     CompletionGate, ControlledCapture, ControlledMatcher, ControlledOcr, ManualClock,
@@ -234,12 +234,27 @@ fn backend_completion_after_the_deadline_commits_no_result() {
     assert_eq!(ocr.recognition_count(), 1);
 }
 
-#[test]
-fn close_wins_the_final_gate_without_waiting_for_the_backend() {
+/// Which recognition entry the held backend is reached through.
+#[derive(Clone, Copy)]
+enum HeldCall {
+    Singular,
+    Grouped,
+}
+
+/// Runs one recognition on a worker while the backend holds the frame at a
+/// gate, lets `interfere` act once the backend has entered, then releases it.
+///
+/// The gate models an uninterruptible backend: whatever `interfere` does, the
+/// backend still produces its candidates afterwards, and the question is
+/// whether they become a result.
+fn recognize_while_the_backend_holds_the_frame(
+    call: HeldCall,
+    interfere: impl FnOnce(&ControlledCapture, &Session),
+) -> (Arc<ControlledOcr>, Result<()>) {
     let gate = Arc::new(CompletionGate::new());
     let ocr = Arc::new(
         ControlledOcr::new(PixelFormat::Rgba8)
-            .with_candidates(vec![candidate(b"closed")])
+            .with_candidates(vec![candidate(b"held")])
             .with_completion_gate(Arc::clone(&gate)),
     );
     let descriptor = ocr.descriptor();
@@ -253,20 +268,124 @@ fn close_wins_the_final_gate_without_waiting_for_the_backend() {
         let session = Arc::clone(&session);
         thread::spawn(move || {
             let operation = OperationContext::new();
-            session.recognize(request(&frame, &descriptor, &operation))
+            match call {
+                HeldCall::Singular => session
+                    .recognize(request(&frame, &descriptor, &operation))
+                    .map(|_| ()),
+                HeldCall::Grouped => {
+                    let zones = [OcrZone::new(
+                        Rect::new(CoordinateSpace::CapturePixels, 0.0, 0.0, 16.0, 12.0)
+                            .expect("valid zone"),
+                        ClipPolicy::Reject,
+                    )];
+                    session
+                        .scan_ocr_zones(
+                            OcrZoneScanRequest::new(
+                                &frame,
+                                descriptor.backend_identity(),
+                                descriptor.model_identity(),
+                                &zones,
+                                CoordinateSpace::CapturePixels,
+                                &operation,
+                            )
+                            .expect("one zone is valid"),
+                        )
+                        .map(|_| ())
+                }
+            }
         })
     };
-    assert!(gate.wait_until_entered(Duration::from_secs(1)));
-    session
-        .close(&OperationContext::new())
-        .expect("close does not wait for OCR backend work");
+    assert!(
+        gate.wait_until_entered(Duration::from_secs(2)),
+        "the backend reached its gate"
+    );
+    interfere(&capture, &session);
     gate.release();
+    let result = worker.join().expect("the recognition thread did not panic");
+    (ocr, result)
+}
 
-    let error = worker
-        .join()
-        .expect("recognition thread did not panic")
-        .expect_err("close is authoritative before final result commit");
+#[test]
+fn a_target_lost_while_the_backend_holds_singular_recognition_yields_the_loss_not_a_result() {
+    let (ocr, result) =
+        recognize_while_the_backend_holds_the_frame(HeldCall::Singular, |capture, _| {
+            capture.lose(capture.target());
+        });
+
+    let error = result.expect_err("the candidates were produced after capture ended");
+    assert_eq!(error.status(), Status::TargetLost);
+    assert_eq!(ocr.recognition_count(), 1);
+}
+
+#[test]
+fn a_target_lost_while_the_backend_holds_a_zone_scan_yields_the_loss_not_a_group() {
+    let (ocr, result) =
+        recognize_while_the_backend_holds_the_frame(HeldCall::Grouped, |capture, _| {
+            capture.lose(capture.target());
+        });
+
+    let error = result.expect_err("the candidates were produced after capture ended");
+    assert_eq!(error.status(), Status::TargetLost);
+    assert_eq!(ocr.recognition_count(), 1);
+}
+
+#[test]
+fn close_wins_the_final_gate_of_singular_recognition_without_waiting_for_the_backend() {
+    let (ocr, result) =
+        recognize_while_the_backend_holds_the_frame(HeldCall::Singular, |_, session| {
+            session
+                .close(&OperationContext::new())
+                .expect("close does not wait for OCR backend work");
+        });
+
+    let error = result.expect_err("close is authoritative before final result commit");
     assert_eq!(error.status(), Status::Closed);
+    assert_eq!(ocr.recognition_count(), 1);
+}
+
+#[test]
+fn close_wins_the_final_gate_of_a_zone_scan_without_waiting_for_the_backend() {
+    let (ocr, result) =
+        recognize_while_the_backend_holds_the_frame(HeldCall::Grouped, |_, session| {
+            session
+                .close(&OperationContext::new())
+                .expect("close does not wait for OCR backend work");
+        });
+
+    let error = result.expect_err("close is authoritative before final result commit");
+    assert_eq!(error.status(), Status::Closed);
+    assert_eq!(ocr.recognition_count(), 1);
+}
+
+#[test]
+fn a_result_committed_before_target_loss_is_a_historical_value_the_loss_does_not_revoke() {
+    let ocr = Arc::new(
+        ControlledOcr::new(PixelFormat::Rgba8).with_candidates(vec![candidate(b"  committed  ")]),
+    );
+    let descriptor = ocr.descriptor();
+    let (engine, capture) = wired(Some(Arc::clone(&ocr)));
+    let operation = OperationContext::new();
+    let (session, frame) = opened_with_frame(&engine, &capture, &operation);
+    let result = session
+        .recognize(request(&frame, &descriptor, &operation))
+        .expect("committed while capture was open");
+
+    capture.lose(capture.target());
+
+    assert_eq!(result.regions()[0].text(), "committed");
+    assert_eq!(result.stamp(), frame.stamp());
+    assert!(
+        session
+            .map_frame(&frame, PixelFormat::Rgba8, &operation)
+            .expect("the retained frame maps after termination")
+            .bytes()
+            .iter()
+            .all(|byte| *byte == 0x31)
+    );
+    let again = session
+        .recognize(request(&frame, &descriptor, &operation))
+        .expect_err("the same frame commits nothing new once capture ended");
+    assert_eq!(again.status(), Status::TargetLost);
     assert_eq!(ocr.recognition_count(), 1);
 }
 

@@ -1,14 +1,12 @@
 //! Compiles the macOS native shim and declares its framework linkage.
 //!
 //! This build script owns the shim's compilation flags and framework linkage
-//! rather than inheriting them from a binding crate, which is rule 8 of
-//! `docs/adr/0012-macos-shim-language-and-containment.md`.
+//! rather than inheriting them from a binding crate.
 //!
 //! Three language flags are correctness requirements rather than preferences.
-//! `-fobjc-arc` owns native object references, and `-fobjc-arc-exceptions` is the
-//! one ADR 0012 measured: without it, ARC emits no release on an exception's
-//! unwind edge, so an exception raised where a failing stream start would raise
-//! one leaks the native object the session had already retained.
+//! `-fobjc-arc` owns native object references. Without `-fobjc-arc-exceptions`,
+//! ARC emits no release on an exception's unwind edge, leaking objects retained
+//! before a failing stream start.
 //! `MP_SHIM_ARC_EXCEPTIONS` is defined beside it because Clang exposes no feature
 //! macro for the flag, so the shim's `#error` and the flag stay in one review.
 //! `-fblocks` compiles the bounded private NSWorkspace completion handler; AppKit

@@ -8,11 +8,11 @@
 //! binary does not — and it keeps the repository free of a build-time image
 //! encoder for test data.
 //!
-//! The encoder is deliberately the smallest correct one: eight-bit truecolour,
-//! no interlacing, no filtering, and DEFLATE's stored mode, which is a valid
-//! zlib stream that every decoder accepts and which needs no compressor. The
-//! bytes are larger than a real encoder's and that does not matter for a
-//! fixture.
+//! The encoder is deliberately the smallest correct one: eight-bit truecolour
+//! with or without alpha, no interlacing, no filtering, and DEFLATE's stored
+//! mode, which is a valid zlib stream that every decoder accepts and which
+//! needs no compressor. The bytes are larger than a real encoder's and that
+//! does not matter for a fixture.
 
 /// The eight bytes every PNG begins with.
 const SIGNATURE: [u8; 8] = [0x89, b'P', b'N', b'G', b'\r', b'\n', 0x1a, b'\n'];
@@ -34,11 +34,28 @@ const ADLER_MODULUS: u32 = 65_521;
 /// rather than conditions to report.
 #[must_use]
 pub fn encode_rgb(width: u32, height: u32, rgb: &[u8]) -> Vec<u8> {
+    encode(width, height, 3, 2, rgb)
+}
+
+/// Encodes `rgba` as an eight-bit truecolour-with-alpha PNG.
+///
+/// `rgba` is row-major, four bytes per pixel, `width * height * 4` bytes long.
+///
+/// # Panics
+///
+/// As [`encode_rgb`].
+#[must_use]
+pub fn encode_rgba(width: u32, height: u32, rgba: &[u8]) -> Vec<u8> {
+    encode(width, height, 4, 6, rgba)
+}
+
+/// Encodes `pixels` of `channels` bytes each as PNG colour type `color_type`.
+fn encode(width: u32, height: u32, channels: usize, color_type: u8, pixels: &[u8]) -> Vec<u8> {
     assert!(width > 0 && height > 0, "a PNG has a non-zero extent");
-    let row_bytes = usize::try_from(width).expect("a test image stays small") * 3;
+    let row_bytes = usize::try_from(width).expect("a test image stays small") * channels;
     let rows = usize::try_from(height).expect("a test image stays small");
     assert_eq!(
-        rgb.len(),
+        pixels.len(),
         row_bytes * rows,
         "the pixel buffer must match the declared extent"
     );
@@ -47,7 +64,7 @@ pub fn encode_rgb(width: u32, height: u32, rgb: &[u8]) -> Vec<u8> {
     let mut raw = Vec::with_capacity(rows * (row_bytes + 1));
     for row in 0..rows {
         raw.push(0);
-        raw.extend_from_slice(&rgb[row * row_bytes..(row + 1) * row_bytes]);
+        raw.extend_from_slice(&pixels[row * row_bytes..(row + 1) * row_bytes]);
     }
 
     let mut png = Vec::new();
@@ -56,7 +73,7 @@ pub fn encode_rgb(width: u32, height: u32, rgb: &[u8]) -> Vec<u8> {
     let mut header = Vec::with_capacity(13);
     header.extend_from_slice(&width.to_be_bytes());
     header.extend_from_slice(&height.to_be_bytes());
-    header.extend_from_slice(&[8, 2, 0, 0, 0]);
+    header.extend_from_slice(&[8, color_type, 0, 0, 0]);
     write_chunk(&mut png, b"IHDR", &header);
     write_chunk(&mut png, b"IDAT", &zlib_stored(&raw));
     write_chunk(&mut png, b"IEND", &[]);
@@ -178,7 +195,7 @@ fn crc32(data: &[u8]) -> u32 {
 
 #[cfg(test)]
 mod tests {
-    use super::{adler32, crc32, encode_rgb, solid_rgb};
+    use super::{adler32, crc32, encode_rgb, encode_rgba, solid_rgb};
 
     #[test]
     fn an_encoded_image_carries_the_signature_and_the_declared_extent() {
@@ -193,6 +210,14 @@ mod tests {
         assert_eq!(&png[12..16], b"IHDR");
         assert_eq!(&png[16..24], &[0, 0, 0, 3, 0, 0, 0, 2]);
         assert_eq!(&png[24..29], &[8, 2, 0, 0, 0]);
+    }
+
+    #[test]
+    fn an_alpha_image_declares_truecolour_with_alpha() {
+        let png = encode_rgba(1, 2, &[1, 2, 3, 4, 5, 6, 7, 8]);
+
+        assert_eq!(&png[16..24], &[0, 0, 0, 1, 0, 0, 0, 2]);
+        assert_eq!(&png[24..29], &[8, 6, 0, 0, 0]);
     }
 
     #[test]

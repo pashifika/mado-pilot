@@ -4,15 +4,15 @@
 //! that call into it. Above this module the adapter sees owned handles, borrowed
 //! views tied to them, and typed statuses; it never sees a raw pointer.
 //!
-//! The declarations mirror `native/madopilot_macos_shim.h` by hand rather than
-//! through a generator, for the reason `docs/adr/0004-c-header-authorship-and-abi-verification.md`
-//! records for the public C header: a hand-written declaration is reviewable, and
-//! a test asserts that the two sides agree on version and structure sizes rather
-//! than trusting that they do.
+//! Hand-written declarations mirror `native/madopilot_macos_shim.h` for review.
+//! A test checks agreement on version and structure sizes.
 
-use std::ffi::{c_char, c_void};
+use std::ffi::{OsString, c_char, c_void};
 use std::fmt;
 use std::marker::PhantomData;
+use std::num::NonZeroU32;
+use std::os::unix::ffi::OsStringExt;
+use std::path::PathBuf;
 use std::ptr::NonNull;
 use std::slice;
 use std::str;
@@ -37,11 +37,69 @@ pub(crate) fn catch_panic<T>(body: impl FnOnce() -> T) -> Result<T, ()> {
     }
 }
 
-use mado_pilot_capture::CaptureFault;
+use mado_pilot_capture::{
+    CaptureFault, CapturePacingReport, CaptureResourceLimits, NativeWindowDescription,
+    NativeWindowId, PacingUnsupportedReason, ResolvedCapturePacing, TargetProcessIdentity,
+    WindowCaptureArea, WindowGeometry,
+};
 use mado_pilot_core::{OperationContext, PermissionState, PixelExtent};
 
+#[cfg(test)]
+thread_local! {
+    static CANCEL_AFTER_START: std::cell::RefCell<Option<mado_pilot_core::CancellationToken>> =
+        const { std::cell::RefCell::new(None) };
+}
+
+#[cfg(test)]
+pub(crate) fn testing_cancel_after_start<T>(
+    cancellation: mado_pilot_core::CancellationToken,
+    body: impl FnOnce() -> T,
+) -> T {
+    struct Reset;
+    impl Drop for Reset {
+        fn drop(&mut self) {
+            CANCEL_AFTER_START.with(|slot| slot.borrow_mut().take());
+        }
+    }
+
+    CANCEL_AFTER_START.with(|slot| {
+        assert!(slot.borrow().is_none(), "start cancellation already armed");
+        *slot.borrow_mut() = Some(cancellation);
+    });
+    let _reset = Reset;
+    body()
+}
+
 /// The internal surface version this build was written against.
-pub(crate) const ABI_VERSION: u32 = 21;
+pub(crate) const ABI_VERSION: u32 = 26;
+
+const PACING_SOURCE_DEFAULT: u32 = 0;
+const PACING_REQUIRED: u32 = 1;
+const PACING_PREFERRED: u32 = 2;
+const PACING_APPLIED: u32 = 1;
+const PACING_UNAVAILABLE: u32 = 2;
+
+/// Converts an explicit interval exactly, independently of bounded native waits.
+pub(crate) fn capture_pacing_nanos(pacing: ResolvedCapturePacing) -> Result<i64, ShimStatus> {
+    let Some(interval) = pacing.interval() else {
+        return Ok(0);
+    };
+    let nanos = i64::try_from(interval.as_nanos()).map_err(|_| ShimStatus::InvalidArgument)?;
+    if nanos <= 0 {
+        return Err(ShimStatus::InvalidArgument);
+    }
+    Ok(nanos)
+}
+
+const fn capture_pacing_mode(pacing: ResolvedCapturePacing) -> u32 {
+    if pacing.is_required() {
+        PACING_REQUIRED
+    } else if pacing.is_preferred() {
+        PACING_PREFERRED
+    } else {
+        PACING_SOURCE_DEFAULT
+    }
+}
 
 /// Largest wait the shim is ever asked for, so one native call cannot consume a
 /// caller's whole budget.
@@ -59,6 +117,8 @@ pub(crate) const KIND_DISPLAY: u32 = 1;
 /// The only pixel layout the shim publishes.
 pub(crate) const PIXEL_BGRA8: u32 = 0;
 const TARGET_INFO_PROCESS_DIRECTED: u32 = 1;
+/// Includes the NUL terminator, mirroring `MP_SHIM_MAX_PROCESS_PATH_BYTES`.
+const MAX_PROCESS_PATH_BYTES: usize = 4096;
 
 /// `FrameInfo` carries a validated same-frame `SCStreamFrameInfoScreenRect`.
 pub(crate) const FRAME_INFO_SCREEN_RECT: u32 = 1;
@@ -78,7 +138,7 @@ pub(crate) const MAX_SURFACE_EXTENT: u32 = 32768;
 /// reason the extent is — the Adapter does not ask for what would be refused.
 pub(crate) const MAX_SURFACE_BYTES: u64 = 268_435_456;
 
-/// Test seams the shim exposes for the ADR 0012 injection positions.
+/// Native exception injection positions exposed only for tests.
 #[cfg(test)]
 pub(crate) const RAISE_AT_START: u32 = 1;
 /// See [`RAISE_AT_START`].
@@ -232,6 +292,29 @@ impl TargetInfo {
         (self.pixel_width > 0 && self.pixel_height > 0)
             .then(|| PixelExtent::new(self.pixel_width, self.pixel_height))
     }
+
+    fn window_description(&self) -> Result<NativeWindowDescription, ShimStatus> {
+        let id = u32::try_from(self.native_id)
+            .ok()
+            .and_then(NonZeroU32::new)
+            .ok_or(ShimStatus::InvalidArgument)?;
+        if self.kind != KIND_WINDOW {
+            return Err(ShimStatus::Unsupported);
+        }
+        let extent = self.extent().ok_or(ShimStatus::InvalidArgument)?;
+        let placement = crate::discovery::window_placement_from_points(
+            (self.logical_x, self.logical_y),
+            (self.logical_width, self.logical_height),
+            self.backing_scale,
+            extent,
+        )
+        .map_err(|_| ShimStatus::GeometryChanged)?;
+        Ok(NativeWindowDescription::new(
+            NativeWindowId::Macos(id),
+            WindowGeometry::new(WindowCaptureArea::MacosWindow, placement, extent),
+        ))
+    }
+
     /// Reports snapshot-time process-directed admission.
     pub(crate) const fn process_directed(&self) -> bool {
         self.kind == KIND_WINDOW && self.flags & TARGET_INFO_PROCESS_DIRECTED != 0
@@ -452,6 +535,18 @@ unsafe impl Send for DetachedFrame {}
 unsafe impl Sync for DetachedFrame {}
 
 impl DetachedFrame {
+    /// Reserves before the Rust CPU allocation; the returned owner outlives this frame.
+    pub(crate) fn reserve_cpu(&self, bytes: usize) -> Result<Option<Arc<ImageLease>>, ShimStatus> {
+        let mut lease = std::ptr::null_mut();
+        // SAFETY: the frame is owned here, and the shim returns a uniquely owned
+        // opaque retainer, independent of both the frame and native session.
+        let status = unsafe {
+            mp_shim_frame_reserve_cpu(self.handle.as_ptr(), bytes as u64, &raw mut lease)
+        };
+        ShimStatus::from_raw(status).into_result()?;
+        Ok(NonNull::new(lease).map(|handle| Arc::new(ImageLease { handle })))
+    }
+
     /// Copies the content into `destination` at exactly `stride` bytes per row.
     pub(crate) fn copy_out(&self, destination: &mut [u8], stride: usize) -> Result<(), ShimStatus> {
         // SAFETY: the handle is owned by this value, the destination pointer and
@@ -482,6 +577,85 @@ impl Drop for DetachedFrame {
         // and is released exactly once.
         unsafe { mp_shim_frame_release(self.handle.as_ptr()) };
     }
+}
+
+pub(crate) struct ImageLease {
+    handle: NonNull<c_void>,
+}
+
+// SAFETY: native leases own immutable limits and atomic byte accounting; their
+// last-release destructor is thread independent and never accesses Rust state.
+unsafe impl Send for ImageLease {}
+// SAFETY: the same atomic ownership contract permits shared retention.
+unsafe impl Sync for ImageLease {}
+
+impl Drop for ImageLease {
+    fn drop(&mut self) {
+        // SAFETY: one owning native reference was transferred by reserve_cpu;
+        // Arc invokes this destructor exactly once after the final pixel owner.
+        unsafe { mp_shim_image_lease_release(self.handle.as_ptr()) };
+    }
+}
+
+#[cfg(test)]
+#[derive(Debug)]
+pub(crate) struct TestingImageBudget {
+    handle: NonNull<c_void>,
+}
+
+#[cfg(test)]
+impl TestingImageBudget {
+    pub(crate) fn used(&self) -> u64 {
+        // SAFETY: this test-only owner retains the native budget while reading
+        // its atomic count, even after the frame and session were released.
+        unsafe { mp_shim_testing_image_bytes(self.handle.as_ptr()) }
+    }
+}
+
+#[cfg(test)]
+impl Drop for TestingImageBudget {
+    fn drop(&mut self) {
+        // SAFETY: the synthetic helper transferred one owning CF reference.
+        unsafe { mp_shim_image_lease_release(self.handle.as_ptr()) };
+    }
+}
+
+pub(crate) fn storage_preflight(
+    extent: PixelExtent,
+    depth: u32,
+    limits: CaptureResourceLimits,
+) -> Result<(), ShimStatus> {
+    // SAFETY: the pure native check consumes only bounded scalar values.
+    let status = unsafe {
+        mp_shim_storage_preflight(
+            extent.width(),
+            extent.height(),
+            depth,
+            limits.max_frame_bytes(),
+            limits.max_retained_bytes(),
+        )
+    };
+    ShimStatus::from_raw(status).into_result()
+}
+
+#[cfg(test)]
+pub(crate) fn testing_limited_frame(
+    max_frame: u64,
+    max_retained: u64,
+) -> Result<(DetachedFrame, TestingImageBudget), ShimStatus> {
+    let mut frame = std::ptr::null_mut();
+    let mut budget = std::ptr::null_mut();
+    // SAFETY: both outputs are writable. The helper creates owned synthetic
+    // pixels and closes its session before transferring independent owners.
+    let status = unsafe {
+        mp_shim_testing_limited_frame(max_frame, max_retained, &raw mut frame, &raw mut budget)
+    };
+    ShimStatus::from_raw(status).into_result()?;
+    let frame = DetachedFrame {
+        handle: NonNull::new(frame).ok_or(ShimStatus::PlatformFailure)?,
+    };
+    let budget = NonNull::new(budget).ok_or(ShimStatus::PlatformFailure)?;
+    Ok((frame, TestingImageBudget { handle: budget }))
 }
 
 /// One snapshot of the currently shareable windows and displays.
@@ -585,18 +759,26 @@ impl ProcessEventSource {
     /// A nonzero activity tag is copied to the source's documented event
     /// user-data field. It remains observational metadata and never affects
     /// admission, posting, or receipt accounting.
-    pub(crate) fn new(activity_tag: u64) -> Result<Self, ShimStatus> {
+    pub(crate) fn new(
+        activity_tag: u64,
+        mode: crate::provider::MacosProcessPointerMode,
+    ) -> Result<Self, ShimStatus> {
         let mut source = std::ptr::null_mut();
+        let mode = match mode {
+            crate::provider::MacosProcessPointerMode::CoreGraphics => 0,
+            crate::provider::MacosProcessPointerMode::AppKitBackground => 1,
+        };
         // SAFETY: `source` is writable for one opaque handle and the native
         // boundary either leaves it null or transfers exactly one owned handle.
-        let status = unsafe { mp_shim_process_event_source_create(activity_tag, &raw mut source) };
+        let status =
+            unsafe { mp_shim_process_event_source_create(activity_tag, mode, &raw mut source) };
         ShimStatus::from_raw(status).into_result()?;
         NonNull::new(source)
             .map(|handle| Self { handle })
             .ok_or(ShimStatus::PlatformFailure)
     }
 
-    fn as_ptr(&self) -> *const OpaqueProcessEventSource {
+    fn as_ptr(&self) -> *mut OpaqueProcessEventSource {
         self.handle.as_ptr()
     }
 }
@@ -643,6 +825,55 @@ unsafe impl Send for TargetTokenInner {}
 unsafe impl Sync for TargetTokenInner {}
 
 impl TargetToken {
+    pub(crate) fn snapshot_window_description(
+        &self,
+    ) -> Result<NativeWindowDescription, ShimStatus> {
+        self.window_info(Duration::ZERO, false)
+    }
+
+    pub(crate) fn window_description(
+        &self,
+        wait: Duration,
+    ) -> Result<NativeWindowDescription, ShimStatus> {
+        self.window_info(wait, true)
+    }
+
+    fn window_info(
+        &self,
+        wait: Duration,
+        revalidate: bool,
+    ) -> Result<NativeWindowDescription, ShimStatus> {
+        #[cfg(test)]
+        if self.inner.handle.is_none() {
+            if !self.inner.synthetic_live.load(Ordering::Acquire) {
+                return Err(ShimStatus::TargetLost);
+            }
+            let placement = crate::discovery::window_placement_from_points(
+                (-64.0, -48.0),
+                (64.0, 48.0),
+                2.0,
+                PixelExtent::new(128, 96),
+            )
+            .map_err(|_| ShimStatus::InvalidArgument)?;
+            return Ok(NativeWindowDescription::new(
+                NativeWindowId::Macos(NonZeroU32::new(7).expect("nonzero fixture key")),
+                WindowGeometry::new(
+                    WindowCaptureArea::MacosWindow,
+                    placement,
+                    PixelExtent::new(128, 96),
+                ),
+            ));
+        }
+        let mut info = TargetInfo::requested();
+        // SAFETY: the immutable retained token outlives this bounded observation;
+        // info is a writable, correctly sized mirror and owns no native pointers.
+        let status = unsafe {
+            mp_shim_target_window_info(self.as_ptr(), nanos(wait), revalidate, &raw mut info)
+        };
+        ShimStatus::from_raw(status).into_result()?;
+        info.window_description()
+    }
+
     fn from_inventory(inventory: &Inventory, index: usize) -> Result<Self, ShimStatus> {
         let mut target = std::ptr::null_mut();
         // SAFETY: the inventory is owned here and `target` is a writable output.
@@ -690,13 +921,53 @@ impl TargetToken {
         self.inner.synthetic_live.store(false, Ordering::Release);
     }
 
+    /// Reads optional provenance from this selection's retained process lifetime.
+    ///
+    /// Failure never invalidates capture. Discovery stores the successful value
+    /// once, so later descriptions share paths instead of calling AppKit again.
+    pub(crate) fn process_identity(&self) -> Result<TargetProcessIdentity, ShimStatus> {
+        let mut process = 0;
+        let mut lifetime = 0;
+        let mut executable = [0u8; MAX_PROCESS_PATH_BYTES];
+        let mut executable_len = 0;
+        let mut bundle = [0u8; MAX_PROCESS_PATH_BYTES];
+        let mut bundle_len = 0;
+        // SAFETY: this token owns the retained target throughout the call. Every
+        // scalar output is writable; the distinct path buffers supply exactly
+        // the declared capacities. The shim retains no caller pointer.
+        let status = unsafe {
+            mp_shim_target_process_identity(
+                self.as_ptr(),
+                &raw mut process,
+                &raw mut lifetime,
+                executable.as_mut_ptr(),
+                executable.len(),
+                &raw mut executable_len,
+                bundle.as_mut_ptr(),
+                bundle.len(),
+                &raw mut bundle_len,
+            )
+        };
+        ShimStatus::from_raw(status).into_result()?;
+        let process = NonZeroU32::new(process).ok_or(ShimStatus::PlatformFailure)?;
+        let executable = process_identity_path(&executable, executable_len)?;
+        let identity = TargetProcessIdentity::new(process, lifetime, executable)
+            .map_err(|_| ShimStatus::PlatformFailure)?;
+        if bundle_len == 0 {
+            return Ok(identity);
+        }
+        identity
+            .with_application_bundle_path(process_identity_path(&bundle, bundle_len)?)
+            .map_err(|_| ShimStatus::PlatformFailure)
+    }
+
     /// Reads bounds from a fresh observation of this retained selection.
     pub(crate) fn input_bounds(&self, wait: Duration) -> Result<NativeBounds, ShimStatus> {
         input_target_bounds(self, wait)
     }
 
-    /// Reads whether this exact retained window is focused within a bounded wait.
-    pub(crate) fn input_focused(&self, wait: Duration) -> Result<bool, ShimStatus> {
+    /// Reads focus and the final retained-window bounds within one bounded wait.
+    pub(crate) fn input_focused(&self, wait: Duration) -> Result<(bool, NativeBounds), ShimStatus> {
         input_target_focused(self, wait)
     }
 
@@ -727,6 +998,18 @@ impl TargetToken {
     ) -> Result<ProcessPostOutcome, ProcessPostFailure> {
         process_post(self, source, request, operation)
     }
+}
+
+/// Copies each bounded native path once into its eventual shared Rust owner.
+fn process_identity_path(bytes: &[u8], len: usize) -> Result<PathBuf, ShimStatus> {
+    if len == 0 || bytes.get(len) != Some(&0) {
+        return Err(ShimStatus::PlatformFailure);
+    }
+    let path = bytes.get(..len).ok_or(ShimStatus::PlatformFailure)?;
+    if path.first() != Some(&b'/') || path.contains(&0) {
+        return Err(ShimStatus::PlatformFailure);
+    }
+    Ok(PathBuf::from(OsString::from_vec(path.to_vec())))
 }
 
 impl fmt::Debug for TargetToken {
@@ -771,6 +1054,11 @@ pub(crate) struct OpenRequest {
     pub(crate) testing_stop_delay: Duration,
     /// Zero in the product. See the shim's `MP_SHIM_RAISE_*` seams.
     pub(crate) testing_raise_sites: u32,
+    /// Already-resolved session pacing, checked before native allocation.
+    pub(crate) capture_pacing: ResolvedCapturePacing,
+    pub(crate) required_window: Option<WindowGeometry>,
+    pub(crate) resource_limits: Option<CaptureResourceLimits>,
+    pub(crate) validation_wait: Duration,
 }
 
 /// One open native session.
@@ -797,8 +1085,9 @@ impl Session {
         frame: FrameCallback,
         frame_commit: FrameCommitCallback,
         stopped: StoppedCallback,
-    ) -> Result<Self, ShimStatus> {
+    ) -> Result<(Self, CapturePacingReport), ShimStatus> {
         validate_open_shape_and_metadata(request)?;
+        let pacing_interval_nanos = capture_pacing_nanos(request.capture_pacing)?;
         if request.target.as_ptr().is_null() {
             return Err(ShimStatus::InvalidArgument);
         }
@@ -822,13 +1111,31 @@ impl Session {
             frame_callback: Some(frame),
             frame_commit_callback: Some(frame_commit),
             stopped_callback: Some(stopped),
+            pacing_mode: capture_pacing_mode(request.capture_pacing),
+            pacing_interval_nanos,
+            max_frame_bytes: request
+                .resource_limits
+                .map_or(0, CaptureResourceLimits::max_frame_bytes),
+            max_retained_bytes: request
+                .resource_limits
+                .map_or(0, CaptureResourceLimits::max_retained_bytes),
+            validation_timeout_nanos: nanos(request.validation_wait),
+            require_window: u32::from(request.required_window.is_some()),
+            required_window: required_window_info(request.required_window)?,
         };
         let mut session = std::ptr::null_mut();
+        let mut report = NativeOpenReport::requested();
         // SAFETY: `native` outlives the call, carries its own size, and
-        // `session` is a writable output for one handle.
-        let status = unsafe { mp_shim_session_open(&raw const native, &raw mut session) };
+        // `session` and `report` are writable outputs.
+        let status =
+            unsafe { mp_shim_session_open(&raw const native, &raw mut session, &raw mut report) };
         match (ShimStatus::from_raw(status), NonNull::new(session)) {
-            (ShimStatus::Ok, Some(handle)) => Ok(Self { handle }),
+            (ShimStatus::Ok, Some(handle)) => {
+                let session = Self { handle };
+                // A contradictory native report drops the unstarted owner.
+                let capture_pacing = report.capture_pacing(request.capture_pacing)?;
+                Ok((session, capture_pacing))
+            }
             (ShimStatus::Ok, None) => Err(ShimStatus::PlatformFailure),
             (status, _) => Err(status),
         }
@@ -838,6 +1145,17 @@ impl Session {
     pub(crate) fn start(&self, wait: Duration) -> Result<(), ShimStatus> {
         // SAFETY: the handle is owned here.
         let status = unsafe { mp_shim_session_start(self.handle.as_ptr(), nanos(wait)) };
+        #[cfg(test)]
+        if matches!(
+            ShimStatus::from_raw(status),
+            ShimStatus::Ok | ShimStatus::TimedOut
+        ) {
+            CANCEL_AFTER_START.with(|slot| {
+                if let Some(cancellation) = slot.borrow_mut().take() {
+                    cancellation.cancel();
+                }
+            });
+        }
         ShimStatus::from_raw(status).into_result()
     }
 
@@ -903,6 +1221,33 @@ impl Session {
             0
         }
     }
+}
+
+fn required_window_info(required: Option<WindowGeometry>) -> Result<TargetInfo, ShimStatus> {
+    let mut info = TargetInfo::requested();
+    if let Some(required) = required {
+        let placement = required.placement();
+        if required.area() != WindowCaptureArea::MacosWindow
+            || placement.scale().x() != placement.scale().y()
+            || placement.desktop_scale() != placement.scale()
+        {
+            return Err(ShimStatus::GeometryChanged);
+        }
+        crate::discovery::window_placement_from_points(
+            placement.desktop_origin(),
+            placement.logical_size(),
+            placement.scale().x(),
+            required.extent(),
+        )
+        .map_err(|_| ShimStatus::GeometryChanged)?;
+        info.kind = KIND_WINDOW;
+        info.pixel_width = required.extent().width();
+        info.pixel_height = required.extent().height();
+        (info.logical_x, info.logical_y) = placement.desktop_origin();
+        (info.logical_width, info.logical_height) = placement.logical_size();
+        info.backing_scale = placement.scale().x();
+    }
+    Ok(info)
 }
 
 /// Validates the platform-neutral part of an open request.
@@ -1233,8 +1578,7 @@ pub(crate) fn monotonic_nanos() -> Option<u64> {
 
 /// Reports how many native objects the shim owns process-wide.
 ///
-/// Only the ownership cases ADR 0012 requires read this, so it is compiled for
-/// tests alone rather than left as an operation the Adapter could come to rely on.
+/// Compiled only for failure-path ownership tests, not adapter operations.
 #[cfg(test)]
 pub(crate) fn live_objects() -> u64 {
     let mut live = 0;
@@ -1524,16 +1868,41 @@ fn native_pixels_from_points(points: f64, scale: f64) -> Option<u32> {
     Some(pixels as u32)
 }
 
-/// Reports whether the exact retained window is focused.
-fn input_target_focused(target: &TargetToken, wait: Duration) -> Result<bool, ShimStatus> {
+/// Reports exact focus and the raw geometry observed before its final predicate.
+fn input_target_focused(
+    target: &TargetToken,
+    wait: Duration,
+) -> Result<(bool, NativeBounds), ShimStatus> {
     let mut focused = false;
-    // SAFETY: the target pointer is either its retained native handle or null for
-    // a test-only synthetic token, the timeout is bounded, and the output is
-    // writable for one C boolean.
-    let status =
-        unsafe { mp_shim_input_target_focused(target.as_ptr(), nanos(wait), &raw mut focused) };
+    let mut native = NativeProcessAuthority::empty();
+    // SAFETY: the retained target outlives the call and both outputs are writable
+    // with the exact layouts declared to C.
+    let status = unsafe {
+        mp_shim_input_target_focused(
+            target.as_ptr(),
+            nanos(wait),
+            &raw mut focused,
+            &raw mut native,
+        )
+    };
     ShimStatus::from_raw(status).into_result()?;
-    Ok(focused)
+    Ok((focused, native.bounds()))
+}
+
+/// Runs the production final-inventory/focus ordering without host authority.
+#[cfg(test)]
+pub(crate) fn testing_input_focus_observation(
+    lose_focus: bool,
+) -> Result<(bool, NativeBounds), ShimStatus> {
+    let mut focused = false;
+    let mut native = NativeProcessAuthority::empty();
+    // SAFETY: the synchronous seam writes only these correctly sized outputs;
+    // it neither retains pointers nor discovers or posts to a desktop target.
+    let status = unsafe {
+        mp_shim_testing_input_focus_observation(lose_focus, &raw mut focused, &raw mut native)
+    };
+    ShimStatus::from_raw(status).into_result()?;
+    Ok((focused, native.bounds()))
 }
 
 /// Reports one target's current rectangle, and thereby whether it still exists.
@@ -1599,16 +1968,7 @@ fn process_target_authority(
             target_match_count: 0,
         });
     };
-    let mut native = NativeProcessAuthority {
-        struct_size: u32::try_from(size_of::<NativeProcessAuthority>())
-            .expect("structure size fits u32"),
-        target_match_count: 0,
-        logical_x: 0.0,
-        logical_y: 0.0,
-        logical_width: 0.0,
-        logical_height: 0.0,
-        backing_scale: 0.0,
-    };
+    let mut native = NativeProcessAuthority::empty();
     // SAFETY: the retained opaque target stays alive for the call and `native`
     // is writable for the exact size-versioned structure declared to C.
     let status = ShimStatus::from_raw(unsafe {
@@ -1621,11 +1981,7 @@ fn process_target_authority(
         });
     }
     Ok(ProcessAuthority {
-        bounds: NativeBounds {
-            origin: (native.logical_x, native.logical_y),
-            size: (native.logical_width, native.logical_height),
-            scale: native.backing_scale,
-        },
+        bounds: native.bounds(),
         target_match_count: native.target_match_count,
     })
 }
@@ -2026,10 +2382,10 @@ pub(crate) fn input_prepare_text(units: &[u16], flags: u32) -> Result<PreparedIn
 
 /// Returns the version, structure sizes, and process-field offsets compiled into
 /// the linked shim.
-pub(crate) fn linked_layout() -> (u32, [u32; 6], [u32; 6]) {
+pub(crate) fn linked_layout() -> (u32, [u32; 7], [u32; 6]) {
     // SAFETY: the version call takes no arguments.
     let version = unsafe { mp_shim_abi_version() };
-    let mut sizes = [0; 6];
+    let mut sizes = [0; 7];
     let [
         target_info,
         frame_info,
@@ -2037,8 +2393,9 @@ pub(crate) fn linked_layout() -> (u32, [u32; 6], [u32; 6]) {
         process_authority,
         process_post_request,
         process_post_report,
+        open_report,
     ] = &mut sizes;
-    // SAFETY: all six outputs are writable for one u32 each.
+    // SAFETY: all seven outputs are writable for one u32 each.
     let size_status = unsafe {
         mp_shim_struct_sizes(
             &raw mut *target_info,
@@ -2047,10 +2404,11 @@ pub(crate) fn linked_layout() -> (u32, [u32; 6], [u32; 6]) {
             &raw mut *process_authority,
             &raw mut *process_post_request,
             &raw mut *process_post_report,
+            &raw mut *open_report,
         )
     };
     if ShimStatus::from_raw(size_status) != ShimStatus::Ok {
-        return (version, [0; 6], [0; 6]);
+        return (version, [0; 7], [0; 6]);
     }
 
     let mut offsets = [0; 6];
@@ -2080,7 +2438,7 @@ pub(crate) fn linked_layout() -> (u32, [u32; 6], [u32; 6]) {
 }
 
 /// The sizes this build compiled its mirrored structures to.
-pub(crate) fn declared_layout() -> [u32; 6] {
+pub(crate) fn declared_layout() -> [u32; 7] {
     [
         u32::try_from(size_of::<TargetInfo>()).expect("structure size fits u32"),
         u32::try_from(size_of::<FrameInfo>()).expect("structure size fits u32"),
@@ -2088,6 +2446,7 @@ pub(crate) fn declared_layout() -> [u32; 6] {
         u32::try_from(size_of::<NativeProcessAuthority>()).expect("structure size fits u32"),
         u32::try_from(size_of::<NativeProcessPostRequest>()).expect("structure size fits u32"),
         u32::try_from(size_of::<NativeProcessPostReport>()).expect("structure size fits u32"),
+        u32::try_from(size_of::<NativeOpenReport>()).expect("structure size fits u32"),
     ]
 }
 
@@ -2121,6 +2480,36 @@ pub(crate) fn declared_process_offsets() -> [u32; 6] {
     ]
 }
 
+pub(crate) fn linked_open_offsets() -> [u32; 14] {
+    let mut offsets = [0; 14];
+    // SAFETY: the array is writable for its declared length.
+    let status = unsafe { mp_shim_open_struct_offsets(offsets.as_mut_ptr(), offsets.len()) };
+    if ShimStatus::from_raw(status) != ShimStatus::Ok {
+        return [0; 14];
+    }
+    offsets
+}
+
+pub(crate) fn declared_open_offsets() -> [u32; 14] {
+    [
+        std::mem::offset_of!(NativeOpenRequest, target),
+        std::mem::offset_of!(NativeOpenRequest, callback_context),
+        std::mem::offset_of!(NativeOpenRequest, frame_callback),
+        std::mem::offset_of!(NativeOpenRequest, frame_commit_callback),
+        std::mem::offset_of!(NativeOpenRequest, stopped_callback),
+        std::mem::offset_of!(NativeOpenRequest, pacing_mode),
+        std::mem::offset_of!(NativeOpenRequest, pacing_interval_nanos),
+        std::mem::offset_of!(NativeOpenReport, pacing_outcome),
+        std::mem::offset_of!(NativeOpenReport, configured_interval_nanos),
+        std::mem::offset_of!(NativeOpenRequest, max_frame_bytes),
+        std::mem::offset_of!(NativeOpenRequest, max_retained_bytes),
+        std::mem::offset_of!(NativeOpenRequest, validation_timeout_nanos),
+        std::mem::offset_of!(NativeOpenRequest, require_window),
+        std::mem::offset_of!(NativeOpenRequest, required_window),
+    ]
+    .map(|offset| u32::try_from(offset).expect("field offset fits u32"))
+}
+
 /// What a shim entry point reported.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) enum ShimStatus {
@@ -2142,9 +2531,9 @@ pub(crate) enum ShimStatus {
     Closed,
     /// A bounded native wait reached the budget it was given.
     TimedOut,
-    /// Every unit of the session's detached-storage budget is leased.
+    /// A byte ceiling was exceeded or detached storage is temporarily unavailable.
     BudgetExhausted,
-    /// The producer surface could not be read as a complete frame.
+    /// The producer sample is incomplete or cannot yet be accounted for.
     FrameIncomplete,
     /// The user stopped the stream through a system control.
     StoppedByUser,
@@ -2236,9 +2625,8 @@ impl ShimStatus {
             ShimStatus::StoppedBySystem => CaptureFault::StreamEnded,
             ShimStatus::TimedOut => CaptureFault::SourceInvalid,
             ShimStatus::BudgetExhausted => CaptureFault::StorageBudgetExhausted,
-            ShimStatus::FrameIncomplete
-            | ShimStatus::GeometryChanged
-            | ShimStatus::FocusRequired => CaptureFault::SourceInvalid,
+            ShimStatus::GeometryChanged => CaptureFault::WindowGeometryChanged,
+            ShimStatus::FrameIncomplete | ShimStatus::FocusRequired => CaptureFault::SourceInvalid,
         }
     }
 }
@@ -2260,8 +2648,11 @@ fn nanos(wait: Duration) -> u64 {
 
 /// The frame callback signature the shim invokes.
 ///
+/// Both frame pointers null notify one producer-pressure drop without a commit.
+/// Ordinary incomplete framework samples do not invoke this callback.
+///
 /// The implementation must contain its own panics: a panic escaping an
-/// `extern "C"` callback aborts the process, which ADR 0012 measured.
+/// `extern "C"` callback aborts the process.
 pub(crate) type FrameCallback =
     unsafe extern "C" fn(*mut c_void, *mut OpaqueFrame, *const FrameInfo) -> u32;
 
@@ -2490,6 +2881,181 @@ fn testing_stop_callback_exception() -> Result<(ShimStatus, u32, ShimStatus), Sh
         calls,
         ShimStatus::from_raw(fence),
     ))
+}
+
+/// Scalar observations after the controlled callback probe released every owner.
+#[cfg(test)]
+#[derive(Debug, Clone, Copy)]
+pub(crate) struct FrameCallbackBoundaryObservation {
+    pub(crate) stages: u32,
+    pub(crate) commits: u32,
+    pub(crate) terminal_reports: u32,
+    pub(crate) terminal_status: Option<ShimStatus>,
+    pub(crate) panic_reached: bool,
+    pub(crate) ordered: bool,
+    pub(crate) pending_frame: bool,
+    pub(crate) valid_samples: u32,
+    pub(crate) fence: ShimStatus,
+}
+
+/// Delivers two owned samples through the production callback boundary, without
+/// discovering a target, opening a stream, or probing Screen Recording.
+///
+/// The synchronous call borrows a stack-owned probe. Commit and stop both clear
+/// its staged frame, retaining that detached owner only for observation after the
+/// helper releases its own session reference. No frame or callback context escapes
+/// this wrapper, including on a setup or copy failure.
+#[cfg(test)]
+pub(crate) fn testing_frame_callback_boundary(
+    site: u32,
+) -> Result<FrameCallbackBoundaryObservation, ShimStatus> {
+    use std::cell::RefCell;
+
+    struct Probe {
+        observation: FrameCallbackBoundaryObservation,
+        panic_in_callback: bool,
+        staged: Option<(DetachedFrame, FrameInfo)>,
+        samples: [Option<(DetachedFrame, FrameInfo)>; 2],
+    }
+
+    impl Probe {
+        fn observe_staged(&mut self) {
+            if let Some(sample) = self.staged.take() {
+                if let Some(slot) = self.samples.iter_mut().find(|slot| slot.is_none()) {
+                    *slot = Some(sample);
+                } else {
+                    self.observation.ordered = false;
+                }
+            }
+        }
+    }
+
+    unsafe extern "C" fn stage(
+        context: *mut c_void,
+        frame: *mut OpaqueFrame,
+        info: *const FrameInfo,
+    ) -> u32 {
+        // SAFETY: the synchronous helper passes the live registered RefCell<Probe>
+        // and the production delegate's callback-borrowed frame and full report.
+        unsafe {
+            contained_frame_callback::<RefCell<Probe>>(
+                context,
+                frame,
+                info,
+                |owner, borrowed, info| {
+                    let mut probe = owner.borrow_mut();
+                    probe.observation.stages += 1;
+                    let ordered =
+                        probe.staged.is_none() && probe.observation.terminal_status.is_none();
+                    probe.observation.ordered &= ordered;
+                    let detached = match borrowed.detach() {
+                        Ok(detached) => detached,
+                        Err(status) => return status,
+                    };
+                    probe.staged = Some((detached, *info));
+                    if probe.panic_in_callback {
+                        probe.observation.panic_reached = true;
+                        panic!("injected Rust frame callback panic");
+                    }
+                    ShimStatus::Ok
+                },
+            )
+        }
+    }
+
+    unsafe extern "C" fn commit(context: *mut c_void) -> u32 {
+        // SAFETY: the helper invokes this only during the synchronous call with
+        // the same live RefCell<Probe> registered for the frame callback.
+        unsafe {
+            contained_frame_commit_callback::<RefCell<Probe>>(context, |owner| {
+                let mut probe = owner.borrow_mut();
+                probe.observation.commits += 1;
+                let ordered = probe.staged.is_some() && probe.observation.terminal_status.is_none();
+                probe.observation.ordered &= ordered;
+                probe.observe_staged();
+                ShimStatus::Ok
+            })
+        }
+    }
+
+    unsafe extern "C" fn stopped(context: *mut c_void, status: u32) {
+        // SAFETY: the production terminal gate invokes this with the same live
+        // RefCell<Probe>; no callback can outlive the synchronous helper call.
+        unsafe {
+            contained_stopped_callback::<RefCell<Probe>>(context, status, |owner, status| {
+                let mut probe = owner.borrow_mut();
+                probe.observation.terminal_reports += 1;
+                if probe.observation.terminal_status.is_none() {
+                    probe.observation.terminal_status = Some(status);
+                } else {
+                    probe.observation.ordered = false;
+                }
+                // This owner is only an observation, never a committed frame.
+                probe.observe_staged();
+            });
+        }
+    }
+
+    let panic_in_callback = site == PANIC_IN_RUST_CALLBACK;
+    let probe = RefCell::new(Probe {
+        observation: FrameCallbackBoundaryObservation {
+            stages: 0,
+            commits: 0,
+            terminal_reports: 0,
+            terminal_status: None,
+            panic_reached: false,
+            ordered: true,
+            pending_frame: false,
+            valid_samples: 0,
+            fence: ShimStatus::Unrecognized(u32::MAX),
+        },
+        panic_in_callback,
+        staged: None,
+        samples: [None, None],
+    });
+    let raise_sites = if panic_in_callback { 0 } else { site };
+    let mut fence = u32::MAX;
+    // SAFETY: all three callbacks use the exact declared C signatures and contain
+    // their Rust bodies. The helper borrows `probe` only on this thread, performs
+    // both deliveries and the admission fence synchronously, and retains neither
+    // its context nor callback registration after returning. `fence` is writable.
+    let status = unsafe {
+        mp_shim_testing_frame_callback_boundary(
+            raise_sites,
+            (&raw const probe).cast_mut().cast(),
+            Some(stage),
+            Some(commit),
+            Some(stopped),
+            &raw mut fence,
+        )
+    };
+    ShimStatus::from_raw(status).into_result()?;
+    let mut probe = probe.into_inner();
+    probe.observation.fence = ShimStatus::from_raw(fence);
+    probe.observation.pending_frame = probe.staged.is_some();
+    for (frame, info) in probe.samples.iter().flatten() {
+        // All metadata and pixel checks run outside the contained FFI callbacks.
+        // The helper has already released its session owner, so this also reads a
+        // real detached frame whose lease alone keeps native pool state alive.
+        let mut pixels = [0; 4 * 4 * 4];
+        frame.copy_out(&mut pixels, 4 * 4)?;
+        if info.pixel_format == PIXEL_BGRA8
+            && info.extent() == Some(PixelExtent::new(4, 4))
+            && info.surface_extent() == Some(PixelExtent::new(4, 4))
+            && info.scale_factor == 1.0
+            && info.backing_scale() == Some(1.0)
+            && info.content_origin_x == 0.0
+            && info.content_origin_y == 0.0
+            && info.screen_rect() == Some(((0.0, 0.0), (4.0, 4.0)))
+            && info.display_time_nanos == 1_000_000_000
+            && pixels == [0x31; 4 * 4 * 4]
+        {
+            probe.observation.valid_samples += 1;
+        }
+    }
+    let observation = probe.observation;
+    drop(probe);
+    Ok(observation)
 }
 
 #[cfg(test)]
@@ -3097,6 +3663,133 @@ struct NativeOpenRequest {
     frame_callback: Option<FrameCallback>,
     frame_commit_callback: Option<FrameCommitCallback>,
     stopped_callback: Option<StoppedCallback>,
+    pacing_mode: u32,
+    pacing_interval_nanos: i64,
+    max_frame_bytes: u64,
+    max_retained_bytes: u64,
+    validation_timeout_nanos: u64,
+    require_window: u32,
+    required_window: TargetInfo,
+}
+
+#[repr(C)]
+#[derive(Debug, Clone, Copy)]
+struct NativeOpenReport {
+    struct_size: u32,
+    pacing_outcome: u32,
+    configured_interval_nanos: i64,
+}
+
+impl NativeOpenReport {
+    fn requested() -> Self {
+        Self {
+            struct_size: u32::try_from(size_of::<Self>()).expect("structure size fits u32"),
+            pacing_outcome: u32::MAX,
+            configured_interval_nanos: 0,
+        }
+    }
+
+    fn capture_pacing(
+        self,
+        request: ResolvedCapturePacing,
+    ) -> Result<CapturePacingReport, ShimStatus> {
+        if self.struct_size < u32::try_from(size_of::<Self>()).expect("structure size fits u32") {
+            return Err(ShimStatus::PlatformFailure);
+        }
+        match (self.pacing_outcome, self.configured_interval_nanos) {
+            (PACING_SOURCE_DEFAULT, 0) if request.interval().is_none() => {
+                Ok(CapturePacingReport::source_default())
+            }
+            (PACING_APPLIED, nanos) if nanos > 0 => CapturePacingReport::applied(
+                request,
+                Duration::from_nanos(
+                    u64::try_from(nanos).map_err(|_| ShimStatus::PlatformFailure)?,
+                ),
+            )
+            .map_err(|_| ShimStatus::PlatformFailure),
+            (PACING_UNAVAILABLE, 0) if request.is_preferred() => CapturePacingReport::unsupported(
+                request,
+                PacingUnsupportedReason::NativeControlUnavailable,
+            )
+            .map_err(|_| ShimStatus::PlatformFailure),
+            _ => Err(ShimStatus::PlatformFailure),
+        }
+    }
+}
+
+#[cfg(test)]
+#[repr(u32)]
+#[derive(Debug, Clone, Copy)]
+enum TestingCapturePacing {
+    Applied = 0,
+    MissingSetter = 1,
+    MissingGetter = 2,
+    SetterException = 3,
+    GetterException = 4,
+    ShortReadback = 5,
+    InvalidReadback = 6,
+    StartException = 7,
+    StartFailure = 8,
+    ResizeException = 9,
+    ResizeLosesInterval = 10,
+    ProbeException = 11,
+    StreamException = 12,
+    OutputException = 13,
+}
+
+#[cfg(test)]
+#[repr(C)]
+#[derive(Debug)]
+struct CapturePacingObservation {
+    struct_size: u32,
+    open_status: u32,
+    start_status: u32,
+    resize_status: u32,
+    close_status: u32,
+    open_report: NativeOpenReport,
+    assigned_value: i64,
+    assigned_timescale: i32,
+    stream_creations: u32,
+    created_interval_nanos: i64,
+    started_interval_nanos: i64,
+    resized_interval_nanos: i64,
+    resized_width: u32,
+    resized_height: u32,
+    live_owners: u32,
+    live_native_objects: u64,
+}
+
+#[cfg(test)]
+fn testing_capture_pacing(
+    mode: u32,
+    nanos: i64,
+    scenario: TestingCapturePacing,
+) -> Result<CapturePacingObservation, ShimStatus> {
+    let mut observed = CapturePacingObservation {
+        struct_size: u32::try_from(size_of::<CapturePacingObservation>())
+            .expect("structure size fits u32"),
+        open_status: u32::MAX,
+        start_status: u32::MAX,
+        resize_status: u32::MAX,
+        close_status: u32::MAX,
+        open_report: NativeOpenReport::requested(),
+        assigned_value: 0,
+        assigned_timescale: 0,
+        stream_creations: 0,
+        created_interval_nanos: 0,
+        started_interval_nanos: 0,
+        resized_interval_nanos: 0,
+        resized_width: 0,
+        resized_height: 0,
+        live_owners: 0,
+        live_native_objects: 0,
+    };
+    // SAFETY: the size-versioned output stays writable for the entire synchronous
+    // seam. It uses local fake objects and settles every callback before returning.
+    let status =
+        unsafe { mp_shim_testing_capture_pacing(mode, nanos, scenario as u32, &raw mut observed) };
+    ShimStatus::from_raw(status).into_result()?;
+    Ok(observed)
 }
 
 #[repr(C)]
@@ -3111,13 +3804,35 @@ struct NativeProcessAuthority {
     backing_scale: f64,
 }
 
+impl NativeProcessAuthority {
+    fn empty() -> Self {
+        Self {
+            struct_size: u32::try_from(size_of::<Self>()).expect("structure size fits u32"),
+            target_match_count: 0,
+            logical_x: 0.0,
+            logical_y: 0.0,
+            logical_width: 0.0,
+            logical_height: 0.0,
+            backing_scale: 0.0,
+        }
+    }
+
+    fn bounds(&self) -> NativeBounds {
+        NativeBounds {
+            origin: (self.logical_x, self.logical_y),
+            size: (self.logical_width, self.logical_height),
+            scale: self.backing_scale,
+        }
+    }
+}
+
 #[repr(C)]
 #[derive(Debug)]
 struct NativeProcessPostRequest {
     struct_size: u32,
     event_kind: u32,
     target: *const OpaqueTarget,
-    event_source: *const OpaqueProcessEventSource,
+    event_source: *mut OpaqueProcessEventSource,
     timeout_nanos: u64,
     flags: u32,
     geometry_check: u32,
@@ -3159,6 +3874,52 @@ struct NativeProcessPostReport {
 }
 
 unsafe extern "C" {
+    fn mp_shim_target_window_info(
+        target: *const OpaqueTarget,
+        timeout_nanos: u64,
+        revalidate: bool,
+        out_info: *mut TargetInfo,
+    ) -> u32;
+    fn mp_shim_frame_reserve_cpu(
+        frame: *const OpaqueFrame,
+        bytes: u64,
+        out_lease: *mut *mut c_void,
+    ) -> u32;
+    fn mp_shim_image_lease_release(lease: *mut c_void);
+    fn mp_shim_storage_preflight(
+        width: u32,
+        height: u32,
+        depth: u32,
+        max_frame: u64,
+        max_retained: u64,
+    ) -> u32;
+    #[cfg(test)]
+    fn mp_shim_testing_limited_frame(
+        max_frame: u64,
+        max_retained: u64,
+        out_frame: *mut *mut OpaqueFrame,
+        out_budget: *mut *mut c_void,
+    ) -> u32;
+    #[cfg(test)]
+    fn mp_shim_testing_image_bytes(budget: *const c_void) -> u64;
+    #[cfg(test)]
+    fn mp_shim_testing_producer_budget(out_values: *mut u64, count: usize) -> u32;
+    #[cfg(test)]
+    fn mp_shim_testing_producer_observation(
+        scenario: u32,
+        out_values: *mut u64,
+        count: usize,
+    ) -> u32;
+    #[cfg(test)]
+    pub(crate) fn mp_shim_testing_storage_pressure(
+        scenario: u32,
+        context: *mut c_void,
+        frame_callback: Option<FrameCallback>,
+        release_callback: Option<FrameCommitCallback>,
+        out_statuses: *mut u32,
+    ) -> u32;
+    #[cfg(test)]
+    fn mp_shim_testing_window_geometry(scenario: u32, out_info: *mut TargetInfo) -> u32;
     fn mp_shim_abi_version() -> u32;
     fn mp_shim_struct_sizes(
         out_target_info: *mut u32,
@@ -3167,6 +3928,7 @@ unsafe extern "C" {
         out_process_authority: *mut u32,
         out_process_post_request: *mut u32,
         out_process_post_report: *mut u32,
+        out_open_report: *mut u32,
     ) -> u32;
     fn mp_shim_process_struct_offsets(
         out_authority_target_match_count: *mut u32,
@@ -3175,6 +3937,25 @@ unsafe extern "C" {
         out_request_timeout_nanos: *mut u32,
         out_report_target_match_count: *mut u32,
         out_report_invoked_native_units: *mut u32,
+    ) -> u32;
+    fn mp_shim_open_struct_offsets(out_offsets: *mut u32, count: usize) -> u32;
+    #[cfg(test)]
+    fn mp_shim_testing_appkit_pointer(
+        action: u32,
+        button: u32,
+        scenario: u32,
+        out_construction: *mut u32,
+        out_points: *mut f64,
+        point_count: usize,
+        out_fields: *mut i64,
+        field_count: usize,
+    ) -> u32;
+    #[cfg(test)]
+    fn mp_shim_testing_capture_pacing(
+        mode: u32,
+        nanos: i64,
+        scenario: u32,
+        out_report: *mut CapturePacingObservation,
     ) -> u32;
     fn mp_shim_capture_available() -> u32;
     fn mp_shim_probe_screen_capture(out_state: *mut u32) -> u32;
@@ -3223,6 +4004,25 @@ unsafe extern "C" {
         out_fence_status: *mut u32,
     ) -> u32;
     #[cfg(test)]
+    fn mp_shim_testing_frame_callback_boundary(
+        raise_sites: u32,
+        context: *mut c_void,
+        frame_callback: Option<FrameCallback>,
+        frame_commit_callback: Option<FrameCommitCallback>,
+        stopped_callback: Option<StoppedCallback>,
+        out_fence_status: *mut u32,
+    ) -> u32;
+    #[cfg(test)]
+    pub(crate) fn mp_shim_testing_delivery_pressure(
+        scenario: u32,
+        context: *mut c_void,
+        frame_callback: Option<FrameCallback>,
+        commit_callback: Option<FrameCommitCallback>,
+        stopped_callback: Option<StoppedCallback>,
+        observe_callback: Option<FrameCommitCallback>,
+        out_fence: *mut u32,
+    ) -> u32;
+    #[cfg(test)]
     fn mp_shim_testing_gate_retries(
         completion_delay_nanos: u64,
         first_wait_nanos: u64,
@@ -3267,6 +4067,12 @@ unsafe extern "C" {
     fn mp_shim_testing_target_without_process_lifetime(
         out_capture_metadata_retained: *mut u32,
         out_process_metadata_retained: *mut u32,
+    ) -> u32;
+    #[cfg(test)]
+    fn mp_shim_testing_target_process_identity(
+        scenario: u32,
+        out_observations: *mut u64,
+        count: usize,
     ) -> u32;
     #[cfg(test)]
     fn mp_shim_testing_resource_allocation_failures(
@@ -3409,10 +4215,24 @@ unsafe extern "C" {
         index: usize,
         out: *mut *mut OpaqueTarget,
     ) -> u32;
+    fn mp_shim_target_process_identity(
+        target: *const OpaqueTarget,
+        out_process: *mut u32,
+        out_lifetime: *mut u64,
+        out_executable: *mut u8,
+        executable_capacity: usize,
+        out_executable_len: *mut usize,
+        out_bundle: *mut u8,
+        bundle_capacity: usize,
+        out_bundle_len: *mut usize,
+    ) -> u32;
     fn mp_shim_inventory_release(inventory: *mut OpaqueInventory);
     fn mp_shim_target_release(target: *mut OpaqueTarget);
-    fn mp_shim_session_open(request: *const NativeOpenRequest, out: *mut *mut OpaqueSession)
-    -> u32;
+    fn mp_shim_session_open(
+        request: *const NativeOpenRequest,
+        out: *mut *mut OpaqueSession,
+        out_report: *mut NativeOpenReport,
+    ) -> u32;
     fn mp_shim_session_start(session: *mut OpaqueSession, timeout_nanos: u64) -> u32;
     fn mp_shim_session_reconfigure(
         session: *mut OpaqueSession,
@@ -3440,6 +4260,13 @@ unsafe extern "C" {
         target: *const OpaqueTarget,
         timeout_nanos: u64,
         out_focused: *mut bool,
+        out_authority: *mut NativeProcessAuthority,
+    ) -> u32;
+    #[cfg(test)]
+    fn mp_shim_testing_input_focus_observation(
+        lose_focus: bool,
+        out_focused: *mut bool,
+        out_authority: *mut NativeProcessAuthority,
     ) -> u32;
     fn mp_shim_input_target_bounds(
         target: *const OpaqueTarget,
@@ -3457,6 +4284,7 @@ unsafe extern "C" {
     ) -> u32;
     fn mp_shim_process_event_source_create(
         activity_tag: u64,
+        pointer_mode: u32,
         out_source: *mut *mut OpaqueProcessEventSource,
     ) -> u32;
     fn mp_shim_process_event_source_release(source: *mut OpaqueProcessEventSource);
@@ -3614,12 +4442,498 @@ mod tests {
         assert_eq!(version, ABI_VERSION);
         assert_eq!(sizes, declared_layout());
         assert_eq!(offsets, declared_process_offsets());
+        assert_eq!(super::linked_open_offsets(), super::declared_open_offsets());
+    }
+
+    #[test]
+    fn capture_pacing_private_handshake_preserves_existing_pointer_offsets() {
+        assert_eq!(
+            super::declared_open_offsets(),
+            [24, 72, 80, 88, 96, 104, 112, 4, 8, 120, 128, 136, 144, 152],
+        );
+        assert_eq!(super::linked_open_offsets(), super::declared_open_offsets());
+    }
+
+    #[test]
+    fn capture_pacing_nanosecond_boundaries_do_not_use_the_native_wait_ceiling() {
+        use mado_pilot_capture::{CapturePacingRequest, ResolvedCapturePacing};
+
+        let maximum = Duration::from_nanos(i64::MAX.unsigned_abs());
+        for interval in [
+            Duration::from_nanos(1),
+            Duration::from_nanos(2_000_000_001),
+            maximum,
+        ] {
+            let request = CapturePacingRequest::required(interval)
+                .expect("positive duration")
+                .resolve(ResolvedCapturePacing::source_default());
+            assert_eq!(
+                super::capture_pacing_nanos(request),
+                Ok(i64::try_from(interval.as_nanos()).expect("representable")),
+            );
+        }
+        let too_large = maximum + Duration::from_nanos(1);
+        for request in [
+            CapturePacingRequest::required(too_large).expect("positive"),
+            CapturePacingRequest::preferred(too_large).expect("positive"),
+            CapturePacingRequest::preferred(Duration::MAX).expect("positive"),
+        ] {
+            assert_eq!(
+                super::capture_pacing_nanos(
+                    request.resolve(ResolvedCapturePacing::source_default())
+                ),
+                Err(ShimStatus::InvalidArgument),
+            );
+        }
+    }
+
+    #[test]
+    fn capture_pacing_is_exact_before_creation_start_and_retained_configuration_resize() {
+        use super::{TestingCapturePacing, testing_capture_pacing};
+        use mado_pilot_capture::{
+            CapturePacingOutcome, CapturePacingRequest, ResolvedCapturePacing,
+        };
+
+        let _serial = serialized_fixture_test();
+        for nanos in [1, 3_500_000_001, i64::MAX] {
+            let interval = Duration::from_nanos(u64::try_from(nanos).expect("positive"));
+            let request = CapturePacingRequest::required(interval)
+                .expect("positive")
+                .resolve(ResolvedCapturePacing::source_default());
+            let observed = testing_capture_pacing(
+                super::PACING_REQUIRED,
+                nanos,
+                TestingCapturePacing::Applied,
+            )
+            .expect("local native configuration seam");
+            assert_eq!(ShimStatus::from_raw(observed.open_status), ShimStatus::Ok);
+            assert_eq!(ShimStatus::from_raw(observed.start_status), ShimStatus::Ok);
+            assert_eq!(ShimStatus::from_raw(observed.resize_status), ShimStatus::Ok);
+            assert_eq!(observed.assigned_value, nanos);
+            assert_eq!(observed.assigned_timescale, 1_000_000_000);
+            assert_eq!(observed.created_interval_nanos, nanos);
+            assert_eq!(observed.started_interval_nanos, nanos);
+            assert_eq!(observed.resized_interval_nanos, nanos);
+            assert_eq!((observed.resized_width, observed.resized_height), (128, 96));
+            let report = observed
+                .open_report
+                .capture_pacing(request)
+                .expect("truthful report");
+            assert_eq!(report.request(), request);
+            assert_eq!(report.configured_interval(), Some(interval));
+            assert_eq!(report.outcome(), CapturePacingOutcome::Applied);
+            assert_eq!(ShimStatus::from_raw(observed.close_status), ShimStatus::Ok);
+            assert_eq!((observed.live_owners, observed.live_native_objects), (0, 0));
+        }
+    }
+
+    #[test]
+    fn capture_pacing_missing_accessors_only_allow_explicit_preferences() {
+        use super::{TestingCapturePacing, testing_capture_pacing};
+        use mado_pilot_capture::{
+            CapturePacingOutcome, CapturePacingRequest, PacingUnsupportedReason,
+            ResolvedCapturePacing,
+        };
+
+        let _serial = serialized_fixture_test();
+        let interval = Duration::from_millis(75);
+        let preference = CapturePacingRequest::preferred(interval)
+            .expect("positive")
+            .resolve(ResolvedCapturePacing::source_default());
+        for scenario in [
+            TestingCapturePacing::MissingSetter,
+            TestingCapturePacing::MissingGetter,
+        ] {
+            let required = testing_capture_pacing(super::PACING_REQUIRED, 75_000_000, scenario)
+                .expect("local capability seam");
+            assert_eq!(
+                ShimStatus::from_raw(required.open_status),
+                ShimStatus::Unsupported
+            );
+            assert_eq!(required.stream_creations, 0);
+            assert_eq!((required.live_owners, required.live_native_objects), (0, 0));
+
+            let preferred = testing_capture_pacing(super::PACING_PREFERRED, 75_000_000, scenario)
+                .expect("local capability seam");
+            assert_eq!(ShimStatus::from_raw(preferred.open_status), ShimStatus::Ok);
+            assert_eq!(ShimStatus::from_raw(preferred.start_status), ShimStatus::Ok);
+            let report = preferred
+                .open_report
+                .capture_pacing(preference)
+                .expect("unapplied report");
+            assert_eq!(report.request(), preference);
+            assert_eq!(report.configured_interval(), None);
+            assert_eq!(
+                report.outcome(),
+                CapturePacingOutcome::PreferredUnapplied(
+                    PacingUnsupportedReason::NativeControlUnavailable
+                ),
+            );
+            assert_eq!(preferred.created_interval_nanos, 17_000_000);
+            assert_eq!(preferred.resized_interval_nanos, 17_000_000);
+            assert_eq!(
+                (preferred.live_owners, preferred.live_native_objects),
+                (0, 0)
+            );
+        }
+
+        let default = testing_capture_pacing(
+            super::PACING_SOURCE_DEFAULT,
+            0,
+            TestingCapturePacing::ProbeException,
+        )
+        .expect("source default never probes pacing");
+        assert_eq!(ShimStatus::from_raw(default.start_status), ShimStatus::Ok);
+        assert_eq!(default.created_interval_nanos, 17_000_000);
+        assert_eq!(
+            default
+                .open_report
+                .capture_pacing(ResolvedCapturePacing::source_default())
+                .expect("source default report")
+                .outcome(),
+            CapturePacingOutcome::SourceDefault,
+        );
+        assert_eq!((default.live_owners, default.live_native_objects), (0, 0));
+    }
+
+    #[test]
+    fn capture_pacing_configuration_failures_never_become_preferred_fallback() {
+        use super::{TestingCapturePacing, testing_capture_pacing};
+
+        let _serial = serialized_fixture_test();
+        for (scenario, expected) in [
+            (
+                TestingCapturePacing::SetterException,
+                ShimStatus::NativeException,
+            ),
+            (
+                TestingCapturePacing::GetterException,
+                ShimStatus::NativeException,
+            ),
+            (
+                TestingCapturePacing::ProbeException,
+                ShimStatus::NativeException,
+            ),
+            (
+                TestingCapturePacing::ShortReadback,
+                ShimStatus::PlatformFailure,
+            ),
+            (
+                TestingCapturePacing::InvalidReadback,
+                ShimStatus::PlatformFailure,
+            ),
+        ] {
+            let observed = testing_capture_pacing(super::PACING_PREFERRED, 50_000_000, scenario)
+                .expect("local rejected-configuration seam");
+            assert_eq!(ShimStatus::from_raw(observed.open_status), expected);
+            assert_eq!(observed.stream_creations, 0);
+            assert_eq!(observed.open_report.pacing_outcome, u32::MAX);
+            assert_eq!((observed.live_owners, observed.live_native_objects), (0, 0));
+        }
+    }
+
+    #[test]
+    fn capture_pacing_native_scalars_refuse_invalid_requests_without_creating_a_stream() {
+        let _serial = serialized_fixture_test();
+        for (mode, nanos) in [(1, 0), (2, -1), (3, 1), (0, 1)] {
+            let observed =
+                super::testing_capture_pacing(mode, nanos, super::TestingCapturePacing::Applied)
+                    .expect("local scalar-validation seam");
+            assert_eq!(
+                ShimStatus::from_raw(observed.open_status),
+                ShimStatus::InvalidArgument
+            );
+            assert_eq!(observed.stream_creations, 0);
+            assert_eq!((observed.live_owners, observed.live_native_objects), (0, 0));
+        }
+    }
+
+    #[test]
+    fn capture_pacing_start_and_registration_failures_release_native_owners() {
+        use super::{TestingCapturePacing, testing_capture_pacing};
+
+        let _serial = serialized_fixture_test();
+        for scenario in [
+            TestingCapturePacing::StreamException,
+            TestingCapturePacing::OutputException,
+        ] {
+            let observed = testing_capture_pacing(super::PACING_PREFERRED, 50_000_000, scenario)
+                .expect("local creation failure seam");
+            assert_eq!(
+                ShimStatus::from_raw(observed.open_status),
+                ShimStatus::NativeException
+            );
+            assert_eq!(observed.open_report.pacing_outcome, u32::MAX);
+            assert_eq!((observed.live_owners, observed.live_native_objects), (0, 0));
+        }
+        for (scenario, expected) in [
+            (
+                TestingCapturePacing::StartException,
+                ShimStatus::NativeException,
+            ),
+            (
+                TestingCapturePacing::StartFailure,
+                ShimStatus::PlatformFailure,
+            ),
+        ] {
+            let observed = testing_capture_pacing(super::PACING_PREFERRED, 50_000_000, scenario)
+                .expect("local start failure seam");
+            assert_eq!(ShimStatus::from_raw(observed.open_status), ShimStatus::Ok);
+            assert_eq!(ShimStatus::from_raw(observed.start_status), expected);
+            assert_eq!(observed.open_report.pacing_outcome, super::PACING_APPLIED);
+            assert_eq!(ShimStatus::from_raw(observed.close_status), expected);
+            assert_eq!((observed.live_owners, observed.live_native_objects), (0, 0));
+        }
+    }
+
+    #[test]
+    fn capture_pacing_resize_rejects_lost_configuration_and_preserves_failure_cleanup() {
+        use super::{TestingCapturePacing, testing_capture_pacing};
+
+        let _serial = serialized_fixture_test();
+        for (scenario, expected) in [
+            (
+                TestingCapturePacing::ResizeException,
+                ShimStatus::NativeException,
+            ),
+            (
+                TestingCapturePacing::ResizeLosesInterval,
+                ShimStatus::PlatformFailure,
+            ),
+        ] {
+            let observed = testing_capture_pacing(super::PACING_REQUIRED, 50_000_000, scenario)
+                .expect("local resize failure seam");
+            assert_eq!(ShimStatus::from_raw(observed.start_status), ShimStatus::Ok);
+            assert_eq!(observed.started_interval_nanos, 50_000_000);
+            assert_eq!(ShimStatus::from_raw(observed.resize_status), expected);
+            assert_eq!(observed.resized_width, 0);
+            assert_eq!(observed.open_report.configured_interval_nanos, 50_000_000);
+            assert_eq!(ShimStatus::from_raw(observed.close_status), ShimStatus::Ok);
+            assert_eq!((observed.live_owners, observed.live_native_objects), (0, 0));
+        }
+    }
+
+    #[test]
+    fn capture_pacing_private_reports_reject_contradictions() {
+        use mado_pilot_capture::{CapturePacingRequest, ResolvedCapturePacing};
+
+        let request = CapturePacingRequest::required(Duration::from_nanos(5))
+            .expect("positive")
+            .resolve(ResolvedCapturePacing::source_default());
+        for (pacing_outcome, configured_interval_nanos) in [
+            (super::PACING_SOURCE_DEFAULT, 0),
+            (super::PACING_APPLIED, 4),
+            (super::PACING_APPLIED, -1),
+            (super::PACING_UNAVAILABLE, 0),
+            (u32::MAX, 5),
+        ] {
+            let report = super::NativeOpenReport {
+                pacing_outcome,
+                configured_interval_nanos,
+                ..super::NativeOpenReport::requested()
+            };
+            assert_eq!(
+                report.capture_pacing(request),
+                Err(ShimStatus::PlatformFailure)
+            );
+        }
+        let applied = super::NativeOpenReport {
+            pacing_outcome: super::PACING_APPLIED,
+            configured_interval_nanos: 5,
+            ..super::NativeOpenReport::requested()
+        };
+        assert_eq!(
+            applied.capture_pacing(ResolvedCapturePacing::source_default()),
+            Err(ShimStatus::PlatformFailure),
+        );
+        let truncated = super::NativeOpenReport {
+            struct_size: 8,
+            ..applied
+        };
+        assert_eq!(
+            truncated.capture_pacing(request),
+            Err(ShimStatus::PlatformFailure)
+        );
+    }
+
+    fn appkit_pointer_observation(
+        action: u32,
+        button: u32,
+        scenario: u32,
+    ) -> (ShimStatus, [f64; 4], [i64; 11]) {
+        let mut construction = u32::MAX;
+        let mut points = [0.0; 4];
+        let mut fields = [0; 11];
+        // SAFETY: the arrays and scalar are writable for their declared extents.
+        // This seam only constructs/inspects/releases events and never posts.
+        let status = unsafe {
+            super::mp_shim_testing_appkit_pointer(
+                action,
+                button,
+                scenario,
+                &raw mut construction,
+                points.as_mut_ptr(),
+                points.len(),
+                fields.as_mut_ptr(),
+                fields.len(),
+            )
+        };
+        assert_eq!(ShimStatus::from_raw(status), ShimStatus::Ok);
+        (ShimStatus::from_raw(construction), points, fields)
+    }
+
+    #[test]
+    fn appkit_pointer_preserves_private_source_metadata_and_button_semantics() {
+        // NSEvent and CGEvent share these public mouse-type numeric values.
+        let cases = [
+            (super::INPUT_POINTER_MOVE, super::INPUT_BUTTON_NONE, 5, 0),
+            (super::INPUT_POINTER_MOVE, super::INPUT_BUTTON_PRIMARY, 6, 0),
+            (
+                super::INPUT_POINTER_MOVE,
+                super::INPUT_BUTTON_SECONDARY,
+                7,
+                1,
+            ),
+            (super::INPUT_POINTER_MOVE, super::INPUT_BUTTON_MIDDLE, 27, 2),
+            (
+                super::INPUT_POINTER_PRESS,
+                super::INPUT_BUTTON_PRIMARY,
+                1,
+                0,
+            ),
+            (
+                super::INPUT_POINTER_RELEASE,
+                super::INPUT_BUTTON_PRIMARY,
+                2,
+                0,
+            ),
+            (
+                super::INPUT_POINTER_PRESS,
+                super::INPUT_BUTTON_SECONDARY,
+                3,
+                1,
+            ),
+            (
+                super::INPUT_POINTER_RELEASE,
+                super::INPUT_BUTTON_SECONDARY,
+                4,
+                1,
+            ),
+            (
+                super::INPUT_POINTER_PRESS,
+                super::INPUT_BUTTON_MIDDLE,
+                25,
+                2,
+            ),
+            (
+                super::INPUT_POINTER_RELEASE,
+                super::INPUT_BUTTON_MIDDLE,
+                26,
+                2,
+            ),
+        ];
+        let mut previous_number = 0;
+        for (action, button, event_type, native_button) in cases {
+            let (status, points, fields) = appkit_pointer_observation(action, button, 0);
+            assert_eq!(status, ShimStatus::Ok, "action {action}, button {button}");
+            assert_eq!(points, [-150.5, 210.25, 49.5, 30.25]);
+            // Private is a creation selector; the resulting source has its own ID.
+            assert!(
+                !matches!(fields[10], 0 | 1),
+                "not combined-session or HID state"
+            );
+            let click_count = if action == super::INPUT_POINTER_MOVE {
+                0
+            } else {
+                2
+            };
+            assert_eq!(
+                &fields[..9],
+                &[
+                    (1 << 17) | (1 << 19) | (1 << 20), // Shift, Option, Command.
+                    fields[10],                        // The exact sequence-owned private source.
+                    42,
+                    event_type,
+                    native_button,
+                    click_count,
+                    3,
+                    123,
+                    123,
+                ],
+            );
+            assert!(fields[9] > previous_number && fields[9] <= i64::from(i32::MAX));
+            previous_number = fields[9];
+        }
+    }
+
+    #[test]
+    fn appkit_pointer_missing_factory_or_window_location_setter_refuses_without_an_owner() {
+        for scenario in [1, 2] {
+            let (status, points, fields) = appkit_pointer_observation(
+                super::INPUT_POINTER_PRESS,
+                super::INPUT_BUTTON_PRIMARY,
+                scenario,
+            );
+            assert_eq!(status, ShimStatus::Unsupported);
+            assert_eq!(points, [0.0; 4]);
+            assert_eq!(fields, [0; 11]);
+        }
+    }
+
+    #[test]
+    fn appkit_pointer_refuses_foreground_transitions_and_releases_prepared_events() {
+        for (scenario, expected_release_count, focus) in [
+            (37, 0, ProcessFocusObservation::Refused),
+            (38, 1, ProcessFocusObservation::Refused),
+            (39, 0, ProcessFocusObservation::NotApplicable),
+            (42, 0, ProcessFocusObservation::Unavailable),
+            (43, 1, ProcessFocusObservation::Refused),
+        ] {
+            let observed = testing_process_post(scenario).expect("non-posting native seam");
+            assert_eq!(observed.delivery, ShimStatus::Unsupported);
+            assert_eq!(observed.invoked_native_units, 0);
+            assert!(!observed.native_effect_may_have_occurred);
+            assert_eq!(observed.focus, focus);
+            assert_eq!(observed.calls[5], 0, "no transport invocation");
+            assert_eq!(observed.calls[6], expected_release_count);
+        }
+    }
+
+    #[test]
+    fn appkit_pointer_owned_release_survives_foreground_change_after_press() {
+        let observed = testing_process_post(40).expect("non-posting native seam");
+        assert_eq!(observed.delivery, ShimStatus::Ok);
+        assert_eq!(observed.invoked_native_units, 1, "one owned release");
+        assert_eq!(
+            observed.target_match_count, 0,
+            "cleanup needs no live window"
+        );
+        assert_eq!(
+            observed.calls[0], 1,
+            "only the press observes window geometry"
+        );
+        assert_eq!(
+            observed.calls[5], 2,
+            "press and owned release, no ordinary release"
+        );
+        assert_eq!(observed.calls[6], 2, "both prepared events are released");
+    }
+
+    #[test]
+    fn appkit_pointer_location_exception_balances_event_ownership_without_posting() {
+        let observed = testing_process_post(41).expect("non-posting native seam");
+        assert_eq!(observed.delivery, ShimStatus::NativeException);
+        assert_eq!(observed.invoked_native_units, 0);
+        assert!(!observed.native_effect_may_have_occurred);
+        assert_eq!(observed.calls[5], 0);
+        assert_eq!(observed.calls[6], 1);
     }
 
     #[test]
     fn process_event_source_has_an_owned_native_lifecycle() {
-        let source = ProcessEventSource::new(0)
-            .expect("this host can create a private Core Graphics source");
+        let source =
+            ProcessEventSource::new(0, crate::provider::MacosProcessPointerMode::CoreGraphics)
+                .expect("this host can create a private Core Graphics source");
         drop(source);
     }
 
@@ -3887,6 +5201,81 @@ mod tests {
             !process_metadata_retained,
             "capture identity survives without inventing process-post authority"
         );
+    }
+
+    #[test]
+    fn process_provenance_requires_a_live_retained_lifetime_and_bounded_paths() {
+        let rows = [
+            (0, ShimStatus::Ok, true),
+            (1, ShimStatus::Unsupported, false),
+            (2, ShimStatus::TargetLost, false),
+            (3, ShimStatus::Unsupported, false),
+            (4, ShimStatus::TargetLost, false),
+            (5, ShimStatus::Ok, false),
+            (6, ShimStatus::Unsupported, false),
+            (7, ShimStatus::Unsupported, false),
+        ];
+        for (scenario, expected_status, has_bundle) in rows {
+            let mut observations = [u64::MAX; 5];
+            // SAFETY: the writable array has the declared count. The seam uses
+            // in-memory retained objects, never a native target or permission.
+            let status = unsafe {
+                super::mp_shim_testing_target_process_identity(
+                    scenario,
+                    observations.as_mut_ptr(),
+                    observations.len(),
+                )
+            };
+            assert_eq!(ShimStatus::from_raw(status), ShimStatus::Ok);
+            assert_eq!(
+                ShimStatus::from_raw(u32::try_from(observations[0]).expect("native status")),
+                expected_status,
+                "scenario {scenario}",
+            );
+            if expected_status == ShimStatus::Ok {
+                assert_eq!(observations[1], 123);
+                assert_eq!(observations[2], 1000.25f64.to_bits());
+                assert_eq!(
+                    observations[3],
+                    u64::try_from(b"/MadoPilotIdentityFixture.app/Contents/MacOS/fixture".len())
+                        .expect("fixture path fits"),
+                );
+                assert_eq!(
+                    observations[4],
+                    if has_bundle {
+                        u64::try_from(b"/MadoPilotIdentityFixture.app".len())
+                            .expect("fixture path fits")
+                    } else {
+                        0
+                    },
+                );
+            } else {
+                assert_eq!(
+                    &observations[1..],
+                    &[0; 4],
+                    "failed provenance must not publish partial authority",
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn process_paths_preserve_filesystem_bytes_and_reject_malformed_native_views() {
+        let path = super::process_identity_path(b"/tmp/\xff\0", 6)
+            .expect("filesystem bytes need not be UTF-8");
+        assert_eq!(path.as_os_str().as_encoded_bytes(), b"/tmp/\xff");
+        for (bytes, len) in [
+            (&b"\0"[..], 0),
+            (&b"relative\0"[..], 8),
+            (&b"/a\0b\0"[..], 4),
+            (&b"/path"[..], 5),
+            (&b"/path\0"[..], usize::MAX),
+        ] {
+            assert_eq!(
+                super::process_identity_path(bytes, len),
+                Err(ShimStatus::PlatformFailure),
+            );
+        }
     }
 
     #[test]
@@ -4324,6 +5713,32 @@ mod tests {
     }
 
     #[test]
+    fn process_required_focus_observes_changes_during_the_final_inventory() {
+        for (scenario, status, invoked, focus) in [
+            (
+                44,
+                ShimStatus::FocusRequired,
+                0,
+                ProcessFocusObservation::Refused,
+            ),
+            (45, ShimStatus::Ok, 1, ProcessFocusObservation::Passed),
+        ] {
+            let observed = testing_process_post(scenario).expect("non-posting native seam");
+            assert_eq!(observed.delivery, status);
+            assert_eq!(observed.invoked_native_units, invoked);
+            assert_eq!(observed.focus, focus);
+            assert_eq!(observed.native_effect_may_have_occurred, invoked != 0);
+            assert_eq!(observed.calls[3], 2, "early focus and final focus both ran");
+            assert_eq!(observed.calls[4], 1, "the pending event was prepared");
+            assert_eq!(
+                observed.calls[5], invoked,
+                "refused focus cannot reach posting"
+            );
+            assert_eq!(observed.calls[6], 1, "prepared ownership was released");
+        }
+    }
+
+    #[test]
     fn process_post_rejects_every_invalid_native_request_before_effect() {
         let scenarios = [
             "null request",
@@ -4600,6 +6015,140 @@ mod tests {
         assert_eq!(over_bytes.recommended_surface_extent(), None);
     }
 
+    #[test]
+    fn retained_window_description_preserves_subpixel_requirements_with_the_same_extent() {
+        let descriptions = [0, 5].map(|scenario| {
+            let mut info = super::TargetInfo::requested();
+            // SAFETY: the native-free seam writes this sized scalar report.
+            let status = unsafe { super::mp_shim_testing_window_geometry(scenario, &raw mut info) };
+            assert_eq!(ShimStatus::from_raw(status), ShimStatus::Ok);
+            info.window_description().expect("current retained window")
+        });
+        for (description, width) in descriptions.iter().zip([64.25, 64.5]) {
+            let geometry = description.geometry();
+            assert_eq!(geometry.extent(), PixelExtent::new(129, 96));
+            assert_eq!(geometry.placement().desktop_origin(), (-64.0, -48.0));
+            assert_eq!(geometry.placement().logical_size(), (width, 48.0));
+            let required = super::required_window_info(Some(geometry)).expect("exact requirement");
+            assert_eq!((required.logical_x, required.logical_y), (-64.0, -48.0));
+            assert_eq!(
+                (required.logical_width, required.logical_height),
+                (width, 48.0)
+            );
+            assert_eq!(required.backing_scale, 2.0);
+            assert_eq!(required.extent(), Some(PixelExtent::new(129, 96)));
+        }
+        assert_ne!(descriptions[0].geometry(), descriptions[1].geometry());
+    }
+
+    #[test]
+    fn retained_filter_geometry_refuses_stale_or_invalid_observations() {
+        for scenario in 1..=4 {
+            let mut refused = super::TargetInfo::requested();
+            // SAFETY: each malformed synthetic observation writes only this report.
+            let status =
+                unsafe { super::mp_shim_testing_window_geometry(scenario, &raw mut refused) };
+            assert_eq!(ShimStatus::from_raw(status), ShimStatus::GeometryChanged);
+            assert_eq!(refused.extent(), None);
+        }
+    }
+
+    #[test]
+    fn window_description_and_requirements_refuse_inconsistent_pixel_extent() {
+        let mut info = super::TargetInfo::requested();
+        // SAFETY: the native-free seam writes this sized scalar report.
+        let status = unsafe { super::mp_shim_testing_window_geometry(0, &raw mut info) };
+        assert_eq!(ShimStatus::from_raw(status), ShimStatus::Ok);
+        let geometry = info
+            .window_description()
+            .expect("current retained window")
+            .geometry();
+        info.pixel_width = 128;
+        assert_eq!(
+            info.window_description()
+                .expect_err("raw points round to 129 pixels"),
+            ShimStatus::GeometryChanged,
+        );
+        let inconsistent = mado_pilot_capture::WindowGeometry::new(
+            geometry.area(),
+            geometry.placement(),
+            PixelExtent::new(128, 96),
+        );
+        assert_eq!(
+            super::required_window_info(Some(inconsistent))
+                .expect_err("inconsistent requirement must be refused"),
+            ShimStatus::GeometryChanged,
+        );
+    }
+
+    #[test]
+    fn producer_padding_and_concurrent_replacement_share_the_retained_ceiling() {
+        let mut observed = [u64::MAX; 9];
+        // SAFETY: the native-free seam writes exactly the supplied nine scalars.
+        let status = unsafe {
+            super::mp_shim_testing_producer_budget(observed.as_mut_ptr(), observed.len())
+        };
+        assert_eq!(ShimStatus::from_raw(status), ShimStatus::Ok);
+        assert_eq!(observed, [0, 192, 376, 9, 184, 224, 40, 9, 0]);
+    }
+
+    fn producer_observations(scenario: u32) -> [(ShimStatus, u64); 3] {
+        let mut values = [u64::MAX; 6];
+        // SAFETY: the synthetic observer seam writes six scalars and retains
+        // all producer leases until the three actual observations complete.
+        let status = unsafe {
+            super::mp_shim_testing_producer_observation(scenario, values.as_mut_ptr(), values.len())
+        };
+        assert_eq!(ShimStatus::from_raw(status), ShimStatus::Ok);
+        std::array::from_fn(|index| {
+            (
+                ShimStatus::from_raw(u32::try_from(values[index * 2]).expect("native status")),
+                values[index * 2 + 1],
+            )
+        })
+    }
+
+    #[test]
+    fn producer_observer_charges_interleaved_old_and_shrunk_surfaces_to_their_own_leases() {
+        assert_eq!(
+            producer_observations(0),
+            [
+                (ShimStatus::Ok, 150_000),
+                (ShimStatus::Ok, 151_200),
+                (ShimStatus::Ok, 151_200),
+            ]
+        );
+    }
+
+    #[test]
+    fn producer_observer_charges_every_same_size_generation_and_refuses_excess_padding() {
+        assert_eq!(
+            producer_observations(1),
+            [
+                (ShimStatus::Ok, 249_600),
+                (ShimStatus::Ok, 249_600),
+                (ShimStatus::BudgetExhausted, 249_600),
+            ]
+        );
+    }
+
+    #[test]
+    fn producer_observer_charges_unknown_extents_to_every_possible_generation() {
+        assert_eq!(producer_observations(2), [(ShimStatus::Ok, 196_800); 3]);
+    }
+
+    #[test]
+    fn producer_observer_recovers_retained_budget_after_owner_release() {
+        assert_eq!(
+            producer_observations(3),
+            [
+                (ShimStatus::FrameIncomplete, 160_000),
+                (ShimStatus::Ok, 154_800),
+                (ShimStatus::Ok, 154_800),
+            ]
+        );
+    }
+
     /// A surface the shim would refuse to allocate is refused before it tries.
     ///
     /// Deterministic on any host, and that is a property of where the check sits: the
@@ -4621,6 +6170,10 @@ mod tests {
                 testing_start_delay: Duration::ZERO,
                 testing_stop_delay: Duration::ZERO,
                 testing_raise_sites: 0,
+                capture_pacing: mado_pilot_capture::ResolvedCapturePacing::source_default(),
+                required_window: None,
+                resource_limits: None,
+                validation_wait: Duration::ZERO,
             };
             validate_open_shape_and_metadata(&request).err()
         };
@@ -4657,6 +6210,10 @@ mod tests {
                 testing_start_delay: Duration::ZERO,
                 testing_stop_delay: Duration::ZERO,
                 testing_raise_sites: 0,
+                capture_pacing: mado_pilot_capture::ResolvedCapturePacing::source_default(),
+                required_window: None,
+                resource_limits: None,
+                validation_wait: Duration::ZERO,
             };
             validate_open_shape_and_metadata(&request).err()
         };

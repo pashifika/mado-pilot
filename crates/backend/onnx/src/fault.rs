@@ -3,8 +3,10 @@
 use std::fmt;
 
 use mado_pilot_core::{Error, Interruption, Status};
+use mado_pilot_ocr::OcrCpuOptions;
 
-use crate::profile::PreprocessingDescriptor;
+use crate::profile::ExecutionProfile;
+use crate::stage::RunNanos;
 
 /// One closed failure class owned by the ONNX OCR adapter.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
@@ -24,6 +26,20 @@ pub enum OnnxBackendFault {
     RecognizerUnavailable,
     /// The accepted recognizer path, size, or digest did not match G-004.
     RecognizerMismatch,
+    /// A non-G-004 catalog detector was absent or unreadable at its declared relative path.
+    ProfileDetectorUnavailable,
+    /// A non-G-004 catalog detector length or digest differed from its declaration.
+    ProfileDetectorMismatch,
+    /// A non-G-004 catalog recognizer was absent or unreadable at its declared relative path.
+    ProfileRecognizerUnavailable,
+    /// A non-G-004 catalog recognizer length or digest differed from its declaration.
+    ProfileRecognizerMismatch,
+    /// The profile's declared vocabulary resource was absent or unreadable.
+    AuxiliaryUnavailable,
+    /// The profile's declared vocabulary resource length or digest differed.
+    AuxiliaryMismatch,
+    /// The declared vocabulary structure, count, or canonical digest differed.
+    VocabularyMismatch,
     /// The controlled runtime file could not be opened.
     RuntimeUnavailable,
     /// The runtime version or API table did not match the reviewed boundary.
@@ -38,7 +54,7 @@ pub enum OnnxBackendFault {
     ProviderDependencyUnavailable,
     /// Provider registration or accelerator session initialization failed.
     ProviderInitializationFailed,
-    /// The source did not carry either exact accepted closed profile.
+    /// The ID or source is not one exact implemented catalog profile.
     ProfileMismatch,
     /// The model graph or embedded vocabulary did not match the selected profile.
     GraphMismatch,
@@ -72,13 +88,21 @@ impl OnnxBackendFault {
             Self::ModelRootUnavailable
             | Self::DetectorUnavailable
             | Self::RecognizerUnavailable
+            | Self::ProfileDetectorUnavailable
+            | Self::ProfileRecognizerUnavailable
+            | Self::AuxiliaryUnavailable
             | Self::RuntimeUnavailable
             | Self::RuntimeIncompatible
             | Self::RuntimeConflict
             | Self::ProviderUnavailable
             | Self::ProviderDependencyUnavailable
             | Self::ProviderQualificationRejected => Status::Unsupported,
-            Self::DetectorMismatch | Self::RecognizerMismatch => Status::AssetInvalid,
+            Self::DetectorMismatch
+            | Self::RecognizerMismatch
+            | Self::ProfileDetectorMismatch
+            | Self::ProfileRecognizerMismatch
+            | Self::AuxiliaryMismatch
+            | Self::VocabularyMismatch => Status::AssetInvalid,
             Self::ResourceLimit | Self::Busy => Status::LimitExceeded,
             Self::Closed => Status::Closed,
             Self::InvalidPixels
@@ -110,6 +134,27 @@ impl OnnxBackendFault {
             }
             Self::RecognizerMismatch => {
                 "accepted OCR recognizer must be 21234383 bytes with SHA-256 6f327246b50388f3c176ae304bd95767ea6dc0c9ae92153ef8cbe210b3c14884"
+            }
+            Self::ProfileDetectorUnavailable => {
+                "selected OCR profile detector is unavailable at its catalog relative path"
+            }
+            Self::ProfileDetectorMismatch => {
+                "selected OCR profile detector does not match its catalog length and SHA-256"
+            }
+            Self::ProfileRecognizerUnavailable => {
+                "selected OCR profile recognizer is unavailable at its catalog relative path"
+            }
+            Self::ProfileRecognizerMismatch => {
+                "selected OCR profile recognizer does not match its catalog length and SHA-256"
+            }
+            Self::AuxiliaryUnavailable => {
+                "selected OCR profile vocabulary resource is unavailable at its catalog relative path"
+            }
+            Self::AuxiliaryMismatch => {
+                "selected OCR profile vocabulary resource does not match its catalog length and SHA-256"
+            }
+            Self::VocabularyMismatch => {
+                "selected OCR profile vocabulary structure, count, or digest does not match its catalog"
             }
             Self::RuntimeUnavailable => "controlled ONNX runtime is unavailable",
             Self::RuntimeIncompatible => "controlled ONNX runtime is incompatible",
@@ -171,7 +216,8 @@ pub enum OnnxExecutionProvider {
 }
 
 impl OnnxExecutionProvider {
-    /// Returns the closed runtime/provider profile identity.
+    /// Returns this provider's identity with default CPU options.
+    /// Use [`crate::OnnxBackendFacts::runtime_profile_id`] for initialized options.
     #[must_use]
     pub const fn runtime_profile_id(self) -> &'static str {
         match self {
@@ -370,8 +416,10 @@ pub enum OnnxRuntimeCompatibility {
 pub enum OnnxOcrProfile {
     /// Released native G-004 DB736 preprocessing without a final dimension ceiling.
     NativeG004,
-    /// ADR 0040 compound bounded-detector sampling with original-source recognition.
+    /// Compound bounded-detector sampling with original-source recognition.
     BoundedDetector,
+    /// Another catalog-declared profile; [`OnnxBackendFacts::profile_id`] names it exactly.
+    Catalog,
 }
 
 /// Privacy-safe, closed observations about one opened backend.
@@ -381,8 +429,11 @@ pub struct OnnxBackendFacts {
     provider: OnnxExecutionProvider,
     fallback_reason: Option<OnnxProviderFallbackReason>,
     runtime: OnnxRuntimeCompatibility,
+    runtime_profile_id: &'static str,
+    cpu_options: OcrCpuOptions,
     max_concurrent_inferences: u32,
     profile: OnnxOcrProfile,
+    profile_id: &'static str,
     max_tensor_bytes: u64,
     max_detector_width: Option<u32>,
     max_detector_height: Option<u32>,
@@ -395,14 +446,14 @@ pub struct OnnxBackendFacts {
 impl OnnxBackendFacts {
     #[cfg(test)]
     pub(crate) fn accepted(
-        preprocessing: PreprocessingDescriptor,
+        profile: ExecutionProfile,
         max_tensor_bytes: u64,
         max_output_bytes: u64,
         max_detector_candidates: u32,
         recognition_batch: u32,
     ) -> Self {
         Self::accepted_with_provider(
-            preprocessing,
+            profile,
             max_tensor_bytes,
             max_output_bytes,
             max_detector_candidates,
@@ -410,12 +461,14 @@ impl OnnxBackendFacts {
             OnnxExecutionProviderPolicy::Cpu,
             OnnxExecutionProvider::Cpu,
             None,
+            OcrCpuOptions::default(),
+            OnnxExecutionProvider::Cpu.runtime_profile_id(),
         )
     }
 
     #[allow(clippy::too_many_arguments)]
     pub(crate) fn accepted_with_provider(
-        preprocessing: PreprocessingDescriptor,
+        profile: ExecutionProfile,
         max_tensor_bytes: u64,
         max_output_bytes: u64,
         max_detector_candidates: u32,
@@ -423,13 +476,19 @@ impl OnnxBackendFacts {
         requested_provider_policy: OnnxExecutionProviderPolicy,
         provider: OnnxExecutionProvider,
         fallback_reason: Option<OnnxProviderFallbackReason>,
+        cpu_options: OcrCpuOptions,
+        runtime_profile_id: &'static str,
     ) -> Self {
+        let preprocessing = profile.preprocessing();
         Self {
             requested_provider_policy,
             provider,
             fallback_reason,
             runtime: OnnxRuntimeCompatibility::Version1_29Api17,
-            profile: preprocessing.selected().public(),
+            runtime_profile_id,
+            cpu_options,
+            profile: profile.public(),
+            profile_id: profile.id(),
             max_concurrent_inferences: 1,
             max_tensor_bytes,
             max_detector_width: preprocessing.max_width(),
@@ -470,10 +529,16 @@ impl OnnxBackendFacts {
         self.fallback_reason
     }
 
-    /// Returns the active runtime/provider profile identity.
+    /// Returns the active runtime/provider identity, including CPU session options.
     #[must_use]
     pub const fn runtime_profile_id(self) -> &'static str {
-        self.provider.runtime_profile_id()
+        self.runtime_profile_id
+    }
+
+    /// Returns the intra-op settings used for both detector and recognizer sessions.
+    #[must_use]
+    pub const fn cpu_options(self) -> OcrCpuOptions {
+        self.cpu_options
     }
 
     /// Returns the reviewed runtime compatibility boundary.
@@ -487,6 +552,13 @@ impl OnnxBackendFacts {
     pub const fn profile(self) -> OnnxOcrProfile {
         self.profile
     }
+
+    /// Returns the exact catalog profile ID selected for this backend.
+    #[must_use]
+    pub const fn profile_id(self) -> &'static str {
+        self.profile_id
+    }
+
     /// Returns the number of calls admitted concurrently.
     #[must_use]
     pub const fn max_concurrent_inferences(self) -> u32 {
@@ -555,6 +627,18 @@ pub struct OnnxBackendObservations {
     cleanup_completions: u64,
     session_pairs: u32,
     sessions: u32,
+    #[cfg(feature = "benchmark-instrumentation")]
+    detector_preprocess_nanos: u64,
+    #[cfg(feature = "benchmark-instrumentation")]
+    detector_inference_nanos: u64,
+    #[cfg(feature = "benchmark-instrumentation")]
+    detector_postprocess_nanos: u64,
+    #[cfg(feature = "benchmark-instrumentation")]
+    recognizer_preprocess_nanos: u64,
+    #[cfg(feature = "benchmark-instrumentation")]
+    recognizer_inference_nanos: u64,
+    #[cfg(feature = "benchmark-instrumentation")]
+    recognizer_decode_nanos: u64,
 }
 
 impl OnnxBackendObservations {
@@ -577,6 +661,18 @@ impl OnnxBackendObservations {
             cleanup_completions: 0,
             session_pairs: 1,
             sessions: 2,
+            #[cfg(feature = "benchmark-instrumentation")]
+            detector_preprocess_nanos: 0,
+            #[cfg(feature = "benchmark-instrumentation")]
+            detector_inference_nanos: 0,
+            #[cfg(feature = "benchmark-instrumentation")]
+            detector_postprocess_nanos: 0,
+            #[cfg(feature = "benchmark-instrumentation")]
+            recognizer_preprocess_nanos: 0,
+            #[cfg(feature = "benchmark-instrumentation")]
+            recognizer_inference_nanos: 0,
+            #[cfg(feature = "benchmark-instrumentation")]
+            recognizer_decode_nanos: 0,
         }
     }
 
@@ -604,6 +700,38 @@ impl OnnxBackendObservations {
 
     pub(crate) fn record_recognizer_run(&mut self) {
         self.recognizer_runs = self.recognizer_runs.saturating_add(1);
+    }
+
+    /// Accumulates qualification stage clocks; a no-op without the feature.
+    pub(crate) fn record_detector_stages(&mut self, preprocess: u64, run: RunNanos) {
+        #[cfg(feature = "benchmark-instrumentation")]
+        {
+            self.detector_preprocess_nanos =
+                self.detector_preprocess_nanos.saturating_add(preprocess);
+            self.detector_inference_nanos =
+                self.detector_inference_nanos.saturating_add(run.inference);
+            self.detector_postprocess_nanos = self
+                .detector_postprocess_nanos
+                .saturating_add(run.postprocess);
+        }
+        #[cfg(not(feature = "benchmark-instrumentation"))]
+        let _ = (preprocess, run);
+    }
+
+    /// Accumulates qualification stage clocks; a no-op without the feature.
+    pub(crate) fn record_recognizer_stages(&mut self, preprocess: u64, run: RunNanos) {
+        #[cfg(feature = "benchmark-instrumentation")]
+        {
+            self.recognizer_preprocess_nanos =
+                self.recognizer_preprocess_nanos.saturating_add(preprocess);
+            self.recognizer_inference_nanos = self
+                .recognizer_inference_nanos
+                .saturating_add(run.inference);
+            self.recognizer_decode_nanos =
+                self.recognizer_decode_nanos.saturating_add(run.postprocess);
+        }
+        #[cfg(not(feature = "benchmark-instrumentation"))]
+        let _ = (preprocess, run);
     }
 
     pub(crate) fn record_interest_filter(
@@ -734,5 +862,47 @@ impl OnnxBackendObservations {
     #[must_use]
     pub const fn sessions(self) -> u32 {
         self.sessions
+    }
+
+    /// Returns cumulative detector planning, resize, and tensor-normalization time.
+    #[cfg(feature = "benchmark-instrumentation")]
+    #[must_use]
+    pub const fn detector_preprocess_nanos(self) -> u64 {
+        self.detector_preprocess_nanos
+    }
+
+    /// Returns cumulative native detector run time.
+    #[cfg(feature = "benchmark-instrumentation")]
+    #[must_use]
+    pub const fn detector_inference_nanos(self) -> u64 {
+        self.detector_inference_nanos
+    }
+
+    /// Returns cumulative DB postprocessing and inverse-geometry time.
+    #[cfg(feature = "benchmark-instrumentation")]
+    #[must_use]
+    pub const fn detector_postprocess_nanos(self) -> u64 {
+        self.detector_postprocess_nanos
+    }
+
+    /// Returns cumulative source-crop, resize, pad, and tensor-normalization time.
+    #[cfg(feature = "benchmark-instrumentation")]
+    #[must_use]
+    pub const fn recognizer_preprocess_nanos(self) -> u64 {
+        self.recognizer_preprocess_nanos
+    }
+
+    /// Returns cumulative native recognizer run time.
+    #[cfg(feature = "benchmark-instrumentation")]
+    #[must_use]
+    pub const fn recognizer_inference_nanos(self) -> u64 {
+        self.recognizer_inference_nanos
+    }
+
+    /// Returns cumulative CTC decoding time.
+    #[cfg(feature = "benchmark-instrumentation")]
+    #[must_use]
+    pub const fn recognizer_decode_nanos(self) -> u64 {
+        self.recognizer_decode_nanos
     }
 }

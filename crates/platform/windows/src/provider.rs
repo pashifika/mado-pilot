@@ -2,13 +2,15 @@
 
 use std::collections::{HashMap, VecDeque};
 use std::fmt;
+use std::num::NonZeroU64;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex, MutexGuard, TryLockError};
 use std::thread;
 use std::time::Duration;
 
 use mado_pilot_capture::{
-    CaptureFault, CaptureProvider, CaptureSession, OpenRequest, PixelFormat, TargetDescription,
+    CaptureFault, CaptureProvider, CaptureSession, NativeWindowDescription, NativeWindowId,
+    OpenRequest, PixelFormat, ResolvedCapturePacing, TargetDescription, WindowGeometry,
 };
 use mado_pilot_core::{IdentityIssuer, Operation, OperationContext, ProviderId, Result, TargetId};
 use mado_pilot_input::{
@@ -22,10 +24,13 @@ use windows::Win32::Foundation::HWND;
 use windows::Win32::UI::WindowsAndMessaging::GetWindowThreadProcessId;
 use windows::core::IInspectable;
 
-use crate::availability::ensure_capture_available;
-use crate::discovery::{Candidate, CaptureItem, NativeKey, TargetMetadata, inventory};
+use crate::availability::{ensure_capture_available, ensure_winrt_apartment};
+use crate::discovery::{
+    Candidate, CaptureItem, NativeKey, TargetMetadata, current_window_geometry, inventory,
+};
 use crate::input::{GeometryLedger, WindowsInputController};
 use crate::native::{NativeSession, NativeSessionSource, native_target_fault};
+use crate::pacing::interval_ticks;
 use crate::storage::validate_surface;
 use crate::window_authority::{RetainedWindowAuthority, WindowAuthorityStatus};
 
@@ -39,6 +44,7 @@ pub const PROVIDER: ProviderId = ProviderId::new("windows");
 /// making an unresolved minimum-Windows claim.
 pub struct WindowsCaptureProvider {
     issuer: Arc<IdentityIssuer>,
+    capture_pacing: ResolvedCapturePacing,
     discovery_gate: Mutex<()>,
     registry: Mutex<Registry>,
 }
@@ -76,9 +82,42 @@ impl WindowsCaptureProvider {
     pub fn new(issuer: Arc<IdentityIssuer>) -> Self {
         Self {
             issuer,
+            capture_pacing: ResolvedCapturePacing::source_default(),
             discovery_gate: Mutex::new(()),
             registry: Mutex::new(Registry::default()),
         }
+    }
+
+    /// Creates a provider with an immutable, already-resolved capture default.
+    ///
+    /// Only the selected interval's representation is checked. Construction
+    /// performs no discovery, capture allocation, or native capability probe.
+    pub fn with_capture_pacing(
+        issuer: Arc<IdentityIssuer>,
+        pacing: ResolvedCapturePacing,
+    ) -> Result<Self> {
+        Self::validate_capture_pacing(pacing)?;
+        Ok(Self {
+            capture_pacing: pacing,
+            ..Self::new(issuer)
+        })
+    }
+
+    /// Checks selected Windows interval representability without native work.
+    ///
+    /// Both required and preferred values must fit positive signed 64-bit
+    /// 100-nanosecond ticks after rounding upward.
+    pub fn validate_capture_pacing(pacing: ResolvedCapturePacing) -> Result<()> {
+        if let Some(interval) = pacing.interval() {
+            interval_ticks(interval)?;
+        }
+        Ok(())
+    }
+
+    fn session_pacing(&self, request: &OpenRequest) -> Result<ResolvedCapturePacing> {
+        let pacing = request.capture_pacing().resolve(self.capture_pacing);
+        Self::validate_capture_pacing(pacing)?;
+        Ok(pacing)
     }
 
     #[cfg(feature = "benchmark-instrumentation")]
@@ -140,7 +179,10 @@ impl WindowsCaptureProvider {
         for candidate in candidates {
             records.push(self.create_record(candidate)?);
         }
-        let descriptions = records.iter().map(|record| record.description()).collect();
+        let descriptions = records
+            .iter()
+            .map(|record| record.capture_description())
+            .collect();
         let generation = records.iter().map(|record| record.id).collect();
         let mut registry = self.registry().clone();
         for record in records {
@@ -171,10 +213,6 @@ impl WindowsCaptureProvider {
 
     fn create_record(&self, candidate: Candidate) -> Result<Arc<TargetRecord>> {
         let id = self.issuer.issue_target(PROVIDER)?;
-        let authority = RetainedWindowAuthority::capture(
-            candidate.key,
-            candidate.metadata.class_name.as_deref(),
-        );
         let lost = Arc::new(AtomicBool::new(false));
         let closed_lost = Arc::clone(&lost);
         let closed_handler =
@@ -197,7 +235,7 @@ impl WindowsCaptureProvider {
             item: candidate.item,
             lost,
             geometry: Arc::new(GeometryLedger::default()),
-            authority,
+            authority: candidate.authority,
             closed_token,
         }))
     }
@@ -242,6 +280,7 @@ impl fmt::Debug for WindowsCaptureProvider {
         formatter
             .debug_struct("WindowsCaptureProvider")
             .field("engine", &self.issuer.engine())
+            .field("capture_pacing", &self.capture_pacing)
             .field("known_targets", &registry.records.len())
             .field("retained_generations", &registry.generations.len())
             .finish()
@@ -258,6 +297,31 @@ impl CaptureProvider for WindowsCaptureProvider {
         self.discover_with(operation, inventory)
     }
 
+    fn describe_window(
+        &self,
+        target: TargetId,
+        operation: &OperationContext,
+    ) -> Result<TargetDescription> {
+        let mut attempt = Operation::admit(operation)?;
+        CaptureProvider::accepts_target(self, target, self.issuer.engine())?;
+        let record = self
+            .registry()
+            .records
+            .get(&target)
+            .cloned()
+            .ok_or(CaptureFault::TargetLost)?;
+        if matches!(&record.item, CaptureItem::Native(_)) {
+            ensure_winrt_apartment()?;
+        }
+        let observed = record.observe_window(None);
+        attempt.checkpoint()?;
+        let window = observed?;
+        let description = record
+            .description_at_extent(window.geometry().extent(), true)
+            .with_window(window);
+        Ok(attempt.commit(description)?)
+    }
+
     fn open(
         &self,
         target: TargetId,
@@ -266,6 +330,7 @@ impl CaptureProvider for WindowsCaptureProvider {
     ) -> Result<Arc<dyn CaptureSession>> {
         let mut attempt = Operation::admit(operation)?;
         CaptureProvider::accepts_target(self, target, self.issuer.engine())?;
+        let pacing = self.session_pacing(request)?;
         ensure_capture_available()?;
         if let Some(required) = request.required_format()
             && required != PixelFormat::Bgra8
@@ -277,6 +342,13 @@ impl CaptureProvider for WindowsCaptureProvider {
         // opaque, so an accepted identity absent from the live registry is
         // conservatively stale rather than an invitation to retain history.
         let record = self.select_record(target)?;
+        let mut metadata = record.metadata.clone();
+        if let Some(required) = request.window_geometry() {
+            let observed = record.required_geometry(required, None);
+            attempt.checkpoint()?;
+            let geometry = observed?;
+            metadata.extent = geometry.extent();
+        }
         let item = match &record.item {
             CaptureItem::Native(item) => item.clone(),
             #[cfg(test)]
@@ -289,10 +361,12 @@ impl CaptureProvider for WindowsCaptureProvider {
                 stream,
                 record.key.kind(),
                 record.key,
-                record.metadata.clone(),
+                metadata,
                 item,
                 Arc::clone(&record.geometry),
-            ),
+            )
+            .with_requirements(&record, request),
+            pacing,
             &mut attempt,
         )?;
         Ok(attempt.commit(session as Arc<dyn CaptureSession>)?)
@@ -349,11 +423,105 @@ fn lock_with_operation<'mutex>(
 
 impl TargetRecord {
     fn description(&self) -> TargetDescription {
-        self.metadata.describe(
-            self.id,
-            self.key.kind(),
-            self.window_message_authority_is_current(),
+        let authority_is_current =
+            !self.lost.load(Ordering::Acquire) && self.window_message_authority_is_current();
+        self.description_at_extent(self.metadata.extent, authority_is_current)
+    }
+
+    fn description_at_extent(
+        &self,
+        extent: mado_pilot_core::PixelExtent,
+        authority_is_current: bool,
+    ) -> TargetDescription {
+        let description =
+            self.metadata
+                .describe(self.id, self.key.kind(), authority_is_current, extent);
+        if authority_is_current
+            && let Some(identity) = self
+                .authority
+                .as_ref()
+                .and_then(RetainedWindowAuthority::process_identity)
+        {
+            description.with_process_identity(identity.clone())
+        } else {
+            description
+        }
+    }
+
+    fn capture_description(&self) -> TargetDescription {
+        match self.observe_window(None) {
+            Ok(window) => self
+                .description_at_extent(window.geometry().extent(), true)
+                .with_window(window),
+            Err(_) => self.description(),
+        }
+    }
+
+    fn retained_window_status(&self) -> std::result::Result<(), CaptureFault> {
+        if !matches!(self.key, NativeKey::Window(_)) {
+            return Err(CaptureFault::UnsupportedOption);
+        }
+        retained_window_authority(
+            self.lost.load(Ordering::Acquire),
+            self.closed_token.is_some(),
+            self.authority.as_ref().map(RetainedWindowAuthority::status),
         )
+    }
+
+    fn observe_window(
+        &self,
+        required: Option<WindowGeometry>,
+    ) -> std::result::Result<NativeWindowDescription, CaptureFault> {
+        self.retained_window_status()?;
+        #[cfg(not(test))]
+        let CaptureItem::Native(item) = &self.item;
+        #[cfg(test)]
+        let item = match &self.item {
+            CaptureItem::Native(item) => item,
+            CaptureItem::Synthetic(_) => return Err(CaptureFault::UnsupportedOption),
+        };
+        let size = item.Size().map_err(|_| CaptureFault::TargetLost)?;
+        let width = u32::try_from(size.Width)
+            .ok()
+            .filter(|value| *value > 0)
+            .ok_or(CaptureFault::InconsistentDescriptor)?;
+        let height = u32::try_from(size.Height)
+            .ok()
+            .filter(|value| *value > 0)
+            .ok_or(CaptureFault::InconsistentDescriptor)?;
+        let extent = mado_pilot_core::PixelExtent::new(width, height);
+        if required.is_some_and(|required| required.extent() != extent) {
+            return Err(CaptureFault::WindowGeometryChanged);
+        }
+        let geometry = current_window_geometry(self.key, extent)?;
+        // Bracket geometry with the original item's Closed state and retained
+        // process creation-time authority, never a newly created capture item.
+        let after = item.Size().map_err(|_| CaptureFault::TargetLost)?;
+        self.retained_window_status()?;
+        if after.Width != size.Width || after.Height != size.Height {
+            return Err(CaptureFault::WindowGeometryChanged);
+        }
+        let NativeKey::Window(raw) = self.key else {
+            return Err(CaptureFault::UnsupportedOption);
+        };
+        let id = u64::try_from(raw)
+            .ok()
+            .and_then(NonZeroU64::new)
+            .ok_or(CaptureFault::SourceInvalid)?;
+        Ok(NativeWindowDescription::new(
+            NativeWindowId::Windows(id),
+            geometry,
+        ))
+    }
+
+    pub(crate) fn required_geometry(
+        &self,
+        required: WindowGeometry,
+        frame_extent: Option<mado_pilot_core::PixelExtent>,
+    ) -> std::result::Result<WindowGeometry, CaptureFault> {
+        let observed = self.observe_window(Some(required))?.geometry();
+        require_geometry(required, observed, frame_extent)?;
+        Ok(observed)
     }
 
     fn window_message_authority_is_current(&self) -> bool {
@@ -429,6 +597,40 @@ impl TargetRecord {
     }
 }
 
+fn retained_window_authority(
+    closed: bool,
+    closed_registered: bool,
+    authority: Option<WindowAuthorityStatus>,
+) -> std::result::Result<(), CaptureFault> {
+    if closed {
+        return Err(CaptureFault::TargetLost);
+    }
+    match (closed_registered, authority) {
+        (true, Some(WindowAuthorityStatus::SameTarget)) => Ok(()),
+        (
+            _,
+            Some(
+                WindowAuthorityStatus::TargetLost
+                | WindowAuthorityStatus::ReplacementOrReuse
+                | WindowAuthorityStatus::RelationshipChanged,
+            ),
+        ) => Err(CaptureFault::TargetLost),
+        _ => Err(CaptureFault::UnsupportedOption),
+    }
+}
+
+pub(crate) fn require_geometry(
+    required: WindowGeometry,
+    observed: WindowGeometry,
+    frame_extent: Option<mado_pilot_core::PixelExtent>,
+) -> std::result::Result<(), CaptureFault> {
+    if required != observed || frame_extent.is_some_and(|extent| extent != required.extent()) {
+        Err(CaptureFault::WindowGeometryChanged)
+    } else {
+        Ok(())
+    }
+}
+
 impl Drop for TargetRecord {
     fn drop(&mut self) {
         if let (CaptureItem::Native(item), Some(token)) = (&self.item, self.closed_token.take()) {
@@ -455,12 +657,15 @@ mod tests {
     use std::thread;
     use std::time::Duration;
 
-    use mado_pilot_capture::{CaptureProvider, OpenRequest, PixelFormat};
+    use mado_pilot_capture::{
+        CapturePacingRequest, CaptureProvider, OpenRequest, PixelFormat, ResolvedCapturePacing,
+    };
     use mado_pilot_core::{
-        Clock, IdentityIssuer, MonotonicInstant, OperationContext, PixelExtent, Scale, Status,
-        TargetPlacement,
+        CancellationToken, Clock, IdentityIssuer, MonotonicInstant, OperationContext, PixelExtent,
+        Scale, Status, TargetPlacement,
     };
 
+    use crate::WindowsConfig;
     use crate::discovery::{Candidate, CaptureItem, NativeKey, TargetMetadata};
 
     use super::{RETAINED_DISCOVERY_GENERATIONS, WindowsCaptureProvider};
@@ -481,6 +686,7 @@ mod tests {
                 .expect("placement"),
             },
             item: CaptureItem::Synthetic(incarnation),
+            authority: None,
         }
     }
 
@@ -509,6 +715,132 @@ mod tests {
                 MonotonicInstant::ORIGIN
             }
         }
+    }
+
+    #[test]
+    fn windows_configuration_validates_only_the_selected_layer() {
+        let source = ResolvedCapturePacing::source_default();
+        let common = CapturePacingRequest::preferred(Duration::MAX)
+            .expect("positive common request")
+            .resolve(source);
+        let selected = CapturePacingRequest::required(Duration::from_millis(200))
+            .expect("positive Windows request");
+        let config = WindowsConfig::new().with_capture_pacing(selected);
+        let provider = WindowsCaptureProvider::with_capture_pacing(
+            Arc::new(IdentityIssuer::new()),
+            config.capture_pacing().resolve(common),
+        )
+        .expect("overridden common overflow is irrelevant");
+        assert_eq!(
+            provider
+                .session_pacing(&OpenRequest::new())
+                .expect("inherit"),
+            selected.resolve(source)
+        );
+
+        const RESET: WindowsConfig =
+            WindowsConfig::new().with_capture_pacing(CapturePacingRequest::source_default());
+        let reset = WindowsCaptureProvider::with_capture_pacing(
+            Arc::new(IdentityIssuer::new()),
+            RESET.capture_pacing().resolve(common),
+        )
+        .expect("source default bypasses an unrepresentable common interval");
+        assert_eq!(
+            reset
+                .session_pacing(&OpenRequest::new())
+                .expect("reset session"),
+            source
+        );
+        let error = WindowsCaptureProvider::with_capture_pacing(
+            Arc::new(IdentityIssuer::new()),
+            WindowsConfig::new().capture_pacing().resolve(common),
+        )
+        .expect_err("replacing the OS block with inheritance exposes common overflow");
+        assert_eq!(error.status(), Status::InvalidArgument);
+    }
+
+    #[test]
+    fn provider_defaults_and_session_overrides_remain_independent() {
+        let source = ResolvedCapturePacing::source_default();
+        let required = CapturePacingRequest::required(Duration::from_millis(200))
+            .expect("required")
+            .resolve(source);
+        let preferred = CapturePacingRequest::preferred(Duration::from_millis(70))
+            .expect("preferred")
+            .resolve(source);
+        let first =
+            WindowsCaptureProvider::with_capture_pacing(Arc::new(IdentityIssuer::new()), required)
+                .expect("first provider");
+        let second =
+            WindowsCaptureProvider::with_capture_pacing(Arc::new(IdentityIssuer::new()), preferred)
+                .expect("second provider");
+        let override_request =
+            CapturePacingRequest::preferred(Duration::from_millis(60)).expect("session preference");
+        let request = OpenRequest::new().with_capture_pacing(override_request);
+        assert_eq!(
+            first.session_pacing(&request).expect("session override"),
+            override_request.resolve(source)
+        );
+        assert_eq!(
+            first
+                .session_pacing(&request.with_capture_pacing(CapturePacingRequest::inherit()))
+                .expect("cleared override"),
+            required
+        );
+        assert_eq!(
+            first
+                .session_pacing(
+                    &OpenRequest::new().with_capture_pacing(CapturePacingRequest::source_default())
+                )
+                .expect("explicit reset"),
+            source
+        );
+        assert_eq!(
+            first
+                .session_pacing(&OpenRequest::new())
+                .expect("first unchanged"),
+            required
+        );
+        assert_eq!(
+            second
+                .session_pacing(&OpenRequest::new())
+                .expect("second unchanged"),
+            preferred
+        );
+        let legacy = WindowsCaptureProvider::new(Arc::new(IdentityIssuer::new()));
+        assert_eq!(
+            legacy
+                .session_pacing(&OpenRequest::new())
+                .expect("legacy open default"),
+            source
+        );
+    }
+
+    #[test]
+    fn selected_session_overflow_fails_before_native_work_but_after_interruption_admission() {
+        let issuer = Arc::new(IdentityIssuer::new());
+        let target = issuer
+            .issue_target(super::PROVIDER)
+            .expect("owned identity");
+        let provider = WindowsCaptureProvider::new(issuer);
+        let request = OpenRequest::new().with_capture_pacing(
+            CapturePacingRequest::preferred(Duration::MAX).expect("positive preference"),
+        );
+        let error = provider
+            .open(target, &request, &OperationContext::new())
+            .expect_err("overflow fails without a native availability probe or target allocation");
+        assert_eq!(error.status(), Status::InvalidArgument);
+
+        let token = CancellationToken::new();
+        token.cancel();
+        let error = provider
+            .open(
+                target,
+                &request,
+                &OperationContext::new().with_cancellation(token),
+            )
+            .expect_err("existing interruption admission wins");
+        assert_eq!(error.status(), Status::Cancelled);
     }
 
     #[test]
@@ -711,5 +1043,158 @@ mod tests {
             CaptureItem::Synthetic(202)
         ));
         assert!(provider.registry().generations.len() <= RETAINED_DISCOVERY_GENERATIONS);
+    }
+
+    #[test]
+    fn retained_window_description_refuses_foreign_retired_display_and_unverified_targets() {
+        let issuer = Arc::new(IdentityIssuer::new());
+        let provider = WindowsCaptureProvider::new(Arc::clone(&issuer));
+        let foreign = IdentityIssuer::new()
+            .issue_target(super::PROVIDER)
+            .expect("foreign");
+        assert_eq!(
+            provider
+                .describe_window(foreign, &OperationContext::new())
+                .expect_err("foreign authority")
+                .status(),
+            Status::InvalidArgument,
+        );
+        let retired = commit_candidates(&provider, vec![window_candidate(7, 1, "old")])[0].id();
+        commit_candidates(&provider, vec![window_candidate(7, 2, "replacement")]);
+        let current = commit_candidates(&provider, vec![window_candidate(7, 3, "current")])[0].id();
+        assert_eq!(
+            provider
+                .describe_window(retired, &OperationContext::new())
+                .expect_err("retired identity cannot reconstruct authority")
+                .status(),
+            Status::TargetLost,
+        );
+        let record = provider.select_record(current).expect("current record");
+        assert_eq!(
+            record.observe_window(None),
+            Err(mado_pilot_capture::CaptureFault::UnsupportedOption)
+        );
+        assert!(record.capture_description().window().is_none());
+        let mut display = window_candidate(9, 4, "display");
+        display.key = NativeKey::Display(9);
+        let display = commit_candidates(&provider, vec![display])[0].id();
+        assert_eq!(
+            provider
+                .describe_window(display, &OperationContext::new())
+                .expect_err("display is not a window")
+                .status(),
+            Status::Unsupported,
+        );
+    }
+
+    #[test]
+    fn retained_window_authority_requires_closed_registration_and_original_owner() {
+        use crate::window_authority::WindowAuthorityStatus as Authority;
+        use mado_pilot_capture::CaptureFault;
+
+        assert_eq!(
+            super::retained_window_authority(false, true, Some(Authority::SameTarget)),
+            Ok(())
+        );
+        assert_eq!(
+            super::retained_window_authority(true, true, Some(Authority::SameTarget)),
+            Err(CaptureFault::TargetLost),
+        );
+        assert_eq!(
+            super::retained_window_authority(false, false, Some(Authority::SameTarget)),
+            Err(CaptureFault::UnsupportedOption),
+        );
+        for authority in [
+            Authority::TargetLost,
+            Authority::ReplacementOrReuse,
+            Authority::RelationshipChanged,
+        ] {
+            assert_eq!(
+                super::retained_window_authority(false, true, Some(authority)),
+                Err(CaptureFault::TargetLost),
+            );
+        }
+        for authority in [None, Some(Authority::Unavailable)] {
+            assert_eq!(
+                super::retained_window_authority(false, true, authority),
+                Err(CaptureFault::UnsupportedOption),
+            );
+        }
+    }
+
+    #[test]
+    fn required_geometry_refuses_movement_scale_area_resize_and_transitional_content() {
+        use mado_pilot_capture::{CaptureFault, WindowCaptureArea, WindowGeometry};
+        let placement = TargetPlacement::new(
+            (-1600.0, -100.0),
+            (640.0, 480.0),
+            Scale::new(1.5, 1.5).expect("scale"),
+        )
+        .expect("placement");
+        let extent = PixelExtent::new(960, 720);
+        let required =
+            WindowGeometry::new(WindowCaptureArea::WindowsExtendedFrame, placement, extent);
+        assert_eq!(
+            super::require_geometry(required, required, Some(extent)),
+            Ok(())
+        );
+        let moved = TargetPlacement::new(
+            (-1599.0, -100.0),
+            (640.0, 480.0),
+            Scale::new(1.5, 1.5).expect("scale"),
+        )
+        .expect("moved");
+        let scaled = TargetPlacement::new(
+            (-1600.0, -100.0),
+            (960.0, 720.0),
+            Scale::new(1.0, 1.0).expect("scale"),
+        )
+        .expect("scaled");
+        for observed in [
+            WindowGeometry::new(required.area(), moved, extent),
+            WindowGeometry::new(required.area(), scaled, extent),
+            WindowGeometry::new(WindowCaptureArea::WindowsClient, placement, extent),
+            WindowGeometry::new(required.area(), placement, PixelExtent::new(961, 720)),
+        ] {
+            assert_eq!(
+                super::require_geometry(required, observed, None),
+                Err(CaptureFault::WindowGeometryChanged),
+            );
+        }
+        assert_eq!(
+            super::require_geometry(required, required, Some(PixelExtent::new(959, 720))),
+            Err(CaptureFault::WindowGeometryChanged),
+        );
+    }
+
+    #[test]
+    fn describe_window_interruption_precedes_retained_lookup() {
+        let issuer = Arc::new(IdentityIssuer::new());
+        let missing = issuer
+            .issue_target(super::PROVIDER)
+            .expect("missing selection");
+        let provider = WindowsCaptureProvider::new(issuer);
+        let cancellation = CancellationToken::new();
+        cancellation.cancel();
+        assert_eq!(
+            provider
+                .describe_window(
+                    missing,
+                    &OperationContext::new().with_cancellation(cancellation)
+                )
+                .expect_err("cancelled before stale lookup")
+                .status(),
+            Status::Cancelled,
+        );
+        assert_eq!(
+            provider
+                .describe_window(
+                    missing,
+                    &OperationContext::new().with_deadline(MonotonicInstant::ORIGIN),
+                )
+                .expect_err("deadline before stale lookup")
+                .status(),
+            Status::DeadlineExceeded,
+        );
     }
 }

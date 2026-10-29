@@ -1,45 +1,18 @@
-//! Turning a dense correlation map into the candidates the matcher normalizes.
+//! Canonical peaks from a request-owned correlation map.
 //!
-//! `matchTemplate` scores every offset at which the template fits, so one real
-//! match arrives as a smooth hill of thousands of high values rather than as one
-//! finding. Materializing that entire dense map as public candidates would make
-//! a permissive threshold consume unbounded result memory.
-//!
-//! The adapter therefore emits a bounded canonical prefix. It repeatedly takes
-//! the greatest *public* score, breaking ties row-major exactly as the matcher
-//! does. `DropOverlapping` removes the selected placement's overlap window;
-//! `KeepAll` removes only the selected offset. The request's public result limit
-//! is also the backend candidate budget, so extraction performs at most that many
-//! map scans without changing any result the matcher could publish through that
-//! limit. The matcher still reapplies thresholding, ordering, suppression, and
-//! truncation as the public authority.
-//!
-//! That budget bounds the work but does not make it short: the public result
-//! limit is a caller's `u32`, so extraction reads the operation context between
-//! scans and stops on the caller's cancellation or deadline rather than running
-//! to a budget the caller no longer wants paid.
-//!
-//! The arithmetic here is independent of OpenCV's native types, which makes the
-//! bounded extraction rules directly testable and identical on both release
-//! targets.
+//! Order: descending public score, then row-major ties. One result scans once;
+//! larger budgets use one winner/upper bound per row with lazy repair.
+//! Suppression mutates the score map without a dense copy. Scanning and
+//! suppression check caller authority in bounded chunks, including final commit.
 
+use std::cmp::{Ordering, Reverse};
+use std::collections::BinaryHeap;
+
+use mado_pilot_core::operation::Operation;
 use mado_pilot_core::{Interruption, OperationContext};
 use mado_pilot_vision::Suppression;
 
-/// How many offsets extraction may compare between two reads of the operation
-/// context.
-///
-/// Extraction has two costs and only one of them is open-ended. A single scan is
-/// bounded by the score map, which is bounded by the searched region and so by
-/// the frame; the *number* of scans is bounded only by the caller's result
-/// limit, which the public API accepts up to `u32::MAX`. The checkpoint
-/// therefore sits between scans, where the unbounded axis is.
-///
-/// Counting compared offsets rather than emitted candidates is what keeps the
-/// check off a small search's critical path. Reading the context costs a clock
-/// read; comparing this many offsets costs microseconds, two orders of magnitude
-/// more, so the check cannot dominate. A map smaller than this is scanned
-/// several times per check, and a map larger than it is checked once per scan.
+/// Maximum scanned or suppressed offsets between operation checkpoints.
 const CHECKPOINT_OFFSETS: usize = 4_096;
 
 /// One extracted peak: an offset from the searched region's origin, and the
@@ -63,10 +36,8 @@ pub(crate) struct Peak {
 /// one the clamp is only a rounding guard, because normalized correlation cannot
 /// exceed one except by floating-point error.
 ///
-/// Rescaling the full range onto `0.0..=1.0` instead was rejected: it would make
-/// a public score of `0.5` mean "no correlation", so every caller's threshold
-/// would quietly mean something weaker than it reads. See
-/// `docs/adr/0003-opencv-matching-profile-and-public-score.md`.
+/// Rescaling the full range onto `0.0..=1.0` would make a public score of `0.5`
+/// mean "no correlation", weakening the meaning of callers' thresholds.
 ///
 /// A non-finite raw value is not this function's concern; [`peaks`] skips those
 /// offsets before mapping them.
@@ -95,121 +66,262 @@ pub(crate) struct PeakSearch {
     pub(crate) suppression: Suppression,
 }
 
-/// Extracts the bounded candidate prefix from `scores`, greatest first.
+/// Selects the canonical prefix from mutable, row-major score scratch.
 ///
-/// `scores` is a row-major map of `search.width` by `search.height` values, one
-/// per offset at which the template fits the searched region.
-///
-/// Selection reads the mapped public score. Two raw values that clamp to the
-/// same public score therefore tie and are broken by row and then column, which
-/// is the matcher's canonical geometry order for a fixed template extent.
-///
-/// An offset whose value is not finite is skipped rather than reported or
-/// treated as a failure: `TM_CCOEFF_NORMED` normalizes by the variance of the
-/// template and of the window, so a uniform window has no correlation to
-/// express, and no correlation is not evidence of a match.
-///
-/// The work is bounded by `search.candidate_budget` scans of the map, and each
-/// scan removes at least the selected offset.
+/// Non-finite offsets are skipped. Suppression marks removed offsets as `NAN`
+/// only when another selection is required; interruption discards a partial prefix.
 ///
 /// # Errors
 ///
-/// Returns the [`Interruption`] `operation` reports when cancellation or the
-/// deadline lands between two scans. Extraction is pure arithmetic, so it stops
-/// where it stands and reports nothing rather than finishing a prefix no caller
-/// is waiting for. See [`CHECKPOINT_OFFSETS`] for how often the context is read.
+/// Returns cancellation or deadline interruption at admission, bounded work
+/// checkpoints, or final commit.
 pub(crate) fn peaks(
-    scores: &[f32],
+    scores: &mut [f32],
     search: PeakSearch,
     operation: &OperationContext,
 ) -> Result<Vec<Peak>, Interruption> {
-    let offsets = search.width.saturating_mul(search.height);
+    let mut work = SelectionWork::new(operation)?;
+    let Some(offsets) = search.width.checked_mul(search.height) else {
+        return work.operation.commit(Vec::new());
+    };
     if offsets == 0
         || scores.len() < offsets
         || search.candidate_budget == 0
         || search.template_width == 0
         || search.template_height == 0
     {
-        return Ok(Vec::new());
+        return work.operation.commit(Vec::new());
     }
 
-    // Suppression writes into a copy so the caller's map stays intact, and it
-    // writes `NAN` because the scan already skips non-finite offsets.
-    let mut remaining = scores[..offsets].to_vec();
+    let remaining = &mut scores[..offsets];
     let mut found = Vec::new();
-    // Offsets compared since the context was last read. The caller checks the
-    // context immediately before calling, so the first scan starts owing
-    // nothing.
-    let mut compared: usize = 0;
-
-    while found.len() < search.candidate_budget {
-        if compared >= CHECKPOINT_OFFSETS {
-            if let Some(interruption) = operation.interruption() {
-                return Err(interruption);
+    if search.candidate_budget == 1 {
+        if let Some(winner) = work.greatest(remaining, 0, search.min_score)? {
+            found = vec![winner.peak(search.width)];
+        }
+    } else {
+        let mut rows = if search.suppression == Suppression::KeepAll
+            && search.candidate_budget < search.height
+        {
+            let mut best_rows: BinaryHeap<Reverse<RowWinner>> = BinaryHeap::new();
+            for (row, values) in remaining.chunks_exact(search.width).enumerate() {
+                if let Some(winner) = work.greatest(values, row * search.width, search.min_score)? {
+                    if best_rows.len() < search.candidate_budget {
+                        best_rows.push(Reverse(winner));
+                    } else if let Some(mut weakest) = best_rows.peek_mut()
+                        && winner > weakest.0
+                    {
+                        *weakest = Reverse(winner);
+                    }
+                }
             }
-            compared = 0;
-        }
-        compared = compared.saturating_add(offsets);
-
-        let Some((left, top, score)) = greatest(&remaining, search.width) else {
-            break;
-        };
-        if score < search.min_score {
-            // Every remaining offset scores no higher than this one, so no
-            // further scan can qualify.
-            break;
-        }
-        found.push(Peak { left, top, score });
-        if search.suppression == Suppression::DropOverlapping {
-            suppress(&mut remaining, search, left, top);
+            // Every omitted row has k surviving winners ahead of it under KeepAll.
+            // Reuse the allocation while changing from weakest-first to greatest-first.
+            work.operation.checkpoint()?;
+            let winners = best_rows
+                .into_vec()
+                .into_iter()
+                .map(|Reverse(winner)| winner)
+                .collect::<Vec<_>>();
+            let rows = BinaryHeap::from(winners);
+            work.operation.checkpoint()?;
+            rows
         } else {
-            // `KeepAll` — and any future policy the public matcher understands —
-            // must reach that matcher without implicit overlap suppression.
-            remaining[top * search.width + left] = f32::NAN;
+            let mut rows = BinaryHeap::new();
+            for (row, values) in remaining.chunks_exact(search.width).enumerate() {
+                if let Some(winner) = work.greatest(values, row * search.width, search.min_score)? {
+                    rows.push(winner);
+                }
+            }
+            rows
+        };
+
+        if !rows.is_empty() && matches!(search.suppression, Suppression::KeepAll) {
+            // Each live row guarantees a result; preserve geometric capacity growth.
+            found.reserve(rows.len().min(search.candidate_budget).next_power_of_two());
+        }
+
+        while found.len() < search.candidate_budget {
+            let Some(mut winner) = rows.peek_mut() else {
+                break;
+            };
+            if !work.is_live(remaining[winner.index])? {
+                let start = winner.index / search.width * search.width;
+                if let Some(repaired) = work.greatest(
+                    &remaining[start..start + search.width],
+                    start,
+                    search.min_score,
+                )? {
+                    *winner = repaired;
+                } else {
+                    std::collections::binary_heap::PeekMut::pop(winner);
+                }
+                continue;
+            }
+
+            // Removals can only lower a row's winner. A live heap maximum is
+            // therefore the exact global winner, even above stale upper bounds.
+            let peak = winner.peak(search.width);
+            found.push(peak);
+            if found.len() == search.candidate_budget {
+                break;
+            }
+            work.suppress(remaining, search, peak)?;
         }
     }
 
-    Ok(found)
+    work.operation.commit(found)
 }
 
-/// Returns the greatest finite public score in `remaining`, scanning row-major
-/// so the first of several public-score ties wins.
-fn greatest(remaining: &[f32], width: usize) -> Option<(usize, usize, f64)> {
-    let mut best: Option<(usize, usize, f64)> = None;
+#[derive(Debug, Clone, Copy, PartialEq)]
+struct RowWinner {
+    index: usize,
+    score: f64,
+}
 
-    for (index, &value) in remaining.iter().enumerate() {
-        if !value.is_finite() {
-            continue;
-        }
-        let score = public_score(value);
-        if best.is_none_or(|(_, _, current)| score > current) {
-            best = Some((index % width, index / width, score));
+impl RowWinner {
+    fn peak(self, width: usize) -> Peak {
+        Peak {
+            left: self.index % width,
+            top: self.index / width,
+            score: self.score,
         }
     }
-
-    best
 }
 
-/// Removes every offset that would overlap a template placed at `(left, top)`.
-///
-/// Two placements of one template overlap exactly when their offsets differ by
-/// less than the template's extent in both axes, so the suppressed window is
-/// one template short of twice the template's size, centred on the peak.
-fn suppress(remaining: &mut [f32], search: PeakSearch, left: usize, top: usize) {
-    let first_row = top.saturating_sub(search.template_height - 1);
-    let last_row = top
-        .saturating_add(search.template_height - 1)
-        .min(search.height - 1);
-    let first_column = left.saturating_sub(search.template_width - 1);
-    let last_column = left
-        .saturating_add(search.template_width - 1)
-        .min(search.width - 1);
+// Winners contain only finite public scores; signed zeros are equal.
+impl Eq for RowWinner {}
 
-    for row in first_row..=last_row {
-        let start = row * search.width;
-        for column in first_column..=last_column {
-            remaining[start + column] = f32::NAN;
+impl Ord for RowWinner {
+    fn cmp(&self, other: &Self) -> Ordering {
+        if self.score > other.score {
+            Ordering::Greater
+        } else if self.score < other.score {
+            Ordering::Less
+        } else {
+            other.index.cmp(&self.index)
         }
+    }
+}
+
+impl PartialOrd for RowWinner {
+    fn partial_cmp(&self, other: &Self) -> Option<Ordering> {
+        Some(self.cmp(other))
+    }
+}
+
+struct SelectionWork<'context> {
+    operation: Operation<'context>,
+    since_checkpoint: usize,
+    #[cfg(feature = "benchmark-instrumentation")]
+    observation: crate::benchmark_instrumentation::ScoreObservation,
+}
+
+impl<'context> SelectionWork<'context> {
+    fn new(context: &'context OperationContext) -> Result<Self, Interruption> {
+        Ok(Self {
+            operation: Operation::admit(context)?,
+            since_checkpoint: 0,
+            #[cfg(feature = "benchmark-instrumentation")]
+            observation: crate::benchmark_instrumentation::ScoreObservation::new(0),
+        })
+    }
+
+    fn advance(&mut self, offsets: usize) -> Result<(), Interruption> {
+        self.since_checkpoint += offsets;
+        if self.since_checkpoint == CHECKPOINT_OFFSETS {
+            self.since_checkpoint = 0;
+            self.operation.checkpoint()?;
+        }
+        Ok(())
+    }
+
+    fn is_live(&mut self, value: f32) -> Result<bool, Interruption> {
+        let live = value.is_finite();
+        #[cfg(feature = "benchmark-instrumentation")]
+        self.observation.scan(1);
+        self.advance(1)?;
+        Ok(live)
+    }
+
+    fn greatest(
+        &mut self,
+        values: &[f32],
+        first_index: usize,
+        min_score: f64,
+    ) -> Result<Option<RowWinner>, Interruption> {
+        let mut best: Option<RowWinner> = None;
+        let mut best_score = f64::NEG_INFINITY;
+        let mut scanned = 0;
+        while scanned < values.len() {
+            let count = (CHECKPOINT_OFFSETS - self.since_checkpoint).min(values.len() - scanned);
+            for (column, &value) in values[scanned..scanned + count].iter().enumerate() {
+                // Clamping cannot lift a raw value above an existing public
+                // winner. Reject losers before normalization, but compare the
+                // public score again to preserve ties above one.
+                if !value.is_finite() || f64::from(value) <= best_score {
+                    continue;
+                }
+                let score = public_score(value);
+                if score > best_score {
+                    best_score = score;
+                    best = Some(RowWinner {
+                        index: first_index + scanned + column,
+                        score,
+                    });
+                    // The first public maximum cannot be outranked by a later offset.
+                    if score >= 1.0 {
+                        let visited = column + 1;
+                        #[cfg(feature = "benchmark-instrumentation")]
+                        self.observation.scan(visited);
+                        self.advance(visited)?;
+                        return Ok(best.filter(|winner| winner.score >= min_score));
+                    }
+                }
+            }
+            #[cfg(feature = "benchmark-instrumentation")]
+            self.observation.scan(count);
+            scanned += count;
+            self.advance(count)?;
+        }
+        Ok(best.filter(|winner| winner.score >= min_score))
+    }
+
+    fn suppress(
+        &mut self,
+        remaining: &mut [f32],
+        search: PeakSearch,
+        peak: Peak,
+    ) -> Result<(), Interruption> {
+        if search.suppression != Suppression::DropOverlapping {
+            remaining[peak.top * search.width + peak.left] = f32::NAN;
+            return self.advance(1);
+        }
+
+        // Placements overlap iff both offset differences are strictly smaller
+        // than the template extent. Edge-touching placements remain available.
+        let first_row = peak.top.saturating_sub(search.template_height - 1);
+        let last_row = peak
+            .top
+            .saturating_add(search.template_height - 1)
+            .min(search.height - 1);
+        let first_column = peak.left.saturating_sub(search.template_width - 1);
+        let last_column = peak
+            .left
+            .saturating_add(search.template_width - 1)
+            .min(search.width - 1);
+
+        for row in first_row..=last_row {
+            let mut start = row * search.width + first_column;
+            let end = row * search.width + last_column + 1;
+            while start < end {
+                let count = (CHECKPOINT_OFFSETS - self.since_checkpoint).min(end - start);
+                remaining[start..start + count].fill(f32::NAN);
+                start += count;
+                self.advance(count)?;
+            }
+        }
+        Ok(())
     }
 }
 
@@ -231,10 +343,8 @@ mod tests {
 
     /// A clock that advances one millisecond every time it is read.
     ///
-    /// A deadline is then a count of context reads rather than a wall-clock
-    /// wait, so "the deadline expired while the map was being rescanned" is an
-    /// exact statement about which check observed it rather than a race against
-    /// a busy machine.
+    /// Deadlines select successive operation checkpoints without wall-clock
+    /// races. Tests sweep the observed checkpoints, not a fixed read count.
     #[derive(Debug)]
     struct TickingClock {
         reads: AtomicU64,
@@ -275,10 +385,6 @@ mod tests {
                 token,
             }
         }
-
-        fn reads(&self) -> u64 {
-            self.reads.load(Ordering::Relaxed)
-        }
     }
 
     impl Clock for CancellingClock {
@@ -293,19 +399,18 @@ mod tests {
 
     /// Extracts under a context that never interrupts.
     fn extract(scores: &[f32], search: PeakSearch) -> Vec<Peak> {
-        peaks(scores, search, &OperationContext::new()).expect("nothing interrupts extraction")
+        peaks(&mut scores.to_vec(), search, &OperationContext::new())
+            .expect("nothing interrupts extraction")
     }
 
-    /// A search that keeps rescanning: one checkpoint interval of offsets, a one
-    /// pixel template, no threshold, and no suppression, so every offset stays a
-    /// candidate and the budget alone decides how many scans happen.
+    /// Wide rows make repeated lazy repairs cross operation checkpoints.
     fn permissive_search() -> (Vec<f32>, PeakSearch) {
-        let width = 64;
-        let height = CHECKPOINT_OFFSETS / width;
+        let width = CHECKPOINT_OFFSETS / 2 + 3;
+        let height = 3;
         let scores = (0..width * height)
             .map(|offset| {
-                let index = u16::try_from(offset).expect("the map is smaller than u16::MAX");
-                1.0 - f32::from(index) / f32::from(u16::MAX)
+                let column = u16::try_from(offset % width).expect("the row fits in u16");
+                1.0 - f32::from(column) / f32::from(u16::MAX)
             })
             .collect();
 
@@ -332,9 +437,71 @@ mod tests {
                 UNREACHABLE_MILLIS,
             )));
 
-        peaks(scores, search, &context).expect("the search finishes when nothing interrupts it");
+        peaks(&mut scores.to_vec(), search, &context)
+            .expect("the search finishes when nothing interrupts it");
 
         clock.reads()
+    }
+
+    /// Observes interrupted scratch writes, not just rejection at final commit.
+    fn assert_bounded_partial_suppression(
+        scores: &[f32],
+        search: PeakSearch,
+        max_suppressed_between_checkpoints: usize,
+    ) {
+        assert!(scores.iter().all(|value| value.is_finite()));
+        let mut complete = scores.to_vec();
+        peaks(&mut complete, search, &OperationContext::new())
+            .expect("the uninterrupted search finishes");
+        let total_suppressed = complete.iter().filter(|value| value.is_nan()).count();
+        assert!(
+            total_suppressed > max_suppressed_between_checkpoints,
+            "the fixture must distinguish loop checkpoints from final commit"
+        );
+        let reads = reads_for(scores, search);
+
+        for interruption in [Interruption::DeadlineExceeded, Interruption::Cancelled] {
+            let points = if interruption == Interruption::Cancelled {
+                reads.saturating_sub(1)
+            } else {
+                reads
+            };
+            let mut observed_suppression = vec![0, total_suppressed];
+            for point in 0..points {
+                let context = if interruption == Interruption::DeadlineExceeded {
+                    OperationContext::new()
+                        .with_clock(Arc::new(TickingClock::new()))
+                        .with_deadline(MonotonicInstant::from_origin(Duration::from_millis(point)))
+                } else {
+                    let token = CancellationToken::new();
+                    OperationContext::new()
+                        .with_clock(Arc::new(CancellingClock::new(token.clone(), point)))
+                        .with_deadline(MonotonicInstant::from_origin(Duration::from_millis(
+                            UNREACHABLE_MILLIS,
+                        )))
+                        .with_cancellation(token)
+                };
+                let mut remaining = scores.to_vec();
+                assert_eq!(
+                    peaks(&mut remaining, search, &context).err(),
+                    Some(interruption),
+                    "{interruption:?} on context read {point} must stop {search:?}"
+                );
+                observed_suppression.push(remaining.iter().filter(|value| value.is_nan()).count());
+            }
+            observed_suppression.sort_unstable();
+            observed_suppression.dedup();
+            assert!(
+                observed_suppression.len() > 2,
+                "{interruption:?} must be observable during partial suppression"
+            );
+            assert!(
+                observed_suppression
+                    .windows(2)
+                    .all(|pair| pair[1] - pair[0] <= max_suppressed_between_checkpoints),
+                "{interruption:?} must bound additional suppression: {observed_suppression:?}"
+            );
+        }
     }
 
     /// A search over a `width` by `height` map for a 2 by 2 template.
@@ -348,6 +515,109 @@ mod tests {
             candidate_budget: 8,
             suppression: Suppression::DropOverlapping,
         }
+    }
+
+    /// The original repeated full-map greedy selection, independent of the row
+    /// index and production suppression arithmetic.
+    fn reference(scores: &[f32], search: PeakSearch) -> Vec<Peak> {
+        let Some(offsets) = search.width.checked_mul(search.height) else {
+            return Vec::new();
+        };
+        if offsets == 0
+            || scores.len() < offsets
+            || search.candidate_budget == 0
+            || search.template_width == 0
+            || search.template_height == 0
+        {
+            return Vec::new();
+        }
+        let mut remaining = scores[..offsets].to_vec();
+        let mut found = Vec::new();
+        while found.len() < search.candidate_budget {
+            let mut best: Option<(usize, f64)> = None;
+            for (index, &raw) in remaining.iter().enumerate() {
+                if raw.is_finite() {
+                    let score = f64::from(raw).clamp(0.0, 1.0);
+                    if best.is_none_or(|(_, current)| score > current) {
+                        best = Some((index, score));
+                    }
+                }
+            }
+            let Some((index, score)) = best else {
+                break;
+            };
+            if score < search.min_score {
+                break;
+            }
+            let left = index % search.width;
+            let top = index / search.width;
+            found.push(Peak { left, top, score });
+            for (other, value) in remaining.iter_mut().enumerate() {
+                let remove = if search.suppression == Suppression::DropOverlapping {
+                    (other % search.width).abs_diff(left) < search.template_width
+                        && (other / search.width).abs_diff(top) < search.template_height
+                } else {
+                    other == index
+                };
+                if remove {
+                    *value = f32::NAN;
+                }
+            }
+        }
+        found
+    }
+
+    fn assert_canonical(scores: &[f32], search: PeakSearch) {
+        assert_eq!(
+            extract(scores, search),
+            reference(scores, search),
+            "canonical prefix for {search:?}"
+        );
+    }
+
+    fn interruption_cases() -> Vec<(Vec<f32>, PeakSearch)> {
+        let (scores, multi) = permissive_search();
+        let overlapping = PeakSearch {
+            template_width: 3,
+            template_height: 2,
+            suppression: Suppression::DropOverlapping,
+            ..multi
+        };
+        let extent = CHECKPOINT_OFFSETS * 3 + 7;
+        let wide = PeakSearch {
+            width: extent,
+            height: 1,
+            template_width: usize::MAX,
+            template_height: usize::MAX,
+            candidate_budget: 2,
+            suppression: Suppression::DropOverlapping,
+            ..multi
+        };
+        let tall = PeakSearch {
+            width: 1,
+            height: extent,
+            candidate_budget: 16,
+            ..multi
+        };
+        let one = PeakSearch {
+            candidate_budget: 1,
+            ..wide
+        };
+        let mut boundary_maximum = vec![0.75; extent];
+        boundary_maximum[CHECKPOINT_OFFSETS - 1] = 1.0;
+        vec![
+            (scores.clone(), multi),
+            (scores, overlapping),
+            (vec![0.75; extent], wide),
+            (vec![0.75; extent], tall),
+            (vec![1.0; extent], one),
+            (boundary_maximum, one),
+            (vec![1.0; extent], wide),
+            (vec![1.0; extent], tall),
+            (vec![0.75; 2], search(2, 1)),
+            (vec![f32::NAN; extent], wide),
+            (Vec::new(), search(0, 0)),
+        ]
     }
 
     #[test]
@@ -560,109 +830,389 @@ mod tests {
     }
 
     #[test]
-    fn the_context_is_read_while_the_map_is_being_scanned_rather_than_once() {
-        let (scores, search) = permissive_search();
+    fn row_winners_match_the_greedy_reference_across_score_and_geometry_boundaries() {
+        let raw = [
+            f32::NAN,
+            f32::NEG_INFINITY,
+            -2.0,
+            -0.0,
+            0.0,
+            0.25,
+            0.5,
+            0.75,
+            1.0,
+            1.000_000_1,
+            2.0,
+            f32::INFINITY,
+        ];
+        for (width, height) in [(33, 1), (5, 31), (31, 5), (17, 19)] {
+            for seed in 0..2 {
+                let scores = (0..width * height)
+                    .map(|index| raw[(index * 17 + index / width * 7 + seed) % raw.len()])
+                    .collect::<Vec<_>>();
+                for suppression in [Suppression::KeepAll, Suppression::DropOverlapping] {
+                    for (template_width, template_height) in [(1, 1), (3, 2), (4, 5)] {
+                        for min_score in [0.0, 0.5, 1.0] {
+                            for candidate_budget in [1, 16, 256, usize::MAX] {
+                                assert_canonical(
+                                    &scores,
+                                    PeakSearch {
+                                        width,
+                                        height,
+                                        template_width,
+                                        template_height,
+                                        min_score,
+                                        candidate_budget,
+                                        suppression,
+                                    },
+                                );
+                            }
+                        }
+                    }
+                }
+            }
+        }
+    }
 
+    #[test]
+    fn bounded_keep_all_rows_preserve_repeated_winners_and_late_better_rows() {
+        for scores in [
+            [0.6, 0.6, 0.6, 0.7, 0.7, 0.7, 0.8, 0.8, 0.8, 1.0, 1.25, 1.0],
+            [
+                1.25, 1.0, 1.0, 1.0, 1.25, 1.0, 1.0, 1.0, 1.25, 1.0, 1.0, 1.0,
+            ],
+            [
+                0.0,
+                0.0,
+                0.0,
+                f32::NAN,
+                0.0,
+                0.0,
+                0.9,
+                0.8,
+                0.0,
+                0.0,
+                0.0,
+                0.0,
+            ],
+            [0.0; 12],
+        ] {
+            for suppression in [Suppression::KeepAll, Suppression::DropOverlapping] {
+                assert_canonical(
+                    &scores,
+                    PeakSearch {
+                        candidate_budget: 2,
+                        suppression,
+                        ..search(3, 4)
+                    },
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn finite_single_offsets_and_columns_have_nonempty_canonical_prefixes() {
+        for scores in [
+            &[0.5][..],
+            &[0.75][..],
+            &[1.000_000_1][..],
+            &[0.5, 1.0, 1.25, 0.25, 0.75, 0.75, -0.0, 0.0, -2.0, 0.5][..],
+        ] {
+            for suppression in [Suppression::KeepAll, Suppression::DropOverlapping] {
+                for template_height in [1, 2, 5, usize::MAX] {
+                    for min_score in [0.0, 0.5, 1.0] {
+                        for candidate_budget in [1, 2, 16, usize::MAX] {
+                            let search = PeakSearch {
+                                template_width: 1,
+                                template_height,
+                                min_score,
+                                candidate_budget,
+                                suppression,
+                                ..search(1, scores.len())
+                            };
+                            let found = extract(scores, search);
+                            if min_score <= 0.5 {
+                                assert!(
+                                    !found.is_empty(),
+                                    "finite qualifying offsets must produce a prefix for {search:?}"
+                                );
+                            }
+                            assert_eq!(found, reference(scores, search));
+                        }
+                    }
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn explicit_result_limits_preserve_the_prefix_and_stop_at_survivors() {
+        let scores = vec![0.75; 17 * 19];
+        for suppression in [Suppression::KeepAll, Suppression::DropOverlapping] {
+            for limit in [1, 16, 256, usize::MAX] {
+                let search = PeakSearch {
+                    template_width: 1,
+                    template_height: 1,
+                    candidate_budget: limit,
+                    suppression,
+                    ..search(17, 19)
+                };
+                let found = extract(&scores, search);
+                assert_eq!(found.len(), limit.min(scores.len()));
+                assert_eq!(found, reference(&scores, search));
+            }
+        }
+    }
+
+    #[test]
+    fn signed_zeros_tie_by_row_and_column_not_sign() {
+        for scores in [
+            [-0.0, 0.0, -0.0, 0.0],
+            [0.0, -0.0, 0.0, -0.0],
+            [-0.0, 0.0, 0.0, -0.0],
+        ] {
+            let search = PeakSearch {
+                candidate_budget: 3,
+                min_score: 0.0,
+                suppression: Suppression::KeepAll,
+                ..search(2, 2)
+            };
+            let found = extract(&scores, search);
+            assert_eq!(
+                found
+                    .iter()
+                    .map(|peak| (peak.left, peak.top))
+                    .collect::<Vec<_>>(),
+                vec![(0, 0), (1, 0), (0, 1)]
+            );
+            assert_eq!(found, reference(&scores, search));
+        }
+    }
+
+    #[test]
+    fn threshold_equality_is_inclusive_and_all_nonfinite_maps_are_empty() {
+        let search = PeakSearch {
+            template_width: 1,
+            template_height: 1,
+            ..search(4, 1)
+        };
+        assert_eq!(
+            extract(&[f32::NAN, 0.5, f32::NEG_INFINITY, 0.25], search),
+            vec![Peak {
+                left: 1,
+                top: 0,
+                score: 0.5,
+            }]
+        );
         assert!(
-            reads_for(&scores, search) > 1,
-            "a search whose budget outlives one checkpoint interval must read \
-             the context more than once, or nothing inside the loop can stop it"
+            extract(
+                &[f32::NAN, f32::INFINITY, f32::NEG_INFINITY, f32::NAN],
+                search
+            )
+            .is_empty()
+        );
+        assert!(extract(&[0.25; 4], search).is_empty());
+    }
+
+    #[test]
+    fn thresholds_between_f32_scores_preserve_the_f64_canonical_prefix() {
+        let scores = [-2.0, -0.0, 0.0, 0.5, 1.0, 1.25];
+        for boundary in [0.0_f64, 0.5, 1.0] {
+            for min_score in [boundary.next_down(), boundary, boundary.next_up()] {
+                for candidate_budget in [1, 16] {
+                    for suppression in [Suppression::KeepAll, Suppression::DropOverlapping] {
+                        assert_canonical(
+                            &scores,
+                            PeakSearch {
+                                min_score,
+                                candidate_budget,
+                                suppression,
+                                ..search(scores.len(), 1)
+                            },
+                        );
+                    }
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn touching_edges_survive_while_overlapping_neighbors_are_removed() {
+        let scores = [1.0; 25];
+        let search = PeakSearch {
+            candidate_budget: usize::MAX,
+            ..search(5, 5)
+        };
+        let found = extract(&scores, search);
+        assert_eq!(
+            found
+                .iter()
+                .map(|peak| (peak.left, peak.top))
+                .collect::<Vec<_>>(),
+            vec![
+                (0, 0),
+                (2, 0),
+                (4, 0),
+                (0, 2),
+                (2, 2),
+                (4, 2),
+                (0, 4),
+                (2, 4),
+                (4, 4),
+            ]
+        );
+        assert_eq!(found, reference(&scores, search));
+        assert_canonical(
+            &scores,
+            PeakSearch {
+                template_width: usize::MAX,
+                template_height: usize::MAX,
+                ..search
+            },
         );
     }
 
     #[test]
-    fn no_deadline_anywhere_inside_extraction_reports_candidates() {
-        let (scores, search) = permissive_search();
-        let total = reads_for(&scores, search);
+    fn suppression_repairs_stale_rows_before_publishing_the_next_winner() {
+        let scores = [
+            0.90, 0.89, 0.20, 0.80, 0.78, 0.10, //
+            0.88, 0.87, 0.30, 0.79, 0.77, 0.20, //
+            0.86, 0.85, 0.40, 0.76, 0.75, 0.20,
+        ];
+        let search = PeakSearch {
+            min_score: 0.0,
+            candidate_budget: 16,
+            ..search(6, 3)
+        };
+        let found = extract(&scores, search);
+        assert_eq!(
+            found
+                .iter()
+                .take(4)
+                .map(|peak| (peak.left, peak.top))
+                .collect::<Vec<_>>(),
+            vec![(0, 0), (0, 2), (3, 0), (3, 2)]
+        );
+        assert_eq!(found, reference(&scores, search));
+    }
 
-        for deadline in 0..total {
-            let clock = Arc::new(TickingClock::new());
-            let context = OperationContext::new().with_clock(clock).with_deadline(
-                MonotonicInstant::from_origin(Duration::from_millis(deadline)),
-            );
+    #[test]
+    fn invalid_extents_and_zero_limits_return_empty_without_large_allocations() {
+        for search in [
+            search(usize::MAX, 2),
+            search(2, usize::MAX),
+            search(4, 0),
+            PeakSearch {
+                template_width: 0,
+                ..search(1, 1)
+            },
+            PeakSearch {
+                template_height: 0,
+                ..search(1, 1)
+            },
+            PeakSearch {
+                candidate_budget: 0,
+                ..search(1, 1)
+            },
+        ] {
+            assert!(extract(&[1.0], search).is_empty());
+        }
+        let search = PeakSearch {
+            candidate_budget: usize::MAX,
+            ..search(1, 1)
+        };
+        assert_eq!(extract(&[1.0], search).len(), 1);
+    }
 
+    #[test]
+    fn already_cancelled_and_expired_calls_retain_their_own_authority() {
+        for (scores, search) in interruption_cases() {
+            let token = CancellationToken::new();
+            token.cancel();
+            let cancelled = OperationContext::new().with_cancellation(token);
             assert_eq!(
-                peaks(&scores, search, &context).err(),
-                Some(Interruption::DeadlineExceeded),
-                "a deadline expiring on context read {deadline} must stop extraction"
+                peaks(&mut scores.clone(), search, &cancelled).err(),
+                Some(Interruption::Cancelled)
             );
+            let expired = OperationContext::new()
+                .with_clock(Arc::new(TickingClock::new()))
+                .with_deadline(MonotonicInstant::from_origin(Duration::ZERO));
+            assert_eq!(
+                peaks(&mut scores.clone(), search, &expired).err(),
+                Some(Interruption::DeadlineExceeded)
+            );
+            assert_canonical(&scores, search);
+        }
+    }
+
+    #[test]
+    fn no_deadline_anywhere_inside_extraction_reports_candidates() {
+        for (scores, search) in interruption_cases() {
+            for deadline in 0..reads_for(&scores, search) {
+                let context = OperationContext::new()
+                    .with_clock(Arc::new(TickingClock::new()))
+                    .with_deadline(MonotonicInstant::from_origin(Duration::from_millis(
+                        deadline,
+                    )));
+                assert_eq!(
+                    peaks(&mut scores.clone(), search, &context).err(),
+                    Some(Interruption::DeadlineExceeded),
+                    "a deadline expiring on context read {deadline} must stop {search:?}"
+                );
+            }
         }
     }
 
     #[test]
     fn no_cancellation_anywhere_inside_extraction_reports_candidates() {
-        let (scores, search) = permissive_search();
-        let total = reads_for(&scores, search);
-
-        // Cancelling on read `point` is observed by the next read, so the last
-        // read that can still observe it is `total - 2`.
-        for point in 0..total.saturating_sub(1) {
-            let token = CancellationToken::new();
-            let clock = Arc::new(CancellingClock::new(token.clone(), point));
-            let context = OperationContext::new()
-                .with_clock(clock)
-                .with_deadline(MonotonicInstant::from_origin(Duration::from_millis(
-                    UNREACHABLE_MILLIS,
-                )))
-                .with_cancellation(token);
-
-            assert_eq!(
-                peaks(&scores, search, &context).err(),
-                Some(Interruption::Cancelled),
-                "cancellation landing on context read {point} must stop extraction"
-            );
+        for (scores, search) in interruption_cases() {
+            let total = reads_for(&scores, search);
+            // A clock callback's cancellation is visible at the next context
+            // check; cancellation after the final check has no stronger fence.
+            for point in 0..total.saturating_sub(1) {
+                let token = CancellationToken::new();
+                let clock = Arc::new(CancellingClock::new(token.clone(), point));
+                let context = OperationContext::new()
+                    .with_clock(clock)
+                    .with_deadline(MonotonicInstant::from_origin(Duration::from_millis(
+                        UNREACHABLE_MILLIS,
+                    )))
+                    .with_cancellation(token);
+                assert_eq!(
+                    peaks(&mut scores.clone(), search, &context).err(),
+                    Some(Interruption::Cancelled),
+                    "cancellation on context read {point} must stop {search:?}"
+                );
+            }
         }
     }
 
     #[test]
-    fn a_budget_the_map_cannot_fill_is_interrupted_rather_than_run_out() {
-        // The public result limit is a caller's `u32`, and `KeepAll` with a zero
-        // threshold qualifies every offset, so this is the shape that made
-        // extraction run for hours: the budget, not the map, sets the length.
-        let (scores, mut search) = permissive_search();
-        search.candidate_budget = usize::try_from(u32::MAX).expect("a u32 fits a usize");
-        let token = CancellationToken::new();
-        let clock = Arc::new(CancellingClock::new(token.clone(), 0));
-        let context = OperationContext::new()
-            .with_clock(clock.clone())
-            .with_deadline(MonotonicInstant::from_origin(Duration::from_millis(
-                UNREACHABLE_MILLIS,
-            )))
-            .with_cancellation(token);
-
-        assert_eq!(
-            peaks(&scores, search, &context).err(),
-            Some(Interruption::Cancelled)
-        );
-        assert_eq!(
-            clock.reads(),
-            1,
-            "extraction stopped at the checkpoint after cancellation, not after \
-             four billion scans"
-        );
+    fn a_large_overlap_window_can_stop_after_a_bounded_partial_suppression() {
+        let scores = vec![0.75; CHECKPOINT_OFFSETS * 3 + 7];
+        let search = PeakSearch {
+            template_width: usize::MAX,
+            candidate_budget: 2,
+            ..search(scores.len(), 1)
+        };
+        assert_bounded_partial_suppression(&scores, search, CHECKPOINT_OFFSETS);
     }
 
     #[test]
-    fn an_extraction_shorter_than_one_checkpoint_interval_never_reads_the_context() {
-        let clock = Arc::new(TickingClock::new());
-        let context = OperationContext::new()
-            .with_clock(clock.clone())
-            .with_deadline(MonotonicInstant::from_origin(Duration::from_millis(
-                UNREACHABLE_MILLIS,
-            )));
-        let mut search = search(2, 1);
-        search.template_width = 1;
-        search.template_height = 1;
-        search.min_score = 0.0;
-        search.suppression = Suppression::KeepAll;
-
-        peaks(&[0.9, 0.8], search, &context).expect("nothing interrupts extraction");
-
-        assert_eq!(
-            clock.reads(),
-            0,
-            "checking per candidate would cost a clock read per handful of \
-             comparisons on a map this small"
+    fn lazy_repairs_and_multiple_suppressions_remain_boundedly_interruptible() {
+        let (scores, search) = permissive_search();
+        // Repairs span over half a checkpoint. KeepAll removes one offset per
+        // selection; each edge-row overlap window adds at most six new offsets.
+        assert_bounded_partial_suppression(&scores, search, 2);
+        assert_bounded_partial_suppression(
+            &scores,
+            PeakSearch {
+                template_width: 3,
+                template_height: 2,
+                suppression: Suppression::DropOverlapping,
+                ..search
+            },
+            12,
         );
     }
 }

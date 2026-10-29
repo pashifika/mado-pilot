@@ -543,9 +543,8 @@ fn match_warm_rust(flow: &RustFlow) -> Sample {
     let elapsed = started.elapsed();
 
     let searched = outcome.result().searched();
-    // The half of the pair that can ask. Both halves report a byte count built
-    // from the same format, and the C one has to be told which; this is where
-    // being told the wrong one is caught.
+    // Check the shared default and four-byte logical pixel width, not the
+    // selected mapping layout or physical copied bytes.
     let format = flow.engine.backend().format();
     assert_eq!(
         format, BACKEND_FORMAT,

@@ -16,7 +16,7 @@ qualification-unsupported-api = []
 mado-pilot-core = { path = "../../automation/core" }
 mado-pilot-capture = { path = "../../automation/capture" }
 mado-pilot-input = { path = "../../automation/input" }
-windows.workspace = true
+windows = { workspace = true, features = ["Foundation_Metadata"] }
 
 [target.'cfg(windows)'.dev-dependencies]
 mado-pilot-testkit = { path = "../../support/testkit" }

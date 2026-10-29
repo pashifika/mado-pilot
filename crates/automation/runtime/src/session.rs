@@ -1,11 +1,8 @@
-//! One open capture session, bound to the engine's matching backend.
+//! Session-bound capture, matching, and OCR orchestration.
 //!
-//! Binding the two is what makes a search a single deep operation rather than a
-//! sequence a caller has to get right. Acquiring a frame and searching it are
-//! two contracts' operations, and between them sit the rules neither contract
-//! owns: which frame a result is about, whether that frame is even this
-//! session's, and whether the whole sequence still wins its race against the
-//! deadline by the time an answer exists.
+//! [`Session::commit_frame`] orders retained-frame results against capture
+//! termination and explicit close. Committed values remain historical facts;
+//! later termination does not revoke them or their immutable frames.
 
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, OnceLock};
@@ -33,6 +30,7 @@ use crate::diagnostic::{
     RouteAttemptDiagnostic, SearchDiagnostic, SearchDiagnosticOutcome, requested_ocr_region,
 };
 use crate::find::{FindOutcome, FindRequest, SearchFrame};
+use crate::watch::{OcrTextQuery, OcrTextWatchRequest};
 use crate::watch::{
     TemplateQuery, TemplateTerminalOutcome, TemplateWatchRequest, WatchRuntime, WatchSession,
 };
@@ -153,7 +151,7 @@ pub struct Session {
     diagnostics: Option<DiagnosticSink>,
     closing: AtomicBool,
     watch_runtime: WatchRuntime,
-    watcher: OnceLock<Arc<WatchSession>>,
+    watcher: OnceLock<Result<Arc<WatchSession>>>,
 }
 
 impl Session {
@@ -230,10 +228,13 @@ impl Session {
         self.closing.load(Ordering::Acquire)
     }
 
+    /// Input/watch admission only; visual operations use the terminal-aware gate.
     fn accepts_work(&self) -> bool {
         !self.close_started() && self.capture.is_open()
     }
 
+    /// The monotonic explicit-close gate: `value` is published only if close
+    /// has not begun at this instant.
     fn commit_while_open<T>(&self, value: T) -> Result<T> {
         self.closing
             .compare_exchange(false, false, Ordering::AcqRel, Ordering::Acquire)
@@ -266,24 +267,25 @@ impl Session {
     /// for anything.
     ///
     /// Frame identity, ordering, and latest-frame semantics are the capture
-    /// package's; this hands the request to the adapter unchanged.
+    /// package's; this hands the request to the adapter unchanged. The adapter
+    /// orders the frame it returns against its own terminal fault, and the
+    /// session then orders it against explicit close with no caller work in
+    /// between. A frame returned here is a committed historical value: a
+    /// terminal fault or close ordered afterwards does not revoke it.
     ///
     /// # Errors
     ///
-    /// Returns a closed outcome once the session is closing, an
-    /// invalid-argument outcome for a stamp from another stream, and the
-    /// operation's terminal outcome when cancellation or the deadline wins.
+    /// Returns the capture's first terminal fault even after later cleanup,
+    /// a closed outcome for ordinary close, an invalid-argument outcome for a
+    /// stamp from another stream, and the operation's terminal outcome when
+    /// cancellation or the deadline wins.
     pub fn acquire_frame(
         &self,
         request: &FrameRequest,
         operation: &OperationContext,
     ) -> Result<Frame> {
         let observed = self.observe(operation, DiagnosticOperationKind::FrameAcquire)?;
-        if self.close_started() {
-            Operation::admit(operation)?;
-            return Err(CaptureFault::SessionClosed.into());
-        }
-        let result = self.capture.frame(request, operation);
+        let result = self.acquire(request, operation);
         match &result {
             Ok(frame) => {
                 self.debug(observed, operation, || {
@@ -305,6 +307,42 @@ impl Session {
             Err(_) => {}
         }
         result
+    }
+
+    /// Commits acquisition in the adapter, then checks runtime close without
+    /// repeating the adapter's clock or stream-lock checks.
+    fn acquire(&self, request: &FrameRequest, operation: &OperationContext) -> Result<Frame> {
+        if self.close_started() && self.capture.lifecycle() == Lifecycle::Open {
+            Operation::admit(operation)?;
+            return Err(CaptureFault::SessionClosed.into());
+        }
+        // A stopped capture returns its first fault (or ordinary closure)
+        // immediately, without acquiring another frame.
+        let frame = self.capture.frame(request, operation)?;
+        self.commit_while_open(frame)
+    }
+
+    /// Commits one exact retained frame of this session against capture
+    /// termination and explicit close.
+    ///
+    /// Prepare the complete candidate before calling. The adapter orders the
+    /// exact frame against capture termination; the monotonic explicit-close
+    /// check follows immediately. Success proves close had not begun at the
+    /// capture ordering point.
+    ///
+    /// Committed candidates are historical, not a liveness or cleanup promise.
+    /// Later termination does not revoke them; retained frames stay mappable.
+    /// Older frames remain eligible after new frames or geometry revisions.
+    /// This acquires no frame, maps no pixels, and invokes no host callback
+    /// under a lock. See [`Session::is_closed`] for cleanup completion.
+    ///
+    /// # Errors
+    ///
+    /// Returns interruption, foreign-stream, capture-terminal, or closed errors.
+    /// The first capture fault survives a later explicit close.
+    pub fn commit_frame(&self, frame: &Frame, operation: &OperationContext) -> Result<()> {
+        self.capture.commit_frame(frame, operation)?;
+        self.commit_while_open(())
     }
 
     /// Maps the whole frame and emits a debug mapping fact when enabled.
@@ -359,36 +397,38 @@ impl Session {
     ///
     /// The request supplies the complete backend/model identity, source region,
     /// output coordinate space, and operation context. The frame must belong to
-    /// this session's stream. Backend work and caller clock checks run without a
-    /// session lock; one atomic final gate orders result commit against close.
+    /// this session's stream. The frame is committed through
+    /// [`Session::commit_frame`] twice: once at admission, so a target already
+    /// lost is reported as lost rather than as closed, and once after the
+    /// backend returned, which is where the result is accepted. Backend work
+    /// and caller clock checks run without a session lock. A result returned
+    /// here is historical: termination or close ordered after that final
+    /// commitment does not revoke it.
     ///
     /// # Errors
     ///
-    /// Returns a closed outcome after close begins, an invalid-argument outcome
-    /// for another stream's frame, an unavailable-backend outcome when OCR was
-    /// not configured, a typed OCR failure, or the operation's terminal outcome.
+    /// Returns a closed outcome once close begins, the capture's terminal fault
+    /// when capture ended before the result committed, an invalid-argument
+    /// outcome for another stream's frame, an unavailable-backend outcome when
+    /// OCR was not configured, a typed OCR failure, or the operation's terminal
+    /// outcome.
     pub fn recognize(&self, request: OcrRequest<'_>) -> Result<OcrResult> {
         let operation = request.operation().clone();
         let observed = self.observe(&operation, DiagnosticOperationKind::OcrRecognition)?;
         let started = observed.map(|_| operation.now());
-        let source = request.frame().stamp();
+        let frame = request.frame();
+        let source = frame.stamp();
         let requested_region = requested_ocr_region(request.source_region());
         let output_space = request.output_space();
-        let result = (|| {
-            let attempt = Operation::admit(&operation)?;
-            if !self.accepts_work() {
-                return Err(CaptureFault::SessionClosed.into());
-            }
-            if request.frame().stamp().stream() != self.description.stream() {
-                return Err(CaptureFault::ForeignStream.into());
-            }
+        let result: Result<OcrResult> = (|| {
+            self.commit_frame(frame, &operation)?;
             let recognizer = self
                 .ocr
                 .as_ref()
                 .ok_or_else(|| mado_pilot_core::Error::from(OcrFault::BackendUnavailable))?;
             let result = recognizer.recognize(request)?;
-            let result = attempt.commit(result)?;
-            self.commit_while_open(result)
+            self.commit_frame(frame, &operation)?;
+            Ok(result)
         })();
 
         if let (Some(context), Some(started)) = (self.ocr_diagnostic, started) {
@@ -447,35 +487,32 @@ impl Session {
     /// The borrowed request is consumed synchronously and the returned grouped
     /// result owns every source, descriptor, zone, candidate, and membership
     /// value it exposes. No request or result state is stored by the session.
+    /// Admission and final acceptance commit the frame exactly as
+    /// [`Session::recognize`] does, and a returned group is likewise historical.
     ///
     /// # Errors
     ///
-    /// Returns the same stream, lifecycle, backend, geometry, limit, and
-    /// interruption failures as singular recognition. The complete operation
-    /// publishes one immutable result or no result.
+    /// Returns the same stream, lifecycle, terminal, backend, geometry, limit,
+    /// and interruption failures as singular recognition. The complete
+    /// operation publishes one immutable result or no result.
     pub fn scan_ocr_zones(&self, request: OcrZoneScanRequest<'_>) -> Result<OcrZoneScanResult> {
         let operation = request.operation().clone();
         let observed = self.observe(&operation, DiagnosticOperationKind::OcrRecognition)?;
         let started = observed.map(|_| operation.now());
-        let source = request.frame().stamp();
+        let frame = request.frame();
+        let source = frame.stamp();
         let output_space = request.output_space();
         let zone_count =
             u64::try_from(request.zones().len()).expect("OCR zone count is bounded below u64::MAX");
-        let result = (|| {
-            let attempt = Operation::admit(&operation)?;
-            if !self.accepts_work() {
-                return Err(CaptureFault::SessionClosed.into());
-            }
-            if request.frame().stamp().stream() != self.description.stream() {
-                return Err(CaptureFault::ForeignStream.into());
-            }
+        let result: Result<OcrZoneScanResult> = (|| {
+            self.commit_frame(frame, &operation)?;
             let recognizer = self
                 .ocr
                 .as_ref()
                 .ok_or_else(|| mado_pilot_core::Error::from(OcrFault::BackendUnavailable))?;
             let result = recognizer.scan_zones(request)?;
-            let result = attempt.commit(result)?;
-            self.commit_while_open(result)
+            self.commit_frame(frame, &operation)?;
+            Ok(result)
         })();
 
         if let (Some(context), Some(started)) = (self.ocr_diagnostic, started) {
@@ -571,6 +608,7 @@ impl Session {
             self.watch_runtime
                 .register_session(Arc::clone(&self.capture))
         });
+        let watcher = watcher.as_ref().map_err(Clone::clone)?;
         if !self.accepts_work() {
             watcher.close(TemplateTerminalOutcome::SessionClosed);
             return Err(CaptureFault::SessionClosed.into());
@@ -578,47 +616,51 @@ impl Session {
         watcher.start_query(request)
     }
 
+    /// Starts text presence with the caller's initialized BGRA OCR backend.
+    ///
+    /// No capture or OCR call runs on this caller. Missing OCR/provider metadata,
+    /// non-BGRA format, known geometry, interruption or shared capacity can refuse
+    /// publication. An unknown initial transform waits for a frame.
+    pub fn start_ocr_text_watch(&self, request: OcrTextWatchRequest) -> Result<OcrTextQuery> {
+        if !self.accepts_work() {
+            return Err(CaptureFault::SessionClosed.into());
+        }
+        let watcher = self.watcher.get_or_init(|| {
+            self.watch_runtime
+                .register_session(Arc::clone(&self.capture))
+        });
+        let watcher = watcher.as_ref().map_err(Clone::clone)?;
+        if !self.accepts_work() {
+            watcher.close(TemplateTerminalOutcome::SessionClosed);
+            return Err(CaptureFault::SessionClosed.into());
+        }
+        watcher.start_ocr_query(request, self.ocr.as_ref())
+    }
+
     /// Waits until this session's watcher acquisition worker has exited.
     #[cfg(feature = "benchmark-instrumentation")]
     #[doc(hidden)]
     pub fn benchmark_wait_template_watcher_idle(&self, wait: &OperationContext) -> Result<()> {
-        self.watcher
-            .get()
-            .map_or(Ok(()), |watcher| watcher.wait_idle_for_benchmark(wait))
+        self.watcher.get().map_or(Ok(()), |watcher| match watcher {
+            Ok(watcher) => watcher.wait_idle_for_benchmark(wait),
+            Err(error) => Err(error.clone()),
+        })
     }
 
     /// Searches one of this session's frames for one prepared template.
     ///
-    /// The whole sequence runs under one operation: the frame is acquired, the
-    /// backend runs, and only then is the envelope committed. A deadline that
-    /// passes after the matcher produced a perfectly good result and before the
-    /// envelope exists therefore reports deadline expiry, and the late work
-    /// never becomes observable.
+    /// Admits the source frame, runs the matcher, then commits the complete
+    /// outcome against deadline, cancellation, capture termination, and close.
+    /// Exact frames use [`Session::commit_frame`] at admission; latest frames
+    /// receive the same capture ordering during acquisition.
     ///
-    /// The capture adapter and the matcher each arbitrate their own terminal
-    /// outcome too, so in practice one of them usually observes an interruption
-    /// first. That is the intent rather than a redundancy: this operation is
-    /// what makes the deep search *one* operation with one terminal outcome,
-    /// instead of a sequence that is correct only because each of its steps
-    /// happened to check.
-    ///
-    /// A session that has begun closing starts no search, whichever frame the
-    /// request names. Searching an exact frame the caller already holds needs
-    /// nothing from the capture side and would otherwise succeed after close,
-    /// but "this session is finished" is the session's answer to give, and a
-    /// caller that has to know which frame it asked for to predict whether close
-    /// is observed has been handed two contracts instead of one. The gate is
-    /// "close has begun" rather than "close has finished", because a close whose
-    /// operation is cancelled or already expired leaves the session closing, and
-    /// a latest-frame search is already refused in that state.
+    /// Closing sessions start no search. Returned outcomes are historical:
+    /// later termination does not revoke them or their retained source frames.
     ///
     /// # Errors
     ///
-    /// Returns a closed outcome once the session is closing, an
-    /// invalid-argument outcome for a frame published by another stream, the
-    /// capture failure for an acquisition that could not be satisfied, the
-    /// vision failure for a search that could not run, and the operation's
-    /// terminal outcome when cancellation or the deadline wins.
+    /// Returns interruption, foreign-stream, capture-terminal, closed, or matcher
+    /// errors. A backend result losing the final commitment is not published.
     pub fn find_template(
         &self,
         request: &FindRequest<'_>,
@@ -635,21 +677,14 @@ impl Session {
         };
 
         let result: Result<FindOutcome> = (|| {
-            let mut attempt = Operation::admit(operation)?;
-            if !self.accepts_work() {
-                return Err(CaptureFault::SessionClosed.into());
-            }
-
             let frame = match request.frame() {
-                SearchFrame::Latest => self.capture.frame(&FrameRequest::latest(), operation)?,
+                SearchFrame::Latest => self.acquire(&FrameRequest::latest(), operation)?,
                 SearchFrame::Exact(frame) => {
-                    if frame.stamp().stream() != self.description.stream() {
-                        return Err(CaptureFault::ForeignStream.into());
-                    }
+                    self.commit_frame(frame, operation)?;
+                    // FindOutcome owns its source frame; only the Arc is cloned.
                     frame.clone()
                 }
             };
-            attempt.checkpoint()?;
             let result = self.matcher.find(
                 MatchRequest::new(
                     &frame,
@@ -659,8 +694,8 @@ impl Session {
                 ),
                 operation,
             )?;
-            let outcome = FindOutcome::new(self.description.target(), frame, result);
-            Ok(attempt.commit(outcome)?)
+            self.commit_frame(&frame, operation)?;
+            Ok(FindOutcome::new(self.description.target(), frame, result))
         })();
 
         if let Some(template) = template {
@@ -820,7 +855,7 @@ impl Session {
     /// rather than two that diverged.
     pub fn close(&self, operation: &OperationContext) -> Result<()> {
         self.closing.swap(true, Ordering::AcqRel);
-        if let Some(watcher) = self.watcher.get() {
+        if let Some(Ok(watcher)) = self.watcher.get() {
             watcher.close(TemplateTerminalOutcome::SessionClosed);
         }
         let observed = self.observe(operation, DiagnosticOperationKind::SessionClose)?;

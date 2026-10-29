@@ -107,6 +107,34 @@ fn exact_rgba_skips_identical_pixels_and_admits_any_changed_pixel() {
 }
 
 #[test]
+fn actual_format_transitions_and_equal_stamp_collisions_require_analysis() {
+    let bytes = vec![0x31; 4 * 4 * 4];
+    for (previous_format, current_format) in [
+        (PixelFormat::Rgba8, PixelFormat::Bgra8),
+        (PixelFormat::Bgra8, PixelFormat::Rgba8),
+    ] {
+        let (previous, newer) = continuous_pair(bytes.clone(), bytes.clone(), previous_format, 0);
+        let current = mapped(newer.stamp(), current_format, bytes.clone());
+        assert_eq!(
+            ChangeDetector::selected_default().compare(&previous, &current),
+            ChangeDecision::AnalysisRequired
+        );
+        assert_eq!(
+            ChangeDetector::new(ChangeDetectionPolicy::AnalysisAlways).compare(&previous, &current),
+            ChangeDecision::AnalysisRequired
+        );
+        for (format, fill) in [(previous_format, 0x87), (current_format, 0x31)] {
+            let collision = mapped(previous.stamp(), format, vec![fill; bytes.len()]);
+            assert_ne!(previous.source_instance(), collision.source_instance());
+            assert_eq!(
+                ChangeDetector::selected_default().compare(&previous, &collision),
+                ChangeDecision::AnalysisRequired
+            );
+        }
+    }
+}
+
+#[test]
 fn sequence_gaps_do_not_invent_a_discontinuity() {
     let bytes = vec![
         29;
@@ -115,6 +143,7 @@ fn sequence_gaps_do_not_invent_a_discontinuity() {
             .byte_len()
     ];
     let (previous, current) = continuous_pair(bytes.clone(), bytes, PixelFormat::Rgba8, 4);
+    assert_ne!(previous.source_instance(), current.source_instance());
 
     assert_eq!(
         ChangeDetector::selected_default().compare(&previous, &current),

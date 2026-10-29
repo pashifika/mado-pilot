@@ -14,24 +14,21 @@
 //! # The native boundary
 //!
 //! One internal C-callable surface, implemented in Objective-C with Automatic
-//! Reference Counting and compiled with `-fobjc-arc-exceptions`, exactly as
-//! [ADR 0012](../../../docs/adr/0012-macos-shim-language-and-containment.md)
-//! records: every entry point and callback trampoline contains native exceptions,
+//! Reference Counting and compiled with `-fobjc-arc-exceptions`:
+//! every entry point and callback trampoline contains native exceptions,
 //! every Rust callback contains its own panics, each frame work item pools its own
 //! temporaries, callback admission is fenced by disable-and-drain before the caller
 //! releases registered state, and close is idempotent and completes its release
 //! even when it reports a failure.
 //!
 //! The implementation and deployment floor is macOS 26.5.2 on Apple Silicon.
-//! ScreenCaptureKit
-//! is loaded from its absolute system location at runtime rather
-//! than linked. That is a change of mechanism from the `-weak_framework` the ADR
-//! named, for a reason the prototype could not observe: Cargo does not propagate a
-//! dependency's `rustc-link-arg` to the binary that consumes it, so a build script
-//! here cannot own that flag. The property the ADR asked for is unchanged — a host
-//! below that floor is outside the support contract — and `tests/linkage.rs`
-//! asserts the produced binary's deployment metadata. The qualified host is build
-//! 25F84 with SDK 26.5; Screen Recording-dependent acceptance remains explicit.
+//! ScreenCaptureKit is loaded from its absolute system location at runtime.
+//! Cargo does not propagate a dependency's `rustc-link-arg` to its consuming
+//! binary, so this build script cannot control weak framework linkage there.
+//! Hosts below the deployment floor are outside the support contract;
+//! `tests/linkage.rs` asserts the produced binary's deployment metadata.
+//! Current support and containment rules live in
+//! `docs/architecture.md#the-macos-native-boundary`.
 //!
 //! # Authorization
 //!
@@ -101,4 +98,4 @@ mod storage;
 #[cfg(target_os = "macos")]
 pub use permission::MacosPermissionProbe;
 #[cfg(target_os = "macos")]
-pub use provider::{MacosCaptureProvider, PROVIDER};
+pub use provider::{MacosCaptureProvider, MacosConfig, MacosProcessPointerMode, PROVIDER};

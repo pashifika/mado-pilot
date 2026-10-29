@@ -1,19 +1,26 @@
 //! Private retained-window identity and bounded Win32 revalidation.
 
-use std::ffi::c_void;
+use std::ffi::{OsString, c_void};
 use std::fmt;
+use std::num::NonZeroU32;
+use std::os::windows::ffi::OsStringExt;
+use std::path::PathBuf;
 
-use windows::Win32::Foundation::{CloseHandle, FILETIME, HANDLE, HWND};
+use mado_pilot_capture::TargetProcessIdentity;
+use windows::Win32::Foundation::{CloseHandle, ERROR_INSUFFICIENT_BUFFER, FILETIME, HANDLE, HWND};
 use windows::Win32::System::Threading::{
-    GetExitCodeProcess, GetProcessTimes, OpenProcess, PROCESS_QUERY_LIMITED_INFORMATION,
+    GetExitCodeProcess, GetProcessTimes, OpenProcess, PROCESS_NAME_WIN32,
+    PROCESS_QUERY_LIMITED_INFORMATION, QueryFullProcessImageNameW,
 };
 use windows::Win32::UI::WindowsAndMessaging::{
     GA_ROOT, GetAncestor, GetClassNameW, GetWindowThreadProcessId, IsWindow,
 };
+use windows::core::PWSTR;
 
 use crate::discovery::NativeKey;
 
 const CLASS_CAPACITY: usize = 256;
+const EXECUTABLE_PATH_CAPACITY: usize = 32_768;
 const STILL_ACTIVE_EXIT_CODE: u32 = 259;
 
 /// The privacy-safe result of comparing current native facts with a retained target.
@@ -31,6 +38,7 @@ pub(crate) struct RetainedWindowAuthority {
     hwnd: usize,
     owner: OwnedProcessHandle,
     identity: WindowIdentity,
+    process_identity: Option<TargetProcessIdentity>,
 }
 
 impl RetainedWindowAuthority {
@@ -44,11 +52,26 @@ impl RetainedWindowAuthority {
         if observed.identity.root != hwnd || observed.identity.class != expected_class {
             return None;
         }
+        let process_identity =
+            process_executable_path(observed.owner.handle()).and_then(|executable_path| {
+                TargetProcessIdentity::new(
+                    NonZeroU32::new(observed.identity.owner_process)?,
+                    observed.identity.owner_creation,
+                    executable_path,
+                )
+                .ok()
+            });
         Some(Self {
             hwnd,
             owner: observed.owner,
             identity: observed.identity,
+            process_identity,
         })
+    }
+
+    /// Returns metadata from the retained process handle, never a reopened PID.
+    pub(crate) fn process_identity(&self) -> Option<&TargetProcessIdentity> {
+        self.process_identity.as_ref()
     }
 
     /// Re-reads all identity facts once and classifies the current target.
@@ -256,6 +279,40 @@ fn process_creation(handle: HANDLE) -> Result<u64, ObservationFault> {
     Ok((u64::from(creation.dwHighDateTime) << 32) | u64::from(creation.dwLowDateTime))
 }
 
+fn process_executable_path(handle: HANDLE) -> Option<PathBuf> {
+    let mut buffer = vec![0u16; 260];
+    loop {
+        let mut written = u32::try_from(buffer.len()).ok()?;
+        // SAFETY: `handle` is the retained process handle with query permission;
+        // the buffer and length output remain writable for the complete call.
+        let result = unsafe {
+            QueryFullProcessImageNameW(
+                handle,
+                PROCESS_NAME_WIN32,
+                PWSTR(buffer.as_mut_ptr()),
+                &raw mut written,
+            )
+        };
+        match result {
+            Ok(()) => {
+                let written = usize::try_from(written).ok()?;
+                if written == 0 || written >= buffer.len() || buffer[..written].contains(&0) {
+                    return None;
+                }
+                let path = PathBuf::from(OsString::from_wide(&buffer[..written]));
+                return path.is_absolute().then_some(path);
+            }
+            Err(error)
+                if error.code() == ERROR_INSUFFICIENT_BUFFER.to_hresult()
+                    && buffer.len() < EXECUTABLE_PATH_CAPACITY =>
+            {
+                buffer.resize((buffer.len() * 2).min(EXECUTABLE_PATH_CAPACITY), 0);
+            }
+            Err(_) => return None,
+        }
+    }
+}
+
 fn owner_is_active(handle: HANDLE) -> Result<bool, ()> {
     let mut exit_code = 0u32;
     // SAFETY: `exit_code` is writable and `handle` is the retained process handle.
@@ -398,6 +455,7 @@ mod tests {
             hwnd: 44,
             owner: OwnedProcessHandle(0),
             identity: identity(),
+            process_identity: None,
         };
         assert_eq!(format!("{authority:?}"), "RetainedWindowAuthority { .. }");
         let _authority = std::mem::ManuallyDrop::new(authority);

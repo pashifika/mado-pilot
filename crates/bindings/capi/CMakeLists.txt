@@ -1,32 +1,16 @@
-# The MadoPilot C and C++ consumption surface.
-#
-# This project builds nothing of MadoPilot's own. `cargo` builds the library;
-# this describes what a C or C++ consumer needs in order to use it, as the two
-# targets `docs/architecture.md` reserves:
-#
-#   MadoPilot::C    the released C ABI — the header and the built library
-#   MadoPilot::Cpp  the header-only C++ wrapper, which links transitively to it
-#
-# `MadoPilot::Cpp` is an INTERFACE target because the wrapper is header-only. It
-# has no ABI of its own and no object code to produce; see
-# `docs/adr/0005-cpp-wrapper-shape-and-cmake-surface.md`.
-#
-# Use it from a consumer project with:
-#
+# Import the cargo-built C ABI for C and C++ consumers.
+# Consumer projects select their own languages and standards:
 #   add_subdirectory(<repo>/crates/bindings/capi madopilot)
-#   target_link_libraries(my-app PRIVATE MadoPilot::Cpp)
-#
-# There is no install or export set. The v0.4.0 release is source-only, so
-# consumption remains from the development tree; ABI-major decorated loader
-# names belong to a future installable-packaging decision. See `docs/c-abi.md`.
+#   target_link_libraries(my-app PRIVATE MadoPilot::C)
+# Development-tree consumption only; no install/export set.
 
 cmake_minimum_required(VERSION 3.22)
 
 project(
   MadoPilot
-  VERSION 0.4.0
-  DESCRIPTION "Headless visual automation runtime — C ABI and C++ wrapper"
-  LANGUAGES C CXX
+  VERSION 0.5.0
+  DESCRIPTION "Headless visual automation runtime — C ABI"
+  LANGUAGES NONE
 )
 
 # ---------------------------------------------------------------------------
@@ -115,32 +99,11 @@ such a path cannot be passed. Build into a directory without one."
 endif()
 
 # ---------------------------------------------------------------------------
-# MadoPilot::Cpp — the header-only wrapper
-#
-# The same include directory, C++17, and the C ABI underneath. Nothing else: an
-# independent implementation of capture, mapping, matching, errors, or ABI
-# negotiation is exactly what this target must not contain.
-# ---------------------------------------------------------------------------
-
-add_library(madopilot_cpp INTERFACE)
-add_library(MadoPilot::Cpp ALIAS madopilot_cpp)
-
-target_include_directories(madopilot_cpp INTERFACE "${CMAKE_CURRENT_LIST_DIR}/include")
-target_compile_features(madopilot_cpp INTERFACE cxx_std_17)
-target_link_libraries(madopilot_cpp INTERFACE MadoPilot::C)
-
-# ---------------------------------------------------------------------------
 # The examples are not built here
 #
-# This project ends at the two targets above, which is the surface ADR 0005
-# declares. It carried a `MADOPILOT_BUILD_EXAMPLES` option and two executables
-# behind it; nothing in the repository set the option, so the branch was never
-# configured on either release target and would have rotted without anything
-# reporting it. Nothing was lost by removing it: `c-abi-check` compiles, links,
-# and runs both examples itself, with the release target's own compiler and
-# flags, and building them a second time through CMake would have added no
-# answer that check does not already give.
-#
-# A consumer that wants to build them adds its own `add_executable` against
-# `MadoPilot::C` or `MadoPilot::Cpp`, which is what those targets are for.
+# This project ends at the target above. `c-abi-check` compiles, links, and runs
+# the examples itself with the release target's own compiler and flags, and the
+# independent consumer project in `tests/cmake/` builds the introductory
+# samples against `MadoPilot::C`. A consumer that wants to build them adds its
+# own `add_executable` against `MadoPilot::C`.
 # ---------------------------------------------------------------------------

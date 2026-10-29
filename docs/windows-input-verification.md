@@ -1,9 +1,9 @@
 # Windows Input Adapter and Verification
 
 The Windows platform package implements input at the Adapter boundary.
-`mado_pilot::windows_engine` wires it into the public Rust facade, and C ABI 1.2
-plus the header-only C++ wrapper expose the same negotiated workflow. `System`
-and `WindowMessage` remain separate caller-selected routes. Ordinary retained
+`mado_pilot::windows_engine` wires it into the public Rust facade. C and C++
+consume that workflow directly through C ABI 1.5's preserved input entries.
+`System` and `WindowMessage` remain separate caller-selected routes. Ordinary retained
 top-level windows expose `WindowMessage` as unknown-but-attemptable with
 target-queue evidence; only the dedicated acknowledged fixture raises that
 evidence to target-protocol acknowledgement. Neither receipt proves application
@@ -39,16 +39,15 @@ flowchart TD
     I --> H
 ```
 
-[ADR 0022](adr/0022-windows-ordinary-background-input-qualification.md)
-remains the evidence for the stronger claim it tested. Its ordinary/game-like
-consumers observed legacy messages, while Raw Input and asynchronous
-state-polling consumers did not; queue admission and a generic procedure return
-could not establish application consumption. [ADR 0027](adr/0027-windows-window-message-queue-submission.md)
-therefore supersedes only ADR 0022's system-only consequence. The current
-contract reports ordinary compatibility as `Unknown`, caps evidence at
-`TargetQueueAdmission`, and requires a separate newer-frame observation when a
-caller needs effect evidence. It makes no Raw Input, DirectInput, XInput,
-asynchronous-state, raw-HID, helper, hook, anti-cheat, or arbitrary-game claim.
+Ordinary compatibility is reported as `Unknown` because the stronger
+application-acknowledged claim was tested and not established: ordinary and
+game-like consumers observed legacy messages, while Raw Input and asynchronous
+state-polling consumers did not, and queue admission or a generic procedure
+return cannot establish application consumption. The contract therefore caps
+evidence at `TargetQueueAdmission` and requires a separate newer-frame
+observation when a caller needs effect evidence. It makes no Raw Input,
+DirectInput, XInput, asynchronous-state, raw-HID, helper, hook, anti-cheat, or
+arbitrary-game claim.
 
 ### Exact target authority
 
@@ -91,12 +90,24 @@ with current authority. `UseFrameSnapshot` requires that exact stream, epoch, an
 geometry revision to remain retained; the Adapter does not reconstruct an
 evicted revision from current DPI.
 
+Physical desktop metrics use a checked, thread-local PMv2 scope; current-cursor
+queries use `GetPhysicalCursorPos`. Message coordinates are converted into the
+target's logical screen convention, then into client coordinates where required.
+Pointer messages are also posted under the target's DPI context, preventing
+USER32 from scaling the prepared coordinates again from the caller's context.
+Every temporary DPI scope restores the caller's context. Failed scope entry or
+conversion refuses the event without changing process DPI or input authority.
+
 The route never synthesizes `WM_INPUT`, mutates global asynchronous key state,
 activates the target, moves the physical cursor, calls `SendInput`,
 `SendMessageTimeoutW`, or `BlockInput`, attaches queues, changes message filters,
 broadcasts, installs hooks, injects a helper, or elevates.
 
 ## Focus, integrity, receipts, and cleanup
+
+System absolute pointer moves run only the native `SendInput` call under PMv2.
+Authority checks and operation callbacks retain the caller's context; scope-entry
+failure refuses before input, and the native call restores the caller afterward.
 
 Window `System` input revalidates focus before every irreversible event.
 `Preserve` cannot satisfy a focus-requiring system path. `RequireFocused` never
@@ -137,6 +148,13 @@ first through the same route and retained authority. It admits no more than 256
 release events and starts no new release after 250 milliseconds. Cleanup cannot
 switch to `System`, revive a lost target, or turn queue admission into proof of
 application state.
+
+An odd accepted System text prefix owes one Unicode key-up. That private state
+is released before earlier sequence-owned keys/buttons, using the controller's
+single event allowance and fresh cleanup deadline. Zero allowance sends nothing;
+a failed release stops cleanup. `Complete`, `Incomplete`, and `Exhausted` report
+aggregate owed/released counts without changing the original fault or complete
+logical-event prefix. Cancellation never authorizes text retry or fallback.
 
 ## Repository-owned fixtures
 
@@ -239,20 +257,20 @@ a helper, or a privileged identity. It refuses zero or multiple title matches.
 Its receipt and newer-frame result are printed as independent facts; neither
 titles, pixels, nor typed payloads enter diagnostics.
 
-## Explicit C and C++ boundary checks
+## Explicit C ABI boundary checks
 
-The ABI check compiles and runs both native common-flow examples in `--check`
-mode by default. That mode creates the real Windows engine, verifies ABI 1.2
-route-capability and diagnostic surfaces, confirms that no permission-probe
-capability is advertised, and stops before discovery or input:
+The ABI checker runs the small direct C/C++ samples without native operations.
+Its C native verifier uses `--check` by default: it creates the Windows engine,
+checks the input/diagnostic surface and absence of a permission-probe capability,
+then stops before discovery or input:
 
 ```bat
 cargo run --locked --package mado-pilot-capi --example c-abi-check -- --label "<host>"
 ```
 
 The unattended Windows matrix owns both fixture lifecycles. Build them first,
-then let `c-abi-check` pass the ordinary and acknowledged exact titles to each C
-and C++ flow:
+then let `c-abi-check` give the C default and extended flows separate fresh
+ordinary/acknowledged fixtures and their exact titles:
 
 ```bat
 cargo build --locked --package mado-pilot-platform-windows --bin mado-pilot-windows-input-fixture --bin mado-pilot-windows-window-message-fixture
@@ -260,22 +278,140 @@ cargo build --locked --package mado-pilot-capi
 cargo run --locked --package mado-pilot-capi --example c-abi-check -- --label "<host>" --windows-native-fixture
 ```
 
-The C flow independently performs engine construction, discovery, capture,
-mapping, a bounded four-event request, immutable receipt/attempt inspection, a
-strictly newer expected-condition search, diagnostic drain, and explicit close
-for both contracts. The Windows C++ flow performs the same lifecycle with a
-16-event request covering pointer movement, every button, both wheel axes, a
-function key, an ordered modifier chord, Unicode text, and an observed delay;
-the harness also checks the complete redacted fixture-event order. The ordinary
+The C default flow performs engine construction, discovery, capture, mapping, a
+bounded four-event request, immutable receipt/attempt inspection, a strictly
+newer expected-condition search, diagnostic drain and explicit close.
+`--extended-sequence` performs the same lifecycle with sixteen events: pointer
+movement, every button, both wheel axes, a function key, an ordered modifier
+chord, Unicode text and an observed delay. `c-abi-check` verifies receipts,
+newer expected-condition frames and the extended delay. The native-phase2
+benchmark separately checks fixture-event order for the four-event default
+flow; the extended flow's fixture-event order is not checked. The ordinary
 flow requires `Unknown` capability and `TargetQueueAdmission`; the dedicated
-flow requires `Supported` and `TargetProtocolAcknowledgement`. Both preserve
-focus and permit no system fallback. Frozen ABI 1.0 layout and negotiation, ABI
-1.2 wrapper ownership, and the independent CMake consumer run in the same check.
+flow requires `Supported` and
+`TargetProtocolAcknowledgement`. Both preserve focus and permit no system
+fallback. Frozen ABI 1.0/1.2/1.3/1.4 layouts and callers, direct C/C++ samples
+and independent CMake consumers run in the same check.
 
 When the caller owns a fixture lifecycle, pass `--ordinary "<full title>"` or
-`--acknowledged "<full title>"` directly to `windows-native-input.exe` or
-`windows-native-input-cpp.exe`. Output excludes the title, captured bytes, and
-typed text.
+`--acknowledged "<full title>"` to `windows-native-input.exe`; prefix either with
+`--extended-sequence` for the extended case. Output excludes the title, captured
+bytes and typed text.
+
+## Audit 2, 6 and 16 acceptance
+
+Deterministic coverage does not replace revision-bound physical arrival and real
+non-ASCII package/OCR acceptance. Bind source and artifacts for each execution;
+historical rows below retain their original bindings.
+
+### Non-input checks
+
+Use an x64 MSVC developer environment and the installed prerequisites from
+[`CONTRIBUTING.md`](../CONTRIBUTING.md). Keep ordinary, private-fixture and
+qualification build roots separate.
+
+```text
+cargo test --locked -p mado-pilot-platform-windows --lib input
+cargo test --locked -p mado-pilot-platform-windows --lib window_message::tests
+cargo test --locked -p mado-pilot-platform-windows --test window_message_native dpi_selectors_accept_only_declared_modes
+cargo clippy --locked -p mado-pilot-platform-windows --all-targets -- -D warnings
+cargo run --locked -p mado-pilot-capi --example c-abi-check -- --windows-ingress-only
+```
+
+The last command requires the separately built C library in the same output
+root. It executes conversion/allocation/borrow-lifetime seams, not OCR or input.
+Forced odd writes, failed releases and cancellation/deadline races use fake
+native calls only. Do not reproduce stuck keys or short writes on a real desktop.
+
+On a scaled interactive desktop, keep the cursor stationary for these read-only
+checks. They verify physical cursor reads and caller-DPI restoration without
+fixture activation or input; they do not prove arrival.
+
+```text
+cargo test --locked -p mado-pilot-platform-windows --lib native_input::tests::coordinates::native_non_move_cursor_preserves_physical_coordinates_and_caller_dpi -- --ignored --exact --nocapture
+cargo test --locked -p mado-pilot-platform-windows --test window_message_native desktop_snapshots_preserve_physical_coordinates_and_caller_dpi -- --ignored --exact --nocapture
+```
+
+### Owned-fixture DPI arrival
+
+Before execution, bind the integrated commit/tree, host/SDK, exact fixture and
+test executables, loaded libraries, display topology and current input authority.
+Set `MADO_PILOT_WINDOWS_DPI_INPUT=1` and
+`MADO_PILOT_WINDOWS_DPI_TOPOLOGY=single-display` or `mixed-dpi-signed`.
+Set `MADO_PILOT_WINDOWS_DPI_MONITORS` to the approved enumeration-order rows:
+`left,top,right,bottom,dpi_x,dpi_y`, separated by `;`. Every physical bound and
+effective DPI must match before the first fixture starts; count or DPI changes
+refuse the run without input.
+Optional `MADO_PILOT_WINDOWS_DPI_CALLER` and `MADO_PILOT_WINDOWS_DPI_TARGET`
+accept `unaware`, `system` or `per-monitor-v2`; omission selects all three.
+
+```text
+cargo test --locked -p mado-pilot-platform-windows --test window_message_native dpi_system_arrival_matrix -- --ignored --exact --nocapture --test-threads=1
+cargo test --locked -p mado-pilot-platform-windows --test window_message_native dpi_window_message_arrival_matrix -- --ignored --exact --nocapture --test-threads=1
+```
+
+The fixture supplies an independent physical/client/screen oracle before input.
+Each System caller starts at the oracle's other owned client point; setup movement
+is observed before the tested frame and counters. The tested destination stays
+identical across callers, so every arrival request requires a real cursor move.
+System tolerance is the virtual-desktop absolute-coordinate quantization bound;
+client tolerance includes its measured target scale and one rounding pixel.
+WindowMessage allows one logical rounding pixel. Never widen a failed row's
+printed tolerance. Require actual target arrival, restored caller DPI state,
+zero wrong-window observations and unchanged unrelated foreground/cursor for
+WindowMessage. System also requires the independently observed physical cursor.
+Fresh System button/wheel sequences exercise the physical current-cursor path;
+ordinary WindowMessage retains its prior-sequence-position requirement.
+
+Operations and arrival waits are bounded at five seconds. Input/capture close
+use two seconds each; desktop restoration uses 500 ms. Successful fixture teardown
+closes its owned windows and observes successful process exit and reader completion
+within five seconds. Forced termination is failure containment, not a passing
+teardown. Failed primary or teardown outcomes block acceptance; missing topology
+or authority leaves the row unexecuted.
+
+### Focused ordinary input
+
+Set `MADO_PILOT_WINDOWS_ORDINARY_INPUT=1` only for explicitly authorized owned-fixture
+runs. Execute one exact ignored selector at a time under the same bounded
+provenance/restoration controller requirements as the DPI rows.
+
+| Selector | Required observation |
+|---|---|
+| `ordinary_window_message_input_acceptance` | Exact paired modifier/function-key and supplementary text delivery; preserved foreground, cursor and physical keys; no System fallback |
+| `ordinary_system_input_acceptance` | Exact delivery to the owned focused target; modifiers/function key released before and after |
+| `ordinary_focus_fallback_acceptance` | Unfocused System and ordered System/WindowMessage requests refuse before submission; target remains unchanged |
+| `ordinary_uipi_acceptance` | Lower-integrity owned sender refuses the higher-integrity owned target before submission; fallback cannot bypass the boundary |
+
+The opt-in fixture oracle compares ordered key events and UTF-16 units without
+printing payloads. System packet keys use the virtual-key low word, with IME
+original-key lookup before translation. Completion requires explicit close, graceful fixture
+shutdown and checked desktop restoration. Missing token privileges/integrity
+prerequisites are unavailable evidence, not passes; no elevation is attempted.
+Do not use the broader lifecycle/queue-pressure matrix as a substitute.
+
+### Actual non-ASCII C consumers
+
+Windows samples use owned strict UTF-8 converted from `wmain` and, for the
+profile sample, `_wgetenv`. Arguments override environment values; missing
+prerequisites remain exit77, while malformed UTF-16/allocation failure is exit1.
+
+On an approved non-UTF-8-ACP host, build the library and verifier with
+`private-fixture` in their own output root. Supply the controlled model/runtime
+environment variables, then explicitly select `c-abi-check --windows-path-acceptance`.
+This mode creates Japanese/supplementary-character paths outside the observed
+ACP, runs actual package/default/profile/private-OCR consumers, and checks the
+C-only CMake profile with environment-only paths. No native input runs.
+
+Before task6 execution, use a supervising controller with a declared whole-run
+and cleanup deadline. The verifier bounds direct consumers to 90 seconds plus
+five seconds for termination, CTest rows to 60 seconds, and copied trees to
+512 entries/2 GiB/depth16; these are not a total CMake/build/deletion deadline.
+Retain executable/DLL pre/post hashes, actual loaded-library identity, primary
+and cleanup outcomes. Exit77, missing prerequisites or incomplete cleanup is
+not acceptance. Do not change ACP, download dependencies or retry automatically.
+The verifier attempts CMake build-tree cleanup after every returned outcome and
+reports cleanup failures alongside the original configure/build/test result.
 
 ## Native evidence and limitations
 

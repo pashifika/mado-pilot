@@ -1,4 +1,4 @@
-//! Compact validation and lookup for the recognizer's embedded vocabulary.
+//! Compact validation and lookup for the recognizer's verified vocabulary.
 
 use std::ops::Range;
 
@@ -68,8 +68,24 @@ impl Vocabulary {
         Ok(Self { raw, entries })
     }
 
+    pub(crate) const fn entries() -> usize {
+        ENTRIES
+    }
+
     pub(crate) const fn classes() -> usize {
         CLASSES
+    }
+
+    /// Returns whether every character is the appended space or one exact entry.
+    #[cfg(feature = "benchmark-instrumentation")]
+    pub(crate) fn supports_text(&self, text: &str) -> bool {
+        text.chars().all(|character| {
+            character == ' '
+                || self.entries.iter().any(|range| {
+                    let mut entry = self.raw[range.clone()].chars();
+                    entry.next() == Some(character) && entry.next().is_none()
+                })
+        })
     }
 
     pub(crate) fn token(&self, class: usize) -> Option<&str> {

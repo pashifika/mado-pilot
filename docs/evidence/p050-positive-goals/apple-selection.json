@@ -1,0 +1,294 @@
+{
+  "binary_sha256": {
+    "baseline": "169dbbdeae2b2e60cf2a73d6905429e7dd0ad1a931afcfdd538987c93ec5cc2d",
+    "candidate": "53dab9d0ef4f080a25e426c6810a6c397dc8abdada4f7da291bda695ee59b643"
+  },
+  "build_mode": "normal",
+  "calibration": {
+    "attempts": 7,
+    "p95_range_median": 0.02767447172866108,
+    "report_sha256": "7aaaaf55bb8781010888d2f5ed80611efcea341a0120e64c59b0ba2d9e080078",
+    "status": "passed"
+  },
+  "comparison": {
+    "attempts": 14,
+    "benefit": {
+      "allowance": 5008904,
+      "baseline_median": 33378458.5,
+      "baseline_median_twice_ns": 66756917,
+      "candidate_median": 138229.0,
+      "candidate_median_twice_ns": 276458,
+      "passed": true
+    },
+    "checks": {
+      "baseline": {
+        "drift_delta_twice": 393582,
+        "noise": 0.01503712341898593,
+        "order_delta_twice": 153000
+      },
+      "candidate": {
+        "drift_delta_twice": 6418,
+        "noise": 0.06450166028836207,
+        "order_delta_twice": 5836
+      }
+    },
+    "execution_status": "completed",
+    "limits": {
+      "p95_ns": 34937042,
+      "peak_rss_bytes": 38567936,
+      "rss_growth_bytes": 1081344,
+      "rss_residual_bytes": 26230784
+    },
+    "normal_timing_verdict": "incomplete",
+    "performance_qualified": false,
+    "report_sha256": "c05e40113accdd77854301cc2daa006c10fa4a0ea55a43e317deeec58ba4f9cd",
+    "rows": [
+      {
+        "attempt": "0002.json",
+        "cpu_ns": 6543649000,
+        "max_ns": 37762792,
+        "p50_ns": 32591250,
+        "p95_ns": 33579083,
+        "peak_rss_bytes": 37502976,
+        "position": 0,
+        "process": 0,
+        "retained_loop_cpu_ns": 6583380000,
+        "role": "baseline",
+        "rss_growth_bytes": 32768,
+        "rss_residual_bytes": 25165824,
+        "timer_resolution_ns": 41
+      },
+      {
+        "attempt": "0003.json",
+        "cpu_ns": 25660000,
+        "max_ns": 159791,
+        "p50_ns": 124000,
+        "p95_ns": 143208,
+        "peak_rss_bytes": 29245440,
+        "position": 1,
+        "process": 0,
+        "retained_loop_cpu_ns": 61310000,
+        "role": "candidate",
+        "rss_growth_bytes": 16384,
+        "rss_residual_bytes": 16875520,
+        "timer_resolution_ns": 41
+      },
+      {
+        "attempt": "0004.json",
+        "cpu_ns": 25468000,
+        "max_ns": 213459,
+        "p50_ns": 123916,
+        "p95_ns": 136083,
+        "peak_rss_bytes": 29261824,
+        "position": 0,
+        "process": 1,
+        "retained_loop_cpu_ns": 59274000,
+        "role": "candidate",
+        "rss_growth_bytes": 16384,
+        "rss_residual_bytes": 16891904,
+        "timer_resolution_ns": 41
+      },
+      {
+        "attempt": "0005.json",
+        "cpu_ns": 6540683000,
+        "max_ns": 34445125,
+        "p50_ns": 32652458,
+        "p95_ns": 33407542,
+        "peak_rss_bytes": 37486592,
+        "position": 1,
+        "process": 1,
+        "retained_loop_cpu_ns": 6579950000,
+        "role": "baseline",
+        "rss_growth_bytes": 16384,
+        "rss_residual_bytes": 25182208,
+        "timer_resolution_ns": 41
+      },
+      {
+        "attempt": "0006.json",
+        "cpu_ns": 6543990000,
+        "max_ns": 34611917,
+        "p50_ns": 32683542,
+        "p95_ns": 33425875,
+        "peak_rss_bytes": 37502976,
+        "position": 0,
+        "process": 2,
+        "retained_loop_cpu_ns": 6583701000,
+        "role": "baseline",
+        "rss_growth_bytes": 32768,
+        "rss_residual_bytes": 25182208,
+        "timer_resolution_ns": 41
+      },
+      {
+        "attempt": "0007.json",
+        "cpu_ns": 25315000,
+        "max_ns": 163375,
+        "p50_ns": 124000,
+        "p95_ns": 134292,
+        "peak_rss_bytes": 29261824,
+        "position": 1,
+        "process": 2,
+        "retained_loop_cpu_ns": 59345000,
+        "role": "candidate",
+        "rss_growth_bytes": 32768,
+        "rss_residual_bytes": 16891904,
+        "timer_resolution_ns": 41
+      },
+      {
+        "attempt": "0008.json",
+        "cpu_ns": 25461000,
+        "max_ns": 196791,
+        "p50_ns": 123792,
+        "p95_ns": 137166,
+        "peak_rss_bytes": 29229056,
+        "position": 0,
+        "process": 3,
+        "retained_loop_cpu_ns": 59285000,
+        "role": "candidate",
+        "rss_growth_bytes": 32768,
+        "rss_residual_bytes": 16859136,
+        "timer_resolution_ns": 41
+      },
+      {
+        "attempt": "0009.json",
+        "cpu_ns": 6526603000,
+        "max_ns": 35316542,
+        "p50_ns": 32611750,
+        "p95_ns": 33077167,
+        "peak_rss_bytes": 37502976,
+        "position": 1,
+        "process": 3,
+        "retained_loop_cpu_ns": 6566130000,
+        "role": "baseline",
+        "rss_growth_bytes": 32768,
+        "rss_residual_bytes": 25198592,
+        "timer_resolution_ns": 41
+      },
+      {
+        "attempt": "0010.json",
+        "cpu_ns": 6544373000,
+        "max_ns": 37279042,
+        "p50_ns": 32702041,
+        "p95_ns": 33229084,
+        "peak_rss_bytes": 37486592,
+        "position": 0,
+        "process": 4,
+        "retained_loop_cpu_ns": 6584040000,
+        "role": "baseline",
+        "rss_growth_bytes": 16384,
+        "rss_residual_bytes": 25182208,
+        "timer_resolution_ns": 41
+      },
+      {
+        "attempt": "0011.json",
+        "cpu_ns": 25521000,
+        "max_ns": 219875,
+        "p50_ns": 123958,
+        "p95_ns": 140084,
+        "peak_rss_bytes": 29278208,
+        "position": 1,
+        "process": 4,
+        "retained_loop_cpu_ns": 59363000,
+        "role": "candidate",
+        "rss_growth_bytes": 32768,
+        "rss_residual_bytes": 16875520,
+        "timer_resolution_ns": 41
+      },
+      {
+        "attempt": "0012.json",
+        "cpu_ns": 25597000,
+        "max_ns": 219083,
+        "p50_ns": 123834,
+        "p95_ns": 139292,
+        "peak_rss_bytes": 29245440,
+        "position": 0,
+        "process": 5,
+        "retained_loop_cpu_ns": 60282000,
+        "role": "candidate",
+        "rss_growth_bytes": 32768,
+        "rss_residual_bytes": 16875520,
+        "timer_resolution_ns": 41
+      },
+      {
+        "attempt": "0013.json",
+        "cpu_ns": 6540613000,
+        "max_ns": 36440417,
+        "p50_ns": 32660250,
+        "p95_ns": 33349375,
+        "peak_rss_bytes": 37470208,
+        "position": 1,
+        "process": 5,
+        "retained_loop_cpu_ns": 6580033000,
+        "role": "baseline",
+        "rss_growth_bytes": 16384,
+        "rss_residual_bytes": 25182208,
+        "timer_resolution_ns": 41
+      }
+    ],
+    "status": "passed"
+  },
+  "control": {
+    "attempts": 14,
+    "checks": {
+      "baseline": {
+        "drift_delta_twice": 367252,
+        "noise": 0.04211205403347266,
+        "order_delta_twice": 332584
+      },
+      "control": {
+        "drift_delta_twice": 321252,
+        "noise": 0.023480639075228047,
+        "order_delta_twice": 354252
+      }
+    },
+    "report_sha256": "2bb0864f8178db8377aad7b6ed99df395869984b7ff932d04723b9fe27e2f795",
+    "status": "passed"
+  },
+  "format": "p050-selected-normal-goal-observation-v1",
+  "limits": [
+    "Selected production-selector timing, not matching/capture/UI end-to-end latency.",
+    "Whole-apparatus RSS growth/residual includes retained report storage. Each process ceiling checked independently.",
+    "CPU remains untrimmed diagnostic; valid absent CPU does not veto.",
+    "Prior Apple turnover RSS FAIL and Windows turnover calibration FAIL remain unchanged.",
+    "No full workload/target/whole-Change numerical qualification."
+  ],
+  "method_sha256": "0a105d9af38ad591f8fb55acf62317ad0fb6353707bd83f6286f039838dbd877",
+  "profile_sha256": "4037193b27fb4f8613b1578972b09b86f71271e993bb964005e300de1c986e4b",
+  "sampling": {
+    "samples": 200,
+    "warmups": 20
+  },
+  "separate_instrumented_smoke": {
+    "counters_scope": "row including setup/warmup; 4iterations, not normal200-sample counters",
+    "roles": {
+      "baseline": {
+        "allocations": 26,
+        "final_owner_correct": true,
+        "heap_after_drop_bytes": 1531,
+        "iterations": 4,
+        "peak_heap_bytes": 24885707,
+        "peak_heap_scope": "row-including-setup-and-warmup",
+        "score_copied_bytes": 33177600,
+        "score_offsets_scanned": 132710400
+      },
+      "candidate": {
+        "allocations": 26,
+        "final_owner_correct": true,
+        "heap_after_drop_bytes": 1531,
+        "iterations": 4,
+        "peak_heap_bytes": 16591371,
+        "peak_heap_scope": "row-including-setup-and-warmup",
+        "score_copied_bytes": 0,
+        "score_offsets_scanned": 610044
+      }
+    },
+    "samples": 3,
+    "warmups": 1
+  },
+  "sources": {
+    "applicability_only": "66260dc6a8580ae4037b6994e7166af3c07095ac",
+    "baseline": "2b3572440394cfa64b742880fa9e92a760b5021a",
+    "candidate": "2cb8d4f576e696152ceafab507d28b61eb2d62f6"
+  },
+  "target": "aarch64-apple-darwin",
+  "workload": "selection-k16-dense1080p-keepall"
+}

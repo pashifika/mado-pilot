@@ -449,10 +449,14 @@ pub(crate) struct MacosInputController {
 }
 
 impl MacosInputController {
-    pub(crate) fn new(record: Arc<TargetRecord>, descriptor: InputDescriptor) -> Arc<Self> {
+    pub(crate) fn new(
+        record: Arc<TargetRecord>,
+        descriptor: InputDescriptor,
+        process_pointer_mode: crate::provider::MacosProcessPointerMode,
+    ) -> Arc<Self> {
         Arc::new(Self {
             descriptor,
-            driver: Arc::new(NativeInputDriver::new(record)),
+            driver: Arc::new(NativeInputDriver::new(record, process_pointer_mode)),
             admission: Admission::new(),
         })
     }

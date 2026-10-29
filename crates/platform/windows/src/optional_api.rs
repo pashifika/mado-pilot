@@ -2,9 +2,11 @@
 //! floor shared by candidate deployment versions.
 
 use std::ffi::c_void;
+use std::marker::PhantomData;
 use std::mem;
 use std::os::windows::ffi::{OsStrExt, OsStringExt};
 use std::path::PathBuf;
+use std::sync::LazyLock;
 use std::sync::OnceLock;
 use std::{ffi::OsString, path::Path};
 
@@ -16,6 +18,9 @@ use windows::Win32::System::LibraryLoader::{
 };
 use windows::Win32::System::SystemInformation::GetSystemDirectoryW;
 use windows::Win32::System::WinRT::RO_INIT_TYPE;
+use windows::Win32::UI::HiDpi::{
+    DPI_AWARENESS_CONTEXT, DPI_AWARENESS_CONTEXT_PER_MONITOR_AWARE_V2, SetThreadDpiAwarenessContext,
+};
 use windows::core::{
     BOOL, Error, GUID, HRESULT, HSTRING, IInspectable, Interface, PCSTR, PCWSTR, Type,
 };
@@ -24,6 +29,8 @@ type GetDpiForWindowFn = unsafe extern "system" fn(HWND) -> u32;
 type GetDpiForMonitorFn = unsafe extern "system" fn(HMONITOR, i32, *mut u32, *mut u32) -> HRESULT;
 type GetScaleFactorForMonitorFn = unsafe extern "system" fn(HMONITOR, *mut i32) -> HRESULT;
 type LogicalToPhysicalPointForPerMonitorDpiFn = unsafe extern "system" fn(HWND, *mut POINT) -> BOOL;
+type PhysicalToLogicalPointForPerMonitorDpiFn = unsafe extern "system" fn(HWND, *mut POINT) -> BOOL;
+type GetWindowDpiAwarenessContextFn = unsafe extern "system" fn(HWND) -> DPI_AWARENESS_CONTEXT;
 type CoIncrementMtaUsageFn = unsafe extern "system" fn(*mut *mut c_void) -> HRESULT;
 type RoGetActivationFactoryFn =
     unsafe extern "system" fn(HSTRING, *const GUID, *mut *mut c_void) -> HRESULT;
@@ -36,6 +43,74 @@ const MDT_EFFECTIVE_DPI: i32 = 0;
 #[cfg(feature = "qualification-unsupported-api")]
 const QUALIFY_MISSING_DIRECT3D_DEVICE: &str =
     "MADO_PILOT_WINDOWS_QUALIFY_MISSING_CREATE_DIRECT3D11_DEVICE";
+
+pub(crate) trait ThreadDpiSource {
+    fn set_context(&self, context: DPI_AWARENESS_CONTEXT) -> DPI_AWARENESS_CONTEXT;
+}
+
+pub(crate) struct NativeThreadDpi;
+
+impl ThreadDpiSource for NativeThreadDpi {
+    fn set_context(&self, context: DPI_AWARENESS_CONTEXT) -> DPI_AWARENESS_CONTEXT {
+        // SAFETY: USER32 validates this opaque context and changes only this thread.
+        unsafe { SetThreadDpiAwarenessContext(context) }
+    }
+}
+
+/// A synchronous, calling-thread-only save/restore scope.
+pub(crate) struct ThreadDpiContext<'source, S: ThreadDpiSource + ?Sized = NativeThreadDpi> {
+    source: &'source S,
+    previous: DPI_AWARENESS_CONTEXT,
+    _thread_only: PhantomData<*mut ()>,
+}
+
+impl ThreadDpiContext<'static> {
+    pub(crate) fn per_monitor() -> Option<Self> {
+        Self::enter(&NativeThreadDpi, DPI_AWARENESS_CONTEXT_PER_MONITOR_AWARE_V2)
+    }
+}
+
+impl<'source, S: ThreadDpiSource + ?Sized> ThreadDpiContext<'source, S> {
+    pub(crate) fn enter(source: &'source S, context: DPI_AWARENESS_CONTEXT) -> Option<Self> {
+        if context.0.is_null() {
+            return None;
+        }
+        let previous = source.set_context(context);
+        if previous.0.is_null() {
+            return None;
+        }
+        Some(Self {
+            source,
+            previous,
+            _thread_only: PhantomData,
+        })
+    }
+}
+
+impl<S: ThreadDpiSource + ?Sized> Drop for ThreadDpiContext<'_, S> {
+    fn drop(&mut self) {
+        let _restored = self.source.set_context(self.previous);
+    }
+}
+
+pub(crate) fn window_dpi_context(hwnd: HWND) -> Option<DPI_AWARENESS_CONTEXT> {
+    static FUNCTION: LazyLock<Option<GetWindowDpiAwarenessContextFn>> =
+        LazyLock::new(|| load_user32(b"GetWindowDpiAwarenessContext\0"));
+    let function = (*FUNCTION)?;
+    // SAFETY: hwnd is an opaque retained window handle.
+    let context = unsafe { function(hwnd) };
+    (!context.0.is_null()).then_some(context)
+}
+
+pub(crate) fn physical_to_logical(hwnd: HWND, point: &mut POINT) -> bool {
+    static FUNCTION: LazyLock<Option<PhysicalToLogicalPointForPerMonitorDpiFn>> =
+        LazyLock::new(|| load_user32(b"PhysicalToLogicalPointForPerMonitorDPI\0"));
+    let Some(function) = *FUNCTION else {
+        return false;
+    };
+    // SAFETY: point is writable and hwnd is an opaque retained window handle.
+    unsafe { function(hwnd, point).as_bool() }
+}
 
 pub(crate) fn geometry_api_available() -> bool {
     logical_to_physical_fn().is_some()

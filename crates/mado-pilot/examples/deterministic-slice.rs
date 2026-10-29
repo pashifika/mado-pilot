@@ -15,10 +15,6 @@
 //! package is tracked on disk, because what package loading has to be shown
 //! doing — reading a manifest, normalizing paths, verifying content digests —
 //! is only exercised by real bytes.
-//!
-//! Reviewing the names this program uses is part of what it is for, and that
-//! review has happened: see
-//! `docs/adr/0006-public-rust-names-and-compatibility-policy.md`.
 
 use std::path::PathBuf;
 
@@ -32,9 +28,7 @@ use mado_pilot_testkit::match_fixtures;
 
 /// The pixel layout the replay source publishes.
 ///
-/// Deliberately not the backend's own layout: the matcher maps a searched
-/// region into whatever the backend declared, and a workflow that only worked
-/// when the two already agreed would be hiding that step.
+/// OpenCV accepts this source layout directly; its default remains BGRA8.
 const SOURCE_FORMAT: PixelFormat = PixelFormat::Rgba8;
 
 fn main() -> Result<(), Box<dyn std::error::Error>> {
@@ -44,7 +38,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     let engine = mado_pilot::replay_engine(scene_source()?)?;
     let backend = engine.backend();
     println!("backend: {backend} required {REQUIRED_BACKEND}");
-    println!("backend pixel format: {}", backend.format());
+    println!("backend default pixel format: {}", backend.format());
 
     // Every operation that can block carries a deadline and cancellation. This
     // one has neither, which is a statement rather than an omission: replay

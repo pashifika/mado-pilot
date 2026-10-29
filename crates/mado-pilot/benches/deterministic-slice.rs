@@ -467,11 +467,7 @@ fn prepare_and_match(fixture: &Fixture) -> Sample {
         .expect("searched");
     let elapsed = started.elapsed();
 
-    Sample::new(
-        elapsed,
-        planted(&outcome),
-        searched_bytes(fixture, &outcome),
-    )
+    Sample::new(elapsed, planted(&outcome), searched_bytes(&outcome))
 }
 
 fn match_warm(fixture: &Fixture) -> Sample {
@@ -488,24 +484,19 @@ fn match_warm(fixture: &Fixture) -> Sample {
         .expect("searched");
     let elapsed = started.elapsed();
 
-    Sample::new(
-        elapsed,
-        planted(&outcome),
-        searched_bytes(fixture, &outcome),
-    )
+    Sample::new(elapsed, planted(&outcome), searched_bytes(&outcome))
 }
 
-/// Returns the frame bytes one search mapped into CPU memory.
-///
-/// Derived rather than observed, from two things the result reports: the region
-/// that was actually searched, after any clipping, and the pixel format the
-/// backend requires. The matcher maps the searched region into that format
-/// exactly once per search, so this is the rule it follows rather than an
-/// estimate of it. A backend that mapped twice would break the rule, not this
-/// arithmetic.
-fn searched_bytes(fixture: &Fixture, outcome: &FindOutcome) -> u64 {
+/// Returns logical searched-pixel bytes, not padding, copies or native readback.
+fn searched_bytes(outcome: &FindOutcome) -> u64 {
     let searched = outcome.result().searched();
-    let format = fixture.engine.backend().format();
+    let descriptor = outcome.result().backend();
+    let source = outcome.frame().descriptor().format();
+    let format = if descriptor.accepts_format(source) {
+        source
+    } else {
+        descriptor.format()
+    };
 
     u64::from(searched.width()) * u64::from(searched.height()) * u64::from(format.bytes_per_pixel())
 }

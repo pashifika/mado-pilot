@@ -1,0 +1,48 @@
+# Performance tuning history
+
+Keep one short Markdown record for a coherent tuning decision or empirical-target
+change, reviewed with its implementation/profile change in the normal PR.
+Use [the template](template.md), named `YYYY-MM-DD-<topic>.md`; link raw output
+instead of copying logs. No ADR, Accepted-status parser, separate approval state
+or full benchmark campaign is required solely to tune a number.
+
+A record states the problem, change/reason, source/platform/workload scope,
+evidence and effect, trade-offs and whether the choice is retained, revised or
+reverted. Include old/new parameters or thresholds when they change. Comparable
+before/after values need units and method/command identity. Otherwise say
+`not-measured`, `not-comparable` or `inconclusive`, and why; make no speedup claim.
+One record can cover related parameters rather than every raw sample.
+
+Targets change prospectively. Do not regrade an earlier failure, erase an adverse
+measurement or select favorable attempts into an unchanged cohort. Follow-ups
+append a dated section or link a successor record; keep the original rationale,
+outcome and source-bound evidence attributable. Label any supported extraction
+from earlier evidence as historical, not a newly run experiment.
+
+Empirical latency/RSS targets are not runtime allocation/tensor/queue caps,
+deadlines, ownership, privacy, compatibility or public guarantees. Those retain
+their [product contracts](../../architecture.md) and required verification.
+Record severe regressions and cross-metric trade-offs explicitly; a chosen
+trade-off is not demonstrated improvement. Missing qualification supplies no
+new platform support or release approval.
+
+## Records
+
+| Date | Topic | Observed effect |
+| --- | --- | --- |
+| 2026-10-26 | [Focused measurements and tuning documentation](2026-10-26-focused-measurements-and-tuning-history.md) | Performance not measured; development observation and optional qualification have explicit separate contracts |
+| 2026-10-26 | [OCR workload profile authority](2026-10-26-ocr-watch-profile-authority.md) | Performance not measured; successor profile identity removes Markdown-status admission without changing numerical ceilings |
+| 2026-10-26 | [Dense KeepAll selection](2026-10-26-dense-keepall-selection-observation.md) | Independent Apple/Windows instrumented observations: fewer visited offsets and no selector dense copy; 28 more counted allocations, no performance qualification |
+| 2026-10-26 | [Bounded KeepAll row heap](2026-10-26-bounded-keepall-row-heap.md) | Direct selector verification reduces dense allocations and counted heap without increasing sparse/empty allocation; preparation and performance qualification remain separate |
+| 2026-10-26 | [Preparation reuse](2026-10-26-preparation-reuse-observation.md) | Both targets reduce BGR conversion and live-owner mapping work; cold-ROI allocations increase, with ownership and qualification scopes retained |
+| 2026-10-26 | [Focused normal observations](2026-10-26-focused-normal-observations.md) | System-allocator selected-path observations preserve raw timing/CPU, explicit null counters and unqualified scope |
+| 2026-10-26 | [Actual-consumer group observation](2026-10-26-actual-consumer-group-observation.md) | Fresh Apple and retained Windows group intervals are descriptive; adverse RSS, unavailable CPU/steady windows and frozen producer identities remain explicit |
+| 2026-10-27 | [Actual-consumer query observations](2026-10-27-actual-consumer-query-observations.md) | Matched/new-frame and expected-deadline contracts pass with known cleanup; individual waits, deadline overshoot and adverse resource values remain unqualified |
+| 2026-10-27 | [Actual-consumer trial observations](2026-10-27-actual-consumer-trial-observations.md) | Saved-frame hit/miss, OCR resource initialization and full settlement pass; search intervals, adverse whole-operation/RSS values and independent clocks remain descriptive |
+| 2026-10-27 | [Current-producer consumer applicability](2026-10-27-current-consumer-source-applicability.md) | Fresh source-bound engine/driver builds pass five candidate-only semantic cases on each target; historical comparisons and qualification limits remain separate |
+| 2026-10-29 | [Independent positive-goal observations](2026-10-29-positive-goal-observations.md) | Apple selection passes and preparation A/A fails its ceiling; Windows instrumented work decreases, while normal selection fails repeatability and preparation fails its frozen benefit margin |
+| 2026-10-29 | [Current Apple consumer calibration](2026-10-29-current-consumer-calibration.md) | Six loader-on baseline group invocations complete with known cleanup; the first release interval fails fixed repeatability, so A/A, profile and candidate comparison remain unrun |
+| 2026-10-29 | [User-facing performance evaluation](2026-10-29-user-facing-evaluation.md) | Current consumer primaries exclude internal timing vetoes; comparisons use frozen absolute budgets. Python regression suite and real Apple consumer smokes pass; no historical regrading or new speedup claim |
+| 2026-10-29 | [Native OCR test liveness](2026-10-29-native-ocr-test-liveness.md) | Gate/cancellation bounds retained; full OCR completion and panic cleanup isolated by a whole-test child fuse, with no performance claim |
+
+Start a measurement from the [performance guide](../../performance.md).

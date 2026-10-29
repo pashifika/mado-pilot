@@ -6,9 +6,8 @@
 //! a lease on a finite resource. Those are what the rules in this file are about,
 //! so a test that used CPU storage would pass without exercising any of them.
 //!
-//! The producer is modelled after the accepted Windows ownership rule
-//! (`docs/adr/0013-windows-capture-frame-detachment.md`): a capture takes a
-//! producer slot, copies into a detached slot, and releases the producer slot
+//! The producer models Windows capture ownership: it takes a producer slot,
+//! copies into a detached slot, and releases the producer slot
 //! before publishing. The point of that order is that a caller retaining frames
 //! consumes detached capacity and never producer capacity, and the tests here
 //! observe exactly that.
@@ -261,6 +260,131 @@ fn lone_stamp() -> FrameStamp {
     cursor.publish(GeometryRevision::FIRST).expect("published")
 }
 
+#[derive(Debug)]
+struct PublicStorage {
+    descriptor: FrameDescriptor,
+    pixels: Arc<CpuPixels>,
+    cpu_readable: bool,
+}
+
+impl FrameStorage for PublicStorage {
+    fn descriptor(&self) -> FrameDescriptor {
+        self.descriptor
+    }
+
+    fn cpu_pixels(&self) -> Option<Arc<CpuPixels>> {
+        self.cpu_readable.then(|| Arc::clone(&self.pixels))
+    }
+
+    fn read_cpu(&self, operation: &OperationContext) -> Result<Arc<CpuPixels>> {
+        let attempt = Operation::admit(operation)?;
+        Ok(attempt.commit(Arc::clone(&self.pixels))?)
+    }
+}
+
+#[test]
+fn safe_descriptor_and_frame_construction_refuse_malformed_layouts() {
+    for format in [PixelFormat::Rgba8, PixelFormat::Bgra8] {
+        for (extent, stride) in [
+            (PixelExtent::new(0, 2), 8),
+            (PixelExtent::new(2, 0), 8),
+            (PixelExtent::new(2, 2), 7),
+            (PixelExtent::new(2, 2), usize::MAX),
+        ] {
+            assert_eq!(
+                FrameDescriptor::new(extent, format, stride),
+                Err(CaptureFault::InconsistentDescriptor)
+            );
+        }
+        let extent = PixelExtent::new(2, 2);
+        let descriptor = FrameDescriptor::new(extent, format, 12).expect("padded layout");
+        let stamp = lone_stamp();
+        for length in [0, descriptor.byte_len() - 1] {
+            assert_eq!(
+                Frame::new(
+                    stamp,
+                    MonotonicInstant::ORIGIN,
+                    descriptor,
+                    TransformSnapshot::frame_only(stamp.geometry(), extent),
+                    vec![0; length].into_boxed_slice(),
+                )
+                .expect_err("truncated public bytes cannot publish a frame"),
+                CaptureFault::ByteLengthMismatch
+            );
+        }
+    }
+}
+
+#[test]
+fn unrepresentable_storage_extent_cannot_publish_a_mapping() {
+    for format in [PixelFormat::Rgba8, PixelFormat::Bgra8] {
+        let extent = PixelExtent::new(i32::MAX as u32 + 1, 1);
+        let descriptor = FrameDescriptor::packed(extent, format).expect("64-bit byte extent");
+        let stamp = lone_stamp();
+        let frame = Frame::from_storage(
+            stamp,
+            MonotonicInstant::ORIGIN,
+            TransformSnapshot::frame_only(stamp.geometry(), extent),
+            Arc::new(PublicStorage {
+                descriptor,
+                pixels: Arc::new(CpuPixels::new(Box::new([]))),
+                cpu_readable: false,
+            }),
+        )
+        .expect("storage descriptor has representable byte arithmetic");
+        assert_eq!(
+            frame
+                .map(format, &OperationContext::new())
+                .expect_err("signed geometry is required"),
+            mado_pilot_core::Error::from(CaptureFault::InconsistentDescriptor)
+        );
+    }
+}
+
+#[test]
+fn truncated_public_storage_cannot_publish_cropped_or_converted_pixels() {
+    for (source, converted) in [
+        (PixelFormat::Rgba8, PixelFormat::Bgra8),
+        (PixelFormat::Bgra8, PixelFormat::Rgba8),
+    ] {
+        for cpu_readable in [false, true] {
+            let extent = PixelExtent::new(2, 2);
+            let descriptor = FrameDescriptor::new(extent, source, 12).expect("padded layout");
+            let stamp = lone_stamp();
+            let frame = Frame::from_storage(
+                stamp,
+                MonotonicInstant::ORIGIN,
+                TransformSnapshot::frame_only(stamp.geometry(), extent),
+                Arc::new(PublicStorage {
+                    descriptor,
+                    pixels: Arc::new(CpuPixels::new(vec![0; 19].into_boxed_slice())),
+                    cpu_readable,
+                }),
+            )
+            .expect("safe custom storage publication");
+            let operation = OperationContext::new();
+            let view = frame
+                .view(
+                    Rect::new(CoordinateSpace::CapturePixels, 0.0, 1.0, 2.0, 2.0)
+                        .expect("last row"),
+                    ClipPolicy::Reject,
+                )
+                .expect("valid region");
+            assert_eq!(
+                frame
+                    .map(converted, &operation)
+                    .expect_err("conversion needs the last pixel"),
+                mado_pilot_core::Error::from(CaptureFault::ByteLengthMismatch)
+            );
+            assert_eq!(
+                view.map(source, &operation)
+                    .expect_err("cropping needs the last pixel"),
+                mado_pilot_core::Error::from(CaptureFault::ByteLengthMismatch)
+            );
+        }
+    }
+}
+
 #[test]
 fn a_retained_frame_never_holds_a_producer_slot() {
     let producer = Producer::new(descriptor(8, 6), 2, 8);
@@ -455,6 +579,54 @@ fn a_mapping_outlives_the_frame_and_the_lease_it_came_from() {
         "a mapping owns its bytes, so the lease returns with the frame"
     );
     assert_eq!(mapping.bytes(), expected.as_slice());
+}
+
+#[test]
+fn weak_provenance_and_live_reuse_do_not_retain_a_native_frame_lease() {
+    let producer = Producer::new(descriptor(4, 3), 1, 1);
+    let frame = Frame::from_storage(
+        lone_stamp(),
+        MonotonicInstant::ORIGIN,
+        TransformSnapshot::frame_only(GeometryRevision::FIRST, PixelExtent::new(4, 3)),
+        producer.capture(0x11).expect("free"),
+    )
+    .expect("valid");
+    let retained_frame = frame.clone();
+    let context = OperationContext::new();
+    let region = PixelRect::new(1, 0, 3, 2).expect("valid");
+    let view = mado_pilot_capture::FrameView::new(frame.clone(), region).expect("inside");
+    let cropped = view.map(PixelFormat::Bgra8, &context).expect("cropped");
+    let reused = view.map(PixelFormat::Bgra8, &context).expect("reused");
+    let swapped = frame.map(PixelFormat::Rgba8, &context).expect("swapped");
+    let direct = frame.map(PixelFormat::Bgra8, &context).expect("direct");
+    let provenance = cropped.source_instance().clone();
+    for mapping in [&cropped, &reused, &swapped, &direct] {
+        assert_eq!(mapping.source_instance(), &provenance);
+        assert_eq!(mapping.stamp(), frame.stamp());
+        assert_eq!(mapping.transform(), frame.transform());
+        assert!(!mapping.is_shared());
+    }
+    drop(view);
+    drop(frame);
+    assert!(provenance.is_alive(), "the frame clone still owns storage");
+    assert_eq!(
+        producer
+            .capture(0x22)
+            .expect_err("source lease is still owned"),
+        CaptureFault::StorageBudgetExhausted
+    );
+    drop(retained_frame);
+    assert!(!provenance.is_alive());
+    let replacement = producer
+        .capture(0x22)
+        .expect("weak provenance did not retain the lease");
+    assert_eq!(cropped.bytes(), &[0x11; 16]);
+    assert_eq!(reused.bytes(), cropped.bytes());
+    assert_eq!(cropped.region(), region);
+    assert_eq!(swapped.bytes(), &[0x11; 48]);
+    assert_eq!(direct.bytes(), &[0x11; 48]);
+    assert_eq!(provenance, cropped.clone().source_instance().clone());
+    drop(replacement);
 }
 
 #[test]

@@ -1,0 +1,1371 @@
+{
+  "boundary_definitions": {
+    "child_settlement": "PrimaryReturned -> settled callback emits EntrySettled BEFORE session close/owner drop. Settled alone does not prove physical cleanup.",
+    "child_stages": "trial-stage-marks-v1/control.started ns; entered through owner_released inside recognition child. Listed subintervals are direct same-epoch differences, not a complete exclusive partition.",
+    "delivery": "runner/recognition.rs:513-518 emits EntrySettled;545-548 emits Terminal after execute/cleanup/observation. Parent-control.started records receive times; root reap and stream join precede returned report. No child-parent epoch subtraction.",
+    "operation_us": "driver.rs:735 clock before recognition_trial reservation through polling, public shutdown, final poll/log drain; elapsed sampled811 before oracle calculation. Includes resource capture/capability probe/fresh recognition child, excludes earlier driver fixture preflight and later result serialization.",
+    "rss": "native-self-rss-v1 stack self query bracketed after owner_released in recognition child; whole child working set point, not process peak/residual/allocator/native-release proof."
+  },
+  "cases": [
+    {
+      "case": "trial-hit-roi",
+      "completion": {
+        "error_mode_restored": true,
+        "guard_coverage_cited_not_rehashed": {
+          "content": 673,
+          "equal": true,
+          "producer_metadata_only": 1520
+        },
+        "inspection_reference": {
+          "archive_member": "inspections/trial-hit-roi.json",
+          "sha256": "7a8a9b9a9a5e3d880e6d6614afaba7143e2cf6030b9625857b312c9bb9b806bf"
+        },
+        "inspection_write_completed_monotonic": 391246.8527117,
+        "live_post_retention_completed_monotonic": 391246.8541257,
+        "management_outer": {
+          "cleanup_ok": true,
+          "exit_code": 0,
+          "output_limited": false,
+          "timed_out": false
+        },
+        "management_outer_reference": {
+          "archive_member": "outer/trial-hit-roi-raw.json",
+          "bytes": 479,
+          "sha256": "de9dc30af691551aa0f819b2bb14c81a16fb7fef0f0a3099d1366896f72cb178"
+        },
+        "original_inspection_state": "PROVISIONAL_PASS",
+        "original_phase_end": 391843.7086478,
+        "postwrite_seal_reference": {
+          "archive_member": "inspections/trial-hit-roi-completion.json",
+          "sha256": "9476643509586760de544b9b6d892b5eaf34f2a63b1ac26dbc1e4fa95fbffab1"
+        },
+        "postwrite_state": "PASS"
+      },
+      "current_minus_baseline": {
+        "child_stage_intervals_ns": {
+          "engine_initialization": 5812700,
+          "entry_settled_emit": -2000,
+          "initial_resource_verification": 646500,
+          "input_validation": -6000,
+          "owner_drop": 95400,
+          "projection": -2000,
+          "resource_reverification": 1292000,
+          "search_call": -3633400,
+          "session_close": -15800,
+          "session_open": -183700,
+          "template_preparation_including_frame_gap": -55900
+        },
+        "operation_us": 12844,
+        "raw_job_cpu_total_seconds": 0.0,
+        "recognition_child_rss_bytes": 249856
+      },
+      "driver_declared_bounds": {
+        "environment_bytes": 524288,
+        "fixture_bytes": 65536,
+        "frame_bytes": 8294400,
+        "operation_ms": 30000,
+        "outer_cleanup_ms": 5000,
+        "outer_output_bytes": 1048576,
+        "outer_owned_tree_fence_required": true,
+        "outer_primary_ms": 60000,
+        "png_bytes": 65536,
+        "preflight_ms": 10000,
+        "public_shutdown_ms": 14000,
+        "receipt_bytes": 1048575
+      },
+      "original_owner_bounds": {
+        "admission_seconds": 60,
+        "child_sink_bytes": 8388608,
+        "cleanup_seconds": 5,
+        "final_retention_seconds": 60,
+        "output_limit_bytes": 4194304,
+        "primary_seconds": 90,
+        "retention_seconds": 10
+      },
+      "rows": [
+        {
+          "application": {
+            "application_owner_authenticated": false,
+            "cancellation_requested": false,
+            "controller_state": "terminal",
+            "oracle": {
+              "actual_count": 1,
+              "expected_count": 1,
+              "max_results_is_request_limit_not_expected_count": 8,
+              "passed": true,
+              "violations": []
+            },
+            "primary": null,
+            "result": {
+              "id": "p050-template-0",
+              "kind": "template",
+              "matches": [
+                {
+                  "bounds": {
+                    "height": 10,
+                    "width": 12,
+                    "x": 80,
+                    "y": 64
+                  },
+                  "score": 1.0
+                }
+              ],
+              "outcome": "matched",
+              "threshold": 0.9
+            },
+            "shutdown": {
+              "completed": true,
+              "error": null
+            },
+            "status": "semantic_pass",
+            "stop_error": null,
+            "success": true,
+            "terminal_observed": true,
+            "ui_coverage": false
+          },
+          "capability_probe": {
+            "child_reaped": true,
+            "cleanup_clean": true,
+            "distinct_from_trial_child": true,
+            "elapsed_us": 36501,
+            "exit_code": 0,
+            "max_ocr_zones": 8,
+            "operation": "recognition_capabilities"
+          },
+          "cpu": {
+            "raw_lifetime_job": {
+              "accounting_resolution_seconds": null,
+              "final": true,
+              "reason": null,
+              "scope": "owned-job-including-nested-jobs",
+              "source": "windows-job-basic-accounting",
+              "source_unit_seconds": 1e-07,
+              "status": "complete",
+              "system_seconds": 0.171875,
+              "user_seconds": 0.375
+            },
+            "raw_user_plus_system_seconds": 0.546875,
+            "reconciled_lifetime_cpu_seconds": null
+          },
+          "delivery_settlement": {
+            "child_exit_code": 0,
+            "child_reaped": true,
+            "cleanup": {
+              "clean": true,
+              "close_error": null,
+              "elapsed_us": 398,
+              "native_input": "not_applicable_saved_frame",
+              "session_closed": true,
+              "status": "CleanupFinished"
+            },
+            "entry_settled_received": true,
+            "forced": false,
+            "identity_matches_captured": true,
+            "ordinary_logs_omitted": 0,
+            "owner_released_before_rss": true,
+            "progress_event_names": [
+              "Preparing",
+              "ChildStarted",
+              "Terminal",
+              "ChildStarted",
+              "EntrySettled",
+              "Terminal",
+              "ControllerSettled"
+            ],
+            "requires_parent_owned_tree_cleanup": false,
+            "terminal_received": true
+          },
+          "fixture_case": {
+            "expected": {
+              "bounds": [
+                80,
+                64,
+                12,
+                10
+              ],
+              "count": 1,
+              "matched": true,
+              "score_max": 1.0,
+              "score_min": 0.99999
+            },
+            "frame": {
+              "bytes": 8294400,
+              "height": 1080,
+              "path": "package/assets/frame-hit.rgba",
+              "sha256": "ac2c6db64009a365fa4a5eb74e12424569ff175c8f57fafbcafb817f6740deae",
+              "width": 1920
+            },
+            "id": "hit-roi",
+            "max_results": 8,
+            "search_region": [
+              64,
+              48,
+              320,
+              180
+            ],
+            "template": {
+              "bytes": 558,
+              "height": 10,
+              "path": "package/assets/template-0.png",
+              "pixel_sha256": "dea6c28fb3d3db13ce176a5f704cf42d654b47c2b8a8344db08e62b9b22df01a",
+              "sha256": "1d2120810f787fa78cfa626e8a2ca08a8766d8dd4b76739c4b3e4b135f5f5ada",
+              "source_png_sha256": "64113c88c2ad5a76bce6d0a3755a34a6afc8c463d864a9a8e1f0308b129ec995",
+              "width": 12
+            },
+            "threshold": 0.9
+          },
+          "input_receipt_bindings": {
+            "environment": {
+              "bytes": 643,
+              "sha256": "d2bf5a3f533786104898b7cf521795d736ff04c2155d5239a0432124292a2c94"
+            },
+            "fixture": {
+              "bytes": 4237,
+              "sha256": "209d073f2c86817c51e5de45e274c7f31b8ed91c50a68d9ed641078ac0e18461"
+            },
+            "frame": {
+              "bytes": 8294400,
+              "sha256": "ac2c6db64009a365fa4a5eb74e12424569ff175c8f57fafbcafb817f6740deae"
+            },
+            "template": {
+              "bytes": 558,
+              "pixel_sha256": "dea6c28fb3d3db13ce176a5f704cf42d654b47c2b8a8344db08e62b9b22df01a",
+              "sha256": "1d2120810f787fa78cfa626e8a2ca08a8766d8dd4b76739c4b3e4b135f5f5ada"
+            },
+            "template_manifest": {
+              "bytes": 555,
+              "sha256": "430b7e7505c8bf7d60c5f2bce6c2f63577d454394478dc8c10abc805510cceff"
+            }
+          },
+          "native_outcome": {
+            "cleanup_ok": true,
+            "duration_seconds": 0.6208900999627076,
+            "exit_code": 0,
+            "output_limited": false,
+            "timed_out": false
+          },
+          "native_threads_endpoint": {
+            "configured_threads": 20,
+            "during_workload_invariance_observed": false,
+            "framework": "ms-concurrency"
+          },
+          "original_receipt_role": "baseline",
+          "process_accounting": {
+            "active": 0,
+            "checkpoint": "after-root-reap-before-job-close",
+            "final": true,
+            "query_succeeded": true,
+            "reason": null,
+            "scope": "owned-job-including-nested-jobs",
+            "source": "windows-job-basic-accounting",
+            "status": "complete",
+            "terminated": 0,
+            "total": 5
+          },
+          "raw_reference": {
+            "archive_member": "cases/trial-hit-roi/baseline-raw.json",
+            "bytes": 14221,
+            "sha256": "83b06a30ede1ff51465a0aca92d623436f0d0089a461a0a66874852781bb3865"
+          },
+          "role": "baseline",
+          "rss": {
+            "available": true,
+            "clock_unit": "ns",
+            "epoch": "control.started",
+            "finished_ns": 398516900,
+            "method": "native-self-rss-v1",
+            "native_os_error": null,
+            "point": "after_trial_owner_release",
+            "reason": null,
+            "rss_bytes": 43810816,
+            "scope": "recognition-child-process-point",
+            "started_ns": 398511700
+          },
+          "timing": {
+            "child_epoch": "control.started",
+            "child_marks_ns": {
+              "acquired": 384022100,
+              "close_started": 391892700,
+              "closed": 392285400,
+              "entered": 14854400,
+              "init_started": 91504800,
+              "initialized": 306589400,
+              "open_started": 382153800,
+              "opened": 384016900,
+              "owner_release_started": 392289000,
+              "owner_released": 398490500,
+              "prepared": 384616400,
+              "primary_returned": 391842000,
+              "projected": 391818700,
+              "resources_reverified": 382132600,
+              "resources_verified": 91479300,
+              "search_finished": 391766100,
+              "search_started": 384620900,
+              "settled": 391881700,
+              "validated": 14995400
+            },
+            "child_stage_intervals_ns": {
+              "engine_initialization": 215084600,
+              "entry_settled_emit": 39700,
+              "initial_resource_verification": 76483900,
+              "input_validation": 141000,
+              "owner_drop": 6201500,
+              "projection": 52600,
+              "resource_reverification": 75543200,
+              "search_call": 7145200,
+              "session_close": 392700,
+              "session_open": 1863100,
+              "template_preparation_including_frame_gap": 594300
+            },
+            "driver_preflight_us": 11972,
+            "driver_total_us": 563944,
+            "operation_us": 551778,
+            "parent_supervision": {
+              "child_started_received_ns": 151589200,
+              "entry_settled_received_ns": 533846800,
+              "epoch": "parent-control.started",
+              "format": "trial-supervision-marks-v1",
+              "root_wait_returned_ns": 550053600,
+              "spawn_returned_ns": 119037200,
+              "spawn_started_ns": 117143700,
+              "streams_joined_ns": 550118000,
+              "terminal_received_ns": 539030000,
+              "unit": "ns"
+            },
+            "recognition_report_elapsed_us": 431119
+          }
+        },
+        {
+          "application": {
+            "application_owner_authenticated": false,
+            "cancellation_requested": false,
+            "controller_state": "terminal",
+            "oracle": {
+              "actual_count": 1,
+              "expected_count": 1,
+              "max_results_is_request_limit_not_expected_count": 8,
+              "passed": true,
+              "violations": []
+            },
+            "primary": null,
+            "result": {
+              "id": "p050-template-0",
+              "kind": "template",
+              "matches": [
+                {
+                  "bounds": {
+                    "height": 10,
+                    "width": 12,
+                    "x": 80,
+                    "y": 64
+                  },
+                  "score": 1.0
+                }
+              ],
+              "outcome": "matched",
+              "threshold": 0.9
+            },
+            "shutdown": {
+              "completed": true,
+              "error": null
+            },
+            "status": "semantic_pass",
+            "stop_error": null,
+            "success": true,
+            "terminal_observed": true,
+            "ui_coverage": false
+          },
+          "capability_probe": {
+            "child_reaped": true,
+            "cleanup_clean": true,
+            "distinct_from_trial_child": true,
+            "elapsed_us": 37395,
+            "exit_code": 0,
+            "max_ocr_zones": 16,
+            "operation": "recognition_capabilities"
+          },
+          "cpu": {
+            "raw_lifetime_job": {
+              "accounting_resolution_seconds": null,
+              "final": true,
+              "reason": null,
+              "scope": "owned-job-including-nested-jobs",
+              "source": "windows-job-basic-accounting",
+              "source_unit_seconds": 1e-07,
+              "status": "complete",
+              "system_seconds": 0.265625,
+              "user_seconds": 0.28125
+            },
+            "raw_user_plus_system_seconds": 0.546875,
+            "reconciled_lifetime_cpu_seconds": null
+          },
+          "delivery_settlement": {
+            "child_exit_code": 0,
+            "child_reaped": true,
+            "cleanup": {
+              "clean": true,
+              "close_error": null,
+              "elapsed_us": 383,
+              "native_input": "not_applicable_saved_frame",
+              "session_closed": true,
+              "status": "CleanupFinished"
+            },
+            "entry_settled_received": true,
+            "forced": false,
+            "identity_matches_captured": true,
+            "ordinary_logs_omitted": 0,
+            "owner_released_before_rss": true,
+            "progress_event_names": [
+              "Preparing",
+              "ChildStarted",
+              "Terminal",
+              "ChildStarted",
+              "EntrySettled",
+              "Terminal",
+              "ControllerSettled"
+            ],
+            "requires_parent_owned_tree_cleanup": false,
+            "terminal_received": true
+          },
+          "fixture_case": {
+            "expected": {
+              "bounds": [
+                80,
+                64,
+                12,
+                10
+              ],
+              "count": 1,
+              "matched": true,
+              "score_max": 1.0,
+              "score_min": 0.99999
+            },
+            "frame": {
+              "bytes": 8294400,
+              "height": 1080,
+              "path": "package/assets/frame-hit.rgba",
+              "sha256": "ac2c6db64009a365fa4a5eb74e12424569ff175c8f57fafbcafb817f6740deae",
+              "width": 1920
+            },
+            "id": "hit-roi",
+            "max_results": 8,
+            "search_region": [
+              64,
+              48,
+              320,
+              180
+            ],
+            "template": {
+              "bytes": 558,
+              "height": 10,
+              "path": "package/assets/template-0.png",
+              "pixel_sha256": "dea6c28fb3d3db13ce176a5f704cf42d654b47c2b8a8344db08e62b9b22df01a",
+              "sha256": "1d2120810f787fa78cfa626e8a2ca08a8766d8dd4b76739c4b3e4b135f5f5ada",
+              "source_png_sha256": "64113c88c2ad5a76bce6d0a3755a34a6afc8c463d864a9a8e1f0308b129ec995",
+              "width": 12
+            },
+            "threshold": 0.9
+          },
+          "input_receipt_bindings": {
+            "environment": {
+              "bytes": 643,
+              "sha256": "d2bf5a3f533786104898b7cf521795d736ff04c2155d5239a0432124292a2c94"
+            },
+            "fixture": {
+              "bytes": 4237,
+              "sha256": "209d073f2c86817c51e5de45e274c7f31b8ed91c50a68d9ed641078ac0e18461"
+            },
+            "frame": {
+              "bytes": 8294400,
+              "sha256": "ac2c6db64009a365fa4a5eb74e12424569ff175c8f57fafbcafb817f6740deae"
+            },
+            "template": {
+              "bytes": 558,
+              "pixel_sha256": "dea6c28fb3d3db13ce176a5f704cf42d654b47c2b8a8344db08e62b9b22df01a",
+              "sha256": "1d2120810f787fa78cfa626e8a2ca08a8766d8dd4b76739c4b3e4b135f5f5ada"
+            },
+            "template_manifest": {
+              "bytes": 555,
+              "sha256": "430b7e7505c8bf7d60c5f2bce6c2f63577d454394478dc8c10abc805510cceff"
+            }
+          },
+          "native_outcome": {
+            "cleanup_ok": true,
+            "duration_seconds": 0.6400936999707483,
+            "exit_code": 0,
+            "output_limited": false,
+            "timed_out": false
+          },
+          "native_threads_endpoint": {
+            "configured_threads": 20,
+            "during_workload_invariance_observed": false,
+            "framework": "ms-concurrency"
+          },
+          "original_receipt_role": "candidate",
+          "process_accounting": {
+            "active": 0,
+            "checkpoint": "after-root-reap-before-job-close",
+            "final": true,
+            "query_succeeded": true,
+            "reason": null,
+            "scope": "owned-job-including-nested-jobs",
+            "source": "windows-job-basic-accounting",
+            "status": "complete",
+            "terminated": 0,
+            "total": 5
+          },
+          "raw_reference": {
+            "archive_member": "cases/trial-hit-roi/candidate-raw.json",
+            "bytes": 14225,
+            "sha256": "fd0cbdfbc7f372c9bce0017255674b64655015dddfb1a7f239c42878c5c3c4a4"
+          },
+          "role": "current",
+          "rss": {
+            "available": true,
+            "clock_unit": "ns",
+            "epoch": "control.started",
+            "finished_ns": 402886100,
+            "method": "native-self-rss-v1",
+            "native_os_error": null,
+            "point": "after_trial_owner_release",
+            "reason": null,
+            "rss_bytes": 44060672,
+            "scope": "recognition-child-process-point",
+            "started_ns": 402880800
+          },
+          "timing": {
+            "child_epoch": "control.started",
+            "child_marks_ns": {
+              "acquired": 392008600,
+              "close_started": 396181900,
+              "closed": 396558800,
+              "entered": 15274000,
+              "init_started": 92569900,
+              "initialized": 313467200,
+              "open_started": 390323900,
+              "opened": 392003300,
+              "owner_release_started": 396563300,
+              "owner_released": 402860200,
+              "prepared": 392547000,
+              "primary_returned": 396133600,
+              "projected": 396113600,
+              "resources_reverified": 390302400,
+              "resources_verified": 92539400,
+              "search_finished": 396063000,
+              "search_started": 392551200,
+              "settled": 396171300,
+              "validated": 15409000
+            },
+            "child_stage_intervals_ns": {
+              "engine_initialization": 220897300,
+              "entry_settled_emit": 37700,
+              "initial_resource_verification": 77130400,
+              "input_validation": 135000,
+              "owner_drop": 6296900,
+              "projection": 50600,
+              "resource_reverification": 76835200,
+              "search_call": 3511800,
+              "session_close": 376900,
+              "session_open": 1679400,
+              "template_preparation_including_frame_gap": 538400
+            },
+            "driver_preflight_us": 12395,
+            "driver_total_us": 577225,
+            "operation_us": 564622,
+            "parent_supervision": {
+              "child_started_received_ns": 155998800,
+              "entry_settled_received_ns": 543100600,
+              "epoch": "parent-control.started",
+              "format": "trial-supervision-marks-v1",
+              "root_wait_returned_ns": 559379900,
+              "spawn_returned_ns": 123537300,
+              "spawn_started_ns": 121763000,
+              "streams_joined_ns": 559445300,
+              "terminal_received_ns": 548616600,
+              "unit": "ns"
+            },
+            "recognition_report_elapsed_us": 435948
+          }
+        }
+      ]
+    },
+    {
+      "case": "trial-miss-roi",
+      "completion": {
+        "error_mode_restored": true,
+        "guard_coverage_cited_not_rehashed": {
+          "content": 673,
+          "equal": true,
+          "producer_metadata_only": 1520
+        },
+        "inspection_reference": {
+          "archive_member": "inspections/trial-miss-roi.json",
+          "sha256": "c2410ba047685e58b87697408567fecf7bccf1a12a210abb286a0c34d9ebd48a"
+        },
+        "inspection_write_completed_monotonic": 391264.2273193,
+        "live_post_retention_completed_monotonic": 391264.2285381,
+        "management_outer": {
+          "cleanup_ok": true,
+          "exit_code": 0,
+          "output_limited": false,
+          "timed_out": false
+        },
+        "management_outer_reference": {
+          "archive_member": "outer/trial-miss-roi-raw.json",
+          "bytes": 479,
+          "sha256": "f9954c039a551ea6d4ec004a555423191b6912db34c403f84eb0859dfe05efb7"
+        },
+        "original_inspection_state": "PROVISIONAL_PASS",
+        "original_phase_end": 391861.2411099,
+        "postwrite_seal_reference": {
+          "archive_member": "inspections/trial-miss-roi-completion.json",
+          "sha256": "3b52996839837ec101e94c17faa4d4d458cb3879ecfa7f19ec4117b2605eb4a7"
+        },
+        "postwrite_state": "PASS"
+      },
+      "current_minus_baseline": {
+        "child_stage_intervals_ns": {
+          "engine_initialization": -1368900,
+          "entry_settled_emit": -1700,
+          "initial_resource_verification": 1495400,
+          "input_validation": -4700,
+          "owner_drop": 121000,
+          "projection": 2300,
+          "resource_reverification": 1656700,
+          "search_call": -2262000,
+          "session_close": 5800,
+          "session_open": 119800,
+          "template_preparation_including_frame_gap": -18700
+        },
+        "operation_us": 3907,
+        "raw_job_cpu_total_seconds": -0.03125,
+        "recognition_child_rss_bytes": -151552
+      },
+      "driver_declared_bounds": {
+        "environment_bytes": 524288,
+        "fixture_bytes": 65536,
+        "frame_bytes": 8294400,
+        "operation_ms": 30000,
+        "outer_cleanup_ms": 5000,
+        "outer_output_bytes": 1048576,
+        "outer_owned_tree_fence_required": true,
+        "outer_primary_ms": 60000,
+        "png_bytes": 65536,
+        "preflight_ms": 10000,
+        "public_shutdown_ms": 14000,
+        "receipt_bytes": 1048575
+      },
+      "original_owner_bounds": {
+        "admission_seconds": 60,
+        "child_sink_bytes": 8388608,
+        "cleanup_seconds": 5,
+        "final_retention_seconds": 60,
+        "output_limit_bytes": 4194304,
+        "primary_seconds": 90,
+        "retention_seconds": 10
+      },
+      "rows": [
+        {
+          "application": {
+            "application_owner_authenticated": false,
+            "cancellation_requested": false,
+            "controller_state": "terminal",
+            "oracle": {
+              "actual_count": 0,
+              "expected_count": 0,
+              "max_results_is_request_limit_not_expected_count": 8,
+              "passed": true,
+              "violations": []
+            },
+            "primary": null,
+            "result": {
+              "id": "p050-template-0",
+              "kind": "template",
+              "matches": [],
+              "outcome": "no_match",
+              "threshold": 0.9
+            },
+            "shutdown": {
+              "completed": true,
+              "error": null
+            },
+            "status": "semantic_pass",
+            "stop_error": null,
+            "success": true,
+            "terminal_observed": true,
+            "ui_coverage": false
+          },
+          "capability_probe": {
+            "child_reaped": true,
+            "cleanup_clean": true,
+            "distinct_from_trial_child": true,
+            "elapsed_us": 37125,
+            "exit_code": 0,
+            "max_ocr_zones": 8,
+            "operation": "recognition_capabilities"
+          },
+          "cpu": {
+            "raw_lifetime_job": {
+              "accounting_resolution_seconds": null,
+              "final": true,
+              "reason": null,
+              "scope": "owned-job-including-nested-jobs",
+              "source": "windows-job-basic-accounting",
+              "source_unit_seconds": 1e-07,
+              "status": "complete",
+              "system_seconds": 0.21875,
+              "user_seconds": 0.375
+            },
+            "raw_user_plus_system_seconds": 0.59375,
+            "reconciled_lifetime_cpu_seconds": null
+          },
+          "delivery_settlement": {
+            "child_exit_code": 0,
+            "child_reaped": true,
+            "cleanup": {
+              "clean": true,
+              "close_error": null,
+              "elapsed_us": 233,
+              "native_input": "not_applicable_saved_frame",
+              "session_closed": true,
+              "status": "CleanupFinished"
+            },
+            "entry_settled_received": true,
+            "forced": false,
+            "identity_matches_captured": true,
+            "ordinary_logs_omitted": 0,
+            "owner_released_before_rss": true,
+            "progress_event_names": [
+              "Preparing",
+              "ChildStarted",
+              "Terminal",
+              "ChildStarted",
+              "EntrySettled",
+              "Terminal",
+              "ControllerSettled"
+            ],
+            "requires_parent_owned_tree_cleanup": false,
+            "terminal_received": true
+          },
+          "fixture_case": {
+            "expected": {
+              "bounds": null,
+              "count": 0,
+              "matched": false,
+              "score_max": null,
+              "score_min": null
+            },
+            "frame": {
+              "bytes": 8294400,
+              "height": 1080,
+              "path": "package/assets/frame-miss.rgba",
+              "sha256": "31cb699858d3535faa700686dba3cadeafaacf60e0a7120df2317404edd2f406",
+              "width": 1920
+            },
+            "id": "miss-roi",
+            "max_results": 8,
+            "search_region": [
+              64,
+              48,
+              320,
+              180
+            ],
+            "template": {
+              "bytes": 558,
+              "height": 10,
+              "path": "package/assets/template-0.png",
+              "pixel_sha256": "dea6c28fb3d3db13ce176a5f704cf42d654b47c2b8a8344db08e62b9b22df01a",
+              "sha256": "1d2120810f787fa78cfa626e8a2ca08a8766d8dd4b76739c4b3e4b135f5f5ada",
+              "source_png_sha256": "64113c88c2ad5a76bce6d0a3755a34a6afc8c463d864a9a8e1f0308b129ec995",
+              "width": 12
+            },
+            "threshold": 0.9
+          },
+          "input_receipt_bindings": {
+            "environment": {
+              "bytes": 643,
+              "sha256": "d2bf5a3f533786104898b7cf521795d736ff04c2155d5239a0432124292a2c94"
+            },
+            "fixture": {
+              "bytes": 4237,
+              "sha256": "209d073f2c86817c51e5de45e274c7f31b8ed91c50a68d9ed641078ac0e18461"
+            },
+            "frame": {
+              "bytes": 8294400,
+              "sha256": "31cb699858d3535faa700686dba3cadeafaacf60e0a7120df2317404edd2f406"
+            },
+            "template": {
+              "bytes": 558,
+              "pixel_sha256": "dea6c28fb3d3db13ce176a5f704cf42d654b47c2b8a8344db08e62b9b22df01a",
+              "sha256": "1d2120810f787fa78cfa626e8a2ca08a8766d8dd4b76739c4b3e4b135f5f5ada"
+            },
+            "template_manifest": {
+              "bytes": 555,
+              "sha256": "430b7e7505c8bf7d60c5f2bce6c2f63577d454394478dc8c10abc805510cceff"
+            }
+          },
+          "native_outcome": {
+            "cleanup_ok": true,
+            "duration_seconds": 0.6238430999801494,
+            "exit_code": 0,
+            "output_limited": false,
+            "timed_out": false
+          },
+          "native_threads_endpoint": {
+            "configured_threads": 20,
+            "during_workload_invariance_observed": false,
+            "framework": "ms-concurrency"
+          },
+          "original_receipt_role": "baseline",
+          "process_accounting": {
+            "active": 0,
+            "checkpoint": "after-root-reap-before-job-close",
+            "final": true,
+            "query_succeeded": true,
+            "reason": null,
+            "scope": "owned-job-including-nested-jobs",
+            "source": "windows-job-basic-accounting",
+            "status": "complete",
+            "terminated": 0,
+            "total": 5
+          },
+          "raw_reference": {
+            "archive_member": "cases/trial-miss-roi/baseline-raw.json",
+            "bytes": 14129,
+            "sha256": "5c26f5a5b78d5ee3d43ba63df63970cde269552a7585fbd5cdfc4c186c731656"
+          },
+          "role": "baseline",
+          "rss": {
+            "available": true,
+            "clock_unit": "ns",
+            "epoch": "control.started",
+            "finished_ns": 384505800,
+            "method": "native-self-rss-v1",
+            "native_os_error": null,
+            "point": "after_trial_owner_release",
+            "reason": null,
+            "rss_bytes": 44965888,
+            "scope": "recognition-child-process-point",
+            "started_ns": 384501000
+          },
+          "timing": {
+            "child_epoch": "control.started",
+            "child_marks_ns": {
+              "acquired": 373263900,
+              "close_started": 379292900,
+              "closed": 379519800,
+              "entered": 14004200,
+              "init_started": 89760900,
+              "initialized": 296346800,
+              "open_started": 372127600,
+              "opened": 373258900,
+              "owner_release_started": 379522900,
+              "owner_released": 384482700,
+              "prepared": 373800300,
+              "primary_returned": 379246300,
+              "projected": 379228100,
+              "resources_reverified": 372107200,
+              "resources_verified": 89735900,
+              "search_finished": 379190800,
+              "search_started": 373804900,
+              "settled": 379281200,
+              "validated": 14140000
+            },
+            "child_stage_intervals_ns": {
+              "engine_initialization": 206585900,
+              "entry_settled_emit": 34900,
+              "initial_resource_verification": 75595900,
+              "input_validation": 135800,
+              "owner_drop": 4959800,
+              "projection": 37300,
+              "resource_reverification": 75760400,
+              "search_call": 5385900,
+              "session_close": 226900,
+              "session_open": 1131300,
+              "template_preparation_including_frame_gap": 536400
+            },
+            "driver_preflight_us": 11692,
+            "driver_total_us": 551588,
+            "operation_us": 539715,
+            "parent_supervision": {
+              "child_started_received_ns": 152688700,
+              "entry_settled_received_ns": 523793900,
+              "epoch": "parent-control.started",
+              "format": "trial-supervision-marks-v1",
+              "root_wait_returned_ns": 538994800,
+              "spawn_returned_ns": 119671500,
+              "spawn_started_ns": 117753500,
+              "streams_joined_ns": 539079400,
+              "terminal_received_ns": 528874800,
+              "unit": "ns"
+            },
+            "recognition_report_elapsed_us": 419420
+          }
+        },
+        {
+          "application": {
+            "application_owner_authenticated": false,
+            "cancellation_requested": false,
+            "controller_state": "terminal",
+            "oracle": {
+              "actual_count": 0,
+              "expected_count": 0,
+              "max_results_is_request_limit_not_expected_count": 8,
+              "passed": true,
+              "violations": []
+            },
+            "primary": null,
+            "result": {
+              "id": "p050-template-0",
+              "kind": "template",
+              "matches": [],
+              "outcome": "no_match",
+              "threshold": 0.9
+            },
+            "shutdown": {
+              "completed": true,
+              "error": null
+            },
+            "status": "semantic_pass",
+            "stop_error": null,
+            "success": true,
+            "terminal_observed": true,
+            "ui_coverage": false
+          },
+          "capability_probe": {
+            "child_reaped": true,
+            "cleanup_clean": true,
+            "distinct_from_trial_child": true,
+            "elapsed_us": 36872,
+            "exit_code": 0,
+            "max_ocr_zones": 16,
+            "operation": "recognition_capabilities"
+          },
+          "cpu": {
+            "raw_lifetime_job": {
+              "accounting_resolution_seconds": null,
+              "final": true,
+              "reason": null,
+              "scope": "owned-job-including-nested-jobs",
+              "source": "windows-job-basic-accounting",
+              "source_unit_seconds": 1e-07,
+              "status": "complete",
+              "system_seconds": 0.171875,
+              "user_seconds": 0.390625
+            },
+            "raw_user_plus_system_seconds": 0.5625,
+            "reconciled_lifetime_cpu_seconds": null
+          },
+          "delivery_settlement": {
+            "child_exit_code": 0,
+            "child_reaped": true,
+            "cleanup": {
+              "clean": true,
+              "close_error": null,
+              "elapsed_us": 238,
+              "native_input": "not_applicable_saved_frame",
+              "session_closed": true,
+              "status": "CleanupFinished"
+            },
+            "entry_settled_received": true,
+            "forced": false,
+            "identity_matches_captured": true,
+            "ordinary_logs_omitted": 0,
+            "owner_released_before_rss": true,
+            "progress_event_names": [
+              "Preparing",
+              "ChildStarted",
+              "Terminal",
+              "ChildStarted",
+              "EntrySettled",
+              "Terminal",
+              "ControllerSettled"
+            ],
+            "requires_parent_owned_tree_cleanup": false,
+            "terminal_received": true
+          },
+          "fixture_case": {
+            "expected": {
+              "bounds": null,
+              "count": 0,
+              "matched": false,
+              "score_max": null,
+              "score_min": null
+            },
+            "frame": {
+              "bytes": 8294400,
+              "height": 1080,
+              "path": "package/assets/frame-miss.rgba",
+              "sha256": "31cb699858d3535faa700686dba3cadeafaacf60e0a7120df2317404edd2f406",
+              "width": 1920
+            },
+            "id": "miss-roi",
+            "max_results": 8,
+            "search_region": [
+              64,
+              48,
+              320,
+              180
+            ],
+            "template": {
+              "bytes": 558,
+              "height": 10,
+              "path": "package/assets/template-0.png",
+              "pixel_sha256": "dea6c28fb3d3db13ce176a5f704cf42d654b47c2b8a8344db08e62b9b22df01a",
+              "sha256": "1d2120810f787fa78cfa626e8a2ca08a8766d8dd4b76739c4b3e4b135f5f5ada",
+              "source_png_sha256": "64113c88c2ad5a76bce6d0a3755a34a6afc8c463d864a9a8e1f0308b129ec995",
+              "width": 12
+            },
+            "threshold": 0.9
+          },
+          "input_receipt_bindings": {
+            "environment": {
+              "bytes": 643,
+              "sha256": "d2bf5a3f533786104898b7cf521795d736ff04c2155d5239a0432124292a2c94"
+            },
+            "fixture": {
+              "bytes": 4237,
+              "sha256": "209d073f2c86817c51e5de45e274c7f31b8ed91c50a68d9ed641078ac0e18461"
+            },
+            "frame": {
+              "bytes": 8294400,
+              "sha256": "31cb699858d3535faa700686dba3cadeafaacf60e0a7120df2317404edd2f406"
+            },
+            "template": {
+              "bytes": 558,
+              "pixel_sha256": "dea6c28fb3d3db13ce176a5f704cf42d654b47c2b8a8344db08e62b9b22df01a",
+              "sha256": "1d2120810f787fa78cfa626e8a2ca08a8766d8dd4b76739c4b3e4b135f5f5ada"
+            },
+            "template_manifest": {
+              "bytes": 555,
+              "sha256": "430b7e7505c8bf7d60c5f2bce6c2f63577d454394478dc8c10abc805510cceff"
+            }
+          },
+          "native_outcome": {
+            "cleanup_ok": true,
+            "duration_seconds": 0.6182519000140019,
+            "exit_code": 0,
+            "output_limited": false,
+            "timed_out": false
+          },
+          "native_threads_endpoint": {
+            "configured_threads": 20,
+            "during_workload_invariance_observed": false,
+            "framework": "ms-concurrency"
+          },
+          "original_receipt_role": "candidate",
+          "process_accounting": {
+            "active": 0,
+            "checkpoint": "after-root-reap-before-job-close",
+            "final": true,
+            "query_succeeded": true,
+            "reason": null,
+            "scope": "owned-job-including-nested-jobs",
+            "source": "windows-job-basic-accounting",
+            "status": "complete",
+            "terminated": 0,
+            "total": 5
+          },
+          "raw_reference": {
+            "archive_member": "cases/trial-miss-roi/candidate-raw.json",
+            "bytes": 14153,
+            "sha256": "32e8611ab8a0427e6a9840b8ff37780359c288fb40a30e7d129501cd0cbe26d4"
+          },
+          "role": "current",
+          "rss": {
+            "available": true,
+            "clock_unit": "ns",
+            "epoch": "control.started",
+            "finished_ns": 384544200,
+            "method": "native-self-rss-v1",
+            "native_os_error": null,
+            "point": "after_trial_owner_release",
+            "reason": null,
+            "rss_bytes": 44814336,
+            "scope": "recognition-child-process-point",
+            "started_ns": 384539100
+          },
+          "timing": {
+            "child_epoch": "control.started",
+            "child_marks_ns": {
+              "acquired": 375456000,
+              "close_started": 379200700,
+              "closed": 379433400,
+              "entered": 14293800,
+              "init_started": 91545900,
+              "initialized": 296762900,
+              "open_started": 374199500,
+              "opened": 375450600,
+              "owner_release_started": 379437800,
+              "owner_released": 384518600,
+              "prepared": 375973700,
+              "primary_returned": 379158700,
+              "projected": 379141900,
+              "resources_reverified": 374180000,
+              "resources_verified": 91516200,
+              "search_finished": 379102300,
+              "search_started": 375978400,
+              "settled": 379191900,
+              "validated": 14424900
+            },
+            "child_stage_intervals_ns": {
+              "engine_initialization": 205217000,
+              "entry_settled_emit": 33200,
+              "initial_resource_verification": 77091300,
+              "input_validation": 131100,
+              "owner_drop": 5080800,
+              "projection": 39600,
+              "resource_reverification": 77417100,
+              "search_call": 3123900,
+              "session_close": 232700,
+              "session_open": 1251100,
+              "template_preparation_including_frame_gap": 517700
+            },
+            "driver_preflight_us": 10989,
+            "driver_total_us": 554788,
+            "operation_us": 543622,
+            "parent_supervision": {
+              "child_started_received_ns": 161539600,
+              "entry_settled_received_ns": 526147800,
+              "epoch": "parent-control.started",
+              "format": "trial-supervision-marks-v1",
+              "root_wait_returned_ns": 541903500,
+              "spawn_returned_ns": 124803700,
+              "spawn_started_ns": 122995900,
+              "streams_joined_ns": 541962100,
+              "terminal_received_ns": 531179600,
+              "unit": "ns"
+            },
+            "recognition_report_elapsed_us": 417183
+          }
+        }
+      ]
+    }
+  ],
+  "data_inspection_deviation": {
+    "error": "RuntimeError: coroutine raised StopIteration",
+    "meaning": "Data inspector initially searched capability-only controller.attempts for recognition_trial. Actual terminal report lives at controller.result. Original error retained; schema corrected against same bytes, no native rerun.",
+    "receipt_sha256": "0c53c41eaac8b700099d17401bfe8faee481d80a348e7100cbbf6482d2e2509e"
+  },
+  "format": "p050-retained-trial-roi-allowlisted-v1",
+  "historical_regrade": false,
+  "input_freshness": {
+    "application_owner_authenticated": false,
+    "meaning": "Fresh private driver/controller and separate capability/recognition child invocations over immutable, hash-checked saved fixture bytes; not fresh live-screen content.",
+    "no_live_capture": true,
+    "no_native_input": true,
+    "os_cache_coldness_proved": false,
+    "saved_frame_source": "recognition_trial/engine.rs:225-241 creates one Rgba8 ReplayFrame at MonotonicInstant::ORIGIN/Continuous, a single authoring-saved-frame target; no live timestamp freshness claim.",
+    "source": "driver.rs:483-556 reads exact RGBA/PNG, hashes and decodes the PNG, captures private TrialIdentity revision/frame/config hashes with frame/content/zones revisions1; drive:737-743 moves already captured frame/selection into callback.",
+    "ui_coverage": false
+  },
+  "limitations": [
+    "Historical roles remain beb064f/dd320 debug builds; raw engine_revision f61a57f and driver consumer_source_revision5af are authored constants, not new current producer identities.",
+    "Actual capability max_ocr_zones differs8/16; selected template ROI options remain0.9/8/DropOverlapping. No OCR workload was selected.",
+    "Single invocation per role/case. Search subinterval reductions do not establish whole-operation benefit; both current operation_us values increase.",
+    "Raw complete Job CPU, resolutionnull and reconciled CPU null remain separate. Job5/0/0 is not a PID-generation/application-role/image census.",
+    "Old receipt driver60s/1MiB/5 and actual owner bounds are retained separately, not retrospectively aligned.",
+    "Final postwrite seals describe historical retention. No present owner liveness, registration, new campaign admission, source rebind or clocks inherited."
+  ],
+  "narrow_source_bindings": {
+    "baseline_trial_engine": {
+      "bytes": 17630,
+      "sha256": "94c68b11e5b6748cc164c6d7c9e947585c8a0b809754a75a85d775d2365e5acd"
+    },
+    "current_trial_engine": {
+      "bytes": 17630,
+      "sha256": "94c68b11e5b6748cc164c6d7c9e947585c8a0b809754a75a85d775d2365e5acd"
+    },
+    "desktop_recognition": {
+      "bytes": 9836,
+      "sha256": "d64595b52d6ca0800270c9b638d1c3c36243bef7fe027bbf6bac77b86fe4ea0a"
+    },
+    "driver": {
+      "bytes": 32537,
+      "sha256": "d3cb0548aacf48cf597b5d5b9cdee7969384f9ff4ac10995c9ebbc93e476ef58"
+    },
+    "runner_recognition": {
+      "bytes": 21950,
+      "sha256": "daddb3236fdd88cf2630d7c04038cf7512929db040aa802c86e9405a368d2656"
+    }
+  },
+  "new_native_executions": 0,
+  "original_archive_sha256": "d3731f1d8012656e6fb87c32d8aef5ecda475b4aededba15ef309924b2b737c3",
+  "privacy": {
+    "construction": "explicit allowlist and hash-bound receipt chain, no digital signature",
+    "excluded": [
+      "absolute local paths",
+      "environment values",
+      "host hardware and kernel identity",
+      "arbitrary stdout/stderr or logs",
+      "run/session/observation identifiers",
+      "process identifiers",
+      "binary bytes",
+      "private plans"
+    ]
+  },
+  "qualification": false,
+  "resource_initialization": {
+    "basis": "desktop/recognition.rs:47-61 captures resources then probes fixed child capabilities without OCR initialization;102-113 launches separate trial. Trial engine:217-267 verifies resources, creates replay engine with OCR profile, reverifies and requires CPU/no fallback. Successful template result crossed these guards.",
+    "captured_environment_identity": "00fee560889f84b938af3bdff8da44fbf83630e318af6495b95926c46db7a435",
+    "configuration": {
+      "language": "horizontal-ja-basic-latin-ascii-digits-ui-symbols-v1",
+      "model": "g-004-rapidocr-ppocrv4-det-v6-rec-small-v1",
+      "profile": "g-004-rapidocr-ppocrv4-det-v6-rec-small-v1",
+      "provider": "cpu",
+      "runtime_profile": "onnxruntime-1.29.0-api17-cpu"
+    },
+    "environment_json": {
+      "bytes": 643,
+      "sha256": "d2bf5a3f533786104898b7cf521795d736ff04c2155d5239a0432124292a2c94"
+    },
+    "limitation": "Resource digests are retained input bindings, not new DLL/model hashes, full loaded-image closure or proof of OCR inference. Initialization is a compound engine/OCR-profile stage, not pure inference time.",
+    "ocr_inference_observed": false,
+    "retained_resource_bindings": {
+      "PP-OCRv6_rec_small.onnx": {
+        "bytes": 21234383,
+        "sha256": "6f327246b50388f3c176ae304bd95767ea6dc0c9ae92153ef8cbe210b3c14884"
+      },
+      "ch_PP-OCRv4_det_mobile.onnx": {
+        "bytes": 4745517,
+        "sha256": "d2a7720d45a54257208b1e13e36a8479894cb74155a5efe29462512d42f49da9"
+      },
+      "onnxruntime.dll": {
+        "bytes": 16149344,
+        "sha256": "69d8e6d3879a3b4001cdc74c8ed9ccc7e7f799a5b847059738323404519ec471"
+      },
+      "onnxruntime_providers_shared.dll": {
+        "bytes": 21856,
+        "sha256": "87f6878cdc1f80b3a9afa5b0c84663315030b4957f5bbb6b66470557cb2f48d8"
+      },
+      "opencv_world4140.dll": {
+        "bytes": 79832576,
+        "sha256": "a192cbf006faf48c054468fa2a2e56e3f680b401c23b8f7fb24373ff75654c46"
+      }
+    },
+    "selected_branch": "WireSelection::Template, not WireSelection::Ocr"
+  },
+  "role_bindings": [
+    {
+      "binary": {
+        "bytes": 19448320,
+        "sha256": "e9762674be2a8fb9ab2ca7fe43a7f9f835495d6af5436869c736836efa2ffc7f"
+      },
+      "effective_producer_revision": "beb064f0c652648f92df5bfb65aaf05384a18b8d",
+      "original_receipt_role": "baseline",
+      "raw_build_identity": {
+        "cargo_lock_sha256": "19430ce2eb872383acdf429c9964e9b35bd97934e83745796f2a2e459e128f60",
+        "engine_revision": "f61a57f661c0314ea0a1d860d9298fbff86d903d",
+        "executable_sha256": "e9762674be2a8fb9ab2ca7fe43a7f9f835495d6af5436869c736836efa2ffc7f",
+        "profile": "debug",
+        "rustc": "rustc 1.98.1 (48a229cea 2026-09-01)",
+        "source_sha256": "4e23452bc363002f87aa554839fba72796d33b087da1711c39dbff128da50fff",
+        "target": "x86_64-pc-windows-msvc"
+      },
+      "role": "baseline",
+      "trial_driver_binary": {
+        "bytes": 4648960,
+        "sha256": "64ed85a01997e594bb24ad33425e82a27c9a2112b377637ddd179711eb5b6aa6"
+      }
+    },
+    {
+      "binary": {
+        "bytes": 19538944,
+        "sha256": "b4690fc3faf5e8232f3b7f758656e64e2afa0451fae0177ac430951eeeeab4ef"
+      },
+      "effective_producer_revision": "dd320044cdd390ee662117c69e865391f72ed996",
+      "original_receipt_role": "candidate",
+      "raw_build_identity": {
+        "cargo_lock_sha256": "eee958a894639ca3c7a3ccd99c8bc3a99a0dea303dfdbb737d88573ab6190dbf",
+        "engine_revision": "f61a57f661c0314ea0a1d860d9298fbff86d903d",
+        "executable_sha256": "b4690fc3faf5e8232f3b7f758656e64e2afa0451fae0177ac430951eeeeab4ef",
+        "profile": "debug",
+        "rustc": "rustc 1.98.1 (48a229cea 2026-09-01)",
+        "source_sha256": "e4aec1f731804974ebe4b269014b05fd232e98d36322945617e25a6e2feaa6eb",
+        "target": "x86_64-pc-windows-msvc"
+      },
+      "role": "current",
+      "trial_driver_binary": {
+        "bytes": 4649472,
+        "sha256": "b638e647a8af62bd1f17483c4cc90cc5d5d279700e81f126a0cae8a4046b7cfe"
+      }
+    }
+  ],
+  "selected_match_options": {
+    "actual_max_results": "min(8, DIAGNOSTIC_REGIONS(256)+1) = 8",
+    "authored_max_results": 8,
+    "authored_min_score": 0.9,
+    "basis": [
+      "driver.rs:523-550 builds template manifest0.9/8 and TrialSelection::Template",
+      "recognition_trial/engine.rs:318-337 prepares template then uses from_defaults(...).with_max_results(min(default,257)) and session.find_template",
+      "both retained producer request.rs:80-84 default to DropOverlapping;108-113 with_max_results changes only result limit",
+      "c305 candidates.rs:103-104 changed branch requires KeepAll"
+    ],
+    "binary_or_timing_equivalence_claim": false,
+    "independent_trial_trace": true,
+    "pr114_keepall_change_applicable": false,
+    "roi": [
+      64,
+      48,
+      320,
+      180
+    ],
+    "suppression": "DropOverlapping"
+  },
+  "shared_guard_reference": {
+    "meaning": "Reuse already reconciled source-role/owner/raw common bindings. No repeat of full common guard scan; each trial final seal is checked separately. Original per-pair673content and1520producer metadata-only remain distinct.",
+    "original_aggregate": {
+      "archive_member": "COMPLETION.json",
+      "sha256": "416c2aa792ef955944f0a5e4b0a595fa89121f74e3dbc805627067030a398cb9",
+      "state": "DEVELOPMENT_SEMANTICS_PASS"
+    },
+    "query_projection_sha256": "001a8b4fcffd864cdc542b87ac34f1e865980f05c7e40342f34e7f0dc454c7f3"
+  },
+  "stage_interval_pairs": {
+    "engine_initialization": [
+      "init_started",
+      "initialized"
+    ],
+    "entry_settled_emit": [
+      "primary_returned",
+      "settled"
+    ],
+    "initial_resource_verification": [
+      "validated",
+      "resources_verified"
+    ],
+    "input_validation": [
+      "entered",
+      "validated"
+    ],
+    "owner_drop": [
+      "owner_release_started",
+      "owner_released"
+    ],
+    "projection": [
+      "search_finished",
+      "projected"
+    ],
+    "resource_reverification": [
+      "initialized",
+      "resources_reverified"
+    ],
+    "search_call": [
+      "search_started",
+      "search_finished"
+    ],
+    "session_close": [
+      "close_started",
+      "closed"
+    ],
+    "session_open": [
+      "open_started",
+      "opened"
+    ],
+    "template_preparation_including_frame_gap": [
+      "acquired",
+      "prepared"
+    ]
+  },
+  "target": "x86_64-pc-windows-msvc"
+}

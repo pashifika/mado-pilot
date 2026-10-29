@@ -5,9 +5,10 @@
 //! A ScreenCaptureKit surface belongs to a producer pool of fixed depth. Retaining
 //! one until a consumer released the frame would let a retaining caller stall
 //! capture, which the capture package's storage contract forbids. The producer
-//! callback therefore copies the frame's content into an Adapter-owned buffer from
-//! a finite pool and publishes that, so a retained public frame pins nothing the
-//! producer needs.
+//! callback therefore copies the frame's content into Adapter-owned storage with
+//! a finite detached count. Without caller byte limits, this uses the original
+//! Core Video pool. With limits, explicit padded allocations carry last-owner
+//! byte leases, so neither pooling nor close can hide retained payload.
 //!
 //! # Why mapping is separate
 //!
@@ -104,9 +105,18 @@ impl MacosFrameStorage {
     }
 
     fn convert(&self) -> std::result::Result<Arc<CpuPixels>, ShimStatus> {
-        let mut bytes = vec![0u8; self.descriptor.byte_len()];
+        let lease = self.frame.reserve_cpu(self.descriptor.byte_len())?;
+        let mut bytes = Vec::new();
+        bytes
+            .try_reserve_exact(self.descriptor.byte_len())
+            .map_err(|_| ShimStatus::BudgetExhausted)?;
+        bytes.resize(self.descriptor.byte_len(), 0);
         self.frame.copy_out(&mut bytes, self.descriptor.stride())?;
-        Ok(Arc::new(CpuPixels::new(bytes.into_boxed_slice())))
+        let pixels = match lease {
+            Some(lease) => CpuPixels::with_retainer(bytes.into_boxed_slice(), lease),
+            None => CpuPixels::new(bytes.into_boxed_slice()),
+        };
+        Ok(Arc::new(pixels))
     }
 }
 
@@ -128,6 +138,13 @@ impl FrameStorage for MacosFrameStorage {
         self.descriptor
     }
 
+    fn reserve_cpu_copy(&self, bytes: usize) -> Result<Option<Arc<dyn Send + Sync>>> {
+        self.frame
+            .reserve_cpu(bytes)
+            .map(|lease| lease.map(|lease| lease as Arc<dyn Send + Sync>))
+            .map_err(Into::into)
+    }
+
     fn cpu_pixels(&self) -> Option<Arc<CpuPixels>> {
         // Fixed for this storage's lifetime. Even once a conversion is cached,
         // native storage stays a conversion path rather than changing its answer
@@ -139,8 +156,11 @@ impl FrameStorage for MacosFrameStorage {
         let mut attempt = Operation::admit(operation)?;
         loop {
             let mut state = self.mapping();
-            if let Some(pixels) = &state.pixels {
-                return Ok(attempt.commit(Arc::clone(pixels))?);
+            if let Some(pixels) = state.pixels.clone() {
+                drop(state);
+                // Commitment reads the caller clock, which may observe this
+                // storage, so it runs with the mapping mutex released.
+                return Ok(attempt.commit(pixels)?);
             }
             if !state.active {
                 // One conversion runs at a time; the rest wait for its result
@@ -186,11 +206,17 @@ mod tests {
     use std::sync::{Arc, Mutex};
     use std::time::Duration;
 
-    use mado_pilot_capture::{CaptureFault, PixelFormat};
-    use mado_pilot_core::{Clock, MonotonicInstant, Operation, OperationContext, PixelExtent};
+    use mado_pilot_capture::{CaptureFault, CpuPixels, FrameStorage, PixelFormat};
+    use mado_pilot_core::{
+        CancellationToken, Clock, MonotonicInstant, Operation, OperationContext, PixelExtent,
+        Status,
+    };
 
-    use super::{DETACHED_BUFFER_BUDGET, MappingState, descriptor_from_native, wait_for_mapping};
+    use super::{MacosFrameStorage, MappingState, descriptor_from_native, wait_for_mapping};
     use crate::shim::PIXEL_BGRA8;
+
+    /// The deadline every cached-mapping clock is measured against.
+    const DEADLINE: MonotonicInstant = MonotonicInstant::from_origin(Duration::from_secs(1));
 
     #[derive(Debug)]
     struct ReentrantMappingClock {
@@ -233,6 +259,151 @@ mod tests {
         assert_eq!(clock.reads.load(Ordering::Relaxed), 1);
     }
 
+    /// What a [`CachedCommitClock`] reports after the admission read.
+    #[derive(Debug)]
+    enum AfterAdmission {
+        Continue,
+        Expire,
+        Cancel(CancellationToken),
+    }
+
+    /// Observes a storage's mapping mutex from inside every caller clock read.
+    ///
+    /// A cached mapping reads the clock at admission and at final commitment,
+    /// so the second observation is the one that proves commitment no longer
+    /// runs under that mutex.
+    #[derive(Debug)]
+    struct CachedCommitClock {
+        storage: Arc<MacosFrameStorage>,
+        after_admission: AfterAdmission,
+        reads: AtomicUsize,
+        released: AtomicUsize,
+    }
+
+    impl CachedCommitClock {
+        fn new(storage: &Arc<MacosFrameStorage>, after_admission: AfterAdmission) -> Self {
+            Self {
+                storage: Arc::clone(storage),
+                after_admission,
+                reads: AtomicUsize::new(0),
+                released: AtomicUsize::new(0),
+            }
+        }
+
+        fn reads(&self) -> usize {
+            self.reads.load(Ordering::Relaxed)
+        }
+
+        fn released(&self) -> usize {
+            self.released.load(Ordering::Relaxed)
+        }
+    }
+
+    impl Clock for CachedCommitClock {
+        fn now(&self) -> MonotonicInstant {
+            if self.storage.mapping.try_lock().is_ok() {
+                self.released.fetch_add(1, Ordering::Relaxed);
+            }
+            if self.reads.fetch_add(1, Ordering::Relaxed) == 0 {
+                if let AfterAdmission::Cancel(token) = &self.after_admission {
+                    token.cancel();
+                }
+                return MonotonicInstant::ORIGIN;
+            }
+            match self.after_admission {
+                AfterAdmission::Expire => DEADLINE,
+                AfterAdmission::Continue | AfterAdmission::Cancel(_) => MonotonicInstant::ORIGIN,
+            }
+        }
+    }
+
+    /// Builds a storage whose 40-byte conversion is already cached, inside a
+    /// retained ceiling that leaves no room for a second conversion.
+    fn cached_storage() -> (
+        Arc<MacosFrameStorage>,
+        Arc<CpuPixels>,
+        crate::shim::TestingImageBudget,
+    ) {
+        let (frame, budget) = crate::shim::testing_limited_frame(64, 104)
+            .expect("64 padded native bytes plus 40 packed CPU bytes");
+        let descriptor =
+            descriptor_from_native(PIXEL_BGRA8, PixelExtent::new(5, 2)).expect("packed mapping");
+        let storage = MacosFrameStorage::new(descriptor, frame);
+        let cached = storage
+            .read_cpu(&OperationContext::new())
+            .expect("the first mapping converts");
+        assert_eq!(budget.used(), 104);
+        (storage, cached, budget)
+    }
+
+    #[test]
+    fn a_cached_mapping_commits_with_its_mutex_released() {
+        let _serial = crate::shim::NATIVE_LIFECYCLE_TEST_SERIAL
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
+        let (storage, cached, budget) = cached_storage();
+        let clock = Arc::new(CachedCommitClock::new(&storage, AfterAdmission::Continue));
+        let operation = OperationContext::new()
+            .with_clock(clock.clone())
+            .with_deadline(DEADLINE);
+
+        let reused = storage
+            .read_cpu(&operation)
+            .expect("the cached mapping commits");
+
+        assert!(Arc::ptr_eq(&reused, &cached));
+        assert_eq!(clock.reads(), 2, "admission and final commitment");
+        assert_eq!(
+            clock.released(),
+            2,
+            "the final commitment observed the storage without waiting"
+        );
+        assert_eq!(budget.used(), 104, "reuse neither converts nor copies");
+    }
+
+    #[test]
+    fn an_interrupted_cached_mapping_leaves_the_cache_for_a_later_caller() {
+        let _serial = crate::shim::NATIVE_LIFECYCLE_TEST_SERIAL
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
+        let (storage, cached, budget) = cached_storage();
+        let expiring = Arc::new(CachedCommitClock::new(&storage, AfterAdmission::Expire));
+        let token = CancellationToken::new();
+        let cancelling = Arc::new(CachedCommitClock::new(
+            &storage,
+            AfterAdmission::Cancel(token.clone()),
+        ));
+
+        let expired = storage
+            .read_cpu(
+                &OperationContext::new()
+                    .with_clock(expiring.clone())
+                    .with_deadline(DEADLINE),
+            )
+            .expect_err("the deadline wins at cached commitment");
+        let cancelled = storage
+            .read_cpu(
+                &OperationContext::new()
+                    .with_clock(cancelling)
+                    .with_deadline(DEADLINE)
+                    .with_cancellation(token),
+            )
+            .expect_err("cancellation wins before cached commitment");
+
+        assert_eq!(expired.status(), Status::DeadlineExceeded);
+        assert_eq!(
+            expiring.released(),
+            2,
+            "the expiring commitment ran with the mutex released"
+        );
+        assert_eq!(cancelled.status(), Status::Cancelled);
+        let later = storage
+            .read_cpu(&OperationContext::new())
+            .expect("an authorized caller still receives the cache");
+        assert!(Arc::ptr_eq(&later, &cached));
+        assert_eq!(budget.used(), 104, "refused callers released nothing early");
+    }
+
     #[test]
     fn a_published_descriptor_carries_no_adapter_row_padding() {
         let descriptor = descriptor_from_native(PIXEL_BGRA8, PixelExtent::new(1710, 1112))
@@ -252,14 +423,125 @@ mod tests {
     }
 
     #[test]
-    fn the_detached_budget_is_finite_and_small_enough_to_bound_memory() {
-        assert!(
-            DETACHED_BUFFER_BUDGET.get() >= 2,
-            "a mapping and a publication overlap"
+    fn padded_detached_and_cpu_storage_remain_charged_after_close_until_last_owner() {
+        let _serial = crate::shim::NATIVE_LIFECYCLE_TEST_SERIAL
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
+        let (frame, budget) = crate::shim::testing_limited_frame(64, 104)
+            .expect("64 padded native bytes plus 40 packed CPU bytes");
+        assert_eq!(budget.used(), 64);
+        let descriptor =
+            descriptor_from_native(PIXEL_BGRA8, PixelExtent::new(5, 2)).expect("packed mapping");
+        let storage = MacosFrameStorage::new(descriptor, frame);
+        let pixels = storage
+            .read_cpu(&OperationContext::new())
+            .expect("inclusive ceiling");
+        let shared = storage
+            .read_cpu(&OperationContext::new())
+            .expect("cached pixels");
+        assert!(Arc::ptr_eq(&pixels, &shared));
+        assert!(pixels.bytes().iter().copied().eq(0..40u8));
+        assert_eq!(budget.used(), 104);
+        drop(storage);
+        assert_eq!(budget.used(), 40);
+        drop(pixels);
+        assert_eq!(budget.used(), 40);
+        drop(shared);
+        assert_eq!(budget.used(), 0);
+    }
+
+    #[test]
+    fn converted_and_cropped_mappings_share_the_native_retained_ceiling() {
+        use mado_pilot_capture::{Frame, FrameView};
+        use mado_pilot_core::{
+            GeometryRevision, IdentityIssuer, PixelRect, StreamCursor, TransformSnapshot,
+        };
+
+        let _serial = crate::shim::NATIVE_LIFECYCLE_TEST_SERIAL
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
+        let (native, budget) = crate::shim::testing_limited_frame(64, 152)
+            .expect("64 native + 40 cached + 40 converted + 8 cropped bytes");
+        let extent = PixelExtent::new(5, 2);
+        let descriptor = descriptor_from_native(PIXEL_BGRA8, extent).expect("descriptor");
+        let storage = MacosFrameStorage::new(descriptor, native);
+        let issuer = IdentityIssuer::new();
+        let mut cursor = StreamCursor::new(issuer.issue_stream().expect("stream"));
+        let stamp = cursor.publish(GeometryRevision::FIRST).expect("stamp");
+        let frame = Frame::from_storage(
+            stamp,
+            MonotonicInstant::ORIGIN,
+            TransformSnapshot::frame_only(stamp.geometry(), extent),
+            storage,
+        )
+        .expect("frame");
+        let operation = OperationContext::new();
+        let converted = frame
+            .map(PixelFormat::Rgba8, &operation)
+            .expect("converted");
+        assert_eq!(&converted.bytes()[..4], &[2, 1, 0, 3]);
+        assert_eq!(budget.used(), 144);
+        let region = PixelRect::new(0, 0, 1, 2).expect("region");
+        let view = FrameView::new(frame.clone(), region).expect("view");
+        let cropped = view
+            .map(PixelFormat::Bgra8, &operation)
+            .expect("exact ceiling");
+        assert_eq!(cropped.bytes(), &[0, 1, 2, 3, 20, 21, 22, 23]);
+        assert_eq!(budget.used(), 152);
+        let reused = view
+            .map(PixelFormat::Bgra8, &operation)
+            .expect("live copy fits without another reservation");
+        assert_eq!(reused.bytes(), cropped.bytes());
+        assert_eq!(budget.used(), 152);
+        assert_eq!(
+            FrameView::new(
+                frame.clone(),
+                PixelRect::new(1, 0, 2, 2).expect("different region"),
+            )
+            .expect("different view")
+            .map(PixelFormat::Bgra8, &operation)
+            .expect_err("different copy exceeds ceiling")
+            .status(),
+            Status::LimitExceeded,
         );
-        assert!(
-            DETACHED_BUFFER_BUDGET.get() <= 16,
-            "these are full-frame CPU allocations, not GPU textures"
+        drop(cropped);
+        assert_eq!(budget.used(), 152);
+        drop(reused);
+        let cropped = view
+            .map(PixelFormat::Bgra8, &operation)
+            .expect("released bytes reusable");
+        drop(view);
+        drop(frame);
+        assert_eq!(budget.used(), 48);
+        drop(converted);
+        assert_eq!(budget.used(), 8);
+        drop(cropped);
+        assert_eq!(budget.used(), 0);
+    }
+
+    #[test]
+    fn native_padding_and_mapping_are_refused_before_exceeding_each_ceiling() {
+        let _serial = crate::shim::NATIVE_LIFECYCLE_TEST_SERIAL
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
+        assert!(matches!(
+            crate::shim::testing_limited_frame(63, 104),
+            Err(crate::shim::ShimStatus::BudgetExhausted),
+        ));
+        let (frame, budget) =
+            crate::shim::testing_limited_frame(64, 103).expect("the detached frame fits");
+        let descriptor =
+            descriptor_from_native(PIXEL_BGRA8, PixelExtent::new(5, 2)).expect("packed mapping");
+        let storage = MacosFrameStorage::new(descriptor, frame);
+        assert_eq!(
+            storage
+                .read_cpu(&OperationContext::new())
+                .expect_err("mapping exceeds ceiling")
+                .status(),
+            mado_pilot_core::Error::from(CaptureFault::StorageBudgetExhausted).status(),
         );
+        assert_eq!(budget.used(), 64);
+        drop(storage);
+        assert_eq!(budget.used(), 0);
     }
 }

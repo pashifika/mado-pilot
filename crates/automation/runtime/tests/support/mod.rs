@@ -336,6 +336,10 @@ impl CaptureSession for CountedClose {
         self.inner.frame(request, operation)
     }
 
+    fn commit_frame(&self, frame: &Frame, operation: &OperationContext) -> Result<()> {
+        self.inner.commit_frame(frame, operation)
+    }
+
     fn close(&self, operation: &OperationContext) -> Result<()> {
         self.closes.fetch_add(1, Ordering::Relaxed);
         self.inner.close(operation)

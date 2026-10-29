@@ -92,8 +92,8 @@ macro_rules! frozen {
         /// what the accepted ABI freeze records fixed it at.
         ///
         /// The middle column is the Rust constant itself, so this table cannot
-        /// be satisfied by editing it alone — the value has to be a literal
-        /// copied from the ADR, and the constant has to still equal it.
+        /// be satisfied by editing it alone: the constant must still equal
+        /// the frozen literal.
         const FROZEN: &[(&str, i128, i128)] = &[
             $((stringify!($name), $name as i128, $value),)*
         ];
@@ -525,7 +525,7 @@ fn the_header_declares_no_number_the_freeze_does_not_cover() {
             });
         assert_eq!(
             declared, *frozen,
-            "the header declares `{name}` as {declared} and ADR 0007 froze it at {frozen}; a \
+            "the header declares `{name}` as {declared} and ABI major 1 freezes it at {frozen}; a \
              caller compiled against the header and a library built from Rust would disagree"
         );
     }

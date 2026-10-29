@@ -11,8 +11,17 @@
 //! Publication order between concurrent advances is bought by a reservation
 //! rather than by nesting those locks. Exactly one advance at a time owns the
 //! removed head of the sequence. It restores that exact frame on interruption
-//! or stream refusal, so frames reach the stream in source order even though the
-//! sequence mutex is released before every publication.
+//! or refusal before publication, so frames reach the stream in source order
+//! even though the sequence mutex is released before every publication. Final
+//! retained-frame commitment follows publication and reservation release; refusal
+//! there cannot roll back a frame that other consumers may already hold.
+//!
+//! A request for a frame newer than some stamp is reconsidered once the
+//! sequence is settled for it: when it holds the claim, or finds the sequence
+//! exhausted with no claim outstanding. Only a claim holder publishes, so the
+//! maintained frame cannot move under that check. A request another advance
+//! already answered returns that frame, restoring any claim untouched, rather
+//! than consuming a later frame or reporting exhaustion.
 
 use std::collections::VecDeque;
 use std::fmt;
@@ -21,12 +30,13 @@ use std::thread;
 use std::time::Duration;
 
 use mado_pilot_capture::{
-    CaptureFault, CaptureProvider, CaptureSession, CoordinateSupport, Frame, FrameRequest,
-    FrameSelection, Lifecycle, OpenRequest, SessionDescription, StreamState, TargetDescription,
+    CaptureFault, CapturePacingReport, CaptureProvider, CaptureSession, CoordinateSupport, Frame,
+    FrameRequest, FrameSelection, Lifecycle, OpenRequest, PacingUnsupportedReason,
+    ResolvedCapturePacing, SessionDescription, StreamState, TargetDescription,
 };
 use mado_pilot_core::{
-    FrameOrder, GeometryRevision, IdentityIssuer, Operation, OperationContext, ProviderId, Result,
-    TargetId, TransformSnapshot,
+    FrameOrder, FrameStamp, GeometryRevision, IdentityIssuer, Operation, OperationContext,
+    ProviderId, Result, TargetId, TransformSnapshot,
 };
 
 use crate::source::{ReplayFrame, ReplaySource, ReplayTarget};
@@ -126,13 +136,27 @@ impl CaptureProvider for ReplayProvider {
         // A required format the source cannot produce fails the open rather
         // than converting behind the caller's back: a caller who required a
         // format wanted the source to have it, not for someone to translate.
+        // Every descriptor is checked, because an accepted session would
+        // otherwise publish a later frame in a format the caller refused.
         let format = source.format();
         if let Some(required) = request.required_format()
-            && required != format
+            && source
+                .frames()
+                .iter()
+                .any(|frame| frame.descriptor().format() != required)
         {
             return Err(CaptureFault::UnsupportedOption.into());
         }
+        if request.window_geometry().is_some() || request.resource_limits().is_some() {
+            return Err(CaptureFault::UnsupportedOption.into());
+        }
         validate_placements(source)?;
+        let pacing = CapturePacingReport::unsupported(
+            request
+                .capture_pacing()
+                .resolve(ResolvedCapturePacing::source_default()),
+            PacingUnsupportedReason::SourceCannotPace,
+        )?;
 
         let stream = self.issuer.issue_stream()?;
         let description = SessionDescription::new(
@@ -141,13 +165,14 @@ impl CaptureProvider for ReplayProvider {
             source.extent(),
             format,
             coordinate_support(source),
-        );
+        )
+        .with_capture_pacing(pacing);
         let session = ReplaySession {
             description,
             state: StreamState::with_target_extent(stream),
             remaining: Mutex::new(Remainder::new(source.clone().into_frames())),
         };
-        session.advance(operation)?;
+        session.advance(None, operation)?;
 
         Ok(attempt.commit(Arc::new(session) as Arc<dyn CaptureSession>)?)
     }
@@ -272,8 +297,18 @@ impl Drop for Reservation<'_> {
     }
 }
 
+/// What a request waiting on the sequence ends up holding.
+#[derive(Debug)]
+enum Claim<'session> {
+    /// The next frame, which this request publishes.
+    Next(Reservation<'session>),
+    /// A frame another advance already published that answers this request.
+    Maintained(Frame),
+}
+
 impl ReplaySession {
-    /// Publishes the next frame of the sequence.
+    /// Publishes the next frame of the sequence, unless another advance has
+    /// already published one newer than `newer_than`.
     ///
     /// The frame is claimed first, arbitrated second, published third. Claiming
     /// is reversible and publishing is what makes the frame observable, so the
@@ -281,15 +316,27 @@ impl ReplaySession {
     /// yet: a cancellation or an expired deadline reaching the commit consumes
     /// no frame, publishes nothing, and advances no identity.
     ///
+    /// A frame another advance published is returned without this commit. Like
+    /// any maintained frame, the caller's terminal frame commitment arbitrates
+    /// it, so interruption, closing and a terminal fault still refuse it.
+    ///
     /// # Errors
     ///
-    /// Returns [`CaptureFault::StreamEnded`] when the sequence is exhausted.
-    /// Waiting instead would be honest only if a frame might still arrive, and
-    /// for a finite replay sequence none ever will — so the caller is told,
-    /// rather than left to discover it when the deadline expires.
-    fn advance(&self, operation: &OperationContext) -> Result<Frame> {
+    /// Returns [`CaptureFault::StreamEnded`] when the sequence is exhausted and
+    /// no published frame is newer than `newer_than`. Waiting instead would be
+    /// honest only if a frame might still arrive, and for a finite replay
+    /// sequence none ever will — so the caller is told, rather than left to
+    /// discover it when the deadline expires.
+    fn advance(
+        &self,
+        newer_than: Option<FrameStamp>,
+        operation: &OperationContext,
+    ) -> Result<Frame> {
         let mut attempt = Operation::admit(operation)?;
-        let reserved = self.reserve(&mut attempt)?;
+        let reserved = match self.reserve(newer_than, &mut attempt)? {
+            Claim::Next(reserved) => reserved,
+            Claim::Maintained(frame) => return Ok(frame),
+        };
         // What is committed is the right to publish exactly this frame, which
         // is the operation's real subject and is already held by the time it is
         // arbitrated. An interruption drops the claim instead of returning it.
@@ -305,14 +352,55 @@ impl ReplaySession {
         reserved.publish()
     }
 
-    /// Waits until this request owns the next frame of the sequence.
-    fn reserve(&self, attempt: &mut Operation<'_>) -> Result<Reservation<'_>> {
+    /// Waits until this request owns the next frame of the sequence, or until
+    /// another advance has published a frame newer than `newer_than`.
+    ///
+    /// The maintained frame is compared only once it is fixed for this request
+    /// — while holding the claim or after observing exhaustion — and with the
+    /// sequence mutex released, so the two locks never nest.
+    fn reserve(
+        &self,
+        newer_than: Option<FrameStamp>,
+        attempt: &mut Operation<'_>,
+    ) -> Result<Claim<'_>> {
         loop {
-            if let Some(reservation) = self.try_reserve()? {
-                return Ok(reservation);
+            match self.try_reserve() {
+                Ok(Some(reservation)) => {
+                    let Some(frame) = self.maintained_after(newer_than)? else {
+                        return Ok(Claim::Next(reservation));
+                    };
+                    // Releasing the unused claim restores its frame to the head.
+                    drop(reservation);
+                    return Ok(Claim::Maintained(frame));
+                }
+                Ok(None) => {}
+                Err(ended) => {
+                    return self
+                        .maintained_after(newer_than)?
+                        .map(Claim::Maintained)
+                        .ok_or(ended);
+                }
             }
             attempt.checkpoint()?;
             thread::sleep(LOCK_POLL_INTERVAL);
+        }
+    }
+
+    /// Returns the maintained frame when it is newer than `stamp`.
+    fn maintained_after(&self, stamp: Option<FrameStamp>) -> Result<Option<Frame>> {
+        let Some(stamp) = stamp else {
+            return Ok(None);
+        };
+        let Some(current) = self.state.current() else {
+            return Ok(None);
+        };
+        match current
+            .stamp()
+            .order(&stamp)
+            .map_err(|_| CaptureFault::ForeignStream)?
+        {
+            FrameOrder::After => Ok(Some(current)),
+            FrameOrder::Before | FrameOrder::Same => Ok(None),
         }
     }
 
@@ -372,9 +460,11 @@ impl CaptureSession for ReplaySession {
             return self.state.frame(request, operation);
         };
         if self.state.lifecycle() != Lifecycle::Open {
-            return Err(CaptureFault::SessionClosed.into());
+            return self.state.frame(request, operation);
         }
-        let current = self.state.current().ok_or(CaptureFault::SessionClosed)?;
+        let Some(current) = self.state.current() else {
+            return self.state.frame(request, operation);
+        };
         // A stamp from another stream is refused without touching the sequence:
         // advancing it would consume a frame to answer a request that was never
         // valid. Validate this before operation admission to preserve that typed
@@ -388,8 +478,16 @@ impl CaptureSession for ReplaySession {
             // maintained frame. Going through it prevents this replay fast path
             // from returning cached data after closing begins.
             FrameOrder::After => self.state.frame(request, operation),
-            FrameOrder::Before | FrameOrder::Same => self.advance(operation),
+            FrameOrder::Before | FrameOrder::Same => {
+                let frame = self.advance(Some(stamp), operation)?;
+                self.commit_frame(&frame, operation)?;
+                Ok(frame)
+            }
         }
+    }
+
+    fn commit_frame(&self, frame: &Frame, operation: &OperationContext) -> Result<()> {
+        self.state.commit_frame(frame, operation)
     }
 
     fn close(&self, operation: &OperationContext) -> Result<()> {
@@ -406,10 +504,10 @@ mod tests {
     use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
     use std::sync::{Arc, Condvar, Mutex, Weak};
 
-    use mado_pilot_capture::{Continuity, FrameDescriptor, PixelFormat};
+    use mado_pilot_capture::{CapturePacingRequest, Continuity, FrameDescriptor, PixelFormat};
     use mado_pilot_core::{
-        Clock, GeometryRevision, MonotonicInstant, PixelExtent, Scale, Status, StreamCursor,
-        TargetPlacement,
+        CancellationToken, Clock, GeometryRevision, Interruption, MonotonicInstant, PixelExtent,
+        Scale, Status, StreamCursor, TargetPlacement,
     };
 
     use super::*;
@@ -698,6 +796,154 @@ mod tests {
         }
     }
 
+    #[derive(Debug)]
+    struct StopAfterPublicationClock {
+        session: Weak<ReplaySession>,
+        fault: Option<CaptureFault>,
+    }
+
+    impl Clock for StopAfterPublicationClock {
+        fn now(&self) -> MonotonicInstant {
+            let session = self.session.upgrade().expect("session remains owned");
+            assert!(
+                session.remaining.try_lock().is_ok(),
+                "final arbitration must release the replay queue"
+            );
+            if session
+                .state
+                .current()
+                .is_some_and(|frame| frame.stamp().sequence().value() > 0)
+            {
+                if let Some(fault) = self.fault {
+                    session.state.terminate(fault);
+                } else {
+                    session.state.begin_close();
+                }
+            }
+            MonotonicInstant::ORIGIN
+        }
+    }
+
+    /// What [`OvertakeAtAdmission`] does once the overtaking frame is published.
+    #[derive(Debug)]
+    enum ThenStop {
+        Nothing,
+        Close,
+        Terminate(CaptureFault),
+        Cancel(CancellationToken),
+    }
+
+    /// Publishes the next frame from another advance at a request's admission.
+    ///
+    /// Admission follows the request's own check of the maintained frame, so
+    /// the request reaches the sequence already answered without ever meeting
+    /// another request's claim.
+    #[derive(Debug)]
+    struct OvertakeAtAdmission {
+        reads: AtomicUsize,
+        session: Weak<ReplaySession>,
+        then: ThenStop,
+    }
+
+    impl OvertakeAtAdmission {
+        fn new(session: &Arc<ReplaySession>, then: ThenStop) -> Self {
+            Self {
+                reads: AtomicUsize::new(0),
+                session: Arc::downgrade(session),
+                then,
+            }
+        }
+    }
+
+    impl Clock for OvertakeAtAdmission {
+        fn now(&self) -> MonotonicInstant {
+            if self.reads.fetch_add(1, Ordering::Relaxed) == 0
+                && let Some(session) = self.session.upgrade()
+            {
+                session
+                    .advance(None, &OperationContext::new())
+                    .expect("the overtaking advance publishes");
+                match &self.then {
+                    ThenStop::Nothing => {}
+                    ThenStop::Close => session.state.begin_close(),
+                    ThenStop::Terminate(fault) => session.state.terminate(*fault),
+                    ThenStop::Cancel(token) => token.cancel(),
+                }
+            }
+            MonotonicInstant::ORIGIN
+        }
+    }
+
+    /// Cancels its own request at admission, before the request claims.
+    #[derive(Debug)]
+    struct CancelAtAdmission {
+        token: CancellationToken,
+    }
+
+    impl Clock for CancelAtAdmission {
+        fn now(&self) -> MonotonicInstant {
+            self.token.cancel();
+            MonotonicInstant::ORIGIN
+        }
+    }
+
+    /// Holds each request at operation admission until `parties` requests arrive.
+    ///
+    /// Admission follows the request's own check of the maintained frame, so
+    /// releasing the barrier proves every party chose to advance from the same
+    /// old stamp before any of them could claim. Each later read advances one
+    /// [`WAIT_STEP`], so a claim that is never released exhausts the refusal
+    /// budget instead of hanging the test.
+    #[derive(Debug)]
+    struct AdmissionBarrier {
+        reads: AtomicUsize,
+        arrivals: Arc<(Mutex<usize>, Condvar)>,
+        parties: usize,
+        met: AtomicBool,
+    }
+
+    impl AdmissionBarrier {
+        fn new(arrivals: Arc<(Mutex<usize>, Condvar)>, parties: usize) -> Self {
+            Self {
+                reads: AtomicUsize::new(0),
+                arrivals,
+                parties,
+                met: AtomicBool::new(false),
+            }
+        }
+
+        fn met(&self) -> bool {
+            self.met.load(Ordering::Relaxed)
+        }
+    }
+
+    impl Clock for AdmissionBarrier {
+        fn now(&self) -> MonotonicInstant {
+            let reads = self.reads.fetch_add(1, Ordering::Relaxed);
+            if reads == 0 {
+                let (arrived, all) = &*self.arrivals;
+                let mut arrived = arrived
+                    .lock()
+                    .unwrap_or_else(|poisoned| poisoned.into_inner());
+                *arrived += 1;
+                all.notify_all();
+                let (arrived, timeout) = all
+                    .wait_timeout_while(arrived, HANDSHAKE_TIMEOUT, |arrived| {
+                        *arrived < self.parties
+                    })
+                    .unwrap_or_else(|poisoned| poisoned.into_inner());
+                self.met.store(
+                    *arrived >= self.parties && !timeout.timed_out(),
+                    Ordering::Relaxed,
+                );
+                return MonotonicInstant::ORIGIN;
+            }
+            MonotonicInstant::ORIGIN
+                .checked_add(WAIT_STEP * u32::try_from(reads).unwrap_or(u32::MAX))
+                .expect("test instant is representable")
+        }
+    }
+
     fn session() -> Arc<ReplaySession> {
         let issuer = IdentityIssuer::new();
         let target = issuer.issue_target(PROVIDER).expect("issued target");
@@ -728,9 +974,73 @@ mod tests {
             remaining: Mutex::new(Remainder::new(frames)),
         });
         session
-            .advance(&OperationContext::new())
+            .advance(None, &OperationContext::new())
             .expect("first frame publishes");
         session
+    }
+
+    /// Builds a session whose second frame is maintained and whose third and
+    /// last frame is the only one left in the sequence.
+    fn session_with_one_remaining() -> (Arc<ReplaySession>, Frame) {
+        let session = session();
+        let first = session.state.current().expect("first frame");
+        let second = session
+            .frame(
+                &FrameRequest::newer_than(first.stamp()),
+                &OperationContext::new(),
+            )
+            .expect("second frame publishes");
+        assert_eq!(session.lock_remainder().frames.len(), 1);
+        (session, second)
+    }
+
+    /// A deadline the replay tests' fixed clocks never reach.
+    const LATE_DEADLINE: MonotonicInstant = MonotonicInstant::from_origin(Duration::from_secs(1));
+
+    /// Returns an operation that lets another advance overtake its request.
+    fn overtaken(session: &Arc<ReplaySession>, then: ThenStop) -> OperationContext {
+        OperationContext::new()
+            .with_clock(Arc::new(OvertakeAtAdmission::new(session, then)))
+            .with_deadline(LATE_DEADLINE)
+    }
+
+    /// Returns the address of a queued frame's pixel allocation.
+    fn pixel_address(frame: &ReplayFrame) -> usize {
+        frame.pixels().as_ptr() as usize
+    }
+
+    /// Returns the byte every pixel of a uniformly filled test frame holds.
+    fn fill(frame: &Frame) -> u8 {
+        let mapping = frame
+            .map(PixelFormat::Rgba8, &OperationContext::new())
+            .expect("frame maps");
+        let bytes = mapping.bytes();
+        assert!(
+            bytes.iter().all(|byte| *byte == bytes[0]),
+            "test frames are uniformly filled"
+        );
+        bytes[0]
+    }
+
+    /// Asserts that `last` is the final frame and exhaustion leaves the session open.
+    fn assert_exhausted_after(session: &ReplaySession, last: &Frame) {
+        assert_eq!(
+            session
+                .frame(
+                    &FrameRequest::newer_than(last.stamp()),
+                    &OperationContext::new(),
+                )
+                .expect_err("the sequence is finite"),
+            CaptureFault::StreamEnded.into()
+        );
+        assert_eq!(
+            session.state.lifecycle(),
+            Lifecycle::Open,
+            "exhaustion is reported, not turned into a terminal state"
+        );
+        let remainder = session.lock_remainder();
+        assert!(remainder.frames.is_empty());
+        assert!(!remainder.reserved);
     }
 
     /// Builds a one-frame source whose declared placement is `placement`.
@@ -767,6 +1077,82 @@ mod tests {
         let operation = OperationContext::new();
         let targets = provider.discover(&operation).expect("discovered");
         provider.open(targets[0].id(), &OpenRequest::new(), &operation)
+    }
+
+    #[test]
+    fn native_requirements_are_refused_without_consuming_replay() {
+        use mado_pilot_capture::{CaptureResourceLimits, WindowCaptureArea, WindowGeometry};
+
+        let extent = PixelExtent::new(8, 6);
+        let placement = TargetPlacement::new(
+            (-20.0, 10.0),
+            (4.0, 3.0),
+            Scale::new(2.0, 2.0).expect("scale"),
+        )
+        .expect("placement");
+        let provider = ReplayProvider::new(
+            Arc::new(IdentityIssuer::new()),
+            placed_source(extent, placement),
+        )
+        .expect("provider");
+        let operation = OperationContext::new();
+        let target = provider.discover(&operation).expect("discovery")[0].id();
+        for request in [
+            OpenRequest::new().require_window_geometry(WindowGeometry::new(
+                WindowCaptureArea::MacosWindow,
+                placement,
+                extent,
+            )),
+            OpenRequest::new().with_resource_limits(
+                CaptureResourceLimits::new(192, 1024).expect("nonzero limits"),
+            ),
+        ] {
+            assert_eq!(
+                provider
+                    .open(target, &request, &operation)
+                    .expect_err("replay cannot honor native constraints")
+                    .status(),
+                Status::Unsupported,
+            );
+        }
+        let session = provider
+            .open(target, &OpenRequest::new(), &operation)
+            .expect("ordinary replay");
+        let frame = session
+            .frame(&FrameRequest::latest(), &operation)
+            .expect("original frame");
+        assert_eq!(frame.descriptor().extent(), extent);
+        assert_eq!(frame.stamp().sequence().value(), 0);
+        session.close(&operation).expect("cleanup");
+    }
+
+    #[test]
+    fn pacing_does_not_mask_invalid_replay_source_geometry() {
+        let extent = PixelExtent::new(8, 6);
+        let inconsistent =
+            TargetPlacement::new((0.0, 0.0), (4.0, 3.0), Scale::new(1.0, 1.0).expect("valid"))
+                .expect("valid");
+        let provider = ReplayProvider::new(
+            Arc::new(IdentityIssuer::new()),
+            placed_source(extent, inconsistent),
+        )
+        .expect("provider");
+        let operation = OperationContext::new();
+        let target = provider.discover(&operation).expect("discovered")[0].id();
+
+        for pacing in [
+            CapturePacingRequest::required(Duration::from_millis(200)).expect("positive"),
+            CapturePacingRequest::preferred(Duration::from_millis(60)).expect("positive"),
+        ] {
+            let error = provider
+                .open(
+                    target,
+                    &OpenRequest::new().with_capture_pacing(pacing),
+                    &operation,
+                )
+                .expect_err("source geometry remains authoritative before pacing");
+            assert_eq!(error.status(), Status::InvalidArgument);
+        }
     }
 
     #[test]
@@ -1139,15 +1525,12 @@ mod tests {
     }
 
     #[test]
-    fn concurrent_advances_publish_in_replay_source_order() {
+    fn contending_requests_share_one_advance_and_keep_source_order() {
         let session = session();
-        let first = session.state.current().expect("first frame");
-        let first_stamp = first.stamp();
+        let first_stamp = session.state.current().expect("first frame").stamp();
         let remaining = session.lock_remainder();
+        let last_pixels = pixel_address(remaining.frames.back().expect("last frame"));
         let contenders = Arc::new((Mutex::new(0usize), Condvar::new()));
-        let deadline = MonotonicInstant::ORIGIN
-            .checked_add(Duration::from_secs(1))
-            .expect("representable deadline");
         let mut handles = Vec::new();
 
         for _ in 0..2 {
@@ -1156,7 +1539,7 @@ mod tests {
             handles.push(thread::spawn(move || {
                 let operation = OperationContext::new()
                     .with_clock(Arc::new(ContentionClock::new(contenders)))
-                    .with_deadline(deadline);
+                    .with_deadline(LATE_DEADLINE);
                 session.frame(&FrameRequest::newer_than(first_stamp), &operation)
             }));
         }
@@ -1173,24 +1556,274 @@ mod tests {
         drop(count);
         drop(remaining);
 
-        let mut frames: Vec<Frame> = handles
+        let frames: Vec<Frame> = handles
             .into_iter()
             .map(|handle| handle.join().expect("request thread finished"))
             .collect::<Result<_>>()
-            .expect("both frames publish");
-        frames.sort_by_key(|frame| frame.stamp().sequence().value());
+            .expect("both requests are answered");
 
-        assert_eq!(frames[0].stamp().sequence().value(), 1);
-        assert_eq!(frames[1].stamp().sequence().value(), 2);
-        for (frame, fill) in frames.iter().zip([1u8, 2]) {
+        // The first claim publishes the next frame. The request behind it is
+        // answered by that publication instead of consuming the frame after it.
+        for frame in &frames {
+            assert_eq!(frame.stamp().sequence().value(), 1);
+            assert_eq!(fill(frame), 1);
+        }
+        assert!(frames[0].is_same_instance(&frames[1]));
+        {
+            let remainder = session.lock_remainder();
+            assert!(!remainder.reserved);
+            assert_eq!(remainder.frames.len(), 1, "exactly one frame was consumed");
+            let last = remainder.frames.front().expect("last frame");
+            assert_eq!(pixel_address(last), last_pixels);
+        }
+        let next = session
+            .frame(
+                &FrameRequest::newer_than(frames[0].stamp()),
+                &OperationContext::new(),
+            )
+            .expect("the frame behind it publishes next");
+        assert_eq!(next.stamp().sequence().value(), 2, "no identity is skipped");
+        assert_eq!(fill(&next), 2, "replay source order is preserved");
+        assert_exhausted_after(&session, &next);
+    }
+
+    #[test]
+    fn two_requests_from_one_old_stamp_both_receive_the_sole_remaining_frame() {
+        let (session, second) = session_with_one_remaining();
+        let old = second.stamp();
+        let arrivals = Arc::new((Mutex::new(0usize), Condvar::new()));
+        let budget_exhausted = MonotonicInstant::ORIGIN
+            .checked_add(WAIT_STEP * REFUSAL_BUDGET)
+            .expect("representable deadline");
+        let requests: Vec<_> = (0..2)
+            .map(|_| {
+                let session = Arc::clone(&session);
+                let clock = Arc::new(AdmissionBarrier::new(Arc::clone(&arrivals), 2));
+                let request_clock = Arc::clone(&clock);
+                let request = thread::spawn(move || {
+                    let operation = OperationContext::new()
+                        .with_clock(request_clock)
+                        .with_deadline(budget_exhausted);
+                    session.frame(&FrameRequest::newer_than(old), &operation)
+                });
+                (clock, request)
+            })
+            .collect();
+
+        let mut frames = Vec::new();
+        for (clock, request) in requests {
+            frames.push(
+                request
+                    .join()
+                    .expect("request thread finished")
+                    .expect("an eligible request is answered without a retry"),
+            );
             assert!(
-                frame
-                    .map(PixelFormat::Rgba8, &OperationContext::new())
-                    .expect("frame maps")
-                    .bytes()
+                clock.met(),
+                "both requests chose to advance from the same old stamp"
+            );
+        }
+
+        for frame in &frames {
+            assert_eq!(frame.stamp().sequence().value(), 2);
+            assert_eq!(fill(frame), 2);
+        }
+        assert!(
+            frames[0].is_same_instance(&frames[1]),
+            "both requests return the one newly published frame"
+        );
+        assert_exhausted_after(&session, &frames[0]);
+    }
+
+    #[test]
+    fn a_request_overtaken_before_its_claim_consumes_no_further_frame() {
+        let session = session();
+        let first = session.state.current().expect("first frame");
+        let last_pixels = pixel_address(session.lock_remainder().frames.back().expect("last"));
+
+        let answered = session
+            .frame(
+                &FrameRequest::newer_than(first.stamp()),
+                &overtaken(&session, ThenStop::Nothing),
+            )
+            .expect("the overtaking frame answers the request");
+
+        assert_eq!(answered.stamp().sequence().value(), 1);
+        assert_eq!(fill(&answered), 1);
+        let maintained = session.state.current().expect("maintained frame");
+        assert!(answered.is_same_instance(&maintained));
+        {
+            let remainder = session.lock_remainder();
+            assert!(!remainder.reserved, "the unused claim is released");
+            assert_eq!(remainder.frames.len(), 1, "the claimed frame is restored");
+            let last = remainder.frames.front().expect("last frame");
+            assert_eq!(pixel_address(last), last_pixels);
+        }
+        let next = session
+            .frame(
+                &FrameRequest::newer_than(answered.stamp()),
+                &OperationContext::new(),
+            )
+            .expect("the restored frame publishes next");
+        assert_eq!(next.stamp().sequence().value(), 2);
+        assert_eq!(fill(&next), 2);
+    }
+
+    #[test]
+    fn a_request_overtaken_by_the_final_frame_is_answered_instead_of_ended() {
+        let (session, second) = session_with_one_remaining();
+
+        let answered = session
+            .frame(
+                &FrameRequest::newer_than(second.stamp()),
+                &overtaken(&session, ThenStop::Nothing),
+            )
+            .expect("the final frame answers the request rather than exhaustion");
+
+        assert_eq!(answered.stamp().sequence().value(), 2);
+        assert_eq!(fill(&answered), 2);
+        let maintained = session.state.current().expect("maintained frame");
+        assert!(answered.is_same_instance(&maintained));
+        assert_exhausted_after(&session, &answered);
+    }
+
+    #[test]
+    fn interruption_and_stops_refuse_a_frame_another_advance_published() {
+        let token = CancellationToken::new();
+        let cases: [(ThenStop, Option<CancellationToken>, mado_pilot_core::Error); 3] = [
+            (ThenStop::Close, None, CaptureFault::SessionClosed.into()),
+            (
+                ThenStop::Terminate(CaptureFault::TargetLost),
+                None,
+                CaptureFault::TargetLost.into(),
+            ),
+            (
+                ThenStop::Cancel(token.clone()),
+                Some(token),
+                Interruption::Cancelled.into(),
+            ),
+        ];
+        for (then, cancellation, expected) in cases {
+            let (session, second) = session_with_one_remaining();
+            let mut operation = overtaken(&session, then);
+            if let Some(token) = cancellation {
+                operation = operation.with_cancellation(token);
+            }
+
+            let error = session
+                .frame(&FrameRequest::newer_than(second.stamp()), &operation)
+                .expect_err("terminal frame commitment refuses the maintained frame");
+
+            assert_eq!(error, expected);
+            let maintained = session.state.current().expect("overtaking frame");
+            assert_eq!(
+                maintained.stamp().sequence().value(),
+                2,
+                "the request was answerable but not authorized"
+            );
+            let remainder = session.lock_remainder();
+            assert!(remainder.frames.is_empty());
+            assert!(!remainder.reserved);
+        }
+    }
+
+    #[test]
+    fn a_cancellation_before_publication_restores_the_claimed_frame() {
+        let session = session();
+        let first = session.state.current().expect("first frame");
+        let head_pixels = pixel_address(session.lock_remainder().frames.front().expect("next"));
+        let token = CancellationToken::new();
+        let operation = OperationContext::new()
+            .with_clock(Arc::new(CancelAtAdmission {
+                token: token.clone(),
+            }))
+            .with_deadline(LATE_DEADLINE)
+            .with_cancellation(token);
+
+        let error = session
+            .frame(&FrameRequest::newer_than(first.stamp()), &operation)
+            .expect_err("cancellation wins before publication");
+
+        assert_eq!(error, Interruption::Cancelled.into());
+        let maintained = session.state.current().expect("maintained frame");
+        assert!(maintained.is_same_instance(&first), "nothing was published");
+        {
+            let remainder = session.lock_remainder();
+            assert!(!remainder.reserved);
+            assert_eq!(remainder.frames.len(), 2);
+            let head = remainder.frames.front().expect("restored head");
+            assert_eq!(pixel_address(head), head_pixels);
+        }
+        let next = session
+            .frame(
+                &FrameRequest::newer_than(first.stamp()),
+                &OperationContext::new(),
+            )
+            .expect("the restored frame publishes");
+        assert_eq!(next.stamp().sequence().value(), 1);
+        assert_eq!(fill(&next), 1);
+    }
+
+    #[test]
+    fn a_newer_than_request_preserves_the_terminal_fault_after_cleanup() {
+        let session = session();
+        let first = session.state.current().expect("first frame");
+        let operation = OperationContext::new();
+        session.state.terminate(CaptureFault::CaptureItemClosed);
+        session.close(&operation).expect("cleanup completes");
+
+        assert_eq!(
+            session
+                .frame(&FrameRequest::newer_than(first.stamp()), &operation)
+                .expect_err("cleanup cannot mask target loss"),
+            CaptureFault::CaptureItemClosed.into()
+        );
+    }
+
+    #[test]
+    fn a_stop_after_replay_publication_refuses_the_returned_candidate() {
+        for fault in [Some(CaptureFault::TargetLost), None] {
+            let session = session();
+            let first = session.state.current().expect("first frame");
+            let operation = OperationContext::new()
+                .with_clock(Arc::new(StopAfterPublicationClock {
+                    session: Arc::downgrade(&session),
+                    fault,
+                }))
+                .with_deadline(
+                    MonotonicInstant::ORIGIN
+                        .checked_add(Duration::from_secs(1))
+                        .expect("deadline"),
+                );
+
+            let error = session
+                .frame(&FrameRequest::newer_than(first.stamp()), &operation)
+                .expect_err("final commitment observes the stop");
+
+            assert_eq!(error, fault.unwrap_or(CaptureFault::SessionClosed).into());
+            assert_eq!(
+                session
+                    .state
+                    .current()
+                    .expect("published frame")
+                    .stamp()
+                    .sequence()
+                    .value(),
+                1,
+                "publication already advanced the maintained stream"
+            );
+            let remainder = session.lock_remainder();
+            assert!(!remainder.reserved);
+            assert_eq!(remainder.frames.len(), 1);
+            assert!(
+                remainder
+                    .frames
+                    .front()
+                    .expect("last frame")
+                    .pixels()
                     .iter()
-                    .all(|byte| *byte == fill),
-                "published identity must preserve replay source order"
+                    .all(|byte| *byte == 2),
+                "a publicly observable publication cannot be rolled back"
             );
         }
     }

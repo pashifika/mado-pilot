@@ -23,13 +23,14 @@ use mado_pilot_input::{
 use super::{
     CommitGeometry, DriverState, FUNCTION_KEYS, GeometryFingerprint, NativeCommitBudget,
     NativePost, PointerState, ProcessCommitSource, ProcessGeometrySource, SystemButtonState,
-    SystemCommitSource, SystemKeyState, commit_cleanup, commit_geometry, commit_prepared,
-    commit_process, contains_desktop_point, extent_from_points, focus_wait, key_flag,
-    modifier_flag, native_button, placement_for, process_permission_denied_fault,
-    process_pointer_for_non_move_with, process_policy_geometry_for, process_status_fault,
-    release_pending_process, release_process, release_system, require_post_event_access,
-    resolve_key_code, retain_process_pointer, retain_process_press, text_chunks,
-    text_release_may_be_pending, wait_for_activation,
+    SystemCommitSource, SystemKeyState, commit_cleanup, commit_prepared, commit_process,
+    commit_system_pointer_move, contains_desktop_point, extent_from_points, focus_wait,
+    focused_system_bounds, key_flag, modifier_flag, native_button, placement_for,
+    process_permission_denied_fault, process_pointer_for_non_move_with,
+    process_policy_geometry_for, process_status_fault, release_pending_process, release_process,
+    release_system, require_post_event_access, resolve_key_code, retain_pointer,
+    retain_process_press, revalidate_system_commit_with, system_policy_geometry, text_chunks,
+    text_release_may_be_pending, validate_system_geometry, wait_for_activation,
 };
 use crate::input::{
     InputDriver, MacosInputController, PendingTextRelease, SubmissionFailure, input_capability,
@@ -74,7 +75,8 @@ struct FakeSource {
     posts: Mutex<Vec<Posted>>,
     revalidation: Mutex<Option<InputFault>>,
     cleanup_authorization: Mutex<Option<InputFault>>,
-    current_geometry: Mutex<Option<GeometryFingerprint>>,
+    current_geometry: Mutex<Option<shim::NativeBounds>>,
+    lose_focus_during_final_inventory: Option<bool>,
     cancel_during_revalidation: Mutex<Option<CancellationToken>>,
     revalidation_delay: Mutex<Duration>,
     advance_during_prepare: Mutex<Option<(Arc<TestClock>, Duration)>>,
@@ -116,7 +118,7 @@ impl FakeSource {
         source
     }
 
-    fn with_current_geometry(geometry: GeometryFingerprint) -> Self {
+    fn with_current_geometry(geometry: shim::NativeBounds) -> Self {
         let source = Self::default();
         *source.current_geometry.lock().expect("uncontended") = Some(geometry);
         source
@@ -199,9 +201,9 @@ impl SystemCommitSource for FakeSource {
 
     fn revalidate_system_commit(
         &self,
-        _focus: FocusPolicy,
+        focus: FocusPolicy,
         geometry: CommitGeometry,
-        _budget: NativeCommitBudget,
+        budget: NativeCommitBudget,
     ) -> Result<(), InputFault> {
         *self.revalidations.lock().expect("uncontended") += 1;
         std::thread::sleep(*self.revalidation_delay.lock().expect("uncontended"));
@@ -216,12 +218,29 @@ impl SystemCommitSource for FakeSource {
         if let Some(fault) = *self.revalidation.lock().expect("uncontended") {
             return Err(fault);
         }
-        if let (CommitGeometry::RequireCurrent(expected), Some(current)) = (
-            geometry,
-            *self.current_geometry.lock().expect("uncontended"),
-        ) && current != expected
-        {
-            return Err(InputFault::GeometryChanged);
+        let current = *self.current_geometry.lock().expect("uncontended");
+        if current.is_some() || self.lose_focus_during_final_inventory.is_some() {
+            // The early inventory differs from the focus observer's final bounds.
+            let current = current.unwrap_or(shim::NativeBounds {
+                origin: (0.0, 0.0),
+                size: (1.0, 1.0),
+                scale: 1.0,
+            });
+            revalidate_system_commit_with(
+                TargetKind::Window,
+                geometry,
+                budget,
+                |_| Ok(current),
+                || Ok(()),
+                |_| {
+                    let observation = match self.lose_focus_during_final_inventory {
+                        Some(lose_focus) => shim::testing_input_focus_observation(lose_focus)
+                            .expect("permission-independent native focus seam"),
+                        None => (true, current),
+                    };
+                    focused_system_bounds(focus, observation)
+                },
+            )?;
         }
         Ok(())
     }
@@ -864,7 +883,7 @@ fn an_ambiguous_drag_move_releases_at_its_possible_destination() {
         native: shim::INPUT_BUTTON_PRIMARY,
     });
 
-    let failure = retain_process_pointer(
+    let failure = retain_pointer(
         &mut state.pointer,
         destination,
         Err(SubmissionFailure::after_native_attempt(
@@ -895,6 +914,77 @@ fn an_ambiguous_drag_move_releases_at_its_possible_destination() {
             location: destination.desktop,
         }]
     );
+}
+
+#[test]
+fn system_drag_move_cleanup_retains_only_a_submitted_or_possible_destination() {
+    let geometry = fingerprint((0.0, 0.0), (640.0, 420.0), 2.0);
+    let origin = PointerState {
+        desktop: (20.0, 30.0),
+        geometry,
+    };
+    let destination = PointerState {
+        desktop: (320.0, 210.0),
+        geometry,
+    };
+    for (post_failure, expected) in [
+        (None, destination),
+        (Some(1), destination),
+        (Some(0), origin),
+    ] {
+        let source = post_failure.map_or_else(FakeSource::new, |invoked| {
+            FakeSource::failing_post(ShimStatus::NativeException, invoked)
+        });
+        let mut state = DriverState {
+            pointer: Some(origin),
+            ..DriverState::default()
+        };
+        state.buttons.push(SystemButtonState {
+            logical: PointerButton::Primary,
+            native: shim::INPUT_BUTTON_PRIMARY,
+        });
+        let outcome = commit_system_pointer_move(
+            &source,
+            FocusPolicy::RequireFocused,
+            CommitGeometry::RequireCurrent(geometry),
+            &OperationContext::new(),
+            &mut state,
+            destination,
+            0,
+        );
+        if let Some(invoked) = post_failure {
+            let failure = outcome.expect_err("posting failure stays visible");
+            assert_eq!(failure.fault, InputFault::SubmissionFailed);
+            assert_eq!(failure.current_event_may_have_effect, invoked != 0);
+        } else {
+            outcome.expect("move submitted");
+        }
+        *source.post_failure.lock().expect("uncontended") = None;
+        release_system(
+            PressedState::Button(PointerButton::Primary),
+            &mut state,
+            &source,
+            &OperationContext::new(),
+        )
+        .expect("owned release");
+        assert_eq!(
+            source.posts().last(),
+            Some(&Posted {
+                post: format!(
+                    "{:?}",
+                    NativePost::Pointer {
+                        action: shim::INPUT_POINTER_RELEASE,
+                        button: shim::INPUT_BUTTON_PRIMARY,
+                        click_state: shim::INPUT_SINGLE_CLICK,
+                        location: expected.desktop,
+                    }
+                ),
+                flags: 0,
+            }),
+            "{post_failure:?}"
+        );
+        assert!(state.buttons.is_empty());
+    }
 }
 
 /// A caller that selected `RequireFocused` gets that predicate confirmed by the
@@ -1185,14 +1275,14 @@ fn a_revoked_authorization_at_the_commit_boundary_stops_before_the_event() {
 
 #[test]
 fn a_geometry_change_between_preparation_and_commit_refuses_the_post() {
-    let prepared = fingerprint((0.0, 0.0), (640.0, 420.0), 2.0);
-    let moved = fingerprint((50.0, 25.0), (640.0, 420.0), 2.0);
+    let prepared = process_geometry((0.0, 0.0), (640.0, 420.0), 2.0).2;
+    let moved = process_geometry((50.0, 25.0), (640.0, 420.0), 2.0).2;
     let source = FakeSource::with_current_geometry(moved);
 
     let failure = commit_prepared(
         &source,
         FocusPolicy::RequireFocused,
-        commit_geometry(GeometryPolicy::RequireUnchanged, prepared).expect("supported policy"),
+        CommitGeometry::RequireUnchanged(prepared),
         &OperationContext::new(),
         NativePost::Pointer {
             action: shim::INPUT_POINTER_PRESS,
@@ -1210,8 +1300,8 @@ fn a_geometry_change_between_preparation_and_commit_refuses_the_post() {
 
 #[test]
 fn a_move_after_resolution_distinguishes_snapshot_from_unchanged_geometry() {
-    let prepared = fingerprint((0.0, 0.0), (640.0, 420.0), 2.0);
-    let moved = fingerprint((50.0, 25.0), (640.0, 420.0), 2.0);
+    let prepared = process_geometry((0.0, 0.0), (640.0, 420.0), 2.0).2;
+    let moved = process_geometry((50.0, 25.0), (640.0, 420.0), 2.0).2;
     let post = NativePost::Pointer {
         action: shim::INPUT_POINTER_MOVE,
         button: shim::INPUT_BUTTON_NONE,
@@ -1223,7 +1313,7 @@ fn a_move_after_resolution_distinguishes_snapshot_from_unchanged_geometry() {
     commit_prepared(
         &snapshot,
         FocusPolicy::RequireFocused,
-        commit_geometry(GeometryPolicy::UseFrameSnapshot, prepared).expect("supported policy"),
+        CommitGeometry::UseFrameSnapshot,
         &OperationContext::new(),
         post,
         0,
@@ -1236,7 +1326,7 @@ fn a_move_after_resolution_distinguishes_snapshot_from_unchanged_geometry() {
     let failure = commit_prepared(
         &unchanged,
         FocusPolicy::RequireFocused,
-        commit_geometry(GeometryPolicy::RequireUnchanged, prepared).expect("supported policy"),
+        CommitGeometry::RequireUnchanged(prepared),
         &OperationContext::new(),
         post,
         0,
@@ -2110,6 +2200,174 @@ fn require_unchanged_preserves_raw_fractional_bounds_when_capture_is_downscaled(
         "the final gate receives raw screen points and backing scale rather than a reconstructed effective rectangle"
     );
     assert_eq!(geometry.calls(), [1, 0]);
+}
+
+#[test]
+fn system_required_focus_observes_changes_during_the_final_inventory() {
+    for lose_focus in [false, true] {
+        let source = FakeSource {
+            lose_focus_during_final_inventory: Some(lose_focus),
+            ..FakeSource::default()
+        };
+        let result = commit_prepared(
+            &source,
+            FocusPolicy::RequireFocused,
+            CommitGeometry::RequireUnchanged(shim::NativeBounds {
+                origin: (100.0, 100.0),
+                size: (320.0, 240.0),
+                scale: 2.0,
+            }),
+            &OperationContext::new(),
+            NativePost::Pointer {
+                action: shim::INPUT_POINTER_MOVE,
+                button: shim::INPUT_BUTTON_NONE,
+                click_state: 0,
+                location: (120.0, 120.0),
+            },
+            0,
+        );
+        if lose_focus {
+            let failure = result.expect_err("final inventory invalidated initially valid focus");
+            assert_eq!(failure.fault, InputFault::FocusRequired);
+            assert_eq!(failure.invoked_native_units, 0);
+            assert!(!failure.current_event_may_have_effect);
+            assert!(source.posts().is_empty());
+        } else {
+            result.expect("stable final focus and its returned bounds permit posting");
+            assert_eq!(source.posts().len(), 1);
+        }
+    }
+}
+
+#[test]
+fn system_unchanged_downscaled_geometry_uses_raw_bounds_at_both_gates() {
+    let source = process_geometry_with_backing((-120.25, 80.5), (320.4, 240.0), 1.0, 2.0);
+    let equivalent = shim::NativeBounds {
+        size: (320.5, 240.0),
+        ..source.2
+    };
+    for current in [source.2, equivalent] {
+        let (transform, fingerprint, commit) = system_policy_geometry(
+            GeometryPolicy::RequireUnchanged,
+            || Ok((source.0, source.2)),
+            || Ok(current),
+        )
+        .expect("unchanged backing geometry is independent of capture downscale");
+        assert_eq!(transform, source.0);
+        assert_eq!(fingerprint, source.1);
+        assert_eq!(commit, CommitGeometry::RequireUnchanged(source.2));
+        let point = transform
+            .convert_point(
+                Point::new(CoordinateSpace::CapturePixels, 100.0, 50.0).expect("finite point"),
+                CoordinateSpace::DesktopLogical,
+            )
+            .expect("the source transform converts coordinates");
+        assert_eq!((point.x(), point.y()), (-20.25, 130.5));
+        let final_source = FakeSource::with_current_geometry(current);
+        commit_prepared(
+            &final_source,
+            FocusPolicy::RequireFocused,
+            commit,
+            &OperationContext::new(),
+            NativePost::Pointer {
+                action: shim::INPUT_POINTER_MOVE,
+                button: shim::INPUT_BUTTON_NONE,
+                click_state: 0,
+                location: (point.x(), point.y()),
+            },
+            0,
+        )
+        .expect("the final raw-geometry gate permits the unchanged target");
+        assert_eq!(final_source.posts().len(), 1);
+    }
+}
+
+#[test]
+fn system_unchanged_raw_changes_refuse_at_early_and_final_gates() {
+    let source = process_geometry_with_backing((-120.25, 80.5), (320.4, 240.0), 1.0, 2.0);
+    for changed in [
+        shim::NativeBounds {
+            origin: (-120.0, 80.5),
+            ..source.2
+        },
+        shim::NativeBounds {
+            size: (321.0, 240.0),
+            ..source.2
+        },
+        shim::NativeBounds {
+            size: (320.4, 241.0),
+            ..source.2
+        },
+        shim::NativeBounds {
+            scale: 1.0,
+            ..source.2
+        },
+    ] {
+        let early = system_policy_geometry(
+            GeometryPolicy::RequireUnchanged,
+            || Ok((source.0, source.2)),
+            || Ok(changed),
+        )
+        .expect_err("a true raw change refuses before event preparation");
+        assert_eq!(early, InputFault::GeometryChanged);
+        let (_, _, commit) = system_policy_geometry(
+            GeometryPolicy::RequireUnchanged,
+            || Ok((source.0, source.2)),
+            || Ok(source.2),
+        )
+        .expect("the early observation is unchanged");
+        let final_source = FakeSource::with_current_geometry(changed);
+        let failure = commit_prepared(
+            &final_source,
+            FocusPolicy::RequireFocused,
+            commit,
+            &OperationContext::new(),
+            NativePost::Pointer {
+                action: shim::INPUT_POINTER_MOVE,
+                button: shim::INPUT_BUTTON_NONE,
+                click_state: 0,
+                location: (-20.25, 130.5),
+            },
+            0,
+        )
+        .expect_err("the final raw change refuses the pending event");
+        assert_eq!(failure.fault, InputFault::GeometryChanged);
+        assert_eq!(failure.invoked_native_units, 0);
+        assert!(!failure.current_event_may_have_effect);
+        assert!(final_source.posts().is_empty());
+    }
+}
+
+#[test]
+fn system_snapshot_and_reprojection_keep_their_geometry_sources() {
+    let source = process_geometry_with_backing((-120.25, 80.5), (320.4, 240.0), 1.0, 2.0);
+    let moved = process_geometry((40.0, 20.0), (640.0, 480.0), 2.0);
+    let snapshot = system_policy_geometry(
+        GeometryPolicy::UseFrameSnapshot,
+        || Ok((source.0, source.2)),
+        || panic!("a snapshot must not request current geometry"),
+    )
+    .expect("the retained frame remains the coordinate source");
+    assert_eq!(
+        snapshot,
+        (source.0, source.1, CommitGeometry::UseFrameSnapshot)
+    );
+    validate_system_geometry(snapshot.2, moved.2).expect("snapshot accepts movement");
+
+    let reprojected = system_policy_geometry(
+        GeometryPolicy::ReprojectCurrent,
+        || panic!("reprojection must not request frame geometry"),
+        || Ok(moved.2),
+    )
+    .expect("current geometry defines reprojection");
+    assert_eq!(
+        reprojected,
+        (moved.0, moved.1, CommitGeometry::RequireCurrent(moved.1)),
+    );
+    assert_eq!(
+        validate_system_geometry(reprojected.2, source.2),
+        Err(InputFault::GeometryChanged),
+    );
 }
 
 #[test]

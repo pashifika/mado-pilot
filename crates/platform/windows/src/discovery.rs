@@ -4,7 +4,10 @@ use std::collections::HashSet;
 use std::ffi::c_void;
 use std::mem::size_of;
 
-use mado_pilot_capture::{CaptureFault, CoordinateSupport, PixelFormat, TargetDescription};
+use mado_pilot_capture::{
+    CaptureFault, CoordinateSupport, PixelFormat, TargetDescription, WindowCaptureArea,
+    WindowGeometry,
+};
 use mado_pilot_core::{
     CapabilitySupport, PixelExtent, Result, Scale, TargetCapability, TargetId, TargetKind,
     TargetPlacement,
@@ -18,41 +21,24 @@ use windows::Win32::Graphics::Gdi::{
     ClientToScreen, EnumDisplayMonitors, GetMonitorInfoW, HDC, HMONITOR, MONITORINFOEXW,
 };
 use windows::Win32::System::WinRT::Graphics::Capture::IGraphicsCaptureItemInterop;
-use windows::Win32::UI::HiDpi::{
-    DPI_AWARENESS_CONTEXT, DPI_AWARENESS_CONTEXT_PER_MONITOR_AWARE_V2, SetThreadDpiAwarenessContext,
-};
 use windows::Win32::UI::WindowsAndMessaging::{
-    EnumWindows, GetClassNameW, GetClientRect, GetWindowTextLengthW, GetWindowTextW, IsWindow,
-    IsWindowVisible,
+    EnumWindows, GetClassNameW, GetClientRect, GetWindowDisplayAffinity, GetWindowTextLengthW,
+    GetWindowTextW, IsIconic, IsWindow, IsWindowVisible,
 };
 use windows::core::BOOL;
 
 use crate::availability::capture_item_factory;
 use crate::input::input_capability;
-use crate::optional_api::{logical_to_physical, monitor_scale, window_dpi};
+use crate::optional_api::{
+    NativeThreadDpi, ThreadDpiContext, logical_to_physical, monitor_scale, window_dpi,
+    window_dpi_context,
+};
 use crate::storage::validate_surface;
+use crate::window_authority::{RetainedWindowAuthority, WindowAuthorityStatus};
 
 const DEFAULT_DPI: u32 = 96;
 
-struct ThreadDpiContext(DPI_AWARENESS_CONTEXT);
-
-impl ThreadDpiContext {
-    fn per_monitor() -> Self {
-        // SAFETY: this changes only the calling thread and returns the context
-        // that Drop restores before control leaves the display query.
-        Self(unsafe { SetThreadDpiAwarenessContext(DPI_AWARENESS_CONTEXT_PER_MONITOR_AWARE_V2) })
-    }
-}
-
-impl Drop for ThreadDpiContext {
-    fn drop(&mut self) {
-        // SAFETY: self.0 is exactly the context returned when this guard changed
-        // the current thread, and restoration happens on that same thread.
-        let _restored = unsafe { SetThreadDpiAwarenessContext(self.0) };
-    }
-}
-
-/// The stable native lookup key. It is never exposed through a public contract.
+/// Private lookup key. Public native-window keys are descriptive, never authority.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, PartialOrd, Ord)]
 pub(crate) enum NativeKey {
     Window(usize),
@@ -96,11 +82,12 @@ impl TargetMetadata {
         id: TargetId,
         kind: TargetKind,
         window_message_authority: bool,
+        extent: PixelExtent,
     ) -> TargetDescription {
         TargetDescription::new(
             id,
             self.name.clone(),
-            self.extent,
+            extent,
             PixelFormat::Bgra8,
             CoordinateSupport::with_target_placement(),
         )
@@ -136,6 +123,7 @@ pub(crate) struct Candidate {
     pub(crate) key: NativeKey,
     pub(crate) metadata: TargetMetadata,
     pub(crate) item: CaptureItem,
+    pub(crate) authority: Option<RetainedWindowAuthority>,
 }
 
 pub(crate) fn inventory() -> Result<Vec<Candidate>> {
@@ -166,12 +154,151 @@ pub(crate) fn current_placement(key: NativeKey, extent: PixelExtent) -> Option<T
             window_placement(hwnd, extent)
         }
         NativeKey::Display(raw) => {
-            let _dpi = ThreadDpiContext::per_monitor();
+            let _dpi = ThreadDpiContext::per_monitor()?;
             let monitor = HMONITOR(std::ptr::with_exposed_provenance_mut::<c_void>(raw));
             let (_, bounds) = monitor_metadata(monitor)?;
             monitor_placement(monitor, bounds, extent).ok()
         }
     }
+}
+
+/// Required geometry gates publication but never supplies its input transform.
+pub(crate) fn publication_placement(
+    required_geometry: std::result::Result<Option<WindowGeometry>, CaptureFault>,
+    input_placement: impl FnOnce() -> std::result::Result<TargetPlacement, CaptureFault>,
+) -> std::result::Result<TargetPlacement, CaptureFault> {
+    required_geometry?;
+    input_placement()
+}
+
+/// Reads geometry only for an already retained capture item. The caller fences
+/// this observation with that item's Closed registration and process authority.
+pub(crate) fn current_window_geometry(
+    key: NativeKey,
+    extent: PixelExtent,
+) -> std::result::Result<WindowGeometry, CaptureFault> {
+    let NativeKey::Window(raw) = key else {
+        return Err(CaptureFault::UnsupportedOption);
+    };
+    let hwnd = HWND(std::ptr::with_exposed_provenance_mut::<c_void>(raw));
+    let _dpi = ThreadDpiContext::per_monitor().ok_or(CaptureFault::UnsupportedOption)?;
+    // SAFETY: these calls inspect the retained opaque HWND without mutating it.
+    if !unsafe { IsWindow(Some(hwnd)).as_bool() } {
+        return Err(CaptureFault::TargetLost);
+    }
+    // SAFETY: no caller memory is accessed by these window state queries.
+    if unsafe { IsIconic(hwnd).as_bool() || !IsWindowVisible(hwnd).as_bool() } {
+        return Err(CaptureFault::SourceInvalid);
+    }
+    let mut affinity = 0;
+    // SAFETY: affinity is a complete writable DWORD. Failure cannot establish
+    // eligibility and is deliberately not treated as unprotected.
+    let observed_affinity = unsafe { GetWindowDisplayAffinity(hwnd, &raw mut affinity) }
+        .ok()
+        .map(|()| affinity);
+    validate_affinity(observed_affinity)?;
+    let mut cloaked = 0u32;
+    let mut bounds = RECT::default();
+    // SAFETY: both outputs match the exact DWM attribute size.
+    unsafe {
+        DwmGetWindowAttribute(
+            hwnd,
+            DWMWA_CLOAKED,
+            (&raw mut cloaked).cast::<c_void>(),
+            u32::try_from(size_of::<u32>()).expect("DWORD size fits u32"),
+        )
+    }
+    .map_err(|_| CaptureFault::UnsupportedOption)?;
+    if cloaked != 0 {
+        return Err(CaptureFault::SourceInvalid);
+    }
+    // SAFETY: bounds is a complete writable RECT.
+    unsafe {
+        DwmGetWindowAttribute(
+            hwnd,
+            DWMWA_EXTENDED_FRAME_BOUNDS,
+            (&raw mut bounds).cast::<c_void>(),
+            u32::try_from(size_of::<RECT>()).expect("RECT size fits u32"),
+        )
+    }
+    .map_err(|_| CaptureFault::UnsupportedOption)?;
+    let mut client = RECT::default();
+    // SAFETY: client is a complete writable RECT.
+    unsafe { GetClientRect(hwnd, &raw mut client) }.map_err(|_| CaptureFault::UnsupportedOption)?;
+    let mut origin = POINT {
+        x: client.left,
+        y: client.top,
+    };
+    let mut far = POINT {
+        x: client.right,
+        y: client.bottom,
+    };
+    // SAFETY: both POINT values are writable; per-monitor awareness makes these
+    // physical virtual-desktop coordinates, including negative origins.
+    if !unsafe {
+        ClientToScreen(hwnd, &raw mut origin).as_bool()
+            && ClientToScreen(hwnd, &raw mut far).as_bool()
+    } {
+        return Err(CaptureFault::UnsupportedOption);
+    }
+    let client = RECT {
+        left: origin.x,
+        top: origin.y,
+        right: far.x,
+        bottom: far.y,
+    };
+    let dpi = window_dpi(hwnd)
+        .filter(|dpi| *dpi != 0)
+        .ok_or(CaptureFault::UnsupportedOption)?;
+    let scale = f64::from(dpi) / f64::from(DEFAULT_DPI);
+    let scale = Scale::new(scale, scale).map_err(|_| CaptureFault::SourceInvalid)?;
+    geometry_from_rectangles(bounds, client, extent, scale)
+}
+
+fn validate_affinity(affinity: Option<u32>) -> std::result::Result<(), CaptureFault> {
+    match affinity {
+        Some(0) => Ok(()),
+        Some(_) => Err(CaptureFault::AccessDenied),
+        // GetWindowDisplayAffinity only documents success for layered windows
+        // under DWM composition. Ordinary/unverifiable windows may refuse too.
+        None => Err(CaptureFault::UnsupportedOption),
+    }
+}
+
+fn geometry_from_rectangles(
+    extended: RECT,
+    client: RECT,
+    extent: PixelExtent,
+    scale: Scale,
+) -> std::result::Result<WindowGeometry, CaptureFault> {
+    let matches = |rect: RECT| {
+        rect.right
+            .checked_sub(rect.left)
+            .and_then(|width| u32::try_from(width).ok())
+            == Some(extent.width())
+            && rect
+                .bottom
+                .checked_sub(rect.top)
+                .and_then(|height| u32::try_from(height).ok())
+                == Some(extent.height())
+    };
+    if matches(extended)
+        && matches(client)
+        && (extended.left != client.left || extended.top != client.top)
+    {
+        return Err(CaptureFault::UnsupportedOption);
+    }
+    let (area, rect) = if matches(extended) {
+        (WindowCaptureArea::WindowsExtendedFrame, extended)
+    } else if matches(client) {
+        (WindowCaptureArea::WindowsClient, client)
+    } else {
+        // Never infer an origin or scale a mismatched WGC content rectangle.
+        return Err(CaptureFault::UnsupportedOption);
+    };
+    let placement = placement_with_scale(rect.left, rect.top, extent, scale)
+        .map_err(|_| CaptureFault::SourceInvalid)?;
+    Ok(WindowGeometry::new(area, placement, extent))
 }
 
 fn window_candidates(factory: &IGraphicsCaptureItemInterop) -> Result<Vec<Candidate>> {
@@ -187,6 +314,10 @@ fn window_candidates(factory: &IGraphicsCaptureItemInterop) -> Result<Vec<Candid
             continue;
         };
         let class_name = window_class(hwnd);
+        // Retain the owner before WGC binds this HWND. A later capture cannot
+        // establish provenance for an item that may already name an old window.
+        let authority =
+            RetainedWindowAuthority::capture(NativeKey::Window(raw), class_name.as_deref());
         // SAFETY: factory is the documented GraphicsCaptureItem desktop interop
         // factory, and hwnd was just validated. A protected/uncapturable window
         // is filtered by the returned error without prompting.
@@ -202,6 +333,10 @@ fn window_candidates(factory: &IGraphicsCaptureItemInterop) -> Result<Vec<Candid
         let Some(placement) = window_placement(hwnd, extent) else {
             continue;
         };
+        // Never join the capture item to authority observed after a replacement.
+        // Missing or changed authority leaves capture available without identity.
+        let authority =
+            authority.filter(|authority| authority.status() == WindowAuthorityStatus::SameTarget);
 
         candidates.push(Candidate {
             key: NativeKey::Window(raw),
@@ -212,18 +347,22 @@ fn window_candidates(factory: &IGraphicsCaptureItemInterop) -> Result<Vec<Candid
                 placement,
             },
             item: CaptureItem::Native(item),
+            authority,
         });
     }
     Ok(candidates)
 }
 
 fn display_candidates(factory: &IGraphicsCaptureItemInterop) -> Result<Vec<Candidate>> {
-    let _dpi = ThreadDpiContext::per_monitor();
     let mut candidates = Vec::new();
     for raw in monitor_handles()? {
         // SAFETY: the value came directly from EnumDisplayMonitors.
         let monitor = HMONITOR(std::ptr::with_exposed_provenance_mut::<c_void>(raw));
-        let Some((device_name, bounds)) = monitor_metadata(monitor) else {
+        let metadata = {
+            let _dpi = ThreadDpiContext::per_monitor().ok_or(CaptureFault::UnsupportedOption)?;
+            monitor_metadata(monitor)
+        };
+        let Some((device_name, bounds)) = metadata else {
             continue;
         };
         // SAFETY: factory is the desktop capture-item interop factory and the
@@ -238,7 +377,10 @@ fn display_candidates(factory: &IGraphicsCaptureItemInterop) -> Result<Vec<Candi
         let Some(extent) = positive_extent(size.Width, size.Height) else {
             continue;
         };
-        let placement = monitor_placement(monitor, bounds, extent)?;
+        let placement = {
+            let _dpi = ThreadDpiContext::per_monitor().ok_or(CaptureFault::UnsupportedOption)?;
+            monitor_placement(monitor, bounds, extent)?
+        };
         candidates.push(Candidate {
             key: NativeKey::Display(raw),
             metadata: TargetMetadata {
@@ -248,6 +390,7 @@ fn display_candidates(factory: &IGraphicsCaptureItemInterop) -> Result<Vec<Candi
                 placement,
             },
             item: CaptureItem::Native(item),
+            authority: None,
         });
     }
     Ok(candidates)
@@ -342,6 +485,7 @@ fn window_class(hwnd: HWND) -> Option<String> {
 }
 
 fn window_placement(hwnd: HWND, extent: PixelExtent) -> Option<TargetPlacement> {
+    let _dpi = ThreadDpiContext::enter(&NativeThreadDpi, window_dpi_context(hwnd)?)?;
     let mut client = RECT::default();
     // SAFETY: client is writable and hwnd is from the current enumeration.
     if unsafe { GetClientRect(hwnd, &raw mut client) }.is_err() {
@@ -519,5 +663,161 @@ mod tests {
         assert_eq!(positive_extent(0, 10), None);
         assert_eq!(positive_extent(10, -1), None);
         assert_eq!(positive_extent(10, 20), Some(PixelExtent::new(10, 20)));
+    }
+
+    #[test]
+    fn retained_geometry_distinguishes_extended_frame_from_client_without_guessing() {
+        use mado_pilot_capture::{CaptureFault, NativeDesktopUnit, WindowCaptureArea};
+        use windows::Win32::Foundation::RECT;
+
+        let extended = RECT {
+            left: -1400,
+            top: -200,
+            right: -1120,
+            bottom: 0,
+        };
+        let client = RECT {
+            left: -1390,
+            top: -170,
+            right: -1130,
+            bottom: -10,
+        };
+        let scale = Scale::new(1.25, 1.25).expect("scale");
+        let frame =
+            super::geometry_from_rectangles(extended, client, PixelExtent::new(280, 200), scale)
+                .expect("exact extended frame");
+        assert_eq!(frame.area(), WindowCaptureArea::WindowsExtendedFrame);
+        assert_eq!(
+            frame.desktop_unit(),
+            NativeDesktopUnit::WindowsPhysicalPixels
+        );
+        assert_eq!(frame.placement().desktop_origin(), (-1400.0, -200.0));
+        assert_eq!(frame.placement().logical_size(), (224.0, 160.0));
+
+        let client_geometry =
+            super::geometry_from_rectangles(extended, client, PixelExtent::new(260, 160), scale)
+                .expect("exact client");
+        assert_eq!(client_geometry.area(), WindowCaptureArea::WindowsClient);
+        assert_eq!(
+            client_geometry.placement().desktop_origin(),
+            (-1390.0, -170.0)
+        );
+        let snapshot = TransformSnapshot::with_target(
+            GeometryRevision::FIRST,
+            client_geometry.extent(),
+            client_geometry.placement(),
+        )
+        .expect("client transform");
+        let far = snapshot
+            .convert_point(
+                Point::new(CoordinateSpace::CapturePixels, 260.0, 160.0).expect("far corner"),
+                CoordinateSpace::DesktopLogical,
+            )
+            .expect("physical desktop conversion");
+        assert_eq!((far.x(), far.y()), (-1130.0, -10.0));
+        assert_eq!(
+            super::geometry_from_rectangles(extended, client, PixelExtent::new(270, 180), scale),
+            Err(CaptureFault::UnsupportedOption),
+        );
+        let shifted = RECT {
+            left: -1390,
+            top: -190,
+            right: -1110,
+            bottom: 10,
+        };
+        assert_eq!(
+            super::geometry_from_rectangles(extended, shifted, PixelExtent::new(280, 200), scale),
+            Err(CaptureFault::UnsupportedOption),
+            "same size at different origins does not identify the captured rectangle",
+        );
+    }
+
+    #[test]
+    fn required_geometry_is_only_a_gate_for_publication_placement() {
+        use mado_pilot_capture::{CaptureFault, WindowGeometry};
+        use windows::Win32::Foundation::RECT;
+
+        use crate::provider::require_geometry;
+
+        let extended = RECT {
+            left: -1400,
+            top: -200,
+            right: -1120,
+            bottom: 0,
+        };
+        let client = RECT {
+            left: -1390,
+            top: -170,
+            right: -1130,
+            bottom: -10,
+        };
+        // Integer client conversion need not equal GetDpiForWindow / 96.
+        let input_scale = Scale::new(260.0 / 207.0, 160.0 / 127.0).expect("client ratios");
+        let described_scale = Scale::new(1.25, 1.25).expect("window DPI");
+        for extent in [PixelExtent::new(280, 200), PixelExtent::new(260, 160)] {
+            let required =
+                super::geometry_from_rectangles(extended, client, extent, described_scale)
+                    .expect("retained area");
+            let input_placement =
+                placement_with_scale(extended.left, extended.top, extent, input_scale)
+                    .expect("input-authoritative placement");
+            assert_ne!(required.placement(), input_placement);
+            let checked =
+                require_geometry(required, required, Some(extent)).map(|()| Some(required));
+            let selected = super::publication_placement(checked, || Ok(input_placement))
+                .expect("unchanged required geometry admits the input placement");
+            assert_eq!(selected, input_placement);
+
+            let published =
+                TransformSnapshot::with_target(GeometryRevision::FIRST, extent, selected)
+                    .expect("selected publication transform");
+            let pixel = Point::new(CoordinateSpace::CapturePixels, 130.0, 80.0).expect("pixel");
+            let logical = published
+                .convert_point(pixel, CoordinateSpace::TargetLogical)
+                .expect("frame-to-target conversion");
+            assert!((logical.x() - 103.5).abs() < 1e-12);
+            assert!((logical.y() - 63.5).abs() < 1e-12);
+            let live =
+                TransformSnapshot::with_target(GeometryRevision::FIRST, extent, input_placement)
+                    .expect("current input transform");
+            let desktop = live
+                .convert_point(logical, CoordinateSpace::DesktopLogical)
+                .expect("reproject target-logical point through live input");
+            assert!((desktop.x() + 1270.0).abs() < 1e-12);
+            assert!((desktop.y() + 120.0).abs() < 1e-12);
+
+            let changed = WindowGeometry::new(required.area(), input_placement, extent);
+            let refused = require_geometry(required, changed, Some(extent)).map(|()| Some(changed));
+            assert_eq!(
+                super::publication_placement(refused, || {
+                    panic!("changed required geometry must refuse before live placement")
+                }),
+                Err(CaptureFault::WindowGeometryChanged),
+            );
+            assert_eq!(
+                super::publication_placement(checked, || Err(CaptureFault::TargetLost)),
+                Err(CaptureFault::TargetLost),
+                "required geometry cannot replace an unavailable input placement",
+            );
+        }
+    }
+
+    #[test]
+    fn unknown_affinity_is_not_mistaken_for_unprotected_capture() {
+        use mado_pilot_capture::CaptureFault;
+
+        assert_eq!(super::validate_affinity(Some(0)), Ok(()));
+        assert_eq!(
+            super::validate_affinity(Some(1)),
+            Err(CaptureFault::AccessDenied)
+        );
+        assert_eq!(
+            super::validate_affinity(Some(0x11)),
+            Err(CaptureFault::AccessDenied)
+        );
+        assert_eq!(
+            super::validate_affinity(None),
+            Err(CaptureFault::UnsupportedOption)
+        );
     }
 }

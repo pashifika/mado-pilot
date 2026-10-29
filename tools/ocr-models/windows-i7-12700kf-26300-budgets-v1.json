@@ -1,0 +1,252 @@
+{
+  "approval": "ADR-0082",
+  "cohort": {
+    "cohort_id": "windows-i7-12700kf-32g-26300-ocr-cpu-v1",
+    "target": "x86_64-pc-windows-msvc",
+    "os": "Windows-11-10.0.26300-SP0",
+    "cpu": "Intel64 Family 6 Model 151 Stepping 2, GenuineIntel",
+    "host_id": "PASHIFIKA-PC",
+    "runtime": "1.29.0-api17",
+    "provider": "cpu",
+    "intra_op": 1,
+    "inter_op": 1
+  },
+  "process": {
+    "cold_open_ms": 354,
+    "close_ms": 10,
+    "peak_resident_bytes": 511705088
+  },
+  "workloads": {
+    "g-004-japanese-ui-v3/hud/singular": {
+      "p50_ms": 1058,
+      "p95_ms": 1078,
+      "max_ms": 1079,
+      "rust_peak_allocated_bytes": 25399296,
+      "rust_steady_bytes": 4096,
+      "rust_growth_bytes": 4096,
+      "mapped_bytes": 2073600,
+      "detector_tensor_bytes": 11587584
+    },
+    "g-004-japanese-ui-v3/hud/grouped": {
+      "p50_ms": 1052,
+      "p95_ms": 1061,
+      "max_ms": 1065,
+      "rust_peak_allocated_bytes": 25399296,
+      "rust_steady_bytes": 4096,
+      "rust_growth_bytes": 4096,
+      "mapped_bytes": 2073600,
+      "detector_tensor_bytes": 11587584
+    },
+    "g-004-japanese-ui-v3/menu/singular": {
+      "p50_ms": 931,
+      "p95_ms": 955,
+      "max_ms": 967,
+      "rust_peak_allocated_bytes": 21442560,
+      "rust_steady_bytes": 4096,
+      "rust_growth_bytes": 4096,
+      "mapped_bytes": 1382400,
+      "detector_tensor_bytes": 9609216
+    },
+    "g-004-japanese-ui-v3/menu/grouped": {
+      "p50_ms": 931,
+      "p95_ms": 945,
+      "max_ms": 948,
+      "rust_peak_allocated_bytes": 21442560,
+      "rust_steady_bytes": 4096,
+      "rust_growth_bytes": 4096,
+      "mapped_bytes": 1382400,
+      "detector_tensor_bytes": 9609216
+    },
+    "g-004-japanese-ui-v3/status/singular": {
+      "p50_ms": 973,
+      "p95_ms": 988,
+      "max_ms": 996,
+      "rust_peak_allocated_bytes": 25399296,
+      "rust_steady_bytes": 4096,
+      "rust_growth_bytes": 4096,
+      "mapped_bytes": 921600,
+      "detector_tensor_bytes": 11587584
+    },
+    "g-004-japanese-ui-v3/status/grouped": {
+      "p50_ms": 971,
+      "p95_ms": 983,
+      "max_ms": 997,
+      "rust_peak_allocated_bytes": 25399296,
+      "rust_steady_bytes": 4096,
+      "rust_growth_bytes": 4096,
+      "mapped_bytes": 921600,
+      "detector_tensor_bytes": 11587584
+    },
+    "g-004-japanese-ui-v3/tooltip-v3/singular": {
+      "p50_ms": 1384,
+      "p95_ms": 1408,
+      "max_ms": 1409,
+      "rust_peak_allocated_bytes": 28782592,
+      "rust_steady_bytes": 4096,
+      "rust_growth_bytes": 4096,
+      "mapped_bytes": 4147200,
+      "detector_tensor_bytes": 13000704
+    },
+    "g-004-japanese-ui-v3/tooltip-v3/grouped": {
+      "p50_ms": 1390,
+      "p95_ms": 1400,
+      "max_ms": 1419,
+      "rust_peak_allocated_bytes": 28782592,
+      "rust_steady_bytes": 4096,
+      "rust_growth_bytes": 4096,
+      "mapped_bytes": 4147200,
+      "detector_tensor_bytes": 13000704
+    },
+    "g-004-japanese-ui-v3/mission/singular": {
+      "p50_ms": 1281,
+      "p95_ms": 1298,
+      "max_ms": 1309,
+      "rust_peak_allocated_bytes": 28225536,
+      "rust_steady_bytes": 4096,
+      "rust_growth_bytes": 4096,
+      "mapped_bytes": 4147200,
+      "detector_tensor_bytes": 13000704
+    },
+    "g-004-japanese-ui-v3/mission/grouped": {
+      "p50_ms": 1282,
+      "p95_ms": 1301,
+      "max_ms": 1305,
+      "rust_peak_allocated_bytes": 28225536,
+      "rust_steady_bytes": 4096,
+      "rust_growth_bytes": 4096,
+      "mapped_bytes": 4147200,
+      "detector_tensor_bytes": 13000704
+    },
+    "compact-ui-v1/dense-tooltip/singular": {
+      "p50_ms": 1196,
+      "p95_ms": 1205,
+      "max_ms": 1215,
+      "rust_peak_allocated_bytes": 26025984,
+      "rust_steady_bytes": 4096,
+      "rust_growth_bytes": 4096,
+      "mapped_bytes": 921600,
+      "detector_tensor_bytes": 11587584
+    },
+    "compact-ui-v1/dense-tooltip/grouped": {
+      "p50_ms": 1192,
+      "p95_ms": 1219,
+      "max_ms": 1225,
+      "rust_peak_allocated_bytes": 26025984,
+      "rust_steady_bytes": 4096,
+      "rust_growth_bytes": 4096,
+      "mapped_bytes": 921600,
+      "detector_tensor_bytes": 11587584
+    },
+    "compact-ui-v1/boundary/singular": {
+      "p50_ms": 936,
+      "p95_ms": 949,
+      "max_ms": 952,
+      "rust_peak_allocated_bytes": 28176384,
+      "rust_steady_bytes": 4096,
+      "rust_growth_bytes": 4096,
+      "mapped_bytes": 294912,
+      "detector_tensor_bytes": 13000704
+    },
+    "compact-ui-v1/boundary/grouped": {
+      "p50_ms": 935,
+      "p95_ms": 950,
+      "max_ms": 956,
+      "rust_peak_allocated_bytes": 28176384,
+      "rust_steady_bytes": 4096,
+      "rust_growth_bytes": 4096,
+      "mapped_bytes": 294912,
+      "detector_tensor_bytes": 13000704
+    },
+    "compact-ui-v1/decoration/singular": {
+      "p50_ms": 935,
+      "p95_ms": 952,
+      "max_ms": 957,
+      "rust_peak_allocated_bytes": 28176384,
+      "rust_steady_bytes": 4096,
+      "rust_growth_bytes": 4096,
+      "mapped_bytes": 524288,
+      "detector_tensor_bytes": 13000704
+    },
+    "compact-ui-v1/decoration/grouped": {
+      "p50_ms": 939,
+      "p95_ms": 954,
+      "max_ms": 957,
+      "rust_peak_allocated_bytes": 28176384,
+      "rust_steady_bytes": 4096,
+      "rust_growth_bytes": 4096,
+      "mapped_bytes": 524288,
+      "detector_tensor_bytes": 13000704
+    },
+    "compact-ui-v1/varied-sizes/singular": {
+      "p50_ms": 1039,
+      "p95_ms": 1057,
+      "max_ms": 1059,
+      "rust_peak_allocated_bytes": 28790784,
+      "rust_steady_bytes": 4096,
+      "rust_growth_bytes": 4096,
+      "mapped_bytes": 1059840,
+      "detector_tensor_bytes": 13283328
+    },
+    "compact-ui-v1/varied-sizes/grouped": {
+      "p50_ms": 1041,
+      "p95_ms": 1052,
+      "max_ms": 1064,
+      "rust_peak_allocated_bytes": 28790784,
+      "rust_steady_bytes": 4096,
+      "rust_growth_bytes": 4096,
+      "mapped_bytes": 1059840,
+      "detector_tensor_bytes": 13283328
+    },
+    "compact-ui-v1/blank/singular": {
+      "p50_ms": 813,
+      "p95_ms": 826,
+      "max_ms": 831,
+      "rust_peak_allocated_bytes": 28176384,
+      "rust_steady_bytes": 4096,
+      "rust_growth_bytes": 4096,
+      "mapped_bytes": 204800,
+      "detector_tensor_bytes": 13000704
+    },
+    "compact-ui-v1/blank/grouped": {
+      "p50_ms": 807,
+      "p95_ms": 821,
+      "max_ms": 823,
+      "rust_peak_allocated_bytes": 28176384,
+      "rust_steady_bytes": 4096,
+      "rust_growth_bytes": 4096,
+      "mapped_bytes": 204800,
+      "detector_tensor_bytes": 13000704
+    },
+    "compact-ui-v1/nonuniform-negative/singular": {
+      "p50_ms": 814,
+      "p95_ms": 850,
+      "max_ms": 873,
+      "rust_peak_allocated_bytes": 28176384,
+      "rust_steady_bytes": 4096,
+      "rust_growth_bytes": 4096,
+      "mapped_bytes": 401408,
+      "detector_tensor_bytes": 13000704
+    },
+    "compact-ui-v1/nonuniform-negative/grouped": {
+      "p50_ms": 809,
+      "p95_ms": 821,
+      "max_ms": 825,
+      "rust_peak_allocated_bytes": 28176384,
+      "rust_steady_bytes": 4096,
+      "rust_growth_bytes": 4096,
+      "mapped_bytes": 401408,
+      "detector_tensor_bytes": 13000704
+    }
+  },
+  "required_collectors": [
+    "rust-accounting",
+    "native-peak-rss",
+    "onnx-stage-clocks"
+  ],
+  "process_limits": {
+    "timeout_seconds": 900,
+    "output_limit_bytes": 33554432,
+    "cleanup_seconds": 15,
+    "lifecycle_bound_ms": 2000
+  }
+}

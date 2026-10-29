@@ -3,16 +3,19 @@
 
 use std::path::PathBuf;
 use std::sync::Arc;
+use std::time::Duration;
 
 use mado_pilot_adapter_replay::{ReplayFrame, ReplayProvider, ReplaySource, ReplayTarget};
 use mado_pilot_capture::{
-    CaptureProvider, Continuity, FrameDescriptor, FrameRequest, OpenRequest, PixelFormat,
+    CaptureFault, CapturePacingOutcome, CapturePacingReport, CapturePacingRequest, CaptureProvider,
+    Continuity, FrameDescriptor, FrameRequest, OpenRequest, PacingUnsupportedReason, PixelFormat,
+    ResolvedCapturePacing,
 };
 use mado_pilot_core::{
     CancellationToken, ClipPolicy, CoordinateSpace, FrameOrder, IdentityIssuer, MonotonicInstant,
     OperationContext, PixelExtent, Point, Rect, Status,
 };
-use mado_pilot_testkit::capture_contract;
+use mado_pilot_testkit::{ManualClock, capture_contract};
 
 fn fixture_directory() -> PathBuf {
     PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../../../fixtures/capture/replay-basic")
@@ -42,6 +45,213 @@ fn memory_provider() -> ReplayProvider {
 fn fixture_provider() -> ReplayProvider {
     let source = ReplaySource::from_directory(fixture_directory()).expect("fixture loads");
     ReplayProvider::new(Arc::new(IdentityIssuer::new()), source).expect("built")
+}
+
+/// Builds a one-target provider whose frames carry `formats` in order.
+fn formatted_provider(formats: &[PixelFormat]) -> ReplayProvider {
+    let frames = formats
+        .iter()
+        .zip(0u8..)
+        .map(|(format, fill)| {
+            let descriptor =
+                FrameDescriptor::packed(PixelExtent::new(8, 6), *format).expect("valid");
+            ReplayFrame::new(
+                descriptor,
+                MonotonicInstant::ORIGIN,
+                Continuity::Continuous,
+                None,
+                vec![fill; descriptor.byte_len()].into_boxed_slice(),
+            )
+            .expect("valid")
+        })
+        .collect();
+    let source =
+        ReplaySource::from_targets(vec![ReplayTarget::new("formats", frames).expect("valid")])
+            .expect("valid");
+    ReplayProvider::new(Arc::new(IdentityIssuer::new()), source).expect("built")
+}
+
+#[test]
+fn required_native_pacing_is_refused_and_source_default_can_still_open() {
+    let provider = memory_provider();
+    let operation = OperationContext::new();
+    let target = provider.discover(&operation).expect("discovered")[0].id();
+    let required = OpenRequest::new().with_capture_pacing(
+        CapturePacingRequest::required(Duration::from_millis(200)).expect("positive"),
+    );
+
+    assert_eq!(
+        provider
+            .open(target, &required, &operation)
+            .expect_err("replay has no native pacing facility")
+            .status(),
+        Status::Unsupported
+    );
+    let session = provider
+        .open(
+            target,
+            &required.with_capture_pacing(CapturePacingRequest::source_default()),
+            &operation,
+        )
+        .expect("explicit source default removes the requirement");
+    assert_eq!(
+        session.description().capture_pacing(),
+        CapturePacingReport::source_default()
+    );
+    let frame = session
+        .frame(&FrameRequest::latest(), &operation)
+        .expect("first frame");
+    assert_eq!(frame.stamp().sequence().value(), 0);
+    assert!(
+        frame
+            .map(PixelFormat::Rgba8, &operation)
+            .expect("mapped")
+            .bytes()
+            .iter()
+            .all(|byte| *byte == 0)
+    );
+}
+
+#[test]
+fn an_unapplied_preference_preserves_pull_progress_and_independent_sessions() {
+    let provider = memory_provider();
+    let clock = Arc::new(ManualClock::new());
+    let operation = OperationContext::new()
+        .with_clock(clock.clone())
+        .with_timeout(Duration::from_secs(10))
+        .expect("bounded");
+    let target = provider.discover(&operation).expect("discovered")[0].id();
+    let preference = CapturePacingRequest::preferred(Duration::from_millis(60)).expect("positive");
+    let preferred = provider
+        .open(
+            target,
+            &OpenRequest::new().with_capture_pacing(preference),
+            &operation,
+        )
+        .expect("a preference does not require native pacing");
+    let baseline = provider
+        .open(target, &OpenRequest::new(), &operation)
+        .expect("another session keeps source defaults");
+    let report = preferred.description().capture_pacing();
+    assert_eq!(
+        report.request(),
+        preference.resolve(ResolvedCapturePacing::source_default())
+    );
+    assert_eq!(report.configured_interval(), None);
+    assert_eq!(
+        report.outcome(),
+        CapturePacingOutcome::PreferredUnapplied(PacingUnsupportedReason::SourceCannotPace)
+    );
+    assert_eq!(
+        baseline.description().capture_pacing(),
+        CapturePacingReport::source_default()
+    );
+    let first = preferred
+        .frame(&FrameRequest::latest(), &operation)
+        .expect("first");
+    let baseline_first = baseline
+        .frame(&FrameRequest::latest(), &operation)
+        .expect("first");
+    assert_ne!(first.stamp().stream(), baseline_first.stamp().stream());
+
+    clock.advance(Duration::from_secs(1));
+    assert_eq!(
+        preferred
+            .frame(&FrameRequest::latest(), &operation)
+            .expect("still current")
+            .stamp(),
+        first.stamp()
+    );
+    let second = preferred
+        .frame(&FrameRequest::newer_than(first.stamp()), &operation)
+        .expect("the next pull advances exactly once");
+    assert_eq!(second.stamp().sequence().value(), 1);
+    assert!(
+        second
+            .map(PixelFormat::Rgba8, &operation)
+            .expect("mapped")
+            .bytes()
+            .iter()
+            .all(|byte| *byte == 1)
+    );
+    assert_eq!(
+        baseline
+            .frame(&FrameRequest::latest(), &operation)
+            .expect("independent cursor")
+            .stamp(),
+        baseline_first.stamp()
+    );
+    let third = preferred
+        .frame(&FrameRequest::newer_than(second.stamp()), &operation)
+        .expect("the third frame is not delayed by a preferred native interval");
+    assert_eq!(third.stamp().sequence().value(), 2);
+    assert_eq!(
+        preferred
+            .frame(&FrameRequest::newer_than(third.stamp()), &operation)
+            .expect_err("the source remains finite")
+            .status(),
+        Status::Closed
+    );
+    let baseline_next = baseline
+        .frame(
+            &FrameRequest::newer_than(baseline_first.stamp()),
+            &operation,
+        )
+        .expect("ending one sequence does not consume another");
+    assert_eq!(baseline_next.stamp().sequence().value(), 1);
+    assert_eq!(preferred.description().capture_pacing(), report);
+}
+
+#[test]
+fn pacing_preserves_replay_operation_target_and_format_error_precedence() {
+    let provider = memory_provider();
+    let operation = OperationContext::new();
+    let target = provider.discover(&operation).expect("discovered")[0].id();
+    let foreign = IdentityIssuer::new()
+        .issue_target(provider.provider())
+        .expect("issued by another engine");
+    let required = OpenRequest::new().with_capture_pacing(
+        CapturePacingRequest::required(Duration::from_millis(200)).expect("positive"),
+    );
+    let cancellation = CancellationToken::new();
+    cancellation.cancel();
+    let cancelled = OperationContext::new()
+        .with_deadline(MonotonicInstant::ORIGIN)
+        .with_cancellation(cancellation);
+    assert_eq!(
+        provider
+            .open(foreign, &required, &cancelled)
+            .expect_err("admission wins")
+            .status(),
+        Status::Cancelled
+    );
+    let expired = OperationContext::new().with_deadline(MonotonicInstant::ORIGIN);
+    assert_eq!(
+        provider
+            .open(target, &required, &expired)
+            .expect_err("admission wins")
+            .status(),
+        Status::DeadlineExceeded
+    );
+    assert_eq!(
+        provider
+            .open(foreign, &required, &operation)
+            .expect_err("foreign target wins")
+            .status(),
+        Status::InvalidArgument
+    );
+    let preferred = OpenRequest::new()
+        .require_format(PixelFormat::Bgra8)
+        .with_capture_pacing(
+            CapturePacingRequest::preferred(Duration::from_millis(60)).expect("positive"),
+        );
+    assert_eq!(
+        provider
+            .open(target, &preferred, &operation)
+            .expect_err("pacing fallback must not hide a required-format failure")
+            .status(),
+        Status::Unsupported
+    );
 }
 
 #[test]
@@ -470,6 +680,118 @@ fn a_required_format_the_source_cannot_provide_fails_the_open() {
         .expect_err("the fixture is rgba8");
 
     assert_eq!(error.status(), Status::Unsupported);
+}
+
+#[test]
+fn a_required_format_must_hold_for_every_replay_frame() {
+    for (first, later) in [
+        (PixelFormat::Rgba8, PixelFormat::Bgra8),
+        (PixelFormat::Bgra8, PixelFormat::Rgba8),
+    ] {
+        let provider = formatted_provider(&[first, first, later]);
+        let operation = OperationContext::new();
+        let target = provider.discover(&operation).expect("discovered").remove(0);
+        assert_eq!(
+            target.format(),
+            first,
+            "the target advertises its first frame"
+        );
+
+        // Neither format describes the whole sequence, so no constrained
+        // session may exist to publish the frame that contradicts it.
+        for required in [first, later] {
+            let error = provider
+                .open(
+                    target.id(),
+                    &OpenRequest::new().require_format(required),
+                    &operation,
+                )
+                .expect_err("a mixed sequence cannot honor a required format");
+            assert_eq!(error, CaptureFault::UnsupportedOption.into());
+        }
+
+        let cancellation = CancellationToken::new();
+        cancellation.cancel();
+        assert_eq!(
+            provider
+                .open(
+                    target.id(),
+                    &OpenRequest::new().require_format(first),
+                    &OperationContext::new().with_cancellation(cancellation),
+                )
+                .expect_err("admission precedes format validation")
+                .status(),
+            Status::Cancelled
+        );
+        provider
+            .open(target.id(), &OpenRequest::new(), &operation)
+            .expect("the same sequence opens without a required format")
+            .close(&operation)
+            .expect("cleanup");
+    }
+}
+
+#[test]
+fn a_required_format_every_replay_frame_has_is_kept_by_every_frame() {
+    let provider = formatted_provider(&[PixelFormat::Bgra8; 3]);
+    let operation = OperationContext::new();
+    let target = provider.discover(&operation).expect("discovered").remove(0);
+    let session = provider
+        .open(
+            target.id(),
+            &OpenRequest::new().require_format(PixelFormat::Bgra8),
+            &operation,
+        )
+        .expect("every frame has the required format");
+
+    assert_eq!(session.description().format(), PixelFormat::Bgra8);
+    let mut current = session
+        .frame(&FrameRequest::latest(), &operation)
+        .expect("first frame");
+    for _ in 0..2 {
+        assert_eq!(current.descriptor().format(), PixelFormat::Bgra8);
+        current = session
+            .frame(&FrameRequest::newer_than(current.stamp()), &operation)
+            .expect("next frame");
+    }
+    assert_eq!(current.descriptor().format(), PixelFormat::Bgra8);
+    assert_eq!(current.stamp().epoch().value(), 0);
+    assert_eq!(current.stamp().sequence().value(), 2);
+}
+
+#[test]
+fn an_unconstrained_format_change_starts_a_later_epoch() {
+    let provider = formatted_provider(&[PixelFormat::Rgba8, PixelFormat::Bgra8]);
+    let operation = OperationContext::new();
+    let target = provider.discover(&operation).expect("discovered").remove(0);
+    let session = provider
+        .open(target.id(), &OpenRequest::new(), &operation)
+        .expect("no format was required");
+
+    let first = session
+        .frame(&FrameRequest::latest(), &operation)
+        .expect("first frame");
+    let changed = session
+        .frame(&FrameRequest::newer_than(first.stamp()), &operation)
+        .expect("format change");
+
+    assert_eq!(first.descriptor().format(), PixelFormat::Rgba8);
+    assert_eq!(changed.descriptor().format(), PixelFormat::Bgra8);
+    assert_eq!(changed.stamp().epoch().value(), 1);
+    assert_eq!(changed.stamp().sequence().value(), 0);
+    assert_ne!(changed.stamp().geometry(), first.stamp().geometry());
+    assert_eq!(
+        first.stamp().order(&changed.stamp()),
+        Ok(FrameOrder::Before)
+    );
+    assert_eq!(
+        first
+            .map(PixelFormat::Rgba8, &operation)
+            .expect("older frame still maps")
+            .descriptor()
+            .format(),
+        PixelFormat::Rgba8
+    );
 }
 
 #[test]

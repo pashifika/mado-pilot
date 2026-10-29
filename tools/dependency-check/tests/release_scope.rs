@@ -42,11 +42,10 @@ fn compliant_observation() -> ReleaseScopeObservation {
             .map(|(path, object_id)| (path.to_owned(), object_id.to_owned()))
             .collect(),
         release_notes: include_str!("../../../docs/releases/v0.4.0.md").to_owned(),
-        cmake_project: include_str!("../../../crates/bindings/capi/CMakeLists.txt").to_owned(),
+        cmake_project: include_str!("fixtures/v0.4.0-CMakeLists.txt").to_owned(),
         c_header: include_str!("../../../crates/bindings/capi/include/madopilot/madopilot.h")
             .to_owned(),
-        cpp_header: include_str!("../../../crates/bindings/capi/include/madopilot/madopilot.hpp")
-            .to_owned(),
+        cpp_header: include_str!("fixtures/v0.4.0-cpp-header-observation.txt").to_owned(),
     }
 }
 

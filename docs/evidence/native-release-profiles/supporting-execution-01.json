@@ -1,0 +1,299 @@
+{
+  "schema_version": 1,
+  "evidence_id": "native-profile-supporting-execution-01",
+  "scope": "CI and development-host supporting evidence; no qualified profile",
+  "tested_source_commit": "c34fcc01c2c76e605272a6d3dd22cc817d6d5030",
+  "tested_source_tree": "e0898f198a920dc5f9c82714a64aab2fd85d108c",
+  "qualification": "not-selected",
+  "gates": {
+    "G-007": "open",
+    "G-012": "open"
+  },
+  "product_implementation_unchanged_from": "2c80d4eb87a658069514cb0e83353e830a705882",
+  "ocr_scope": "blank-image CPU inference; no recognition-quality or nonempty OCR-region lifetime claim",
+  "ci": {
+    "source_commit": "c34fcc01c2c76e605272a6d3dd22cc817d6d5030",
+    "rust_run": "https://github.com/pashifika/mado-pilot/actions/runs/33955741931",
+    "branch_run": "https://github.com/pashifika/mado-pilot/actions/runs/33955741869",
+    "result": "all required jobs passed"
+  },
+  "procedure": {
+    "macos": {
+      "tests": 57,
+      "skipped": 4,
+      "status": "passed"
+    },
+    "windows": {
+      "python": "3.14.6",
+      "runs": 1,
+      "tests": 57,
+      "skipped": 3,
+      "status": "passed",
+      "resource_warning": false
+    },
+    "cli_smoke_source_commit": "ff1f4648e05da5ad25a33d5afc25dedc3cd854aa",
+    "cli_attempts": [
+      {
+        "attempt": "success",
+        "exit": 0,
+        "rows": [
+          "passed"
+        ],
+        "record_sha256": "b08606b1b24b51aa01266a588e3b3c2e7c9e66aa6897ea3f457da81dcbadf200"
+      },
+      {
+        "attempt": "failure",
+        "exit": 1,
+        "rows": [
+          "failed",
+          "passed"
+        ],
+        "record_sha256": "36dc6bff86f48c8099345023c084e618ec7f1f0150e961dad399d154d7f8e459"
+      }
+    ],
+    "retained_module_detector": [
+      {
+        "row": "correct-retained-input",
+        "child_exit": 0,
+        "accepted": true,
+        "required_modules_retained": true
+      },
+      {
+        "row": "wrong-retained-input",
+        "child_exit": 0,
+        "accepted": false,
+        "required_modules_retained": false
+      }
+    ]
+  },
+  "windows": {
+    "product_build_commit": "ff1f4648e05da5ad25a33d5afc25dedc3cd854aa",
+    "product_artifacts": [
+      {
+        "file": "madopilot.dll",
+        "bytes": 2057216,
+        "sha256": "5cb3188bb96899354d1a3e987063b16032ec1ac68961ea56358addbb8b19512e",
+        "build_commit": "ff1f4648e05da5ad25a33d5afc25dedc3cd854aa"
+      },
+      {
+        "file": "madopilot.dll.lib",
+        "bytes": 2310,
+        "sha256": "9b0155f450abdf7bae5062037d6d23037c965e3068f5034b331a8b8d13b37843",
+        "build_commit": "ff1f4648e05da5ad25a33d5afc25dedc3cd854aa"
+      },
+      {
+        "file": "libmado_pilot.rlib",
+        "bytes": 246502,
+        "sha256": "126cc042d2cc67debe084ba4f52020c8067e35290da234b903120ee65ff6b1a6",
+        "build_commit": "ff1f4648e05da5ad25a33d5afc25dedc3cd854aa"
+      }
+    ],
+    "historical_attempts": [
+      {
+        "evidence": "windows-execution-01",
+        "id": "ascii",
+        "source_commit": "ff1f4648e05da5ad25a33d5afc25dedc3cd854aa",
+        "status": "failed",
+        "executed_rows": 1,
+        "failed_rows": [
+          "build-host-shim"
+        ]
+      },
+      {
+        "evidence": "windows-execution-01",
+        "id": "baseline-unicode-output",
+        "source_commit": "ff1f4648e05da5ad25a33d5afc25dedc3cd854aa",
+        "status": "failed",
+        "executed_rows": 1,
+        "failed_rows": [
+          "build-host-shim"
+        ]
+      },
+      {
+        "evidence": "windows-execution-01",
+        "id": "utf8-diagnostic-001",
+        "source_commit": "ff1f4648e05da5ad25a33d5afc25dedc3cd854aa",
+        "status": "failed",
+        "executed_rows": 20,
+        "failed_rows": [
+          "run-c-host-load"
+        ]
+      },
+      {
+        "evidence": "windows-execution-01",
+        "id": "repair-ascii-001",
+        "source_commit": "8b3419c8d02d25962cc04980508a743beb89dd53",
+        "status": "failed",
+        "executed_rows": 20,
+        "failed_rows": [
+          "run-c-host-load"
+        ]
+      },
+      {
+        "evidence": "windows-execution-01",
+        "id": "repaired-unicode-output",
+        "source_commit": "8b3419c8d02d25962cc04980508a743beb89dd53",
+        "status": "failed",
+        "executed_rows": 20,
+        "failed_rows": [
+          "run-c-host-load"
+        ]
+      },
+      {
+        "evidence": "windows-integration-01",
+        "id": "initial-ascii",
+        "source_commit": "6d4291bb88acd7fc22e3176738b77a639b505b5d",
+        "status": "failed",
+        "executed_rows": 20,
+        "failed_rows": [
+          "run-c-host-load"
+        ]
+      },
+      {
+        "evidence": "windows-integration-01",
+        "id": "initial-unicode-output",
+        "source_commit": "6d4291bb88acd7fc22e3176738b77a639b505b5d",
+        "status": "failed",
+        "executed_rows": 20,
+        "failed_rows": [
+          "run-c-host-load"
+        ]
+      },
+      {
+        "evidence": "windows-integration-01",
+        "id": "fixed-ascii",
+        "source_commit": "f031be18dc4e1bcfdef0aab6e2cc8dd248f64788",
+        "status": "passed",
+        "executed_rows": 28,
+        "failed_rows": []
+      },
+      {
+        "evidence": "windows-integration-01",
+        "id": "fixed-unicode-output",
+        "source_commit": "f031be18dc4e1bcfdef0aab6e2cc8dd248f64788",
+        "status": "passed",
+        "executed_rows": 28,
+        "failed_rows": []
+      }
+    ],
+    "final_attempts": [
+      {
+        "id": "ascii",
+        "status": "passed",
+        "executed_rows": 28,
+        "retained_module_rows": [
+          "run-c-host-load",
+          "run-cpp-host-load",
+          "run-rust-deferred"
+        ]
+      },
+      {
+        "id": "unicode-output",
+        "status": "passed",
+        "executed_rows": 28,
+        "retained_module_rows": [
+          "run-c-host-load",
+          "run-cpp-host-load",
+          "run-rust-deferred"
+        ]
+      }
+    ],
+    "unicode_scope": "executable/output paths and UTF8 argv; model/runtime file-I/O unclaimed",
+    "preload_experiment": {
+      "source_commit": "8b3419c8d02d25962cc04980508a743beb89dd53",
+      "rows": 12,
+      "accepted_rows": 12,
+      "approved_preloads": [
+        {
+          "file": "opencv_world4140.dll",
+          "bytes": 79832576,
+          "sha256": "a192cbf006faf48c054468fa2a2e56e3f680b401c23b8f7fb24373ff75654c46",
+          "order": 1,
+          "flags": [
+            "LOAD_LIBRARY_SEARCH_DLL_LOAD_DIR",
+            "LOAD_LIBRARY_SEARCH_SYSTEM32"
+          ],
+          "selection": "both product and Rust module have one OpenCV import edge; FFmpeg not imported or observed"
+        }
+      ],
+      "decoys": "invalid PE sentinels in PATH and current directory",
+      "caveat": "builder System32 support; corrected CRLF marker analysis retained without rerunning children"
+    }
+  },
+  "macos": {
+    "consumer_rows": 26,
+    "consumer_status": "passed",
+    "nix_cpp": {
+      "host_version": "26.6.2",
+      "encoded_product_minimum": "26.5.2",
+      "builder_sandbox": false,
+      "runtime_homebrew_read_denied": true,
+      "exit": 0,
+      "matching_ocr_ownership": "passed",
+      "complete_exit_snapshot": true,
+      "homebrew_modules_observed": 0,
+      "nix_modules_observed": 27,
+      "nix_module_bytes": 36301232,
+      "record_sha256": "1278856a5e479083916479b36c4f11e0c7c2cdd57d4e7084826984b738444453",
+      "digest_scope": "post-run filesystem identities; not immutable-handle or transient-load attribution"
+    },
+    "developer_cpp_refusal": {
+      "exit": 1,
+      "status": "UNSUPPORTED",
+      "record_sha256": "1d6e9586a3b513f8e691575710285094295e19f2f82195282f8b68bacec0a12e"
+    },
+    "direct_rust_weak_link_experiment": {
+      "native_weak_library_flags": 56,
+      "strong_load_commands": 66,
+      "weak_load_commands": 0,
+      "available": {
+        "row": "available",
+        "exit": 0,
+        "cleanup_ok": true,
+        "entered": true,
+        "passed": true,
+        "stderr_bytes": 0
+      },
+      "homebrew_denied": {
+        "row": "homebrew-denied",
+        "exit": -6,
+        "cleanup_ok": true,
+        "entered": false,
+        "passed": false,
+        "stderr_bytes": 556
+      },
+      "result": "rejected: added weak-library flags did not replace Rust native strong linkage; dyld aborted before entry"
+    }
+  },
+  "private_archives": [
+    {
+      "id": "windows-execution-01",
+      "bytes": 60875,
+      "sha256": "229b360b6cc70c49fd2f2bb890d462a27b11f56008962d36d90418b8c6900bcd"
+    },
+    {
+      "id": "windows-preload-01",
+      "bytes": 51952,
+      "sha256": "49eb32889f50dc0d2f98d69801805974005fe5d77f611290aba6198c63693c3a"
+    },
+    {
+      "id": "windows-integration-01",
+      "bytes": 96724,
+      "sha256": "d06fc6f87488559a88fa6ca8620efffba68d9b9852e0aa07bccc927ed025dbc7"
+    },
+    {
+      "id": "windows-final-01",
+      "bytes": 56050,
+      "sha256": "bc53753fa6edf2a36b81fd10c5e60c413db963c735c2ed286bfa521597073720"
+    }
+  ],
+  "remaining": [
+    "ordinary direct Rust missing-native refusal",
+    "real private backend-only bridge comparison",
+    "clean and minimum-host admission",
+    "full required loading and transitive-closure matrix",
+    "per-file redistribution and notices",
+    "distribution signing",
+    "qualified profile and gate ADRs"
+  ]
+}

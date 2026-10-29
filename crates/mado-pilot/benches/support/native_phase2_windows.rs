@@ -77,25 +77,6 @@ const fn language_event(kind: u32, text_units: u32) -> protocol::EventSummary {
 }
 
 #[cfg(windows)]
-const CPP_LANGUAGE_EVENTS: [protocol::EventSummary; 15] = [
-    language_event(protocol::EVENT_POINTER_MOVE, 0),
-    language_event(protocol::EVENT_POINTER_PRESS, 0),
-    language_event(protocol::EVENT_POINTER_RELEASE, 0),
-    language_event(protocol::EVENT_POINTER_PRESS, 0),
-    language_event(protocol::EVENT_POINTER_RELEASE, 0),
-    language_event(protocol::EVENT_POINTER_PRESS, 0),
-    language_event(protocol::EVENT_POINTER_RELEASE, 0),
-    language_event(protocol::EVENT_POINTER_SCROLL, 0),
-    language_event(protocol::EVENT_KEY_DOWN, expected_key_units()),
-    language_event(protocol::EVENT_KEY_UP, expected_key_units()),
-    language_event(protocol::EVENT_KEY_DOWN, expected_key_units()),
-    language_event(protocol::EVENT_KEY_DOWN, expected_key_units()),
-    language_event(protocol::EVENT_KEY_UP, expected_key_units()),
-    language_event(protocol::EVENT_KEY_UP, expected_key_units()),
-    language_event(protocol::EVENT_TEXT, 3),
-];
-
-#[cfg(windows)]
 const fn input_workload_description() -> &'static str {
     "native interactive System input and the public Rust common flow"
 }
@@ -1500,7 +1481,7 @@ fn language_common_flow(program: &LanguageProgram) -> Sample {
         .as_deref()
         .is_some_and(|stdout| stdout.lines().any(|line| line == program.receipt_line));
     let fixture_acknowledged = if process_succeeded || receipt_present {
-        fixture.next_flow(program.expected_fixture_events())
+        fixture.next_flow(&COMMON_LANGUAGE_EVENTS)
     } else {
         false
     };
@@ -1735,21 +1716,6 @@ fn native_engine() -> NativeEngine {
 #[cfg(windows)]
 const fn c_example_name() -> &'static str {
     "windows-native-input"
-}
-
-#[cfg(windows)]
-const fn cpp_example_name() -> &'static str {
-    "windows-native-input-cpp"
-}
-
-#[cfg(windows)]
-const fn cpp_correctness_oracle() -> &'static str {
-    "the released C++ wrapper submits the full bounded pointer, button, wheel, key, modifier, text, and delay flow through a fresh process"
-}
-
-#[cfg(windows)]
-const fn cpp_receipt_line() -> &'static str {
-    "receipt: outcome 1 submitted 16 evidence 4 cleanup 0"
 }
 
 #[cfg(windows)]

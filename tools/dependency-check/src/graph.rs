@@ -671,7 +671,7 @@ impl fmt::Display for Violation {
 }
 
 /// Package version the repository contract fixes for the whole workspace.
-pub const REQUIRED_VERSION: &str = "0.4.0";
+pub const REQUIRED_VERSION: &str = "0.5.0";
 /// Edition every workspace member must use.
 pub const REQUIRED_EDITION: &str = "2024";
 /// Tested minimum supported Rust version, which is also the pinned toolchain.
@@ -971,7 +971,7 @@ fn validate_dependencies(graph: &PackageGraph) -> Vec<Violation> {
         let allowed = allowed_dependencies(&edge.from).unwrap_or(&[]);
         // Test support is available to every product package as a development
         // dependency. The C ABI additionally wires a controlled runtime engine
-        // in contract tests; ADR 0018 keeps that exception exact and test-only.
+        // in contract tests; that exception is development-only.
         let test_support_extra = edge.kind == DependencyKind::Development
             && source.role.is_product()
             && edge.to == TESTKIT;

@@ -11,8 +11,9 @@ use std::thread;
 use std::time::{Duration, Instant};
 
 use mado_pilot_capture::{
-    CaptureFault, CaptureSession, Continuity, Frame, FrameRequest, Lifecycle, OverflowPolicy,
-    QueuePolicy, SessionDescription, StoragePublication, StreamState,
+    CaptureFault, CapturePacingReport, CaptureResourceLimits, CaptureSession, Continuity, Frame,
+    FrameRequest, Lifecycle, OpenRequest, OverflowPolicy, QueuePolicy, ResolvedCapturePacing,
+    SessionDescription, StoragePublication, StreamState, WindowGeometry,
 };
 use mado_pilot_core::{
     Clock, MonotonicInstant, Operation, OperationContext, PixelExtent, Result, StreamId,
@@ -30,12 +31,13 @@ use windows::Win32::System::WinRT::Direct3D11::IDirect3DDxgiInterfaceAccess;
 use windows::core::{IInspectable, Interface};
 
 use crate::availability::{create_free_threaded_frame_pool, ensure_winrt_apartment};
-use crate::discovery::{NativeKey, TargetMetadata, current_placement};
+use crate::discovery::{NativeKey, TargetMetadata, current_placement, publication_placement};
 use crate::input::GeometryLedger;
+use crate::pacing::configure_capture_pacing;
+use crate::provider::TargetRecord;
 use crate::storage::{
     DeviceDomain, DeviceTerminal, RetainedBytes, SessionMemory, StorageFailureSink, TexturePool,
-    WindowsFrameStorage, descriptor_from_native, native_fault, retained_storage_capacity,
-    validate_surface,
+    WindowsFrameStorage, descriptor_from_native, native_fault, validate_surface,
 };
 
 const WGC_PRODUCER_POOL_SIZE: i32 = 2;
@@ -53,6 +55,8 @@ pub(crate) struct NativeSessionSource {
     metadata: TargetMetadata,
     item: GraphicsCaptureItem,
     geometry: Arc<GeometryLedger>,
+    window: Option<(Arc<TargetRecord>, WindowGeometry)>,
+    resource_limits: Option<CaptureResourceLimits>,
 }
 
 impl NativeSessionSource {
@@ -73,7 +77,21 @@ impl NativeSessionSource {
             metadata,
             item,
             geometry,
+            window: None,
+            resource_limits: None,
         }
+    }
+
+    pub(crate) fn with_requirements(
+        mut self,
+        record: &Arc<TargetRecord>,
+        request: &OpenRequest,
+    ) -> Self {
+        self.window = request
+            .window_geometry()
+            .map(|geometry| (Arc::clone(record), geometry));
+        self.resource_limits = request.resource_limits();
+        self
     }
 }
 
@@ -139,6 +157,7 @@ struct SessionCore {
     target_kind: TargetKind,
     stream: StreamId,
     key: NativeKey,
+    window: Option<(Arc<TargetRecord>, WindowGeometry)>,
     state: StreamState,
     geometry: GeometryRegistration,
     domain: Arc<DeviceDomain>,
@@ -188,6 +207,57 @@ struct TransitionState {
     movement_not_before: Option<i64>,
     clock_anchor: (i64, MonotonicInstant),
     published: bool,
+}
+
+impl TransitionState {
+    fn pool_recreated(&mut self, extent: PixelExtent) {
+        self.extent = extent;
+        self.pending_discontinuity = self.published;
+        // Recreation does not prove that an already observed movement is in
+        // the pixels. Keep its capture-time fence until a fresh frame arrives.
+    }
+
+    fn accepts_frame_geometry(
+        &mut self,
+        placement: TargetPlacement,
+        native_time: i64,
+        observed_now: impl FnOnce() -> Option<i64>,
+    ) -> bool {
+        // Pool extent correlates size changes. Origin and scales instead need
+        // pixels captured after their observation, including during a resize.
+        if self.published
+            && (placement.desktop_origin() != self.placement.desktop_origin()
+                || placement.scale() != self.placement.scale()
+                || placement.desktop_scale() != self.placement.desktop_scale())
+        {
+            self.placement = placement;
+            self.pending_geometry_change = true;
+            let not_before = observed_now().unwrap_or_else(|| native_time.saturating_add(1));
+            self.movement_not_before = Some(
+                self.movement_not_before
+                    .map_or(not_before, |previous| previous.max(not_before)),
+            );
+            return false;
+        }
+        if self
+            .movement_not_before
+            .is_some_and(|not_before| native_time < not_before)
+        {
+            return false;
+        }
+        self.movement_not_before = None;
+        true
+    }
+
+    fn continuity(&self) -> Continuity {
+        if self.pending_discontinuity {
+            Continuity::Discontinuous
+        } else if self.pending_geometry_change {
+            Continuity::GeometryChanged
+        } else {
+            Continuity::Continuous
+        }
+    }
 }
 
 struct TeardownJob {
@@ -252,6 +322,7 @@ struct WorkerGuard {
 impl NativeSession {
     pub(crate) fn open(
         source: NativeSessionSource,
+        pacing: ResolvedCapturePacing,
         operation: &mut Operation<'_>,
     ) -> Result<Arc<Self>> {
         let NativeSessionSource {
@@ -262,19 +333,27 @@ impl NativeSession {
             metadata,
             item,
             geometry,
+            window,
+            resource_limits,
         } = source;
         let teardown = teardown_executor(operation)?;
         let teardown_permit = teardown.reserve(operation)?;
         let clock_anchor = clock_calibration().ok_or(CaptureFault::SourceInvalid)?;
-        let domain = DeviceDomain::create()?;
-        let layout = validate_surface(metadata.extent.width(), metadata.extent.height())?;
-        let retained_storage_capacity = retained_storage_capacity(layout)?;
-        let memory = SessionMemory::production();
+        if let Some((record, required)) = &window {
+            let observed = record.required_geometry(*required, Some(metadata.extent));
+            operation.checkpoint()?;
+            observed?;
+        }
+        let memory = SessionMemory::production(resource_limits);
+        let layout = memory.validate_surface(metadata.extent.width(), metadata.extent.height())?;
+        let retained_storage_capacity = memory.retained_storage_capacity(layout)?;
         let producer_bytes = layout
             .bytes()
             .checked_mul(u64::try_from(WGC_PRODUCER_POOL_SIZE).expect("positive pool size"))
             .ok_or(CaptureFault::ResourceLimitExceeded)?;
         let producer_bytes = memory.reserve(producer_bytes)?;
+        operation.checkpoint()?;
+        let domain = DeviceDomain::create()?;
         let device_terminal = Arc::new(DeviceTerminal::default());
         let textures = TexturePool::new(
             Arc::clone(&domain),
@@ -286,6 +365,7 @@ impl NativeSession {
             target_kind: kind,
             stream,
             key,
+            window,
             state: StreamState::with_target_extent(stream),
             geometry: GeometryRegistration::new(geometry, stream),
             domain,
@@ -314,6 +394,9 @@ impl NativeSession {
 
         let size = native_size(metadata.extent)?;
         let winrt_device = core.domain.winrt_device()?;
+        let observed = core.check_required_geometry(metadata.extent);
+        operation.checkpoint()?;
+        observed?;
         let frame_pool = create_free_threaded_frame_pool(
             &winrt_device,
             DirectXPixelFormat::B8G8R8A8UIntNormalized,
@@ -324,19 +407,29 @@ impl NativeSession {
         let capture = frame_pool
             .CreateCaptureSession(&item)
             .map_err(|error| native_target_fault(error, kind))?;
+        let pacing = configure_pending_capture(
+            || configure_capture_pacing(&capture, pacing, kind, operation),
+            || capture.Close(),
+            || frame_pool.Close(),
+        )?;
 
         let frame_weak = Arc::downgrade(&core);
         let frame_callbacks = Arc::clone(&callbacks);
         let frame_handler =
             TypedEventHandler::<Direct3D11CaptureFramePool, IInspectable>::new(move |sender, _| {
+                crate::benchmark_metrics::record_callback_entry();
                 let Some(_lease) = frame_callbacks.admit() else {
+                    crate::benchmark_metrics::record_callback_admission_refusal();
                     return Ok(());
                 };
                 let Some(core) = frame_weak.upgrade() else {
+                    crate::benchmark_metrics::record_callback_owner_unavailable();
                     return Ok(());
                 };
                 if let Some(sender) = sender.as_ref() {
                     core.on_frame(sender);
+                } else {
+                    crate::benchmark_metrics::record_callback_sender_unavailable();
                 }
                 Ok(())
             });
@@ -391,7 +484,8 @@ impl NativeSession {
             mado_pilot_capture::PixelFormat::Bgra8,
             mado_pilot_capture::CoordinateSupport::with_target_placement(),
         )
-        .with_queue(session_queue_policy(retained_storage_capacity));
+        .with_queue(session_queue_policy(retained_storage_capacity))
+        .with_capture_pacing(pacing);
         let session = Arc::new(Self {
             description,
             core,
@@ -405,7 +499,7 @@ impl NativeSession {
             close_gate: Mutex::new(()),
             teardown: Mutex::new(teardown),
         });
-        {
+        start_capture(session, operation, |session| {
             let runtime = session.runtime();
             runtime
                 .resources
@@ -414,9 +508,8 @@ impl NativeSession {
                 .native
                 .capture
                 .StartCapture()
-                .map_err(|error| native_target_fault(error, kind))?;
-        }
-        Ok(session)
+                .map_err(|error| native_target_fault(error, kind).into())
+        })
     }
 
     fn runtime(&self) -> MutexGuard<'_, RuntimeState> {
@@ -561,6 +654,35 @@ impl NativeSession {
             attempt.checkpoint()?;
         }
     }
+}
+
+fn configure_pending_capture(
+    configure: impl FnOnce() -> Result<CapturePacingReport>,
+    close_capture: impl FnOnce() -> windows::core::Result<()>,
+    close_pool: impl FnOnce() -> windows::core::Result<()>,
+) -> Result<CapturePacingReport> {
+    match configure() {
+        Ok(report) => Ok(report),
+        Err(error) => {
+            // No callbacks or producer have started. Close both pending owners
+            // on this initialized apartment without replacing the open failure.
+            let _capture = close_capture();
+            let _pool = close_pool();
+            Err(error)
+        }
+    }
+}
+
+fn start_capture<T>(
+    session: T,
+    operation: &mut Operation<'_>,
+    start: impl FnOnce(&T) -> Result<()>,
+) -> Result<T> {
+    operation.checkpoint()?;
+    let result = start(&session);
+    operation.checkpoint()?;
+    result?;
+    Ok(session)
 }
 
 fn session_queue_policy(retained_storage_capacity: NonZeroU32) -> QueuePolicy {
@@ -968,11 +1090,15 @@ impl fmt::Debug for NativeSession {
 fn frame_with_target_liveness(
     operation: &OperationContext,
     poll_interval: Duration,
+    mut is_open: impl FnMut() -> bool,
     mut key_is_present: impl FnMut() -> bool,
     mut record_key_loss: impl FnMut(),
     mut acquire_frame: impl FnMut(&OperationContext) -> Result<Frame>,
 ) -> Result<Frame> {
     loop {
+        if !is_open() {
+            return acquire_frame(operation);
+        }
         if !key_is_present() {
             record_key_loss();
             return acquire_frame(operation);
@@ -997,6 +1123,20 @@ fn frame_with_target_liveness(
     }
 }
 
+fn commit_frame_with_target_liveness(
+    state: &StreamState,
+    frame: &Frame,
+    operation: &OperationContext,
+    key_is_present: impl FnOnce() -> bool,
+    record_key_loss: impl FnOnce(),
+) -> Result<()> {
+    // A retained-frame query may finish before the native Closed callback arrives.
+    if state.lifecycle() == Lifecycle::Open && !key_is_present() {
+        record_key_loss();
+    }
+    state.commit_frame(frame, operation)
+}
+
 impl CaptureSession for NativeSession {
     fn description(&self) -> SessionDescription {
         self.description.clone()
@@ -1009,9 +1149,20 @@ impl CaptureSession for NativeSession {
         frame_with_target_liveness(
             operation,
             TARGET_LIVENESS_POLL_INTERVAL,
+            || self.core.state.lifecycle() == Lifecycle::Open,
             || self.core.key.is_present(),
             || self.core.fail_native(target_fault(self.core.target_kind)),
             |bounded| self.core.state.frame(request, bounded),
+        )
+    }
+
+    fn commit_frame(&self, frame: &Frame, operation: &OperationContext) -> Result<()> {
+        commit_frame_with_target_liveness(
+            &self.core.state,
+            frame,
+            operation,
+            || self.core.key.is_present(),
+            || self.core.fail_native(target_fault(self.core.target_kind)),
         )
     }
 
@@ -1048,9 +1199,20 @@ impl Drop for NativeSession {
 }
 
 impl SessionCore {
+    fn check_required_geometry(
+        &self,
+        extent: PixelExtent,
+    ) -> std::result::Result<Option<WindowGeometry>, CaptureFault> {
+        self.window
+            .as_ref()
+            .map(|(record, required)| record.required_geometry(*required, Some(extent)))
+            .transpose()
+    }
+
     fn on_frame(&self, sender: &Direct3D11CaptureFramePool) {
         let result = self.process_frame(sender);
         if let Err(fault) = result {
+            crate::benchmark_metrics::record_callback_fault();
             if fault == CaptureFault::SessionClosed && self.state.lifecycle() != Lifecycle::Open {
                 return;
             }
@@ -1071,11 +1233,15 @@ impl SessionCore {
     ) -> std::result::Result<(), CaptureFault> {
         let mut transition = match self.transition.try_lock() {
             Ok(transition) => transition,
-            Err(TryLockError::WouldBlock) => return Ok(()),
+            Err(TryLockError::WouldBlock) => {
+                crate::benchmark_metrics::record_transition_lock_contention();
+                return Ok(());
+            }
             Err(TryLockError::Poisoned(poisoned)) => poisoned.into_inner(),
         };
         let frame = sender.TryGetNextFrame().map_err(native_fault)?;
         let frame = WgcFrameGuard(Some(frame));
+        crate::benchmark_metrics::record_native_frame_acquired();
         let content_size = frame.frame().ContentSize().map_err(native_fault)?;
         let native_time = frame
             .frame()
@@ -1083,10 +1249,17 @@ impl SessionCore {
             .map_err(native_fault)?
             .Duration;
         let extent = positive_extent(content_size)?;
+        // A required selection cannot enter resize/recreate or detached-image
+        // allocation with a new extent, area, scale, origin, or incarnation.
+        let required_geometry = self.check_required_geometry(extent);
 
         if extent != transition.extent {
-            let layout = validate_surface(extent.width(), extent.height())?;
-            if retained_storage_capacity(layout)? < self.retained_storage_capacity {
+            crate::benchmark_metrics::record_resize_detected();
+            required_geometry?;
+            let layout = self
+                .memory
+                .validate_surface(extent.width(), extent.height())?;
+            if self.memory.retained_storage_capacity(layout)? < self.retained_storage_capacity {
                 return Err(CaptureFault::ResourceLimitExceeded);
             }
             let producer_bytes = layout
@@ -1100,6 +1273,8 @@ impl SessionCore {
                     CaptureFault::SourceInvalid
                 }
             })?;
+            #[cfg(feature = "benchmark-instrumentation")]
+            observe_resize_frame_surface(frame.frame(), (content_size.Width, content_size.Height));
             // The transition frame and its producer surface are released before
             // pool recreation. The first frame from the recreated pool receives
             // the discontinuity.
@@ -1115,6 +1290,7 @@ impl SessionCore {
                 .and_then(Weak::upgrade)
                 .ok_or(CaptureFault::SessionClosed)?;
             native.replace_producer_after_recreate(producer_bytes, || {
+                crate::benchmark_metrics::record_recreate_begun();
                 sender
                     .Recreate(
                         &device,
@@ -1122,31 +1298,22 @@ impl SessionCore {
                         WGC_PRODUCER_POOL_SIZE,
                         content_size,
                     )
-                    .map_err(native_fault)
+                    .map_err(native_fault)?;
+                crate::benchmark_metrics::record_recreate_completed();
+                Ok(())
             })?;
             let _retired = self.textures.try_retire_for_resize();
-            transition.extent = extent;
-            transition.pending_discontinuity = transition.published;
-            transition.movement_not_before = None;
+            transition.pool_recreated(extent);
             return Ok(());
         }
 
-        let placement =
-            current_placement(self.key, extent).ok_or_else(|| target_fault(self.target_kind))?;
-        if transition.published && placement != transition.placement {
-            transition.placement = placement;
-            transition.pending_geometry_change = true;
-            transition.movement_not_before =
-                Some(native_monotonic_now().unwrap_or_else(|| native_time.saturating_add(1)));
+        let placement = publication_placement(required_geometry, || {
+            current_placement(self.key, extent).ok_or_else(|| target_fault(self.target_kind))
+        })?;
+        if !transition.accepts_frame_geometry(placement, native_time, native_monotonic_now) {
+            crate::benchmark_metrics::record_geometry_fence_refusal();
             let _drop = self.state.try_record_drop();
             return Ok(());
-        }
-        if let Some(not_before) = transition.movement_not_before {
-            if native_time < not_before {
-                let _drop = self.state.try_record_drop();
-                return Ok(());
-            }
-            transition.movement_not_before = None;
         }
 
         let surface = frame.frame().Surface().map_err(native_fault)?;
@@ -1157,28 +1324,44 @@ impl SessionCore {
         let mut native_descriptor = D3D11_TEXTURE2D_DESC::default();
         // SAFETY: output is valid for the complete descriptor.
         unsafe { source.GetDesc(&raw mut native_descriptor) };
-        let Some(descriptor) = descriptor_from_native(&native_descriptor, extent)? else {
+        let Some(descriptor) = descriptor_from_native(&native_descriptor, extent)
+            .inspect_err(|_| crate::benchmark_metrics::record_texture_descriptor_refusal())?
+        else {
+            crate::benchmark_metrics::record_texture_descriptor_refusal();
             let _drop = self.state.try_record_drop();
             return Ok(());
         };
         let captured_at = frame_time(&transition, native_time);
 
-        let lease = self.textures.try_acquire(native_descriptor).map_err(|_| {
-            self.domain
-                .device_fault()
-                .unwrap_or(CaptureFault::SourceInvalid)
-        })?;
+        let lease = self
+            .textures
+            .try_acquire(native_descriptor)
+            .map_err(|error| {
+                crate::benchmark_metrics::record_detached_lease_refusal();
+                if error.status() == mado_pilot_core::Status::LimitExceeded {
+                    CaptureFault::ResourceLimitExceeded
+                } else {
+                    self.domain
+                        .device_fault()
+                        .unwrap_or(CaptureFault::SourceInvalid)
+                }
+            })?;
         let Some(lease) = lease else {
+            crate::benchmark_metrics::record_detached_lease_refusal();
             let _drop = self.state.try_record_drop();
             return Ok(());
         };
-        let Some(callback_copy) = self.domain.try_copy(
-            lease.texture(),
-            &source,
-            u64::try_from(descriptor.byte_len()).expect("validated frame byte length fits u64"),
-            self.stream.get(),
-        )?
+        let Some(callback_copy) = self
+            .domain
+            .try_copy(
+                lease.texture(),
+                &source,
+                u64::try_from(descriptor.byte_len()).expect("validated frame byte length fits u64"),
+                self.stream.get(),
+            )
+            .inspect_err(|_| crate::benchmark_metrics::record_detached_copy_refusal())?
         else {
+            crate::benchmark_metrics::record_detached_copy_refusal();
             let _drop = self.state.try_record_drop();
             return Ok(());
         };
@@ -1190,13 +1373,7 @@ impl SessionCore {
         drop(surface);
         drop(frame);
 
-        let continuity = if transition.pending_discontinuity {
-            Continuity::Discontinuous
-        } else if transition.pending_geometry_change {
-            Continuity::GeometryChanged
-        } else {
-            Continuity::Continuous
-        };
+        let continuity = transition.continuity();
         let storage = WindowsFrameStorage::new(
             descriptor,
             Arc::clone(&self.domain),
@@ -1208,6 +1385,10 @@ impl SessionCore {
             Arc::clone(&self.device_terminal),
             Arc::clone(&self.memory),
         );
+        // The detach copy may overlap a window transition. Revalidate the same
+        // retained record immediately before stream publication, not by HWND.
+        self.check_required_geometry(extent)?;
+        crate::benchmark_metrics::record_publish_attempt();
         self.state
             .publish_storage_with(
                 StoragePublication {
@@ -1222,12 +1403,14 @@ impl SessionCore {
                 },
             )
             .map_err(|refused| {
+                crate::benchmark_metrics::record_publish_refusal();
                 if refused.error().status() == mado_pilot_core::Status::Closed {
                     CaptureFault::SessionClosed
                 } else {
                     CaptureFault::SourceInvalid
                 }
             })?;
+        crate::benchmark_metrics::record_publish_success();
         transition.placement = placement;
         transition.pending_discontinuity = false;
         transition.pending_geometry_change = false;
@@ -1275,6 +1458,32 @@ const fn target_fault(kind: TargetKind) -> CaptureFault {
         TargetKind::Display => CaptureFault::DisplayDisconnected,
         _ => CaptureFault::TargetLost,
     }
+}
+
+#[cfg(feature = "benchmark-instrumentation")]
+fn observe_resize_frame_surface(frame: &Direct3D11CaptureFrame, content_size: (i32, i32)) {
+    use crate::benchmark_metrics::{ResizeSurfaceProbeFailure, record_resize_surface_probe};
+
+    let observation = (|| {
+        let surface = frame
+            .Surface()
+            .map_err(|error| ResizeSurfaceProbeFailure::Surface(error.code().0))?;
+        let access: IDirect3DDxgiInterfaceAccess = surface
+            .cast()
+            .map_err(|error| ResizeSurfaceProbeFailure::Access(error.code().0))?;
+        // SAFETY: the borrowed live WGC frame owns this surface; the requested
+        // interface is its documented D3D11 texture owner.
+        let texture: ID3D11Texture2D = unsafe { access.GetInterface() }
+            .map_err(|error| ResizeSurfaceProbeFailure::Texture(error.code().0))?;
+        let mut descriptor = D3D11_TEXTURE2D_DESC::default();
+        // SAFETY: output is valid for the complete descriptor; no pixel access.
+        unsafe { texture.GetDesc(&raw mut descriptor) };
+        Ok((descriptor.Width, descriptor.Height, descriptor.Format.0))
+    })();
+    // All temporary COM owners above have dropped on either result path before
+    // the caller closes its frame and recreates the pool. Probe errors remain
+    // diagnostic scalars, never the capture operation's error or control flow.
+    record_resize_surface_probe(content_size, observation);
 }
 
 struct WgcFrameGuard(Option<Direct3D11CaptureFrame>);
@@ -1486,6 +1695,7 @@ fn lock_with_operation<'mutex>(
 
 #[cfg(test)]
 mod tests {
+    use std::cell::Cell;
     use std::io;
     use std::mem::ManuallyDrop;
     use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
@@ -1494,14 +1704,15 @@ mod tests {
     use std::time::{Duration, Instant};
 
     use mado_pilot_capture::{
-        CaptureFault, Continuity, CoordinateSupport, CpuPixels, FrameDescriptor, FrameRequest,
-        Lifecycle, OverflowPolicy, PixelFormat, Publication, RetainedStoragePolicy,
+        CaptureFault, Continuity, CoordinateSupport, CpuPixels, Frame, FrameDescriptor,
+        FrameRequest, Lifecycle, OverflowPolicy, PixelFormat, Publication, RetainedStoragePolicy,
         SessionDescription, StreamState,
     };
     use mado_pilot_core::{
         CancellationToken, Clock, IdentityIssuer, MonotonicInstant, Operation, OperationContext,
         PixelExtent, ProviderId, Scale, Status, TargetPlacement,
     };
+    use mado_pilot_testkit::ManualClock;
     use windows::Graphics::SizeInt32;
     use windows::Win32::Foundation::RO_E_CLOSED;
 
@@ -1514,11 +1725,12 @@ mod tests {
     use super::{
         CallbackControl, GeometryRegistration, NativeOwnership, TEARDOWN_QUEUE_CAPACITY,
         TEARDOWN_WORKER_COUNT, TeardownExecutorSlot, TeardownPermits, TransitionState,
-        WGC_PRODUCER_POOL_SIZE, capture_already_ended_after_drain, frame_time,
+        WGC_PRODUCER_POOL_SIZE, capture_already_ended_after_drain,
+        commit_frame_with_target_liveness, configure_pending_capture, frame_time,
         frame_with_target_liveness, map_worker_start, native_close_result, native_size,
         normalize_native_fault, positive_extent, record_authoritative_native_end,
-        session_queue_policy, start_teardown_executor_with, target_fault, teardown_channel,
-        teardown_executor_from_slot,
+        session_queue_policy, start_capture, start_teardown_executor_with, target_fault,
+        teardown_channel, teardown_executor_from_slot,
     };
 
     static STALLED_INITIALIZERS: AtomicUsize = AtomicUsize::new(0);
@@ -1570,6 +1782,206 @@ mod tests {
     }
 
     #[test]
+    fn pacing_failure_closes_both_pending_owners_without_replacing_the_failure() {
+        let capture_closed = Cell::new(false);
+        let pool_closed = Cell::new(false);
+        let error = configure_pending_capture(
+            || Err(CaptureFault::UnsupportedOption.into()),
+            || {
+                capture_closed.set(true);
+                Err(windows::core::Error::from_hresult(RO_E_CLOSED))
+            },
+            || {
+                assert!(capture_closed.get(), "capture closes before its pool");
+                pool_closed.set(true);
+                Ok(())
+            },
+        )
+        .expect_err("required pacing cannot open without its control");
+        assert_eq!(error.status(), Status::Unsupported);
+        assert!(
+            pool_closed.get(),
+            "capture close failure cannot skip pool cleanup"
+        );
+    }
+
+    #[test]
+    fn capture_start_failure_releases_uncommitted_native_ownership() {
+        let memory = SessionMemory::testing_isolated(512, 512);
+        let dropped = Arc::new(AtomicBool::new(false));
+        let owner = NativeOwnership::new(
+            NativeDropProbe {
+                memory: Arc::clone(&memory),
+                observed: Arc::clone(&dropped),
+                expected: 64,
+            },
+            memory.reserve(64).expect("producer reservation"),
+        );
+        let context = OperationContext::new();
+        let error = start_capture(
+            owner,
+            &mut Operation::admit(&context).expect("admitted"),
+            |_| Err(CaptureFault::DeviceRemoved.into()),
+        )
+        .err()
+        .expect("failed native start cannot publish a session");
+        assert_eq!(error.status(), Status::CaptureFailed);
+        assert!(dropped.load(Ordering::Acquire));
+        assert_eq!(memory.usage(), (0, 0));
+    }
+
+    #[test]
+    fn capture_start_success_transfers_native_ownership_until_session_release() {
+        let memory = SessionMemory::testing_isolated(512, 512);
+        let dropped = Arc::new(AtomicBool::new(false));
+        let owner = NativeOwnership::new(
+            NativeDropProbe {
+                memory: Arc::clone(&memory),
+                observed: Arc::clone(&dropped),
+                expected: 64,
+            },
+            memory.reserve(64).expect("producer reservation"),
+        );
+        let context = OperationContext::new();
+        let mut attempt = Operation::admit(&context).expect("admitted");
+        let session = start_capture(owner, &mut attempt, |_| Ok(())).expect("native start");
+        let session = attempt.commit(session).expect("open commits");
+        assert!(!dropped.load(Ordering::Acquire));
+        assert_eq!(memory.usage(), (64, 64));
+        drop(session);
+        assert!(dropped.load(Ordering::Acquire));
+        assert_eq!(memory.usage(), (0, 0));
+    }
+
+    #[test]
+    fn cancellation_before_start_releases_ownership_without_starting_capture() {
+        let memory = SessionMemory::testing_isolated(512, 512);
+        let dropped = Arc::new(AtomicBool::new(false));
+        let owner = NativeOwnership::new(
+            NativeDropProbe {
+                memory: Arc::clone(&memory),
+                observed: Arc::clone(&dropped),
+                expected: 64,
+            },
+            memory.reserve(64).expect("producer reservation"),
+        );
+        let token = CancellationToken::new();
+        let context = OperationContext::new().with_cancellation(token.clone());
+        let mut attempt = Operation::admit(&context).expect("admitted");
+        token.cancel();
+        let error = start_capture(owner, &mut attempt, |_| {
+            panic!("authority ended after configuration and before start")
+        })
+        .err()
+        .expect("cancelled open cannot start");
+        assert_eq!(error.status(), Status::Cancelled);
+        assert!(dropped.load(Ordering::Acquire));
+        assert_eq!(memory.usage(), (0, 0));
+    }
+
+    #[test]
+    fn deadline_during_successful_start_discards_the_uncommitted_session() {
+        let memory = SessionMemory::testing_isolated(512, 512);
+        let dropped = Arc::new(AtomicBool::new(false));
+        let owner = NativeOwnership::new(
+            NativeDropProbe {
+                memory: Arc::clone(&memory),
+                observed: Arc::clone(&dropped),
+                expected: 64,
+            },
+            memory.reserve(64).expect("producer reservation"),
+        );
+        let clock = Arc::new(ManualClock::new());
+        let context = OperationContext::new()
+            .with_clock(clock.clone())
+            .with_deadline(MonotonicInstant::from_origin(Duration::from_secs(1)));
+        let error = start_capture(
+            owner,
+            &mut Operation::admit(&context).expect("admitted"),
+            |_| {
+                clock.advance(Duration::from_secs(1));
+                Ok(())
+            },
+        )
+        .err()
+        .expect("late successful native start cannot return a session");
+        assert_eq!(error.status(), Status::DeadlineExceeded);
+        assert!(dropped.load(Ordering::Acquire));
+        assert_eq!(memory.usage(), (0, 0));
+    }
+
+    fn retained_frame(state: &StreamState) -> Frame {
+        let descriptor = FrameDescriptor::packed(PixelExtent::new(2, 2), PixelFormat::Bgra8)
+            .expect("descriptor");
+        state
+            .publish(Publication {
+                captured_at: MonotonicInstant::ORIGIN,
+                descriptor,
+                placement: None,
+                pixels: vec![0x55; descriptor.byte_len()].into_boxed_slice(),
+                continuity: Continuity::Continuous,
+            })
+            .expect("retained frame")
+    }
+
+    #[test]
+    fn retained_commit_rechecks_native_key_without_closed_callback() {
+        let stream = IdentityIssuer::new().issue_stream().expect("stream");
+        let state = StreamState::with_target_extent(stream);
+        let frame = retained_frame(&state);
+        let operation = OperationContext::new();
+        let present = Cell::new(true);
+        let commit = || {
+            commit_frame_with_target_liveness(
+                &state,
+                &frame,
+                &operation,
+                || present.get(),
+                || state.terminate(CaptureFault::CaptureItemClosed),
+            )
+        };
+        commit().expect("live target accepts retained-frame work");
+        present.set(false);
+        assert_eq!(state.lifecycle(), Lifecycle::Open);
+        assert_eq!(state.terminal(), None);
+
+        let error = commit().expect_err("target loss must reject work without another capture");
+        assert_eq!(error, CaptureFault::CaptureItemClosed.into());
+    }
+
+    #[test]
+    fn retained_commit_liveness_preserves_completed_close() {
+        let stream = IdentityIssuer::new().issue_stream().expect("stream");
+        let state = StreamState::with_target_extent(stream);
+        let frame = retained_frame(&state);
+        let operation = OperationContext::new();
+
+        let error = commit_frame_with_target_liveness(
+            &state,
+            &frame,
+            &operation,
+            || {
+                state.drain(&operation).expect("close wins during probe");
+                false
+            },
+            || state.terminate(CaptureFault::CaptureItemClosed),
+        )
+        .expect_err("target loss cannot replace completed close");
+        assert_eq!(error, CaptureFault::SessionClosed.into());
+        assert_eq!(state.terminal(), None);
+
+        let error = commit_frame_with_target_liveness(
+            &state,
+            &frame,
+            &operation,
+            || panic!("closed capture must not probe native identity"),
+            || panic!("closed capture must not introduce a terminal fault"),
+        )
+        .expect_err("completed close remains closed");
+        assert_eq!(error, CaptureFault::SessionClosed.into());
+    }
+
+    #[test]
     fn r2_2_liveness_bound_rechecks_missing_key_without_native_terminal() {
         let stream = IdentityIssuer::new().issue_stream().expect("issued stream");
         let state = StreamState::with_target_extent(stream);
@@ -1584,6 +1996,7 @@ mod tests {
         let error = frame_with_target_liveness(
             &operation,
             Duration::from_millis(1),
+            || state.lifecycle() == Lifecycle::Open,
             || {
                 let check = checks.fetch_add(1, Ordering::AcqRel);
                 assert_eq!(state.lifecycle(), Lifecycle::Open);
@@ -1614,6 +2027,7 @@ mod tests {
         let error = frame_with_target_liveness(
             &operation,
             Duration::from_millis(1),
+            || state.lifecycle() == Lifecycle::Open,
             || {
                 checks.fetch_add(1, Ordering::AcqRel);
                 true
@@ -1644,6 +2058,7 @@ mod tests {
             &operation,
             Duration::from_millis(100),
             || true,
+            || true,
             || panic!("a present key cannot record target loss"),
             |bounded| {
                 *observed_deadline.lock().expect("deadline lock") = bounded.deadline();
@@ -1670,6 +2085,7 @@ mod tests {
             &operation,
             Duration::from_secs(1),
             || true,
+            || true,
             || panic!("a present key cannot record target loss"),
             |bounded| {
                 let mut wait = Operation::admit(bounded)?;
@@ -1684,22 +2100,119 @@ mod tests {
     }
 
     #[test]
-    fn r2_2_liveness_bound_preserves_first_terminal_fault() {
-        let stream = IdentityIssuer::new().issue_stream().expect("issued stream");
+    fn liveness_admission_returns_stopped_state_without_probing() {
+        for fault in [None, Some(CaptureFault::TargetLost)] {
+            for completed in [false, true] {
+                let stream = IdentityIssuer::new().issue_stream().expect("stream");
+                let state = StreamState::with_target_extent(stream);
+                if let Some(fault) = fault {
+                    state.terminate(fault);
+                } else {
+                    state.begin_close();
+                }
+                if completed {
+                    state
+                        .drain(&OperationContext::new())
+                        .expect("cleanup completes");
+                }
+                let token = CancellationToken::new();
+                token.cancel();
+                for (operation, expected) in [
+                    (
+                        OperationContext::new(),
+                        fault.unwrap_or(CaptureFault::SessionClosed).status(),
+                    ),
+                    (
+                        OperationContext::new().with_cancellation(token),
+                        Status::Cancelled,
+                    ),
+                    (
+                        OperationContext::new()
+                            .with_clock(Arc::new(ScriptedClock::new(&[0])))
+                            .with_deadline(MonotonicInstant::ORIGIN),
+                        Status::DeadlineExceeded,
+                    ),
+                ] {
+                    let error = frame_with_target_liveness(
+                        &operation,
+                        Duration::from_millis(1),
+                        || state.lifecycle() == Lifecycle::Open,
+                        || panic!("stopped capture must not probe the native key"),
+                        || panic!("stopped capture must not introduce a terminal fault"),
+                        |operation| state.frame(&FrameRequest::latest(), operation),
+                    )
+                    .expect_err("stopped frame admission");
+
+                    assert_eq!(error.status(), expected);
+                    assert_eq!(state.terminal(), fault);
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn liveness_probe_racing_completed_close_cannot_introduce_a_fault() {
+        let stream = IdentityIssuer::new().issue_stream().expect("stream");
         let state = StreamState::with_target_extent(stream);
-        state.terminate(CaptureFault::SourceInvalid);
+        let operation = OperationContext::new();
 
         let error = frame_with_target_liveness(
-            &OperationContext::new(),
+            &operation,
             Duration::from_millis(1),
-            || false,
-            || state.terminate(CaptureFault::CaptureItemClosed),
-            |bounded| state.frame(&FrameRequest::latest(), bounded),
+            || state.lifecycle() == Lifecycle::Open,
+            || {
+                state
+                    .drain(&operation)
+                    .expect("close wins during the admitted probe");
+                false
+            },
+            || state.terminate(CaptureFault::TargetLost),
+            |operation| state.frame(&FrameRequest::latest(), operation),
         )
-        .expect_err("the first terminal fault outranks later key loss");
+        .expect_err("the admitted probe cannot replace completed close");
 
-        assert_eq!(error.status(), Status::CaptureFailed);
-        assert_eq!(state.terminal(), Some(CaptureFault::SourceInvalid));
+        assert_eq!(error, CaptureFault::SessionClosed.into());
+        assert_eq!(state.terminal(), None);
+        assert_eq!(state.lifecycle(), Lifecycle::Closed);
+    }
+
+    #[test]
+    fn liveness_retry_observes_close_before_probing_again() {
+        let stream = IdentityIssuer::new().issue_stream().expect("stream");
+        let state = StreamState::with_target_extent(stream);
+        let operation = OperationContext::new().with_clock(Arc::new(ScriptedClock::new(&[0])));
+        let attempts = Cell::new(0);
+
+        let error = frame_with_target_liveness(
+            &operation,
+            Duration::from_millis(1),
+            || state.lifecycle() == Lifecycle::Open,
+            || {
+                assert_eq!(attempts.get(), 0, "close must prevent a second probe");
+                true
+            },
+            || panic!("a present key cannot record target loss"),
+            |bounded| {
+                let attempt = attempts.get();
+                attempts.set(attempt + 1);
+                if attempt == 0 {
+                    state
+                        .drain(&operation)
+                        .expect("close completes during the wait");
+                    state.frame(
+                        &FrameRequest::latest(),
+                        &bounded.clone().with_deadline(MonotonicInstant::ORIGIN),
+                    )
+                } else {
+                    state.frame(&FrameRequest::latest(), bounded)
+                }
+            },
+        )
+        .expect_err("retry observes the completed close");
+
+        assert_eq!(error, CaptureFault::SessionClosed.into());
+        assert_eq!(attempts.get(), 2);
+        assert_eq!(state.terminal(), None);
     }
 
     #[test]
@@ -1720,6 +2233,7 @@ mod tests {
         let frame = frame_with_target_liveness(
             &operation,
             Duration::from_millis(1),
+            || state.lifecycle() == Lifecycle::Open,
             || {
                 let check = checks.fetch_add(1, Ordering::AcqRel);
                 if check == 1 {
@@ -1828,10 +2342,25 @@ mod tests {
 
     #[test]
     fn r1_2_resize_replaces_producer_reservation_only_after_native_success() {
-        let memory = SessionMemory::testing_isolated(512, 512);
+        let memory = SessionMemory::testing_with_limits(
+            mado_pilot_capture::CaptureResourceLimits::new(48, 160).expect("tight limits"),
+            160,
+        );
         let owner = NativeOwnership::new(
             (),
             memory.reserve(64).expect("initial producer reservation"),
+        );
+        assert_eq!(
+            memory
+                .reserve(97)
+                .expect_err("replacement overlap is one byte over")
+                .status(),
+            Status::LimitExceeded,
+        );
+        assert_eq!(
+            memory.validate_surface(4, 4),
+            Err(CaptureFault::ResourceLimitExceeded),
+            "resize checks its single-frame limit before reserving the new producer",
         );
 
         let held = owner
@@ -1926,7 +2455,8 @@ mod tests {
     fn r1_2_production_multi_session_description_matches_shared_pressure_and_resume() {
         let layout = validate_surface(3840, 2160).expect("4K layout");
         let surface_bytes = layout.bytes();
-        let capacity = retained_storage_capacity(layout).expect("4K retained capacity");
+        let capacity = retained_storage_capacity(layout, SESSION_RETAINED_BYTES)
+            .expect("4K retained capacity");
         assert_eq!(capacity.get(), 40);
         let producer_bytes = surface_bytes
             .checked_mul(u64::try_from(WGC_PRODUCER_POOL_SIZE).expect("positive producer count"))
@@ -2437,6 +2967,105 @@ mod tests {
         assert!(permits.try_reserve().is_none());
         held.pop();
         assert!(permits.try_reserve().is_some());
+    }
+
+    fn published_transition() -> TransitionState {
+        TransitionState {
+            extent: PixelExtent::new(4, 4),
+            placement: TargetPlacement::new(
+                (0.0, 0.0),
+                (4.0, 4.0),
+                Scale::new(1.0, 1.0).expect("scale"),
+            )
+            .expect("placement"),
+            pending_discontinuity: false,
+            pending_geometry_change: false,
+            movement_not_before: None,
+            clock_anchor: (100, MonotonicInstant::from_origin(Duration::from_secs(10))),
+            published: true,
+        }
+    }
+
+    #[test]
+    fn geometry_transition_accepts_one_resized_frame_without_a_future_tick() {
+        for sizes in [&[8][..], &[8, 16][..], &[8, 4][..]] {
+            let mut transition = published_transition();
+            for &size in sizes {
+                transition.pool_recreated(PixelExtent::new(size, size));
+            }
+            let final_size = f64::from(*sizes.last().expect("at least one resize"));
+            let placement = TargetPlacement::new(
+                (0.0, 0.0),
+                (final_size, final_size),
+                Scale::new(1.0, 1.0).expect("scale"),
+            )
+            .expect("resized placement");
+
+            assert!(transition.accepts_frame_geometry(placement, 90, || {
+                panic!("extent-only changes must not wait for a later capture time")
+            }));
+            assert_eq!(transition.continuity(), Continuity::Discontinuous);
+        }
+    }
+
+    #[test]
+    fn geometry_transition_fences_move_and_both_scales_during_resize() {
+        let unit = Scale::new(1.0, 1.0).expect("unit scale");
+        let double = Scale::new(2.0, 2.0).expect("double scale");
+        let placements = [
+            TargetPlacement::new((20.0, 10.0), (8.0, 8.0), unit).expect("moved"),
+            TargetPlacement::new((0.0, 0.0), (4.0, 4.0), double).expect("target scale"),
+            TargetPlacement::new((0.0, 0.0), (8.0, 8.0), unit)
+                .expect("placement")
+                .with_desktop_scale(double),
+        ];
+        for placement in placements {
+            let mut transition = published_transition();
+            transition.pool_recreated(PixelExtent::new(8, 8));
+            assert!(!transition.accepts_frame_geometry(placement, 90, || Some(100)));
+            assert!(!transition.accepts_frame_geometry(placement, 99, || {
+                panic!("unchanged geometry must not rearm the fence")
+            }));
+            assert!(transition.accepts_frame_geometry(placement, 100, || {
+                panic!("the first fresh candidate must satisfy the existing fence")
+            }));
+            assert_eq!(transition.continuity(), Continuity::Discontinuous);
+        }
+    }
+
+    #[test]
+    fn geometry_transition_preserves_unfulfilled_movement_across_recreation() {
+        let unit = Scale::new(1.0, 1.0).expect("scale");
+        let moved = TargetPlacement::new((20.0, 10.0), (4.0, 4.0), unit).expect("moved");
+        let resized = TargetPlacement::new((20.0, 10.0), (16.0, 16.0), unit).expect("resized");
+        let mut transition = published_transition();
+        assert!(!transition.accepts_frame_geometry(moved, 90, || Some(100)));
+        transition.pool_recreated(PixelExtent::new(8, 8));
+        transition.pool_recreated(PixelExtent::new(16, 16));
+        assert!(!transition.accepts_frame_geometry(resized, 99, || {
+            panic!("only size changed after the movement observation")
+        }));
+        assert!(transition.accepts_frame_geometry(resized, 100, || {
+            panic!("recreation must preserve the original capture-time boundary")
+        }));
+        assert_eq!(transition.continuity(), Continuity::Discontinuous);
+    }
+
+    #[test]
+    fn geometry_transition_clock_fallback_does_not_lower_an_active_fence() {
+        let unit = Scale::new(1.0, 1.0).expect("scale");
+        let first = TargetPlacement::new((20.0, 10.0), (4.0, 4.0), unit).expect("first");
+        let second = TargetPlacement::new((40.0, 10.0), (4.0, 4.0), unit).expect("second");
+        let mut transition = published_transition();
+        assert!(!transition.accepts_frame_geometry(first, 90, || Some(100)));
+        assert!(!transition.accepts_frame_geometry(second, 95, || None));
+        assert!(!transition.accepts_frame_geometry(second, 99, || {
+            panic!("the clock fallback must retain the stronger pending fence")
+        }));
+        assert!(transition.accepts_frame_geometry(second, 100, || {
+            panic!("the first fresh candidate must be accepted without another observation")
+        }));
+        assert_eq!(transition.continuity(), Continuity::GeometryChanged);
     }
 
     #[test]

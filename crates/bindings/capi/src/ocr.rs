@@ -23,8 +23,9 @@ use crate::error::{Fault, madopilot_error_t};
 use crate::handle::opaque;
 use crate::operation;
 use crate::status::{
-    MADOPILOT_ERROR_CATEGORY_VISION, MADOPILOT_STATUS_INVALID_ARGUMENT, MADOPILOT_STATUS_OK,
-    MADOPILOT_STATUS_UNSUPPORTED, madopilot_status_t,
+    MADOPILOT_ERROR_CATEGORY_CAPTURE, MADOPILOT_ERROR_CATEGORY_VISION,
+    MADOPILOT_STATUS_INVALID_ARGUMENT, MADOPILOT_STATUS_OK, MADOPILOT_STATUS_UNSUPPORTED,
+    madopilot_status_t,
 };
 use crate::types::{
     MADOPILOT_CLIP_POLICY_REJECT, MADOPILOT_OCR_EXECUTION_PROVIDER_COREML,
@@ -802,6 +803,9 @@ fn ocr_fault(fault: OcrFault) -> Fault {
 fn recognition_failure(error: &Error, backend: &str) -> Fault {
     if error.status() == Status::Closed {
         return Fault::closed("the session has closed and starts no further OCR work");
+    }
+    if matches!(error.status(), Status::TargetLost | Status::CaptureFailed) {
+        return Fault::from_error(error, MADOPILOT_ERROR_CATEGORY_CAPTURE);
     }
     Fault::from_error(error, MADOPILOT_ERROR_CATEGORY_VISION).with_backend(backend)
 }

@@ -1,0 +1,1243 @@
+{
+  "admission": "builder-supporting-only",
+  "clean_consumer": "unadmitted",
+  "evidence_id": "windows-input-inventory-01",
+  "files": [
+    {
+      "bytes": 4471328,
+      "file": "nvrtc-builtins64_130.dll",
+      "group": "cuda",
+      "license": "NVIDIA CUDA Software License Agreement and supplement",
+      "notices": [
+        "CUDA-EULA.txt",
+        "CUDA-LICENSE.txt"
+      ],
+      "redistribution": "not_approved_for_staging_or_redistribution",
+      "sha256": "cd4ce3e0351b0d10f43b07c667782028420e03858999fab65207c40a28546d19",
+      "version": "CUDA toolkit 13.0.3 (component versions vary)",
+      "version_basis": "distribution metadata/historical provenance, not individual binary version"
+    },
+    {
+      "bytes": 90965024,
+      "file": "nvrtc64_130_0.dll",
+      "group": "cuda",
+      "license": "NVIDIA CUDA Software License Agreement and supplement",
+      "notices": [
+        "CUDA-EULA.txt",
+        "CUDA-LICENSE.txt"
+      ],
+      "redistribution": "not_approved_for_staging_or_redistribution",
+      "sha256": "28d1021a82003f4aed742ea36ece1d595e32a107f915dfbd07d3ee8764858bce",
+      "version": "6.14.11.9000",
+      "version_basis": "PE file resource"
+    },
+    {
+      "bytes": 8,
+      "file": "ORT-VERSION_NUMBER.txt",
+      "group": "ort_gpu",
+      "license": "MIT; bundled ThirdPartyNotices apply",
+      "notices": [
+        "ORT-LICENSE.txt",
+        "ORT-ThirdPartyNotices.txt"
+      ],
+      "redistribution": "not_approved_for_staging_or_redistribution",
+      "sha256": "ff88535d8f54d19afde7911a5b6dab64452208632c0a92e0ca3dd79ad7f32ca7",
+      "version": "1.29.0",
+      "version_basis": "distribution metadata/historical provenance, not individual binary version"
+    },
+    {
+      "bytes": 43,
+      "file": "ORT-GIT_COMMIT_ID.txt",
+      "group": "ort_gpu",
+      "license": "MIT; bundled ThirdPartyNotices apply",
+      "notices": [
+        "ORT-LICENSE.txt",
+        "ORT-ThirdPartyNotices.txt"
+      ],
+      "redistribution": "not_approved_for_staging_or_redistribution",
+      "sha256": "40a61979453482547403b5dfdb99efe49fbeeadec066d493cba81a07d1084d80",
+      "version": "1.29.0",
+      "version_basis": "distribution metadata/historical provenance, not individual binary version"
+    },
+    {
+      "bytes": 343249,
+      "file": "ORT-ThirdPartyNotices.txt",
+      "group": "ort_gpu",
+      "license": "MIT; bundled ThirdPartyNotices apply",
+      "notices": [
+        "ORT-LICENSE.txt",
+        "ORT-ThirdPartyNotices.txt"
+      ],
+      "redistribution": "not_approved_for_staging_or_redistribution",
+      "sha256": "4c5b864d8974c94b37461f38163facef79a1bb5dea461667ee9e5be6a8e73f83",
+      "version": "1.29.0",
+      "version_basis": "distribution metadata/historical provenance, not individual binary version"
+    },
+    {
+      "bytes": 1094,
+      "file": "ORT-LICENSE.txt",
+      "group": "ort_gpu",
+      "license": "MIT; bundled ThirdPartyNotices apply",
+      "notices": [
+        "ORT-LICENSE.txt",
+        "ORT-ThirdPartyNotices.txt"
+      ],
+      "redistribution": "not_approved_for_staging_or_redistribution",
+      "sha256": "c250d6278f0b47a6439fb7592b08b58a55eb9f535aa49a1db63211c3f982b674",
+      "version": "1.29.0",
+      "version_basis": "distribution metadata/historical provenance, not individual binary version"
+    },
+    {
+      "bytes": 3114,
+      "file": "cuDNN-version.h",
+      "group": "cudnn",
+      "license": "NVIDIA cuDNN Software License Agreement",
+      "notices": [
+        "cuDNN-LICENSE.txt"
+      ],
+      "redistribution": "not_approved_for_staging_or_redistribution",
+      "sha256": "ff45f8ed37491aaf7d775e3f6b52cd20414640e35ddebcbce4b4aa1d190bf5a3",
+      "version": "9.14.0.64",
+      "version_basis": "distribution metadata/historical provenance, not individual binary version"
+    },
+    {
+      "bytes": 29574,
+      "file": "cuDNN-LICENSE.txt",
+      "group": "cudnn",
+      "license": "NVIDIA cuDNN Software License Agreement",
+      "notices": [
+        "cuDNN-LICENSE.txt"
+      ],
+      "redistribution": "not_approved_for_staging_or_redistribution",
+      "sha256": "295a1b7118d3417f5d6a943e5f87b59e2a0631fb277129c3b15dee6248adc7cf",
+      "version": "9.14.0.64",
+      "version_basis": "distribution metadata/historical provenance, not individual binary version"
+    },
+    {
+      "bytes": 2829,
+      "file": "CUDA-version.json",
+      "group": "cuda",
+      "license": "NVIDIA CUDA Software License Agreement and supplement",
+      "notices": [
+        "CUDA-EULA.txt",
+        "CUDA-LICENSE.txt"
+      ],
+      "redistribution": "not_approved_for_staging_or_redistribution",
+      "sha256": "a0fd19846ecf717b3421859d7ee8e7a077e1452a13fb88fb723793bf5b162681",
+      "version": "CUDA toolkit 13.0.3 (component versions vary)",
+      "version_basis": "distribution metadata/historical provenance, not individual binary version"
+    },
+    {
+      "bytes": 534,
+      "file": "CUDA-README.txt",
+      "group": "cuda",
+      "license": "NVIDIA CUDA Software License Agreement and supplement",
+      "notices": [
+        "CUDA-EULA.txt",
+        "CUDA-LICENSE.txt"
+      ],
+      "redistribution": "not_approved_for_staging_or_redistribution",
+      "sha256": "1603ba7da679b1562c32672f853d87358e7cf9011d6f215a349431840b9f1a97",
+      "version": "CUDA toolkit 13.0.3 (component versions vary)",
+      "version_basis": "distribution metadata/historical provenance, not individual binary version"
+    },
+    {
+      "bytes": 69587,
+      "file": "CUDA-EULA.txt",
+      "group": "cuda",
+      "license": "NVIDIA CUDA Software License Agreement and supplement",
+      "notices": [
+        "CUDA-EULA.txt",
+        "CUDA-LICENSE.txt"
+      ],
+      "redistribution": "not_approved_for_staging_or_redistribution",
+      "sha256": "f0bd2eb0a82e7db5353a1c32084c53171b6e6792f79a4bd44515457498be74a0",
+      "version": "CUDA toolkit 13.0.3 (component versions vary)",
+      "version_basis": "distribution metadata/historical provenance, not individual binary version"
+    },
+    {
+      "bytes": 67875,
+      "file": "CUDA-LICENSE.txt",
+      "group": "cuda",
+      "license": "NVIDIA CUDA Software License Agreement and supplement",
+      "notices": [
+        "CUDA-EULA.txt",
+        "CUDA-LICENSE.txt"
+      ],
+      "redistribution": "not_approved_for_staging_or_redistribution",
+      "sha256": "f176e5fd245a4ff1d7aee743e345e14b29c4b724f150e4858c4c6a313966d1fb",
+      "version": "CUDA toolkit 13.0.3 (component versions vary)",
+      "version_basis": "distribution metadata/historical provenance, not individual binary version"
+    },
+    {
+      "bytes": 174478688,
+      "file": "onnxruntime_providers_cuda.dll",
+      "group": "ort_gpu",
+      "license": "MIT; bundled ThirdPartyNotices apply",
+      "notices": [
+        "ORT-LICENSE.txt",
+        "ORT-ThirdPartyNotices.txt"
+      ],
+      "redistribution": "not_approved_for_staging_or_redistribution",
+      "sha256": "9ca854c2478cfa6e7bb15dbfc91dcefb32e51533f10d304b932a169225727ec3",
+      "version": "1.29.0.20260811.4.2e2543f",
+      "version_basis": "PE file resource"
+    },
+    {
+      "bytes": 21856,
+      "file": "onnxruntime_providers_shared.dll",
+      "group": "ort_gpu",
+      "license": "MIT; bundled ThirdPartyNotices apply",
+      "notices": [
+        "ORT-LICENSE.txt",
+        "ORT-ThirdPartyNotices.txt"
+      ],
+      "redistribution": "not_approved_for_staging_or_redistribution",
+      "sha256": "cbcfeb3c5b5f195f3c1dc429e016cecbc5fc17d88d79044bf8daee0f38fe1461",
+      "version": "1.29.0.20260811.4.2e2543f",
+      "version_basis": "PE file resource"
+    },
+    {
+      "bytes": 16588600,
+      "file": "onnxruntime.dll",
+      "group": "ort_gpu",
+      "license": "MIT; bundled ThirdPartyNotices apply",
+      "notices": [
+        "ORT-LICENSE.txt",
+        "ORT-ThirdPartyNotices.txt"
+      ],
+      "redistribution": "not_approved_for_staging_or_redistribution",
+      "sha256": "5458c46e26efe64d7b2f960ba6aff97209b454a007af0f93d682ac2570f7541d",
+      "version": "1.29.0.20260811.4.2e2543f",
+      "version_basis": "PE file resource"
+    },
+    {
+      "bytes": 34962032,
+      "file": "cudnn_ops64_9.dll",
+      "group": "cudnn",
+      "license": "NVIDIA cuDNN Software License Agreement",
+      "notices": [
+        "cuDNN-LICENSE.txt"
+      ],
+      "redistribution": "not_approved_for_staging_or_redistribution",
+      "sha256": "90c0d2e8799d967c888b06cf0186f88202419a216269981719e5c7ed72831e12",
+      "version": "9.14.0.64",
+      "version_basis": "PE file resource"
+    },
+    {
+      "bytes": 54122608,
+      "file": "cudnn_heuristic64_9.dll",
+      "group": "cudnn",
+      "license": "NVIDIA cuDNN Software License Agreement",
+      "notices": [
+        "cuDNN-LICENSE.txt"
+      ],
+      "redistribution": "not_approved_for_staging_or_redistribution",
+      "sha256": "a6be83da793812be81bee1cac4f2f05643c78ce80250a6cd77d1ab128019b6c8",
+      "version": "9.14.0.64",
+      "version_basis": "distribution metadata/historical provenance, not individual binary version"
+    },
+    {
+      "bytes": 2344560,
+      "file": "cudnn_graph64_9.dll",
+      "group": "cudnn",
+      "license": "NVIDIA cuDNN Software License Agreement",
+      "notices": [
+        "cuDNN-LICENSE.txt"
+      ],
+      "redistribution": "not_approved_for_staging_or_redistribution",
+      "sha256": "e170e503021f5bc16f5119ef6b4c0b065c4e8dbd859c6b7e6bedb969c065bede",
+      "version": "9.14.0.64",
+      "version_basis": "distribution metadata/historical provenance, not individual binary version"
+    },
+    {
+      "bytes": 23116912,
+      "file": "cudnn_engines_runtime_compiled64_9.dll",
+      "group": "cudnn",
+      "license": "NVIDIA cuDNN Software License Agreement",
+      "notices": [
+        "cuDNN-LICENSE.txt"
+      ],
+      "redistribution": "not_approved_for_staging_or_redistribution",
+      "sha256": "b30c92ff1857ef1454716e3a0c7be64ab7235aec61b45085dabdd7f2c10ac81b",
+      "version": "9.14.0.64",
+      "version_basis": "PE file resource"
+    },
+    {
+      "bytes": 196693104,
+      "file": "cudnn_engines_precompiled64_9.dll",
+      "group": "cudnn",
+      "license": "NVIDIA cuDNN Software License Agreement",
+      "notices": [
+        "cuDNN-LICENSE.txt"
+      ],
+      "redistribution": "not_approved_for_staging_or_redistribution",
+      "sha256": "77d7da3b05214a3efad2570ccd76a1d52ef6a172f9a80167cf87be709d6ffcea",
+      "version": "9.14.0.64",
+      "version_basis": "PE file resource"
+    },
+    {
+      "bytes": 1500784,
+      "file": "cudnn_cnn64_9.dll",
+      "group": "cudnn",
+      "license": "NVIDIA cuDNN Software License Agreement",
+      "notices": [
+        "cuDNN-LICENSE.txt"
+      ],
+      "redistribution": "not_approved_for_staging_or_redistribution",
+      "sha256": "5779eabd77c2071edefef2017c91b6acdea21194ea6a0204112e427e7aa446ec",
+      "version": "9.14.0.64",
+      "version_basis": "PE file resource"
+    },
+    {
+      "bytes": 104365680,
+      "file": "cudnn_adv64_9.dll",
+      "group": "cudnn",
+      "license": "NVIDIA cuDNN Software License Agreement",
+      "notices": [
+        "cuDNN-LICENSE.txt"
+      ],
+      "redistribution": "not_approved_for_staging_or_redistribution",
+      "sha256": "0c4ad9ad4d43a90e38bd544e06877b139024bdc930bf1557119aa4d29e6f3d01",
+      "version": "9.14.0.64",
+      "version_basis": "PE file resource"
+    },
+    {
+      "bytes": 265328,
+      "file": "cudnn64_9.dll",
+      "group": "cudnn",
+      "license": "NVIDIA cuDNN Software License Agreement",
+      "notices": [
+        "cuDNN-LICENSE.txt"
+      ],
+      "redistribution": "not_approved_for_staging_or_redistribution",
+      "sha256": "d66be1ea2dec5f2447b6ba446fb22604ada5500604b29a3b5194845e91ae9af6",
+      "version": "9.14.0.64",
+      "version_basis": "PE file resource"
+    },
+    {
+      "bytes": 284331040,
+      "file": "cufft64_12.dll",
+      "group": "cuda",
+      "license": "NVIDIA CUDA Software License Agreement and supplement",
+      "notices": [
+        "CUDA-EULA.txt",
+        "CUDA-LICENSE.txt"
+      ],
+      "redistribution": "not_approved_for_staging_or_redistribution",
+      "sha256": "7b437a41a6e45803079aae38d794f5aa10012dcc2194884d9c29551bb369c768",
+      "version": "6,14,11,1200",
+      "version_basis": "PE file resource"
+    },
+    {
+      "bytes": 58863672,
+      "file": "curand64_10.dll",
+      "group": "cuda",
+      "license": "NVIDIA CUDA Software License Agreement and supplement",
+      "notices": [
+        "CUDA-EULA.txt",
+        "CUDA-LICENSE.txt"
+      ],
+      "redistribution": "not_approved_for_staging_or_redistribution",
+      "sha256": "da51792dc1b4768ea8207a21f5a2e05226263ae399b310cfd9bc7efb481b5530",
+      "version": "6,14,11,1040",
+      "version_basis": "PE file resource"
+    },
+    {
+      "bytes": 480399472,
+      "file": "cublasLt64_13.dll",
+      "group": "cuda",
+      "license": "NVIDIA CUDA Software License Agreement and supplement",
+      "notices": [
+        "CUDA-EULA.txt",
+        "CUDA-LICENSE.txt"
+      ],
+      "redistribution": "not_approved_for_staging_or_redistribution",
+      "sha256": "5d9ef9e66b68713f2b2a9cd6f0219f20f458e5d36e893fe34fe483bbcd68a744",
+      "version": "6,14,11,1311",
+      "version_basis": "PE file resource"
+    },
+    {
+      "bytes": 51561584,
+      "file": "cublas64_13.dll",
+      "group": "cuda",
+      "license": "NVIDIA CUDA Software License Agreement and supplement",
+      "notices": [
+        "CUDA-EULA.txt",
+        "CUDA-LICENSE.txt"
+      ],
+      "redistribution": "not_approved_for_staging_or_redistribution",
+      "sha256": "b787fada026a2cfe3eb07fe6f15b73b7a2aec6083a3cbc9584eb006737b980d6",
+      "version": "6,14,11,1311",
+      "version_basis": "PE file resource"
+    },
+    {
+      "bytes": 470640,
+      "file": "cudart64_13.dll",
+      "group": "cuda",
+      "license": "NVIDIA CUDA Software License Agreement and supplement",
+      "notices": [
+        "CUDA-EULA.txt",
+        "CUDA-LICENSE.txt"
+      ],
+      "redistribution": "not_approved_for_staging_or_redistribution",
+      "sha256": "769440f43991b2af0fbc7ee69d77f6f6d60f7468f585ae7cf1fb86451a51fcb1",
+      "version": "6,14,11,13000",
+      "version_basis": "PE file resource"
+    },
+    {
+      "bytes": 43,
+      "file": "GIT_COMMIT_ID",
+      "group": "ort_cpu",
+      "license": "MIT; bundled ThirdPartyNotices apply",
+      "notices": [
+        "LICENSE",
+        "ThirdPartyNotices.txt"
+      ],
+      "redistribution": "not_approved_for_staging_or_redistribution",
+      "sha256": "40a61979453482547403b5dfdb99efe49fbeeadec066d493cba81a07d1084d80",
+      "version": "1.29.0",
+      "version_basis": "distribution metadata/historical provenance, not individual binary version"
+    },
+    {
+      "bytes": 1094,
+      "file": "LICENSE",
+      "group": "ort_cpu",
+      "license": "MIT; bundled ThirdPartyNotices apply",
+      "notices": [
+        "LICENSE",
+        "ThirdPartyNotices.txt"
+      ],
+      "redistribution": "not_approved_for_staging_or_redistribution",
+      "sha256": "c250d6278f0b47a6439fb7592b08b58a55eb9f535aa49a1db63211c3f982b674",
+      "version": "1.29.0",
+      "version_basis": "distribution metadata/historical provenance, not individual binary version"
+    },
+    {
+      "bytes": 343249,
+      "file": "ThirdPartyNotices.txt",
+      "group": "ort_cpu",
+      "license": "MIT; bundled ThirdPartyNotices apply",
+      "notices": [
+        "LICENSE",
+        "ThirdPartyNotices.txt"
+      ],
+      "redistribution": "not_approved_for_staging_or_redistribution",
+      "sha256": "4c5b864d8974c94b37461f38163facef79a1bb5dea461667ee9e5be6a8e73f83",
+      "version": "1.29.0",
+      "version_basis": "distribution metadata/historical provenance, not individual binary version"
+    },
+    {
+      "bytes": 8,
+      "file": "VERSION_NUMBER",
+      "group": "ort_cpu",
+      "license": "MIT; bundled ThirdPartyNotices apply",
+      "notices": [
+        "LICENSE",
+        "ThirdPartyNotices.txt"
+      ],
+      "redistribution": "not_approved_for_staging_or_redistribution",
+      "sha256": "ff88535d8f54d19afde7911a5b6dab64452208632c0a92e0ca3dd79ad7f32ca7",
+      "version": "1.29.0",
+      "version_basis": "distribution metadata/historical provenance, not individual binary version"
+    },
+    {
+      "bytes": 16149344,
+      "file": "onnxruntime.dll",
+      "group": "ort_cpu",
+      "license": "MIT; bundled ThirdPartyNotices apply",
+      "notices": [
+        "LICENSE",
+        "ThirdPartyNotices.txt"
+      ],
+      "redistribution": "not_approved_for_staging_or_redistribution",
+      "sha256": "69d8e6d3879a3b4001cdc74c8ed9ccc7e7f799a5b847059738323404519ec471",
+      "version": "1.29.0.20260811.4.2e2543f",
+      "version_basis": "PE file resource"
+    },
+    {
+      "bytes": 21856,
+      "file": "onnxruntime_providers_shared.dll",
+      "group": "ort_cpu",
+      "license": "MIT; bundled ThirdPartyNotices apply",
+      "notices": [
+        "LICENSE",
+        "ThirdPartyNotices.txt"
+      ],
+      "redistribution": "not_approved_for_staging_or_redistribution",
+      "sha256": "87f6878cdc1f80b3a9afa5b0c84663315030b4957f5bbb6b66470557cb2f48d8",
+      "version": "1.29.0.20260811.4.2e2543f",
+      "version_basis": "PE file resource"
+    },
+    {
+      "bytes": 79645520,
+      "file": "onnxruntime-win-x64-1.29.0.zip",
+      "group": "ort_cpu",
+      "license": "MIT; bundled ThirdPartyNotices apply",
+      "notices": [
+        "LICENSE",
+        "ThirdPartyNotices.txt"
+      ],
+      "redistribution": "not_approved_for_staging_or_redistribution",
+      "sha256": "c9b4b7086b529ad814f428c1bad028e20a25d7dc0699836775faace4ab5b78b2",
+      "version": "1.29.0",
+      "version_basis": "distribution metadata/historical provenance, not individual binary version"
+    },
+    {
+      "bytes": 4745517,
+      "file": "ch_PP-OCRv4_det_mobile.onnx",
+      "group": "model",
+      "license": "Apache-2.0 per historical G004 dependency review; upstream model chain not independently reacquired",
+      "notices": [],
+      "redistribution": "not_approved_for_staging_or_redistribution",
+      "sha256": "d2a7720d45a54257208b1e13e36a8479894cb74155a5efe29462512d42f49da9",
+      "version": "RapidOCR v3.9.2 source selection",
+      "version_basis": "distribution metadata/historical provenance, not individual binary version"
+    },
+    {
+      "bytes": 21234383,
+      "file": "PP-OCRv6_rec_small.onnx",
+      "group": "model",
+      "license": "Apache-2.0 per historical G004 dependency review; upstream model chain not independently reacquired",
+      "notices": [],
+      "redistribution": "not_approved_for_staging_or_redistribution",
+      "sha256": "6f327246b50388f3c176ae304bd95767ea6dc0c9ae92153ef8cbe210b3c14884",
+      "version": "RapidOCR v3.9.2 source selection",
+      "version_basis": "distribution metadata/historical provenance, not individual binary version"
+    },
+    {
+      "bytes": 79832576,
+      "file": "opencv_world4140.dll",
+      "group": "opencv",
+      "license": "Apache-2.0 for OpenCV; embedded third-party terms require component mapping",
+      "notices": [
+        "LICENSE.txt",
+        "LICENSE_FFMPEG.txt",
+        "licenses"
+      ],
+      "redistribution": "not_approved_for_staging_or_redistribution",
+      "sha256": "a192cbf006faf48c054468fa2a2e56e3f680b401c23b8f7fb24373ff75654c46",
+      "version": "4.14.0",
+      "version_basis": "PE file resource"
+    },
+    {
+      "bytes": 30518784,
+      "file": "opencv_videoio_ffmpeg4140_64.dll",
+      "group": "opencv",
+      "license": "LGPL-2.1 per supplied FFmpeg license",
+      "notices": [
+        "LICENSE.txt",
+        "LICENSE_FFMPEG.txt",
+        "licenses"
+      ],
+      "redistribution": "not_approved_for_staging_or_redistribution",
+      "sha256": "131d7657a173f659de69e1e331916e4a9c0d8cf7bde7201a6988af6056b94853",
+      "version": "2024.11.0",
+      "version_basis": "PE file resource"
+    },
+    {
+      "bytes": 38528,
+      "file": "vcruntime140_threads.dll",
+      "group": "msvc_redist",
+      "license": "Microsoft Visual Studio redistribution terms; exact authorization not reviewed",
+      "notices": [],
+      "redistribution": "not_approved_for_staging_or_redistribution",
+      "sha256": "219915cf20822f34d5e7c1fdd4e21ae7f3396881096c51036225fb8f84b47afa",
+      "version": "14.44.35211.0",
+      "version_basis": "PE file resource"
+    },
+    {
+      "bytes": 49792,
+      "file": "vcruntime140_1.dll",
+      "group": "msvc_redist",
+      "license": "Microsoft Visual Studio redistribution terms; exact authorization not reviewed",
+      "notices": [],
+      "redistribution": "not_approved_for_staging_or_redistribution",
+      "sha256": "1f2d41c4aa5db0bc33ebf7b66d72943a817d7ce6cbe880502a9403823633093f",
+      "version": "14.44.35211.0",
+      "version_basis": "PE file resource"
+    },
+    {
+      "bytes": 124544,
+      "file": "vcruntime140.dll",
+      "group": "msvc_redist",
+      "license": "Microsoft Visual Studio redistribution terms; exact authorization not reviewed",
+      "notices": [],
+      "redistribution": "not_approved_for_staging_or_redistribution",
+      "sha256": "d5e4d9a3e835fa679450145d6a7d94e36573a509317111904d9b3712c30d9066",
+      "version": "14.44.35211.0",
+      "version_basis": "PE file resource"
+    },
+    {
+      "bytes": 352384,
+      "file": "vccorlib140.dll",
+      "group": "msvc_redist",
+      "license": "Microsoft Visual Studio redistribution terms; exact authorization not reviewed",
+      "notices": [],
+      "redistribution": "not_approved_for_staging_or_redistribution",
+      "sha256": "19839407c3fdbc824e5bce189bf68ddf8097f12ec28b757797ffa0415c144ddd",
+      "version": "14.44.35211.0",
+      "version_basis": "PE file resource"
+    },
+    {
+      "bytes": 31872,
+      "file": "msvcp140_codecvt_ids.dll",
+      "group": "msvc_redist",
+      "license": "Microsoft Visual Studio redistribution terms; exact authorization not reviewed",
+      "notices": [],
+      "redistribution": "not_approved_for_staging_or_redistribution",
+      "sha256": "f2069a52880ec885ee7f0511186100eb7fada0411a2b4948fafea7735b878a18",
+      "version": "14.44.35211.0",
+      "version_basis": "PE file resource"
+    },
+    {
+      "bytes": 50304,
+      "file": "msvcp140_atomic_wait.dll",
+      "group": "msvc_redist",
+      "license": "Microsoft Visual Studio redistribution terms; exact authorization not reviewed",
+      "notices": [],
+      "redistribution": "not_approved_for_staging_or_redistribution",
+      "sha256": "640b2aefced484d0368eea5bdd06addd0658a3a70a49256e560d6923b404a479",
+      "version": "14.44.35211.0",
+      "version_basis": "PE file resource"
+    },
+    {
+      "bytes": 280200,
+      "file": "msvcp140_2.dll",
+      "group": "msvc_redist",
+      "license": "Microsoft Visual Studio redistribution terms; exact authorization not reviewed",
+      "notices": [],
+      "redistribution": "not_approved_for_staging_or_redistribution",
+      "sha256": "3ea06f0ee098b4823cb79599df3780e7f23cce52c19aac31d2a0d47efe33a5e9",
+      "version": "14.44.35211.0",
+      "version_basis": "PE file resource"
+    },
+    {
+      "bytes": 35952,
+      "file": "msvcp140_1.dll",
+      "group": "msvc_redist",
+      "license": "Microsoft Visual Studio redistribution terms; exact authorization not reviewed",
+      "notices": [],
+      "redistribution": "not_approved_for_staging_or_redistribution",
+      "sha256": "bfad5aef4c63a669e3c140655cdfdf395b6c979b400a447bd5dcb65ed8826c3d",
+      "version": "14.44.35211.0",
+      "version_basis": "PE file resource"
+    },
+    {
+      "bytes": 557728,
+      "file": "msvcp140.dll",
+      "group": "msvc_redist",
+      "license": "Microsoft Visual Studio redistribution terms; exact authorization not reviewed",
+      "notices": [],
+      "redistribution": "not_approved_for_staging_or_redistribution",
+      "sha256": "0f885b509a685d2bbfa652fed26b5fb31d88fbdab0a978c641d1c7b8aa460aa9",
+      "version": "14.44.35211.0",
+      "version_basis": "PE file resource"
+    },
+    {
+      "bytes": 324208,
+      "file": "concrt140.dll",
+      "group": "msvc_redist",
+      "license": "Microsoft Visual Studio redistribution terms; exact authorization not reviewed",
+      "notices": [],
+      "redistribution": "not_approved_for_staging_or_redistribution",
+      "sha256": "2405355f0a58067b258f8df33c327e3a3d716eaac5a3a5aebb757842d85bd376",
+      "version": "14.44.35211.0",
+      "version_basis": "PE file resource"
+    },
+    {
+      "bytes": 1104,
+      "file": "vasot-LICENSE.txt",
+      "group": "opencv",
+      "license": "MIT",
+      "notices": [
+        "vasot-LICENSE.txt"
+      ],
+      "redistribution": "not_approved_for_staging_or_redistribution",
+      "sha256": "1efc5b489dd9e7c3f9dff762bbd0c949b6ebdeea5f3fd535653a57026edcef21",
+      "version": null,
+      "version_basis": "license/attribution record; component version not established"
+    },
+    {
+      "bytes": 1577,
+      "file": "features2d-LICENSE.AKAZE",
+      "group": "opencv",
+      "license": "BSD-style; see exact supplied record",
+      "notices": [
+        "features2d-LICENSE.AKAZE"
+      ],
+      "redistribution": "not_approved_for_staging_or_redistribution",
+      "sha256": "5e496490f0453c93ba1a021c9c3d6b9dc8c265f674968ac16ffbef98350759c4",
+      "version": null,
+      "version_basis": "license/attribution record; component version not established"
+    },
+    {
+      "bytes": 1565,
+      "file": "features2d-LICENSE.KAZE",
+      "group": "opencv",
+      "license": "BSD-style; see exact supplied record",
+      "notices": [
+        "features2d-LICENSE.KAZE"
+      ],
+      "redistribution": "not_approved_for_staging_or_redistribution",
+      "sha256": "6d66d0c283794e73e5909b7bc6dd1149edf2494ab49afeb0fb0fa6e57bbf3ff0",
+      "version": null,
+      "version_basis": "license/attribution record; component version not established"
+    },
+    {
+      "bytes": 1587,
+      "file": "mscr-chi_table_LICENSE.txt",
+      "group": "opencv",
+      "license": "component-specific terms in this measured license/attribution record",
+      "notices": [
+        "mscr-chi_table_LICENSE.txt"
+      ],
+      "redistribution": "not_approved_for_staging_or_redistribution",
+      "sha256": "3562b309154acbd79175a8c9055897721c1a770f4f5208aa12d0e6284812c84d",
+      "version": null,
+      "version_basis": "license/attribution record; component version not established"
+    },
+    {
+      "bytes": 1768,
+      "file": "SoftFloat-COPYING.txt",
+      "group": "opencv",
+      "license": "BSD-style; see exact supplied record",
+      "notices": [
+        "SoftFloat-COPYING.txt"
+      ],
+      "redistribution": "not_approved_for_staging_or_redistribution",
+      "sha256": "157c1095adca585146eef6b36f654daff6ade2b4b40dad49aa6cd6b0aaee80ef",
+      "version": null,
+      "version_basis": "license/attribution record; component version not established"
+    },
+    {
+      "bytes": 1024,
+      "file": "zlib-LICENSE",
+      "group": "opencv",
+      "license": "zlib",
+      "notices": [
+        "zlib-LICENSE"
+      ],
+      "redistribution": "not_approved_for_staging_or_redistribution",
+      "sha256": "439c75ab12b340c5362b9d4b08ff05ec3a4d0eb7667a6fff49a9b16d8795c78e",
+      "version": null,
+      "version_basis": "license/attribution record; component version not established"
+    },
+    {
+      "bytes": 1764,
+      "file": "protobuf-LICENSE",
+      "group": "opencv",
+      "license": "component-specific terms in this measured license/attribution record",
+      "notices": [
+        "protobuf-LICENSE"
+      ],
+      "redistribution": "not_approved_for_staging_or_redistribution",
+      "sha256": "f4df8b2457697851385d9ebb93267832c1dfa24e0e61881952f6b0c452663dc9",
+      "version": null,
+      "version_basis": "license/attribution record; component version not established"
+    },
+    {
+      "bytes": 137,
+      "file": "protobuf-README.md",
+      "group": "opencv",
+      "license": "component-specific terms in this measured license/attribution record",
+      "notices": [
+        "protobuf-README.md"
+      ],
+      "redistribution": "not_approved_for_staging_or_redistribution",
+      "sha256": "521eae82acd5726bfc6b45aef1f91288054a60111426158c625d75aa02c2ed0a",
+      "version": null,
+      "version_basis": "license/attribution record; component version not established"
+    },
+    {
+      "bytes": 2151,
+      "file": "libopenjp2-LICENSE",
+      "group": "opencv",
+      "license": "component-specific terms in this measured license/attribution record",
+      "notices": [
+        "libopenjp2-LICENSE"
+      ],
+      "redistribution": "not_approved_for_staging_or_redistribution",
+      "sha256": "1203c08d905d7ea23de2efc40fbfb147d593c327cf72f0d55c1e13081798d48d",
+      "version": null,
+      "version_basis": "license/attribution record; component version not established"
+    },
+    {
+      "bytes": 5485,
+      "file": "libopenjp2-README.md",
+      "group": "opencv",
+      "license": "component-specific terms in this measured license/attribution record",
+      "notices": [
+        "libopenjp2-README.md"
+      ],
+      "redistribution": "not_approved_for_staging_or_redistribution",
+      "sha256": "a82eefc115f4b6c2c3510651cc656f487f713edfca2be9332e5f55dc4017478b",
+      "version": null,
+      "version_basis": "license/attribution record; component version not established"
+    },
+    {
+      "bytes": 1731,
+      "file": "openexr-LICENSE",
+      "group": "opencv",
+      "license": "component-specific terms in this measured license/attribution record",
+      "notices": [
+        "openexr-LICENSE"
+      ],
+      "redistribution": "not_approved_for_staging_or_redistribution",
+      "sha256": "f7f4a60d7b6da8787d30fc058701d91dcf67b148ef5f1f31be69d1bda8880f84",
+      "version": null,
+      "version_basis": "license/attribution record; component version not established"
+    },
+    {
+      "bytes": 357,
+      "file": "openexr-AUTHORS.ilmbase",
+      "group": "opencv",
+      "license": "component-specific terms in this measured license/attribution record",
+      "notices": [
+        "openexr-AUTHORS.ilmbase"
+      ],
+      "redistribution": "not_approved_for_staging_or_redistribution",
+      "sha256": "ce3d8791b21477bcfcce29301b7f378c188caecd9ca647ff91704e1736ff479a",
+      "version": null,
+      "version_basis": "license/attribution record; component version not established"
+    },
+    {
+      "bytes": 1302,
+      "file": "openexr-AUTHORS.openexr",
+      "group": "opencv",
+      "license": "component-specific terms in this measured license/attribution record",
+      "notices": [
+        "openexr-AUTHORS.openexr"
+      ],
+      "redistribution": "not_approved_for_staging_or_redistribution",
+      "sha256": "202dd37f32d11914daae0e13258853aca67ea014a69a0d016cdce2c8239a919a",
+      "version": null,
+      "version_basis": "license/attribution record; component version not established"
+    },
+    {
+      "bytes": 2465,
+      "file": "libtiff-LICENSE.md",
+      "group": "opencv",
+      "license": "component-specific terms in this measured license/attribution record",
+      "notices": [
+        "libtiff-LICENSE.md"
+      ],
+      "redistribution": "not_approved_for_staging_or_redistribution",
+      "sha256": "d31876347c51d5777698b1e72414921c59344f20dc6f861ebf09403e2d4ea1df",
+      "version": null,
+      "version_basis": "license/attribution record; component version not established"
+    },
+    {
+      "bytes": 5479,
+      "file": "libpng-LICENSE",
+      "group": "opencv",
+      "license": "PNG license",
+      "notices": [
+        "libpng-LICENSE"
+      ],
+      "redistribution": "not_approved_for_staging_or_redistribution",
+      "sha256": "452390433ba0f88aa3e2b122c647741b72a0c117cd6ed7a329b49785aecb5511",
+      "version": null,
+      "version_basis": "license/attribution record; component version not established"
+    },
+    {
+      "bytes": 9669,
+      "file": "libpng-README",
+      "group": "opencv",
+      "license": "PNG license",
+      "notices": [
+        "libpng-README"
+      ],
+      "redistribution": "not_approved_for_staging_or_redistribution",
+      "sha256": "c05a3c74879af866e08715fbb169be42950665f4d8ed5b7fd5c604b4ec7bca71",
+      "version": null,
+      "version_basis": "license/attribution record; component version not established"
+    },
+    {
+      "bytes": 18159,
+      "file": "libjpeg-turbo-README.md",
+      "group": "opencv",
+      "license": "IJG plus BSD/zlib terms",
+      "notices": [
+        "libjpeg-turbo-README.md"
+      ],
+      "redistribution": "not_approved_for_staging_or_redistribution",
+      "sha256": "7366abd364726a619dec4ccc9b6175621352d350993b356e909f0a074d7497d1",
+      "version": null,
+      "version_basis": "license/attribution record; component version not established"
+    },
+    {
+      "bytes": 5755,
+      "file": "libjpeg-turbo-LICENSE.md",
+      "group": "opencv",
+      "license": "IJG plus BSD/zlib terms",
+      "notices": [
+        "libjpeg-turbo-LICENSE.md"
+      ],
+      "redistribution": "not_approved_for_staging_or_redistribution",
+      "sha256": "be2b2b5ab168bce87bc3e31f2a5c5adba4b7f6e9e51d618e958d1d46972ebd95",
+      "version": null,
+      "version_basis": "license/attribution record; component version not established"
+    },
+    {
+      "bytes": 13059,
+      "file": "libjpeg-turbo-README.ijg",
+      "group": "opencv",
+      "license": "IJG plus BSD/zlib terms",
+      "notices": [
+        "libjpeg-turbo-README.ijg"
+      ],
+      "redistribution": "not_approved_for_staging_or_redistribution",
+      "sha256": "db16a04128171879c60708d171b88d97345a2dd20f9bfc173680a4497c73f704",
+      "version": null,
+      "version_basis": "license/attribution record; component version not established"
+    },
+    {
+      "bytes": 1493,
+      "file": "ittnotify-BSD-3-Clause.txt",
+      "group": "opencv",
+      "license": "BSD-style; see exact supplied record",
+      "notices": [
+        "ittnotify-BSD-3-Clause.txt"
+      ],
+      "redistribution": "not_approved_for_staging_or_redistribution",
+      "sha256": "f48ca8b3e59598da8dbcabe6267d375014f9700a3e0c1513b5d7fbc1f53fa6af",
+      "version": null,
+      "version_basis": "license/attribution record; component version not established"
+    },
+    {
+      "bytes": 17702,
+      "file": "ittnotify-GPL-2.0-only.txt",
+      "group": "opencv",
+      "license": "GPL-2.0-only (record present, inclusion unproven)",
+      "notices": [
+        "ittnotify-GPL-2.0-only.txt"
+      ],
+      "redistribution": "not_approved_for_staging_or_redistribution",
+      "sha256": "48f45a2780683aa0b35b784974064a8d9274707f63ff714d04cd425d0f575801",
+      "version": null,
+      "version_basis": "license/attribution record; component version not established"
+    },
+    {
+      "bytes": 1334,
+      "file": "opencl-headers-LICENSE.txt",
+      "group": "opencv",
+      "license": "Khronos permissive",
+      "notices": [
+        "opencl-headers-LICENSE.txt"
+      ],
+      "redistribution": "not_approved_for_staging_or_redistribution",
+      "sha256": "4ce57ae987c869f8d1c296cced11daa3121c1716c5e0ce3455cb9b4d4a41bcbf",
+      "version": null,
+      "version_basis": "license/attribution record; component version not established"
+    },
+    {
+      "bytes": 11546,
+      "file": "dlpack-LICENSE",
+      "group": "opencv",
+      "license": "MIT",
+      "notices": [
+        "dlpack-LICENSE"
+      ],
+      "redistribution": "not_approved_for_staging_or_redistribution",
+      "sha256": "9bda2385fa325d1df6dc39772eba3cc6d07bdfaf2c656cd644cd29f7509514fd",
+      "version": null,
+      "version_basis": "license/attribution record; component version not established"
+    },
+    {
+      "bytes": 27913,
+      "file": "ffmpeg-license.txt",
+      "group": "opencv",
+      "license": "LGPL-2.1",
+      "notices": [
+        "ffmpeg-license.txt"
+      ],
+      "redistribution": "not_approved_for_staging_or_redistribution",
+      "sha256": "1629ff18b1b89e918905e9e92bbad4606a491ad05779809be217cf0f2fa0d435",
+      "version": null,
+      "version_basis": "license/attribution record; component version not established"
+    },
+    {
+      "bytes": 2504,
+      "file": "ffmpeg-readme.txt",
+      "group": "opencv",
+      "license": "LGPL-2.1",
+      "notices": [
+        "ffmpeg-readme.txt"
+      ],
+      "redistribution": "not_approved_for_staging_or_redistribution",
+      "sha256": "4f7f840358fae114d353337acd60ac99c88701b296cb92ef2fef513a2c494452",
+      "version": null,
+      "version_basis": "license/attribution record; component version not established"
+    },
+    {
+      "bytes": 11560,
+      "file": "flatbuffers-LICENSE.txt",
+      "group": "opencv",
+      "license": "Apache-2.0",
+      "notices": [
+        "flatbuffers-LICENSE.txt"
+      ],
+      "redistribution": "not_approved_for_staging_or_redistribution",
+      "sha256": "3ddf9be5c28fe27dad143a5dc76eea25222ad1dd68934a047064e56ed2fa40c5",
+      "version": null,
+      "version_basis": "license/attribution record; component version not established"
+    },
+    {
+      "bytes": 284,
+      "file": "ippicv-third-party-programs.txt",
+      "group": "opencv",
+      "license": "Intel IPP EULA plus third-party terms",
+      "notices": [
+        "ippicv-third-party-programs.txt"
+      ],
+      "redistribution": "not_approved_for_staging_or_redistribution",
+      "sha256": "75b8e68f815cefc85d58b644ce9e868f5194ffe79901fd697768dce42c3ca6ce",
+      "version": null,
+      "version_basis": "license/attribution record; component version not established"
+    },
+    {
+      "bytes": 362,
+      "file": "ippiw-support.txt",
+      "group": "opencv",
+      "license": "Intel IPP EULA plus third-party terms",
+      "notices": [
+        "ippiw-support.txt"
+      ],
+      "redistribution": "not_approved_for_staging_or_redistribution",
+      "sha256": "ec471506442b47935d267377debe0f4762116571c2fd1a8888ed1fa4532bb3a4",
+      "version": null,
+      "version_basis": "license/attribution record; component version not established"
+    },
+    {
+      "bytes": 284,
+      "file": "ippiw-third-party-programs.txt",
+      "group": "opencv",
+      "license": "Intel IPP EULA plus third-party terms",
+      "notices": [
+        "ippiw-third-party-programs.txt"
+      ],
+      "redistribution": "not_approved_for_staging_or_redistribution",
+      "sha256": "75b8e68f815cefc85d58b644ce9e868f5194ffe79901fd697768dce42c3ca6ce",
+      "version": null,
+      "version_basis": "license/attribution record; component version not established"
+    },
+    {
+      "bytes": 68409,
+      "file": "ippicv-EULA.rtf",
+      "group": "opencv",
+      "license": "Intel IPP EULA plus third-party terms",
+      "notices": [
+        "ippicv-EULA.rtf"
+      ],
+      "redistribution": "not_approved_for_staging_or_redistribution",
+      "sha256": "37f11c79f36fb5e1b00aca31c1234a7435c2929d83e181ee802a349ca8571749",
+      "version": null,
+      "version_basis": "license/attribution record; component version not established"
+    },
+    {
+      "bytes": 6894,
+      "file": "ippicv-readme.htm",
+      "group": "opencv",
+      "license": "Intel IPP EULA plus third-party terms",
+      "notices": [
+        "ippicv-readme.htm"
+      ],
+      "redistribution": "not_approved_for_staging_or_redistribution",
+      "sha256": "2fbc6125275ebb4fe17dcbfdf987e8cac1694a15fd5d73aa8861b69015ae6ccf",
+      "version": null,
+      "version_basis": "license/attribution record; component version not established"
+    },
+    {
+      "bytes": 68409,
+      "file": "ippiw-EULA.rtf",
+      "group": "opencv",
+      "license": "Intel IPP EULA plus third-party terms",
+      "notices": [
+        "ippiw-EULA.rtf"
+      ],
+      "redistribution": "not_approved_for_staging_or_redistribution",
+      "sha256": "37f11c79f36fb5e1b00aca31c1234a7435c2929d83e181ee802a349ca8571749",
+      "version": null,
+      "version_basis": "license/attribution record; component version not established"
+    },
+    {
+      "bytes": 11358,
+      "file": "ade-LICENSE",
+      "group": "opencv",
+      "license": "Apache-2.0",
+      "notices": [
+        "ade-LICENSE"
+      ],
+      "redistribution": "not_approved_for_staging_or_redistribution",
+      "sha256": "cfc7749b96f63bd31c3c42b5c471bf756814053e847c10f3eb003417bc523d30",
+      "version": null,
+      "version_basis": "license/attribution record; component version not established"
+    },
+    {
+      "bytes": 11560,
+      "file": "LICENSE.txt",
+      "group": "opencv",
+      "license": "Apache-2.0 for OpenCV; embedded third-party terms require component mapping",
+      "notices": [
+        "LICENSE.txt",
+        "LICENSE_FFMPEG.txt",
+        "licenses"
+      ],
+      "redistribution": "not_approved_for_staging_or_redistribution",
+      "sha256": "3ddf9be5c28fe27dad143a5dc76eea25222ad1dd68934a047064e56ed2fa40c5",
+      "version": "4.14.0 distribution; third-party file version not independently determined",
+      "version_basis": "distribution metadata/historical provenance, not individual binary version"
+    },
+    {
+      "bytes": 27913,
+      "file": "LICENSE_FFMPEG.txt",
+      "group": "opencv",
+      "license": "LGPL-2.1 per supplied FFmpeg license",
+      "notices": [
+        "LICENSE.txt",
+        "LICENSE_FFMPEG.txt",
+        "licenses"
+      ],
+      "redistribution": "not_approved_for_staging_or_redistribution",
+      "sha256": "1629ff18b1b89e918905e9e92bbad4606a491ad05779809be217cf0f2fa0d435",
+      "version": "4.14.0 distribution; third-party file version not independently determined",
+      "version_basis": "distribution metadata/historical provenance, not individual binary version"
+    },
+    {
+      "bytes": 643512,
+      "file": "msvcp140.dll",
+      "group": "system_observation",
+      "license": "Microsoft OS or runtime terms; no redistribution authority inferred",
+      "notices": [],
+      "redistribution": "host_observation_only_do_not_copy",
+      "sha256": "7c26614e1d733892c2deac7e245ce115504b1d80592dd0a01b08e3e5a55f89ca",
+      "version": "14.51.36247.0",
+      "version_basis": null
+    },
+    {
+      "bytes": 35768,
+      "file": "msvcp140_1.dll",
+      "group": "system_observation",
+      "license": "Microsoft OS or runtime terms; no redistribution authority inferred",
+      "notices": [],
+      "redistribution": "host_observation_only_do_not_copy",
+      "sha256": "206c931bf90fdad8816de3b5e2ef80b2bcaa9406c89ecc05fe6fddffe251e982",
+      "version": "14.51.36247.0",
+      "version_basis": null
+    },
+    {
+      "bytes": 374200,
+      "file": "concrt140.dll",
+      "group": "system_observation",
+      "license": "Microsoft OS or runtime terms; no redistribution authority inferred",
+      "notices": [],
+      "redistribution": "host_observation_only_do_not_copy",
+      "sha256": "54716f0738af891f283d213b5c8d11b25896bb8ee3097d301eae718560cf974e",
+      "version": "14.51.36247.0",
+      "version_basis": null
+    },
+    {
+      "bytes": 178616,
+      "file": "vcruntime140.dll",
+      "group": "system_observation",
+      "license": "Microsoft OS or runtime terms; no redistribution authority inferred",
+      "notices": [],
+      "redistribution": "host_observation_only_do_not_copy",
+      "sha256": "d1f4225df2cd877dbf130d5668a021dce3f94118455ff5ec952061c30afc9ce7",
+      "version": "14.51.36247.0",
+      "version_basis": null
+    },
+    {
+      "bytes": 50112,
+      "file": "vcruntime140_1.dll",
+      "group": "system_observation",
+      "license": "Microsoft OS or runtime terms; no redistribution authority inferred",
+      "notices": [],
+      "redistribution": "host_observation_only_do_not_copy",
+      "sha256": "a7146c08f89fe5b04541ab507cdb59ff7b44534d4ba3c668a426c6450a03434e",
+      "version": "14.51.36247.0",
+      "version_basis": null
+    },
+    {
+      "bytes": 1377536,
+      "file": "ucrtbase.dll",
+      "group": "system_observation",
+      "license": "Microsoft OS or runtime terms; no redistribution authority inferred",
+      "notices": [],
+      "redistribution": "host_observation_only_do_not_copy",
+      "sha256": "6ae500081442c38e0cc8d2e3dea30d3ab7971688a60ff5d73daa7f854974804d",
+      "version": "10.0.26100.9278 (WinBuild.160101.0800)",
+      "version_basis": null
+    },
+    {
+      "bytes": 4288232,
+      "file": "nvcuda.dll",
+      "group": "system_observation",
+      "license": "NVIDIA driver terms not reviewed",
+      "notices": [],
+      "redistribution": "host_observation_only_do_not_copy",
+      "sha256": "3fc980f90af215f58941973b9bc5c70ca438c73df8fccfee19bf11a9a19c1e4a",
+      "version": "32.0.15.9186",
+      "version_basis": null
+    },
+    {
+      "bytes": 275109089,
+      "file": "onnxruntime-win-x64-gpu_cuda13-1.29.0.zip",
+      "group": "ort_gpu_archive",
+      "license": "MIT plus ThirdPartyNotices and provider terms",
+      "notices": [
+        "ORT-LICENSE.txt",
+        "ORT-ThirdPartyNotices.txt"
+      ],
+      "redistribution": "not_approved_for_staging_or_redistribution",
+      "sha256": "0d2ab3feb9ed0ae68ccbbf2013ac87ad58a3b31bc8b28c5854f2ccacecbd8d90",
+      "version": "1.29.0",
+      "version_basis": null
+    }
+  ],
+  "gate_decisions": {
+    "G-007": "open",
+    "G-012": "open"
+  },
+  "host": {
+    "architecture": "x64",
+    "build": "26200.9278",
+    "display_version": "25H2",
+    "msvc": "19.44.35228",
+    "os": "Windows 11 Pro",
+    "rustc": "1.97.1 (8bab26f4f 2026-07-14)",
+    "sdk": "10.0.26100.0",
+    "visual_studio": "2022 17.14.37"
+  },
+  "not_executed": [
+    "build",
+    "public-consumers",
+    "qualification-procedure",
+    "missing-dependency-matrix",
+    "decoy-matrix"
+  ],
+  "observed_at": "2026-09-05T04:57:08.202Z",
+  "private_archive": {
+    "bytes": 49533,
+    "sha256": "b550cba097f2781d09caff93c4b02f2253e4c334b118fb6f1d3a9d76e94f05a2"
+  },
+  "qualification": "not-selected",
+  "remaining_gaps": [
+    "clean-consumer-image-and-absence-authority",
+    "actual-loaded-identities",
+    "opencv-acquisition-authenticity",
+    "dynamic-opencv-closure",
+    "per-file-redistribution-review"
+  ],
+  "schema_version": 1,
+  "source_commit": "2c80d4eb87a658069514cb0e83353e830a705882",
+  "source_tree": "9a18817221c78450f7af076504095d2aa902c28b",
+  "static_observations": {
+    "all_inspected_pe_amd64": true,
+    "complete_runtime_closure_admitted": false,
+    "gpu_controlled_dll_count": 18,
+    "pe_files_inspected": 32,
+    "static_only": true
+  }
+}

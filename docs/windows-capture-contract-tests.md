@@ -1,7 +1,9 @@
 # Windows capture ownership contract tests
 
-This plan translates
-[ADR 0013](adr/0013-windows-capture-frame-detachment.md) into tests for
+This plan translates the Windows capture ownership contract settled under gate
+[`G-002`](validation-gates.md#g-002) and stated in
+[Windows native capture ownership](architecture.md#windows-native-capture-ownership)
+into tests for
 `mado-pilot-platform-windows`. The production Adapter, controlled tests, and
 approved interactive Windows host matrix now exist; this document distinguishes
 their revision-bound evidence from Windows exact-candidate Phase 1 checks, Apple
@@ -24,6 +26,7 @@ drop counters, but Windows or D3D11 types must not enter `mado-pilot-core`,
 | Concern | Controlled evidence |
 |---|---|
 | Picker-free discovery, staged final arbitration, deterministic concurrent commit order, provider identity, required format | `r1_1_deadline_at_final_arbitration_leaves_all_registry_state_unchanged`, `discovery_snapshots_commit_in_query_order`, other `crates/platform/windows/src/provider.rs` unit tests, and `crates/platform/windows/tests/native_capture.rs` |
+| Retained-result commitment after native loss | `retained_commit_rechecks_native_key_without_closed_callback` and `retained_commit_liveness_preserves_completed_close` |
 | Replacement identity and bounded current/previous generations | `r1_4_identical_raw_identity_with_a_fresh_lifetime_never_retargets_the_old_id`, `an_absent_identity_accepted_by_this_provider_is_conservatively_lost`, and the synthetic replacement-window path |
 | Producer detachment, finite pressure, lease-safe reuse, resize retirement | `crates/automation/capture/tests/native_storage.rs` and `crates/platform/windows/src/storage.rs` unit tests |
 | Checked surface and retained-byte bounds | `r1_2_surface_axes_and_bytes_accept_the_exact_boundary_and_reject_one_over`, `r1_2_surface_and_mapping_multiplication_overflow_is_typed_before_allocation`, `r1_2_production_limits_admit_the_exact_4k_retention_and_mapping_workload`, `r1_2_reported_capacity_is_truthful_for_4k_and_reduced_for_8k`, `r1_2_derived_4k_capacity_admits_first_and_fortieth_then_refuses_forty_one`, `r1_2_derived_8k_capacity_admits_the_first_and_twelfth_then_refuses_thirteen`, `r1_2_production_session_and_global_limits_are_exact_and_shared`, `r1_2_production_multi_session_description_matches_shared_pressure_and_resume`, `r1_2_mapping_budget_follows_pixels_that_outlive_the_session_owner`, `r1_2_process_shared_mapping_stays_charged_after_session_close_until_pixels_release`, and the resize budget-release assertion |
@@ -45,12 +48,12 @@ case, which skips with a reason only when WGC is unavailable. On a supported
 host, failure to discover the test-owned target is a test failure. The tests do
 not capture an unrelated desktop or application.
 
-[ADR 0031](adr/0031-windows-1280-production-capture-performance-budgets.md)
-accepts the revision-bound 120-warm-up/600-frame 1280×720 production matrix.
-[ADR 0032](adr/0032-windows-dual-4k-production-capture-performance-budgets.md)
-accepts the exact two-display mixed-DPI dual-4K matrix. Both retain
-resource-zeroing observations and affected `G-013` budgets; a skip remains
-ineligible as support evidence.
+The revision-bound 120-warm-up/600-frame 1280×720 production matrix and the
+exact two-display mixed-DPI dual-4K matrix keep their resource-zeroing
+observations in the
+[1280×720](benchmarks/phase-2-production-capture-1280x720-x86_64-pc-windows-msvc.toml)
+and [dual-4K](benchmarks/phase-2-production-capture-dual-4k-x86_64-pc-windows-msvc.toml)
+profiles; a skip remains ineligible as support evidence.
 
 ## Privacy review
 
@@ -78,7 +81,7 @@ assertions name only the test-owned fixture and typed outcomes.
 | Pressure before resize | A discontinuous publication starts its new epoch at `FIRST` and therefore preserves all pending pressure debt; repeated discontinuities preserve it, and the first later non-discontinuous publication consumes it only by committing the checked same-epoch sequence gap |
 | Close admission fence | Both native handlers use lifetime-independent shared state; owner detachment and admission are synchronized; no callback is admitted to the owner after the fence; a delegate deliberately paused before admission is rejected safely after close |
 | Idempotent close | Concurrent and repeated close calls converge on one terminal state without double release or a host callback under a lock; native teardown runs on a fixed shared worker pool whose apartments and global ownership permits are established before open, startup failures are typed and retryable, and explicit close remains bounded by its operation deadline |
-| Target loss | Loss stops admission, reports the typed terminal outcome, and does not mutate retained frames |
+| Target loss | Loss stops admission and reports the typed terminal outcome. Retained-frame commitment rechecks native identity without waiting for `Closed`; historical frames remain unchanged |
 | Device removal/reset | Admission stops, the typed device outcome terminates the session, no late callback publishes or mapping state commits, and teardown remains bounded |
 | Resource bound | WGC frames never exceed two; a surface stays within 16,384 per axis and 128 MiB; detached, staging, and mapped ownership stays within 2 GiB per session and 4 GiB process-wide; the extent-derived retained count is enforced as a session-local maximum capped at 40 and is publicly marked process-shared; global contention may refuse earlier and every byte lease returns after final release |
 | Diagnostic redaction | Drop, close, reset, and mapping failures exclude pixel bytes, captured hashes, recognized text, titles, process paths, and native serial identifiers |
@@ -145,8 +148,8 @@ identifiers, with no captured payload.
 
 ## Performance obligations
 
-G-002 chooses correctness and ownership, not numeric product budgets. ADR 0031
-accepts the 1280×720 `G-013` profiles for:
+G-002 chooses correctness and ownership, not numeric product targets. The
+1280×720 production workload profiles measure:
 
 - capture arrival and callback-copy p50/p95 latency;
 - full-frame copied bytes and lazy mapped bytes;
@@ -155,7 +158,7 @@ accepts the 1280×720 `G-013` profiles for:
 - session startup, resize recreation, callback drain, complete close, and
   target-loss replacement recovery.
 
-ADR 0032 accepts the same applicable capture, mapping, resource, progress, and
+The dual-4K profile measures the same applicable capture, mapping, resource, progress, and
 cleanup facts for the exact two-display 4K topology. It requires one shared
 600-sample stationary pass per display plus 300 retained frame pairs while the
 fixture moves across the signed seam. Both requested-position markers and each

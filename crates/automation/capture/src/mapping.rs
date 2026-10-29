@@ -9,7 +9,7 @@ use mado_pilot_core::{
 
 use crate::descriptor::{FrameDescriptor, PixelFormat};
 use crate::fault::CaptureFault;
-use crate::frame::{Frame, FrameView};
+use crate::frame::{Frame, FrameInstance, FrameView};
 use crate::storage::CpuPixels;
 
 /// A CPU-readable image owned by the caller.
@@ -17,9 +17,9 @@ use crate::storage::CpuPixels;
 /// A mapping is what makes the ownership contract observable: once it exists,
 /// releasing the source frame, releasing the source view, publishing later
 /// frames, and closing the session all leave it readable and unchanged. It
-/// either retains the frame it came from or owns an independent allocation, and
-/// which of the two is an implementation detail a caller never has to reason
-/// about.
+/// retains only the pixels its bytes need, never the source frame's storage or
+/// lease. Cropped and converted mappings can share an independently owned pixel
+/// allocation without becoming source-shared mappings.
 ///
 /// The byte view borrows from the mapping, so Rust's own lifetimes enforce the
 /// rule the C ABI will have to state in prose: a borrowed view dies with its
@@ -27,6 +27,7 @@ use crate::storage::CpuPixels;
 #[derive(Clone)]
 pub struct CpuMapping {
     stamp: FrameStamp,
+    source_instance: FrameInstance,
     transform: TransformSnapshot,
     region: PixelRect,
     descriptor: FrameDescriptor,
@@ -56,6 +57,13 @@ impl CpuMapping {
     #[must_use]
     pub const fn stamp(&self) -> FrameStamp {
         self.stamp
+    }
+
+    /// Returns weak provenance without retaining the source frame's storage.
+    #[doc(hidden)]
+    #[must_use]
+    pub const fn source_instance(&self) -> &FrameInstance {
+        &self.source_instance
     }
 
     /// Returns the transform that was authoritative for the source frame.
@@ -166,44 +174,56 @@ fn map_region(
         return Err(CaptureFault::RegionOutsideFrame.into());
     }
 
-    // Nothing to crop and nothing to swap means the storage's own CPU bytes are
-    // already the mapping's bytes, whether they were there to begin with or a
-    // conversion produced them.
     let unconverted = region == bounds && source.format() == format;
-    let (pixels, shared) = match frame.storage().cpu_pixels() {
-        Some(pixels) => (pixels, true),
-        None => {
-            let converted = frame.storage().read_cpu(operation)?;
-            // The conversion is the expensive part of mapping native storage, and
-            // an interruption that arrived during it must discard the result
-            // rather than let it commit.
-            attempt.checkpoint()?;
-            (converted, false)
+    let descriptor = if unconverted {
+        source
+    } else {
+        if source.format().bytes_per_pixel() != format.bytes_per_pixel() {
+            return Err(CaptureFault::UnsupportedFormat.into());
         }
+        FrameDescriptor::packed(PixelExtent::new(region.width(), region.height()), format)?
     };
-
-    let mapping = if unconverted {
-        CpuMapping {
-            stamp: frame.stamp(),
-            transform: *frame.transform(),
-            region,
-            descriptor: source,
-            storage: if shared {
+    // Direct full-frame sharing never consults the optional reuse metadata.
+    let cached = if unconverted {
+        None
+    } else {
+        frame.mappings().find(region, descriptor)
+    };
+    let storage = if let Some(pixels) = cached {
+        MappingStorage::Owned(pixels)
+    } else {
+        let (pixels, shared) = match frame.storage().cpu_pixels() {
+            Some(pixels) => (pixels, true),
+            None => {
+                let converted = frame.storage().read_cpu(operation)?;
+                attempt.checkpoint()?;
+                (converted, false)
+            }
+        };
+        if unconverted {
+            if shared {
                 MappingStorage::Shared(pixels)
             } else {
                 MappingStorage::Owned(pixels)
-            },
+            }
+        } else {
+            let reservation = frame.storage().reserve_cpu_copy(descriptor.byte_len())?;
+            let bytes = copy_region(source, pixels.bytes(), region, descriptor)?;
+            let copied = Arc::new(match reservation {
+                Some(reservation) => CpuPixels::with_retainer(bytes, reservation),
+                None => CpuPixels::new(bytes),
+            });
+            attempt.checkpoint()?;
+            MappingStorage::Owned(frame.mappings().publish(region, descriptor, copied))
         }
-    } else {
-        let (descriptor, bytes) = copy_region(source, pixels.bytes(), region, format)?;
-        attempt.checkpoint()?;
-        CpuMapping {
-            stamp: frame.stamp(),
-            transform: *frame.transform(),
-            region,
-            descriptor,
-            storage: MappingStorage::Owned(Arc::new(CpuPixels::new(bytes))),
-        }
+    };
+    let mapping = CpuMapping {
+        stamp: frame.stamp(),
+        source_instance: frame.instance(),
+        transform: *frame.transform(),
+        region,
+        descriptor,
+        storage,
     };
 
     Ok(attempt.commit(mapping)?)
@@ -217,16 +237,12 @@ fn copy_region(
     source: FrameDescriptor,
     pixels: &[u8],
     region: PixelRect,
-    format: PixelFormat,
-) -> Result<(FrameDescriptor, Box<[u8]>), CaptureFault> {
+    descriptor: FrameDescriptor,
+) -> Result<Box<[u8]>, CaptureFault> {
+    let format = descriptor.format();
     let bytes_per_pixel = usize::try_from(format.bytes_per_pixel())
         .map_err(|_| CaptureFault::InconsistentDescriptor)?;
-    if source.format().bytes_per_pixel() != format.bytes_per_pixel() {
-        return Err(CaptureFault::UnsupportedFormat);
-    }
-
-    let extent = PixelExtent::new(region.width(), region.height());
-    let descriptor = FrameDescriptor::packed(extent, format)?;
+    let extent = descriptor.extent();
     let left = usize::try_from(region.left()).map_err(|_| CaptureFault::RegionOutsideFrame)?;
     let top = usize::try_from(region.top()).map_err(|_| CaptureFault::RegionOutsideFrame)?;
     let row_bytes = descriptor.row_bytes();
@@ -269,7 +285,10 @@ fn copy_region(
         swap_red_and_blue(&mut output);
     }
 
-    Ok((descriptor, output.into_boxed_slice()))
+    #[cfg(feature = "benchmark-instrumentation")]
+    crate::benchmark_instrumentation::record_copy(output.len());
+
+    Ok(output.into_boxed_slice())
 }
 
 /// Exchanges the first and third byte of every four-byte pixel.

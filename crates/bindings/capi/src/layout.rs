@@ -5,8 +5,7 @@
 //! than an assertion in either of them: this module reports what `rustc`
 //! produced, `tests/c/madopilot-abi-layout.c` reports what the C compiler
 //! produced for the same declarations, and `examples/c-abi-check.rs` fails on
-//! the first difference. See
-//! `docs/adr/0004-c-header-authorship-and-abi-verification.md`.
+//! the first difference. See `docs/c-abi.md`.
 //!
 //! The report is also the evidence `G-010` froze, taken on both release
 //! targets, so it is written in a format that is stable to diff and cheap to

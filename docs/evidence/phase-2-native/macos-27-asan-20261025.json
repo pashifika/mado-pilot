@@ -1,0 +1,105 @@
+{
+  "format_version": 1,
+  "scope": "macOS native-shim ASan library scenarios only",
+  "date": "2026-10-25",
+  "source": {
+    "revision": "1e4d0b4b426b011a295ceb14f710793827503e6f",
+    "tree": "d97a73b70df6c764d0089cd9fac691b8dbfd6181",
+    "compiled_workspace_packages": [
+      "crates/automation/capture",
+      "crates/automation/core",
+      "crates/automation/input",
+      "crates/platform/macos"
+    ],
+    "applicability": "These four packages, Cargo.toml, Cargo.lock and rust-toolchain.toml matched HEAD after the run. The recorded applicability_command covers exactly those paths.",
+    "applicability_command": [
+      "git",
+      "diff",
+      "--exit-code",
+      "HEAD",
+      "--",
+      "crates/automation/capture",
+      "crates/automation/core",
+      "crates/automation/input",
+      "crates/platform/macos",
+      "Cargo.toml",
+      "Cargo.lock",
+      "rust-toolchain.toml"
+    ],
+    "applicability_exit_code": 0,
+    "additional_applicability": "Separate post-run source check of build inputs tools/setup-native.py and .cargo/config.toml; source applicability only, not retroactive pre/post runtime or toolchain pinning.",
+    "additional_applicability_command": [
+      "git",
+      "diff",
+      "--exit-code",
+      "HEAD",
+      "--",
+      "tools/setup-native.py",
+      ".cargo/config.toml"
+    ],
+    "additional_applicability_exit_code": 0
+  },
+  "host": {
+    "target": "aarch64-apple-darwin",
+    "os": "macOS 27.0.1",
+    "build": "26A434",
+    "processor": "Apple M1 Pro",
+    "memory_bytes": 34359738368
+  },
+  "build": {
+    "argv": [
+      "env",
+      "MADO_PILOT_MACOS_ASAN=1",
+      "python3",
+      "tools/setup-native.py",
+      "--",
+      "cargo",
+      "test",
+      "--locked",
+      "-p",
+      "mado-pilot-platform-macos",
+      "--target-dir",
+      "target/p050-release-macos27-asan",
+      "--lib",
+      "--no-run",
+      "--message-format=json"
+    ],
+    "exit_code": 0,
+    "cfgs": [
+      "mado_pilot_asan"
+    ],
+    "executable": "target/p050-release-macos27-asan/debug/deps/mado_pilot_platform_macos-f49a89cbdeb489e3",
+    "bytes": 6568424,
+    "sha256": "97a9246fcd0ad16d70d12f2a0cfa6dc0b04684a6166db48250ef9e3bb7fa8a85",
+    "post_execution_sha256": "97a9246fcd0ad16d70d12f2a0cfa6dc0b04684a6166db48250ef9e3bb7fa8a85"
+  },
+  "execution": {
+    "argv": [
+      "target/p050-release-macos27-asan/debug/deps/mado_pilot_platform_macos-f49a89cbdeb489e3",
+      "--test-threads=1"
+    ],
+    "launcher": "Tern direct child",
+    "exit_code": 0,
+    "passed": 321,
+    "failed": 0,
+    "ignored": 0,
+    "filtered_out": 0,
+    "test_reported_seconds": 42.46,
+    "native_scenario_skip_policy": "mado_pilot_asan makes skipped() panic; no passing permission skip",
+    "raw_output": "macos-27-asan-20261025.txt",
+    "raw_output_kind": "combined output captured by the Tern launcher, without --nocapture or --show-output; libtest discards passing tests' stdout",
+    "raw_output_trailer": "final line 'Wall time: 43.05 seconds' is the launcher's wall-time trailer, not test output",
+    "raw_output_sha256": "48c643f2882a89eda8e963b4d0f2287980b6f940a2406af0ac1711049ae2f2d1"
+  },
+  "not_claimed": [
+    "historical macOS26.6.2 execution",
+    "historical coordinate/selection acceptance gate or a recorded display inventory/topology",
+    "execution of note-and-pass branches: window-subject scenarios, multi-display/mixed-scale/seam scenarios, the non-Retina scale note and idle-producer continuation; passing-test output was not retained",
+    "all capture/input topology qualification",
+    "manual input delivery",
+    "template-watch Lane B",
+    "performance qualification",
+    "whole Rust code instrumented by ASan",
+    "runtime-loaded ASan dylib, Apple clang and Command Line Tools path/version/hash identity; not bound by this receipt and not bound after the run"
+  ]
+}

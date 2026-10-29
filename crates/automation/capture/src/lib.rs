@@ -45,31 +45,51 @@
 //! one-shot capture are not implemented or reserved here as empty seams.
 //!
 //! **The public names here are reviewed, not yet stable.**
-//! `docs/adr/0006-public-rust-names-and-compatibility-policy.md` records the
-//! review that settled them and the policy that now applies: renaming or
-//! removing one is a breaking change needing an ADR and a version bump, while
-//! adding is free. The stability promise itself begins at 1.0.
+//! Renaming or removing a public name is a breaking change requiring a version
+//! bump; additions are allowed. The stability promise begins at 1.0.
+//! Current naming and compatibility policy lives in `docs/architecture.md`.
+
+/// Effective physical-copy instrumentation, including unified Cargo features.
+#[doc(hidden)]
+pub const BENCHMARK_INSTRUMENTATION_ENABLED: bool = cfg!(feature = "benchmark-instrumentation");
+
+/// Opt-in observations of physical CPU mapping copies.
+#[cfg(feature = "benchmark-instrumentation")]
+#[doc(hidden)]
+pub mod benchmark_instrumentation;
 
 pub mod descriptor;
 pub mod discovery;
 pub mod fault;
 pub mod frame;
 pub mod mapping;
+pub mod pacing;
 pub mod session;
 pub mod storage;
 pub mod stream;
+pub mod window;
+
+mod mapping_cache;
 
 pub use descriptor::{
     CoordinateSupport, FrameDescriptor, OverflowPolicy, PixelFormat, QueuePolicy,
-    RetainedStoragePolicy, SessionDescription, TargetDescription,
+    RetainedStoragePolicy, SessionDescription, TargetDescription, TargetProcessIdentity,
 };
 pub use discovery::DiscoveryRequest;
 pub use fault::CaptureFault;
 pub use frame::{Frame, FrameView};
 pub use mapping::CpuMapping;
+pub use pacing::{
+    CapturePacingOutcome, CapturePacingReport, CapturePacingRequest, PacingUnsupportedReason,
+    ResolvedCapturePacing,
+};
 pub use session::{CaptureProvider, CaptureSession, OpenRequest};
 pub use storage::{CpuFrameStorage, CpuPixels, FrameStorage};
 pub use stream::{
     Continuity, FrameRequest, FrameSelection, Lifecycle, Publication, RefusedPublication,
     RefusedStorage, StoragePublication, StreamState,
+};
+pub use window::{
+    CaptureResourceLimits, NativeDesktopUnit, NativeWindowDescription, NativeWindowId,
+    WindowCaptureArea, WindowGeometry,
 };

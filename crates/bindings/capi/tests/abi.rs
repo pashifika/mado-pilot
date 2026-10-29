@@ -107,6 +107,23 @@ fn a_caller_that_knows_only_the_information_prefix_still_negotiates() {
 }
 
 #[test]
+fn current_minor_negotiates_an_incomplete_input_suffix() {
+    let extent = std::mem::offset_of!(madopilot_api_t, session_send_input);
+    let api = negotiate(MADOPILOT_ABI_MAJOR, MADOPILOT_ABI_MINOR, extent)
+        .expect("a caller may know only part of a supported minor's suffix");
+    assert_eq!(api.struct_size, MADOPILOT_API_SIZE_CURRENT);
+    let mut info = build_info();
+    // SAFETY: describe_build lies within the caller-known extent.
+    assert_eq!(
+        unsafe { (api.describe_build)(&raw mut info) },
+        MADOPILOT_STATUS_OK
+    );
+    assert_eq!(info.abi_major, MADOPILOT_ABI_MAJOR);
+    assert_eq!(info.abi_minor, MADOPILOT_ABI_MINOR);
+    assert_eq!(info.table_size, api.struct_size);
+}
+
+#[test]
 fn an_unsupported_abi_major_is_refused() {
     let status = negotiate(
         MADOPILOT_ABI_MAJOR + 1,
@@ -419,6 +436,168 @@ fn frozen_abi_1_2_engine_options_remain_exact_and_default_ocr_has_its_own_entry(
         MADOPILOT_STATUS_INVALID_ARGUMENT
     );
     assert!(engine.is_null());
+}
+
+#[test]
+fn capture_only_replay_reports_and_refuses_unavailable_input() {
+    let flow = support::Flow::open();
+    let api = flow.api;
+    let operation = operation();
+    let mut capabilities = madopilot_engine_capabilities_t {
+        struct_size: struct_size::<madopilot_engine_capabilities_t>(),
+        flags: u32::MAX,
+    };
+    assert_eq!(
+        unsafe { (api.engine_capabilities)(flow.engine, &raw mut capabilities) },
+        MADOPILOT_STATUS_OK
+    );
+    assert_eq!(
+        capabilities.flags & (MADOPILOT_ENGINE_DELIVERS_INPUT | MADOPILOT_ENGINE_READS_PERMISSIONS),
+        0
+    );
+
+    // SAFETY: these C output records contain only integers and raw pointers.
+    let mut capability = unsafe { poisoned::<madopilot_input_capability_t>() };
+    capability.struct_size = struct_size::<madopilot_input_capability_t>();
+    assert_eq!(
+        unsafe {
+            (api.target_list_input_capability)(
+                flow.targets,
+                0,
+                MADOPILOT_INPUT_OPERATION_POINTER,
+                MADOPILOT_INPUT_DELIVERY_PROCESS_DIRECTED,
+                &raw mut capability,
+            )
+        },
+        MADOPILOT_STATUS_OK
+    );
+    assert_eq!(capability.operation, MADOPILOT_INPUT_OPERATION_POINTER);
+    assert_eq!(
+        capability.delivery,
+        MADOPILOT_INPUT_DELIVERY_PROCESS_DIRECTED
+    );
+    assert_eq!(capability.support, MADOPILOT_CAPABILITY_UNSUPPORTED);
+    assert_eq!(
+        capability.flags
+            & (MADOPILOT_INPUT_CAPABILITY_HAS_PERMISSION | MADOPILOT_INPUT_CAPABILITY_HAS_EVIDENCE),
+        0
+    );
+
+    let mut engine_descriptor = unsafe { poisoned::<madopilot_input_descriptor_t>() };
+    engine_descriptor.struct_size = struct_size::<madopilot_input_descriptor_t>();
+    let mut session_descriptor = engine_descriptor;
+    let mut error = ptr::null_mut();
+    assert_eq!(
+        unsafe {
+            (api.engine_input_descriptor)(
+                flow.engine,
+                flow.targets,
+                0,
+                &raw const operation,
+                &raw mut engine_descriptor,
+                &raw mut error,
+            )
+        },
+        MADOPILOT_STATUS_OK
+    );
+    assert!(error.is_null());
+    assert_eq!(
+        unsafe { (api.session_input_descriptor)(flow.session, &raw mut session_descriptor) },
+        MADOPILOT_STATUS_OK
+    );
+    for descriptor in [engine_descriptor, session_descriptor] {
+        assert_eq!(descriptor.target, capability.target);
+        assert_eq!(descriptor.known_pairs, MADOPILOT_INPUT_PAIRS_ALL);
+        assert_eq!(descriptor.supported_pairs, 0);
+        assert_eq!(descriptor.unknown_pairs, 0);
+    }
+
+    let mut permission = unsafe { poisoned::<madopilot_permission_t>() };
+    permission.struct_size = struct_size::<madopilot_permission_t>();
+    assert_eq!(
+        unsafe {
+            (api.engine_permission)(
+                flow.engine,
+                MADOPILOT_PERMISSION_KIND_SCREEN_CAPTURE,
+                &raw const operation,
+                &raw mut permission,
+                &raw mut error,
+            )
+        },
+        MADOPILOT_STATUS_UNSUPPORTED
+    );
+    let detail = support::describe_and_release(api, error);
+    assert_eq!(detail.category, MADOPILOT_ERROR_CATEGORY_PERMISSION);
+
+    // SAFETY: every unselected event/request field has a valid zero bit pattern.
+    let event = madopilot_input_event_t {
+        struct_size: struct_size::<madopilot_input_event_t>(),
+        kind: MADOPILOT_INPUT_EVENT_DELAY,
+        delay_nanos: 1,
+        ..unsafe { std::mem::zeroed() }
+    };
+    let delivery = MADOPILOT_INPUT_DELIVERY_PROCESS_DIRECTED;
+    let request = madopilot_input_request_t {
+        struct_size: struct_size::<madopilot_input_request_t>(),
+        events: &raw const event,
+        event_count: 1,
+        event_stride: size_of::<madopilot_input_event_t>(),
+        deliveries: &raw const delivery,
+        delivery_count: 1,
+        ..unsafe { std::mem::zeroed() }
+    };
+    let mut receipt = ptr::NonNull::<madopilot_input_receipt_t>::dangling().as_ptr();
+    error = ptr::null_mut();
+    assert_eq!(
+        unsafe {
+            (api.session_send_input)(
+                flow.session,
+                &raw const request,
+                &raw const operation,
+                &raw mut receipt,
+                &raw mut error,
+            )
+        },
+        MADOPILOT_STATUS_UNSUPPORTED
+    );
+    assert!(receipt.is_null());
+    let detail = support::describe_and_release(api, error);
+    assert_eq!(detail.category, MADOPILOT_ERROR_CATEGORY_INPUT);
+
+    let open = madopilot_open_request_t {
+        struct_size: struct_size::<madopilot_open_request_t>(),
+        flags: 0,
+        required_format: MADOPILOT_PIXEL_FORMAT_RGBA8,
+        preferred_format: MADOPILOT_PIXEL_FORMAT_RGBA8,
+    };
+    let input = madopilot_input_open_request_t {
+        struct_size: struct_size::<madopilot_input_open_request_t>(),
+        flags: 0,
+        requirement: MADOPILOT_INPUT_REQUIRED,
+        reserved: 0,
+        required_pairs: MADOPILOT_INPUT_PAIR_POINTER_PROCESS_DIRECTED,
+        preferred_pairs: MADOPILOT_INPUT_PAIR_KEYBOARD_SYSTEM,
+    };
+    let mut session = ptr::NonNull::<madopilot_session_t>::dangling().as_ptr();
+    error = ptr::null_mut();
+    assert_eq!(
+        unsafe {
+            (api.session_open_with_input)(
+                flow.engine,
+                flow.targets,
+                0,
+                &raw const open,
+                &raw const input,
+                &raw const operation,
+                &raw mut session,
+                &raw mut error,
+            )
+        },
+        MADOPILOT_STATUS_UNSUPPORTED
+    );
+    assert!(session.is_null());
+    let detail = support::describe_and_release(api, error);
+    assert_eq!(detail.category, MADOPILOT_ERROR_CATEGORY_INPUT);
 }
 
 #[test]
@@ -803,9 +982,9 @@ fn a_refusal_reports_a_message_a_reader_can_use() {
 
 /// The mandatory prefix of every size-versioned structure, in both directions.
 ///
-/// These are the numbers `src/` declares as `Versioned::MANDATORY` and
-/// `Input::MANDATORY`, and ADR 0007 froze. They are written out here rather than
-/// read from the crate because `Versioned` and `Input` are internal: what a
+/// These frozen values match `src/`'s `Versioned::MANDATORY` and
+/// `Input::MANDATORY`. They are written out here rather than read from the
+/// crate because those constants are internal: what a
 /// caller can observe is the refusal, so that is what is asserted, from both
 /// sides. One byte below the prefix must be refused, and the prefix itself must
 /// be accepted — without the second half, raising a prefix would go unnoticed;
@@ -885,9 +1064,8 @@ fn every_versioned_output_holds_a_declared_size_to_its_own_field_boundaries() {
         40,
         |out| unsafe { (api.result_stamp)(result, out) },
     );
-    // The one structure with two prefixes: 8 bytes as the options a caller
-    // supplies, 24 as the report of what the search ran under. Only ADR 0007
-    // records the asymmetry, so only a test keeps it.
+    // This structure has two prefixes: 8 bytes as caller-supplied options,
+    // 24 as the report of the options the search used.
     assert_output_prefixes(
         "result_options",
         "madopilot_match_options_t",
@@ -1790,9 +1968,8 @@ fn a_null_archive_view_carrying_a_length_is_a_malformed_request_whatever_the_len
     let flow = support::Flow::open();
     let operation = operation();
 
-    // A null pointer with a length is a view that cannot exist, and ADR 0007
-    // freezes that as an invalid argument of the boundary's own category. The
-    // length here is one byte past the source ceiling this ABI's engines apply,
+    // A null pointer with a length is an invalid argument of the boundary's
+    // own category. The length here is one byte past the source ceiling,
     // which is what makes the case worth a test: the boundary also refuses an
     // oversized archive length before it copies anything, and that refusal
     // carries an asset status. It may not answer first. A caller that passed a
@@ -1938,11 +2115,8 @@ fn an_expired_operation_refuses_a_lent_archive_at_admission() {
     let detail = support::describe_and_release(api, error);
     assert_eq!(detail.status, MADOPILOT_STATUS_DEADLINE_EXCEEDED);
 
-    // The same request with a view that cannot exist. A null pointer carrying a
-    // length is the refusal ADR 0007 freezes as an invalid argument, so answering
-    // the deadline here is what says admission ran *before* the source structure
-    // was read rather than after it — which is what this test's name claims and
-    // what the assertions above cannot tell apart on their own.
+    // A null pointer carrying a length would otherwise be an invalid argument.
+    // Reporting the deadline proves admission precedes source-shape validation.
     let malformed = madopilot_package_source_t {
         archive: madopilot_bytes_t {
             data: ptr::null(),

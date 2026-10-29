@@ -55,9 +55,7 @@ impl PackagePath {
     ///
     /// Folding here would buy the reverse: two names that a filesystem keeps
     /// apart would become one entry, and a package would load differently
-    /// depending on a rule the package cannot see. See
-    /// `docs/adr/0001-asset-archive-container-and-safety-ceilings.md`,
-    /// "A package path is its bytes".
+    /// depending on a rule the package cannot see.
     #[must_use]
     pub fn normalize(raw: &[u8]) -> Option<Self> {
         let name = std::str::from_utf8(raw).ok()?;

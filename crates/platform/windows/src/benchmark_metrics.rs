@@ -10,7 +10,7 @@ use mado_pilot_core::FrameStamp;
 #[cfg(feature = "benchmark-instrumentation")]
 use std::sync::{
     LazyLock,
-    atomic::{AtomicU64, Ordering},
+    atomic::{AtomicI32, AtomicU32, AtomicU64, Ordering},
 };
 #[cfg(feature = "benchmark-instrumentation")]
 use std::time::{Duration, Instant};
@@ -31,13 +31,120 @@ static DETACHED_PEAK: AtomicU64 = AtomicU64::new(0);
 static STAGING_LIVE: AtomicU64 = AtomicU64::new(0);
 #[cfg(feature = "benchmark-instrumentation")]
 static STAGING_PEAK: AtomicU64 = AtomicU64::new(0);
+#[cfg(feature = "benchmark-instrumentation")]
+static CALLBACK_ENTRIES: AtomicU64 = AtomicU64::new(0);
+#[cfg(feature = "benchmark-instrumentation")]
+static CALLBACK_ADMISSION_REFUSALS: AtomicU64 = AtomicU64::new(0);
+#[cfg(feature = "benchmark-instrumentation")]
+static CALLBACK_OWNER_UNAVAILABLE: AtomicU64 = AtomicU64::new(0);
+#[cfg(feature = "benchmark-instrumentation")]
+static CALLBACK_SENDER_UNAVAILABLE: AtomicU64 = AtomicU64::new(0);
+#[cfg(feature = "benchmark-instrumentation")]
+static TRANSITION_LOCK_CONTENTIONS: AtomicU64 = AtomicU64::new(0);
+#[cfg(feature = "benchmark-instrumentation")]
+static NATIVE_FRAMES_ACQUIRED: AtomicU64 = AtomicU64::new(0);
+#[cfg(feature = "benchmark-instrumentation")]
+static RESIZE_DETECTIONS: AtomicU64 = AtomicU64::new(0);
+#[cfg(feature = "benchmark-instrumentation")]
+static RECREATE_BEGUN: AtomicU64 = AtomicU64::new(0);
+#[cfg(feature = "benchmark-instrumentation")]
+static RECREATE_COMPLETED: AtomicU64 = AtomicU64::new(0);
+#[cfg(feature = "benchmark-instrumentation")]
+static GEOMETRY_FENCE_REFUSALS: AtomicU64 = AtomicU64::new(0);
+#[cfg(feature = "benchmark-instrumentation")]
+static TEXTURE_DESCRIPTOR_REFUSALS: AtomicU64 = AtomicU64::new(0);
+#[cfg(feature = "benchmark-instrumentation")]
+static DETACHED_LEASE_REFUSALS: AtomicU64 = AtomicU64::new(0);
+#[cfg(feature = "benchmark-instrumentation")]
+static DETACHED_COPY_REFUSALS: AtomicU64 = AtomicU64::new(0);
+#[cfg(feature = "benchmark-instrumentation")]
+static PUBLISH_ATTEMPTS: AtomicU64 = AtomicU64::new(0);
+#[cfg(feature = "benchmark-instrumentation")]
+static PUBLISH_SUCCESSES: AtomicU64 = AtomicU64::new(0);
+#[cfg(feature = "benchmark-instrumentation")]
+static PUBLISH_REFUSALS: AtomicU64 = AtomicU64::new(0);
+#[cfg(feature = "benchmark-instrumentation")]
+static CALLBACK_FAULTS: AtomicU64 = AtomicU64::new(0);
+#[cfg(feature = "benchmark-instrumentation")]
+static RESIZE_SURFACE_SUCCESSES: AtomicU64 = AtomicU64::new(0);
+#[cfg(feature = "benchmark-instrumentation")]
+static RESIZE_SURFACE_FAILURES: AtomicU64 = AtomicU64::new(0);
+#[cfg(feature = "benchmark-instrumentation")]
+static RESIZE_CONTENT_WIDTH: AtomicI32 = AtomicI32::new(0);
+#[cfg(feature = "benchmark-instrumentation")]
+static RESIZE_CONTENT_HEIGHT: AtomicI32 = AtomicI32::new(0);
+#[cfg(feature = "benchmark-instrumentation")]
+static RESIZE_TEXTURE_WIDTH: AtomicU32 = AtomicU32::new(0);
+#[cfg(feature = "benchmark-instrumentation")]
+static RESIZE_TEXTURE_HEIGHT: AtomicU32 = AtomicU32::new(0);
+#[cfg(feature = "benchmark-instrumentation")]
+static RESIZE_TEXTURE_FORMAT: AtomicI32 = AtomicI32::new(0);
+#[cfg(feature = "benchmark-instrumentation")]
+static RESIZE_SURFACE_STATUS: AtomicU64 = AtomicU64::new(0);
+#[cfg(feature = "benchmark-instrumentation")]
+static RESIZE_SURFACE_HRESULT: AtomicI32 = AtomicI32::new(0);
 
-/// One process-wide resource observation of the Windows capture implementation.
+/// One process-wide resource and callback-progress observation.
+///
+/// Fields are independent atomic observations, not a transaction or event order.
+/// Progress counters wrap at `u64::MAX` and reset only at a quiescent profile boundary.
 #[cfg(feature = "benchmark-instrumentation")]
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
 pub struct CaptureMetricsSnapshot {
     /// Callback observations lost to contention or overwrite.
     pub callback_observation_losses: u64,
+    /// Frame-arrived handler entries, before callback admission.
+    pub callback_entries: u64,
+    /// Entries refused by the existing callback admission fence.
+    pub callback_admission_refusals: u64,
+    /// Admitted entries whose weak session owner was gone.
+    pub callback_owner_unavailable: u64,
+    /// Admitted entries with an owner but without an event sender.
+    pub callback_sender_unavailable: u64,
+    /// Entries discarded because the transition lock was contended.
+    pub transition_lock_contentions: u64,
+    /// Successful native frame acquisitions, before content metadata inspection.
+    pub native_frames_acquired: u64,
+    /// Native content extents differing from the current producer pool extent.
+    pub resize_detections: u64,
+    /// Calls begun to the native frame-pool recreation API.
+    pub recreate_begun: u64,
+    /// Successful returns from that API, before owner/transition bookkeeping.
+    pub recreate_completed: u64,
+    /// Frames refused by the existing geometry/capture-time fence.
+    pub geometry_fence_refusals: u64,
+    /// Texture descriptor checks returning an error or no usable descriptor.
+    pub texture_descriptor_refusals: u64,
+    /// Detached texture acquisition returning an error or no available lease.
+    pub detached_lease_refusals: u64,
+    /// Detach-copy submission returning an error or refusal.
+    pub detached_copy_refusals: u64,
+    /// Calls to the stream storage-publication boundary after revalidation.
+    pub publish_attempts: u64,
+    /// Successful returns from storage publication.
+    pub publish_successes: u64,
+    /// Errors returned by storage publication.
+    pub publish_refusals: u64,
+    /// Frame-processing errors, including ignored late close errors.
+    pub callback_faults: u64,
+    /// Completed resize texture descriptor probes, not pixel/oracle successes.
+    pub resize_surface_successes: u64,
+    /// Resize metadata probe failures, independent of capture faults.
+    pub resize_surface_failures: u64,
+    /// Last probed native ContentSize width; independent, nontransactional load.
+    pub resize_content_width: i32,
+    /// Last probed native ContentSize height.
+    pub resize_content_height: i32,
+    /// Last probed texture width, or zero on probe failure/reset.
+    pub resize_texture_width: u32,
+    /// Last probed texture height, or zero on probe failure/reset.
+    pub resize_texture_height: u32,
+    /// Last probed raw DXGI format, or zero on probe failure/reset.
+    pub resize_texture_format: i32,
+    /// 0 unmeasured, 1 descriptor read, 2 Surface, 3 access cast, 4 texture failure.
+    pub resize_surface_status: u64,
+    /// Raw failing HRESULT, or zero on probe success/reset.
+    pub resize_surface_hresult: i32,
     /// Detached private textures alive at the instant of the snapshot.
     pub detached_textures_live: u64,
     /// Maximum simultaneously live detached private textures since reset.
@@ -614,21 +721,108 @@ pub fn reset_capture_metrics() {
     let detached = DETACHED_LIVE.load(Ordering::Acquire);
     let staging = STAGING_LIVE.load(Ordering::Acquire);
     CALLBACK_METRICS.reset();
+    CALLBACK_ENTRIES.store(0, Ordering::Relaxed);
+    CALLBACK_ADMISSION_REFUSALS.store(0, Ordering::Relaxed);
+    CALLBACK_OWNER_UNAVAILABLE.store(0, Ordering::Relaxed);
+    CALLBACK_SENDER_UNAVAILABLE.store(0, Ordering::Relaxed);
+    TRANSITION_LOCK_CONTENTIONS.store(0, Ordering::Relaxed);
+    NATIVE_FRAMES_ACQUIRED.store(0, Ordering::Relaxed);
+    RESIZE_DETECTIONS.store(0, Ordering::Relaxed);
+    RECREATE_BEGUN.store(0, Ordering::Relaxed);
+    RECREATE_COMPLETED.store(0, Ordering::Relaxed);
+    GEOMETRY_FENCE_REFUSALS.store(0, Ordering::Relaxed);
+    TEXTURE_DESCRIPTOR_REFUSALS.store(0, Ordering::Relaxed);
+    DETACHED_LEASE_REFUSALS.store(0, Ordering::Relaxed);
+    DETACHED_COPY_REFUSALS.store(0, Ordering::Relaxed);
+    PUBLISH_ATTEMPTS.store(0, Ordering::Relaxed);
+    PUBLISH_SUCCESSES.store(0, Ordering::Relaxed);
+    PUBLISH_REFUSALS.store(0, Ordering::Relaxed);
+    CALLBACK_FAULTS.store(0, Ordering::Relaxed);
+    RESIZE_SURFACE_SUCCESSES.store(0, Ordering::Relaxed);
+    RESIZE_SURFACE_FAILURES.store(0, Ordering::Relaxed);
+    RESIZE_CONTENT_WIDTH.store(0, Ordering::Relaxed);
+    RESIZE_CONTENT_HEIGHT.store(0, Ordering::Relaxed);
+    RESIZE_TEXTURE_WIDTH.store(0, Ordering::Relaxed);
+    RESIZE_TEXTURE_HEIGHT.store(0, Ordering::Relaxed);
+    RESIZE_TEXTURE_FORMAT.store(0, Ordering::Relaxed);
+    RESIZE_SURFACE_STATUS.store(0, Ordering::Relaxed);
+    RESIZE_SURFACE_HRESULT.store(0, Ordering::Relaxed);
     DETACHED_PEAK.store(detached, Ordering::Release);
     STAGING_PEAK.store(staging, Ordering::Release);
 }
 
-/// Returns the current process resource metrics without changing them.
+/// Returns process resource and callback-progress metrics without changing them.
 #[cfg(feature = "benchmark-instrumentation")]
 #[must_use]
 pub fn capture_metrics() -> CaptureMetricsSnapshot {
     CaptureMetricsSnapshot {
         callback_observation_losses: CALLBACK_METRICS.losses(),
+        callback_entries: CALLBACK_ENTRIES.load(Ordering::Relaxed),
+        callback_admission_refusals: CALLBACK_ADMISSION_REFUSALS.load(Ordering::Relaxed),
+        callback_owner_unavailable: CALLBACK_OWNER_UNAVAILABLE.load(Ordering::Relaxed),
+        callback_sender_unavailable: CALLBACK_SENDER_UNAVAILABLE.load(Ordering::Relaxed),
+        transition_lock_contentions: TRANSITION_LOCK_CONTENTIONS.load(Ordering::Relaxed),
+        native_frames_acquired: NATIVE_FRAMES_ACQUIRED.load(Ordering::Relaxed),
+        resize_detections: RESIZE_DETECTIONS.load(Ordering::Relaxed),
+        recreate_begun: RECREATE_BEGUN.load(Ordering::Relaxed),
+        recreate_completed: RECREATE_COMPLETED.load(Ordering::Relaxed),
+        geometry_fence_refusals: GEOMETRY_FENCE_REFUSALS.load(Ordering::Relaxed),
+        texture_descriptor_refusals: TEXTURE_DESCRIPTOR_REFUSALS.load(Ordering::Relaxed),
+        detached_lease_refusals: DETACHED_LEASE_REFUSALS.load(Ordering::Relaxed),
+        detached_copy_refusals: DETACHED_COPY_REFUSALS.load(Ordering::Relaxed),
+        publish_attempts: PUBLISH_ATTEMPTS.load(Ordering::Relaxed),
+        publish_successes: PUBLISH_SUCCESSES.load(Ordering::Relaxed),
+        publish_refusals: PUBLISH_REFUSALS.load(Ordering::Relaxed),
+        callback_faults: CALLBACK_FAULTS.load(Ordering::Relaxed),
+        resize_surface_successes: RESIZE_SURFACE_SUCCESSES.load(Ordering::Relaxed),
+        resize_surface_failures: RESIZE_SURFACE_FAILURES.load(Ordering::Relaxed),
+        resize_content_width: RESIZE_CONTENT_WIDTH.load(Ordering::Relaxed),
+        resize_content_height: RESIZE_CONTENT_HEIGHT.load(Ordering::Relaxed),
+        resize_texture_width: RESIZE_TEXTURE_WIDTH.load(Ordering::Relaxed),
+        resize_texture_height: RESIZE_TEXTURE_HEIGHT.load(Ordering::Relaxed),
+        resize_texture_format: RESIZE_TEXTURE_FORMAT.load(Ordering::Relaxed),
+        resize_surface_status: RESIZE_SURFACE_STATUS.load(Ordering::Relaxed),
+        resize_surface_hresult: RESIZE_SURFACE_HRESULT.load(Ordering::Relaxed),
         detached_textures_live: DETACHED_LIVE.load(Ordering::Acquire),
         detached_textures_peak: DETACHED_PEAK.load(Ordering::Acquire),
         staging_textures_live: STAGING_LIVE.load(Ordering::Acquire),
         staging_textures_peak: STAGING_PEAK.load(Ordering::Acquire),
     }
+}
+
+#[cfg(feature = "benchmark-instrumentation")]
+pub(crate) enum ResizeSurfaceProbeFailure {
+    Surface(i32),
+    Access(i32),
+    Texture(i32),
+}
+
+#[cfg(feature = "benchmark-instrumentation")]
+pub(crate) fn record_resize_surface_probe(
+    content_size: (i32, i32),
+    result: Result<(u32, u32, i32), ResizeSurfaceProbeFailure>,
+) {
+    let (texture, status, hresult, counter) = match result {
+        Ok(texture) => (texture, 1, 0, &RESIZE_SURFACE_SUCCESSES),
+        Err(failure) => {
+            let (status, hresult) = match failure {
+                ResizeSurfaceProbeFailure::Surface(code) => (2, code),
+                ResizeSurfaceProbeFailure::Access(code) => (3, code),
+                ResizeSurfaceProbeFailure::Texture(code) => (4, code),
+            };
+            ((0, 0, 0), status, hresult, &RESIZE_SURFACE_FAILURES)
+        }
+    };
+    // These observations are deliberately independent: no callback lock or
+    // retry is added to manufacture a coherent process-wide sample.
+    RESIZE_CONTENT_WIDTH.store(content_size.0, Ordering::Relaxed);
+    RESIZE_CONTENT_HEIGHT.store(content_size.1, Ordering::Relaxed);
+    RESIZE_TEXTURE_WIDTH.store(texture.0, Ordering::Relaxed);
+    RESIZE_TEXTURE_HEIGHT.store(texture.1, Ordering::Relaxed);
+    RESIZE_TEXTURE_FORMAT.store(texture.2, Ordering::Relaxed);
+    RESIZE_SURFACE_STATUS.store(status, Ordering::Relaxed);
+    RESIZE_SURFACE_HRESULT.store(hresult, Ordering::Relaxed);
+    counter.fetch_add(1, Ordering::Relaxed);
 }
 
 /// Captures a callback observation baseline before requesting a frame.
@@ -660,6 +854,110 @@ pub fn callback_copied_bytes_between(
     streams: &[u64],
 ) -> Result<u64, CallbackObservationError> {
     CALLBACK_METRICS.copied_bytes_between(start, end, streams)
+}
+
+// Progress hooks add only one relaxed atomic increment when instrumentation is
+// enabled. No clock, logging, allocation, locking, or retry loop belongs here.
+#[inline]
+pub(crate) fn record_callback_entry() {
+    #[cfg(feature = "benchmark-instrumentation")]
+    CALLBACK_ENTRIES.fetch_add(1, Ordering::Relaxed);
+}
+
+#[inline]
+pub(crate) fn record_callback_admission_refusal() {
+    #[cfg(feature = "benchmark-instrumentation")]
+    CALLBACK_ADMISSION_REFUSALS.fetch_add(1, Ordering::Relaxed);
+}
+
+#[inline]
+pub(crate) fn record_callback_owner_unavailable() {
+    #[cfg(feature = "benchmark-instrumentation")]
+    CALLBACK_OWNER_UNAVAILABLE.fetch_add(1, Ordering::Relaxed);
+}
+
+#[inline]
+pub(crate) fn record_callback_sender_unavailable() {
+    #[cfg(feature = "benchmark-instrumentation")]
+    CALLBACK_SENDER_UNAVAILABLE.fetch_add(1, Ordering::Relaxed);
+}
+
+#[inline]
+pub(crate) fn record_transition_lock_contention() {
+    #[cfg(feature = "benchmark-instrumentation")]
+    TRANSITION_LOCK_CONTENTIONS.fetch_add(1, Ordering::Relaxed);
+}
+
+#[inline]
+pub(crate) fn record_native_frame_acquired() {
+    #[cfg(feature = "benchmark-instrumentation")]
+    NATIVE_FRAMES_ACQUIRED.fetch_add(1, Ordering::Relaxed);
+}
+
+#[inline]
+pub(crate) fn record_resize_detected() {
+    #[cfg(feature = "benchmark-instrumentation")]
+    RESIZE_DETECTIONS.fetch_add(1, Ordering::Relaxed);
+}
+
+#[inline]
+pub(crate) fn record_recreate_begun() {
+    #[cfg(feature = "benchmark-instrumentation")]
+    RECREATE_BEGUN.fetch_add(1, Ordering::Relaxed);
+}
+
+#[inline]
+pub(crate) fn record_recreate_completed() {
+    #[cfg(feature = "benchmark-instrumentation")]
+    RECREATE_COMPLETED.fetch_add(1, Ordering::Relaxed);
+}
+
+#[inline]
+pub(crate) fn record_geometry_fence_refusal() {
+    #[cfg(feature = "benchmark-instrumentation")]
+    GEOMETRY_FENCE_REFUSALS.fetch_add(1, Ordering::Relaxed);
+}
+
+#[inline]
+pub(crate) fn record_texture_descriptor_refusal() {
+    #[cfg(feature = "benchmark-instrumentation")]
+    TEXTURE_DESCRIPTOR_REFUSALS.fetch_add(1, Ordering::Relaxed);
+}
+
+#[inline]
+pub(crate) fn record_detached_lease_refusal() {
+    #[cfg(feature = "benchmark-instrumentation")]
+    DETACHED_LEASE_REFUSALS.fetch_add(1, Ordering::Relaxed);
+}
+
+#[inline]
+pub(crate) fn record_detached_copy_refusal() {
+    #[cfg(feature = "benchmark-instrumentation")]
+    DETACHED_COPY_REFUSALS.fetch_add(1, Ordering::Relaxed);
+}
+
+#[inline]
+pub(crate) fn record_publish_attempt() {
+    #[cfg(feature = "benchmark-instrumentation")]
+    PUBLISH_ATTEMPTS.fetch_add(1, Ordering::Relaxed);
+}
+
+#[inline]
+pub(crate) fn record_publish_success() {
+    #[cfg(feature = "benchmark-instrumentation")]
+    PUBLISH_SUCCESSES.fetch_add(1, Ordering::Relaxed);
+}
+
+#[inline]
+pub(crate) fn record_publish_refusal() {
+    #[cfg(feature = "benchmark-instrumentation")]
+    PUBLISH_REFUSALS.fetch_add(1, Ordering::Relaxed);
+}
+
+#[inline]
+pub(crate) fn record_callback_fault() {
+    #[cfg(feature = "benchmark-instrumentation")]
+    CALLBACK_FAULTS.fetch_add(1, Ordering::Relaxed);
 }
 
 pub(crate) fn time_callback_copy(_copied_bytes: u64, _stream: u64) -> CallbackCopyTimer {

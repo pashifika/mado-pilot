@@ -3,8 +3,7 @@
  *
  * This surface is internal to `mado-pilot-platform-macos`. It is not a public
  * MadoPilot ABI, is not installed, and is not covered by the C ABI compatibility
- * policy in docs/c-abi.md. Its rules come from
- * docs/adr/0012-macos-shim-language-and-containment.md:
+ * policy in docs/c-abi.md. Its internal boundary requires:
  *
  *   - opaque handles, size-versioned request and report structures, a status
  *     return on every entry point, and output values written through validated
@@ -30,13 +29,15 @@ extern "C" {
 #endif
 
 /* The version of this internal surface. Rust asserts it at load. */
-#define MP_SHIM_ABI_VERSION 21u
+#define MP_SHIM_ABI_VERSION 26u
 
 /* The largest extent, budget, and default wait the shim will accept or apply. */
 #define MP_SHIM_MAX_PIXEL_EXTENT 32768u
 #define MP_SHIM_MAX_DETACHED_BUDGET 256u
 #define MP_SHIM_DEFAULT_TIMEOUT_NANOS 1000000000ull
 #define MP_SHIM_MAX_NATIVE_WAIT_NANOS 2000000000ull
+/* Including the NUL terminator; longer process paths have no public provenance. */
+#define MP_SHIM_MAX_PROCESS_PATH_BYTES 4096u
 
 /*
  * The largest surface the shim will accept, in bytes.
@@ -60,10 +61,9 @@ extern "C" {
 /*
  * Session-scoped test seams.
  *
- * A caller may ask a session to raise a native exception at one of the boundary
- * positions ADR 0012 measured, which is how the containment and failure-path
- * ownership cases become testable. Nothing in the product sets them, and a session
- * that leaves them zero behaves as if they did not exist.
+ * A caller may ask a session to raise a native exception at a boundary position
+ * to test containment and failure-path ownership. Product sessions leave these
+ * seams zero and never inject exceptions.
  *
  * The completion seams cover callback trampolines the framework invokes after the
  * registering entry point has returned. A catch around that entry point cannot
@@ -160,6 +160,13 @@ typedef uint32_t mp_shim_status;
 #define MP_SHIM_FRAME_INFO_SCREEN_RECT 1u
 /* A same-sample, bounded producer-capacity recommendation is present. */
 #define MP_SHIM_FRAME_INFO_SURFACE_RECOMMENDATION (1u << 1)
+
+/* Resolved pacing requests and successful open outcomes. */
+#define MP_SHIM_PACING_SOURCE_DEFAULT 0u
+#define MP_SHIM_PACING_REQUIRED 1u
+#define MP_SHIM_PACING_PREFERRED 2u
+#define MP_SHIM_PACING_APPLIED 1u
+#define MP_SHIM_PACING_UNAVAILABLE 2u
 
 /* Opaque handles. Each has a complete lifecycle below. */
 typedef struct mp_shim_inventory mp_shim_inventory;
@@ -275,22 +282,70 @@ typedef struct mp_shim_open_request {
     /* Passed unchanged to both callbacks. Never dereferenced by the shim. */
     void *callback_context;
     /*
-     * Invoked on the session's sample queue with a borrowed frame. The frame is
-     * valid only for the duration of the call; retaining it is
-     * mp_shim_frame_detach and nothing else. The callback must not let a Rust
-     * panic escape.
+     * Invoked on the session's sample queue inside callback admission, without
+     * holding native_mutex. A borrowed frame is valid only during the call;
+     * retaining it requires mp_shim_frame_detach.
+     * Both frame pointers NULL instead report one complete candidate dropped by
+     * producer pressure; no commit follows. Incomplete framework samples do not
+     * invoke this notification. The callback must contain Rust panics.
      */
     mp_shim_status (*frame_callback)(void *context, mp_shim_frame *borrowed,
                                     const mp_shim_frame_info *info);
     /*
-     * Invoked only after frame_callback returned success and every remaining
-     * throwing native frame step completed. It commits or safely ignores the
-     * frame staged by frame_callback and must contain Rust panics.
+     * Invoked only after frame_callback received non-NULL frame pointers and
+     * returned success, and every remaining throwing native frame step completed.
+     * It commits or safely ignores the staged frame and must contain Rust panics.
      */
     mp_shim_status (*frame_commit_callback)(void *context);
     /* Invoked once if the producer stops for a reason of its own. */
     void (*stopped_callback)(void *context, mp_shim_status status);
+    /* Appended in ABI 22. Explicit intervals are positive signed nanoseconds. */
+    uint32_t pacing_mode;
+    int64_t pacing_interval_nanos;
+    /* ABI 25: zero limits preserve the original production allocation policy. */
+    uint64_t max_frame_bytes;
+    uint64_t max_retained_bytes;
+    uint64_t validation_timeout_nanos;
+    uint32_t require_window;
+    mp_shim_target_info required_window;
 } mp_shim_open_request;
+
+/* Valid only after successful configuration and session creation, before start. */
+typedef struct mp_shim_open_report {
+    uint32_t struct_size;
+    uint32_t pacing_outcome;
+    int64_t configured_interval_nanos;
+} mp_shim_open_report;
+
+/* Reads only the original retained selection; never opens or replaces a filter.
+ * Revalidation compares one bounded current SCWindow observation with that
+ * retained object. false is reserved for the originating inventory snapshot. */
+mp_shim_status mp_shim_target_window_info(const mp_shim_target *target,
+                                         uint64_t timeout_nanos, bool revalidate,
+                                         mp_shim_target_info *out_info);
+
+/* Allocation-only retainers. A successful NULL lease denotes unchanged defaults.
+ * The lease owns its byte charge independently of the frame and closed session. */
+mp_shim_status mp_shim_frame_reserve_cpu(const mp_shim_frame *frame, uint64_t bytes,
+                                        void **out_lease);
+void mp_shim_image_lease_release(void *lease);
+/* Requires room for the declared producer pool and one padded detached image. */
+mp_shim_status mp_shim_storage_preflight(
+    uint32_t width, uint32_t height, uint32_t depth,
+    uint64_t max_frame, uint64_t max_retained);
+
+/* Synthetic owned pixels only: no discovery, stream, input or permission probe. */
+mp_shim_status mp_shim_testing_limited_frame(
+    uint64_t max_frame, uint64_t max_retained, mp_shim_frame **out_frame, void **out_budget);
+uint64_t mp_shim_testing_image_bytes(const void *budget);
+mp_shim_status mp_shim_testing_producer_budget(uint64_t *out_values, size_t count);
+mp_shim_status mp_shim_testing_producer_observation(
+    uint32_t scenario, uint64_t *out_values, size_t count);
+mp_shim_status mp_shim_testing_storage_pressure(
+    uint32_t scenario, void *context,
+    mp_shim_status (*frame_callback)(void *, mp_shim_frame *, const mp_shim_frame_info *),
+    mp_shim_status (*release_callback)(void *), mp_shim_status *out_statuses);
+mp_shim_status mp_shim_testing_window_geometry(uint32_t scenario, mp_shim_target_info *out_info);
 
 /* Returns MP_SHIM_ABI_VERSION as the linked shim was compiled with it. */
 uint32_t mp_shim_abi_version(void);
@@ -305,7 +360,8 @@ mp_shim_status mp_shim_struct_sizes(uint32_t *out_target_info, uint32_t *out_fra
                                     uint32_t *out_open_request,
                                     uint32_t *out_process_authority,
                                     uint32_t *out_process_post_request,
-                                    uint32_t *out_process_post_report);
+                                    uint32_t *out_process_post_report,
+                                    uint32_t *out_open_report);
 
 /*
  * Reports offsets for every process-post pointer/count field whose placement
@@ -316,6 +372,48 @@ mp_shim_status mp_shim_process_struct_offsets(
     uint32_t *out_authority_target_match_count, uint32_t *out_request_target,
     uint32_t *out_request_event_source, uint32_t *out_request_timeout_nanos,
     uint32_t *out_report_target_match_count, uint32_t *out_report_invoked_native_units);
+
+/* Fourteen offsets: retained target, callback context, three callbacks, pacing
+ * mode/interval, report outcome/interval, and the five ABI 25 option fields. */
+mp_shim_status mp_shim_open_struct_offsets(uint32_t *out_offsets, size_t count);
+
+/* Production configuration/lifecycle with local objects, never native capture. */
+#define MP_SHIM_TEST_PACING_APPLIED 0u
+#define MP_SHIM_TEST_PACING_MISSING_SETTER 1u
+#define MP_SHIM_TEST_PACING_MISSING_GETTER 2u
+#define MP_SHIM_TEST_PACING_SETTER_EXCEPTION 3u
+#define MP_SHIM_TEST_PACING_GETTER_EXCEPTION 4u
+#define MP_SHIM_TEST_PACING_SHORT_READBACK 5u
+#define MP_SHIM_TEST_PACING_INVALID_READBACK 6u
+#define MP_SHIM_TEST_PACING_START_EXCEPTION 7u
+#define MP_SHIM_TEST_PACING_START_FAILURE 8u
+#define MP_SHIM_TEST_PACING_RESIZE_EXCEPTION 9u
+#define MP_SHIM_TEST_PACING_RESIZE_LOSES_INTERVAL 10u
+#define MP_SHIM_TEST_PACING_PROBE_EXCEPTION 11u
+#define MP_SHIM_TEST_PACING_STREAM_EXCEPTION 12u
+#define MP_SHIM_TEST_PACING_OUTPUT_EXCEPTION 13u
+
+typedef struct mp_shim_pacing_test_report {
+    uint32_t struct_size;
+    mp_shim_status open_status;
+    mp_shim_status start_status;
+    mp_shim_status resize_status;
+    mp_shim_status close_status;
+    mp_shim_open_report open_report;
+    int64_t assigned_value;
+    int32_t assigned_timescale;
+    uint32_t stream_creations;
+    int64_t created_interval_nanos;
+    int64_t started_interval_nanos;
+    int64_t resized_interval_nanos;
+    uint32_t resized_width;
+    uint32_t resized_height;
+    uint32_t live_owners;
+    uint64_t live_native_objects;
+} mp_shim_pacing_test_report;
+
+mp_shim_status mp_shim_testing_capture_pacing(uint32_t mode, int64_t nanos, uint32_t scenario,
+                                              mp_shim_pacing_test_report *out_report);
 
 /*
  * Reports whether this host offers the capture capability at all.
@@ -385,8 +483,7 @@ mp_shim_status mp_shim_monotonic_nanos(uint64_t *out_nanos);
 /*
  * Reports how many native objects this shim owns process-wide.
  *
- * This exists for the ownership cases ADR 0012 requires: a contained failure
- * must leave none of the objects it had taken alive.
+ * A contained failure must release every object it acquired.
  */
 mp_shim_status mp_shim_live_objects(uint64_t *out_live);
 
@@ -403,6 +500,45 @@ uint64_t mp_shim_testing_seconds_to_nanos(double seconds);
 mp_shim_status mp_shim_testing_stop_callback_exception(
     mp_shim_status *out_terminal_status, uint32_t *out_terminal_calls,
     mp_shim_status *out_fence_status);
+
+/*
+ * Synchronously delivers one owned 4x4 BGRA sample twice through the production
+ * frame delegate. `raise_sites` is zero, MP_SHIM_RAISE_BEFORE_CALLBACK, or
+ * MP_SHIM_RAISE_AFTER_CALLBACK; a Rust panic is contained by the caller's real
+ * callback trampoline with native sites zero.
+ *
+ * The sample is filled with 0x31, has unit scale, content/screen rect (0, 0, 4, 4),
+ * and a one-second presentation timestamp. Callbacks run only on this call's
+ * thread, before it returns. Borrowed frames may be detached; up to two detached
+ * owners may outlive this call and keep their heap session alive until released.
+ *
+ * The return value reports setup/cleanup failure, while `out_fence_status`
+ * reports the production disable-and-drain fence. An ordinary ARC metadata owner
+ * surviving sample release is a cleanup failure. Frame failures reach only the
+ * stopped callback. No discovery, permission probe, stream, or input is
+ * submitted. The existing constant loader may initialize its non-prompting
+ * Core Graphics connection.
+ */
+mp_shim_status mp_shim_testing_frame_callback_boundary(
+    uint32_t raise_sites, void *context,
+    mp_shim_status (*frame_callback)(void *, mp_shim_frame *, const mp_shim_frame_info *),
+    mp_shim_status (*frame_commit_callback)(void *),
+    void (*stopped_callback)(void *, mp_shim_status),
+    mp_shim_status *out_fence_status);
+
+/* Synthetic complete samples through the production delegate, with observations
+ * before pressure, during pressure, twice after recovery, and after fencing.
+ * Scenarios: retained producer bytes, first-frame pressure, per-frame ceiling,
+ * incomplete framework sample, native/pool mutex contention, detached bytes,
+ * and a drain fence attempted during the pressure callback.
+ * No discovery, capture, input, or permission probe is performed.
+ * Callbacks are synchronous; detached owners may outlive the helper. */
+mp_shim_status mp_shim_testing_delivery_pressure(
+    uint32_t scenario, void *context,
+    mp_shim_status (*frame_callback)(void *, mp_shim_frame *, const mp_shim_frame_info *),
+    mp_shim_status (*commit_callback)(void *),
+    void (*stopped_callback)(void *, mp_shim_status),
+    mp_shim_status (*observe_callback)(void *), mp_shim_status *out_fence);
 
 /*
  * Deterministic test seam for the resumable asynchronous start/stop gates.
@@ -461,6 +597,16 @@ mp_shim_status mp_shim_testing_surface_recommendation(double logical_width,
  */
 mp_shim_status mp_shim_testing_target_without_process_lifetime(
     uint32_t *out_capture_metadata_retained, uint32_t *out_process_metadata_retained);
+
+/*
+ * Exercises the production provenance read with retained in-memory applications.
+ * Scenarios: complete, no lifetime, stale launch, no executable, death during
+ * path read, no bundle, short buffer, non-file URL. No native target is queried.
+ * The five observations are status, PID, lifetime bits, executable and bundle
+ * byte lengths, respectively.
+ */
+mp_shim_status mp_shim_testing_target_process_identity(
+    uint32_t scenario, uint64_t *out_observations, size_t count);
 
 /*
  * Proves activation uses one retained target and refuses a process-lifetime
@@ -594,6 +740,20 @@ mp_shim_status mp_shim_testing_target_release_exception(
 #define MP_SHIM_TEST_PROCESS_FOCUS_LOST_DURING_AUTHORITY 34u
 #define MP_SHIM_TEST_PROCESS_GEOMETRY_CHANGED_DURING_FOCUS 35u
 #define MP_SHIM_TEST_PROCESS_GEOMETRY_MOVED_WITHOUT_REQUIRE_UNCHANGED 36u
+#define MP_SHIM_TEST_PROCESS_APPKIT_FOREGROUND 37u
+#define MP_SHIM_TEST_PROCESS_APPKIT_FOREGROUND_AFTER_PREPARE 38u
+#define MP_SHIM_TEST_PROCESS_APPKIT_CAPABILITY_UNAVAILABLE 39u
+#define MP_SHIM_TEST_PROCESS_APPKIT_OWNED_RELEASE 40u
+#define MP_SHIM_TEST_PROCESS_APPKIT_LOCATE_EXCEPTION 41u
+#define MP_SHIM_TEST_PROCESS_APPKIT_BACKGROUND_UNAVAILABLE 42u
+#define MP_SHIM_TEST_PROCESS_APPKIT_FOREGROUND_DURING_LIFETIME 43u
+#define MP_SHIM_TEST_PROCESS_FOCUS_LOST_DURING_FINAL_INVENTORY 44u
+#define MP_SHIM_TEST_PROCESS_FOCUS_STABLE_FINAL_INVENTORY 45u
+
+/* Non-posting NSEvent construction, scalar observations after autorelease drain. */
+mp_shim_status mp_shim_testing_appkit_pointer(
+    uint32_t action, uint32_t button, uint32_t scenario, mp_shim_status *out_construction,
+    double *out_points, size_t point_count, int64_t *out_fields, size_t field_count);
 
 /* Process-post request and capture-only target-shape validation scenarios. */
 #define MP_SHIM_TEST_PROCESS_VALIDATE_NULL_REQUEST 0u
@@ -716,6 +876,21 @@ mp_shim_status mp_shim_inventory_name(const mp_shim_inventory *inventory, size_t
 mp_shim_status mp_shim_inventory_target(const mp_shim_inventory *inventory, size_t index,
                                         mp_shim_target **out);
 
+/*
+ * Reads provenance only from the retained NSRunningApplication, bracketed by
+ * the same process-lifetime revalidation used for input. No target is reopened.
+ * Paths use filesystem bytes, exclude the trailing NUL from reported lengths,
+ * and require capacities in 1..=MP_SHIM_MAX_PROCESS_PATH_BYTES. Both buffers are
+ * caller-owned and must not overlap. A missing bundle has length zero.
+ * The lifetime is the exact retained launch-date double bit pattern.
+ * Scalar outputs remain zero on failure; path bytes are usable only on OK.
+ * Unavailable metadata does not invalidate the independently retained filter.
+ */
+mp_shim_status mp_shim_target_process_identity(
+    const mp_shim_target *target, uint32_t *out_process, uint64_t *out_lifetime,
+    uint8_t *out_executable, size_t executable_capacity, size_t *out_executable_len,
+    uint8_t *out_bundle, size_t bundle_capacity, size_t *out_bundle_len);
+
 /* Releases the inventory and every view borrowed from it. Accepts NULL. */
 void mp_shim_inventory_release(mp_shim_inventory *inventory);
 
@@ -728,7 +903,8 @@ void mp_shim_target_release(mp_shim_target *target);
  * On success the caller owns the handle and must release it with
  * mp_shim_session_release after mp_shim_session_close.
  */
-mp_shim_status mp_shim_session_open(const mp_shim_open_request *request, mp_shim_session **out);
+mp_shim_status mp_shim_session_open(const mp_shim_open_request *request, mp_shim_session **out,
+                                    mp_shim_open_report *out_report);
 
 /* Starts the producer. `timeout_nanos` bounds the native start. */
 mp_shim_status mp_shim_session_start(mp_shim_session *session, uint64_t timeout_nanos);
@@ -772,8 +948,7 @@ mp_shim_status mp_shim_session_leased(const mp_shim_session *session, uint64_t *
 /*
  * Reports how many native objects the session still owns.
  *
- * This exists for the ownership tests ADR 0012 requires: a contained failure
- * must leave none of them alive.
+ * A contained failure must release every object it acquired.
  */
 mp_shim_status mp_shim_session_live_objects(const mp_shim_session *session, uint64_t *out_live);
 
@@ -869,6 +1044,10 @@ mp_shim_status mp_shim_frame_copy_out(const mp_shim_frame *frame, uint8_t *desti
 #define MP_SHIM_PROCESS_EVENT_KEY 2u
 #define MP_SHIM_PROCESS_EVENT_TEXT 3u
 
+/* Immutable construction selection owned by each process-directed sequence. */
+#define MP_SHIM_PROCESS_POINTER_CORE_GRAPHICS 0u
+#define MP_SHIM_PROCESS_POINTER_APPKIT_BACKGROUND 1u
+
 /* Whether one post is ordinary input or a bounded sequence-owned release. */
 #define MP_SHIM_PROCESS_POST_INPUT 0u
 #define MP_SHIM_PROCESS_POST_RELEASE 1u
@@ -933,7 +1112,7 @@ typedef struct mp_shim_process_post_request {
     uint32_t struct_size;
     uint32_t event_kind;
     const mp_shim_target *target;
-    const mp_shim_process_event_source *event_source;
+    mp_shim_process_event_source *event_source;
     uint64_t timeout_nanos;
     uint32_t flags;
     uint32_t geometry_check;
@@ -1017,9 +1196,12 @@ mp_shim_status mp_shim_process_authority(const mp_shim_target *target,
  * NULL. Every event and sequence-owned cleanup release passes the same source.
  * A nonzero activity tag is copied to the documented event-source user-data
  * field as observational, non-control-flow metadata.
+ * The immutable pointer mode applies only to mouse movement/button events.
+ * The caller serializes use; the source retains only last authorized pointer
+ * geometry for bounded owned releases after the window or foreground changes.
  */
 mp_shim_status mp_shim_process_event_source_create(
-    uint64_t activity_tag, mp_shim_process_event_source **out_source);
+    uint64_t activity_tag, uint32_t pointer_mode, mp_shim_process_event_source **out_source);
 void mp_shim_process_event_source_release(mp_shim_process_event_source *source);
 
 /*
@@ -1041,14 +1223,19 @@ mp_shim_status mp_shim_process_post(const mp_shim_process_post_request *request,
  * attributes then report the active application, its focused window, and its
  * window list. Focus is true only when exactly one Accessibility window has the
  * freshly verified window's unchanged position and size and that element is
- * focused. Missing or internally inconsistent required attributes return a
- * failure status; a complete unequal or ambiguous observation writes false. No
- * title, private Accessibility identifier, or window-raising action is used.
- *
- * `timeout_nanos` bounds the shareable-content and Accessibility observations.
+ * focused. The final inventory precedes the final Accessibility predicate;
+ * `out_authority` returns those bounds on a focused result, without another wait.
+ * Missing or inconsistent attributes fail; a complete unequal or ambiguous
+ * observation writes false. No title, private identifier, or activation is used.
+ * `timeout_nanos` bounds both observations; this is not an OS-atomic focus fence.
  */
-mp_shim_status mp_shim_input_target_focused(const mp_shim_target *target,
-                                            uint64_t timeout_nanos, bool *out_focused);
+mp_shim_status mp_shim_input_target_focused(
+    const mp_shim_target *target, uint64_t timeout_nanos, bool *out_focused,
+    mp_shim_process_authority_report *out_authority);
+
+/* Permission-independent production final-focus ordering seam; never posts. */
+mp_shim_status mp_shim_testing_input_focus_observation(
+    bool lose_focus, bool *out_focused, mp_shim_process_authority_report *out_authority);
 
 /*
  * Reports the retained selection's current on-screen rectangle in the global

@@ -381,3 +381,185 @@ fn a_bounded_reader_and_immutable_batch_outlive_the_engine() {
         MADOPILOT_STATUS_OK
     );
 }
+
+#[test]
+fn retained_frame_mapping_after_engine_close_keeps_diagnostic_eof() {
+    let options = madopilot_engine_options_t {
+        struct_size: u32::try_from(size_of::<madopilot_engine_options_t>())
+            .expect("the options size fits u32"),
+        flags: 0,
+        diagnostic_level: MADOPILOT_DIAGNOSTIC_LEVEL_DEBUG,
+        diagnostic_capacity: 64,
+    };
+    let flow = support::Flow::open_with_diagnostics(&options);
+    let api = flow.api;
+    let operation = operation();
+    let source = flow.scene().frame_input();
+    // SAFETY: the scene owns the complete source slice until `flow` is dropped.
+    let expected_pixels =
+        unsafe { std::slice::from_raw_parts(source.pixels.data, source.pixels.len) }.to_vec();
+    let frame = flow.frame;
+    let mut reader = ptr::null_mut();
+    assert_eq!(
+        // SAFETY: the engine is live and the output is writable.
+        unsafe { (api.engine_take_diagnostic_reader)(flow.engine, &raw mut reader) },
+        MADOPILOT_STATUS_OK
+    );
+    assert!(!reader.is_null());
+    assert_eq!(
+        // SAFETY: the flow owns a live frame; this takes an independent reference.
+        unsafe { (api.frame_retain)(frame) },
+        MADOPILOT_STATUS_OK
+    );
+
+    let mapping = flow.map();
+    assert_eq!(
+        // SAFETY: the map call returned this owned reference.
+        unsafe { (api.mapping_release)(mapping) },
+        MADOPILOT_STATUS_OK
+    );
+    assert_eq!(
+        // SAFETY: the flow retains the session and the operation is readable.
+        unsafe { (api.session_close)(flow.session, &raw const operation, ptr::null_mut()) },
+        MADOPILOT_STATUS_OK
+    );
+    drop(flow);
+
+    let drain = || {
+        let mut state = MADOPILOT_DIAGNOSTIC_DRAIN_OPEN_EMPTY;
+        let mut batch = ptr::without_provenance_mut(usize::MAX);
+        assert_eq!(
+            // SAFETY: the independent reader is retained and both outputs are writable.
+            unsafe { (api.diagnostic_reader_drain)(reader, &raw mut state, &raw mut batch) },
+            MADOPILOT_STATUS_OK
+        );
+        (state, batch)
+    };
+    let (state, batch) = drain();
+    assert_eq!(state, MADOPILOT_DIAGNOSTIC_DRAIN_BATCH);
+    assert!(!batch.is_null());
+    let mut info = madopilot_diagnostic_batch_info_t {
+        struct_size: u32::try_from(size_of::<madopilot_diagnostic_batch_info_t>())
+            .expect("the batch-info size fits u32"),
+        flags: 0,
+        record_count: 0,
+        discarded_normal: 0,
+        discarded_debug: 0,
+    };
+    assert_eq!(
+        // SAFETY: the batch is live and the output is writable.
+        unsafe { (api.diagnostic_batch_info)(batch, &raw mut info) },
+        MADOPILOT_STATUS_OK
+    );
+    assert_eq!(info.discarded_normal, 0);
+    assert_eq!(info.discarded_debug, 0);
+    let mut observed_mapping = false;
+    for index in 0..info.record_count {
+        let mut record = diagnostic_record();
+        assert_eq!(
+            // SAFETY: the immutable batch count bounds the index and the output is writable.
+            unsafe {
+                (api.diagnostic_batch_record_at)(
+                    batch,
+                    usize::try_from(index).expect("the bounded index fits usize"),
+                    &raw mut record,
+                )
+            },
+            MADOPILOT_STATUS_OK
+        );
+        observed_mapping |= record.kind == MADOPILOT_DIAGNOSTIC_KIND_MAPPING;
+    }
+    assert!(
+        observed_mapping,
+        "mapping is observed before engine release"
+    );
+    assert_eq!(
+        // SAFETY: releases the original batch reference.
+        unsafe { (api.diagnostic_batch_release)(batch) },
+        MADOPILOT_STATUS_OK
+    );
+    let (state, batch) = drain();
+    assert_eq!(state, MADOPILOT_DIAGNOSTIC_DRAIN_END_OF_STREAM);
+    assert!(batch.is_null());
+
+    let request = madopilot_map_request_t {
+        struct_size: u32::try_from(size_of::<madopilot_map_request_t>())
+            .expect("the map-request size fits u32"),
+        flags: 0,
+        format: MADOPILOT_PIXEL_FORMAT_RGBA8,
+        clip_policy: MADOPILOT_CLIP_POLICY_REJECT,
+        region: madopilot_pixel_rect_t::empty(),
+    };
+    for _ in 0..3 {
+        let mut mapping = ptr::null_mut();
+        let mut error = ptr::null_mut();
+        assert_eq!(
+            // SAFETY: the retained frame is independent of its released parents;
+            // the request, operation and both outputs are live for the call.
+            unsafe {
+                (api.frame_map)(
+                    frame,
+                    &raw const request,
+                    &raw const operation,
+                    &raw mut mapping,
+                    &raw mut error,
+                )
+            },
+            MADOPILOT_STATUS_OK
+        );
+        assert!(!mapping.is_null());
+        assert!(error.is_null());
+        let mut image = madopilot_image_t {
+            struct_size: u32::try_from(size_of::<madopilot_image_t>())
+                .expect("the image size fits u32"),
+            flags: 0,
+            width: 0,
+            height: 0,
+            format: 0,
+            space: 0,
+            stride: 0,
+            bytes: madopilot_bytes_t::empty(),
+            region: madopilot_pixel_rect_t::empty(),
+        };
+        assert_eq!(
+            // SAFETY: the mapping is retained and the image output is writable.
+            unsafe { (api.mapping_describe)(mapping, &raw mut image) },
+            MADOPILOT_STATUS_OK
+        );
+        assert_eq!((image.width, image.height), (source.width, source.height));
+        assert_eq!(image.format, MADOPILOT_PIXEL_FORMAT_RGBA8);
+        assert_eq!(image.space, MADOPILOT_SPACE_CAPTURE_PIXELS);
+        assert_eq!(image.bytes.len, expected_pixels.len());
+        assert!(!image.bytes.data.is_null());
+        // SAFETY: the successful descriptor borrows its complete pixel slice
+        // from the mapping, which remains retained through this comparison.
+        let pixels = unsafe { std::slice::from_raw_parts(image.bytes.data, image.bytes.len) };
+        assert_eq!(pixels, expected_pixels);
+        assert_eq!(
+            // SAFETY: releases the mapping after its borrowed pixel view was read.
+            unsafe { (api.mapping_release)(mapping) },
+            MADOPILOT_STATUS_OK
+        );
+        for _ in 0..2 {
+            let (state, batch) = drain();
+            assert_eq!(state, MADOPILOT_DIAGNOSTIC_DRAIN_END_OF_STREAM);
+            assert!(
+                batch.is_null(),
+                "late mapping publishes no records or losses"
+            );
+        }
+    }
+    assert_eq!(
+        // SAFETY: balances the independent frame reference retained before teardown.
+        unsafe { (api.frame_release)(frame) },
+        MADOPILOT_STATUS_OK
+    );
+    let (state, batch) = drain();
+    assert_eq!(state, MADOPILOT_DIAGNOSTIC_DRAIN_END_OF_STREAM);
+    assert!(batch.is_null());
+    assert_eq!(
+        // SAFETY: releases the independent reader after the final drain.
+        unsafe { (api.diagnostic_reader_release)(reader) },
+        MADOPILOT_STATUS_OK
+    );
+}

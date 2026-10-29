@@ -24,7 +24,7 @@ pub enum OcrRegion {
     },
 }
 /// Maximum caller-order zones admitted by one grouped scan.
-pub const MAX_OCR_ZONES: usize = 8;
+pub const MAX_OCR_ZONES: usize = 16;
 
 /// One source-relative zone and its clipping policy.
 #[derive(Debug, Clone, Copy, PartialEq)]
@@ -86,7 +86,7 @@ impl<'a> OcrZoneScanRequest<'a> {
     /// # Errors
     ///
     /// Returns [`OcrFault::ZoneCountOutOfRange`] unless `zones` contains one
-    /// through eight caller-order entries.
+    /// through sixteen caller-order entries.
     pub fn new(
         frame: &'a Frame,
         backend: &'a OcrBackendIdentity,
@@ -110,7 +110,7 @@ impl<'a> OcrZoneScanRequest<'a> {
 
     /// Returns the exact immutable source frame.
     #[must_use]
-    pub const fn frame(&self) -> &Frame {
+    pub const fn frame(&self) -> &'a Frame {
         self.frame
     }
 
@@ -194,7 +194,7 @@ impl<'a> OcrRequest<'a> {
 
     /// Returns the exact immutable source frame.
     #[must_use]
-    pub const fn frame(&self) -> &Frame {
+    pub const fn frame(&self) -> &'a Frame {
         self.frame
     }
 

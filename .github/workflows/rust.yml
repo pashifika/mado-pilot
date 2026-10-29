@@ -1,8 +1,7 @@
 name: Rust
 
-# Every job runs on every pull request and development-branch push rather than
-# behind a path filter, because these checks are intended to be required statuses
-# and a skipped required status blocks a pull request instead of passing it.
+# Required PR checks have no path filter. Development pushes retain post-merge
+# verification unless an open release PR covers that exact head.
 on:
   pull_request:
     branches:
@@ -26,7 +25,7 @@ env:
   RUSTDOCFLAGS: -D warnings
   # `mado-pilot-backend-opencv` generates its bindings at build time, so OpenCV and
   # a loadable libclang are build prerequisites for the whole workspace rather than
-  # only for the matching tests, and both native jobs provision them before they can
+  # only for the matching tests, and every native lane provisions them before it can
   # compile anything. Measured on the first run: 36 s to download and extract on
   # Windows against a cold cache, 129 s for `brew install opencv@4` on macOS, which
   # is not cached. See docs/third-party-dependencies.md.
@@ -34,7 +33,7 @@ env:
   # This pin is the **Windows** version only. It names the official prebuilt release
   # to download, and the `opencv_world<major><minor><patch>` import library inside
   # it. macOS takes whatever `opencv@4` Homebrew currently carries, which is not the
-  # same version and deliberately is not pinned; the macOS job explains why.
+  # same version and deliberately is not pinned; the macOS setup explains why.
   OPENCV_VERSION: 4.14.0
   ONNXRUNTIME_VERSION: 1.29.0
   ONNXRUNTIME_WIN_X64_SHA256: c9b4b7086b529ad814f428c1bad028e20a25d7dc0699836775faace4ab5b78b2
@@ -43,14 +42,72 @@ env:
   G004_RECOGNIZER_SHA256: 6f327246b50388f3c176ae304bd95767ea6dc0c9ae92153ef8cbe210b3c14884
 
 jobs:
+  dev-push-policy:
+    name: Select dev push checks
+    if: github.event_name == 'push'
+    runs-on: ubuntu-latest
+    timeout-minutes: 2
+    permissions:
+      contents: read
+      pull-requests: read
+    outputs:
+      skip-checks: ${{ steps.release-pr.outputs.skip-checks }}
+    steps:
+      - name: Check out the repository
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+
+      - name: Check for a covering release PR
+        id: release-pr
+        env:
+          GH_TOKEN: ${{ github.token }}
+        shell: bash
+        run: bash .github/scripts/select-dev-push-checks.sh
+
+  # Push checks use distinct names: a skipped push job must never satisfy a
+  # required PR status on the head commit. PR checks also run when the selector
+  # is skipped or fails; only an explicit push-only decision suppresses work.
   repository-policy:
-    name: Repository policy
+    name: Repository policy${{ github.event_name == 'push' && ' (dev push)' || '' }}
+    needs: dev-push-policy
+    if: ${{ !cancelled() && (github.event_name == 'pull_request' || needs.dev-push-policy.outputs.skip-checks != 'true') }}
     runs-on: ubuntu-latest
     env:
       CARGO_DENY_VERSION: 0.20.2
     steps:
       - name: Check out the repository
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+
+      - name: Install qualification Python
+        uses: actions/setup-python@ece7cb06caefa5fff74198d8649806c4678c61a1 # v6
+        with:
+          python-version: "3.14"
+
+      - name: Test CI selection and native aggregation
+        shell: bash
+        run: python3 -m unittest discover -s .github/tests -v
+
+      - name: Test native profile procedure
+        shell: bash
+        run: python3 -m unittest discover -s tools/native-release-profile/tests -v
+
+      - name: Test native development setup
+        shell: bash
+        run: python3 -m unittest discover -s tools/tests -v
+
+      - name: Test OCR replay evidence admission
+        shell: bash
+        run: python3 -m unittest discover -s tools/ocr-text-watch/tests -v
+
+      - name: Test independent OCR model rule evaluation
+        shell: bash
+        run: python3 -m unittest discover -s tools/ocr-models/tests -v
+
+      - name: Test capture pacing evidence without native execution
+        shell: bash
+        run: |
+          mkdir -p .rasen/ci-capture-pacing/tmp
+          TMPDIR="${PWD}/.rasen/ci-capture-pacing/tmp" PYTHONDONTWRITEBYTECODE=1 \
+            python3 -B -m unittest discover -s tools/capture-pacing/tests -v
 
       - name: Install the pinned toolchain
         shell: bash
@@ -81,9 +138,9 @@ jobs:
 
       # This step also prints the resolved workspace package inventory, so an
       # accidental workspace member is visible in the log as well as failing.
-      - name: Check workspace architecture and release scope
+      - name: Check workspace architecture
         shell: bash
-        run: cargo run --locked --package mado-pilot-dependency-check -- --release-scope
+        run: cargo run --locked --package mado-pilot-dependency-check
 
       - name: Check G-004 OCR profile evidence
         shell: bash
@@ -98,8 +155,8 @@ jobs:
       # every other step reads manifests, metadata, or source text. So it needs no
       # OpenCV installation on a host that is neither release target, which any
       # product package would, because mado-pilot-backend-opencv generates its
-      # bindings at build time. Documentation is built in both native jobs
-      # instead, where the compiler that would report a broken link is the one the
+      # bindings at build time. Documentation is built in both native workspace
+      # lanes instead, where the compiler that would report a broken link is the one the
       # product is verified with.
       - name: Restore cargo-deny
         uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
@@ -117,12 +174,25 @@ jobs:
           cargo deny --version
           cargo deny --locked check
 
-  windows:
-    name: Windows x86_64-pc-windows-msvc
+  # Each lane builds on a fresh runner; compiled outputs stay within that job.
+  windows-lanes:
+    name: Windows x86_64-pc-windows-msvc / ${{ matrix.lane }}${{ github.event_name == 'push' && ' (dev push)' || '' }}
+    needs: dev-push-policy
+    if: ${{ !cancelled() && (github.event_name == 'pull_request' || needs.dev-push-policy.outputs.skip-checks != 'true') }}
     runs-on: windows-2025
+    timeout-minutes: 30
+    strategy:
+      fail-fast: false
+      matrix:
+        lane: [workspace, ocr, matching-normal, matching-instrumented, consumers, external]
     steps:
       - name: Check out the repository
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+
+      - name: Install qualification Python
+        uses: actions/setup-python@ece7cb06caefa5fff74198d8649806c4678c61a1 # v6
+        with:
+          python-version: "3.14"
 
       - name: Install the pinned toolchain
         shell: bash
@@ -181,21 +251,10 @@ jobs:
           ./opencv-installer.exe -o"C:\\" -y
           rm -f opencv-installer.exe
 
-      # Discovery is restricted to the directory above. Without
-      # OPENCV_DISABLE_PROBES the build script would also try pkg-config, CMake, and
-      # vcpkg, any of which could find a different OpenCV than the one named here.
-      - name: Configure the OpenCV and libclang discovery
+      - name: Locate the CI libclang installation
         shell: bash
         run: |
           set -euo pipefail
-          root="C:/opencv/build"
-          if [[ ! -d "${root}/x64/vc16/lib" ]]; then
-            echo "::error::expected ${root}/x64/vc16/lib; the archive layout changed"
-            exit 1
-          fi
-          # The runner image ships LLVM, but a job that depended on that silently
-          # would fail with a binding-generator error rather than a named cause, so
-          # the location is searched and installed explicitly.
           libclang=""
           for candidate in "C:/Program Files/LLVM/bin" "C:/ProgramData/chocolatey/lib/llvm/tools/LLVM/bin"; do
             if [[ -f "${candidate}/libclang.dll" ]]; then
@@ -213,16 +272,38 @@ jobs:
             exit 1
           fi
           echo "using libclang from ${libclang}"
-          {
-            echo "OPENCV_INCLUDE_PATHS=${root}/include"
-            echo "OPENCV_LINK_PATHS=${root}/x64/vc16/lib"
-            echo "OPENCV_LINK_LIBS=opencv_world${OPENCV_VERSION//./}"
-            echo "OPENCV_DISABLE_PROBES=pkg_config,cmake,vcpkg_cmake,vcpkg"
-            echo "LIBCLANG_PATH=${libclang}"
-          } >> "${GITHUB_ENV}"
-          echo "${root}/x64/vc16/bin" >> "${GITHUB_PATH}"
+          echo "MADO_SETUP_LIBCLANG_PATH=${libclang}" >> "${GITHUB_ENV}"
 
-      - name: Provision the reviewed ONNX runtime and G-004 models
+      - name: Configure and check native development prerequisites
+        shell: cmd
+        run: |
+          for /f "usebackq tokens=*" %%i in (`"%ProgramFiles(x86)%\Microsoft Visual Studio\Installer\vswhere.exe" -latest -products * -requires Microsoft.VisualStudio.Component.VC.Tools.x86.x64 -property installationPath`) do set "VSROOT=%%i"
+          if not defined VSROOT exit /b 1
+          call "%VSROOT%\VC\Auxiliary\Build\vcvars64.bat" || exit /b 1
+          python tools/setup-native.py --opencv-root C:\opencv --libclang-path "%MADO_SETUP_LIBCLANG_PATH%" --github-env "%GITHUB_ENV%" --github-path "%GITHUB_PATH%" || exit /b 1
+
+      # This runs only model-free help, smoke and configuration refusal checks.
+      # Its Cargo cwd, home, target root and lockfile belong to an external copy.
+      - name: Prove the independent Rust consumer
+        if: matrix.lane == 'external'
+        shell: cmd
+        run: |
+          python tools/check-external-rust-consumer.py --work-root "%RUNNER_TEMP%\external-rust-consumer-${{ github.run_id }}-${{ github.run_attempt }}" --opencv-root C:\opencv --libclang-path "%MADO_SETUP_LIBCLANG_PATH%" || exit /b 1
+
+      - name: Retain independent Rust consumer evidence
+        if: ${{ always() && matrix.lane == 'external' }}
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: external-rust-consumer-windows-${{ github.run_id }}-${{ github.run_attempt }}
+          path: |
+            ${{ runner.temp }}/external-rust-consumer-${{ github.run_id }}-${{ github.run_attempt }}/evidence
+            ${{ runner.temp }}/external-rust-consumer-${{ github.run_id }}-${{ github.run_attempt }}/consumer
+          include-hidden-files: true
+          if-no-files-found: warn
+          retention-days: 14
+
+      - name: Provision the reviewed ONNX runtime and catalog models
+        if: matrix.lane == 'workspace' || matrix.lane == 'ocr' || matrix.lane == 'consumers'
         shell: bash
         run: |
           set -euo pipefail
@@ -272,6 +353,17 @@ jobs:
             "https://hf-mirror.com/DjB314/RapidOCR/resolve/04e88d0483f0bfcdd0f29429594244c10bfc2867/v3.9.2/onnx/PP-OCRv6/rec/PP-OCRv6_rec_small.onnx" \
             "https://www.modelscope.cn/models/RapidAI/RapidOCR/resolve/v3.9.2/onnx/PP-OCRv6/rec/PP-OCRv6_rec_small.onnx"
 
+          # Maintainer validation supplies paths and identities from the catalog.
+          resources="${RUNNER_TEMP}/ocr-candidate-resources.tsv"
+          cargo run --locked --package mado-pilot-ocr --example ocr-catalog-validate -- \
+            --resources ppocrv6-tiny-det-small-rec-max736-v1 > "${resources}"
+          while IFS=$'\t' read -r relative_path byte_len sha256 source_url; do
+            destination="${model_root}/${relative_path}"
+            mkdir -p "$(dirname "${destination}")"
+            download_verified_model "${destination}" "${sha256}" "${source_url}"
+            [[ "$(wc -c < "${destination}")" -eq "${byte_len}" ]]
+          done < "${resources}"
+
           runtime="${root}/onnxruntime-win-x64-${ONNXRUNTIME_VERSION}/lib/onnxruntime.dll"
           [[ -f "${runtime}" ]]
           {
@@ -281,49 +373,174 @@ jobs:
             echo "MADO_PILOT_G004_MODEL_ROOT=$(cygpath -m "${model_root}")"
           } >> "${GITHUB_ENV}"
 
-      - name: Check workspace architecture and release scope
+      - name: Check workspace architecture
+        if: matrix.lane == 'workspace'
         shell: bash
-        run: cargo run --locked --package mado-pilot-dependency-check -- --release-scope
+        run: cargo run --locked --package mado-pilot-dependency-check
 
       - name: Lint the workspace
+        if: matrix.lane == 'workspace'
         shell: bash
         run: cargo clippy --locked --workspace --all-targets -- -D warnings
 
       - name: Test the workspace
+        if: matrix.lane == 'workspace'
         shell: bash
         run: cargo test --locked --workspace --all-targets
+
+      - name: Exercise completion-paced OCR without capture or models
+        if: matrix.lane == 'workspace'
+        shell: bash
+        run: cargo run --locked --package mado-pilot --example completion-paced-ocr -- --controlled-smoke
+
+      - name: Prove bounded OCR literal normalization
+        if: matrix.lane == 'workspace'
+        shell: bash
+        run: cargo run --locked --release --package mado-pilot-ocr --example ocr-normalization-bound --target-dir target/ocr-normalization-proof
+
+      - name: Test OCR replay evidence admission
+        if: matrix.lane == 'workspace'
+        shell: bash
+        run: python -m unittest discover -s tools/ocr-text-watch/tests -v
+
+      - name: Test qualification-only OCR observation without inference
+        if: matrix.lane == 'ocr'
+        shell: bash
+        env:
+          CARGO_TARGET_DIR: ${{ runner.temp }}/ocr-watch-qualification-tests
+        run: cargo test --locked --package mado-pilot --features ocr-text-watch-qualification --example ocr-text-watch
+
+      - name: Compile the owned OCR fixture without launching it
+        if: matrix.lane == 'ocr'
+        shell: cmd
+        run: |
+          if not exist "%RUNNER_TEMP%\ocr-text-watch-fixture" mkdir "%RUNNER_TEMP%\ocr-text-watch-fixture"
+          cl.exe /nologo /std:c++17 /EHsc /W4 /WX /DUNICODE /D_UNICODE tools\ocr-text-watch\windows\fixture.cpp "/Fe:%RUNNER_TEMP%\ocr-text-watch-fixture\fixture.exe" "/Fo:%RUNNER_TEMP%\ocr-text-watch-fixture\fixture.obj" /link user32.lib gdi32.lib dwmapi.lib /SUBSYSTEM:CONSOLE
+          if errorlevel 1 exit /b 1
+
+      - name: Compile the owned pacing fixture without launching it
+        if: matrix.lane == 'workspace'
+        shell: cmd
+        run: |
+          if not exist ".rasen\ci-capture-pacing" mkdir ".rasen\ci-capture-pacing"
+          cl.exe /nologo /std:c++17 /EHsc /W4 /WX tools\capture-pacing\windows\fixture.cpp "/Fe:.rasen\ci-capture-pacing\fixture.exe" "/Fo:.rasen\ci-capture-pacing\fixture.obj" /link user32.lib gdi32.lib dwmapi.lib advapi32.lib psapi.lib /SUBSYSTEM:CONSOLE
+          if errorlevel 1 exit /b 1
 
       # Lane A owns deterministic scheduler/query behavior. Cargo's benchmark
       # flag selects the short semantic plan; statistical enforcement is
       # available only through the explicit optional Lane C mode.
       - name: Run the required template-watch Lane A replay contract
+        if: matrix.lane == 'workspace'
         shell: bash
         run: cargo bench --locked --package mado-pilot --bench template-watch-query
 
+      - name: Check and run owned capture-free matching efficiency smoke
+        if: matrix.lane == 'matching-normal' || matrix.lane == 'matching-instrumented'
+        shell: bash
+        env:
+          CARGO_TARGET_DIR: ${{ runner.temp }}/direct-format-matching-${{ github.run_id }}-${{ github.run_attempt }}
+          MATCHING_SMOKE_TARGET: x86_64-pc-windows-msvc
+          MATCHING_SMOKE_ROOT: ${{ runner.temp }}/matching-efficiency-smoke
+          MATCHING_SMOKE_MODE: ${{ matrix.lane == 'matching-normal' && 'normal' || 'instrumented' }}
+        run: |
+          python - <<'PY'
+          import json, os, shutil, subprocess, sys
+          from pathlib import Path
+          root = Path(os.environ["MATCHING_SMOKE_ROOT"])
+          root.mkdir(parents=True, exist_ok=False)
+          mode = os.environ["MATCHING_SMOKE_MODE"]
+          feature = {"normal": "template-matching-timing", "instrumented": "template-matching-benchmark"}[mode]
+          mode_root = root / mode
+          mode_root.mkdir()
+          test = ["cargo", "test", "--locked", "--package", "mado-pilot", "--features", feature,
+                  "--test", "template_matching_efficiency_exit",
+                  "--target-dir", str(Path(os.environ["CARGO_TARGET_DIR"]) / f"{mode}-exit-tests")]
+          common = ["--locked", "--package", "mado-pilot", "--features", feature, "--bench", "template-matching-efficiency",
+                    "--target-dir", str(Path(os.environ["CARGO_TARGET_DIR"]) / mode)]
+          lint = ["cargo", "clippy", *common, "--", "-D", "warnings"]
+          build = ["cargo", "bench", "--config", 'profile.bench.build-override.strip="none"', *common, "--no-run", "--message-format=json"]
+          commands = [test, lint, build]
+          (mode_root / "commands.json").write_text(json.dumps(commands, indent=2) + "\n")
+          for label, argv in (("test", test), ("lint", lint), ("build", build)):
+              with (mode_root / f"{label}.stdout").open("wb") as out, (mode_root / f"{label}.stderr").open("wb") as err:
+                  subprocess.run(argv, stdout=out, stderr=err, check=True, timeout=1200)
+          artifacts = [json.loads(line) for line in (mode_root / "build.stdout").read_text().splitlines()]
+          binaries = {item["executable"] for item in artifacts if item.get("reason") == "compiler-artifact" and item.get("target", {}).get("name") == "template-matching-efficiency" and item.get("executable")}
+          if len(binaries) != 1:
+              raise SystemExit("expected exactly one Cargo-reported benchmark executable")
+          source = Path(binaries.pop())
+          binary = mode_root / ("template-matching-efficiency" + source.suffix)
+          shutil.copy2(source, binary)
+          metadata = mode_root / "build-metadata.json"
+          target = os.environ["MATCHING_SMOKE_TARGET"]
+          protocol = ["--protocol-version", "4", "--build-mode", mode]
+          for label, argv, timeout in (
+              ("attest", [sys.executable, "tools/template-matching-efficiency.py", "attest", *protocol, "--target", target, "--binary", str(binary), "--build-argv-json", json.dumps(build), "--output", str(metadata)], 500),
+              ("smoke", [sys.executable, "tools/template-matching-efficiency.py", "smoke", *protocol, "--target", target, "--baseline", str(binary), "--baseline-metadata", str(metadata), "--output", str(mode_root / "campaign")], 930),
+          ):
+              commands.append(argv)
+              (mode_root / "commands.json").write_text(json.dumps(commands, indent=2) + "\n")
+              with (mode_root / f"{label}.stdout").open("wb") as out, (mode_root / f"{label}.stderr").open("wb") as err:
+                  subprocess.run(argv, stdout=out, stderr=err, check=True, timeout=timeout)
+          PY
+
+      - name: Preserve matching efficiency smoke observations
+        if: ${{ always() && (matrix.lane == 'matching-normal' || matrix.lane == 'matching-instrumented') }}
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: matching-efficiency-smoke-windows-${{ matrix.lane }}-${{ github.run_id }}-${{ github.run_attempt }}
+          path: ${{ runner.temp }}/matching-efficiency-smoke
+          include-hidden-files: true
+          if-no-files-found: warn
+          retention-days: 14
+
+      - name: Test native Windows image-preflight contracts
+        if: matrix.lane == 'workspace'
+        shell: bash
+        run: python -B -m unittest discover -s tools/tests -p test_windows_image_observer.py -v
+
       - name: Compile the native template-watch Lane B and Lane C runners
+        if: matrix.lane == 'workspace'
         shell: bash
         run: cargo check --locked --package mado-pilot --bench native-template-watch --features native-template-watch-qualification
 
       - name: Reproduce the frozen G-005 change-detection report
+        if: matrix.lane == 'workspace'
         shell: bash
         run: |
           report="${RUNNER_TEMP}/g-005-change-detection-report.json"
           cargo run --locked --package mado-pilot-testkit --example change-detection-evaluator > "${report}"
           diff -u docs/evidence/g-005/accepted-report.json "${report}"
 
-      - name: Test the accepted ONNX CPU OCR backend
+      - name: Test ordinary model choices and compile their evaluation benchmark
+        if: matrix.lane == 'ocr'
         shell: bash
-        run: cargo test --locked --package mado-pilot-backend-onnx --lib -- --ignored --nocapture
+        run: |
+          cargo test --locked --package mado-pilot-ocr --all-targets
+          cargo clippy --locked --package mado-pilot-backend-onnx --features benchmark-instrumentation --all-targets -- -D warnings
+
+      - name: Test catalog ONNX CPU paths
+        if: matrix.lane == 'ocr'
+        shell: bash
+        run: cargo test --locked --package mado-pilot-backend-onnx --features benchmark-instrumentation --lib -- --include-ignored --nocapture --test-threads=1
+
+      - name: Read model choices and rule results without initialization
+        if: matrix.lane == 'ocr'
+        shell: bash
+        run: cargo run --locked --package mado-pilot --example ocr-profiles
 
       - name: Test the integrated default and bounded OCR facade
+        if: matrix.lane == 'ocr'
         shell: bash
         run: cargo test --locked --package mado-pilot --test ocr_public_surface default_ocr_profile_runs_full_and_bounded_replay_regions -- --ignored --nocapture
 
       - name: Run the integrated default OCR Rust example
+        if: matrix.lane == 'ocr'
         shell: bash
         run: cargo run --locked --package mado-pilot --example ocr-default
 
       - name: Run the explicit bounded-profile zone OCR Rust example
+        if: matrix.lane == 'ocr'
         shell: bash
         run: cargo run --locked --package mado-pilot --example ocr-profile-zones
 
@@ -331,49 +548,42 @@ jobs:
       # predicates. It never substitutes runner timing for a named hardware
       # profile.
       - name: Run the OCR benchmark smoke gate
+        if: matrix.lane == 'ocr'
         shell: bash
         run: cargo bench --locked --package mado-pilot-backend-onnx --bench onnx-cpu -- --smoke
 
       - name: Run the bounded detector and grouped-zone smoke gates
+        if: matrix.lane == 'ocr'
         shell: bash
         run: |
-          export MADO_PILOT_BOUNDED_SOURCE_REVISION="$(git rev-parse HEAD)"
-          export MADO_PILOT_BOUNDED_SOURCE_TREE="$(git rev-parse 'HEAD^{tree}')"
+          MADO_PILOT_BOUNDED_SOURCE_REVISION="$(git rev-parse HEAD)"
+          MADO_PILOT_BOUNDED_SOURCE_TREE="$(git rev-parse 'HEAD^{tree}')"
+          export MADO_PILOT_BOUNDED_SOURCE_REVISION MADO_PILOT_BOUNDED_SOURCE_TREE
           export MADO_PILOT_BOUNDED_HOST_ID="hosted-ci"
           export MADO_PILOT_BOUNDED_PROCESS_INDEX="smoke"
           cargo bench --locked --package mado-pilot-backend-onnx --features benchmark-instrumentation --bench bounded-detector -- --smoke --profile=native
           cargo bench --locked --package mado-pilot-backend-onnx --features benchmark-instrumentation --bench bounded-detector -- --smoke --profile=bounded --integrated
 
       - name: Run the diagnostic benchmark smoke gate
+        if: matrix.lane == 'workspace'
         shell: bash
         run: cargo bench --locked --package mado-pilot-runtime --bench diagnostic-overhead -- --smoke
 
       # `--all-targets` deliberately excludes doctests, so they need their own run.
       - name: Test the documentation examples
+        if: matrix.lane == 'workspace'
         shell: bash
         run: cargo test --locked --workspace --doc
 
       - name: Check documentation
+        if: matrix.lane == 'workspace'
         shell: bash
         run: cargo doc --locked --workspace --no-deps
 
-      # The only check in this repository that is not `cargo` alone. It compiles
-      # the tracked C header with the release target's own C compiler — MSVC here,
-      # the Xcode Command Line Tools on macOS — and compares the layout it produces
-      # field by field against the one `rustc` produced; then builds and runs the C
-      # example, the C++ ownership probe, and the C++ example against the library;
-      # then configures, builds, and runs the CMake consumer project. The Ubuntu
-      # repository-policy job deliberately compiles nothing and does not run this.
-      # See docs/adr/0004-c-header-authorship-and-abi-verification.md and
-      # docs/adr/0005-cpp-wrapper-shape-and-cmake-surface.md.
-      # `cl` is installed on this image but is not on `PATH` until the developer
-      # environment is entered, so the step runs under `cmd` and calls
-      # `vcvars64.bat` itself rather than exporting a whole environment to later
-      # steps. The install path is discovered with `vswhere` instead of being
-      # hard-coded, because it carries the Visual Studio edition. That environment
-      # also sets `VSINSTALLDIR`, through which the check finds the CMake Visual
-      # Studio ships if the runner image ever stops carrying one on `PATH`.
-      - name: Check the C ABI and the C++ wrapper
+      # Native compilers verify direct C/C++ consumers and frozen C ABI layouts.
+      # Windows native input stays confined to the repository-owned fixtures.
+      - name: Check the C ABI and direct C/C++ consumers
+        if: matrix.lane == 'consumers'
         shell: cmd
         run: |
           for /f "usebackq tokens=*" %%i in (`"%ProgramFiles(x86)%\Microsoft Visual Studio\Installer\vswhere.exe" -latest -products * -requires Microsoft.VisualStudio.Component.VC.Tools.x86.x64 -property installationPath`) do set "VSROOT=%%i"
@@ -388,6 +598,37 @@ jobs:
           cargo build --locked --package mado-pilot-platform-windows --bin mado-pilot-windows-input-fixture --bin mado-pilot-windows-window-message-fixture || exit /b 1
           cargo run --locked --package mado-pilot-capi --example c-abi-check -- --label "CI ${{ runner.os }} ${{ runner.arch }}" --windows-native-fixture || exit /b 1
           certutil -hashfile target\debug\madopilot.dll SHA256 || exit /b 1
+          certutil -hashfile target\debug\madopilot.dll.lib SHA256 || exit /b 1
+          set "CARGO_TARGET_DIR=%RUNNER_TEMP%\c-abi-private-fixture"
+          cargo build --locked --package mado-pilot-capi --features private-fixture || exit /b 1
+          cargo test --locked --package mado-pilot-capi --features private-fixture --tests || exit /b 1
+          cargo run --locked --package mado-pilot-capi --features private-fixture --example c-abi-check -- --label "CI ${{ runner.os }} ${{ runner.arch }} private-fixture" || exit /b 1
+          certutil -hashfile "%CARGO_TARGET_DIR%\debug\madopilot.dll" SHA256 || exit /b 1
+          certutil -hashfile "%CARGO_TARGET_DIR%\debug\madopilot.dll.lib" SHA256 || exit /b 1
+
+      - name: Check native profile procedure and external consumers
+        if: matrix.lane == 'consumers'
+        id: native-consumers
+        shell: cmd
+        run: |
+          python -m unittest discover -s tools/native-release-profile/tests -v || exit /b 1
+          python -m unittest discover -s tools/tests -v || exit /b 1
+          for /f "usebackq tokens=*" %%i in (`"%ProgramFiles(x86)%\Microsoft Visual Studio\Installer\vswhere.exe" -latest -products * -requires Microsoft.VisualStudio.Component.VC.Tools.x86.x64 -property installationPath`) do set "VSROOT=%%i"
+          if not defined VSROOT exit /b 1
+          call "%VSROOT%\VC\Auxiliary\Build\vcvars64.bat" || exit /b 1
+          cargo build --locked --release -p mado-pilot -p mado-pilot-capi || exit /b 1
+          python tools/native-release-profile/check_consumers.py --root . --library-dir target/release --output target/profile-consumers-ci --model-root "%MADO_PILOT_G004_MODEL_ROOT%" --runtime "%MADO_PILOT_ONNX_RUNTIME%" --opencv-runtime "C:\opencv\build\x64\vc16\bin\opencv_world%OPENCV_VERSION:.=%.dll" || exit /b 1
+
+      - name: Retain direct C ABI consumer evidence
+        if: ${{ always() && matrix.lane == 'consumers' && steps.native-consumers.outcome != '' && steps.native-consumers.outcome != 'skipped' }}
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: direct-c-abi-consumers-windows-${{ github.run_id }}-${{ github.run_attempt }}
+          path: |
+            target/profile-consumers-ci/result.json
+            target/profile-consumers-ci/*.log
+          if-no-files-found: error
+          retention-days: 14
 
       # This asserts nothing about the scores. It names the OpenCV build the run
       # actually used and prints what that build matched, so a provisioning drift
@@ -398,17 +639,30 @@ jobs:
       # loaded or a fixture that cannot be searched ends the step. What it never
       # does is compare a score against a threshold and fail on the answer.
       - name: Report what this host's OpenCV matched
+        if: matrix.lane == 'workspace'
         shell: bash
         run: |
           cargo run --locked --release --package mado-pilot-backend-opencv \
             --example match-report -- --label "CI ${{ runner.os }} ${{ runner.arch }}"
 
-  macos:
-    name: macOS aarch64-apple-darwin
+  macos-lanes:
+    name: macOS aarch64-apple-darwin / ${{ matrix.lane }}${{ github.event_name == 'push' && ' (dev push)' || '' }}
+    needs: dev-push-policy
+    if: ${{ !cancelled() && (github.event_name == 'pull_request' || needs.dev-push-policy.outputs.skip-checks != 'true') }}
     runs-on: macos-26
+    timeout-minutes: 30
+    strategy:
+      fail-fast: false
+      matrix:
+        lane: [workspace, ocr, matching-normal, matching-instrumented, consumers, external]
     steps:
       - name: Check out the repository
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+
+      - name: Install qualification Python
+        uses: actions/setup-python@ece7cb06caefa5fff74198d8649806c4678c61a1 # v6
+        with:
+          python-version: "3.14"
 
       - name: Install the pinned toolchain
         shell: bash
@@ -459,24 +713,38 @@ jobs:
         run: |
           set -euo pipefail
           brew install opencv@4
-          prefix="$(brew --prefix opencv@4)"
-          # Set explicitly rather than relying on the formula being linked: it is
-          # keg-only, and whether its pkg-config file reaches the default search path
-          # depends on what else the image has installed.
-          echo "PKG_CONFIG_PATH=${prefix}/lib/pkgconfig" >> "${GITHUB_ENV}"
 
-      - name: Confirm the OpenCV the build will find
+      - name: Configure and check native development prerequisites
         shell: bash
         run: |
           set -euo pipefail
-          found="$(pkg-config --modversion opencv4)"
-          echo "pkg-config reports opencv4 ${found}"
-          if [[ "${found%%.*}" != "4" ]]; then
-            echo "::error::expected an OpenCV 4 installation but found ${found}"
-            exit 1
-          fi
+          python3 tools/setup-native.py --github-env "${GITHUB_ENV}" --github-path "${GITHUB_PATH}"
 
-      - name: Provision the reviewed ONNX runtime and G-004 models
+      # This runs only model-free help, smoke and configuration refusal checks.
+      # The copied consumer owns and verifies its macOS deployment floor.
+      - name: Prove the independent Rust consumer
+        if: matrix.lane == 'external'
+        shell: bash
+        run: |
+          set -euo pipefail
+          python3 tools/check-external-rust-consumer.py \
+            --work-root "${RUNNER_TEMP}/external-rust-consumer-${{ github.run_id }}-${{ github.run_attempt }}" \
+            --opencv-root "$(brew --prefix opencv@4)" --libclang-path "${LIBCLANG_PATH}"
+
+      - name: Retain independent Rust consumer evidence
+        if: ${{ always() && matrix.lane == 'external' }}
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: external-rust-consumer-macos-${{ github.run_id }}-${{ github.run_attempt }}
+          path: |
+            ${{ runner.temp }}/external-rust-consumer-${{ github.run_id }}-${{ github.run_attempt }}/evidence
+            ${{ runner.temp }}/external-rust-consumer-${{ github.run_id }}-${{ github.run_attempt }}/consumer
+          include-hidden-files: true
+          if-no-files-found: warn
+          retention-days: 14
+
+      - name: Provision the reviewed ONNX runtime and catalog models
+        if: matrix.lane == 'workspace' || matrix.lane == 'ocr' || matrix.lane == 'consumers'
         shell: bash
         run: |
           set -euo pipefail
@@ -525,6 +793,16 @@ jobs:
             "https://hf-mirror.com/DjB314/RapidOCR/resolve/04e88d0483f0bfcdd0f29429594244c10bfc2867/v3.9.2/onnx/PP-OCRv6/rec/PP-OCRv6_rec_small.onnx" \
             "https://www.modelscope.cn/models/RapidAI/RapidOCR/resolve/v3.9.2/onnx/PP-OCRv6/rec/PP-OCRv6_rec_small.onnx"
 
+          resources="${RUNNER_TEMP}/ocr-candidate-resources.tsv"
+          cargo run --locked --package mado-pilot-ocr --example ocr-catalog-validate -- \
+            --resources ppocrv6-tiny-det-small-rec-max736-v1 > "${resources}"
+          while IFS=$'\t' read -r relative_path byte_len sha256 source_url; do
+            destination="${model_root}/${relative_path}"
+            mkdir -p "$(dirname "${destination}")"
+            download_verified_model "${destination}" "${sha256}" "${source_url}"
+            [[ "$(wc -c < "${destination}")" -eq "${byte_len}" ]]
+          done < "${resources}"
+
           runtime="${root}/onnxruntime-osx-arm64-${ONNXRUNTIME_VERSION}/lib/libonnxruntime.1.29.0.dylib"
           [[ -f "${runtime}" ]]
           {
@@ -534,49 +812,181 @@ jobs:
             echo "MADO_PILOT_G004_MODEL_ROOT=${model_root}"
           } >> "${GITHUB_ENV}"
 
-      - name: Check workspace architecture and release scope
+      - name: Check workspace architecture
+        if: matrix.lane == 'workspace'
         shell: bash
-        run: cargo run --locked --package mado-pilot-dependency-check -- --release-scope
+        run: cargo run --locked --package mado-pilot-dependency-check
 
       - name: Lint the workspace
+        if: matrix.lane == 'workspace'
         shell: bash
         run: cargo clippy --locked --workspace --all-targets -- -D warnings
 
       - name: Test the workspace
+        if: matrix.lane == 'workspace'
         shell: bash
         run: cargo test --locked --workspace --all-targets
+
+      - name: Exercise completion-paced OCR without capture or models
+        if: matrix.lane == 'workspace'
+        shell: bash
+        run: cargo run --locked --package mado-pilot --example completion-paced-ocr -- --controlled-smoke
+
+      - name: Prove bounded OCR literal normalization
+        if: matrix.lane == 'workspace'
+        shell: bash
+        run: cargo run --locked --release --package mado-pilot-ocr --example ocr-normalization-bound --target-dir target/ocr-normalization-proof
+
+      - name: Test OCR replay evidence admission
+        if: matrix.lane == 'workspace'
+        shell: bash
+        run: python3 -m unittest discover -s tools/ocr-text-watch/tests -v
+
+      - name: Test qualification-only OCR observation without inference
+        if: matrix.lane == 'ocr'
+        shell: bash
+        env:
+          CARGO_TARGET_DIR: ${{ runner.temp }}/ocr-watch-qualification-tests
+        run: cargo test --locked --package mado-pilot --features ocr-text-watch-qualification --example ocr-text-watch
+
+      - name: Compile the owned OCR fixture without launching it
+        if: matrix.lane == 'ocr'
+        shell: bash
+        run: |
+          xcrun clang -arch arm64 -mmacosx-version-min=26.5.2 \
+            -fobjc-arc -fobjc-arc-exceptions -Wall -Wextra -Werror \
+            -framework AppKit -framework QuartzCore \
+            tools/ocr-text-watch/macos/fixture.m \
+            -o "${RUNNER_TEMP}/ocr-owned-fixture"
+
+      - name: Compile the owned pacing fixture without launching it
+        if: matrix.lane == 'workspace'
+        shell: bash
+        run: |
+          mkdir -p .rasen/ci-capture-pacing
+          xcrun clang -arch arm64 -mmacosx-version-min=26.5.2 \
+            -fobjc-arc -fobjc-arc-exceptions -fblocks -Wall -Wextra -Werror \
+            -framework AppKit -framework QuartzCore \
+            tools/capture-pacing/macos/fixture.m \
+            -o .rasen/ci-capture-pacing/fixture
 
       # Hosted macOS has no Screen Recording grant, so this executes only Lane A.
       # The approved interactive host runs Lane B separately; hosted CI still
       # compiles both native modes below.
       - name: Run the required template-watch Lane A replay contract
+        if: matrix.lane == 'workspace'
         shell: bash
         run: cargo bench --locked --package mado-pilot --bench template-watch-query
 
+      - name: Check and run owned capture-free matching efficiency smoke
+        if: matrix.lane == 'matching-normal' || matrix.lane == 'matching-instrumented'
+        shell: bash
+        env:
+          CARGO_TARGET_DIR: ${{ runner.temp }}/direct-format-matching-${{ github.run_id }}-${{ github.run_attempt }}
+          MATCHING_SMOKE_TARGET: aarch64-apple-darwin
+          MATCHING_SMOKE_ROOT: ${{ runner.temp }}/matching-efficiency-smoke
+          MATCHING_SMOKE_MODE: ${{ matrix.lane == 'matching-normal' && 'normal' || 'instrumented' }}
+        run: |
+          python3 - <<'PY'
+          import json, os, shutil, subprocess, sys
+          from pathlib import Path
+          root = Path(os.environ["MATCHING_SMOKE_ROOT"])
+          root.mkdir(parents=True, exist_ok=False)
+          mode = os.environ["MATCHING_SMOKE_MODE"]
+          feature = {"normal": "template-matching-timing", "instrumented": "template-matching-benchmark"}[mode]
+          mode_root = root / mode
+          mode_root.mkdir()
+          test = ["cargo", "test", "--locked", "--package", "mado-pilot", "--features", feature,
+                  "--test", "template_matching_efficiency_exit",
+                  "--target-dir", str(Path(os.environ["CARGO_TARGET_DIR"]) / f"{mode}-exit-tests")]
+          common = ["--locked", "--package", "mado-pilot", "--features", feature, "--bench", "template-matching-efficiency",
+                    "--target-dir", str(Path(os.environ["CARGO_TARGET_DIR"]) / mode)]
+          lint = ["cargo", "clippy", *common, "--", "-D", "warnings"]
+          build = ["cargo", "bench", "--config", 'profile.bench.build-override.strip="none"', *common, "--no-run", "--message-format=json"]
+          commands = [test, lint, build]
+          (mode_root / "commands.json").write_text(json.dumps(commands, indent=2) + "\n")
+          for label, argv in (("test", test), ("lint", lint), ("build", build)):
+              with (mode_root / f"{label}.stdout").open("wb") as out, (mode_root / f"{label}.stderr").open("wb") as err:
+                  subprocess.run(argv, stdout=out, stderr=err, check=True, timeout=1200)
+          artifacts = [json.loads(line) for line in (mode_root / "build.stdout").read_text().splitlines()]
+          binaries = {item["executable"] for item in artifacts if item.get("reason") == "compiler-artifact" and item.get("target", {}).get("name") == "template-matching-efficiency" and item.get("executable")}
+          if len(binaries) != 1:
+              raise SystemExit("expected exactly one Cargo-reported benchmark executable")
+          source = Path(binaries.pop())
+          binary = mode_root / ("template-matching-efficiency" + source.suffix)
+          shutil.copy2(source, binary)
+          metadata = mode_root / "build-metadata.json"
+          target = os.environ["MATCHING_SMOKE_TARGET"]
+          protocol = ["--protocol-version", "4", "--build-mode", mode]
+          for label, argv, timeout in (
+              ("attest", [sys.executable, "tools/template-matching-efficiency.py", "attest", *protocol, "--target", target, "--binary", str(binary), "--build-argv-json", json.dumps(build), "--output", str(metadata)], 500),
+              ("smoke", [sys.executable, "tools/template-matching-efficiency.py", "smoke", *protocol, "--target", target, "--baseline", str(binary), "--baseline-metadata", str(metadata), "--output", str(mode_root / "campaign")], 930),
+          ):
+              commands.append(argv)
+              (mode_root / "commands.json").write_text(json.dumps(commands, indent=2) + "\n")
+              with (mode_root / f"{label}.stdout").open("wb") as out, (mode_root / f"{label}.stderr").open("wb") as err:
+                  subprocess.run(argv, stdout=out, stderr=err, check=True, timeout=timeout)
+          PY
+
+      - name: Preserve matching efficiency smoke observations
+        if: ${{ always() && (matrix.lane == 'matching-normal' || matrix.lane == 'matching-instrumented') }}
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: matching-efficiency-smoke-macos-${{ matrix.lane }}-${{ github.run_id }}-${{ github.run_attempt }}
+          path: ${{ runner.temp }}/matching-efficiency-smoke
+          include-hidden-files: true
+          if-no-files-found: warn
+          retention-days: 14
+
+      - name: Test native macOS image-observer contracts
+        if: matrix.lane == 'workspace'
+        shell: bash
+        env:
+          MADO_MACOS_IMAGE_OBSERVER_SMOKE: "1"
+        run: python3 -B -m unittest discover -s tools/tests -p test_macos_image_observer.py -v
+
       - name: Compile the native template-watch Lane B and Lane C runners
+        if: matrix.lane == 'workspace'
         shell: bash
         run: cargo check --locked --package mado-pilot --bench native-template-watch --features native-template-watch-qualification
 
       - name: Reproduce the frozen G-005 change-detection report
+        if: matrix.lane == 'workspace'
         shell: bash
         run: |
           report="${RUNNER_TEMP}/g-005-change-detection-report.json"
           cargo run --locked --package mado-pilot-testkit --example change-detection-evaluator > "${report}"
           diff -u docs/evidence/g-005/accepted-report.json "${report}"
 
-      - name: Test the accepted ONNX CPU OCR backend
+      - name: Test ordinary model choices and compile their evaluation benchmark
+        if: matrix.lane == 'ocr'
         shell: bash
-        run: cargo test --locked --package mado-pilot-backend-onnx --lib -- --ignored --nocapture
+        run: |
+          cargo test --locked --package mado-pilot-ocr --all-targets
+          cargo clippy --locked --package mado-pilot-backend-onnx --features benchmark-instrumentation --all-targets -- -D warnings
+
+      - name: Test catalog ONNX CPU paths
+        if: matrix.lane == 'ocr'
+        shell: bash
+        run: cargo test --locked --package mado-pilot-backend-onnx --features benchmark-instrumentation --lib -- --include-ignored --nocapture --test-threads=1
+
+      - name: Read model choices and rule results without initialization
+        if: matrix.lane == 'ocr'
+        shell: bash
+        run: cargo run --locked --package mado-pilot --example ocr-profiles
 
       - name: Test the integrated default and bounded OCR facade
+        if: matrix.lane == 'ocr'
         shell: bash
         run: cargo test --locked --package mado-pilot --test ocr_public_surface default_ocr_profile_runs_full_and_bounded_replay_regions -- --ignored --nocapture
 
       - name: Run the integrated default OCR Rust example
+        if: matrix.lane == 'ocr'
         shell: bash
         run: cargo run --locked --package mado-pilot --example ocr-default
 
       - name: Run the explicit bounded-profile zone OCR Rust example
+        if: matrix.lane == 'ocr'
         shell: bash
         run: cargo run --locked --package mado-pilot --example ocr-profile-zones
 
@@ -584,43 +994,42 @@ jobs:
       # predicates. It never substitutes runner timing for a named hardware
       # profile.
       - name: Run the OCR benchmark smoke gate
+        if: matrix.lane == 'ocr'
         shell: bash
         run: cargo bench --locked --package mado-pilot-backend-onnx --bench onnx-cpu -- --smoke
 
       - name: Run the bounded detector and grouped-zone smoke gates
+        if: matrix.lane == 'ocr'
         shell: bash
         run: |
-          export MADO_PILOT_BOUNDED_SOURCE_REVISION="$(git rev-parse HEAD)"
-          export MADO_PILOT_BOUNDED_SOURCE_TREE="$(git rev-parse 'HEAD^{tree}')"
+          MADO_PILOT_BOUNDED_SOURCE_REVISION="$(git rev-parse HEAD)"
+          MADO_PILOT_BOUNDED_SOURCE_TREE="$(git rev-parse 'HEAD^{tree}')"
+          export MADO_PILOT_BOUNDED_SOURCE_REVISION MADO_PILOT_BOUNDED_SOURCE_TREE
           export MADO_PILOT_BOUNDED_HOST_ID="hosted-ci"
           export MADO_PILOT_BOUNDED_PROCESS_INDEX="smoke"
           cargo bench --locked --package mado-pilot-backend-onnx --features benchmark-instrumentation --bench bounded-detector -- --smoke --profile=native
           cargo bench --locked --package mado-pilot-backend-onnx --features benchmark-instrumentation --bench bounded-detector -- --smoke --profile=bounded --integrated
 
       - name: Run the diagnostic benchmark smoke gate
+        if: matrix.lane == 'workspace'
         shell: bash
         run: cargo bench --locked --package mado-pilot-runtime --bench diagnostic-overhead -- --smoke
 
       # `--all-targets` deliberately excludes doctests, so they need their own run.
       - name: Test the documentation examples
+        if: matrix.lane == 'workspace'
         shell: bash
         run: cargo test --locked --workspace --doc
 
       - name: Check documentation
+        if: matrix.lane == 'workspace'
         shell: bash
         run: cargo doc --locked --workspace --no-deps
 
-      # The only check in this repository that is not `cargo` alone. It compiles
-      # the tracked C header with the release target's own C compiler — the Xcode
-      # Command Line Tools here, MSVC on Windows — and compares the layout it
-      # produces field by field against the one `rustc` produced; then builds and
-      # runs the C example, the C++ ownership probe, and the C++ example against
-      # the library; then configures, builds, and runs the CMake consumer project.
-      # The Ubuntu repository-policy job deliberately compiles nothing and does
-      # not run this. See
-      # docs/adr/0004-c-header-authorship-and-abi-verification.md and
-      # docs/adr/0005-cpp-wrapper-shape-and-cmake-surface.md.
-      - name: Check the C ABI and the C++ wrapper
+      # Direct C/C++ consumers share the released C header and library.
+      # Keep private-fixture builds separate from the ordinary library.
+      - name: Check the C ABI and direct C/C++ consumers
+        if: matrix.lane == 'consumers'
         shell: bash
         run: |
           cargo check --locked --package mado-pilot-capi --all-targets --features coreml-provider
@@ -628,6 +1037,36 @@ jobs:
           cargo run --locked --package mado-pilot-capi --example c-abi-check -- \
             --label "CI ${{ runner.os }} ${{ runner.arch }}"
           shasum -a 256 target/debug/libmadopilot.dylib
+          export CARGO_TARGET_DIR="${RUNNER_TEMP}/c-abi-private-fixture"
+          cargo build --locked --package mado-pilot-capi --features private-fixture
+          cargo test --locked --package mado-pilot-capi --features private-fixture --tests
+          cargo run --locked --package mado-pilot-capi --features private-fixture --example c-abi-check -- \
+            --label "CI ${{ runner.os }} ${{ runner.arch }} private-fixture"
+          shasum -a 256 "${CARGO_TARGET_DIR}/debug/libmadopilot.dylib"
+
+      - name: Check native profile procedure and external consumers
+        if: matrix.lane == 'consumers'
+        id: native-consumers
+        shell: bash
+        run: |
+          set -euo pipefail
+          python3 -m unittest discover -s tools/native-release-profile/tests -v
+          python3 -m unittest discover -s tools/tests -v
+          cargo build --locked --release -p mado-pilot -p mado-pilot-capi
+          python3 tools/native-release-profile/check_consumers.py \
+            --root . --library-dir target/release --output target/profile-consumers-ci \
+            --model-root "${MADO_PILOT_G004_MODEL_ROOT}" --runtime "${MADO_PILOT_ONNX_RUNTIME}"
+
+      - name: Retain direct C ABI consumer evidence
+        if: ${{ always() && matrix.lane == 'consumers' && steps.native-consumers.outcome != '' && steps.native-consumers.outcome != 'skipped' }}
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: direct-c-abi-consumers-macos-${{ github.run_id }}-${{ github.run_attempt }}
+          path: |
+            target/profile-consumers-ci/result.json
+            target/profile-consumers-ci/*.log
+          if-no-files-found: error
+          retention-days: 14
 
       # This asserts nothing about the scores. It names the OpenCV build the run
       # actually used and prints what that build matched, so a provisioning drift
@@ -638,7 +1077,41 @@ jobs:
       # loaded or a fixture that cannot be searched ends the step. What it never
       # does is compare a score against a threshold and fail on the answer.
       - name: Report what this host's OpenCV matched
+        if: matrix.lane == 'workspace'
         shell: bash
         run: |
           cargo run --locked --release --package mado-pilot-backend-opencv \
             --example match-report -- --label "CI ${{ runner.os }} ${{ runner.arch }}"
+
+  # Stable required statuses accept only successful native matrix results.
+  windows:
+    name: Windows x86_64-pc-windows-msvc${{ github.event_name == 'push' && ' (dev push)' || '' }}
+    needs: [dev-push-policy, windows-lanes]
+    if: ${{ always() && (github.event_name == 'pull_request' || needs.dev-push-policy.outputs.skip-checks != 'true') }}
+    runs-on: ubuntu-latest
+    timeout-minutes: 2
+    steps:
+      - name: Check out the repository
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+
+      - name: Require every Windows lane
+        env:
+          NEEDS_JSON: ${{ toJSON(needs) }}
+        shell: bash
+        run: python3 .github/scripts/check-native-lanes.py windows-lanes
+
+  macos:
+    name: macOS aarch64-apple-darwin${{ github.event_name == 'push' && ' (dev push)' || '' }}
+    needs: [dev-push-policy, macos-lanes]
+    if: ${{ always() && (github.event_name == 'pull_request' || needs.dev-push-policy.outputs.skip-checks != 'true') }}
+    runs-on: ubuntu-latest
+    timeout-minutes: 2
+    steps:
+      - name: Check out the repository
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+
+      - name: Require every macOS lane
+        env:
+          NEEDS_JSON: ${{ toJSON(needs) }}
+        shell: bash
+        run: python3 .github/scripts/check-native-lanes.py macos-lanes

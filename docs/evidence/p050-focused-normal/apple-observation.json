@@ -1,0 +1,636 @@
+{
+  "target": "aarch64-apple-darwin",
+  "mode": "normal",
+  "qualification": "not-requested",
+  "verification": {
+    "fresh_builds": 3,
+    "actual_attestations": 3,
+    "provenance_calls_including_host_processor": 18,
+    "selected_rows": 4,
+    "manifest_children": 4,
+    "normal_unobserved_fields": [
+      "allocations",
+      "heap_before_bytes",
+      "heap_after_bytes",
+      "heap_after_drop_bytes",
+      "heap_steady_before_bytes",
+      "heap_steady_after_bytes",
+      "peak_heap_bytes",
+      "peak_heap_scope",
+      "score_copied_bytes",
+      "score_offsets_scanned",
+      "bgr_conversions",
+      "bgr_converted_bytes",
+      "bgr_retained_bytes",
+      "bgr_retained_peak_bytes",
+      "bgr_retained_after_drop_bytes",
+      "bgr_evicted_bytes",
+      "bgr_evicted_peak_bytes",
+      "bgr_evicted_after_drop_bytes",
+      "mapping_copies",
+      "mapping_copied_bytes",
+      "logical_mapped_bytes",
+      "backend_find_calls",
+      "backend_find_failures",
+      "peak_active_finds",
+      "peak_active_finds_scope",
+      "final_owner_correct"
+    ],
+    "cleanup_ok": true,
+    "data_inspector_event": "baseline build completed successfully; post-native field-path inspection retained separately without rerun"
+  },
+  "roles": {
+    "baseline": {
+      "source_revision": "8cc67f5a20a1e4726913cf4da6963b5d658c9e84",
+      "source_tree": "ffb72950ce4d63d82d453aa129f6148672cf6e71",
+      "binary_sha256": "d21c5dcf79e66c939d206756a72f24b229b965e0fe7023c46607e27674b78bc9",
+      "binary_bytes": 2647488,
+      "build_argv": [
+        "/Users/pashifika/.cargo/bin/cargo",
+        "+1.97.1",
+        "bench",
+        "--locked",
+        "--offline",
+        "--package",
+        "mado-pilot",
+        "--features",
+        "template-matching-timing",
+        "--bench",
+        "template-matching-efficiency",
+        "--config",
+        "profile.bench.build-override.strip=\"none\"",
+        "--target-dir",
+        "/Users/pashifika/Work/pashifika.github/game-tools/mado-pilot/target/p050-focused-normal-baseline-v1",
+        "--message-format=json",
+        "--no-run"
+      ],
+      "metadata_sha256": "95497bbe96304680c5507f99d8f51888069cd45700371f4f316511193872b616",
+      "source_attestation": "exact exported Git commit/tree bytes; operator-supplied build command; not a review, reproducible build or loaded-image closure proof"
+    },
+    "current": {
+      "source_revision": "36f0cafb02b5e350ea77a6570e68171d44674655",
+      "source_tree": "d3bd22f576b1f744ab1f1e90df7104a01300291d",
+      "binary_sha256": "5368943927308211b956f191ff1e434d8db43c3db30363f86202144ff8c13065",
+      "binary_bytes": 2712016,
+      "build_argv": [
+        "/Users/pashifika/.cargo/bin/cargo",
+        "+1.97.1",
+        "bench",
+        "--locked",
+        "--offline",
+        "--package",
+        "mado-pilot",
+        "--features",
+        "template-matching-timing",
+        "--bench",
+        "template-matching-efficiency",
+        "--config",
+        "profile.bench.build-override.strip=\"none\"",
+        "--target-dir",
+        "/Users/pashifika/Work/pashifika.github/game-tools/mado-pilot/target/p050-focused-normal-current-v1",
+        "--message-format=json",
+        "--no-run"
+      ],
+      "metadata_sha256": "c8c460d8413dbdd3a77f258b7799a20c63fe72478373d470f9f0fc90445a436e",
+      "source_attestation": "exact exported Git commit/tree bytes; operator-supplied build command; not a review, reproducible build or loaded-image closure proof"
+    },
+    "candidate": {
+      "source_revision": "c3050a805280c4315fba854d6984a2645b0ca0ba",
+      "source_tree": "044e61086466448e28dc49a1a40975f5c401f493",
+      "binary_sha256": "acd6364f0d65aa85cf8fb017e0740e773d81686ab20ae54b0c2565ace086afca",
+      "binary_bytes": 2713232,
+      "build_argv": [
+        "/Users/pashifika/.cargo/bin/cargo",
+        "+1.97.1",
+        "bench",
+        "--locked",
+        "--offline",
+        "--package",
+        "mado-pilot",
+        "--features",
+        "template-matching-timing",
+        "--bench",
+        "template-matching-efficiency",
+        "--config",
+        "profile.bench.build-override.strip=\"none\"",
+        "--target-dir",
+        "/Users/pashifika/Work/pashifika.github/game-tools/mado-pilot/target/p050-focused-normal-candidate-v1",
+        "--message-format=json",
+        "--no-run"
+      ],
+      "metadata_sha256": "c55852fa33be0c500a54383aee70099ddeee6a4f350a7b679f71a99796c91d4b",
+      "source_attestation": "operator-supplied build command; source commit/tree and dirty status observed, not a reproducible build proof"
+    }
+  },
+  "pairs": [
+    {
+      "family": "selector",
+      "workload": "selection-k16-dense1080p-keepall",
+      "before": {
+        "role": "current",
+        "workload": "selection-k16-dense1080p-keepall",
+        "source_revision": "36f0cafb02b5e350ea77a6570e68171d44674655",
+        "binary_sha256": "5368943927308211b956f191ff1e434d8db43c3db30363f86202144ff8c13065",
+        "metadata_sha256": "c8c460d8413dbdd3a77f258b7799a20c63fe72478373d470f9f0fc90445a436e",
+        "raw_sha256": "36baff0c91cd7b5c8af97fbc7e7773643bceecff5f89adffe0919fe168e7322a",
+        "oracle_failures": 0,
+        "cleanup_ok": true,
+        "normal_null_fields": 26,
+        "inspected_monotonic": 385033.220135208,
+        "row_started_unix_ns": 1793018032891579000,
+        "producer_output": "apple-current-selection-k16-dense1080p-keepall.json",
+        "fixture_sha256": "0128b4b4e1e9dce98a69ef615972afd9211c9e85db221c4bdc96da6d9fbd9fa6",
+        "samples": [
+          {
+            "correct": true,
+            "cpu_ns": 135000,
+            "elapsed_ns": 134875,
+            "error": null
+          },
+          {
+            "correct": true,
+            "cpu_ns": 127000,
+            "elapsed_ns": 127083,
+            "error": null
+          },
+          {
+            "correct": true,
+            "cpu_ns": 129000,
+            "elapsed_ns": 129125,
+            "error": null
+          }
+        ],
+        "warmup_samples": [
+          {
+            "correct": true,
+            "cpu_ns": 152000,
+            "elapsed_ns": 149708,
+            "error": null
+          }
+        ],
+        "metrics": {
+          "allocations": null,
+          "backend_find_calls": null,
+          "backend_find_failures": null,
+          "bgr_conversions": null,
+          "bgr_converted_bytes": null,
+          "bgr_evicted_after_drop_bytes": null,
+          "bgr_evicted_bytes": null,
+          "bgr_evicted_peak_bytes": null,
+          "bgr_retained_after_drop_bytes": null,
+          "bgr_retained_bytes": null,
+          "bgr_retained_peak_bytes": null,
+          "cpu_ns": 391000,
+          "cpu_reason": null,
+          "final_owner_correct": null,
+          "footprint_after_bytes": 20169208,
+          "footprint_reason": null,
+          "heap_after_bytes": null,
+          "heap_after_drop_bytes": null,
+          "heap_before_bytes": null,
+          "heap_steady_after_bytes": null,
+          "heap_steady_before_bytes": null,
+          "iterations": 4,
+          "logical_mapped_bytes": null,
+          "mapping_copied_bytes": null,
+          "mapping_copies": null,
+          "mapping_owner_live_before_drop": false,
+          "native_allocation_scope": "process RSS only; no cache-payload gauges or native allocation tracking",
+          "native_resource_reason": null,
+          "peak_active_finds": null,
+          "peak_active_finds_scope": null,
+          "peak_heap_bytes": null,
+          "peak_heap_scope": null,
+          "peak_rss_bytes": 29163520,
+          "peak_rss_scope": "process-high-water",
+          "private_after_bytes": null,
+          "private_reason": "not exposed by this target resource helper",
+          "rss_after_bytes": 29163520,
+          "rss_after_drop_bytes": 29163520,
+          "rss_before_bytes": 12271616,
+          "rss_steady_after_bytes": 29163520,
+          "rss_steady_before_bytes": 29081600,
+          "score_copied_bytes": null,
+          "score_offsets_scanned": null
+        },
+        "retained_loop_cpu": {
+          "cpu_ns": 824000,
+          "end_ns": 68174000,
+          "protocol": "mado-component-retained-loop-cpu-v1",
+          "reason": null,
+          "sample_count": 3,
+          "scope": "current-process-retained-loop-including-preparation-oracles-and-storage",
+          "source": "getrusage-RUSAGE_SELF",
+          "source_unit_ns": 1000,
+          "start_ns": 67350000
+        },
+        "native_threads": {
+          "after": {
+            "framework": "tbb",
+            "reason": null,
+            "threads": 10
+          },
+          "before": {
+            "framework": "tbb",
+            "reason": null,
+            "threads": 10
+          },
+          "changed": false,
+          "method": "opencv-runtime-backend-and-thread-setting-v1"
+        },
+        "native_cpu": {
+          "accounting_resolution_seconds": null,
+          "final": true,
+          "reason": "descendant_rollup_unproven",
+          "scope": "root-and-native-descendant-rollup",
+          "source": "posix-wait4",
+          "source_unit_seconds": 1e-06,
+          "status": "partial",
+          "system_seconds": 0.013392,
+          "user_seconds": 0.308367
+        },
+        "process_accounting": null
+      },
+      "after": {
+        "role": "candidate",
+        "workload": "selection-k16-dense1080p-keepall",
+        "source_revision": "c3050a805280c4315fba854d6984a2645b0ca0ba",
+        "binary_sha256": "acd6364f0d65aa85cf8fb017e0740e773d81686ab20ae54b0c2565ace086afca",
+        "metadata_sha256": "c55852fa33be0c500a54383aee70099ddeee6a4f350a7b679f71a99796c91d4b",
+        "raw_sha256": "afad44dfd350e3e8f0f08bd0185a652fab9d910442e773646c712325746470f7",
+        "oracle_failures": 0,
+        "cleanup_ok": true,
+        "normal_null_fields": 26,
+        "inspected_monotonic": 385042.033628208,
+        "row_started_unix_ns": 1793018041731104000,
+        "producer_output": "apple-candidate-selection-k16-dense1080p-keepall.json",
+        "fixture_sha256": "0128b4b4e1e9dce98a69ef615972afd9211c9e85db221c4bdc96da6d9fbd9fa6",
+        "samples": [
+          {
+            "correct": true,
+            "cpu_ns": 131000,
+            "elapsed_ns": 129875,
+            "error": null
+          },
+          {
+            "correct": true,
+            "cpu_ns": 125000,
+            "elapsed_ns": 124583,
+            "error": null
+          },
+          {
+            "correct": true,
+            "cpu_ns": 124000,
+            "elapsed_ns": 123542,
+            "error": null
+          }
+        ],
+        "warmup_samples": [
+          {
+            "correct": true,
+            "cpu_ns": 136000,
+            "elapsed_ns": 134083,
+            "error": null
+          }
+        ],
+        "metrics": {
+          "allocations": null,
+          "backend_find_calls": null,
+          "backend_find_failures": null,
+          "bgr_conversions": null,
+          "bgr_converted_bytes": null,
+          "bgr_evicted_after_drop_bytes": null,
+          "bgr_evicted_bytes": null,
+          "bgr_evicted_peak_bytes": null,
+          "bgr_retained_after_drop_bytes": null,
+          "bgr_retained_bytes": null,
+          "bgr_retained_peak_bytes": null,
+          "cpu_ns": 380000,
+          "cpu_reason": null,
+          "final_owner_correct": null,
+          "footprint_after_bytes": 20054520,
+          "footprint_reason": null,
+          "heap_after_bytes": null,
+          "heap_after_drop_bytes": null,
+          "heap_before_bytes": null,
+          "heap_steady_after_bytes": null,
+          "heap_steady_before_bytes": null,
+          "iterations": 4,
+          "logical_mapped_bytes": null,
+          "mapping_copied_bytes": null,
+          "mapping_copies": null,
+          "mapping_owner_live_before_drop": false,
+          "native_allocation_scope": "process RSS only; no cache-payload gauges or native allocation tracking",
+          "native_resource_reason": null,
+          "peak_active_finds": null,
+          "peak_active_finds_scope": null,
+          "peak_heap_bytes": null,
+          "peak_heap_scope": null,
+          "peak_rss_bytes": 29048832,
+          "peak_rss_scope": "process-high-water",
+          "private_after_bytes": null,
+          "private_reason": "not exposed by this target resource helper",
+          "rss_after_bytes": 29048832,
+          "rss_after_drop_bytes": 29048832,
+          "rss_before_bytes": 12271616,
+          "rss_steady_after_bytes": 29048832,
+          "rss_steady_before_bytes": 29032448,
+          "score_copied_bytes": null,
+          "score_offsets_scanned": null
+        },
+        "retained_loop_cpu": {
+          "cpu_ns": 815000,
+          "end_ns": 67729000,
+          "protocol": "mado-component-retained-loop-cpu-v1",
+          "reason": null,
+          "sample_count": 3,
+          "scope": "current-process-retained-loop-including-preparation-oracles-and-storage",
+          "source": "getrusage-RUSAGE_SELF",
+          "source_unit_ns": 1000,
+          "start_ns": 66914000
+        },
+        "native_threads": {
+          "after": {
+            "framework": "tbb",
+            "reason": null,
+            "threads": 10
+          },
+          "before": {
+            "framework": "tbb",
+            "reason": null,
+            "threads": 10
+          },
+          "changed": false,
+          "method": "opencv-runtime-backend-and-thread-setting-v1"
+        },
+        "native_cpu": {
+          "accounting_resolution_seconds": null,
+          "final": true,
+          "reason": "descendant_rollup_unproven",
+          "scope": "root-and-native-descendant-rollup",
+          "source": "posix-wait4",
+          "source_unit_seconds": 1e-06,
+          "status": "partial",
+          "system_seconds": 0.012912999999999999,
+          "user_seconds": 0.308299
+        },
+        "process_accounting": null
+      }
+    },
+    {
+      "family": "preparation",
+      "workload": "batch8-cold-roi320x180",
+      "before": {
+        "role": "baseline",
+        "workload": "batch8-cold-roi320x180",
+        "source_revision": "8cc67f5a20a1e4726913cf4da6963b5d658c9e84",
+        "binary_sha256": "d21c5dcf79e66c939d206756a72f24b229b965e0fe7023c46607e27674b78bc9",
+        "metadata_sha256": "95497bbe96304680c5507f99d8f51888069cd45700371f4f316511193872b616",
+        "raw_sha256": "3a8498b849cd5b64c7c0cd65dca560da6b845677fce7d452d261e5bdf44685d6",
+        "oracle_failures": 0,
+        "cleanup_ok": true,
+        "normal_null_fields": 26,
+        "inspected_monotonic": 385047.062273541,
+        "row_started_unix_ns": 1793018046653232000,
+        "producer_output": "apple-baseline-batch8-cold-roi320x180.json",
+        "fixture_sha256": "0128b4b4e1e9dce98a69ef615972afd9211c9e85db221c4bdc96da6d9fbd9fa6",
+        "samples": [
+          {
+            "correct": true,
+            "cpu_ns": 154459000,
+            "elapsed_ns": 28826792,
+            "error": null
+          },
+          {
+            "correct": true,
+            "cpu_ns": 155385000,
+            "elapsed_ns": 28781041,
+            "error": null
+          },
+          {
+            "correct": true,
+            "cpu_ns": 152429000,
+            "elapsed_ns": 28897875,
+            "error": null
+          }
+        ],
+        "warmup_samples": [
+          {
+            "correct": true,
+            "cpu_ns": 162089000,
+            "elapsed_ns": 29592833,
+            "error": null
+          }
+        ],
+        "metrics": {
+          "allocations": null,
+          "backend_find_calls": null,
+          "backend_find_failures": null,
+          "bgr_conversions": null,
+          "bgr_converted_bytes": null,
+          "bgr_evicted_after_drop_bytes": null,
+          "bgr_evicted_bytes": null,
+          "bgr_evicted_peak_bytes": null,
+          "bgr_retained_after_drop_bytes": null,
+          "bgr_retained_bytes": null,
+          "bgr_retained_peak_bytes": null,
+          "cpu_ns": 462273000,
+          "cpu_reason": null,
+          "final_owner_correct": null,
+          "footprint_after_bytes": 36995648,
+          "footprint_reason": null,
+          "heap_after_bytes": null,
+          "heap_after_drop_bytes": null,
+          "heap_before_bytes": null,
+          "heap_steady_after_bytes": null,
+          "heap_steady_before_bytes": null,
+          "iterations": 4,
+          "logical_mapped_bytes": null,
+          "mapping_copied_bytes": null,
+          "mapping_copies": null,
+          "mapping_owner_live_before_drop": false,
+          "native_allocation_scope": "process RSS only; no cache-payload gauges or native allocation tracking",
+          "native_resource_reason": null,
+          "peak_active_finds": null,
+          "peak_active_finds_scope": null,
+          "peak_heap_bytes": null,
+          "peak_heap_scope": null,
+          "peak_rss_bytes": 47316992,
+          "peak_rss_scope": "process-high-water",
+          "private_after_bytes": null,
+          "private_reason": "not exposed by this target resource helper",
+          "rss_after_bytes": 47300608,
+          "rss_after_drop_bytes": 47316992,
+          "rss_before_bytes": 12271616,
+          "rss_steady_after_bytes": 47300608,
+          "rss_steady_before_bytes": 43778048,
+          "score_copied_bytes": null,
+          "score_offsets_scanned": null
+        },
+        "retained_loop_cpu": {
+          "cpu_ns": 463647000,
+          "end_ns": 652565000,
+          "protocol": "mado-component-retained-loop-cpu-v1",
+          "reason": null,
+          "sample_count": 3,
+          "scope": "current-process-retained-loop-including-preparation-oracles-and-storage",
+          "source": "getrusage-RUSAGE_SELF",
+          "source_unit_ns": 1000,
+          "start_ns": 188918000
+        },
+        "native_threads": {
+          "after": {
+            "framework": "tbb",
+            "reason": null,
+            "threads": 10
+          },
+          "before": {
+            "framework": "tbb",
+            "reason": null,
+            "threads": 10
+          },
+          "changed": false,
+          "method": "opencv-runtime-backend-and-thread-setting-v1"
+        },
+        "native_cpu": {
+          "accounting_resolution_seconds": null,
+          "final": true,
+          "reason": "descendant_rollup_unproven",
+          "scope": "root-and-native-descendant-rollup",
+          "source": "posix-wait4",
+          "source_unit_seconds": 1e-06,
+          "status": "partial",
+          "system_seconds": 0.34637599999999996,
+          "user_seconds": 0.559543
+        },
+        "process_accounting": null
+      },
+      "after": {
+        "role": "current",
+        "workload": "batch8-cold-roi320x180",
+        "source_revision": "36f0cafb02b5e350ea77a6570e68171d44674655",
+        "binary_sha256": "5368943927308211b956f191ff1e434d8db43c3db30363f86202144ff8c13065",
+        "metadata_sha256": "c8c460d8413dbdd3a77f258b7799a20c63fe72478373d470f9f0fc90445a436e",
+        "raw_sha256": "75437c2ef8bbec189cd36bd9aedaa807943451ba3082945104e9dbbb85127646",
+        "oracle_failures": 0,
+        "cleanup_ok": true,
+        "normal_null_fields": 26,
+        "inspected_monotonic": 385061.138572166,
+        "row_started_unix_ns": 1793018060724915000,
+        "producer_output": "apple-current-batch8-cold-roi320x180.json",
+        "fixture_sha256": "0128b4b4e1e9dce98a69ef615972afd9211c9e85db221c4bdc96da6d9fbd9fa6",
+        "samples": [
+          {
+            "correct": true,
+            "cpu_ns": 161663000,
+            "elapsed_ns": 28424708,
+            "error": null
+          },
+          {
+            "correct": true,
+            "cpu_ns": 147917000,
+            "elapsed_ns": 28519250,
+            "error": null
+          },
+          {
+            "correct": true,
+            "cpu_ns": 161595000,
+            "elapsed_ns": 28349916,
+            "error": null
+          }
+        ],
+        "warmup_samples": [
+          {
+            "correct": true,
+            "cpu_ns": 156834000,
+            "elapsed_ns": 29133041,
+            "error": null
+          }
+        ],
+        "metrics": {
+          "allocations": null,
+          "backend_find_calls": null,
+          "backend_find_failures": null,
+          "bgr_conversions": null,
+          "bgr_converted_bytes": null,
+          "bgr_evicted_after_drop_bytes": null,
+          "bgr_evicted_bytes": null,
+          "bgr_evicted_peak_bytes": null,
+          "bgr_retained_after_drop_bytes": null,
+          "bgr_retained_bytes": null,
+          "bgr_retained_peak_bytes": null,
+          "cpu_ns": 471175000,
+          "cpu_reason": null,
+          "final_owner_correct": null,
+          "footprint_after_bytes": 36815400,
+          "footprint_reason": null,
+          "heap_after_bytes": null,
+          "heap_after_drop_bytes": null,
+          "heap_before_bytes": null,
+          "heap_steady_after_bytes": null,
+          "heap_steady_before_bytes": null,
+          "iterations": 4,
+          "logical_mapped_bytes": null,
+          "mapping_copied_bytes": null,
+          "mapping_copies": null,
+          "mapping_owner_live_before_drop": false,
+          "native_allocation_scope": "process RSS only; no cache-payload gauges or native allocation tracking",
+          "native_resource_reason": null,
+          "peak_active_finds": null,
+          "peak_active_finds_scope": null,
+          "peak_heap_bytes": null,
+          "peak_heap_scope": null,
+          "peak_rss_bytes": 47185920,
+          "peak_rss_scope": "process-high-water",
+          "private_after_bytes": null,
+          "private_reason": "not exposed by this target resource helper",
+          "rss_after_bytes": 47169536,
+          "rss_after_drop_bytes": 47185920,
+          "rss_before_bytes": 12271616,
+          "rss_steady_after_bytes": 47169536,
+          "rss_steady_before_bytes": 46645248,
+          "score_copied_bytes": null,
+          "score_offsets_scanned": null
+        },
+        "retained_loop_cpu": {
+          "cpu_ns": 472592000,
+          "end_ns": 654814000,
+          "protocol": "mado-component-retained-loop-cpu-v1",
+          "reason": null,
+          "sample_count": 3,
+          "scope": "current-process-retained-loop-including-preparation-oracles-and-storage",
+          "source": "getrusage-RUSAGE_SELF",
+          "source_unit_ns": 1000,
+          "start_ns": 182222000
+        },
+        "native_threads": {
+          "after": {
+            "framework": "tbb",
+            "reason": null,
+            "threads": 10
+          },
+          "before": {
+            "framework": "tbb",
+            "reason": null,
+            "threads": 10
+          },
+          "changed": false,
+          "method": "opencv-runtime-backend-and-thread-setting-v1"
+        },
+        "native_cpu": {
+          "accounting_resolution_seconds": null,
+          "final": true,
+          "reason": "descendant_rollup_unproven",
+          "scope": "root-and-native-descendant-rollup",
+          "source": "posix-wait4",
+          "source_unit_seconds": 1e-06,
+          "status": "partial",
+          "system_seconds": 0.352418,
+          "user_seconds": 0.561839
+        },
+        "process_accounting": null
+      }
+    }
+  ],
+  "private_evidence_locator": ".rasen/changes/v0-5-0-pre-release-performance-measurement-and-adjustment/ephemera/focused-normal-v1"
+}

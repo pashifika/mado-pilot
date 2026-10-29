@@ -10,6 +10,7 @@
 #include <string.h>
 
 #include <madopilot/madopilot.h>
+#include "windows-utf8-entry.h"
 
 static madopilot_str_t borrow(const char* text)
 {
@@ -107,25 +108,10 @@ static madopilot_ocr_zone_t zone(int32_t left, int32_t top,
     return value;
 }
 
-int main(int argc, char** argv)
+static int run_profile(const char* model_root, const char* runtime_path)
 {
-    const char* model_root = NULL;
-    const char* runtime_path = NULL;
     char* controlled_model_root = NULL;
     char* controlled_runtime_path = NULL;
-    for (int index = 1; index + 1 < argc; index += 2) {
-        if (strcmp(argv[index], "--model-root") == 0) {
-            model_root = argv[index + 1];
-        } else if (strcmp(argv[index], "--runtime") == 0) {
-            runtime_path = argv[index + 1];
-        }
-    }
-    if (model_root == NULL) model_root = getenv("MADO_PILOT_G004_MODEL_ROOT");
-    if (runtime_path == NULL) runtime_path = getenv("MADO_PILOT_ONNX_RUNTIME");
-    if (model_root == NULL || runtime_path == NULL) {
-        fprintf(stderr, "profile OCR prerequisites are not configured; skipping\n");
-        return 77;
-    }
     controlled_model_root = controlled_path(model_root);
     controlled_runtime_path = controlled_path(runtime_path);
     if (controlled_model_root == NULL || controlled_runtime_path == NULL) {
@@ -300,4 +286,58 @@ cleanup:
     free(controlled_model_root);
     free(controlled_runtime_path);
     return success ? 0 : 1;
+}
+
+int main(int argc, char** argv)
+{
+    const char* model_root = NULL;
+    const char* runtime_path = NULL;
+#ifdef _WIN32
+    char* environment_model = NULL;
+    char* environment_runtime = NULL;
+#endif
+    int result = 1;
+    for (int index = 1; index + 1 < argc; index += 2) {
+        if (strcmp(argv[index], "--model-root") == 0) {
+            model_root = argv[index + 1];
+        } else if (strcmp(argv[index], "--runtime") == 0) {
+            runtime_path = argv[index + 1];
+        }
+    }
+#ifdef _WIN32
+    if (model_root == NULL) {
+        const wchar_t* wide = _wgetenv(L"MADO_PILOT_G004_MODEL_ROOT");
+        if (wide != NULL) {
+            environment_model = sample_utf8(wide);
+            if (environment_model == NULL) goto conversion_failed;
+            model_root = environment_model;
+        }
+    }
+    if (runtime_path == NULL) {
+        const wchar_t* wide = _wgetenv(L"MADO_PILOT_ONNX_RUNTIME");
+        if (wide != NULL) {
+            environment_runtime = sample_utf8(wide);
+            if (environment_runtime == NULL) goto conversion_failed;
+            runtime_path = environment_runtime;
+        }
+    }
+#else
+    if (model_root == NULL) model_root = getenv("MADO_PILOT_G004_MODEL_ROOT");
+    if (runtime_path == NULL) runtime_path = getenv("MADO_PILOT_ONNX_RUNTIME");
+#endif
+    if (model_root == NULL || runtime_path == NULL) {
+        fprintf(stderr, "profile OCR prerequisites are not configured; skipping\n");
+        result = 77;
+    } else {
+        result = run_profile(model_root, runtime_path);
+    }
+#ifdef _WIN32
+    goto cleanup;
+conversion_failed:
+    fputs("could not convert Windows OCR environment to UTF-8\n", stderr);
+cleanup:
+    free(environment_model);
+    free(environment_runtime);
+#endif
+    return result;
 }

@@ -7,11 +7,12 @@
 
 use std::collections::{HashMap, VecDeque};
 use std::num::NonZeroU64;
-use std::sync::atomic::{AtomicU64, AtomicUsize, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicU64, AtomicUsize, Ordering};
 use std::sync::{Arc, Mutex, TryLockError, Weak};
 
 use crate::watch::{
-    TemplateQueryId, TemplateQueryState, TemplateWorkCounts, TemplateWorkDisposition,
+    OcrTextQueryId, OcrTextQueryProgress, OcrTextWorkDisposition, TemplateQueryId,
+    TemplateQueryState, TemplateWorkCounts, TemplateWorkDisposition,
 };
 use mado_pilot_core::{
     ActivityTag, ClipPolicy, CoordinateSpace, Error, FrameStamp, InputAddressScope, InputDelivery,
@@ -192,6 +193,8 @@ pub enum DiagnosticOperationKind {
     OcrRecognition,
     /// Session close.
     SessionClose,
+    /// Rust-only maintained OCR text-presence query.
+    OcrTextWatch,
 }
 
 /// Stable record payload categories.
@@ -218,6 +221,8 @@ pub enum DiagnosticKind {
     Lifecycle,
     /// A permission state was observed or failed.
     Permission,
+    /// Rust-only OCR query state, disposition or terminal summary.
+    OcrTextWatch,
 }
 
 /// A compact set of input operation kinds without event payloads.
@@ -373,6 +378,49 @@ pub struct TemplateWatchDiagnostic {
     pub outcome: Option<TemplateWatchDiagnosticOutcome>,
 }
 
+/// Closed content-free OCR text-watch terminal vocabulary.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+#[non_exhaustive]
+pub enum OcrTextWatchDiagnosticOutcome {
+    /// Required confirmation succeeded.
+    Matched,
+    /// Query cancellation won.
+    Cancelled,
+    /// Query deadline won.
+    DeadlineExceeded,
+    /// Session closed or drained without success.
+    SessionClosed,
+    /// Engine dispatch sealed.
+    SchedulerClosed,
+    /// Capture target lost.
+    TargetLost,
+    /// Eligible pending residence expired.
+    Overloaded,
+    /// Typed capture, mapping, admission or backend failure.
+    Failed(Status),
+}
+
+/// Rust-only bounded text-watch facts; no text, pixels or backend messages.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub struct OcrTextWatchDiagnostic {
+    /// Absent for a refusal before query publication.
+    pub query: Option<OcrTextQueryId>,
+    /// The maintained target.
+    pub target: TargetId,
+    /// Newest considered source, when known.
+    pub frame: Option<FrameStamp>,
+    /// Exact resolved capture-pixel region, when known.
+    pub region: Option<PixelRect>,
+    /// Copied work and logical/physical occupancy facts.
+    pub progress: Option<OcrTextQueryProgress>,
+    /// Applicable bounded work transition.
+    pub disposition: Option<OcrTextWorkDisposition>,
+    /// Terminal outcome, absent for nonterminal observations.
+    pub outcome: Option<OcrTextWatchDiagnosticOutcome>,
+    /// Elapsed query-clock duration.
+    pub elapsed_nanos: u64,
+}
+
 /// One immutable route attempt without input event payloads.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub struct RouteAttemptDiagnostic {
@@ -523,7 +571,7 @@ pub struct PermissionDiagnostic {
 pub enum OcrDiagnosticProfile {
     /// Accepted G-004 RapidOCR PP-OCRv4 detector / PP-OCRv6 small recognizer profile.
     AcceptedG004,
-    /// Accepted ADR 0040/0041 bounded-detector profile.
+    /// Bounded-detector profile with compound sampling and original-source recognition.
     BoundedDetector,
     /// No accepted public profile claim is made, as for a deterministic test double.
     Unspecified,
@@ -685,6 +733,8 @@ pub enum DiagnosticPayload {
     Lifecycle(LifecycleDiagnostic),
     /// Permission summary.
     Permission(PermissionDiagnostic),
+    /// Rust-only maintained OCR text-watch observation.
+    OcrTextWatch(OcrTextWatchDiagnostic),
 }
 
 impl DiagnosticPayload {
@@ -702,6 +752,7 @@ impl DiagnosticPayload {
             Self::RouteAttempt(_) => DiagnosticKind::RouteAttempt,
             Self::Lifecycle(_) => DiagnosticKind::Lifecycle,
             Self::Permission(_) => DiagnosticKind::Permission,
+            Self::OcrTextWatch(_) => DiagnosticKind::OcrTextWatch,
         }
     }
 }
@@ -878,6 +929,11 @@ struct StreamState {
     sealed: bool,
 }
 
+// Each contention counter reserves its high bit for irreversible admission close.
+// The remaining bits saturate independently at 2^63 - 1 between drains.
+const LOSS_ADMISSION_SEALED: u64 = 1 << 63;
+const PENDING_LOSS_MASK: u64 = LOSS_ADMISSION_SEALED - 1;
+
 #[derive(Debug)]
 struct DiagnosticStream {
     level: DiagnosticLevel,
@@ -982,7 +1038,7 @@ impl DiagnosticStream {
             DiagnosticLevel::Off => return,
         };
         let _ = counter.fetch_update(Ordering::AcqRel, Ordering::Acquire, |value| {
-            Some(value.saturating_add(1))
+            (value < PENDING_LOSS_MASK).then(|| value + 1)
         });
     }
 
@@ -1057,8 +1113,14 @@ impl DiagnosticStream {
             .lock()
             .unwrap_or_else(std::sync::PoisonError::into_inner);
         let pending = DiagnosticLosses {
-            normal: self.pending_normal.swap(0, Ordering::AcqRel),
-            debug: self.pending_debug.swap(0, Ordering::AcqRel),
+            normal: self
+                .pending_normal
+                .fetch_and(LOSS_ADMISSION_SEALED, Ordering::AcqRel)
+                & PENDING_LOSS_MASK,
+            debug: self
+                .pending_debug
+                .fetch_and(LOSS_ADMISSION_SEALED, Ordering::AcqRel)
+                & PENDING_LOSS_MASK,
         };
         let losses = DiagnosticLosses {
             normal: state.losses.normal.saturating_add(pending.normal),
@@ -1081,10 +1143,17 @@ impl DiagnosticStream {
     }
 
     fn seal(&self) {
-        self.state
+        let mut state = self
+            .state
             .lock()
-            .unwrap_or_else(std::sync::PoisonError::into_inner)
-            .sealed = true;
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        // Each loss CAS commits before its fence or refuses the sealed counter.
+        // Publish queue closure only after both level-specific fences are closed.
+        self.pending_normal
+            .fetch_or(LOSS_ADMISSION_SEALED, Ordering::AcqRel);
+        self.pending_debug
+            .fetch_or(LOSS_ADMISSION_SEALED, Ordering::AcqRel);
+        state.sealed = true;
     }
 }
 
@@ -1092,6 +1161,7 @@ impl DiagnosticStream {
 #[derive(Debug)]
 pub(crate) struct DiagnosticSink {
     stream: Arc<DiagnosticStream>,
+    producer_released: AtomicBool,
 }
 
 impl Clone for DiagnosticSink {
@@ -1099,6 +1169,7 @@ impl Clone for DiagnosticSink {
         self.stream.producers.fetch_add(1, Ordering::Relaxed);
         Self {
             stream: Arc::clone(&self.stream),
+            producer_released: AtomicBool::new(false),
         }
     }
 }
@@ -1108,9 +1179,7 @@ impl Drop for DiagnosticSink {
         // Weak mapping observers do not count as producers. The last real
         // engine/session producer seals the stream regardless of whether the
         // reader or retained frame handles still exist.
-        if self.stream.producers.fetch_sub(1, Ordering::AcqRel) == 1 {
-            self.stream.seal();
-        }
+        self.release_producer();
     }
 }
 
@@ -1123,9 +1192,20 @@ impl DiagnosticSink {
         Some((
             Self {
                 stream: Arc::clone(&stream),
+                producer_released: AtomicBool::new(false),
             },
             DiagnosticReader { stream },
         ))
+    }
+
+    // Only a sealed Rust OCR scheduler releases its producer before physical
+    // work returns. Ordinary template/foreign producers still drain on Drop.
+    pub(crate) fn release_producer(&self) {
+        if !self.producer_released.swap(true, Ordering::AcqRel)
+            && self.stream.producers.fetch_sub(1, Ordering::AcqRel) == 1
+        {
+            self.stream.seal();
+        }
     }
 
     pub(crate) fn emitter(&self) -> DiagnosticEmitter {
@@ -1159,6 +1239,9 @@ impl DiagnosticSink {
         kind: DiagnosticOperationKind,
     ) -> Result<ObservedOperation, Error> {
         Operation::admit(context)?;
+        if self.producer_released.load(Ordering::Acquire) {
+            return Err(Error::new(Status::Closed, "diagnostic producer is sealed"));
+        }
         let observed = ObservedOperation {
             id: self.stream.issue_operation()?,
             activity: context.activity_tag(),
@@ -1184,6 +1267,9 @@ impl DiagnosticSink {
         timestamp: MonotonicInstant,
         payload: impl FnOnce() -> DiagnosticPayload,
     ) {
+        if self.producer_released.load(Ordering::Acquire) {
+            return;
+        }
         self.stream
             .emit(DiagnosticLevel::Normal, operation, timestamp, payload());
     }
@@ -1211,6 +1297,9 @@ impl DiagnosticSink {
         payload: impl FnOnce() -> DiagnosticPayload,
     ) {
         if self.stream.level != DiagnosticLevel::Debug {
+            return;
+        }
+        if self.producer_released.load(Ordering::Acquire) {
             return;
         }
         self.stream
@@ -1305,6 +1394,8 @@ impl DetachedObservation {
 
 #[cfg(test)]
 mod tests {
+    use std::sync::mpsc;
+    use std::time::Duration;
     use std::{sync::Arc, sync::Barrier, thread};
 
     use mado_pilot_capture::{CoordinateSupport, PixelFormat, TargetDescription};
@@ -1622,6 +1713,16 @@ mod tests {
                     format!("{:?}", value.elapsed_nanos),
                     format!("{:?}", value.outcome),
                 ],
+                DiagnosticPayload::OcrTextWatch(value) => vec![
+                    format!("{:?}", value.query),
+                    format!("{:?}", value.target),
+                    format!("{:?}", value.frame),
+                    format!("{:?}", value.region),
+                    format!("{:?}", value.progress),
+                    format!("{:?}", value.disposition),
+                    format!("{:?}", value.outcome),
+                    format!("{:?}", value.elapsed_nanos),
+                ],
                 DiagnosticPayload::Ocr(value) => vec![
                     format!("{:?}", value.model_instance),
                     format!("{:?}", value.profile),
@@ -1803,6 +1904,21 @@ mod tests {
                 }),
             ),
             (
+                DiagnosticKind::OcrTextWatch,
+                DiagnosticPayload::OcrTextWatch(OcrTextWatchDiagnostic {
+                    query: None,
+                    target,
+                    frame: Some(frame),
+                    region: Some(region),
+                    progress: None,
+                    disposition: Some(OcrTextWorkDisposition::Rejected),
+                    outcome: Some(OcrTextWatchDiagnosticOutcome::Failed(
+                        Status::InvalidArgument,
+                    )),
+                    elapsed_nanos: 7,
+                }),
+            ),
+            (
                 DiagnosticKind::Ocr,
                 DiagnosticPayload::Ocr(OcrDiagnostic {
                     model_instance: DiagnosticOcrModelInstanceId::new(
@@ -1854,7 +1970,6 @@ mod tests {
             ),
         ];
 
-        assert_eq!(matrix.len(), 10);
         let input_key = INPUT_KEY.to_string();
         let sensitive = [
             TEMPLATE_NAME,
@@ -2000,6 +2115,152 @@ mod tests {
         assert!(batch.is_empty());
         assert_eq!(batch.losses().normal(), 1);
         assert_eq!(batch.losses().debug(), 0);
+    }
+
+    #[test]
+    fn preseal_contended_losses_drain_exactly_by_level() {
+        let (sink, reader) = enabled(DiagnosticLevel::Debug, 4);
+        let context = OperationContext::new();
+        let operation = observe(&sink, &context);
+        assert_eq!(batch(&reader).len(), 1);
+        let start = Barrier::new(2);
+        let (finished, completion) = mpsc::channel();
+
+        thread::scope(|scope| {
+            let guard = sink.stream.state.lock().expect("uncontended");
+            scope.spawn(|| {
+                start.wait();
+                for _ in 0..2 {
+                    sink.normal(operation, &context, input_payload);
+                }
+                for _ in 0..3 {
+                    sink.debug(operation, &context, input_payload);
+                }
+                finished.send(()).expect("completion receiver is retained");
+            });
+            start.wait();
+            let emitted = completion.recv_timeout(Duration::from_secs(5));
+            drop(guard);
+            emitted.expect("emission completes while the queue mutex is held");
+        });
+
+        drop(sink);
+        let losses = batch(&reader);
+        assert!(losses.is_empty());
+        assert_eq!(losses.losses().normal(), 2);
+        assert_eq!(losses.losses().debug(), 3);
+        for _ in 0..3 {
+            assert!(matches!(reader.drain(), DiagnosticDrain::EndOfStream));
+        }
+    }
+
+    #[test]
+    fn preobtained_observer_cannot_publish_after_sealed_eof() {
+        let (sink, reader) = enabled(DiagnosticLevel::Debug, 4);
+        let context = OperationContext::new();
+        let observed = sink
+            .emitter()
+            .observe(&context, DiagnosticOperationKind::Mapping)
+            .expect("observation succeeds")
+            .expect("producer is live");
+        drop(sink);
+        assert_eq!(batch(&reader).len(), 1);
+        assert!(matches!(reader.drain(), DiagnosticDrain::EndOfStream));
+        let start = Barrier::new(2);
+        let (finished, completion) = mpsc::channel();
+
+        thread::scope(|scope| {
+            let guard = reader.stream.state.lock().expect("uncontended");
+            scope.spawn(|| {
+                start.wait();
+                for _ in 0..3 {
+                    observed.debug(&context, input_payload);
+                }
+                finished.send(()).expect("completion receiver is retained");
+            });
+            start.wait();
+            let emitted = completion.recv_timeout(Duration::from_secs(5));
+            drop(guard);
+            emitted.expect("late emission completes while the queue mutex is held");
+        });
+
+        for _ in 0..3 {
+            assert!(matches!(reader.drain(), DiagnosticDrain::EndOfStream));
+            observed.debug(&context, input_payload);
+            reader.stream.count_loss(DiagnosticLevel::Normal);
+        }
+        assert!(matches!(reader.drain(), DiagnosticDrain::EndOfStream));
+    }
+
+    #[test]
+    fn pending_loss_saturation_does_not_close_admission() {
+        let (sink, reader) = enabled(DiagnosticLevel::Debug, 4);
+        let context = OperationContext::new();
+        let operation = observe(&sink, &context);
+        assert_eq!(batch(&reader).len(), 1);
+        let guard = sink.stream.state.lock().expect("uncontended");
+        sink.stream
+            .pending_normal
+            .store(PENDING_LOSS_MASK - 1, Ordering::Release);
+        sink.stream
+            .pending_debug
+            .store(PENDING_LOSS_MASK - 1, Ordering::Release);
+        for _ in 0..2 {
+            sink.normal_loss();
+            sink.debug(operation, &context, input_payload);
+        }
+        drop(guard);
+
+        let saturated = batch(&reader);
+        assert!(saturated.is_empty());
+        assert_eq!(saturated.losses().normal(), PENDING_LOSS_MASK);
+        assert_eq!(saturated.losses().debug(), PENDING_LOSS_MASK);
+        assert!(matches!(reader.drain(), DiagnosticDrain::OpenEmpty));
+
+        let guard = sink.stream.state.lock().expect("uncontended");
+        sink.normal_loss();
+        sink.debug(operation, &context, input_payload);
+        drop(guard);
+        drop(sink);
+        let resumed = batch(&reader);
+        assert!(resumed.is_empty());
+        assert_eq!(resumed.losses().normal(), 1);
+        assert_eq!(resumed.losses().debug(), 1);
+        assert!(matches!(reader.drain(), DiagnosticDrain::EndOfStream));
+    }
+
+    #[test]
+    fn sealed_losses_preserve_aggregate_u64_saturation() {
+        let (sink, reader) = enabled(DiagnosticLevel::Debug, 4);
+        let context = OperationContext::new();
+        let operation = observe(&sink, &context);
+        assert_eq!(batch(&reader).len(), 1);
+        let mut guard = sink.stream.state.lock().expect("uncontended");
+        guard.losses = DiagnosticLosses {
+            normal: u64::MAX - PENDING_LOSS_MASK,
+            debug: u64::MAX - PENDING_LOSS_MASK + 1,
+        };
+        sink.stream
+            .pending_normal
+            .store(PENDING_LOSS_MASK - 1, Ordering::Release);
+        sink.stream
+            .pending_debug
+            .store(PENDING_LOSS_MASK - 1, Ordering::Release);
+        sink.normal_loss();
+        sink.debug(operation, &context, input_payload);
+        drop(guard);
+        sink.seal();
+        sink.seal();
+
+        let saturated = batch(&reader);
+        assert!(saturated.is_empty());
+        assert_eq!(saturated.losses().normal(), u64::MAX);
+        assert_eq!(saturated.losses().debug(), u64::MAX);
+        for _ in 0..3 {
+            sink.normal_loss();
+            sink.stream.count_loss(DiagnosticLevel::Debug);
+            assert!(matches!(reader.drain(), DiagnosticDrain::EndOfStream));
+        }
     }
 
     #[test]

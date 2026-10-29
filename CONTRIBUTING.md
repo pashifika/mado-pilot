@@ -15,28 +15,89 @@ member has its own lockfile. Run verification with `--locked` so that a check
 fails instead of silently changing dependency resolution, and commit the lockfile
 change in the same pull request whenever a manifest requirement changes.
 
+The independent [`examples/rust-input-workflow`](examples/rust-input-workflow/)
+application is not a workspace member. It owns its lockfile, pinned toolchain
+and deployment configuration. The [external build procedure](docs/rust-input-workflow.md)
+copies it outside the checkout and verifies it from that directory; workspace
+checks alone do not cover this consumer.
+When product dependencies change, update this application's `Cargo.lock` as well
+as the workspace lockfile. The external verifier keeps `--locked` and never
+rewrites the consumer's dependency resolution.
+
 ## Native development prerequisites
 
-Building the workspace needs an **OpenCV 4 development installation** and a
-**libclang** the binding generator can load. `mado-pilot-backend-opencv` generates
-its bindings at build time, so this is a prerequisite for `cargo build`, not only
-for running the matching tests.
+Developers acquire and maintain the native prerequisites; this source-only
+project redistributes no native library or model. Building the workspace needs
+an **OpenCV 4 development installation**, a loadable **libclang**, and the native
+compiler/SDK. The binding generator needs them for `cargo build`, not only tests.
 
-| Host | Install |
+Acquire these separately before running setup:
+
+| Host | Developer-owned installation |
 |---|---|
-| macOS | `brew install opencv@4`. Xcode Command Line Tools supply libclang; no Homebrew LLVM and no `PKG_CONFIG_PATH` are needed. |
-| Windows | Extract the official OpenCV prebuilt release, install LLVM, and set the discovery variables. |
+| macOS | Xcode Command Line Tools, Homebrew, and `brew install opencv@4` (not `opencv`). The Command Line Tools supply libclang; Homebrew LLVM is not required. |
+| Windows | The official OpenCV 4.14.0 prebuilt archive, LLVM 22.1.8, and Visual Studio C++ build tools with a Windows SDK. Open an **x64 MSVC developer command prompt**. |
 
-[docs/third-party-dependencies.md](docs/third-party-dependencies.md) records the
-exact versions, the Windows environment variables, why the discovery is restricted
-rather than ambient, and what fails when the library is absent. This is a
-development prerequisite only: source releases bundle no native dependency and
-make no installable deployment-profile claim, which remains gate `G-007`.
+With **Python 3.13+**, explicitly configure and check the existing installations:
 
-The supported macOS native host is Apple Silicon macOS 26.6.2 (25G83), SDK
-26.5; the deployment floor remains macOS 26.5.2, and earlier versions are
-unsupported investigation targets rather than compatibility claims.
-Individual revision-bound feature gates can still be unexecuted on that host.
+```sh
+# macOS: discover opencv@4 and the selected Xcode Command Line Tools
+python3 tools/setup-native.py
+python3 tools/setup-native.py -- cargo build --locked
+```
+
+```bat
+rem Windows: OPENCV_ROOT contains build\include and build\x64\vc16\{lib,bin}
+python tools/setup-native.py --opencv-root C:\native\opencv --libclang-path "C:\Program Files\LLVM\bin"
+python tools/setup-native.py --opencv-root C:\native\opencv --libclang-path "C:\Program Files\LLVM\bin" -- cargo build --locked
+```
+
+The CLI is `tools/setup-native.py [--opencv-root DIR] [--libclang-path DIR]
+[--github-env FILE --github-path FILE] [-- COMMAND ARG...]`. Both root options
+are required on Windows; macOS permits explicit overrides. Without a command it
+validates and prints JSON describing the target, version, selected roots, and
+configured environment; it does not modify the calling shell. Command mode runs
+one executable with that child-scoped environment and propagates its failure.
+Use it around subsequent native build/check commands too. CI may explicitly pass
+both GitHub environment files; setup writes them only after validation succeeds.
+Windows exports include the selected MSVC include/library search paths, so later
+CI steps retain the compiler context without exporting the whole inherited environment.
+The script does not download, install, elevate, or edit global shell settings.
+
+macOS setup links only the workspace's required shared OpenCV modules: `core`,
+`imgproc`, and `imgcodecs`. It does not inherit every library from `opencv4.pc`.
+Windows retains the versioned `opencv_world` import library and DLL. Transitive
+shared dependencies remain required; link selection changes no Rust feature,
+dependency ownership or qualification limit.
+
+On macOS, command mode keeps inherited `DYLD_LIBRARY_PATH` entries after the
+selected OpenCV library directory. Relative entries resolve from the caller's
+working directory before any native probe, so probes and commands use the same
+locations. JSON reports only selected settings/additions.
+Explicit GitHub export refuses additional inherited loader entries before writing
+either file or running a command: the environment-file format cannot prepend them
+without disclosing them. Use `-- COMMAND` without export options in that case.
+
+Missing or incompatible OpenCV, libclang, or toolchain inputs may fail setup or
+the build. Removing an eagerly linked OpenCV library after setup invalidates the
+environment and can prevent process entry; no deferred-load bridge or static-link
+workaround is promised. Existing caller-selected ORT/model canonical-path,
+length/hash, and typed runtime-refusal checks remain mandatory, as do platform
+capability checks. Product runtime never acquires dependencies.
+See [the dependency policy](docs/third-party-dependencies.md#opencv) and
+[native development prerequisite ownership](docs/architecture.md#native-development-prerequisite-ownership).
+This is not an installable profile or a clean/minimum-host/signing qualification;
+`G-007` and `G-012` remain open.
+
+Historical Apple platform qualification uses macOS 26.6.2 (25G83), SDK 26.5.
+The operator-selected current CPU OCR verification host is Apple M1 Pro, 32 GiB,
+macOS 27.0.1 (26A434), limited to its exact frozen cohort in
+[`tools/ocr-models/host-policy-v1.json`](tools/ocr-models/host-policy-v1.json).
+Its cohort policy applies to complete OCR model evaluations published in the catalog
+and to explicit performance claims; an OS upgrade or an earlier debug run does
+not confer qualification. Capture/input
+verification on the upgraded host remains separate. The deployment floor is
+macOS 26.5.2; earlier versions remain unsupported investigation targets.
 `.cargo/config.toml` sets the final artifact deployment metadata to 26.5.2 and
 the native build repeats that floor. The macOS native shim
 `mado-pilot-platform-macos` compiles, links, and passes its tests with the **Xcode
@@ -48,10 +109,16 @@ the finished adapter what the `G-003` prototype had suggested on the same setup,
 the measurements are in [docs/evidence/g-003/](docs/evidence/g-003/README.md). Full
 Xcode is still not evaluated, so this remains a positive result about the smaller
 installation rather than a statement that the two are interchangeable. The shim is
-compiled with `-fobjc-arc-exceptions`, which
-[docs/adr/0012-macos-shim-language-and-containment.md](docs/adr/0012-macos-shim-language-and-containment.md)
-records as a correctness requirement rather than a style choice: without it, an
-exception unwinding out of a scope that holds a native object leaks it.
+compiled with `-fobjc-arc-exceptions`, a correctness requirement rather than a
+style choice: without it, an exception unwinding out of a scope that holds a
+native object leaks it. See
+[the macOS native boundary](docs/architecture.md#the-macos-native-boundary).
+
+The four frame-callback boundary cases feed owned CoreMedia samples to the real
+callback. They cover successful commit, native exceptions before/after delivery,
+and a Rust callback panic without opening a capture stream or probing permissions.
+They run without Screen Recording, including under ASAN; they do not qualify
+capture, target discovery, or native input.
 
 Running that adapter's capture scenarios needs one thing the build does not:
 **Screen Recording granted to the process running the tests**. MadoPilot never
@@ -199,10 +266,27 @@ retained original mapping changes. The accepted qualified-host record is
 [`docs/evidence/g-001/macos-owned-window-replacement.md`](docs/evidence/g-001/macos-owned-window-replacement.md).
 
 The minimum supported Windows boundary is Windows 11 25H2 build family 26200 on
-a currently serviced x64 desktop installation, accepted by
-[ADR 0019](docs/adr/0019-windows-qualified-system-and-controlled-availability.md).
+a currently serviced x64 desktop installation, fixed under gate
+[`G-001`](docs/validation-gates.md#g-001).
 Windows SDK 10.0.26100.0 is the supported build input, not the runtime floor.
 Earlier Windows versions are unsupported and unqualified.
+
+Windows 11 and later serviced desktop releases are the supported OS family,
+subject to that exact floor. Current CPU OCR verification uses `win-worker` on
+Windows 11 Pro 26H2 build 26300.9550. Earlier 25H2 platform qualifications remain
+revision-bound; no feature result is transferred to the upgraded host. A failed
+or unexecuted feature/workload row is not an OS non-support decision. See the
+[OS support policy](docs/architecture.md#os-support-policy).
+
+Complete OCR model evaluations published in the catalog, and explicit performance
+claims, use the frozen cohort, numerical policy and bounded campaign rules in
+[the OCR model catalog](docs/ocr-model-catalog.md#repeatable-rust-measurements),
+and the text-comparison rules in
+[rule interpretation](docs/ocr-model-catalog.md#rule-interpretation). Ordinary
+bounded investigation can run `tools/ocr-models/run.py run --diagnostic` without a
+qualifying host policy or budgets; it retains missing prerequisites and failures
+and is never a complete evaluation. Calibration never qualifies a model, and a
+reference campaign is not candidate execution, acquisition or qualification.
 
 The Windows capture adapter adds no prerequisite beyond that environment. The
 production adapter uses the target-gated `windows` crate for Windows Graphics
@@ -211,8 +295,8 @@ vcpkg, vendored sample, or redistributable. The preceding `G-002` prototype used
 the same native stack with the MSVC toolchain, a Windows SDK, and CMake; its
 review is in
 [docs/evidence/g-002/dependency-review.md](docs/evidence/g-002/dependency-review.md).
-[docs/adr/0013-windows-capture-frame-detachment.md](docs/adr/0013-windows-capture-frame-detachment.md)
-records the ownership decision that the production implementation follows.
+[Windows native capture ownership](docs/architecture.md#windows-native-capture-ownership)
+states the ownership contract the production implementation follows.
 
 The Windows input implementation adds no external prerequisite or production
 helper process. It uses target-gated Win32 bindings, does not elevate, and does
@@ -282,7 +366,8 @@ job's authority from another:
 
 1. Required Lane A owns deterministic replay/OpenCV scheduler and query
    semantics. Both hosted release-target jobs run
-   `cargo bench --locked --package mado-pilot --bench template-watch-query`.
+   `cargo bench --locked --package mado-pilot --bench template-watch-query` after
+   the setup CI export.
    This short plan enforces every semantic, accounting, mapped-byte, and bounded
    growth oracle, but does not apply target-specific statistical ceilings.
 2. Required Windows Lane B owns the compact WGC integration contract on the
@@ -295,17 +380,22 @@ job's authority from another:
    host, toolchain, and backend arguments. Add `--enforce-budgets` only in this
    lane. A Lane C result cannot replace or reinterpret Lane B.
 
-Each Lane B host builds once:
+Each Lane B host builds once through setup (macOS form below; use the Windows
+root arguments from [native setup](#native-development-prerequisites) on Windows):
 
 ```sh
-cargo bench --locked --package mado-pilot --bench native-template-watch \
-  --features native-template-watch-qualification --no-run
+python3 tools/setup-native.py -- cargo bench --locked --package mado-pilot --bench native-template-watch --features native-template-watch-qualification --no-run
 ```
 
 Record the exact source tree and executable/fixture digests, then invoke the
-emitted executable once with `--native-contract`. Exit `0` is `PASS`, `1` is
+emitted executable once through setup with `--native-contract`, for example
+`python3 tools/setup-native.py -- /absolute/emitted-executable --native-contract`
+(use the Windows setup form on Windows). The earlier build does not configure
+the parent shell for this process. Exit `0` is `PASS`, `1` is
 product `FAIL`, `2` is `INFRA`, and `3` is `UNSUPPORTED`; only `PASS` satisfies
 the required host job. Preserve the single JSON report even when it is red.
+These exit meanings apply to the emitted executable and its report; setup refusal
+is a prerequisite failure, not a Lane B product result.
 
 Hosted Windows and macOS jobs compile both native modes but do not execute Lane
 B: hosted macOS has no Screen Recording grant, and neither hosted runner owns
@@ -319,47 +409,86 @@ the native and fixture resource baseline. No interval includes fixture launch,
 and no hidden retry, sleep, deadline extension, or replacement sample is
 permitted.
 
+## Rust OCR text-query verification
+
+The [OCR text-query guide](docs/ocr-text-watch.md) separates controlled contracts,
+real CPU replay, target-owned native capture, descriptive workload observation and
+explicitly requested numerical enforcement.
+Use a fresh purpose-specific `CARGO_TARGET_DIR`; never reuse a hash-pinned
+qualification root for ordinary tests, examples or other feature/profile builds.
+
+Ordinary CI compiles the Rust examples and new owned native fixtures without
+launching them. It runs the model-free Unicode derivation and replay-input
+identity regressions. The existing backend test lane is unchanged; a new OCR
+watcher model/native cohort requires its own reviewed inputs and execution
+authority, not a prior template/foreign campaign grant.
+
+Focused deterministic checks are:
+
+```sh
+: "${CARGO_TARGET_DIR:?set a new deterministic target root}"
+: "${OCR_NORMALIZATION_PROOF_TARGET:?set a separate new proof target root}"
+: "${OCR_QUALIFICATION_CHECK_TARGET:?set a separate new qualification-feature check root}"
+cargo test --locked --package mado-pilot-ocr --lib
+cargo run --locked --release --package mado-pilot-ocr --example ocr-normalization-bound --target-dir "$OCR_NORMALIZATION_PROOF_TARGET"
+python3 tools/setup-native.py -- cargo test --locked --package mado-pilot-runtime --tests
+python3 tools/setup-native.py -- cargo test --locked --package mado-pilot --example ocr-text-watch
+python3 tools/setup-native.py -- cargo test --locked --package mado-pilot --features ocr-text-watch-qualification --example ocr-text-watch --target-dir "$OCR_QUALIFICATION_CHECK_TARGET"
+python3 -m unittest discover -s tools/ocr-text-watch/tests -v
+```
+
+Set `CARGO_TARGET_DIR` on the non-proof commands before running them. Windows
+uses the existing explicit `--opencv-root`/`--libclang-path` setup options.
+The Python tests use inert files and an owned Python child, not ONNX or capture.
+The example tests verify its independent Retina oracle and qualification-only
+stage-record rejection; neither test configuration executes the real-model main.
+
 ## Verification
 
 Run this sequence from the repository root before opening a pull request. The
 steps are ordered so that the cheapest structural failure is reported first, and
 each step returns a non-zero status with an actionable diagnostic when its policy
 is violated.
+The OpenCV-dependent commands below use macOS setup discovery. On Windows, replace
+`python3 tools/setup-native.py --` with
+`python tools/setup-native.py --opencv-root DIR --libclang-path DIR --` from an
+x64 MSVC developer prompt, using the installed roots. Do not run OpenCV-dependent
+Cargo commands unwrapped after check-only setup; it does not change the shell.
+This block uses POSIX shell syntax; use the Windows shell forms of step 6 below
+instead of its `RUSTDOCFLAGS=...` assignment. Steps 9 and 10 are macOS-only.
 
 ```sh
-# 1. Workspace architecture and committed v0.4.0 release scope
-cargo run --locked --package mado-pilot-dependency-check -- --release-scope
+# 1. Workspace architecture
+cargo run --locked --package mado-pilot-dependency-check
 
 # 2. Formatting
 cargo fmt --all --check
 
 # 3. Lints, with warnings promoted to failures
-cargo clippy --locked --workspace --all-targets -- -D warnings
+python3 tools/setup-native.py -- cargo clippy --locked --workspace --all-targets -- -D warnings
 
 # 4. Tests
-cargo test --locked --workspace --all-targets
+python3 tools/setup-native.py -- cargo test --locked --workspace --all-targets
 
 # 5. Documentation examples. `--all-targets` above deliberately excludes doctests,
 #    so they need their own run.
-cargo test --locked --workspace --doc
+python3 tools/setup-native.py -- cargo test --locked --workspace --doc
 
 # 6. Documentation, with rustdoc warnings promoted to failures
-RUSTDOCFLAGS="-D warnings" cargo doc --locked --workspace --no-deps
+RUSTDOCFLAGS="-D warnings" python3 tools/setup-native.py -- cargo doc --locked --workspace --no-deps
 
 # 7. Dependency licenses, advisories, sources, and duplicate versions
 cargo deny --locked check
 
-# 8. C/C++ ABI 1.5, provider feature compilation, ownership, frozen
-#    1.0/1.2/1.3/1.4 callers, current examples, and CMake consumers. The
-#    private-fixture run additionally compiles/runs local OCR fixtures; its
-#    constructor is absent from release builds and the public table.
-cargo build --locked --package mado-pilot-capi
-cargo check --locked --package mado-pilot-capi --all-targets --all-features
-cargo run --locked --package mado-pilot-capi --example c-abi-check -- --label "<host>"
-cargo run --locked --package mado-pilot --example ocr-fixture
-cargo build --locked --package mado-pilot-capi --features private-fixture
-cargo run --locked --package mado-pilot-capi --features private-fixture \
-  --example c-abi-check -- --label "<host>"
+# 8. Direct C/C++ samples, ABI 1.5, provider compilation, ownership, frozen
+#    1.0/1.2/1.3/1.4 callers, and CMake consumers (including C-only without CXX).
+#    Keep the private OCR fixture library separate from the ordinary artifact.
+python3 tools/setup-native.py -- cargo build --locked --package mado-pilot-capi
+python3 tools/setup-native.py -- cargo check --locked --package mado-pilot-capi --all-targets --all-features
+python3 tools/setup-native.py -- cargo run --locked --package mado-pilot-capi --example c-abi-check -- --label "<host>"
+python3 tools/setup-native.py -- cargo run --locked --package mado-pilot --example ocr-fixture
+python3 tools/setup-native.py -- cargo build --locked --package mado-pilot-capi --features private-fixture --target-dir target/c-abi-private-fixture
+python3 tools/setup-native.py -- cargo run --locked --package mado-pilot-capi --features private-fixture --target-dir target/c-abi-private-fixture --example c-abi-check -- --label "<host>"
 
 # 9. macOS host only: the macOS adapter as the *other* release target sees it.
 #    Step 3 above cannot reach that configuration here, because on this host the
@@ -368,11 +497,24 @@ cargo clippy --locked --target x86_64-pc-windows-msvc \
   -p mado-pilot-platform-macos --all-targets -- -D warnings
 
 # 10. macOS host only: the capture scenarios with the native shim instrumented.
-#     Run on the qualified 26.6.2 (25G83) Apple Silicon host. Needs Screen
-#     Recording granted, and fails rather than skips without it.
-MADO_PILOT_MACOS_ASAN=1 cargo test --locked \
+#     Run on the current 27.0.1 (26A434) Apple Silicon host.
+#     Needs Screen Recording granted, and fails rather than skips without it.
+MADO_PILOT_MACOS_ASAN=1 python3 tools/setup-native.py -- cargo test --locked \
   -p mado-pilot-platform-macos --target-dir target/asan --lib -- --test-threads=1
 ```
+
+Step 10's host and source-bound scope are stated under the
+[OS support policy](docs/architecture.md#os-support-policy). The ASan library
+suite does not replace native input, display-topology or watcher qualification.
+Its recorded run kept no passing-test output, so it establishes none of the
+branches that note an absent subject and pass: window-subject, multi-display,
+mixed-scale, seam, non-Retina and idle-producer (see the window gap below).
+Use a fresh target directory for a new proof; do not rebuild a hash-pinned one.
+
+The opt-in `--release-scope` check validates the immutable v0.4.0 source-release
+tree, not later development changes. Run it separately from a checkout of the
+source-release candidate. Its historical tree/blob identities remain frozen;
+never refresh them to make a feature branch pass.
 
 Both platform adapters are workspace members on both targets, so step 3 lints each of
 them with the *other* platform's code compiled away — which is a configuration neither
@@ -394,11 +536,14 @@ package's test binaries; with the variable unset the build is unchanged, and the
 is never part of a released artifact. The Xcode Command Line Tools ship it, so the step
 needs nothing installed that the shim did not already need.
 
-The same run is also the permissioned coordinate/selection acceptance gate. It
-compares frame-attached `screenRect` origin, logical size, and effective scale with
-the qualified host's display inventory and checks that a fresh discovery does not
-terminate an already-open retained filter. A run that fails because Screen Recording
-is not granted is useful denial evidence, but passes neither that live gate nor the
+On the historical qualified 26.6.2 host, the same run was also the permissioned
+coordinate/selection acceptance gate. It compared frame-attached `screenRect`
+origin, logical size, and effective scale with that host's display inventory and
+checked that a fresh discovery does not terminate an already-open retained filter.
+A current-host ASan run does not satisfy that gate, because it records
+no qualified display inventory or topology. A run that fails because Screen
+Recording is not granted is useful denial evidence, but passes neither that live
+gate nor the
 manual window move/resize/loss probe in
 `crates/platform/macos/tests/window_movement.rs`. The separate owned-window
 replacement command above is the release oracle that proves a retained filter
@@ -484,15 +629,16 @@ Running with `-- --skip a_symlinked_` gets the rest of the suite through on a ho
 without the privilege. That run is not a verification: it is exactly the silent
 gap the two tests were changed to expose, so record it as what it is.
 
-Step 8 is the only check in this repository that is not `cargo` alone. It needs a
+Step 8 additionally compiles non-Rust consumers. It needs a
 C compiler, a C++ compiler, and CMake 3.22 or later. On both release targets the
 compilers are the ones the platform already has — MSVC on Windows, the Xcode
 Command Line Tools on macOS — and both CI runners and both verification hosts
-already have a CMake. Set `CC`, `CXX`, or `CMAKE` to choose a different one.
+already have a CMake. Setup selects `CC` and `CXX` from the native toolchain; set
+`CMAKE` to choose a different CMake. The ABI checker also accepts `CC`/`CXX`
+overrides when invoked directly from an already configured environment.
 
-[docs/c-abi.md](docs/c-abi.md) records what it compiles and why the header is
-verified this way rather than generated;
-[docs/cpp-wrapper.md](docs/cpp-wrapper.md) records the C++ half.
+[docs/c-abi.md](docs/c-abi.md) records direct consumption from both languages,
+the small samples, explicit ownership, and the header/consumer verification.
 
 On Windows, run step 8 from a Developer Command Prompt. `cl` is not on `PATH`
 otherwise, and the same environment sets `VSINSTALLDIR`, through which the check
@@ -504,7 +650,7 @@ comes first:
 
 ```bat
 set "RUSTDOCFLAGS=-D warnings"
-cargo doc --locked --workspace --no-deps
+python tools/setup-native.py --opencv-root DIR --libclang-path DIR -- cargo doc --locked --workspace --no-deps
 set "RUSTDOCFLAGS="
 ```
 
@@ -513,10 +659,10 @@ marks *inside* the value, and rustdoc is then passed an argument it does not
 recognize. The third line clears it again: `set` outlives the command, and a
 `RUSTDOCFLAGS` left behind applies to every later `cargo doc` in that window.
 
-On Windows PowerShell, step 6 is:
+In PowerShell with the x64 MSVC environment already imported, step 6 is:
 
 ```powershell
-$env:RUSTDOCFLAGS = "-D warnings"; cargo doc --locked --workspace --no-deps
+$env:RUSTDOCFLAGS = "-D warnings"; python tools/setup-native.py --opencv-root DIR --libclang-path DIR -- cargo doc --locked --workspace --no-deps
 ```
 
 Step 7 needs `cargo-deny`, which is not part of the toolchain, and needs network
@@ -556,6 +702,37 @@ not necessarily right about the others, and a verification is worth only as much
 as the freshness of what it compiled — so if a run needed this, say so alongside
 its result, or `cargo clean` and take the run again.
 
+## Documentation, decisions and tuning
+
+Start at the [documentation index](docs/README.md); every current rule has one
+purpose-based home. Update the affected guide in the same pull request as the
+change, following
+[documentation governance](docs/architecture.md#documentation-governance).
+
+- **Decision records.** Write a short [ADR](docs/adr/README.md) only for a
+  consequential choice: package responsibility or dependency direction,
+  technology or backend choice, public naming or compatibility policy, platform
+  or toolchain policy, or a security/trust boundary. Put commands, measurement
+  tables and history in their guides or evidence instead.
+- **Benchmarks and tuning.** Measure to investigate and tune. A focused, bounded
+  measurement needs no decision record, calibration campaign, quiet-host
+  threshold or prior qualification; see [performance](docs/performance.md).
+  Changing an empirical target, sample count or tuning parameter adds or extends
+  a [tuning record](docs/performance/tuning/README.md) with the reason and the
+  observed or explicitly missing effect. A new target applies prospectively and
+  never regrades an earlier run.
+- **Mandatory checks stay mandatory.** Correctness, memory and resource limits,
+  ownership and cleanup, identity, privacy, cancellation, ABI compatibility,
+  required native semantics and CI are never relaxed by a tuning record. Raising
+  an enforced limit or changing a public guarantee is a contract change.
+- **Claims need matching evidence.** A performance or support claim needs
+  evidence for its stated scope. A missing or failed numerical qualification
+  leaves that claim unsupported; it does not block unrelated implementation or
+  tuning.
+- **History stays history.** Evidence, released notes and earlier profiles keep
+  their bytes and verdicts. Records from before source `646369f` may cite retired
+  decision records by path; read those at that source, never as current rules.
+
 ## Branch strategy
 
 `main` contains released, production-ready code. Development for each release
@@ -591,6 +768,12 @@ Emergency fixes follow the same flow: create the next patch-version
 Pull requests directly from topic branches into `main`, or from one version
 development branch into another, are rejected by the branch policy check.
 
+Group related improvements into one coherent pull request per category. Use
+meaningful commits to separate reviewable implementation steps; do not open a
+pull request for each commit, measurement receipt or documentation follow-through,
+and do not collapse a multi-step change into one giant commit. Keep affected
+tests, contracts and evidence with the category they verify.
+
 ## Release checklist
 
 A version branch is not a release by itself. Use this order so that the permanent
@@ -600,10 +783,11 @@ tag, public notes, and native verification identify one final source revision:
    `docs/releases/vx.y.z.md` notes. Confirm that the workspace version, public
    behavior, prerequisites, compatibility, artifact list, limitations, security
    boundaries, and retained evidence all agree.
-2. Run the complete [verification](#verification) sequence. Retained benchmark
-   or ABI evidence from an earlier revision needs a reviewed applicability record
-   covering the complete intervening diff; otherwise rerun it on its named native
-   host.
+2. Run the complete [verification](#verification) sequence. Retained ABI, native
+   semantic or support evidence from an earlier revision, and any benchmark
+   evidence cited for a performance claim in the notes, needs a reviewed
+   applicability record covering the complete intervening diff; otherwise rerun
+   it on its named native host.
 3. Merge the release-readiness topic branch to `dev/x.y.z` through its protected
    pull request and wait for every required check.
 4. Open the release pull request from `dev/x.y.z` to `main`. Verify that its head
@@ -619,6 +803,13 @@ tag, public notes, and native verification identify one final source revision:
    source archives, and public URL.
 8. Create the next `dev/x.y.z` branch from the released `main` commit before
    accepting implementation for that version.
+
+Numerical performance qualification supports a specific published claim, not
+release eligibility by itself. Record an inconclusive benefit or a repeatability
+miss without claiming a speedup or treating it as a product regression. Release
+decisions still require the actual application behavior, applicable native/ABI/CI
+verification, enforced resource and ownership contracts, and disposition of known
+defects or significant observed regressions.
 
 A published version tag is immutable: never move, delete, or reuse it to replace
 a release. Correct a source or documentation defect in a later semantic version.
@@ -649,25 +840,68 @@ maintainer is available to review changes.
 the branch rulesets. They are not applied automatically, so editing them does not
 change the live repository configuration.
 
-The stable check names are:
+The stable required pull-request check names are:
 
 | Check | Workflow | What it verifies |
 |---|---|---|
 | `Validate branch flow` | `branch-policy.yml` | The source and target branches follow the pull request flow. |
 | `Repository policy` | `rust.yml` | Package inventory, dependency directions, formatting, and dependency policy. |
-| `Windows x86_64-pc-windows-msvc` | `rust.yml` | Native `windows-2025` inventory, lint, test, doctest, documentation, C/C++ checks, the required Lane A semantic run, and compilation of Lane B/C. It does not execute approved-host WGC Lane B. |
-| `macOS aarch64-apple-darwin` | `rust.yml` | Native `macos-26` Apple Silicon inventory, lint, test, doctest, documentation, C/C++ checks, the required Lane A semantic run, and compilation of Lane B/C. It has no Screen Recording authority and does not execute ScreenCaptureKit Lane B. |
+| `Windows x86_64-pc-windows-msvc` | `rust.yml` | Aggregates all six native `windows-2025` lanes: workspace, OCR, normal/instrumented matching, C ABI consumers, and the independent Rust consumer. Includes Lane A execution and Lane B/C compilation, not approved-host WGC Lane B. |
+| `macOS aarch64-apple-darwin` | `rust.yml` | Aggregates the same six lanes on native `macos-26` Apple Silicon. It has no Screen Recording authority and does not execute ScreenCaptureKit Lane B. |
 
-The `Repository policy` job builds no product package, which is why
-documentation, lints, tests, and the C and C++ boundary are verified only in the
-two native jobs. Building any product package needs OpenCV and a loadable
-libclang, because `mado-pilot-backend-opencv` generates its bindings at build
-time, and that installation exists on the two release targets rather than on a
-host that is neither. Of the verification sequence above, steps 3 through 6,
-step 8, Lane A execution, and Lane B/C compilation therefore run only in the two
-native jobs; steps 2 and 7 run only in the repository-policy job, and step 1 runs
-in all three. The separate approved-host Lane B jobs are support evidence, not
-GitHub required-status names.
+Every pull request targeting `main` or `dev/**` runs these checks without a path
+filter. A `dev/**` push normally runs Repository policy and both native groups
+again after integration. Before those push groups start, a lightweight
+`Select dev push checks` job looks for an open `dev/x.y.z` → `main` release PR
+in this repository whose head branch and commit exactly match the push.
+Only a confirmed match suppresses repository policy and both native groups; draft
+release PRs count because their PR checks also run. A closed PR, another repository,
+another branch, or a different head commit does not suppress verification.
+API errors, unreadable responses, or a failed selector leave push checks enabled.
+
+The lookup needs only `pull-requests: read`, scoped to the selector job in
+addition to its checkout permission. Pull-request jobs do not perform this lookup
+and retain their existing permissions and required names. Push job names append
+` (dev push)`, so their skipped statuses cannot satisfy a required PR check.
+The small selector run and skipped push jobs remain visible in Actions; this
+avoids duplicate builds, not every extra workflow entry.
+
+The decision uses the PR state observed by the selector, not an atomic snapshot
+with PR creation or closure. Opening a release PR after the selector has decided
+to run does not cancel that push run; closing it after a skip does not replay
+the skipped push. Subsequent pushes without a covering release PR run normally.
+Superseded PR runs still cancel only earlier runs of that same PR. `main` pushes
+remain disabled; release-PR checks remain the release merge gate.
+
+Each native group has six independent build-owning lanes: `workspace`, `ocr`,
+`matching-normal`, `matching-instrumented`, `consumers`, and `external`.
+Every lane starts on a fresh hosted runner and keeps compiled outputs within that
+job. No Cargo target or compiler-output cache is restored, and no compiled
+artifact is downloaded from another job or attempt. Existing prerequisite/tool
+caches remain. Matching attest/smoke checks reuse the fixed executable copy;
+C/C++ consumers use the selected freshly built C ABI library. Normal/instrumented,
+ordinary/private-fixture, and debug/release variants retain separate identities.
+The external Rust consumer retains its independent Cargo home, target and lockfile.
+
+The stable native check names belong to small Ubuntu aggregation jobs, not to
+cross-compiled verification. Each requires its entire native matrix to succeed;
+failure, cancellation, missing results and unexpected skips cannot turn green.
+Matrix fail-fast is disabled so another lane's failure does not cancel evidence
+collection. Native lanes have a 30-minute timeout; this is a safety limit, not a
+15-minute performance claim.
+
+`Repository policy` and the aggregation jobs compile no product package.
+Every product build still runs on the applicable native target with OpenCV and
+libclang. The two workspace lanes run inventory, lint, tests, doctests and docs;
+other native checks retain their existing commands in their owning lane.
+Approved-host Lane B remains separate support evidence.
+
+Rerunning a failed lane builds it afresh; it does not import a prior attempt's
+compiled files. Earlier successful checks retain their original attempt
+attribution. CI timing acceptance uses complete attempts, reports initial queue
+delay separately, and includes setup, compilation, execution and downstream
+scheduling in the critical path. More parallel jobs can increase total runner
+time. See the [verification baseline](docs/architecture.md#verification-baseline).
 
 A check is activated as a live required status only after that check has produced
 its first successful run on the branch it will guard, and only with separate

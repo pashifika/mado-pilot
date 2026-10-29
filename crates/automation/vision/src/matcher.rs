@@ -13,7 +13,7 @@
 
 use std::sync::Arc;
 
-use mado_pilot_capture::{CpuMapping, Frame, FrameView};
+use mado_pilot_capture::{CpuMapping, Frame, FrameView, PixelFormat};
 use mado_pilot_core::{
     ClipPolicy, Error, GeometryFault, Operation, OperationContext, PixelExtent, PixelRect, Result,
     TransformSnapshot,
@@ -86,7 +86,7 @@ impl MappedMatch {
     #[doc(hidden)]
     #[must_use]
     pub fn is_equivalent_request(&self, request: &MatchRequest<'_>) -> bool {
-        if request.frame().stamp() != self.frame.stamp()
+        if !request.frame().is_same_instance(&self.frame)
             || request.template().backend().as_str() != self.descriptor.id()
             || !self
                 .template
@@ -106,7 +106,11 @@ impl MappedMatch {
             },
         };
         let has_pixels = !searched.is_empty() && fits(request.template().extent(), searched);
-        searched == self.searched && has_pixels == self.pixels.is_some()
+        searched == self.searched
+            && has_pixels == self.pixels.is_some()
+            && self.pixels.as_ref().is_none_or(|pixels| {
+                pixels.descriptor().format() == selected_format(&self.descriptor, &self.frame)
+            })
     }
 }
 
@@ -146,7 +150,7 @@ impl Matcher {
         right: &MatchRequest<'_>,
     ) -> bool {
         let descriptor = &self.descriptor;
-        if left.frame().stamp() != right.frame().stamp()
+        if !left.frame().is_same_instance(right.frame())
             || left.template().backend().as_str() != descriptor.id()
             || right.template().backend().as_str() != descriptor.id()
             || !left
@@ -237,7 +241,7 @@ impl Matcher {
             None
         } else {
             let view = FrameView::new(frame.clone(), searched)?;
-            let pixels = view.map(descriptor.format(), operation)?;
+            let pixels = view.map(selected_format(&descriptor, frame), operation)?;
             attempt.checkpoint()?;
             Some(pixels)
         };
@@ -284,6 +288,9 @@ impl Matcher {
                 Vec::new(),
             );
         };
+        if pixels.descriptor().format() != selected_format(descriptor, &mapped.frame) {
+            return Err(VisionFault::BackendMismatch.into());
+        }
         let candidates = self.backend.find(
             &BackendRequest {
                 template,
@@ -304,6 +311,15 @@ impl Matcher {
             mapped.options,
             matches,
         )
+    }
+}
+
+fn selected_format(descriptor: &BackendDescriptor, frame: &Frame) -> PixelFormat {
+    let source = frame.descriptor().format();
+    if descriptor.accepts_format(source) {
+        source
+    } else {
+        descriptor.format()
     }
 }
 
@@ -510,10 +526,13 @@ mod tests {
         let prepared = matcher.prepare(&template(template_extent), &OperationContext::new())?;
         let frame = frame();
 
-        matcher.find(
-            MatchRequest::new(&frame, selection, &prepared, options()),
-            &OperationContext::new(),
-        )
+        let operation = OperationContext::new();
+        let mapped = matcher.map_match(
+            &MatchRequest::new(&frame, selection, &prepared, options()),
+            &operation,
+        )?;
+        assert!(mapped.pixels().is_none());
+        matcher.find_mapped(&mapped, &prepared, &operation)
     }
 
     fn snapshot() -> TransformSnapshot {

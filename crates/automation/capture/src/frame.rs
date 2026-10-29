@@ -1,7 +1,7 @@
 //! Immutable published frames and the views taken over them.
 
 use std::fmt;
-use std::sync::Arc;
+use std::sync::{Arc, Weak};
 
 use mado_pilot_core::{
     ClipPolicy, FrameStamp, GeometryFault, MonotonicInstant, PixelRect, Rect, TransformSnapshot,
@@ -9,6 +9,7 @@ use mado_pilot_core::{
 
 use crate::descriptor::FrameDescriptor;
 use crate::fault::CaptureFault;
+use crate::mapping_cache::MappingCache;
 use crate::storage::{CpuFrameStorage, FrameStorage};
 
 /// One published frame, immutable and independently retainable.
@@ -33,6 +34,36 @@ struct FrameData {
     descriptor: FrameDescriptor,
     transform: TransformSnapshot,
     storage: Arc<dyn FrameStorage>,
+    mappings: MappingCache,
+}
+
+/// Weak provenance for mappings of one immutable frame allocation.
+#[doc(hidden)]
+#[derive(Clone)]
+pub struct FrameInstance(Weak<FrameData>);
+
+impl FrameInstance {
+    /// Reports whether any frame or view still owns the source.
+    #[must_use]
+    pub fn is_alive(&self) -> bool {
+        self.0.strong_count() != 0
+    }
+}
+
+impl PartialEq for FrameInstance {
+    fn eq(&self, other: &Self) -> bool {
+        Weak::ptr_eq(&self.0, &other.0)
+    }
+}
+
+impl Eq for FrameInstance {}
+
+impl fmt::Debug for FrameInstance {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        formatter
+            .debug_struct("FrameInstance")
+            .finish_non_exhaustive()
+    }
 }
 
 impl Frame {
@@ -127,7 +158,15 @@ impl Frame {
             descriptor,
             transform,
             storage,
+            mappings: MappingCache::default(),
         }))
+    }
+
+    /// Reports whether both handles own the same immutable frame.
+    #[doc(hidden)]
+    #[must_use]
+    pub fn is_same_instance(&self, other: &Self) -> bool {
+        Arc::ptr_eq(&self.0, &other.0)
     }
 
     /// Returns the frame's complete identity.
@@ -178,8 +217,9 @@ impl Frame {
     ///
     /// Returns [`CaptureFault::UnsupportedCoordinate`] when the frame has no
     /// authoritative mapping for the region's coordinate space, and
-    /// [`CaptureFault::RegionOutsideFrame`] when the geometry is otherwise invalid
-    /// or outside the frame under `policy`.
+    /// [`CaptureFault::RegionOutsideFrame`] when the region is empty, otherwise
+    /// invalid, or outside the frame under `policy`. A fractional zero-width or
+    /// zero-height region stays empty rather than rounding out to a pixel.
     pub fn view(&self, region: Rect, policy: ClipPolicy) -> Result<FrameView, CaptureFault> {
         let resolved = self
             .0
@@ -208,6 +248,14 @@ impl Frame {
     /// replay bytes or a GPU texture.
     pub(crate) fn storage(&self) -> &Arc<dyn FrameStorage> {
         &self.0.storage
+    }
+
+    pub(crate) fn instance(&self) -> FrameInstance {
+        FrameInstance(Arc::downgrade(&self.0))
+    }
+
+    pub(crate) fn mappings(&self) -> &MappingCache {
+        &self.0.mappings
     }
 }
 
@@ -461,6 +509,68 @@ mod tests {
             FrameView::new(frame.clone(), PixelRect::new(2, 2, 2, 5).expect("valid")).err(),
             Some(CaptureFault::RegionOutsideFrame)
         );
+    }
+
+    #[test]
+    fn a_fractional_empty_region_is_refused_rather_than_rounded_into_a_pixel() {
+        let frame = testing::any_frame(8, 6, 0x35);
+        // 0.3125 of eight pixels is the fractional pixel edge 2.5.
+        let empty = [
+            Rect::new(CoordinateSpace::CapturePixels, 2.5, 1.0, 2.5, 3.0),
+            Rect::new(CoordinateSpace::CapturePixels, 1.0, 2.5, 3.0, 2.5),
+            Rect::new(CoordinateSpace::FrameNormalized, 0.3125, 0.0, 0.3125, 0.5),
+        ];
+
+        for region in empty {
+            let region = region.expect("valid geometry");
+            for policy in [ClipPolicy::Reject, ClipPolicy::Clip] {
+                assert_eq!(
+                    frame.view(region, policy).err(),
+                    Some(CaptureFault::RegionOutsideFrame),
+                    "{region:?} under {policy:?}"
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn a_nonempty_fractional_view_covers_every_pixel_it_touches() {
+        let frame = testing::any_frame(8, 6, 0x36);
+        let sliver =
+            Rect::new(CoordinateSpace::CapturePixels, 2.5, 1.0, 2.6, 3.0).expect("valid geometry");
+        let overhanging =
+            Rect::new(CoordinateSpace::CapturePixels, 7.5, 5.5, 8.5, 6.5).expect("valid geometry");
+
+        for policy in [ClipPolicy::Reject, ClipPolicy::Clip] {
+            let view = frame.view(sliver, policy).expect("a sliver covers a pixel");
+            assert_eq!(view.region(), PixelRect::new(2, 1, 3, 3).expect("valid"));
+        }
+        assert_eq!(
+            frame.view(overhanging, ClipPolicy::Reject).err(),
+            Some(CaptureFault::RegionOutsideFrame)
+        );
+        assert_eq!(
+            frame
+                .view(overhanging, ClipPolicy::Clip)
+                .expect("clipping keeps the covered pixel")
+                .region(),
+            PixelRect::new(7, 5, 8, 6).expect("valid")
+        );
+    }
+
+    #[test]
+    fn an_unsupported_empty_region_keeps_its_unsupported_status() {
+        let frame = testing::any_frame(8, 6, 0x37);
+        let region = Rect::new(CoordinateSpace::TargetLogical, 1.25, 0.0, 1.25, 1.0)
+            .expect("valid geometry");
+
+        for policy in [ClipPolicy::Reject, ClipPolicy::Clip] {
+            assert_eq!(
+                frame.view(region, policy).err(),
+                Some(CaptureFault::UnsupportedCoordinate),
+                "a frame-only transform has no logical mapping to examine"
+            );
+        }
     }
 
     #[test]

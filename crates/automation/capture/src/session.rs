@@ -9,28 +9,35 @@ use crate::descriptor::{PixelFormat, SessionDescription, TargetDescription};
 use crate::discovery::DiscoveryRequest;
 use crate::fault::CaptureFault;
 use crate::frame::Frame;
+use crate::pacing::CapturePacingRequest;
 use crate::stream::{FrameRequest, Lifecycle};
+use crate::window::{CaptureResourceLimits, WindowGeometry};
 
 /// What a caller asks for when opening a session.
 ///
-/// Required options and preferences are separate axes on purpose. A required
-/// option that cannot be honored fails the open; a preference that cannot be
-/// honored falls back, and the session description then reports what was
-/// actually accepted. Collapsing the two would mean a caller either cannot
-/// express "I need this" or cannot tell whether they got it.
+/// Required pixel format and preferred pixel format are separate options. Native
+/// capture pacing instead selects its interval and required/preferred policy as
+/// one value. A requirement that cannot be honored fails the open; an unsupported
+/// preference is reported unapplied in the session description.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
 pub struct OpenRequest {
     required_format: Option<PixelFormat>,
     preferred_format: Option<PixelFormat>,
+    capture_pacing: CapturePacingRequest,
+    window_geometry: Option<WindowGeometry>,
+    resource_limits: Option<CaptureResourceLimits>,
 }
 
 impl OpenRequest {
-    /// Returns a request with no constraints.
+    /// Returns a request with no format constraints and inherited capture pacing.
     #[must_use]
     pub const fn new() -> Self {
         Self {
             required_format: None,
             preferred_format: None,
+            capture_pacing: CapturePacingRequest::inherit(),
+            window_geometry: None,
+            resource_limits: None,
         }
     }
 
@@ -48,6 +55,15 @@ impl OpenRequest {
         self
     }
 
+    /// Replaces this session's entire capture pacing selection.
+    ///
+    /// Inheritance restores the provider default; source default bypasses it.
+    #[must_use]
+    pub const fn with_capture_pacing(mut self, pacing: CapturePacingRequest) -> Self {
+        self.capture_pacing = pacing;
+        self
+    }
+
     /// Returns the required pixel format, if any.
     #[must_use]
     pub const fn required_format(&self) -> Option<PixelFormat> {
@@ -58,6 +74,38 @@ impl OpenRequest {
     #[must_use]
     pub const fn preferred_format(&self) -> Option<PixelFormat> {
         self.preferred_format
+    }
+
+    /// Returns this session's native capture pacing selection.
+    #[must_use]
+    pub const fn capture_pacing(&self) -> CapturePacingRequest {
+        self.capture_pacing
+    }
+
+    /// Requires the retained window's exact geometry, without moving or resizing it.
+    #[must_use]
+    pub const fn require_window_geometry(mut self, geometry: WindowGeometry) -> Self {
+        self.window_geometry = Some(geometry);
+        self
+    }
+
+    /// Returns the required window geometry, if selected.
+    #[must_use]
+    pub const fn window_geometry(&self) -> Option<WindowGeometry> {
+        self.window_geometry
+    }
+
+    /// Requires these allocation ceilings; unsupported providers must refuse them.
+    #[must_use]
+    pub const fn with_resource_limits(mut self, limits: CaptureResourceLimits) -> Self {
+        self.resource_limits = Some(limits);
+        self
+    }
+
+    /// Returns the required frame and session image-storage ceilings.
+    #[must_use]
+    pub const fn resource_limits(&self) -> Option<CaptureResourceLimits> {
+        self.resource_limits
     }
 }
 
@@ -97,6 +145,23 @@ pub trait CaptureProvider: Debug + Send + Sync {
         let mut targets = self.discover(operation)?;
         targets.retain(|target| request.accepts(target));
         Ok(targets)
+    }
+
+    /// Describes the same retained native window after read-only revalidation.
+    ///
+    /// Native keys are descriptive only. The provider must refuse retired,
+    /// replaced, ineligible or unverifiable targets without rediscovering by key.
+    ///
+    /// # Errors
+    /// Returns foreign-target, target-loss, unsupported or interruption outcomes.
+    fn describe_window(
+        &self,
+        target: TargetId,
+        operation: &OperationContext,
+    ) -> Result<TargetDescription> {
+        let _attempt = mado_pilot_core::Operation::admit(operation)?;
+        let _ = target;
+        Err(CaptureFault::UnsupportedOption.into())
     }
 
     /// Confirms that this provider issued `target`, for `engine`.
@@ -144,13 +209,36 @@ pub trait CaptureSession: Debug + Send + Sync {
 
     /// Returns the frame `request` asks for, waiting when necessary.
     ///
+    /// Success commits the selected immutable frame against termination after
+    /// the final operation check, as specified by [`CaptureSession::commit_frame`].
+    ///
     /// # Errors
     ///
-    /// Returns a closed outcome once the session is closing, a target-lost
-    /// outcome when the Adapter observes that capture ended while waiting, an
-    /// invalid-argument outcome for a stamp from another stream, and the
-    /// operation's terminal outcome when cancellation or the deadline wins.
+    /// Returns the original terminal fault when capture ends, a closed outcome
+    /// after ordinary close admission, an invalid-argument outcome for a stamp
+    /// from another stream, or the operation's cancellation/deadline outcome.
     fn frame(&self, request: &FrameRequest, operation: &OperationContext) -> Result<Frame>;
+
+    /// Commits a prepared candidate associated with this exact retained frame.
+    ///
+    /// Prepare all candidate work before calling this method. The final
+    /// operation check runs outside internal locks, then commitment is ordered
+    /// against the stream's first terminal fault and close admission. A terminal
+    /// transition ordered first refuses commitment with its original fault,
+    /// even after cleanup. Commitment ordered first leaves the immutable
+    /// candidate and frame valid historical values after later termination.
+    ///
+    /// The frame must belong to this stream, but need not be the latest frame or
+    /// geometry revision. This neither captures nor maps pixels and executes no
+    /// caller work under a lock. Success grants no ongoing readiness, input
+    /// authority, or guarantee that native cleanup has completed.
+    ///
+    /// # Errors
+    ///
+    /// Returns an invalid-argument outcome for a foreign frame, the stream's
+    /// original terminal fault, a closed outcome after ordinary close admission,
+    /// or cancellation/deadline observed before commitment.
+    fn commit_frame(&self, frame: &Frame, operation: &OperationContext) -> Result<()>;
 
     /// Closes the session and drains in-flight frame waits.
     ///

@@ -9,11 +9,12 @@ use mado_pilot_vision::{
     BackendDescriptor, BackendId, BackendRequest, Candidate, MatchBackend, PreparedTemplate,
     TemplateEncoding, TemplateSource, VisionFault,
 };
-use opencv::core::{Mat, MatTraitConst, MatTraitConstManual};
+use opencv::core::{Mat, MatTraitConst, MatTraitConstManual, MatTraitManual};
 use opencv::imgproc::{TM_CCOEFF_NORMED, match_template_def};
 
 use crate::candidates::{PeakSearch, peaks};
-use crate::image::{self, ImageFault, REQUIRED_FORMAT};
+use crate::image::{self, ALTERNATE_FORMAT, DEFAULT_FORMAT, ImageFault};
+use crate::prepared_images::{Lookup, PreparedImages, PreparedRegion};
 
 /// The backend's stable public identifier.
 ///
@@ -55,8 +56,6 @@ impl fmt::Debug for TemplateMatrix {
 ///
 /// The Phase 1 profile is normalized correlation coefficient over three-channel
 /// BGR, with the negative half of the correlation range clamped to "no match".
-/// Both the profile and the clamp are decisions with recorded reasons; see
-/// `docs/adr/0003-opencv-matching-profile-and-public-score.md`.
 ///
 /// # What it decides, and what it does not
 ///
@@ -77,6 +76,7 @@ impl fmt::Debug for TemplateMatrix {
 #[derive(Debug, Clone)]
 pub struct OpenCvBackend {
     descriptor: BackendDescriptor,
+    prepared: Arc<PreparedImages>,
 }
 
 impl OpenCvBackend {
@@ -96,7 +96,9 @@ impl OpenCvBackend {
         let version = accept_version(opencv::core::get_version_major(), &version)?;
 
         Ok(Self {
-            descriptor: BackendDescriptor::new(BACKEND_ID, version, REQUIRED_FORMAT),
+            descriptor: BackendDescriptor::new(BACKEND_ID, version, DEFAULT_FORMAT)
+                .with_alternate_format(ALTERNATE_FORMAT),
+            prepared: Arc::new(PreparedImages::new()),
         })
     }
 }
@@ -135,7 +137,19 @@ impl MatchBackend for OpenCvBackend {
         if extent != source.extent() {
             return Err(VisionFault::TemplatePreparationFailed.into());
         }
+        // CCOEFF's denominator is zero when every BGR channel is spatially constant.
+        let mut pixels = image
+            .data_bytes()
+            .map_err(|_| Error::from(VisionFault::TemplatePreparationFailed))?
+            .chunks_exact(3);
+        let first = pixels
+            .next()
+            .ok_or(VisionFault::TemplatePreparationFailed)?;
+        let constant = pixels.all(|pixel| pixel == first);
         checkpoint(operation)?;
+        if constant {
+            return Err(VisionFault::TemplatePreparationFailed.into());
+        }
 
         Ok(PreparedTemplate::new(
             BackendId::new(BACKEND_ID),
@@ -174,18 +188,38 @@ impl MatchBackend for OpenCvBackend {
             return Err(VisionFault::BackendFailed.into());
         }
 
-        let region = image::region_to_bgr(request.pixels).map_err(backend_failure)?;
+        let lookup = self.prepared.lookup(request.pixels);
+        let cacheable = matches!(lookup, Lookup::Vacant);
+        let region = match lookup {
+            Lookup::Hit(image) => PreparedRegion::Shared(image),
+            Lookup::Vacant | Lookup::Bypass => PreparedRegion::new(
+                image::region_to_bgr(request.pixels).map_err(backend_failure)?,
+                cacheable && request.pixels.source_instance().is_alive(),
+            ),
+        };
         checkpoint(operation)?;
+        let region = if cacheable {
+            self.prepared.publish(request.pixels, region)
+        } else {
+            region
+        };
+        #[cfg(feature = "benchmark-instrumentation")]
+        crate::benchmark_instrumentation::observe_prepared_reader(&region, operation)?;
 
         let mut scores = Mat::default();
-        match_template_def(&region, &template.image, &mut scores, TM_CCOEFF_NORMED)
-            .map_err(|_| Error::from(VisionFault::BackendFailed))?;
+        match_template_def(
+            region.matrix(),
+            &template.image,
+            &mut scores,
+            TM_CCOEFF_NORMED,
+        )
+        .map_err(|_| Error::from(VisionFault::BackendFailed))?;
         checkpoint(operation)?;
 
         let width = usize::try_from(scores.cols()).map_err(|_| unrepresentable())?;
         let height = usize::try_from(scores.rows()).map_err(|_| unrepresentable())?;
         let values = scores
-            .data_typed::<f32>()
+            .data_typed_mut::<f32>()
             .map_err(|_| Error::from(VisionFault::BackendFailed))?;
 
         let search = PeakSearch {
@@ -200,10 +234,7 @@ impl MatchBackend for OpenCvBackend {
             suppression: request.options.suppression(),
         };
 
-        // Extraction scans the score map once per candidate and the budget above
-        // is the caller's own `u32` result limit, so this is the one stage of a
-        // search whose length the caller sets. It reads the context as it goes
-        // rather than at its end.
+        // Selection checks this caller's authority while scanning and suppressing.
         let result: Result<Vec<Candidate>> = peaks(values, search, operation)?
             .into_iter()
             .map(|peak| {
@@ -262,8 +293,12 @@ fn unrepresentable() -> Error {
 }
 
 #[cfg(test)]
+mod preparation_tests;
+
+#[cfg(test)]
 mod tests {
     use super::{BACKEND_ID, OpenCvBackend, SUPPORTED_MAJOR, accept_version};
+    use mado_pilot_capture::PixelFormat;
     use mado_pilot_core::Status;
     use mado_pilot_vision::MatchBackend;
 
@@ -298,5 +333,14 @@ mod tests {
             descriptor.version().starts_with("4."),
             "the descriptor records the runtime version"
         );
+    }
+
+    #[test]
+    fn bgra_is_the_default_and_rgba_the_alternate_input_layout() {
+        let descriptor = OpenCvBackend::new().expect("backend").descriptor();
+
+        assert_eq!(descriptor.format(), PixelFormat::Bgra8);
+        assert!(descriptor.accepts_format(PixelFormat::Bgra8));
+        assert!(descriptor.accepts_format(PixelFormat::Rgba8));
     }
 }

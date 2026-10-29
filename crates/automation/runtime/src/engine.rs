@@ -28,6 +28,7 @@ use crate::diagnostic::{
     PermissionDiagnostic,
 };
 use crate::session::Session;
+use crate::watch::{OcrTextSchedulerDescriptor, OcrTextSchedulerObservation};
 use crate::watch::{TemplateSchedulerDescriptor, WatchRuntime};
 
 /// How long the release of an already-opened capture session or input
@@ -261,6 +262,21 @@ impl Engine {
         self.watcher.descriptor()
     }
 
+    /// Returns fixed OCR watch limits, excluding backend-specific resource bounds.
+    #[must_use]
+    pub const fn ocr_text_scheduler(&self) -> OcrTextSchedulerDescriptor {
+        OcrTextSchedulerDescriptor
+    }
+
+    /// Observes logical work, physical retirement and live result extents.
+    ///
+    /// Logical close is not physical quiescence. Retention counts logical
+    /// result-owned extents, not RSS, native allocations or separate frame clones.
+    #[must_use]
+    pub fn ocr_text_observation(&self) -> OcrTextSchedulerObservation {
+        self.watcher.ocr_observation()
+    }
+
     /// Returns the configured OCR backend/model/profile descriptor, if any.
     #[must_use]
     pub fn ocr_backend(&self) -> Option<OcrBackendDescriptor> {
@@ -324,6 +340,23 @@ impl Engine {
         self.capture.discover(operation)
     }
 
+    /// Revalidates this engine's retained native window without capture or input.
+    ///
+    /// The returned metadata is an observation, not transferable target authority.
+    ///
+    /// # Errors
+    /// Refuses foreign, retired, unavailable or unsupported targets and interrupted operations.
+    pub fn describe_window(
+        &self,
+        target: TargetId,
+        operation: &OperationContext,
+    ) -> Result<TargetDescription, Error> {
+        let attempt = Operation::admit(operation)?;
+        self.capture.accepts_target(target, self.engine)?;
+        let description = self.capture.describe_window(target, operation)?;
+        Ok(attempt.commit(description)?)
+    }
+
     /// Reports whether this engine can deliver input at all.
     ///
     /// False for an engine wired without an input adapter. It answers a question
@@ -353,11 +386,9 @@ impl Engine {
     /// How much is checked differs with the wiring, and the difference is
     /// visible rather than hidden. An engine with an input adapter asks that
     /// adapter, which knows whether the target is still there. A capture-only
-    /// engine has nothing to ask — the capture contract offers no liveness query
-    /// short of opening — so it checks only that the identity is one of its own
-    /// and answers "no input" for a target that may since have gone. That answer
-    /// stays true either way: a target this engine cannot deliver input to is
-    /// one it cannot deliver input to.
+    /// engine checks only that the identity is one of its own and answers "no
+    /// input" for a target that may since have gone. It does not require the
+    /// optional native-window description capability to establish that answer.
     ///
     /// # Errors
     ///

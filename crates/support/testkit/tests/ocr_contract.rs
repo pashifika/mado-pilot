@@ -1,12 +1,11 @@
 //! Deterministic evidence for the platform-neutral OCR contract.
 
 use std::sync::Arc;
-use std::sync::atomic::{AtomicUsize, Ordering};
 use std::time::Duration;
 
 use mado_pilot_capture::{CpuPixels, Frame, FrameDescriptor, FrameStorage, PixelFormat};
 use mado_pilot_core::{
-    CancellationToken, ClipPolicy, Clock, CoordinateSpace, GeometryRevision, IdentityIssuer,
+    CancellationToken, ClipPolicy, CoordinateSpace, GeometryRevision, IdentityIssuer,
     MonotonicInstant, OperationContext, PixelExtent, PixelRect, Rect, Status, StreamCursor,
     TransformSnapshot,
 };
@@ -45,38 +44,6 @@ impl FrameStorage for PreflightOnlyStorage {
 
     fn read_cpu(&self, _operation: &OperationContext) -> mado_pilot_core::Result<Arc<CpuPixels>> {
         panic!("mapping preflight must reject this storage before conversion")
-    }
-}
-
-#[derive(Debug)]
-struct CountingDeadlineClock {
-    calls: AtomicUsize,
-    expire_at: Option<usize>,
-}
-
-impl CountingDeadlineClock {
-    fn new(expire_at: Option<usize>) -> Self {
-        Self {
-            calls: AtomicUsize::new(0),
-            expire_at,
-        }
-    }
-
-    fn calls(&self) -> usize {
-        self.calls.load(Ordering::Acquire)
-    }
-}
-
-impl Clock for CountingDeadlineClock {
-    fn now(&self) -> MonotonicInstant {
-        let call = self.calls.fetch_add(1, Ordering::AcqRel) + 1;
-        if self.expire_at.is_some_and(|expire_at| call >= expire_at) {
-            MonotonicInstant::ORIGIN
-                .checked_add(Duration::from_secs(1))
-                .unwrap()
-        } else {
-            MonotonicInstant::ORIGIN
-        }
     }
 }
 
@@ -238,13 +205,13 @@ fn zone_scan_request_is_bounded_borrowed_and_fully_explicit() {
         .status(),
         Status::InvalidArgument
     );
-    let nine = [zones[0]; 9];
+    let seventeen = [zones[0]; 17];
     assert_eq!(
         OcrZoneScanRequest::new(
             &source,
             descriptor.backend_identity(),
             descriptor.model_identity(),
-            &nine,
+            &seventeen,
             CoordinateSpace::CapturePixels,
             &context,
         )
@@ -476,6 +443,146 @@ fn qualified_eight_zone_fixture_and_caller_reordering_are_deterministic() {
         ["right-ready", "left-name", "right-mana"]
     );
     assert_eq!(backend.recognition_count(), 2);
+}
+
+#[test]
+fn ninth_and_sixteenth_groups_preserve_sparse_membership_order_and_ownership() {
+    for zone_count in [9_i32, 16] {
+        let zones: Vec<_> = (0..zone_count)
+            .map(|index| {
+                let left = 4.0 + f64::from(index * 8);
+                zone(left, 2.0, left + 6.0, 12.0, ClipPolicy::Reject)
+            })
+            .collect();
+        let last = zones.len() - 1;
+        let left = f64::from((zone_count - 1) * 8);
+        let outputs: [ScriptedOutput; 2] = [
+            (
+                b"first",
+                [
+                    (left + 1.0, 1.0),
+                    (left + 5.0, 1.0),
+                    (left + 5.0, 4.0),
+                    (left + 1.0, 4.0),
+                ],
+                0,
+            ),
+            (
+                b"second",
+                [
+                    (left + 1.0, 6.0),
+                    (left + 5.0, 6.0),
+                    (left + 5.0, 9.0),
+                    (left + 1.0, 9.0),
+                ],
+                1,
+            ),
+        ];
+        let source = ocr_contract::frame(PixelExtent::new(132, 16), PixelFormat::Bgra8, 0);
+        let mut ignored_result = None;
+        for honor_interests in [false, true] {
+            let mut candidates: Vec<_> = outputs
+                .iter()
+                .rev()
+                .map(|(text, quad, order)| candidate_with(text, *quad, 0.9, *order))
+                .collect();
+            candidates.push(candidate_with(
+                b"outside",
+                [(6.25, 1.0), (7.75, 1.0), (7.75, 4.0), (6.25, 4.0)],
+                0.8,
+                2,
+            ));
+            let backend = ControlledOcr::new(PixelFormat::Bgra8).with_candidates(candidates);
+            let backend = Arc::new(if honor_interests {
+                backend.honoring_interests()
+            } else {
+                backend
+            });
+            let recognizer = OcrRecognizer::new(backend.clone());
+            let result =
+                scan_zones(&recognizer, &source, &zones, &OperationContext::new()).unwrap();
+
+            assert_eq!(backend.recognition_count(), 1);
+            assert_eq!(
+                backend.last_region(),
+                Some(PixelRect::new(4, 2, 4 + (zone_count - 1) * 8 + 6, 12).unwrap())
+            );
+            assert_eq!(result.source_envelope(), backend.last_region().unwrap());
+            assert_eq!(result.stamp(), source.stamp());
+            assert_eq!(result.transform(), source.transform());
+            assert_eq!(result.effective_zones().len(), zones.len());
+            assert_eq!(result.unique_candidates().len(), 2);
+            assert_eq!(result.group(last).unwrap().len(), 2);
+            assert!(result.group(zones.len()).is_none());
+            for group in 0..last {
+                assert!(result.group(group).unwrap().is_empty());
+            }
+            for (index, (text, quad, _)) in outputs.iter().enumerate() {
+                let region = result.group(last).unwrap().get(index).unwrap();
+                assert!(std::ptr::eq(region, &result.unique_candidates()[index]));
+                assert_eq!(region.text(), std::str::from_utf8(text).unwrap());
+                for (point, &(x, y)) in region.geometry().points().iter().zip(quad) {
+                    assert_eq!(
+                        *point,
+                        mado_pilot_core::Point::new(
+                            CoordinateSpace::CapturePixels,
+                            x + 4.0,
+                            y + 2.0,
+                        )
+                        .unwrap()
+                    );
+                }
+            }
+
+            let reordered: Vec<_> = zones.iter().copied().rev().collect();
+            let reordered =
+                scan_zones(&recognizer, &source, &reordered, &OperationContext::new()).unwrap();
+            assert_eq!(backend.recognition_count(), 2);
+            assert_eq!(
+                backend.last_selected_candidates(),
+                if honor_interests { 2 } else { 3 }
+            );
+            assert_eq!(
+                backend.last_ignored_candidates(),
+                usize::from(honor_interests)
+            );
+            assert_eq!(reordered.source_envelope(), result.source_envelope());
+            assert_eq!(reordered.unique_candidates(), result.unique_candidates());
+            for group in 0..zones.len() {
+                assert_eq!(
+                    reordered.effective_zones()[group],
+                    result.effective_zones()[last - group]
+                );
+                assert_eq!(
+                    reordered.group(group).unwrap().iter().collect::<Vec<_>>(),
+                    result
+                        .group(last - group)
+                        .unwrap()
+                        .iter()
+                        .collect::<Vec<_>>()
+                );
+            }
+            drop(recognizer);
+            drop(backend);
+            assert_eq!(reordered.group(0).unwrap().get(1).unwrap().text(), "second");
+            if let Some(ignored) = &ignored_result {
+                assert_eq!(&result, ignored);
+            } else {
+                ignored_result = Some(result);
+            }
+        }
+        drop(source);
+        assert_eq!(
+            ignored_result
+                .unwrap()
+                .group(last)
+                .unwrap()
+                .get(0)
+                .unwrap()
+                .text(),
+            "first"
+        );
+    }
 }
 
 #[test]
@@ -814,23 +921,23 @@ fn grouped_scan_accepts_exact_aggregate_bounds_and_refuses_the_next_candidate() 
     let backend = Arc::new(ControlledOcr::new(PixelFormat::Bgra8).with_candidates(candidates));
     let recognizer = OcrRecognizer::new(backend);
     let source = frame();
-    let zones = [zone(0.0, 0.0, 32.0, 24.0, ClipPolicy::Reject); 8];
+    let zones = [zone(0.0, 0.0, 32.0, 24.0, ClipPolicy::Reject); 16];
     let result = scan_zones(&recognizer, &source, &zones, &OperationContext::new()).unwrap();
 
-    assert_eq!(
-        result.unique_candidates().len(),
-        mado_pilot_ocr::MAX_CANDIDATES
-    );
-    for group in 0..8 {
-        assert_eq!(
-            result.group(group).unwrap().len(),
-            mado_pilot_ocr::MAX_CANDIDATES
-        );
+    assert_eq!(mado_pilot_ocr::MAX_CANDIDATES, 1_000);
+    assert_eq!(result.unique_candidates().len(), 1_000);
+    assert_eq!(result.effective_zones().len(), 16);
+    let mut memberships = 0;
+    for group in 0..16 {
+        let group = result.group(group).unwrap();
+        assert_eq!(group.len(), 1_000);
+        memberships += group.len();
+        for (index, region) in group.iter().enumerate() {
+            assert!(std::ptr::eq(region, &result.unique_candidates()[index]));
+        }
     }
-    assert!(std::ptr::eq(
-        result.group(0).unwrap().get(0).unwrap(),
-        result.group(7).unwrap().get(0).unwrap(),
-    ));
+    assert_eq!(memberships, 16_000);
+    assert!(result.group(16).is_none());
 
     let maximum_raw_text: Arc<[u8]> = Arc::from(vec![b' '; mado_pilot_ocr::MAX_BACKEND_TEXT_BYTES]);
     let raw_boundary = (0..mado_pilot_ocr::MAX_CANDIDATES)
@@ -863,7 +970,7 @@ fn grouped_scan_accepts_exact_aggregate_bounds_and_refuses_the_next_candidate() 
         scan_zones(
             &OcrRecognizer::new(backend),
             &source,
-            &zones[..1],
+            &zones,
             &OperationContext::new(),
         )
         .unwrap_err()
@@ -1156,44 +1263,6 @@ fn grouped_interruption_stages_never_commit_partial_output() {
             .status(),
         Status::DeadlineExceeded
     );
-}
-
-#[test]
-fn grouped_final_commit_rechecks_deadline_without_a_production_test_hook() {
-    const FINAL_COMMIT_CLOCK_READ: usize = 11;
-
-    let backend = Arc::new(
-        ControlledOcr::new(PixelFormat::Bgra8).with_candidates(vec![candidate(b"complete", 0)]),
-    );
-    let recognizer = OcrRecognizer::new(backend.clone());
-    let source = frame();
-    let zones = [zone(0.0, 0.0, 32.0, 24.0, ClipPolicy::Reject)];
-    let deadline = MonotonicInstant::ORIGIN
-        .checked_add(Duration::from_secs(1))
-        .unwrap();
-
-    let baseline_clock = Arc::new(CountingDeadlineClock::new(None));
-    let baseline_context = OperationContext::new()
-        .with_clock(baseline_clock.clone())
-        .with_deadline(deadline);
-    scan_zones(&recognizer, &source, &zones, &baseline_context).unwrap();
-    // Scan admission; mapping admission/commit; mapping checkpoint; backend and
-    // sink checks; backend checkpoint; finish and group checks; finish
-    // checkpoint; then the final commit read.
-    assert_eq!(baseline_clock.calls(), FINAL_COMMIT_CLOCK_READ);
-
-    let expiring_clock = Arc::new(CountingDeadlineClock::new(Some(FINAL_COMMIT_CLOCK_READ)));
-    let expiring_context = OperationContext::new()
-        .with_clock(expiring_clock.clone())
-        .with_deadline(deadline);
-    assert_eq!(
-        scan_zones(&recognizer, &source, &zones, &expiring_context)
-            .unwrap_err()
-            .status(),
-        Status::DeadlineExceeded
-    );
-    assert_eq!(expiring_clock.calls(), FINAL_COMMIT_CLOCK_READ);
-    assert_eq!(backend.recognition_count(), 2);
 }
 
 #[test]

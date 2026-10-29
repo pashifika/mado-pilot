@@ -35,6 +35,19 @@ def fail(message: str) -> None:
     raise SystemExit(f"G-004 evidence invalid: {message}")
 
 
+def reject_unapproved_payload(value: object, report_label: str) -> None:
+    if isinstance(value, dict):
+        if any(key in {"text", "observed", "raw"} for key in value):
+            fail(f"{report_label} contains unapproved recognized payload fields")
+        for nested in value.values():
+            reject_unapproved_payload(nested, report_label)
+    elif isinstance(value, list):
+        for nested in value:
+            reject_unapproved_payload(nested, report_label)
+    elif isinstance(value, str) and ("/Users/" in value or "\\Users\\" in value):
+        fail(f"{report_label} contains a host-local path")
+
+
 def load_json(path: Path) -> dict[str, object]:
     try:
         value = json.loads(path.read_text(encoding="utf-8"))
@@ -737,19 +750,7 @@ def validate_apple_report() -> None:
     }:
         fail("Apple report privacy declaration drifted")
 
-    def reject_unapproved_payload(value: object) -> None:
-        if isinstance(value, dict):
-            if any(key in {"text", "observed", "raw"} for key in value):
-                fail("Apple report contains unapproved recognized payload fields")
-            for nested in value.values():
-                reject_unapproved_payload(nested)
-        elif isinstance(value, list):
-            for nested in value:
-                reject_unapproved_payload(nested)
-        elif isinstance(value, str) and ("/Users/" in value or "\\Users\\" in value):
-            fail("Apple report contains a host-local path")
-
-    reject_unapproved_payload(report)
+    reject_unapproved_payload(report, "Apple report")
 
 def validate_windows_report() -> None:
     report = load_json(EVIDENCE / "report-x86_64-pc-windows-msvc.json")
@@ -1011,19 +1012,7 @@ def validate_windows_report() -> None:
     }:
         fail("Windows report privacy declaration drifted")
 
-    def reject_unapproved_payload(value: object) -> None:
-        if isinstance(value, dict):
-            if any(key in {"text", "observed", "raw"} for key in value):
-                fail("Windows report contains unapproved recognized payload fields")
-            for nested in value.values():
-                reject_unapproved_payload(nested)
-        elif isinstance(value, list):
-            for nested in value:
-                reject_unapproved_payload(nested)
-        elif isinstance(value, str) and ("/Users/" in value or "\\Users\\" in value):
-            fail("Windows report contains a host-local path")
-
-    reject_unapproved_payload(report)
+    reject_unapproved_payload(report, "Windows report")
 
 
 
@@ -1324,19 +1313,7 @@ def validate_apple_v5_report() -> None:
     }:
         fail("Apple v5 privacy declaration drifted")
 
-    def reject_unapproved_payload(value: object) -> None:
-        if isinstance(value, dict):
-            if any(key in {"text", "observed", "raw"} for key in value):
-                fail("Apple v5 report contains unapproved recognized payload fields")
-            for nested in value.values():
-                reject_unapproved_payload(nested)
-        elif isinstance(value, list):
-            for nested in value:
-                reject_unapproved_payload(nested)
-        elif isinstance(value, str) and ("/Users/" in value or "\\Users\\" in value):
-            fail("Apple v5 report contains a host-local path")
-
-    reject_unapproved_payload(report)
+    reject_unapproved_payload(report, "Apple v5 report")
 
 
 def validate_windows_v5_report() -> None:
@@ -1641,19 +1618,7 @@ def validate_windows_v5_report() -> None:
     }:
         fail("Windows v5 privacy declaration drifted")
 
-    def reject_unapproved_payload(value: object) -> None:
-        if isinstance(value, dict):
-            if any(key in {"text", "observed", "raw"} for key in value):
-                fail("Windows v5 report contains unapproved recognized payload fields")
-            for nested in value.values():
-                reject_unapproved_payload(nested)
-        elif isinstance(value, list):
-            for nested in value:
-                reject_unapproved_payload(nested)
-        elif isinstance(value, str) and ("/Users/" in value or "\\Users\\" in value):
-            fail("Windows v5 report contains a host-local path")
-
-    reject_unapproved_payload(report)
+    reject_unapproved_payload(report, "Windows v5 report")
 
 
 def validate_requirements() -> None:
