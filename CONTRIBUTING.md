@@ -10,35 +10,33 @@ tracked baseline that this repository is verified against.
 checkout with `rustup` available selects the tested compiler automatically. That
 pin is also the workspace minimum supported Rust version.
 
-The workspace keeps one lockfile, the root `Cargo.lock`, and it is committed. No
+The workspace keeps one committed lockfile at the root `Cargo.lock`; no workspace
 member has its own lockfile. Run verification with `--locked` so that a check
-fails instead of silently changing dependency resolution, and commit the lockfile
-change in the same pull request whenever a manifest requirement changes.
+fails instead of silently changing dependency resolution, and commit `Cargo.lock`
+changes in the same pull request whenever a manifest requirement changes.
 
 The independent [`examples/rust-input-workflow`](examples/rust-input-workflow/)
-application is not a workspace member. It owns its lockfile, pinned toolchain
-and deployment configuration. The [external build procedure](docs/rust-input-workflow.md)
-copies it outside the checkout and verifies it from that directory; workspace
-checks alone do not cover this consumer.
-When product dependencies change, update this application's `Cargo.lock` as well
-as the workspace lockfile. The external verifier keeps `--locked` and never
-rewrites the consumer's dependency resolution.
+application is not a workspace member and owns its own `Cargo.lock`, toolchain
+pin, and deployment configuration. See the
+[standalone Rust input workflow guide](docs/rust-input-workflow.md) for the
+external copy-and-verify procedure (`tools/check-external-rust-consumer.py`);
+update its `Cargo.lock` alongside the workspace lockfile whenever product
+dependencies change.
 
 ## Native development prerequisites
 
 Developers acquire and maintain the native prerequisites; this source-only
-project redistributes no native library or model. Building the workspace needs
+project redistributes no native library or model. Building the workspace requires
 an **OpenCV 4 development installation**, a loadable **libclang**, and the native
-compiler/SDK. The binding generator needs them for `cargo build`, not only tests.
-
-Acquire these separately before running setup:
+compiler/SDK:
 
 | Host | Developer-owned installation |
 |---|---|
-| macOS | Xcode Command Line Tools, Homebrew, and `brew install opencv@4` (not `opencv`). The Command Line Tools supply libclang; Homebrew LLVM is not required. |
-| Windows | The official OpenCV 4.14.0 prebuilt archive, LLVM 22.1.8, and Visual Studio C++ build tools with a Windows SDK. Open an **x64 MSVC developer command prompt**. |
+| macOS (`aarch64-apple-darwin`) | Xcode Command Line Tools, Homebrew, and `brew install opencv@4` (not `opencv`). The Command Line Tools supply `libclang` and compile `mado-pilot-platform-macos` (`-fobjc-arc-exceptions`) without full Xcode; see [the macOS native boundary](docs/architecture.md#the-macos-native-boundary). |
+| Windows (`x86_64-pc-windows-msvc`) | Official OpenCV 4.14.0 prebuilt archive, LLVM 22.1.8, and Visual Studio C++ build tools with Windows SDK 10.0.26100.0. Open an **x64 MSVC developer command prompt**. |
 
-With **Python 3.13+**, explicitly configure and check the existing installations:
+With **Python 3.13+**, validate existing installations and run commands in a
+child-scoped environment:
 
 ```sh
 # macOS: discover opencv@4 and the selected Xcode Command Line Tools
@@ -52,410 +50,65 @@ python tools/setup-native.py --opencv-root C:\native\opencv --libclang-path "C:\
 python tools/setup-native.py --opencv-root C:\native\opencv --libclang-path "C:\Program Files\LLVM\bin" -- cargo build --locked
 ```
 
-The CLI is `tools/setup-native.py [--opencv-root DIR] [--libclang-path DIR]
-[--github-env FILE --github-path FILE] [-- COMMAND ARG...]`. Both root options
-are required on Windows; macOS permits explicit overrides. Without a command it
-validates and prints JSON describing the target, version, selected roots, and
-configured environment; it does not modify the calling shell. Command mode runs
-one executable with that child-scoped environment and propagates its failure.
-Use it around subsequent native build/check commands too. CI may explicitly pass
-both GitHub environment files; setup writes them only after validation succeeds.
-Windows exports include the selected MSVC include/library search paths, so later
-CI steps retain the compiler context without exporting the whole inherited environment.
-The script does not download, install, elevate, or edit global shell settings.
+`tools/setup-native.py [--opencv-root DIR] [--libclang-path DIR] [--github-env FILE --github-path FILE] [-- COMMAND ARG...]`
+validates inputs and prints JSON when invoked without a command, or runs one
+child command with the configured environment. Both root flags are required on
+Windows and optional overrides on macOS. Key behavioral rules:
 
-macOS setup links only the workspace's required shared OpenCV modules: `core`,
-`imgproc`, and `imgcodecs`. It does not inherit every library from `opencv4.pc`.
-Windows retains the versioned `opencv_world` import library and DLL. Transitive
-shared dependencies remain required; link selection changes no Rust feature,
-dependency ownership or qualification limit.
+- **No ambient mutation or installation:** The script never downloads, installs,
+  elevates, or modifies the calling shell. Wrap every OpenCV-dependent Cargo
+  command with `tools/setup-native.py --`.
+- **Link selection and loader paths:** macOS links only `opencv_core`,
+  `opencv_imgproc`, and `opencv_imgcodecs` (not all of `opencv4.pc`), keeping
+  inherited `DYLD_LIBRARY_PATH` entries after the selected OpenCV library
+  directory. Windows links the versioned `opencv_world` import library and DLL
+  and exports the selected MSVC include/library paths when `--github-env` and
+  `--github-path` are supplied. GitHub environment export refuses additional
+  inherited `DYLD_LIBRARY_PATH` entries on macOS; use `-- COMMAND` directly in
+  that case.
+- **Ownership and OS support boundaries:** Removing an eagerly linked OpenCV
+  library after setup invalidates the environment; runtime ONNX Runtime/model
+  canonical-path, length/hash, and platform capability checks remain mandatory.
+  See [the OpenCV dependency policy](docs/third-party-dependencies.md#opencv) for
+  license and link details,
+  [native development prerequisite ownership](docs/architecture.md#native-development-prerequisite-ownership)
+  for `G-007`/`G-012` scope, and the
+  [OS support policy](docs/architecture.md#os-support-policy) for minimum
+  deployment floors (`macOS 26.5.2`, `Windows 11 25H2 build 26200`) versus
+  verified qualification hosts.
 
-On macOS, command mode keeps inherited `DYLD_LIBRARY_PATH` entries after the
-selected OpenCV library directory. Relative entries resolve from the caller's
-working directory before any native probe, so probes and commands use the same
-locations. JSON reports only selected settings/additions.
-Explicit GitHub export refuses additional inherited loader entries before writing
-either file or running a command: the environment-file format cannot prepend them
-without disclosing them. Use `-- COMMAND` without export options in that case.
+## Native and feature-specific verification
 
-Missing or incompatible OpenCV, libclang, or toolchain inputs may fail setup or
-the build. Removing an eagerly linked OpenCV library after setup invalidates the
-environment and can prevent process entry; no deferred-load bridge or static-link
-workaround is promised. Existing caller-selected ORT/model canonical-path,
-length/hash, and typed runtime-refusal checks remain mandatory, as do platform
-capability checks. Product runtime never acquires dependencies.
-See [the dependency policy](docs/third-party-dependencies.md#opencv) and
-[native development prerequisite ownership](docs/architecture.md#native-development-prerequisite-ownership).
-This is not an installable profile or a clean/minimum-host/signing qualification;
-`G-007` and `G-012` remain open.
+Open a topic pull request first so hosted CI validates compilation, architecture
+contracts, ABI negotiation, and examples on both targets before reserving
+interactive hardware. Because hosted runners do not hold macOS Screen Recording
+or Accessibility grants, interactive foreground focus, or multi-display hardware
+topologies, a green `cargo test` or hosted CI run is contract/compile evidence
+rather than native capture, input, or topology qualification.
 
-Historical Apple platform qualification uses macOS 26.6.2 (25G83), SDK 26.5.
-The operator-selected current CPU OCR verification host is Apple M1 Pro, 32 GiB,
-macOS 27.0.1 (26A434), limited to its exact frozen cohort in
-[`tools/ocr-models/host-policy-v1.json`](tools/ocr-models/host-policy-v1.json).
-Its cohort policy applies to complete OCR model evaluations published in the catalog
-and to explicit performance claims; an OS upgrade or an earlier debug run does
-not confer qualification. Capture/input
-verification on the upgraded host remains separate. The deployment floor is
-macOS 26.5.2; earlier versions remain unsupported investigation targets.
-`.cargo/config.toml` sets the final artifact deployment metadata to 26.5.2 and
-the native build repeats that floor. The macOS native shim
-`mado-pilot-platform-macos` compiles, links, and passes its tests with the **Xcode
-Command Line Tools alone**, on a host where full Xcode is not installed; its only
-Cargo addition is `cc`, declared as an unconditional build dependency so Cargo
-resolves the edge on every host. The build script returns before compiling the shim
-or emitting Apple framework link directives for a non-macOS target. That confirms on
-the finished adapter what the `G-003` prototype had suggested on the same setup, and
-the measurements are in [docs/evidence/g-003/](docs/evidence/g-003/README.md). Full
-Xcode is still not evaluated, so this remains a positive result about the smaller
-installation rather than a statement that the two are interchangeable. The shim is
-compiled with `-fobjc-arc-exceptions`, a correctness requirement rather than a
-style choice: without it, an exception unwinding out of a scope that holds a
-native object leaks it. See
-[the macOS native boundary](docs/architecture.md#the-macos-native-boundary).
+When running native or feature-specific verification on a dedicated host, always
+use a fresh, purpose-specific `CARGO_TARGET_DIR` so ordinary builds and tests
+never overwrite hash-pinned qualification binaries. Consult the canonical guide
+for each area's prerequisites, opt-in commands, and revision-bound evidence:
 
-The four frame-callback boundary cases feed owned CoreMedia samples to the real
-callback. They cover successful commit, native exceptions before/after delivery,
-and a Rust callback panic without opening a capture stream or probing permissions.
-They run without Screen Recording, including under ASAN; they do not qualify
-capture, target discovery, or native input.
-
-Running that adapter's capture scenarios needs one thing the build does not:
-**Screen Recording granted to the process running the tests**. MadoPilot never
-prompts, so on a host that has neither granted nor denied it the scenarios reach the
-non-prompting refusal and print a skip naming that reason instead of passing. A green
-`cargo test` on such a host — including a continuous-integration runner — is
-therefore not evidence that macOS capture ran. To exercise them, grant Screen
-Recording to the terminal or editor that launches `cargo test`, under System Settings
-▸ Privacy & Security ▸ Screen & System Audio Recording, and restart it so the new
-grant applies.
-
-A runner reaches that skip rather than a crash for a reason worth knowing, because the
-alternative is not a failure but an abort. The capture framework's shareable-content
-query aborts, rather than returning a status, in a process holding no Core Graphics
-window-server connection — and an abort is not an exception, so no handler contains
-it. Both shim entry points that would reach that query return the non-prompting
-authorization refusal first, so the query is unreachable without the grant, and a grant
-implies the session the connection comes from. Keep that order if either entry point is
-edited: the preflight is what stands between an unauthorized host and an abort.
-
-The macOS input implementation adds a second authorization with the same
-non-prompting rule: **event-post access granted to the process running the
-tests**, which macOS surfaces under System Settings ▸ Privacy & Security ▸
-Accessibility. macOS does not fail a synthesized event from an unauthorized
-process — it discards it silently — so the Adapter reads the public
-`CGPreflightPostEventAccess` decision before every irreversible event on both
-input routes and reports `NotAuthorized` rather than claiming a delivery. The
-legacy `AXIsProcessTrusted` observation is read beside that preflight only as
-paired qualification evidence; it grants nothing and demotes nothing. Screen
-Recording and event-post access are separate grants and neither implies the
-other.
-
-The ordinary workspace test run **delivers no macOS input at all**. Both real
-routes — focus-dependent `System` and process-scoped `ProcessDirected` — post
-real events to a real process, so the automatic checks exercise the read-only
-native observations and the refusals that happen before any event, and every
-posting row is opt-in. The fixture binary and its private control protocol are
-built only under the explicit `private-fixture` feature and are absent from the
-production library. Starting the fixture window is itself opt-in, because it
-takes focus:
-
-```sh
-MADO_PILOT_MACOS_FIXTURE=1 cargo test --locked \
-  -p mado-pilot-platform-macos --features private-fixture --test native_input
-```
-
-Successful macOS `System` injection is the explicit user-focused check, run on
-an interactive desktop with both grants in place:
-
-```sh
-MADO_PILOT_MACOS_FIXTURE_EXECUTABLE="$PWD/target/mado-pilot-fixtures/MadoPilotInputFixture.app/Contents/MacOS/mado-pilot-macos-input-fixture" \
-  cargo test --locked -p mado-pilot-platform-macos --test native_input \
-  interactive_system_delivery_targets_only_the_exact_fixture -- \
-  --ignored --exact --nocapture --test-threads=1
-```
-
-It sends no click and no pointer movement, stops before input when selection is
-absent or ambiguous, and refuses rather than activating anything on its own. Do
-not make it pass by requesting a permission, opening System Settings, or
-activating another application to force focus.
-
-Process-directed qualification is seven explicit tests that never focus the
-target fixture. They post through the production `ProcessDirected` route while
-an unrelated, independently identified owned fixture stays frontmost; assert an
-unchanged physical cursor and foreground; keep sustained capture active; reject
-untagged same-process observation credit; and fail closed if the retained window
-or original process lifetime is lost. Additional same-process windows remain
-admitted because the route promises owning-process, not exact-window, scope.
-After building and signing both bundles as documented in
-[`docs/macos-input-verification.md`](docs/macos-input-verification.md), export
-their executable paths and the one topology being qualified:
-
-```sh
-export MADO_PILOT_MACOS_FIXTURE_EXECUTABLE="$PWD/target/mado-pilot-fixtures/MadoPilotInputFixture.app/Contents/MacOS/mado-pilot-macos-input-fixture"
-export MADO_PILOT_MACOS_FOREGROUND_FIXTURE_EXECUTABLE="$PWD/target/mado-pilot-fixtures/MadoPilotForegroundFixture.app/Contents/MacOS/mado-pilot-macos-input-fixture"
-export MADO_PILOT_MACOS_QUALIFICATION_TOPOLOGY="<single|same-scale|mixed-scale>"
-for test in \
-  process_directed_delivery_qualifies_appkit_renderer \
-  process_directed_delivery_qualifies_game_like_renderer \
-  controlled_unrelated_activity_remains_outside_appkit_process_evidence \
-  controlled_unrelated_activity_remains_outside_game_like_process_evidence \
-  sustained_capture_soak_keeps_process_route_isolated \
-  process_directed_pointer_refuses_offscreen_and_closed_targets \
-  process_directed_delivery_uses_process_authority_and_revalidates_window_state
-do
-  cargo test --locked -p mado-pilot-platform-macos --features private-fixture \
-    --test native_input "$test" -- \
-    --ignored --exact --nocapture --test-threads=1
-done
-```
-
-The capability matrix, typed outcomes, privacy bounds, and bundling step are in
-[docs/macos-input-verification.md](docs/macos-input-verification.md).
-
-Run each topology selector against the exact candidate source; a pass under one
-selector cannot qualify another. Measured product candidate
-`dec43d7b6c91d415f2028e188e89fa289cb9c1c9` retained the complete
-three-display `mixed-scale` matrix through the benchmark-harness-only
-applicability diff; test-only successor `5f1fdb6` tightened and passed the
-minimized/off-screen refusal row. The required disconnected `single` and exact
-two-display non-mirrored `same-scale` matrices remain unavailable, so all
-fourteen release decisions remain unexecuted. The complete pre-optimization
-matrix and the `a471c2d` native rows are historical provenance only; the
-benchmark bodies formerly attributed to `a471c2d` are source/oracle-misbound
-and supply no result.
-
-The performance claim is narrower than the qualification matrix. The one-event
-terminal `RequireUnchanged` path, with default no-focus behavior and no later
-fallback, makes one final inventory read. Its pre-optimization equivalent made
-four: route preflight, Rust live geometry, native preparation, and native final
-authority. A fallback-eligible route and terminal `ReprojectCurrent` each have
-distinct two-read shapes; `RequireFocused`, combinations of stronger policies,
-cleanup, and multi-unit sequences are excluded from the one-read result.
-
-The revision-bound one-read decision is composite. Eight exact-source
-controller, geometry-source, and native seam tests prove the call count.
-Exact-source AppKit and controlled OpenGL benchmark rows separately prove
-latency, one matching fixture event, unchanged foreground and physical cursor,
-zero correctness failures, and allocation growth no greater than 4,096 bytes
-without adding private timing-path instrumentation. On measured product
-candidate `dec43d7`, AppKit p95 is `56.466375 ms` under `106.34 ms`;
-controlled game-like p95 is `56.699333 ms` under `112.18 ms`; both profiles
-have zero allocation growth. Run the exact candidate-bound commands in
-[`docs/macos-input-verification.md`](docs/macos-input-verification.md#current-native-input-performance-evidence).
-Each accepted benchmark retains 50 samples after five warm-ups and records
-fixture source, signed fixture executable, and benchmark executable digests.
-Those gates are regression evidence for the named source, host, fixture,
-renderer, route, geometry policy, and focus policy only; they are not real-time
-or general application/game compatibility claims.
-
-The owned-window replacement acceptance probe sends no input, but it opens and
-replaces the signed fixture window and therefore remains explicit:
-
-```sh
-MADO_PILOT_MACOS_FIXTURE_EXECUTABLE="$PWD/target/mado-pilot-fixtures/MadoPilotInputFixture.app/Contents/MacOS/mado-pilot-macos-input-fixture" \
-  cargo test --locked -p mado-pilot-platform-macos --test native_input \
-  owned_window_replacement_never_retargets_the_retained_filter -- \
-  --ignored --exact --nocapture --test-threads=1
-```
-
-The old retained filter may report explicit `TargetLost` or remain quiescent; a
-request timeout is not loss evidence. The gate fails if it publishes the
-distinct successor, if the successor cannot be captured independently, or if the
-retained original mapping changes. The accepted qualified-host record is
-[`docs/evidence/g-001/macos-owned-window-replacement.md`](docs/evidence/g-001/macos-owned-window-replacement.md).
-
-The minimum supported Windows boundary is Windows 11 25H2 build family 26200 on
-a currently serviced x64 desktop installation, fixed under gate
-[`G-001`](docs/validation-gates.md#g-001).
-Windows SDK 10.0.26100.0 is the supported build input, not the runtime floor.
-Earlier Windows versions are unsupported and unqualified.
-
-Windows 11 and later serviced desktop releases are the supported OS family,
-subject to that exact floor. Current CPU OCR verification uses `win-worker` on
-Windows 11 Pro 26H2 build 26300.9550. Earlier 25H2 platform qualifications remain
-revision-bound; no feature result is transferred to the upgraded host. A failed
-or unexecuted feature/workload row is not an OS non-support decision. See the
-[OS support policy](docs/architecture.md#os-support-policy).
-
-Complete OCR model evaluations published in the catalog, and explicit performance
-claims, use the frozen cohort, numerical policy and bounded campaign rules in
-[the OCR model catalog](docs/ocr-model-catalog.md#repeatable-rust-measurements),
-and the text-comparison rules in
-[rule interpretation](docs/ocr-model-catalog.md#rule-interpretation). Ordinary
-bounded investigation can run `tools/ocr-models/run.py run --diagnostic` without a
-qualifying host policy or budgets; it retains missing prerequisites and failures
-and is never a complete evaluation. Calibration never qualifies a model, and a
-reference campaign is not candidate execution, acquisition or qualification.
-
-The Windows capture adapter adds no prerequisite beyond that environment. The
-production adapter uses the target-gated `windows` crate for Windows Graphics
-Capture, Direct3D 11, and DXGI, and needs no NuGet package, Windows App SDK,
-vcpkg, vendored sample, or redistributable. The preceding `G-002` prototype used
-the same native stack with the MSVC toolchain, a Windows SDK, and CMake; its
-review is in
-[docs/evidence/g-002/dependency-review.md](docs/evidence/g-002/dependency-review.md).
-[Windows native capture ownership](docs/architecture.md#windows-native-capture-ownership)
-states the ownership contract the production implementation follows.
-
-The Windows input implementation adds no external prerequisite or production
-helper process. It uses target-gated Win32 bindings, does not elevate, and does
-not attach another thread's input queue. The ordinary workspace test run starts
-only `MadoPilotInputFixture` in no-activation mode, sends no system input, and
-never retains input text.
-
-The ordinary `WindowMessage` native matrix is also ignored by default because it
-temporarily activates a repository-owned foreground fixture and requires an
-unlocked interactive desktop. Run it deliberately with:
-
-```sh
-cargo test --locked -p mado-pilot-platform-windows --test window_message_native ordinary_window_message_native_matrix -- --ignored --exact --nocapture --test-threads=1
-```
-
-It posts only to other exact fixture windows, sends no `System` input, does not
-intentionally move the physical pointer, and attempts to restore the prior
-foreground and cursor on exit.
-
-Successful system injection is deliberately excluded from the automatic suite
-because Windows requires a real foreground target. On an interactive Windows host,
-run the following command and click the exact PID-qualified fixture within the
-15-second prompt:
-
-```sh
-cargo test --locked -p mado-pilot-platform-windows --test native_input interactive_system_delivery_targets_only_the_exact_fixture -- --ignored --exact --nocapture --test-threads=1
-```
-
-The test sends no click, restores the previous pointer position and foreground
-window when Windows permits, and fails before system input if exact target selection
-or focus is unavailable. Do not make it pass through `AttachThreadInput`, elevation,
-or another foreground-policy bypass. The capability matrix, typed outcomes,
-privacy bounds, and focused commands are in
-[docs/windows-input-verification.md](docs/windows-input-verification.md).
-
-## Phase 2 native release matrices
-
-Hosted CI is the first gate: open the topic pull request and let both native jobs
-validate compilation, contracts, ABI negotiation, and public examples before
-reserving interactive hardware. A passing hosted job is not permission, display,
-GPU/device, signing, input, target-loss, or minimum-system evidence.
-
-Bind every retained run to the candidate commit and tree, or add a review that
-covers the complete intervening diff. The accepted release matrices are:
-
-- Windows single-display 1280×720 evidence on the approved Windows 11 desktop
-  and exactly two non-mirrored 3840×2160 displays for mixed-DPI, signed-origin,
-  movement, capture, mapping, pointer-input, device-reset/removal, target-loss,
-  Rust, C, and C++ cases. Shared-display availability is an operational
-  prerequisite, not a timing oracle.
-- macOS exactly two online non-mirrored displays with different effective
-  scales on the qualified Apple Silicon macOS 26.6.2 host, covering signed
-  placement, movement, capture, mapping, pointer-input, target-loss, Rust, C,
-  and C++ cases regardless of physical connection method.
-
-Use dedicated fixtures. Evidence may retain approved host/toolchain metadata,
-typed outcomes, timings, counts, and source identities; it must not retain
-captured pixels, pixel hashes, input text, credentials, unrelated window titles,
-process paths, or desktop metadata. Record an unavailable host or topology as an
-explicit evidence gap. Never turn absence into a skip that passes the release
-claim.
-
-## Native template-watch qualification lanes
-
-Native template-watch verification has four independent jobs. Do not infer one
-job's authority from another:
-
-1. Required Lane A owns deterministic replay/OpenCV scheduler and query
-   semantics. Both hosted release-target jobs run
-   `cargo bench --locked --package mado-pilot --bench template-watch-query` after
-   the setup CI export.
-   This short plan enforces every semantic, accounting, mapped-byte, and bounded
-   growth oracle, but does not apply target-specific statistical ceilings.
-2. Required Windows Lane B owns the compact WGC integration contract on the
-   approved interactive mixed-DPI host.
-3. Required macOS Lane B owns the same compact ScreenCaptureKit integration
-   contract on the approved permissioned Retina host.
-4. Optional Lane C owns statistical, topology, resource, provenance, and
-   endurance evidence. Invoke the replay or native executable with
-   `--lane-c-evidence` and its exact source, tree, executable, fixture, process,
-   host, toolchain, and backend arguments. Add `--enforce-budgets` only in this
-   lane. A Lane C result cannot replace or reinterpret Lane B.
-
-Each Lane B host builds once through setup (macOS form below; use the Windows
-root arguments from [native setup](#native-development-prerequisites) on Windows):
-
-```sh
-python3 tools/setup-native.py -- cargo bench --locked --package mado-pilot --bench native-template-watch --features native-template-watch-qualification --no-run
-```
-
-Record the exact source tree and executable/fixture digests, then invoke the
-emitted executable once through setup with `--native-contract`, for example
-`python3 tools/setup-native.py -- /absolute/emitted-executable --native-contract`
-(use the Windows setup form on Windows). The earlier build does not configure
-the parent shell for this process. Exit `0` is `PASS`, `1` is
-product `FAIL`, `2` is `INFRA`, and `3` is `UNSUPPORTED`; only `PASS` satisfies
-the required host job. Preserve the single JSON report even when it is red.
-These exit meanings apply to the emitted executable and its report; setup refusal
-is a prerequisite failure, not a Lane B product result.
-
-Hosted Windows and macOS jobs compile both native modes but do not execute Lane
-B: hosted macOS has no Screen Recording grant, and neither hosted runner owns
-the approved interactive fixture topology. A green hosted job is therefore Lane
-A plus compile/contract evidence, not WGC or ScreenCaptureKit semantic evidence.
-Lane B session open starts no readiness timer by itself. Startup begins after
-accepted open and ends when the acknowledged absent token is decoded; watcher
-time begins at the visible-token acknowledgement and ends at the correlated
-terminal outcome; teardown begins at explicit close/finalize and ends only at
-the native and fixture resource baseline. No interval includes fixture launch,
-and no hidden retry, sleep, deadline extension, or replacement sample is
-permitted.
-
-## Rust OCR text-query verification
-
-The [OCR text-query guide](docs/ocr-text-watch.md) separates controlled contracts,
-real CPU replay, target-owned native capture, descriptive workload observation and
-explicitly requested numerical enforcement.
-Use a fresh purpose-specific `CARGO_TARGET_DIR`; never reuse a hash-pinned
-qualification root for ordinary tests, examples or other feature/profile builds.
-
-Ordinary CI compiles the Rust examples and new owned native fixtures without
-launching them. It runs the model-free Unicode derivation and replay-input
-identity regressions. The existing backend test lane is unchanged; a new OCR
-watcher model/native cohort requires its own reviewed inputs and execution
-authority, not a prior template/foreign campaign grant.
-
-Focused deterministic checks are:
-
-```sh
-: "${CARGO_TARGET_DIR:?set a new deterministic target root}"
-: "${OCR_NORMALIZATION_PROOF_TARGET:?set a separate new proof target root}"
-: "${OCR_QUALIFICATION_CHECK_TARGET:?set a separate new qualification-feature check root}"
-cargo test --locked --package mado-pilot-ocr --lib
-cargo run --locked --release --package mado-pilot-ocr --example ocr-normalization-bound --target-dir "$OCR_NORMALIZATION_PROOF_TARGET"
-python3 tools/setup-native.py -- cargo test --locked --package mado-pilot-runtime --tests
-python3 tools/setup-native.py -- cargo test --locked --package mado-pilot --example ocr-text-watch
-python3 tools/setup-native.py -- cargo test --locked --package mado-pilot --features ocr-text-watch-qualification --example ocr-text-watch --target-dir "$OCR_QUALIFICATION_CHECK_TARGET"
-python3 -m unittest discover -s tools/ocr-text-watch/tests -v
-```
-
-Set `CARGO_TARGET_DIR` on the non-proof commands before running them. Windows
-uses the existing explicit `--opencv-root`/`--libclang-path` setup options.
-The Python tests use inert files and an owned Python child, not ONNX or capture.
-The example tests verify its independent Retina oracle and qualification-only
-stage-record rejection; neither test configuration executes the real-model main.
+| Verification area | What it requires and verifies | Canonical guide |
+|---|---|---|
+| macOS capture & non-prompting permissions | Four frame-callback boundary tests run without permissions (including under ASan). Live ScreenCaptureKit scenarios require **Screen Recording** granted to the test runner; without it, the preflight returns `NotAuthorized` before reaching the shareable-content query (which would otherwise abort without a WindowServer connection) and prints an explicit skip. | [Architecture: macOS native boundary](docs/architecture.md#the-macos-native-boundary) and [macOS owned-window replacement evidence](docs/evidence/g-001/macos-owned-window-replacement.md) |
+| macOS native input (`System` & `ProcessDirected`) | Ordinary `cargo test` sends no macOS input. Opt-in `private-fixture` tests verify `CGPreflightPostEventAccess` (Accessibility), interactive `System` delivery, seven `ProcessDirected` background-delivery scenarios across signed fixture bundles and display topologies, owned-window replacement, and the one-read `RequireUnchanged` performance profile. | [macOS input verification](docs/macos-input-verification.md) |
+| Windows native capture (`WGC`) | Uses the target-gated `windows` crate (WGC, D3D11, DXGI) with no external redistributable. Covers producer-pool lease isolation, resize, device removal, and single-display / dual-4K mixed-DPI capture evidence. | [Windows capture contract tests](docs/windows-capture-contract-tests.md) and [Architecture: Windows capture ownership](docs/architecture.md#windows-native-capture-ownership) |
+| Windows native input (`System` & `WindowMessage`) | Ordinary `cargo test` starts `MadoPilotInputFixture` in no-activation mode and sends no `System` input. Opt-in tests cover the `WindowMessage` native matrix, interactive `System` delivery (without `AttachThreadInput` or elevation), and Audit 2/6/16 DPI, cleanup, and non-ASCII C consumer acceptance. | [Windows input verification](docs/windows-input-verification.md) |
+| Native template-watch lanes (`Lane A`, `Lane B`, `Lane C`) | Separates hosted deterministic replay (`Lane A`, `template-watch-query`), required interactive WGC and ScreenCaptureKit contracts (`Lane B`, `native-template-watch --native-contract`), and optional statistical/resource evidence (`Lane C`, `--lane-c-evidence`). | [Native template watching](docs/native-template-watch.md#qualification-v2-protocol-and-migration) |
+| Rust OCR text-watch & model catalog | Covers deterministic Unicode normalization and replay tests (`mado-pilot-ocr`, `mado-pilot-runtime`, `tools/ocr-text-watch/tests`), fixed real-CPU replay, target-owned native capture procedures, and frozen-cohort model evaluations (`tools/ocr-models/run.py`). | [OCR text queries](docs/ocr-text-watch.md) and [OCR model catalog](docs/ocr-model-catalog.md#repeatable-rust-measurements) |
 
 ## Verification
 
-Run this sequence from the repository root before opening a pull request. The
-steps are ordered so that the cheapest structural failure is reported first, and
-each step returns a non-zero status with an actionable diagnostic when its policy
-is violated.
-The OpenCV-dependent commands below use macOS setup discovery. On Windows, replace
-`python3 tools/setup-native.py --` with
-`python tools/setup-native.py --opencv-root DIR --libclang-path DIR --` from an
-x64 MSVC developer prompt, using the installed roots. Do not run OpenCV-dependent
-Cargo commands unwrapped after check-only setup; it does not change the shell.
-This block uses POSIX shell syntax; use the Windows shell forms of step 6 below
-instead of its `RUSTDOCFLAGS=...` assignment. Steps 9 and 10 are macOS-only.
+Run this 10-step sequence from the repository root before opening a pull request.
+Steps are ordered from cheapest structural checks to full native verification;
+no step modifies tracked files (`cargo fmt --all` without `--check` formats in
+place). On Windows, replace `python3 tools/setup-native.py --` with
+`python tools/setup-native.py --opencv-root DIR --libclang-path DIR --` in an
+x64 MSVC developer prompt, and use the Windows shell forms for step 6. Steps 9
+and 10 run on macOS hosts only.
 
 ```sh
 # 1. Workspace architecture
@@ -470,8 +123,7 @@ python3 tools/setup-native.py -- cargo clippy --locked --workspace --all-targets
 # 4. Tests
 python3 tools/setup-native.py -- cargo test --locked --workspace --all-targets
 
-# 5. Documentation examples. `--all-targets` above deliberately excludes doctests,
-#    so they need their own run.
+# 5. Documentation examples (`--all-targets` excludes doctests)
 python3 tools/setup-native.py -- cargo test --locked --workspace --doc
 
 # 6. Documentation, with rustdoc warnings promoted to failures
@@ -490,217 +142,82 @@ python3 tools/setup-native.py -- cargo run --locked --package mado-pilot --examp
 python3 tools/setup-native.py -- cargo build --locked --package mado-pilot-capi --features private-fixture --target-dir target/c-abi-private-fixture
 python3 tools/setup-native.py -- cargo run --locked --package mado-pilot-capi --features private-fixture --target-dir target/c-abi-private-fixture --example c-abi-check -- --label "<host>"
 
-# 9. macOS host only: the macOS adapter as the *other* release target sees it.
-#    Step 3 above cannot reach that configuration here, because on this host the
-#    macOS adapter compiles under its own target.
+# 9. macOS host only: lint the macOS adapter as the Windows target sees it
 cargo clippy --locked --target x86_64-pc-windows-msvc \
   -p mado-pilot-platform-macos --all-targets -- -D warnings
 
-# 10. macOS host only: the capture scenarios with the native shim instrumented.
-#     Run on the current 27.0.1 (26A434) Apple Silicon host.
-#     Needs Screen Recording granted, and fails rather than skips without it.
+# 10. macOS host only: capture scenarios with the Objective-C shim under ASan
+#     (requires Screen Recording granted; fails rather than skips without it)
 MADO_PILOT_MACOS_ASAN=1 python3 tools/setup-native.py -- cargo test --locked \
   -p mado-pilot-platform-macos --target-dir target/asan --lib -- --test-threads=1
 ```
 
-Step 10's host and source-bound scope are stated under the
-[OS support policy](docs/architecture.md#os-support-policy). The ASan library
-suite does not replace native input, display-topology or watcher qualification.
-Its recorded run kept no passing-test output, so it establishes none of the
-branches that note an absent subject and pass: window-subject, multi-display,
-mixed-scale, seam, non-Retina and idle-producer (see the window gap below).
-Use a fresh target directory for a new proof; do not rebuild a hash-pinned one.
+Operational requirements for specific steps:
 
-The opt-in `--release-scope` check validates the immutable v0.4.0 source-release
-tree, not later development changes. Run it separately from a checkout of the
-source-release candidate. Its historical tree/blob identities remain frozen;
-never refresh them to make a feature branch pass.
-
-Both platform adapters are workspace members on both targets, so step 3 lints each of
-them with the *other* platform's code compiled away — which is a configuration neither
-adapter's own host ever produces. The coverage is asymmetric, and step 9 is what closes
-the half a macOS host would otherwise leave to a continuous-integration job:
-
-- a **macOS** host's step 3 lints the Windows adapter gated away, and step 9 adds the
-  macOS adapter gated away;
-- a **Windows** host's step 3 lints the macOS adapter gated away, so it needs no step 9.
-  The mirrored command does not exist: targeting `aarch64-apple-darwin` from Windows
-  would run the shim's build script, which needs a macOS toolchain.
-
-Step 10 looks for a defect none of the steps above it can see. The macOS ownership
-scenarios assert that a live native object *count* returns to its baseline, and a count
-cannot observe an access after a free — which is how a confirmed use-after-free in the
-native session's lifetime passed 72 green cases. `MADO_PILOT_MACOS_ASAN=1` compiles the
-Objective-C shim under AddressSanitizer and links the sanitizer runtime into that
-package's test binaries; with the variable unset the build is unchanged, and the runtime
-is never part of a released artifact. The Xcode Command Line Tools ship it, so the step
-needs nothing installed that the shim did not already need.
-
-On the historical qualified 26.6.2 host, the same run was also the permissioned
-coordinate/selection acceptance gate. It compared frame-attached `screenRect`
-origin, logical size, and effective scale with that host's display inventory and
-checked that a fresh discovery does not terminate an already-open retained filter.
-A current-host ASan run does not satisfy that gate, because it records
-no qualified display inventory or topology. A run that fails because Screen
-Recording is not granted is useful denial evidence, but passes neither that live
-gate nor the
-manual window move/resize/loss probe in
-`crates/platform/macos/tests/window_movement.rs`. The separate owned-window
-replacement command above is the release oracle that proves a retained filter
-never captures a successor after its selected window is destroyed; its accepted
-qualified-host result is retained with `G-001`.
-
-Every part of that command is load-bearing rather than a matter of taste:
-
-- **the single package**, because the runtime is attached with
-  `cargo::rustc-link-arg`, which Cargo applies to the emitting package's own binaries
-  and tests and does not propagate to a consumer. A wider build instruments the shim
-  and then fails to link everything downstream of it;
-- **the separate target directory**, so the instrumented archive never reaches a link
-  that steps 3 through 8 read from — the mixed-cache hazard the section below
-  describes, with a linker error instead of a puzzle;
-- **one test thread**, because the sanitizer halts on its first violation and aborts
-  the process, which is every test thread at once. One run therefore names one defect,
-  and fixing the group it belongs to is an iteration rather than a single report.
-
-Only the shim is instrumented, so the step observes any access the shim makes to freed
-memory and not a freed Rust allocation that Rust dereferences. Covering both sides needs
-`-Zsanitizer=address` on nightly, which the toolchain pin above rules out.
-
-This step is deliberately not a continuous-integration check. A runner has granted no
-Screen Recording, so the capture scenarios cannot run there — and because a sanitizer
-run whose scenarios never captured reports nothing at all, a skip and a pass would be
-the same line of output. A scenario that cannot reach a capture therefore *fails* under
-this build rather than skipping, which is the same rule the replay symlink tests follow,
-and which is why the step belongs to the macOS verification host alongside step 9 rather
-than to a job that can never satisfy it.
-
-One gap in that rule is deliberate and has to be read alongside it. A scenario whose
-subject is a *window* moves on when no window matches it or when every match is idle,
-and passes having noted that — because an idle window is a legitimate absence of subject
-matter rather than a host that cannot capture, and the desktop decides which it is. So a
-green step 10 means the display-based scenarios captured; it does not by itself mean the
-window-based ones did. Read the run's notes when the window paths are what a change
-touched.
-
-Step 9 names one package rather than the workspace because `--workspace` at another
-target fails in `opencv`'s build script, which looks for an installation for the target
-it is building for. It needs no more than that package: crate-level `#[cfg]` gating of a
-whole file is what produces this failure, and the two platform adapters are the only
-places the workspace uses it. Elsewhere a target is selected with `cfg!()` inside an
-expression, which strips no items.
-
-The failure this reaches is never in the gated code. A crate-level `#![cfg(…)]` strips
-the whole file, and when the crate's `//!` documentation sits inside what is stripped,
-the crate root is left undocumented and `missing_docs` fails the lint. Every
-target-gated test file in both adapters therefore opens with the guard before the gate:
-
-```rust
-#![cfg_attr(not(target_os = "macos"), allow(missing_docs))]
-#![cfg(target_os = "macos")]
-//! …
-```
-
-Keep it there. Without it a file passes only while its documentation happens to sit
-above the gate — an ordering no reader can be expected to preserve, and one that has
-already broken a continuous-integration job once for each adapter.
-
-Step 4 needs one thing of a Windows host: the privilege to create a symbolic
-link. Two tests in `mado-pilot-adapter-replay` prove that a linked path component
-cannot reach outside a replay source, and they are the only coverage of that
-rule. A host that cannot create the link has proven nothing, so they fail rather
-than return early — a skipped test and a passing one are the same line of output,
-and a green suite has to mean the case ran. The failure names the requirement and
-carries `Os { code: 1314 }`, which is `ERROR_PRIVILEGE_NOT_HELD`.
-
-Turn on **Settings → System → For developers → Developer Mode**. It takes effect
-in a console opened afterwards, with no reboot, and `cmd` confirms it:
-
-```bat
-reg query "HKLM\SOFTWARE\Microsoft\Windows\CurrentVersion\AppModelUnlock" /v AllowDevelopmentWithoutDevLicense
-```
-
-`0x1` is on. An elevated prompt also holds the privilege, but do not verify from
-one: `cargo` writes `target/` as whoever ran it, and mixing elevated and ordinary
-runs in one working copy produces permission failures later that look like
-anything but their cause.
-
-Running with `-- --skip a_symlinked_` gets the rest of the suite through on a host
-without the privilege. That run is not a verification: it is exactly the silent
-gap the two tests were changed to expose, so record it as what it is.
-
-Step 8 additionally compiles non-Rust consumers. It needs a
-C compiler, a C++ compiler, and CMake 3.22 or later. On both release targets the
-compilers are the ones the platform already has — MSVC on Windows, the Xcode
-Command Line Tools on macOS — and both CI runners and both verification hosts
-already have a CMake. Setup selects `CC` and `CXX` from the native toolchain; set
-`CMAKE` to choose a different CMake. The ABI checker also accepts `CC`/`CXX`
-overrides when invoked directly from an already configured environment.
-
-[docs/c-abi.md](docs/c-abi.md) records direct consumption from both languages,
-the small samples, explicit ownership, and the header/consumer verification.
-
-On Windows, run step 8 from a Developer Command Prompt. `cl` is not on `PATH`
-otherwise, and the same environment sets `VSINSTALLDIR`, through which the check
-finds the CMake that Visual Studio ships when none is on `PATH`.
-
-Step 6 sets an environment variable, which each Windows shell spells its own way.
-The Developer Command Prompt the paragraph above asks for is `cmd`, so that form
-comes first:
-
-```bat
-set "RUSTDOCFLAGS=-D warnings"
-python tools/setup-native.py --opencv-root DIR --libclang-path DIR -- cargo doc --locked --workspace --no-deps
-set "RUSTDOCFLAGS="
-```
-
-Quote the whole assignment. `set RUSTDOCFLAGS="-D warnings"` puts the quotation
-marks *inside* the value, and rustdoc is then passed an argument it does not
-recognize. The third line clears it again: `set` outlives the command, and a
-`RUSTDOCFLAGS` left behind applies to every later `cargo doc` in that window.
-
-In PowerShell with the x64 MSVC environment already imported, step 6 is:
-
-```powershell
-$env:RUSTDOCFLAGS = "-D warnings"; python tools/setup-native.py --opencv-root DIR --libclang-path DIR -- cargo doc --locked --workspace --no-deps
-```
-
-Step 7 needs `cargo-deny`, which is not part of the toolchain, and needs network
-access because it fetches the RustSec advisory database:
-
-```sh
-cargo install --locked cargo-deny
-```
-
-No step modifies a tracked file. `cargo fmt --all` without `--check` applies the
-formatting that step 2 verifies.
-
-[docs/third-party-dependencies.md](docs/third-party-dependencies.md) records the
-dependency policy that step 7 enforces, including the review required before a
-native library or model file is added.
+- **Step 1 (`--release-scope` opt-in):** The separate `--release-scope` flag on
+  `mado-pilot-dependency-check` validates the immutable `v0.4.0` source-release
+  tree and is run only against that release checkout; never rewrite its frozen
+  tree/blob identities for later branches.
+- **Step 4 (Windows symbolic-link privilege):** Two tests in
+  `mado-pilot-adapter-replay` verify that symlinked path components cannot escape
+  a replay source. Because a skipped test proves nothing, a Windows host lacking
+  symlink privilege fails with `Os { code: 1314 }` (`ERROR_PRIVILEGE_NOT_HELD`).
+  Enable **Settings → System → For developers → Developer Mode** and open a new
+  console (confirm `0x1` via
+  `reg query "HKLM\SOFTWARE\Microsoft\Windows\CurrentVersion\AppModelUnlock" /v AllowDevelopmentWithoutDevLicense`).
+  Never run verification from an elevated prompt: mixing elevated and ordinary
+  file ownership inside `target/` breaks subsequent builds. Passing
+  `-- --skip a_symlinked_` is an incomplete local workaround, not verification.
+- **Step 6 (Windows `RUSTDOCFLAGS` syntax):** In `cmd` (Developer Command Prompt),
+  quote the entire assignment and clear the variable afterward so it does not leak
+  into later commands:
+  ```bat
+  set "RUSTDOCFLAGS=-D warnings"
+  python tools/setup-native.py --opencv-root DIR --libclang-path DIR -- cargo doc --locked --workspace --no-deps
+  set "RUSTDOCFLAGS="
+  ```
+  In PowerShell with the x64 MSVC environment imported:
+  ```powershell
+  $env:RUSTDOCFLAGS = "-D warnings"; python tools/setup-native.py --opencv-root DIR --libclang-path DIR -- cargo doc --locked --workspace --no-deps
+  ```
+- **Step 7 (`cargo-deny`):** Install with `cargo install --locked cargo-deny`
+  (requires network access to fetch the RustSec advisory database). See
+  [third-party dependencies](docs/third-party-dependencies.md) for the enforced
+  license and source policy.
+- **Step 8 (C/C++ consumers and CMake):** Requires a C compiler, C++ compiler, and
+  CMake 3.22+ (`CC`/`CXX` are selected by `setup-native.py`; set `CMAKE` to
+  override). On Windows, run from a Developer Command Prompt so `cl` and
+  `VSINSTALLDIR` are present. See [the C ABI guide](docs/c-abi.md) for direct
+  C/C++ consumption and frozen header compatibility rules.
+- **Step 9 (Cross-target `cfg` lint on macOS):** On macOS, step 3 compiles the
+  Windows adapter with its `#![cfg(target_os = "windows")]` items stripped, and
+  step 9 checks the symmetric case for `mado-pilot-platform-macos` without running
+  the `opencv` build script for another target. Every target-gated test file in
+  both platform adapters must place `#![cfg_attr(not(target_os = "..."), allow(missing_docs))]`
+  before `#![cfg(target_os = "...")]` so stripping the file does not leave the
+  crate root undocumented.
+- **Step 10 (macOS ASan library suite):** `MADO_PILOT_MACOS_ASAN=1` instruments
+  the Objective-C shim with AddressSanitizer to catch native use-after-free bugs
+  that object-count assertions cannot see. Every flag is load-bearing: build only
+  `-p mado-pilot-platform-macos` (because `cargo::rustc-link-arg` does not
+  propagate to downstream crates), isolate `--target-dir target/asan` (so steps
+  3–8 never link instrumented archives), and run `--test-threads=1` (because ASan
+  aborts on the first violation). Under `MADO_PILOT_MACOS_ASAN=1`, missing Screen
+  Recording fails rather than skips. Window-subject scenarios still pass with a
+  note when no matching active window exists on the desktop, so inspect test
+  output notes when verifying window-capture changes.
 
 ### When a step contradicts the one before it
 
-A build cache can go stale in a way that makes one step disagree with another,
-and the disagreement is the symptom worth recognising rather than debugging.
-Observed on the Windows verification host: step 6 reported that a trait was
-missing methods its callers use, on a working tree where step 3 and step 4 had
-both just passed over the same source. `cargo doc` had checked the dependents
-against metadata for two crates that was thirteen commits old.
-
-`cargo clippy` runs through `RUSTC_WORKSPACE_WRAPPER` and writes its check
-artifacts under a fingerprint of its own, so a green step 3 does not refresh what
-step 6 consumes. When one step reports an API that the source plainly does not
-have, do not read the error: rebuild what it read.
+`cargo clippy` runs under `RUSTC_WORKSPACE_WRAPPER` with its own artifact
+fingerprint, so a passing step 3 does not refresh metadata consumed by `cargo doc`
+in step 6. If step 6 reports missing trait methods or API mismatches on source
+that just passed steps 3 and 4, clean the stale crate metadata and rerun from
+step 1:
 
 ```sh
 cargo clean -p <the crates the error names>
 ```
-
-Then re-run from step 1. A cache that was wrong once about one artifact kind was
-not necessarily right about the others, and a verification is worth only as much
-as the freshness of what it compiled — so if a run needed this, say so alongside
-its result, or `cargo clean` and take the run again.
 
 ## Documentation, decisions and tuning
 
@@ -709,47 +226,35 @@ purpose-based home. Update the affected guide in the same pull request as the
 change, following
 [documentation governance](docs/architecture.md#documentation-governance).
 
-- **Decision records.** Write a short [ADR](docs/adr/README.md) only for a
-  consequential choice: package responsibility or dependency direction,
-  technology or backend choice, public naming or compatibility policy, platform
-  or toolchain policy, or a security/trust boundary. Put commands, measurement
-  tables and history in their guides or evidence instead.
-- **Benchmarks and tuning.** Measure to investigate and tune. A focused, bounded
-  measurement needs no decision record, calibration campaign, quiet-host
-  threshold or prior qualification; see [performance](docs/performance.md).
-  Changing an empirical target, sample count or tuning parameter adds or extends
-  a [tuning record](docs/performance/tuning/README.md) with the reason and the
-  observed or explicitly missing effect. A new target applies prospectively and
-  never regrades an earlier run.
-- **Mandatory checks stay mandatory.** Correctness, memory and resource limits,
-  ownership and cleanup, identity, privacy, cancellation, ABI compatibility,
-  required native semantics and CI are never relaxed by a tuning record. Raising
-  an enforced limit or changing a public guarantee is a contract change.
-- **Claims need matching evidence.** A performance or support claim needs
-  evidence for its stated scope. A missing or failed numerical qualification
-  leaves that claim unsupported; it does not block unrelated implementation or
-  tuning.
-- **History stays history.** Evidence, released notes and earlier profiles keep
-  their bytes and verdicts. Records from before source `646369f` may cite retired
-  decision records by path; read those at that source, never as current rules.
+- **Decision records:** Write a short [ADR](docs/adr/README.md) only for a
+  consequential architectural or technical choice (package boundaries, backend
+  selection, public naming/compatibility, platform/toolchain policy, or security
+  boundaries). Keep procedures, measurement tables, and run history in their
+  canonical guides or evidence.
+- **Benchmarks and tuning:** Focused, bounded measurements require no ADR or prior
+  qualification campaign; see [performance](docs/performance.md) for measurement
+  methods and profile rules. Changing an empirical target, sample count, or tuning
+  parameter requires a concise [tuning record](docs/performance/tuning/README.md)
+  that applies prospectively without regrading earlier runs.
+- **Mandatory checks and claims:** Correctness, resource limits, ownership,
+  privacy, cancellation, ABI compatibility, and required native semantics are
+  enforced by their contracts and never relaxed by tuning records. Performance or
+  support claims require matching evidence for their stated scope.
+- **Historical immutability:** Evidence (`docs/evidence/`), release notes
+  (`docs/releases/`), and benchmark profiles (`docs/benchmarks/`) keep their
+  original bytes and verdicts. Pre-`646369f` references to `docs/adr/NNNN-*.md`
+  are historical context only.
 
 ## Branch strategy
 
 `main` contains released, production-ready code. Development for each release
 is collected in a version branch named `dev/x.y.z`, where `x.y.z` is a semantic
-version without a leading `v` (for example, `dev/0.2.0`).
+version without a leading `v` (for example, `dev/0.5.1`).
 
 Use short-lived topic branches for individual changes:
 
-- `feat/<name>` for features
-- `fix/<name>` for bug fixes
-- `docs/<name>` for documentation
-- `refactor/<name>` for refactoring
-- `test/<name>` for tests
-- `chore/<name>` for maintenance
-- `ci/<name>` for CI changes
-- `build/<name>` for build changes
-- `perf/<name>` for performance changes
+- `feat/<name>`, `fix/<name>`, `docs/<name>`, `refactor/<name>`, `test/<name>`,
+  `chore/<name>`, `ci/<name>`, `build/<name>`, or `perf/<name>`
 
 Branch names after the prefix must contain lowercase letters, numbers, `.`,
 `_`, or `-`.
@@ -762,155 +267,74 @@ Branch names after the prefix must contain lowercase letters, numbers, `.`,
 4. When the release is ready, open a pull request from `dev/x.y.z` into `main`.
 5. After merging into `main`, tag the release as `vx.y.z`.
 
-Emergency fixes follow the same flow: create the next patch-version
-`dev/x.y.z` branch from `main`, then merge a `fix/<name>` branch into it.
-
-Pull requests directly from topic branches into `main`, or from one version
-development branch into another, are rejected by the branch policy check.
-
-Group related improvements into one coherent pull request per category. Use
-meaningful commits to separate reviewable implementation steps; do not open a
-pull request for each commit, measurement receipt or documentation follow-through,
-and do not collapse a multi-step change into one giant commit. Keep affected
-tests, contracts and evidence with the category they verify.
+Emergency fixes follow the same flow through the next patch-version `dev/x.y.z`
+branch. Pull requests directly from topic branches into `main`, or between
+different `dev/*` branches, are rejected by `branch-policy.yml`. Group related
+improvements into one coherent pull request per category with reviewable commits.
 
 ## Release checklist
 
-A version branch is not a release by itself. Use this order so that the permanent
+A version branch is not a release by itself. Follow this order so the permanent
 tag, public notes, and native verification identify one final source revision:
 
-1. On a short-lived topic branch from `dev/x.y.z`, add or update the canonical
-   `docs/releases/vx.y.z.md` notes. Confirm that the workspace version, public
-   behavior, prerequisites, compatibility, artifact list, limitations, security
-   boundaries, and retained evidence all agree.
-2. Run the complete [verification](#verification) sequence. Retained ABI, native
-   semantic or support evidence from an earlier revision, and any benchmark
-   evidence cited for a performance claim in the notes, needs a reviewed
+1. On a topic branch from `dev/x.y.z`, add or update `docs/releases/vx.y.z.md`
+   and confirm that workspace version, public behavior, prerequisites,
+   compatibility, artifact list, limitations, security boundaries, and retained
+   evidence agree.
+2. Run the complete [verification](#verification) sequence. Retained ABI, native,
+   or benchmark evidence from an earlier revision requires a reviewed
    applicability record covering the complete intervening diff; otherwise rerun
    it on its named native host.
-3. Merge the release-readiness topic branch to `dev/x.y.z` through its protected
-   pull request and wait for every required check.
-4. Open the release pull request from `dev/x.y.z` to `main`. Verify that its head
-   contains only the intended release history and that its checks pass.
-5. Merge the release pull request, record the full resulting `main` commit id,
-   and verify that `origin/main` contains the accepted development history. The
-   required Rust statuses are the release pull-request checks from step 4; they
-   are not rerun only because the protected merge created a new `main` commit.
-6. Create an annotated `vx.y.z` tag at that verified `main` commit and push that
-   tag. Never tag the version-branch head before the release merge.
-7. Publish the release-provider record using the tracked
-   `docs/releases/vx.y.z.md` file verbatim as its body. Verify the tag, body,
-   source archives, and public URL.
+3. Merge the release-readiness topic branch to `dev/x.y.z` and wait for all
+   required checks.
+4. Open the release pull request from `dev/x.y.z` to `main`, verify its history,
+   and wait for all required checks to pass.
+5. Merge the release pull request, record the resulting `main` commit id, and
+   verify `origin/main` history. Required Rust statuses come from the release PR
+   checks in step 4.
+6. Create and push an annotated `vx.y.z` tag at that verified `main` commit
+   (never tag `dev/x.y.z` before merging).
+7. Publish the release-provider record using `docs/releases/vx.y.z.md` verbatim,
+   and verify the tag, body, source archives, and public URL.
 8. Create the next `dev/x.y.z` branch from the released `main` commit before
-   accepting implementation for that version.
+   accepting new implementation.
 
-Numerical performance qualification supports a specific published claim, not
-release eligibility by itself. Record an inconclusive benefit or a repeatability
-miss without claiming a speedup or treating it as a product regression. Release
-decisions still require the actual application behavior, applicable native/ABI/CI
-verification, enforced resource and ownership contracts, and disposition of known
-defects or significant observed regressions.
-
-A published version tag is immutable: never move, delete, or reuse it to replace
-a release. Correct a source or documentation defect in a later semantic version.
-A release-provider metadata correction may clarify the record only when it does
-not change what the tagged source contains or claims.
+Numerical performance qualification supports a specific published claim rather
+than release eligibility by itself. A published version tag is immutable: never
+move, delete, or reuse it; ship corrections in a later semantic version.
 
 ## Protected branches
 
-The repository rulesets protect `main` and all `dev/*` branches:
-
-- Changes must be submitted through a pull request.
-- The branch policy check must pass.
-- Review conversations must be resolved.
-- Merge commits, squash merging, and rebasing are allowed.
-- Force pushes are blocked.
-
-Deletion is blocked for `main`. Merged topic and `dev/*` branches are deleted
-automatically; deletion remains allowed for `dev/*` so completed release
-branches do not accumulate.
-
-The required approval count is currently zero because a pull request author
-cannot approve their own pull request. Increase it to one or more when another
-maintainer is available to review changes.
+Repository rulesets (tracked as reference exports in `.github/rulesets/*.json`)
+protect `main` and `dev/*`: changes require a pull request, passing branch-policy
+and status checks, and resolved review conversations; force pushes and `main`
+deletion are blocked, while merged topic and `dev/*` branches auto-delete.
 
 ## Required status checks
 
-`.github/rulesets/*.json` are tracked exports that describe the intended state of
-the branch rulesets. They are not applied automatically, so editing them does not
-change the live repository configuration.
-
-The stable required pull-request check names are:
+Every pull request targeting `main` or `dev/**` runs these required checks
+without a path filter:
 
 | Check | Workflow | What it verifies |
 |---|---|---|
-| `Validate branch flow` | `branch-policy.yml` | The source and target branches follow the pull request flow. |
-| `Repository policy` | `rust.yml` | Package inventory, dependency directions, formatting, and dependency policy. |
-| `Windows x86_64-pc-windows-msvc` | `rust.yml` | Aggregates all six native `windows-2025` lanes: workspace, OCR, normal/instrumented matching, C ABI consumers, and the independent Rust consumer. Includes Lane A execution and Lane B/C compilation, not approved-host WGC Lane B. |
-| `macOS aarch64-apple-darwin` | `rust.yml` | Aggregates the same six lanes on native `macos-26` Apple Silicon. It has no Screen Recording authority and does not execute ScreenCaptureKit Lane B. |
+| `Validate branch flow` | `branch-policy.yml` | Source and target branches follow the `topic -> dev/x.y.z -> main` flow. |
+| `Repository policy` | `rust.yml` (`ubuntu-latest`) | Package inventory, dependency directions, formatting, and `cargo deny`. |
+| `Windows x86_64-pc-windows-msvc` | `rust.yml` (`windows-2025`) | Aggregates six clean-build native lanes (`workspace`, `ocr`, `matching-normal`, `matching-instrumented`, `consumers`, `external`), including Lane A execution and Lane B/C compilation. |
+| `macOS aarch64-apple-darwin` | `rust.yml` (`macos-26`) | Aggregates the same six clean-build native lanes on Apple Silicon without Screen Recording authority. |
 
-Every pull request targeting `main` or `dev/**` runs these checks without a path
-filter. A `dev/**` push normally runs Repository policy and both native groups
-again after integration. Before those push groups start, a lightweight
-`Select dev push checks` job looks for an open `dev/x.y.z` → `main` release PR
-in this repository whose head branch and commit exactly match the push.
-Only a confirmed match suppresses repository policy and both native groups; draft
-release PRs count because their PR checks also run. A closed PR, another repository,
-another branch, or a different head commit does not suppress verification.
-API errors, unreadable responses, or a failed selector leave push checks enabled.
+CI execution rules:
 
-The lookup needs only `pull-requests: read`, scoped to the selector job in
-addition to its checkout permission. Pull-request jobs do not perform this lookup
-and retain their existing permissions and required names. Push job names append
-` (dev push)`, so their skipped statuses cannot satisfy a required PR check.
-The small selector run and skipped push jobs remain visible in Actions; this
-avoids duplicate builds, not every extra workflow entry.
-
-The decision uses the PR state observed by the selector, not an atomic snapshot
-with PR creation or closure. Opening a release PR after the selector has decided
-to run does not cancel that push run; closing it after a skip does not replay
-the skipped push. Subsequent pushes without a covering release PR run normally.
-Superseded PR runs still cancel only earlier runs of that same PR. `main` pushes
-remain disabled; release-PR checks remain the release merge gate.
-
-Each native group has six independent build-owning lanes: `workspace`, `ocr`,
-`matching-normal`, `matching-instrumented`, `consumers`, and `external`.
-Every lane starts on a fresh hosted runner and keeps compiled outputs within that
-job. No Cargo target or compiler-output cache is restored, and no compiled
-artifact is downloaded from another job or attempt. Existing prerequisite/tool
-caches remain. Matching attest/smoke checks reuse the fixed executable copy;
-C/C++ consumers use the selected freshly built C ABI library. Normal/instrumented,
-ordinary/private-fixture, and debug/release variants retain separate identities.
-The external Rust consumer retains its independent Cargo home, target and lockfile.
-
-The stable native check names belong to small Ubuntu aggregation jobs, not to
-cross-compiled verification. Each requires its entire native matrix to succeed;
-failure, cancellation, missing results and unexpected skips cannot turn green.
-Matrix fail-fast is disabled so another lane's failure does not cancel evidence
-collection. Native lanes have a 30-minute timeout; this is a safety limit, not a
-15-minute performance claim.
-
-`Repository policy` and the aggregation jobs compile no product package.
-Every product build still runs on the applicable native target with OpenCV and
-libclang. The two workspace lanes run inventory, lint, tests, doctests and docs;
-other native checks retain their existing commands in their owning lane.
-Approved-host Lane B remains separate support evidence.
-
-Rerunning a failed lane builds it afresh; it does not import a prior attempt's
-compiled files. Earlier successful checks retain their original attempt
-attribution. CI timing acceptance uses complete attempts, reports initial queue
-delay separately, and includes setup, compilation, execution and downstream
-scheduling in the critical path. More parallel jobs can increase total runner
-time. See the [verification baseline](docs/architecture.md#verification-baseline).
-
-A check is activated as a live required status only after that check has produced
-its first successful run on the branch it will guard, and only with separate
-maintainer authorization. Enabling a required check that has never reported turns
-every open pull request into a blocked pull request.
-
-The native jobs name `windows-2025` and `macos-26` rather than a `-latest` label, so
-moving to a new operating-system version is a reviewed change. Those labels still
-pin only an OS version: GitHub migrates the images behind them on its own schedule,
-so the toolchain and the exact image contents are not frozen by the label. The
-`Repository policy` job deliberately uses the moving `ubuntu-latest`, because it
-verifies host-independent policy rather than a release target.
+- **Dev-push deduplication:** Pushes to `dev/**` run `Repository policy` and both
+  native groups (`(dev push)` suffix) unless `Select dev push checks` (`pull-requests: read`)
+  finds an open `dev/x.y.z -> main` release PR in this repository with the exact
+  same head branch and commit. Any mismatch or API error leaves push checks
+  enabled.
+- **Clean-build lane isolation:** Each of the six native lanes runs on a fresh
+  runner with a 30-minute safety timeout, keeps compiled outputs local to that
+  job (no shared Cargo target cache or cross-job binary artifact download), and
+  runs with `fail-fast: false` before reporting to its Ubuntu aggregation job.
+  See the [verification baseline](docs/architecture.md#verification-baseline) for
+  architectural verification boundaries.
+- **Activating new checks:** Enable a check as a required ruleset status only
+  after it has reported a successful run on the target branch and received
+  maintainer authorization.
