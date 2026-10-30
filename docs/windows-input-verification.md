@@ -151,10 +151,14 @@ cargo run --locked --package mado-pilot --example windows-native-input -- "MadoP
 
 ## Explicit C ABI boundary checks
 
-Non-input C ABI check (`--check`, default):
+Run from an x64 MSVC developer prompt with the installed native roots. The
+non-input C ABI check (`--check`, default) requires the shared library built in
+the same active `CARGO_TARGET_DIR`; wrap both commands because setup configures
+only its child process:
 
 ```bat
-cargo run --locked --package mado-pilot-capi --example c-abi-check -- --label "<host>"
+python tools/setup-native.py --opencv-root DIR --libclang-path DIR -- cargo build --locked --package mado-pilot-capi
+python tools/setup-native.py --opencv-root DIR --libclang-path DIR -- cargo run --locked --package mado-pilot-capi --example c-abi-check -- --label "<host>"
 ```
 
 To run the full C default (4-event) and `--extended-sequence` (16-event)
@@ -162,8 +166,8 @@ To run the full C default (4-event) and `--extended-sequence` (16-event)
 
 ```bat
 cargo build --locked --package mado-pilot-platform-windows --bin mado-pilot-windows-input-fixture --bin mado-pilot-windows-window-message-fixture
-cargo build --locked --package mado-pilot-capi
-cargo run --locked --package mado-pilot-capi --example c-abi-check -- --label "<host>" --windows-native-fixture
+python tools/setup-native.py --opencv-root DIR --libclang-path DIR -- cargo build --locked --package mado-pilot-capi
+python tools/setup-native.py --opencv-root DIR --libclang-path DIR -- cargo run --locked --package mado-pilot-capi --example c-abi-check -- --label "<host>" --windows-native-fixture
 ```
 
 When managing fixture lifecycles externally, pass `--ordinary "<full title>"` or
@@ -178,14 +182,16 @@ run.
 
 ### Non-input checks
 
-Deterministic unit, cleanup-seam, and UTF-16 argument-conversion checks:
+Deterministic unit, cleanup-seam, and UTF-16 argument-conversion checks (`c-abi-check`
+requires the built `mado-pilot-capi` shared library in the same target output root):
 
 ```text
 cargo test --locked -p mado-pilot-platform-windows --lib input
 cargo test --locked -p mado-pilot-platform-windows --lib window_message::tests
 cargo test --locked -p mado-pilot-platform-windows --test window_message_native dpi_selectors_accept_only_declared_modes
 cargo clippy --locked -p mado-pilot-platform-windows --all-targets -- -D warnings
-cargo run --locked -p mado-pilot-capi --example c-abi-check -- --windows-ingress-only
+python tools/setup-native.py --opencv-root DIR --libclang-path DIR -- cargo build --locked -p mado-pilot-capi
+python tools/setup-native.py --opencv-root DIR --libclang-path DIR -- cargo run --locked -p mado-pilot-capi --example c-abi-check -- --windows-ingress-only
 ```
 
 Read-only interactive DPI cursor and snapshot checks (keep the physical cursor

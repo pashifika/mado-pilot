@@ -281,8 +281,9 @@ tag, public notes, and native verification identify one final source revision:
    and confirm that workspace version, public behavior, prerequisites,
    compatibility, artifact list, limitations, security boundaries, and retained
    evidence agree.
-2. Run the complete [verification](#verification) sequence. Retained ABI, native,
-   or benchmark evidence from an earlier revision requires a reviewed
+2. Run the complete [verification](#verification) sequence. Retained ABI, native
+   semantic, or support evidence from an earlier revision, and benchmark evidence
+   cited for a performance claim in the release notes, requires a reviewed
    applicability record covering the complete intervening diff; otherwise rerun
    it on its named native host.
 3. Merge the release-readiness topic branch to `dev/x.y.z` and wait for all

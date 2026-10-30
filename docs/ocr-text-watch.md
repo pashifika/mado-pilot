@@ -134,6 +134,28 @@ alive until physical completion.
 
 ## Fixed real-replay procedure
 
+Run the deterministic model-free OCR text-query verification suite first using
+fresh, isolated Cargo target roots (on Windows, pass the `--opencv-root` and
+`--libclang-path` setup options from
+[CONTRIBUTING.md](../CONTRIBUTING.md#native-development-prerequisites)):
+
+```sh
+: "${CARGO_TARGET_DIR:?set a new deterministic target root}"
+: "${OCR_NORMALIZATION_PROOF_TARGET:?set a separate new proof target root}"
+: "${OCR_QUALIFICATION_CHECK_TARGET:?set a separate new qualification-feature check root}"
+cargo test --locked --package mado-pilot-ocr --lib
+cargo run --locked --release --package mado-pilot-ocr --example ocr-normalization-bound --target-dir "$OCR_NORMALIZATION_PROOF_TARGET"
+python3 tools/setup-native.py -- cargo test --locked --package mado-pilot-runtime --tests
+python3 tools/setup-native.py -- cargo test --locked --package mado-pilot --example ocr-text-watch
+python3 tools/setup-native.py -- cargo test --locked --package mado-pilot --features ocr-text-watch-qualification --example ocr-text-watch --target-dir "$OCR_QUALIFICATION_CHECK_TARGET"
+python3 -m unittest discover -s tools/ocr-text-watch/tests -v
+```
+
+`tools/ocr-text-watch/tests` uses inert files and an owned Python child (no ONNX
+or capture), and the two `--example ocr-text-watch` test configurations verify
+the independent Retina oracle and qualification-only stage-record rejection
+without executing the real-model `main`.
+
 [`crates/mado-pilot/examples/ocr-text-watch.rs`](../crates/mado-pilot/examples/ocr-text-watch.rs)
 exercises the explicit CPU bounded-v2 profile across three fixed replay
 scenarios: blank-to-positive (`sequence 1`, `epoch/geometry 0`), negative

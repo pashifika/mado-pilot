@@ -257,7 +257,10 @@ Requires Screen Recording (sends no input). Verifies that destroying the
 retained fixture window and creating a same-process, same-title successor never
 retargets the old `SCContentFilter` and that retained mappings stay unchanged
 (accepted record at `a1faf04505c8471deb4de8c136fddcc7f76105e7` in
-[`evidence/g-001/macos-owned-window-replacement.md`](evidence/g-001/macos-owned-window-replacement.md)):
+[`evidence/g-001/macos-owned-window-replacement.md`](evidence/g-001/macos-owned-window-replacement.md);
+the current test also maps the retained original frame after capture close and
+compares its bytes with the earlier mapping, an added assertion that is not
+attributed to or qualified by `a1faf04505c8471deb4de8c136fddcc7f76105e7`):
 
 ```sh
 MADO_PILOT_MACOS_FIXTURE_EXECUTABLE="$APP/Contents/MacOS/mado-pilot-macos-input-fixture" \
@@ -281,12 +284,16 @@ MADO_PILOT_MACOS_FIXTURE_EXECUTABLE="$APP/Contents/MacOS/mado-pilot-macos-input-
 
 ## Bounded focus and raw-geometry regressions
 
-These three ignored rows test `ProcessDirected` `RequireFocused`, `System`
-`RequireUnchanged` raw-geometry refusal across `Move`/`Resize`, and
-`effective-1/raw-2` frame handling on a `mixed-scale` topology (`CONTENT_WAIT = 5s`;
-separate native execution authority required):
+These three ignored rows test `ProcessDirected` `RequireFocused` (requiring both
+`MADO_PILOT_MACOS_FIXTURE_EXECUTABLE` and
+`MADO_PILOT_MACOS_FOREGROUND_FIXTURE_EXECUTABLE`), `System` `RequireUnchanged`
+raw-geometry refusal across `Move`/`Resize` (requiring the target executable),
+and `effective-1/raw-2` frame handling on a `mixed-scale` topology
+(`CONTENT_WAIT = 5s`; separate native execution authority required):
 
 ```sh
+export MADO_PILOT_MACOS_FIXTURE_EXECUTABLE="$APP/Contents/MacOS/mado-pilot-macos-input-fixture"
+export MADO_PILOT_MACOS_FOREGROUND_FIXTURE_EXECUTABLE="$FOREGROUND_APP/Contents/MacOS/mado-pilot-macos-input-fixture"
 cargo test --locked -p mado-pilot-platform-macos --features private-fixture --test native_input \
   process_directed_require_focused_accepts_only_the_focused_fixture -- \
   --ignored --exact --nocapture --test-threads=1
@@ -302,9 +309,12 @@ MADO_PILOT_MACOS_QUALIFICATION_TOPOLOGY=mixed-scale \
 ## Explicit process-directed checks
 
 Seven ignored tests qualify `ProcessDirected` while `MadoPilotForegroundFixture`
-remains frontmost (`MADO_PILOT_MACOS_QUALIFICATION_TOPOLOGY` selects `single`
-1×2x display, `same-scale` 2×2x displays, or `mixed-scale` 2x/1x signed-origin
-seam, and `kCGEventSourceUserData` correlates row tokens):
+remains frontmost, and one additional ignored test
+(`owned_fixture_control_is_versioned_idempotent_and_identity_bound`) verifies
+the versioned, identity-bound fixture control channel
+(`MADO_PILOT_MACOS_QUALIFICATION_TOPOLOGY` selects `single` 1×2x display,
+`same-scale` 2×2x displays, or `mixed-scale` 2x/1x signed-origin seam, and
+`kCGEventSourceUserData` correlates row tokens):
 
 ```sh
 export MADO_PILOT_MACOS_FIXTURE_EXECUTABLE="$APP/Contents/MacOS/mado-pilot-macos-input-fixture"
@@ -340,8 +350,11 @@ Revision lineage for the qualification record in
 - Current accepted candidate: `df1c45d` and benchmark-harness-only successor
   `dec43d7` (`dec43d7b6c91d415f2028e188e89fa289cb9c1c9`, tree
   `109f77df9ef9f40b515245ab60a6036822ee7d78`, shim v19 / protocol v11), with
-  passing `single`, `same-scale`, and `mixed-scale` matrices qualifying all 14
-  controlled pairs; see
+  subsequent test-only commit `5f1fdb6`
+  (`5f1fdb6177d7ec02d2f8eb841f0786432299b0c2`) tightening and passing the
+  minimized/off-screen refusal row without relabeling the `dec43d7`-bound
+  profiles, and passing `single`, `same-scale`, and `mixed-scale` matrices
+  qualifying all 14 controlled pairs; see
   [current native input performance evidence](#current-native-input-performance-evidence)
   for the reproduction commands.
 
@@ -361,14 +374,18 @@ cargo run --locked --package mado-pilot --example macos-native-input -- \
 
 ## Explicit C ABI boundary checks
 
-Non-input C ABI check (`--check`, default on macOS):
+Non-input C ABI check (`--check`, default on macOS; build the `mado-pilot-capi`
+shared library in the active target directory first):
 
 ```sh
-cargo run --locked --package mado-pilot-capi --example c-abi-check -- --label "<host>"
+python3 tools/setup-native.py -- cargo build --locked --package mado-pilot-capi
+python3 tools/setup-native.py -- cargo run --locked --package mado-pilot-capi --example c-abi-check -- --label "<host>"
 ```
 
-With the fixture running in `--animate-on-input` mode, run the 4-event default
-and 5-event `--extended-sequence` C consumers:
+Run the 4-event default and 5-event `--extended-sequence` C consumers against
+separately prepared fixture state (restarting `mado-pilot-macos-input-fixture`
+in `--animate-on-input` mode before each run because the first sequence
+transitions the fixture window to its target fill):
 
 ```sh
 target/debug/c-abi-check/macos-native-input "MadoPilot Input Fixture [<pid>]"
@@ -419,11 +436,21 @@ done
 
 ## Historical Phase 2 evidence
 
-The single-display matrix for commit `a1faf04505c8471deb4de8c136fddcc7f76105e7`
-is retained as historical provenance in
-[`evidence/phase-2-native/macos-current-display.md`](evidence/phase-2-native/macos-current-display.md),
-and the owned-window replacement record is in
+The one-display qualified-host matrix for commit
+`a1faf04505c8471deb4de8c136fddcc7f76105e7` (including the AddressSanitizer run
+and full Rust, C, and C++ flows) is retained in
+[`evidence/phase-2-native/macos-current-display.md`](evidence/phase-2-native/macos-current-display.md).
+Its former acceptance status was invalidated after source, oracle, profile, and
+toolchain drift; it is historical evidence, not authorization for the current
+release candidate. The exact owned-window replacement oracle remains retained
+separately in
 [`evidence/g-001/macos-owned-window-replacement.md`](evidence/g-001/macos-owned-window-replacement.md).
+Revision-bound Phase 2 current-display and shared-display release matrices
+(requiring on macOS exactly two online non-mirrored displays with different
+effective scales on the qualified Apple Silicon macOS 26.6.2 host, covering
+signed placement, movement, capture, mapping, pointer-input, target-loss, Rust,
+C, and C++ cases regardless of physical connection method) remain open release
+gaps.
 
 ## Frameworks
 

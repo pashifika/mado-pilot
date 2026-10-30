@@ -89,7 +89,12 @@ python3 tools/setup-native.py -- cargo run --locked -p mado-pilot \
 ```
 
 For an authorized live target with reviewed `G-004` model and ONNX Runtime paths
-(using a dedicated `CARGO_TARGET_DIR`):
+(using a dedicated `CARGO_TARGET_DIR`, where selection must match a unique
+`<window|display>` and `<exact-target-name>`):
+
+```text
+completion-paced-ocr --native <window|display> <exact-target-name> <model-root> <runtime-file> <source-default|required:MS|preferred:MS> <cooldown-ms> <operation-ms> <exact-stop-text>
+```
 
 ```sh
 python3 tools/setup-native.py -- cargo run --locked -p mado-pilot \
@@ -143,11 +148,35 @@ python3 -B tools/capture-pacing/report.py \
   --output .rasen/approved-pacing-report.json
 ```
 
+Authority schema 1 (`.rasen/approved-pacing-run.json`) uses these distinct fields:
+
+| Fields | Required value or shape |
+|---|---|
+| `schema`, `purpose`, `approved`, `attempts` | `1`, `"capture-pacing-native"`, `true`, and integer `1` |
+| `target`, `host` | Current release-target string and the exact object returned by `--host-snapshot` |
+| `project_root`, `model_root` | Paths resolving to this checkout and its controlled model directory |
+| `source_commit`, `source_tree` | Lowercase 40-digit hexadecimal Git identities, not file records |
+| `cases`, `nonces` | Ordered `["semantic", "capture-off", "baseline", "cooldown-only", "native-only", "combined"]`; a map of those cases to distinct nonzero 16-digit lowercase hexadecimal nonces |
+| `native_interval_ns`, `cooldown_ns`, `warmup_seconds`, `measurement_seconds` | `100000000`, `250000000`, `2`, `6` |
+| `input_authorized`, `permission_changes_authorized` | Both `false` |
+| `output_root` | Absolute, nonexistent child of this checkout's `.rasen/`, not `.rasen/` itself |
+| `loader_directories` | 1–4 canonical absolute directory paths |
+| `consumer`, `fixture`, `runtime`, `detector`, `recognizer`, `image`, `native_inspector` | Each is a `{path, bytes, sha256}` file record; `native_inspector` binds `dumpbin` or `otool` |
+| `native_inputs` | 1–64 distinct `{path, bytes, sha256}` file records covering transitive non-OS dependencies |
+
+File records bind a canonical absolute path, nonnegative byte count, and lowercase
+SHA-256 digest. The detector and recognizer belong to the `G-004` profile under
+`model_root`. Native dependency checks provide static import/lookup-path evidence,
+not loaded-image enumeration. The fixture image is the verified raw BGRA
+conversion of `G-004` `hud.png` on Windows and the PNG on macOS. Windows requires
+the fixture's physical geometry to fit the work area; macOS requires a 2× main
+screen and preflights Screen Recording before starting the fixture or model
+(`not-run` on denial).
+
 Runner receipts and derived reports use schema 3 (with consumer schema 2
-recording `missed_poll_deadlines` separately from dropped samples, and authority
-schema 1 binding exact source, host, binary, model/runtime, and static loader
-inputs; offline reporter exit codes are `0` = `pass`, `1` = published non-pass
-or `legacy-inspection`, `2` = input/alias/publication refusal).
+recording `missed_poll_deadlines` separately from dropped samples; offline
+reporter exit codes are `0` = `pass`, `1` = published non-pass or
+`legacy-inspection`, `2` = input/alias/publication refusal).
 
 ## Accepted owned-workload qualification
 

@@ -1,8 +1,10 @@
 # Third-party dependency policy
 
 MadoPilot is distributed under `Apache-2.0`. Every Rust crate, native library, or
-model file added to the project is governed by this policy and enforced by
-`deny.toml` (`cargo deny --locked check`).
+model file added to the project is governed by this policy. `deny.toml`
+(`cargo deny --locked check`) enforces the Cargo portion only; native libraries
+and models require manual license, provenance, and deployment review under
+[Before adding a native dependency](#before-adding-a-native-dependency).
 
 ## Project license
 
@@ -132,10 +134,21 @@ not redistributed) from a caller-supplied canonical absolute path:
   flat directory (retaining 16 dependency handles before ORT initialization and
   deferring `onnxruntime_providers_cuda.dll`). Automatic selection remains `CPU`
   on both targets; see [OCR recognition](architecture.md#ocr-recognition).
+- **CUDA licensing and provenance:** ONNX Runtime's `MIT` license does not cover
+  CUDA Toolkit/cuBLAS/NVRTC or cuDNN, which remain subject to NVIDIA's supplied
+  licenses. Qualification retains their source, version, byte length, SHA-256,
+  signature, and license identity privately.
 - **CI fixture transport:** Hosted CI jobs download the pinned ORT 1.29.0 archive
   and SHA-256-verified model files from an ordered source allowlist (ModelScope,
   Hugging Face, `hf-mirror.com`) inside ephemeral runners for test execution
   only.
+
+Updating exact-pinned `ort` requires source review, conformance and native-load
+reruns on both release targets, dependency and license review, and confirmation
+that CPU provider selection and API 17 are unchanged. Changing the required ONNX
+Runtime version from `1.29.0` requires new loading and compatibility evidence.
+Every replacement macOS runtime artifact must repeat the check that its
+dependency closure contains only system libraries and frameworks.
 
 ### G-003 macOS shim boundary
 

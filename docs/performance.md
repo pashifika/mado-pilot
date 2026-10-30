@@ -123,8 +123,10 @@ CARGO_TARGET_DIR=target/bounded-ocr-dev \
 
 `--precursor --profile=bounded --provider=cpu` runs 3 warm-ups and 20 samples
 with explicit `MADO_PILOT_BOUNDED_SOURCE_REVISION`, `MADO_PILOT_BOUNDED_HOST_ID`,
-and `MADO_PILOT_BOUNDED_PROCESS_INDEX` bindings; `--enforce-budgets` adds the
-compiled target-specific ceilings (`--qualify` is rejected).
+and `MADO_PILOT_BOUNDED_PROCESS_INDEX` bindings (plus
+`MADO_PILOT_BOUNDED_SOURCE_TREE` where the selected report mode requires exact
+source-tree identity); `--enforce-budgets` adds the compiled target-specific
+ceilings (`--qualify` is rejected).
 
 ## Historical results and applicability
 

@@ -53,12 +53,14 @@ from the hosts used for specific verification cohorts:
   to their recorded macOS `26.6.2` (`25G83`) host. Current CPU OCR verification
   uses macOS `27.0.1` (`26A434`) under the frozen cohort allowlist in
   [`tools/ocr-models/host-policy-v1.json`](../tools/ocr-models/host-policy-v1.json).
-  The same `27.0.1` host runs the native-shim ASan library suite (at product
-  source `1e4d0b4`, 321 display-capture library tests passed with permission
-  skips refused; window-subject, multi-display/mixed-scale seam, non-Retina, and
-  idle-producer branches note an absent subject and pass without establishing
-  live execution). ASan runs provide native-shim memory-safety evidence only, not
-  coordinate, display-topology, input, watcher, or performance qualification.
+  On the same `27.0.1` host, the native-shim ASan library run at product source
+  `1e4d0b4` passed 321 tests and exercised display capture with permission skips
+  refused. Window-subject, multi-display/mixed-scale seam, non-Retina, and
+  idle-producer branches can note an absent subject and pass; passing-test output
+  was not retained, so their live execution is not established. ASan runtime and
+  clang/CLT identities remain unbound. This is native-shim memory-safety evidence
+  only, not coordinate, display-topology, input, watcher, or performance
+  qualification.
 - **Separation of OS support and workload qualification:** An unexecuted native
   scenario, a skipped permission check on an unauthorized runner, or a failed
   empirical benchmark target does not mark a supported OS unsupported or transfer
@@ -383,8 +385,9 @@ lane isolation and dev-push deduplication rules.
 The repository and all Cargo packages use `Apache-2.0` (`LICENSE`).
 [third-party-dependencies.md](third-party-dependencies.md) defines the approved
 license list, source restrictions, exception workflow, and pre-addition review
-for Rust crates, native libraries, and OCR models, enforced by
-`cargo deny --locked check` (`deny.toml`).
+for Rust crates, native libraries, and OCR models. `cargo deny --locked check`
+(`deny.toml`) enforces the Cargo portion; native libraries and models require
+manual review under that policy.
 
 ## Public naming baseline
 
@@ -399,8 +402,9 @@ for Rust crates, native libraries, and OCR models, enforced by
 | pkg-config package / static library | `madopilot-1` / `staticlib` | Reserved (`G-007`/`G-008`); not generated |
 
 Under [`G-009`](validation-gates.md#g-009), public Rust names are reviewed `0.x`
-names (additions allowed; renames, removals, or semantic changes require an ADR
-and version bump; stability promise begins at 1.0). Under
+names: additions are allowed, renames or removals require an ADR and version bump,
+and changing what an existing name means while keeping it is refused. The
+stability promise begins at 1.0. Under
 [`G-010`](validation-gates.md#g-010), the C ABI is versioned separately, and
 every released minor (`1.0`, `1.2`, `1.3`, `1.4`, `1.5`) is an append-only
 frozen prefix; see [released prefixes](c-abi.md#released-prefixes-and-compatibility).
@@ -629,10 +633,22 @@ Engine-scoped diagnostics are pull-based and default to `DiagnosticOptions::off(
 
 - **Ordering and loss accounting:** Records carry a strict engine-local sequence,
   monotonic timestamp, `DiagnosticOperationId`, and optional caller `ActivityTag`.
-  Producers never block or invoke host callbacks; capacity overflow increments
-  exact saturating per-level loss counters delivered in the next `Batch` before
-  `EndOfStream` seals on engine/session drop. Template metadata is capped at
-  65,536 entries per engine.
+  Producers never block or invoke host callbacks. A full or contended queue
+  discards the record and counts its level's loss in the next immutable `Batch`,
+  which may contain only losses. Pending per-level counters saturate at
+  `2^63 - 1` between drains; aggregate and public loss counts saturate at `u64`
+  maximum. Counts are exact below those bounds.
+- **Retained-reader lifecycle:** Final engine and session producer release seals
+  pending-loss admission before sealing the queue. An independently retained
+  reader drains committed records and losses before stable `EndOfStream`.
+  Detached observations add neither records nor losses after sealing. Retained
+  C frames remain mappable, but their weak observers neither retain the stream
+  nor delay its seal.
+- **Non-interference:** Template metadata is capped at 65,536 entries per engine.
+  Reaching that cap leaves preparation and search unchanged; a terminal `Normal`
+  record that cannot name its template is omitted and counted once as `Normal`
+  loss. Diagnostic bookkeeping never changes an otherwise successful public
+  operation's outcome.
 - **Closed privacy-reviewed payload:** Records may include public target/frame
   identities, coordinate spaces, clipped search `PixelRect`, statuses, permission
   states, route/submission/cleanup counts, and bounded grouped-OCR envelope and
@@ -839,6 +855,15 @@ expansion it bounds:
 | `expansion` | Referenced entries streamed in `64 KiB` chunks capped at declared size and ceiling; templates and OCR detector (before recognizer) are SHA-256 verified before commit. |
 | `commit` | Final `OperationContext` deadline/cancellation check before publishing the package. |
 
+The immutable archive copy is not proof of a single temporal source version on
+every platform. Windows write/delete exclusion prevents concurrent modification;
+Unix change-stamp checks detect recorded changes, but insufficient timestamp
+granularity can leave the copy containing bytes from two temporal versions.
+
+The borrowed C path avoids a whole-archive allocation proportional to
+`madopilot_bytes_t.len`; it does not make all allocation fallible. Allocation
+failure at bounded ZIP metadata and package-content sites can still abort.
+
 #### Safety ceilings
 
 Fixed under [`G-014`](validation-gates.md#g-014) ([evidence/g-014/](evidence/g-014/));
@@ -935,6 +960,25 @@ and `mado-pilot-backend-onnx` implements inference over ONNX Runtime `1.29.0`
   fails closed (`Status::Unsupported`), and published engines never switch
   providers at runtime. Explicit Rust profile configs also accept `OcrCpuOptions`
   (`1..=8` intra-op threads and spin control; default is 1 thread with spinning).
+
+Both request forms use the same validation and ownership boundary:
+
+| Contract | Rule |
+|---|---|
+| Identity admission | Before mapping or inference, require exact backend ID/version, complete model/profile identity, and supported normalization identity. Model identity includes revision, detector/recognizer byte identities, language/preprocessing/decoder/normalization identities, and vocabulary count/digest. |
+| Candidate validation | Text must be valid UTF-8. Quadrilaterals are relative to the effective region or grouped envelope, finite, strictly convex, and inside it. Confidence is finite in `0.0..=1.0`; detector order is unique. Any malformed candidate refuses the complete request without a partial result. |
+| Normalization and ordering | Normalize text to NFC, trim Unicode edge whitespace, and omit empty normalized text. Round confidence to the accepted five-decimal observation and sort by explicit global detector order, preserving that order within every group. |
+| Result ownership | Results copy complete source stream/epoch/sequence/geometry identity, transform snapshot, output space, backend/model/profile descriptors, and effective region or caller-order zones and envelope. They own normalized text and converted geometry without retaining frames, mappings, model bytes, backend candidate/session buffers, native tensors, session locks, or capture slots. |
+| Grouped storage | Own each unique candidate once; checked `u16` membership indexes use seventeen offsets, with equal adjacent offsets for empty groups. Working storage is bounded to `262,144` temporary semantic bytes and `32,000` membership-index bytes, in addition to the mapping, membership, and result ceilings above. Check the complete source descriptor before mapping, because native conversion may materialize the full source, and check the returned mapping again. |
+
+One `OperationContext` covers admission, mapping, backend work, normalization,
+grouping, and commit. It is checked before admission, after mapping, after backend
+return, during and after bounded normalization/grouping, and at commit.
+Cancellation or deadline wins over simultaneous backend, malformed-output, or
+close failure. The synchronous call is the caller's only wait: uninterruptible
+native work may return after the deadline, but its late result is discarded and
+the authoritative interruption is reported when control returns. Deadlines
+provide terminal authority, not native-thread preemption.
 
 ### The public Rust workflow
 
