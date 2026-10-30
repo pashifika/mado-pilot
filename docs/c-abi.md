@@ -297,7 +297,8 @@ inspected via `input_receipt_info` and `input_receipt_attempt_at`. Only
 `NOT_NEEDED` and `COMPLETE` cleanup states prove no sequence-pressed state
 remains held. See [Windows input verification](windows-input-verification.md#capability-boundary)
 and [macOS input verification](macos-input-verification.md#capability-boundary)
-for platform route matrices and qualification details.
+(where final candidate `dec43d7` qualified all 14 controlled pairs) for platform
+route matrices and qualification details.
 
 ## Bounded diagnostic stream
 
@@ -336,7 +337,9 @@ No `staticlib` is emitted while [`G-008`](validation-gates.md#g-008) remains ope
 ### Prerequisites
 
 Running a C or C++ consumer requires the same host OpenCV 4 installation as Rust
-(plus canonical `MADO_PILOT_G004_MODEL_ROOT` and `MADO_PILOT_ONNX_RUNTIME` paths
+(an absent OpenCV stops the process at load time before any MadoPilot code runs,
+tracked under [`G-007`](validation-gates.md#g-007); canonical
+`MADO_PILOT_G004_MODEL_ROOT` and `MADO_PILOT_ONNX_RUNTIME` paths are required
 when running real OCR examples), a C11/C++17 compiler (`cc`/`c++` from Xcode
 Command Line Tools on macOS, `cl` from an x64 MSVC Developer Command Prompt on
 Windows), and **CMake 3.22+**. On Windows, `c-abi-check` strips `\\?\`

@@ -54,6 +54,14 @@ The C ABI (`docs/c-abi.md`) uses `madopilot_`-prefixed `extern "C"` functions, `
 
 Perform no implicit network access, privilege escalation, or permission prompting. Ordinary logs and diagnostics exclude captured pixels, recognized text, input payloads, credentials, and host-local paths. Validate C pointer-length views, numeric ranges, asset/model hashes, and archive entries (`G-014` safety ceilings rejecting traversal, symlinks, special files, duplicates, and decompression bombs).
 
-## Testing, documentation, and Git workflow
+## Testing and verification
 
-Add deterministic contract tests for changed behavior and run the verification sequence in `CONTRIBUTING.md#verification`. Synchronize affected guides under `docs/` in the same pull request, and keep host-provided versus bundled native dependency requirements explicit (`docs/third-party-dependencies.md`). Before implementation begins, create a short-lived topic branch from the active `dev/x.y.z` branch (or ask the user if the active version branch cannot be determined).
+Add deterministic contract tests for changed behavior and run the verification sequence in `CONTRIBUTING.md#verification`, including affected Windows DPI/capture/input, Apple Silicon Retina/ScreenCaptureKit/permission, C/C++ ABI layout and frozen-header compatibility, and bounded-queue/deadline/target-loss checks.
+
+## Documentation and packaging
+
+Synchronize affected guides under `docs/` in the same pull request, and keep host-provided versus bundled native dependency requirements and licenses explicit (`docs/third-party-dependencies.md`).
+
+## Git workflow
+
+Before implementation begins, create a short-lived topic branch from the active `dev/x.y.z` branch (or ask the user if the active version branch cannot be determined).

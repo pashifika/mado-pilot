@@ -94,11 +94,11 @@ for ONNX Runtime 1.29.0 and model acquisition rules.
    execution identity (never mutate an existing tuple).
 2. Implement any new algorithm or bound before evaluation, adding an
    [ADR](adr/README.md) if changing a backend or technology choice.
-3. Freeze licensed inputs and exact oracles (retaining all `G-004` v3 rows,
+3. Freeze licensed inputs and exact oracles (retaining all [`G-004`](evidence/g-004/) v3 rows,
    including the dense-tooltip case) before inference.
 4. Verify resource refusal, geometry, singular/grouped correlation,
    cancellation/deadline/close, and watcher compatibility.
-5. Freeze host/cohort policies (`tools/ocr-models/host-policy-v1.json`) and
+5. Freeze host/cohort policies ([`tools/ocr-models/host-policy-v1.json`](../tools/ocr-models/host-policy-v1.json)) and
    numerical budgets before running the evaluation campaign.
 6. Retain all observations and publish scoped per-rule outcomes without hiding
    technically valid profiles that fail empirical quality or latency rules.

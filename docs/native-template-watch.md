@@ -36,6 +36,8 @@ Revision-bound Qualification V2 report identities:
   fixture SHA-256 `5a50466c3fbf420df3d56ae466a6ae233254705f340098bca677a574ae9e8957`,
   codec SHA-256 `8b59a9cbc375e21ca39514a6c2f2ca16ebdaec47b82126d7c7d36c7809dc8f10`,
   report SHA-256 `a4b6800217f1f96872d7f25f0614c1ff2a3a6f1942293267f990193557a92fbe`.
+  Earlier V1 passes and repairs are summarized under
+  [earlier qualification attempts](#earlier-qualification-attempts).
 
 ## Qualification V2 protocol and migration
 

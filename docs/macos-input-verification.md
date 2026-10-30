@@ -333,15 +333,17 @@ Revision lineage for the qualification record in
   `27fe879e0c4bb55fe4850d9a50737b568936cc10`, protocol v9), pre-optimization
   `a1eee9c14a0bd9a1ba92a5ceeff53d378c33f426` (tree `f4a707501748303adcec577df5f18fcd18f13f45`,
   shim v14 / protocol v10), invalidated `28ceb2e` (fractional Retina point
-  mismatch), `a471c2d51428a25dd11e42572b73cf5e86ef7478` (tree
+  mismatch), `a471c2d` (`a471c2d51428a25dd11e42572b73cf5e86ef7478`, tree
   `3f5ada8d116b527a8644be4d804f91341bc1e296`, benchmark bodies oracle-misbound),
   and `9e3e77d4021b792f4c4835390658aaac98e76826` (tree
   `ea7881c4416ca2a330fa3097d4fa271f9a547f96`).
 - Current accepted candidate: `df1c45d` and benchmark-harness-only successor
-  `dec43d7b6c91d415f2028e188e89fa289cb9c1c9` (tree
+  `dec43d7` (`dec43d7b6c91d415f2028e188e89fa289cb9c1c9`, tree
   `109f77df9ef9f40b515245ab60a6036822ee7d78`, shim v19 / protocol v11), with
   passing `single`, `same-scale`, and `mixed-scale` matrices qualifying all 14
-  controlled pairs.
+  controlled pairs; see
+  [current native input performance evidence](#current-native-input-performance-evidence)
+  for the reproduction commands.
 
 ## Explicit facade check
 

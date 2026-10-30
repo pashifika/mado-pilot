@@ -245,7 +245,6 @@ graph TD
     Runtime --> Capture
     Runtime --> Input
     Runtime --> Vision
-    OCR_R[ ]
     Runtime --> OCR
     Runtime --> Assets
 
@@ -681,7 +680,9 @@ Key Windows input contracts:
 
 See [windows-input-verification.md](windows-input-verification.md) for the full
 capability matrix, opt-in test commands, Audit 2/6/16 DPI and non-ASCII C
-consumer acceptance records, and documented Win32 `HWND` reuse limits.
+consumer acceptance records (and [v0.5.0 release notes](releases/v0.5.0.md#windows-audit-repairs)
+for the recorded mixed-DPI and ACP `932` revisions), and documented Win32 `HWND`
+reuse limits.
 
 ### macOS native input submission
 
@@ -722,12 +723,16 @@ consumer acceptance records, and documented Win32 `HWND` reuse limits.
 
 See [macos-input-verification.md](macos-input-verification.md) for the capability
 matrix, ad-hoc signed fixture bundling (`dev.mado-pilot.macos-input-fixture`),
-opt-in `System` and `ProcessDirected` qualification commands, and revision-bound
-performance evidence (`dec43d7`).
+opt-in `System` and `ProcessDirected` qualification commands, the
+[revision-bound `AppKitBackground` consumer observation](macos-input-verification.md#revision-bound-consumer-observation)
+(`acc5d98`), and
+[current native input performance evidence](macos-input-verification.md#current-native-input-performance-evidence)
+(`dec43d7`).
 
 ### Windows native capture ownership
 
-Settled under [`G-002`](validation-gates.md#g-002) and verified by the suites in
+Settled under [`G-002`](validation-gates.md#g-002) ([prototype evidence](evidence/g-002/))
+and verified by the suites in
 [windows-capture-contract-tests.md](windows-capture-contract-tests.md),
 `mado-pilot-platform-windows` manages WGC capture and D3D11 resources as follows:
 
@@ -791,7 +796,9 @@ frames behind [the macOS native boundary](#the-macos-native-boundary):
   stops, missing-source target loss, and revoked Screen Recording are reported as
   distinct typed outcomes; see
   [the Apple OCR procedure](ocr-text-watch-macos.md#current-v3-contract--verified-native-cohort)
-  for verified window-loss and process-reap rediscovery behavior.
+  (`86a482d`) for verified window-loss and process-reap rediscovery behavior, and
+  [evidence/phase-2-native/macos-current-display.md](evidence/phase-2-native/macos-current-display.md)
+  for the retained one-display Phase 2 matrix.
 
 ### Asset packages
 
@@ -898,8 +905,9 @@ and `mado-pilot-backend-onnx` implements inference over ONNX Runtime `1.29.0`
   PP-OCRv6 tiny/small profile (`ppocrv6-tiny-det-small-rec-max736-v1`, which
   requires an external YAML vocabulary). Per-rule quality and timing outcomes
   inform caller selection without filtering choices or altering defaults; see the
-  [OCR model catalog](ocr-model-catalog.md) for resource digests, schema, and
-  evaluation rules.
+  [OCR model catalog](ocr-model-catalog.md) and its
+  [rule interpretation](ocr-model-catalog.md#rule-interpretation) for resource
+  digests, schema, and evaluation rules.
 - **Singular and grouped-zone requests and bounds:** `OcrRequest` recognizes one
   region; `OcrZoneScanRequest` resolves 1–16 zones, rejects any empty effective
   zone, maps the minimal shared capture-pixel bounding envelope once, and assigns
@@ -970,11 +978,12 @@ shared `WatchRuntime` and two-worker scheduler:
   physical OCR call may outlive final Rust handle drop until native return.
 
 See [OCR text queries](ocr-text-watch.md) for usage, `OcrCpuOptions`, the fixed
-replay procedure, and the model-free workload apparatus,
+replay procedure, and the
+[model-free workload apparatus](ocr-text-watch.md#model-free-workload-apparatus),
 [performance/methods/ocr-watch.md](performance/methods/ocr-watch.md) for
 measurement boundaries, and the owned-fixture native procedure records in
-[ocr-text-watch-windows.md](ocr-text-watch-windows.md) and
-[ocr-text-watch-macos.md](ocr-text-watch-macos.md).
+[ocr-text-watch-windows.md](ocr-text-watch-windows.md) (`fd98dba`) and
+[ocr-text-watch-macos.md](ocr-text-watch-macos.md) (`86a482d`).
 
 ### Bounded template-presence queries
 

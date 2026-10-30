@@ -67,12 +67,12 @@ change, is actively maintained, builds on both `x86_64-pc-windows-msvc` and
 | Crate | Used by | Role and feature boundary | License |
 |---|---|---|---|
 | `serde`, `serde_json` | `mado-pilot-adapter-replay`, `mado-pilot-assets`; `mado-pilot-ocr` build/maintainer tools | Strict replay/package manifest parsing and build-time catalog validation (OCR runtime uses generated static descriptors) | MIT OR Apache-2.0 |
-| `zip` 9.0.3 | `mado-pilot-assets` | Bounded ZIP central-directory and raw entry reader; default features **off**, `deflate-flate2` only (`G-014` excludes bzip2/LZMA/XZ/Zstd/AES) | MIT |
+| `zip` 9.0.3 | `mado-pilot-assets` | Bounded ZIP central-directory and raw entry reader; default features **off**, `deflate-flate2` only ([`G-014`](validation-gates.md#g-014) excludes bzip2/LZMA/XZ/Zstd/AES) | MIT |
 | `flate2` 1.1 | `mado-pilot-assets` | Pure-Rust (`miniz_oxide`) DEFLATE decoding under `G-014` expansion limits | MIT OR Apache-2.0 |
 | `crc32fast` 1.5 | `mado-pilot-assets` | Incremental ZIP entry CRC-32 validation | MIT OR Apache-2.0 |
 | `sha2` 0.11 | `mado-pilot-assets`, `mado-pilot-ocr`, `mado-pilot-backend-onnx` | Package entry, OCR model component, and recognizer vocabulary SHA-256 verification | MIT OR Apache-2.0 |
 | `unicode-normalization` 0.1.25 | `mado-pilot-ocr` | NFC normalization for OCR outputs and search literals under Unicode 17.0.0 decomposition bounds | MIT OR Apache-2.0 |
-| `opencv` 0.99 | `mado-pilot-backend-opencv`, `mado-pilot-backend-onnx` | OpenCV C++ bindings; default features **off**, `imgcodecs`, `imgproc`, and `clang-runtime` only | MIT |
+| `opencv` 0.99 | `mado-pilot-backend-opencv`, `mado-pilot-backend-onnx` | OpenCV C++ bindings for the [matching profile](architecture.md#template-matching) and OCR preprocessing; default features **off**, `imgcodecs`, `imgproc`, and `clang-runtime` only | MIT |
 | `ort` `=2.0.0-rc.13` | `mado-pilot-backend-onnx` | Safe ONNX Runtime API 17 wrapper; default features **off**, `std`, `alternative-backend` (`ort-sys/disable-linking`), and `api-17` only (plus target-gated `cuda-provider` / `coreml-provider` registration modules; no downloader or telemetry) | MIT OR Apache-2.0 |
 | `libloading` 0.8.9 | `mado-pilot-backend-onnx` | Restricted dynamic loading of caller-supplied ONNX Runtime and Windows CUDA/cuBLAS/cuDNN/NVRTC libraries without `PATH` search | ISC |
 | `yaml-rust2` 0.13.0 | `mado-pilot-backend-onnx` | Pure-Rust bounded event parsing for the pinned Paddle `inference.yml` vocabulary; default features **off** | MIT OR Apache-2.0 |
@@ -168,7 +168,8 @@ Any change that adds, links, or bundles a native library or model must document
 
 Broader native deployment profiles (`G-007`), static libraries (`G-008`), and
 published build profiles (`G-012`) remain open in
-[validation-gates.md](validation-gates.md).
+[validation-gates.md](validation-gates.md); see
+[native development prerequisite ownership](architecture.md#native-development-prerequisite-ownership).
 
 ## OpenCV
 

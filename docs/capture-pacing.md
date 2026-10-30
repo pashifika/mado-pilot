@@ -5,7 +5,9 @@ override it per session, and inspect the applied native outcome via
 `session.description().capture_pacing()`. The companion
 [`completion-paced-ocr.rs`](../crates/mado-pilot/examples/completion-paced-ocr.rs)
 example demonstrates waiting a full caller-owned cooldown after one-shot OCR and
-result interpretation complete.
+result interpretation complete; see
+[accepted owned-workload qualification](#accepted-owned-workload-qualification)
+for the Windows and Apple Silicon results.
 
 ## Engine and session configuration
 
@@ -126,7 +128,8 @@ frame-time reductions.
 and [`tools/capture-pacing/run.py`](../tools/capture-pacing/run.py) execute the
 private 6-case verification suite (`semantic`, `capture-off`, `baseline`,
 `cooldown-only`, `native-only`, `combined`) against an owned non-activating
-fixture (`100 ms` native pacing, `250 ms` cooldown, `2 s` warm-up, `6 s` nominal
+fixture (`100 ms` native pacing / `native_interval_ns: 100000000`, `250 ms`
+cooldown / `cooldown_ns: 250000000`, `2 s` warm-up, `6 s` nominal
 measurement; `180 s` semantic / `120 s` comparison deadlines + `10 s` cleanup;
 `<= 60 s` startup, `<= 2 GiB` consumer peak RSS, `<= 256 MiB` fixture peak RSS,
 `<= 5 s` OCR p95, `<= 8 MiB` padded mapping):
