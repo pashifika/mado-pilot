@@ -1,50 +1,45 @@
 # Native template watching from Rust
 
-MadoPilot can wait for stable template presence on maintained Windows Graphics Capture or ScreenCaptureKit sessions through the Rust facade. The caller starts one bounded query and receives one immutable terminal outcome; no caller frame-polling loop, target activation, input injection, host callback, or permission prompt is involved.
+MadoPilot can wait for stable template presence on maintained Windows Graphics
+Capture (`WGC`) or macOS `ScreenCaptureKit` sessions through the Rust facade
+(`Session::start_template_watch`). Callers start one bounded query and receive
+one immutable terminal outcome without writing a frame-polling loop, activating
+targets, injecting input, or prompting for permissions.
 
-This page documents a Rust native boundary supported on the named release
-targets. Support rests on the token-driven Qualification V2 contract below:
-source `318ad1c` passed the required Apple Silicon Lane B contract, Windows
-execution source `3e3079f` passed the required approved-host contract, and
-test-only successor `53608af` pins the earlier-deadline clamp. Reviewed
-target-isolated applicability joins those results at the current boundary.
-Earlier qualification attempts keep their recorded results and are not part of
-the current support decision.
+Native support on both release targets rests on the token-driven Qualification V2
+contract below: Apple Silicon source `318ad1c` passed the required `Lane B`
+contract on macOS `26.6.2` (SDK `26.5`), Windows source `3e3079f` passed the
+required `Lane B` contract on the mixed-DPI Windows 11 25H2 host, and test-only
+successor `53608af` pins the earlier-deadline clamp across both targets through
+reviewed target-isolated applicability.
 
 ## Current boundary
 
 | Surface | State |
 |---|---|
 | Rust `Session::start_template_watch` over replay/OpenCV | Supported |
-| Rust `Session::start_template_watch` over Windows WGC window/display sessions | Supported on the qualified Windows 11 25H2 floor; V2 execution source `3e3079f` passed all eight semantic and cleanup scenarios on the approved mixed-DPI host, including exact-token geometry progress and acknowledged `TargetLost` termination; test-only successor `53608af` pins the earlier caller deadline |
-| Rust `Session::start_template_watch` over macOS ScreenCaptureKit window/display sessions | Supported on the qualified macOS floor; V2 source `318ad1c` passed all eight semantic and cleanup scenarios on the approved Apple M1 Pro, macOS 26.6.2, SDK 26.5 host, including captured 2× token scale and exact fixture finalization, and reviewed Windows-only runtime-diff applicability carries the result through `53608af` |
-| Non-blocking `TemplateQuery::poll`, blocking `wait`, explicit `cancel`, and immutable terminal results | Supported for replay/OpenCV and the qualified native sessions |
-| OCR predicates inside template queries | Not implemented; use [OCR text queries](ocr-text-watch.md) to wait for text |
-| Watcher callbacks or subscriptions | Not implemented |
-| C ABI or C++ watcher start/query APIs | Not implemented; ABI 1.5 remains unchanged |
-| Automatic input, target activation, or watcher-triggered actions | Not implemented |
-| Tokio/futures integration or real-time guarantees | Not implemented |
-| `v0.4.0` distribution | Source-only release; packaged libraries, crates.io publication, static artifacts, installers, and bundled native dependencies are not provided |
+| Rust `Session::start_template_watch` over Windows WGC window/display sessions | Supported on the qualified Windows 11 25H2 floor (`3e3079f` passed all 8 semantic/cleanup scenarios on the mixed-DPI host; `53608af` pins the earlier caller deadline) |
+| Rust `Session::start_template_watch` over macOS ScreenCaptureKit window/display sessions | Supported on the qualified macOS 26.5.2 floor (`318ad1c` passed all 8 semantic/cleanup scenarios on Apple M1 Pro macOS 26.6.2, carried through `53608af`) |
+| `TemplateQuery::poll`, `wait`, `cancel`, and immutable terminal results | Supported for replay/OpenCV and qualified native sessions |
+| OCR predicates inside template queries | Not implemented; use [OCR text queries](ocr-text-watch.md) to wait for literal text |
+| Watcher callbacks, subscriptions, Tokio/futures, automatic input, or C/C++ watcher APIs | Not implemented (C ABI 1.5 remains unchanged) |
 
-The V2 native matrices use repository-owned token fixtures to prove exact producer progress, source/frame correlation, geometry generation, retained ownership, lifecycle outcomes, and bounded cleanup. The current Apple report is bound to commit `318ad1c49102d9fcd33448d12ee75d739bf04336`, tree `00fe097cb4b1ea4eaf58abc87f496584f50d3ae8`, runner SHA-256 `7a4720f3ca8b756b0f2757988921c901983a13ef6e67fd86926860e3d5e6ea87`, fixture SHA-256 `d7fe848cccaf2db829dafd538b36460d1c015d33d666ac4158e015d4e700e307`, codec SHA-256 `8b59a9cbc375e21ca39514a6c2f2ca16ebdaec47b82126d7c7d36c7809dc8f10`, and report SHA-256 `9518c00ec118b1e2f21027fd1c7bd811a3f176f79ef89752714ef27c65ce6289`. Earlier V1 Windows passes, Apple terminal failures, repairs, and consumed builders are summarized under [Earlier qualification attempts](#earlier-qualification-attempts); V2 neither relabels them nor claims a cause for the historical ScreenCaptureKit suspension. These fixtures are qualification apparatus, not a compatibility claim for arbitrary applications or caller content.
+Revision-bound Qualification V2 report identities:
 
-The accepted Windows report is bound to commit
-`3e3079f2d71243d1b25d5bda79e3672c0cd3df07`, tree
-`77f127c281e35b4475cb5e931ae10b969b6f1a64`, runner SHA-256
-`bd827d1be2114145a1f7c436ef70adbe0a6047d4e1e1f5bfdfcbc66bcf92b714`,
-fixture SHA-256
-`5a50466c3fbf420df3d56ae466a6ae233254705f340098bca677a574ae9e8957`,
-codec SHA-256
-`8b59a9cbc375e21ca39514a6c2f2ca16ebdaec47b82126d7c7d36c7809dc8f10`,
-and report SHA-256
-`a4b6800217f1f96872d7f25f0614c1ff2a3a6f1942293267f990193557a92fbe`.
-The complete product diff from the accepted Apple source through test-only
-successor `53608af` contains runtime changes only for Windows; documentation
-changes carry no execution authority.
+- **Apple (`aarch64-apple-darwin`):** Commit `318ad1c49102d9fcd33448d12ee75d739bf04336`,
+  tree `00fe097cb4b1ea4eaf58abc87f496584f50d3ae8`, runner SHA-256 `7a4720f3ca8b756b0f2757988921c901983a13ef6e67fd86926860e3d5e6ea87`,
+  fixture SHA-256 `d7fe848cccaf2db829dafd538b36460d1c015d33d666ac4158e015d4e700e307`,
+  codec SHA-256 `8b59a9cbc375e21ca39514a6c2f2ca16ebdaec47b82126d7c7d36c7809dc8f10`,
+  report SHA-256 `9518c00ec118b1e2f21027fd1c7bd811a3f176f79ef89752714ef27c65ce6289`.
+- **Windows (`x86_64-pc-windows-msvc`):** Commit `3e3079f2d71243d1b25d5bda79e3672c0cd3df07`,
+  tree `77f127c281e35b4475cb5e931ae10b969b6f1a64`, runner SHA-256 `bd827d1be2114145a1f7c436ef70adbe0a6047d4e1e1f5bfdfcbc66bcf92b714`,
+  fixture SHA-256 `5a50466c3fbf420df3d56ae466a6ae233254705f340098bca677a574ae9e8957`,
+  codec SHA-256 `8b59a9cbc375e21ca39514a6c2f2ca16ebdaec47b82126d7c7d36c7809dc8f10`,
+  report SHA-256 `a4b6800217f1f96872d7f25f0614c1ff2a3a6f1942293267f990193557a92fbe`.
+  Earlier V1 passes and repairs are summarized under
+  [earlier qualification attempts](#earlier-qualification-attempts).
 
 ## Qualification V2 protocol and migration
-
-Qualification authority is split rather than inferred across jobs:
 
 ```mermaid
 flowchart LR
@@ -55,98 +50,69 @@ flowchart LR
     S --> Q[Qualified Rust native support]
 ```
 
-Lane A runs the deterministic scheduler/query contract. It owns deadlines,
-stability, change/rate admission, coalescing, saturation, fairness, stale
-generations, terminal outcomes, diagnostics, retained ownership, and complete
-work accounting. Ordinary
-`cargo bench --locked --package mado-pilot --bench template-watch-query` runs
-the short required semantic plan. Target-specific statistical ceilings require
-the explicit optional `--lane-c-evidence --enforce-budgets` path.
-
-Lane B runs the same eight compact scenarios once on each approved host: target
-and non-prompting permission admission, post-open synchronization, correlated
-watcher match, fair two-session progress, geometry generation, retained native
-frame and CPU-mapping ownership with fresh-session progress, exact
-session/engine/target termination, and explicit cleanup baseline. Invoke the
-release benchmark executable with `--native-contract`; do not combine it with
-Lane C, workload, diagnostic, or budget flags. Its JSON schema is
-`mado-pilot.native-template-watch-contract.v2`. Exit `0` means `PASS`, exit `1`
-means product `FAIL`, exit `2` means `INFRA`, and exit `3` means `UNSUPPORTED`.
-Only `PASS` on both approved hosts contributes native support authority.
-
-Each fixture command commits a monotonically unique nonzero token and marker
-state in one UI transaction, then acknowledges that state. The token uses a
-10-by-9 grid outside the template ROI: asymmetric orientation sentinels, 32
-token bits, their inverse, a marker-state bit, and a five-bit checksum. A frame
-establishes progress only when its complete grid decodes the exact acknowledged
-token under the expected target, stream, epoch, sequence, and geometry
-authority. A stale or partially rendered grid is rejected while newer frames
-remain eligible under the same absolute deadline. Session open alone does not
-promise an initial pixel-bearing frame for an unchanged target.
-
-Startup time begins after accepted session open and ends at exact absent-token
-observation. Watch time begins at the visible-token acknowledgement and ends at
-the correlated terminal result. Teardown begins at explicit close/finalize and
-ends only after native and fixture resources reach baseline. Fixture launch is
-outside every watcher interval. Semantic, cleanup, and apparatus outcomes remain
-independent; setup that never obtains product execution authority is `INFRA` or
-`UNSUPPORTED`, never product `FAIL`.
-
-Lane B consumes explicit fixture finalization. Windows requires the controlled
-process to be reaped and its bounded reader joined. macOS additionally requires
-the authenticated exact launch to be observed `Live` before acceptance, Stop
-acknowledgement, authenticated and retained launch lifetimes to become `Lost`,
-bounded containment, reader/output drain, unchanged executable identity, and no
-remaining exact-lifetime cleanup debt. Retained native frames and owned CPU
-mappings must remain valid without pinning resources needed by a fresh session.
-
-The former 24-workload native registry remains available only through
-`--lane-c-evidence`. Its V2 report identity is separate from both compact Lane B
-and every V1 PR #59–#64 record. Existing V1 parsers and bytes remain
-revision-bound; consumers must select the schema rather than relabel an old
-record. No hidden retry, replacement sample, target substitution, automatic
-restart, sleep-based readiness, or deadline inflation is permitted in any lane.
+- **Required `Lane A` (deterministic replay/OpenCV):** Runs via
+  `cargo bench --locked --package mado-pilot --bench template-watch-query` in
+  hosted CI on both targets, enforcing scheduler deadlines, stability,
+  change/rate admission, coalescing, saturation, fairness, stale-generation
+  rejection, diagnostics, and bounded allocation growth.
+- **Required `Lane B` (compact native contract on Windows WGC and macOS
+  ScreenCaptureKit):** Built once per approved host through `tools/setup-native.py`
+  and invoked through `tools/setup-native.py --` (because the build step does
+  not configure the parent shell's loader environment; use the Windows setup
+  options from [native development prerequisites](../CONTRIBUTING.md#native-development-prerequisites)
+  on Windows):
+  ```sh
+  python3 tools/setup-native.py -- cargo bench --locked --package mado-pilot \
+    --bench native-template-watch --features native-template-watch-qualification --no-run
+  python3 tools/setup-native.py -- /absolute/emitted-executable --native-contract
+  ```
+  Emits a single JSON report (`<= 64 KiB`, schema
+  `mado-pilot.native-template-watch-contract.v2`; exit `0` = `PASS`, `1` =
+  product `FAIL`, `2` = `INFRA`, `3` = `UNSUPPORTED`, preserved even when red)
+  and exercises 8 compact scenarios driven by an acknowledged 10×9 visual token
+  grid outside the template ROI (asymmetric sentinels, 32 token bits + inverse,
+  marker bit, 5-bit checksum):
+  1. Target and non-prompting permission admission.
+  2. Post-open absent-token synchronization (startup interval).
+  3. Correlated watcher match after visible-token acknowledgement (watch interval).
+  4. Fair two-session progress.
+  5. Geometry generation across target changes.
+  6. Retained native frame and CPU-mapping ownership alongside fresh-session progress.
+  7. Exact session, engine, and target termination (`TargetLost`).
+  8. Explicit native and fixture teardown to resource baseline (Windows process
+     reap + reader join; macOS authenticated launch `Live` -> `Stop` -> `Lost`,
+     containment, output drain, and zero cleanup debt).
+- **Optional `Lane C` (`--lane-c-evidence`, optionally `--enforce-budgets`):**
+  Invokes the replay or native benchmark executable with `--lane-c-evidence`
+  (and its exact source, tree, executable, fixture, process, host, toolchain,
+  and backend arguments) to collect statistical latency, topology, resource, and
+  24-workload endurance evidence without replacing `Lane B`.
 
 ## Prerequisites
 
-Build from the repository with its pinned Rust toolchain and a compatible OpenCV 4 development/runtime installation. Native watcher use does not require the private `native-template-watch-qualification` feature; that feature exposes only repository benchmark instrumentation and fixtures.
-
-The qualification platform floors remain:
-
-- `x86_64-pc-windows-msvc`: Windows 11 25H2 build family 26200 on a currently serviced x64 desktop installation.
-- `aarch64-apple-darwin`: Apple Silicon macOS 26.5.2 or newer under the current deployment contract.
-
-On macOS, grant Screen Recording to the application hosting MadoPilot before starting capture. MadoPilot checks capture authorization without presenting UI or calling a permission-request API. Accessibility and event-post authorization are input concerns and are neither required nor used by a template watcher.
-
-Windows exposes no capture permission prompt or permission-probe API. Unsupported capture, target loss, device failure, and integrity-sensitive input remain typed outcomes; the watcher never elevates privileges or falls back to input.
-
-While a Windows frame acquisition is idle, the Adapter derives a 100 ms
-liveness interval from the caller's clock and rechecks the raw native key. Raw
-key disappearance therefore reaches `TargetLost` within approximately one
-interval; an earlier caller deadline or cancellation still wins. A still-present
-or immediately recycled HWND does not prove target identity and is not covered
-by that bound; it still requires the authoritative WGC `Closed` event or the
-caller's own deadline. A synthetic caller clock must advance for the derived
-interval to expire.
-
-The caller must also supply:
-
-- an asset package accepted by the existing asset loader;
-- a prepared template and explicit match options;
-- a target selected from the same engine's current discovery result;
-- a query-lifetime deadline and, when blocking, a separate wait deadline;
-- stability, rate, region, and change-detection policies appropriate for the caller's content.
+- Build with the pinned Rust toolchain and host OpenCV 4 installation via
+  `tools/setup-native.py` (see [native development prerequisites](../CONTRIBUTING.md#native-development-prerequisites)).
+  Production callers do not enable `native-template-watch-qualification`.
+- Minimum deployment floors: Windows 11 25H2 build `26200` (`x86_64-pc-windows-msvc`)
+  and Apple Silicon macOS `26.5.2` (`aarch64-apple-darwin`).
+- On macOS, grant **Screen Recording** to the host process before opening capture
+  (Accessibility/event-post access is not required for watching). On Windows, idle
+  frame acquisitions recheck raw native key liveness at 100 ms intervals derived
+  from the caller's clock so vanished targets report `TargetLost` promptly.
+- Callers supply a validated asset package, prepared template, `MatchOptions`,
+  `TargetId` from the current discovery snapshot, `TemplateAnalysisRate`,
+  `TemplateStability`, `ChangeDetectionPolicy`, and query/wait
+  `OperationContext` instances.
 
 ## Rust flow
 
-`crates/mado-pilot/examples/native-template-watch.rs` demonstrates the complete public flow:
+Run [`crates/mado-pilot/examples/native-template-watch.rs`](../crates/mado-pilot/examples/native-template-watch.rs)
+against a discovered target index:
 
 ```text
 cargo run --locked --package mado-pilot --example native-template-watch -- \
   <asset-package-directory> <template-name> <target-index>
 ```
-
-The numeric index selects one entry from that invocation's discovery snapshot. The example deliberately does not print window titles or native identifiers. Production callers should present their own explicit target-selection UI or policy and retain the returned provider-qualified `TargetId`; they must not synthesize or reuse an identifier from another engine.
 
 ```mermaid
 flowchart LR
@@ -162,95 +128,67 @@ flowchart LR
     X[Cancellation, deadline, target loss, or close] --> T
 ```
 
-The request owns query authority. `TemplateQuery::wait` accepts another `OperationContext`; a wait timeout or cancellation ends only that wait and does not cancel or extend the query. `TemplateQuery::cancel` and dropping the sole query handle cancel the query idempotently.
-
-A successful `TemplateTerminalOutcome::Matched` retains the exact satisfying frame, frame-time transform, effective region, match result, backend facts, and confirmed-observation count. The result remains readable after query, session, and engine teardown without pinning capture producer slots.
-
-Other terminal outcomes are explicit: `Cancelled`, `DeadlineExceeded`, `SessionClosed`, `SchedulerClosed`, `TargetLost`, `Overloaded`, or `Failed`. Late capture or backend work cannot replace a terminal outcome or publish a stale success.
+`TemplateWatchRequest` owns query lifetime authority; `TemplateQuery::wait` uses
+an independent caller-wait `OperationContext` whose timeout/cancellation ends
+only that wait. `TemplateQuery::cancel` (or dropping the handle) cancels the
+query idempotently. Terminal outcomes are `Matched` (retaining the exact frame,
+transform, effective ROI, match result, and confirmed count independently of
+session teardown), `Cancelled`, `DeadlineExceeded`, `SessionClosed`,
+`SchedulerClosed`, `TargetLost`, `Overloaded(QueueExpired)`, or `Failed`.
 
 ## Scheduling and performance
 
-The production watcher uses fixed finite engine/session/query limits, two engine-wide analysis slots with at most one admitted generation per query, one latest pending frame per query, a bounded shared mapping cache, and a 30-second eligible-queue residence bound. Capture publication never waits for OpenCV matching. Superseded, coalesced, deferred, rejected, expired, completed, and failed work remains observable through query results or bounded diagnostics.
-
-The native target profiles are independent Windows and Apple Silicon regression
-targets for repository fixtures. They are not service-level objectives or Lane B
-pass criteria, and new statistical enforcement belongs only to optional Lane C,
-which cannot relabel a compact semantic result. No cross-target limit, automatic
-retry, dynamic capacity tuning, or real-time guarantee is implied.
+See [Bounded template-presence queries](architecture.md#bounded-template-presence-queries)
+for the fixed scheduler limits (`256` queries/engine, `16` sessions, `64`
+queries/session, `2` analysis slots, `64 MiB`/`256`-entry ROI mapping cache, and
+`30 s` eligible queue residence). Capture publication never blocks on OpenCV
+matching, and displaced or expired work is observable in query outcomes and
+diagnostics.
 
 ### Earlier qualification attempts
 
-These results are history; they keep their sources and verdicts and do not
-affect the current support decision.
+Historical V1 qualification attempts remain bound to their original commits and
+do not affect the V2 support decision above:
 
-- Replacement source `f16591f` corrected engine-close and Windows cross-DPI
-  semantics rejected by independent review. Its Windows cohort passed five fresh
-  processes; its Apple cohort passed processes 1–4, then process 5 terminated red
-  at `retained_result_mapping` after ScreenCaptureKit suspended the newly opened
-  stream. That failure remains attributed only to the observed suspension.
-- Source `030398e` produced a distinct `retained_result_mapping` terminal red:
-  bounded fixture finalization failed and p95 and maximum latency exceeded their
-  unchanged limits. Cleanup localization then selected the exact
-  retained-lifetime and typed-finalization repair described below, without
-  changing deadlines, delayed-reaper bounds, or limits.
-- Integrated candidate `9cf746f` contained both private repairs, but its sole
-  authorized builders terminated at apparatus controls before process 1; those
-  attempts were retained without retry.
-
-The decision records behind these steps are readable at the
-[historical source revision](https://github.com/pashifika/mado-pilot/tree/646369fad6c922ac7b064367817337a18e572d8c/docs/adr)
-(ADRs 0053, 0057 and 0059–0064).
+- `f16591f`: Windows passed 5 fresh processes; Apple passed processes 1–4 and
+  failed process 5 at `retained_result_mapping` after ScreenCaptureKit stream
+  suspension.
+- `030398e`: Failed `retained_result_mapping` fixture finalization and latency
+  ceilings, motivating the retained-lifetime and typed-finalization repair.
+- `9cf746f`: Terminated at pre-process-1 apparatus controls without retry.
+- Historical ADRs `0053`, `0057`, and `0059`–`0064` remain browsable at commit
+  [`646369fad6c922ac7b064367817337a18e572d8c`](https://github.com/pashifika/mado-pilot/tree/646369fad6c922ac7b064367817337a18e572d8c/docs/adr).
 
 ## Diagnostics and privacy
 
-Diagnostics are disabled by default. `Normal` mode retains terminal state, final work counters, and exact loss accounting; `Debug` additionally retains bounded nonterminal dispositions and intermediate counters. Neither mode retains captured pixels or hashes, template bytes or caller template identifiers, window titles, raw native identifiers, local paths, credentials, OCR/input text, native payloads, process inventories, or unrelated desktop metadata.
-
-The private qualification harness applies another report boundary before
-retaining evidence. V2 Lane B emits one typed JSON object no larger than 64 KiB;
-unknown fields are rejected recursively, so pixels, hashes, titles, paths,
-credentials, unrelated process data, and free-form native payloads cannot be
-admitted. Its bounded scale, frame ordinal, status, timing, count, and resource
-facts contain no target name or native identifier.
-
-Tracked native-watch reports pass two ordered checks behind one validator.
-Privacy and schema validation runs first and admits only fixed report fields,
-canonical identities and finite bounded platform grammars; it rejects paths,
-credentials, captured/template content, OCR/input text, native identifiers,
-process inventories, free-form payloads, malformed or overflowing numbers, extra
-delimiters and trailing data. Environment compatibility then independently
-checks the approved host class, platform family, deployment target, SDK,
-toolchain and backend, and returns a typed incompatibility distinct from schema
-and privacy failures. The caller maps the three outcomes to distinct bounded
-failure classes, publishes no tracked report after any rejection, and publishes
-exactly one report only after semantic, privacy and environment checks all pass.
-For Windows host class `windows-i7-12700kf-32g`, Windows 11 Pro 25H2 build family
-26200 and Windows SDK 10.0.26100.0 remain required; a canonical unsigned 32-bit
-UBR and bounded hardware text (the fixed processor description with either
-`32 GiB` or a canonical unsigned 64-bit byte count) are diagnostic provenance,
-not exact-update or hardware admission keys. Apple allowlists and rejection rules
-stay exact.
-
-On Apple, fixture finalization facts stay separate: Stop
-acknowledgement, authenticated and retained launched lifetime, bounded
-containment, output drain, executable identity, and cleanup debt. Failure output
-uses fixed state vocabulary, booleans, and bounded counts rather than paths,
-titles, native identifiers, free-form framework text, or captured content.
-Neither the private V1 repairs nor V2 qualification changes the public watcher
-interface. Cross-target support is limited to the named release targets and
-platform floors recorded above.
-
-Application logs remain the caller's responsibility. Avoid formatting full native errors or discovered target names into ordinary telemetry when those values may contain sensitive application or desktop data.
+Engine diagnostics default to `Off` and exclude pixels, hashes, template names or
+bytes, window titles, native identifiers, paths, and desktop metadata when
+enabled at `Normal` or `Debug` (see
+[Bounded diagnostic observation](architecture.md#bounded-diagnostic-observation)).
+Tracked V2 `Lane B` reports (`<= 64 KiB` JSON) additionally pass a two-stage
+validator in `mado-pilot-testkit`: strict schema/privacy validation (rejecting
+unknown fields, paths, titles, pixels, or free-form text) followed by host
+environment compatibility validation (`windows-i7-12700kf-32g` on Windows 11 Pro
+25H2 build `26200` / SDK `10.0.26100.0`, and the Apple M1 Pro allowlist).
 
 ## Troubleshooting
 
-- macOS refuses discovery or open: grant Screen Recording to the hosting application in system settings, then restart that application if macOS requires it. MadoPilot will not open the settings pane or request permission.
-- Discovery returns no usable target: repeat discovery after the target exists and select from the new snapshot. Do not reuse an identifier from another engine or an earlier target lifetime.
-- `DeadlineExceeded`: inspect the query outcome, not only the return from `wait`. A wait deadline affects the caller wait; the query deadline is fixed in `TemplateWatchRequest`.
-- `Overloaded(QueueExpired)`: eligible work could not enter the fixed scheduler within 30 seconds. Repair the source rate, query deadline, rate/stability policy, or backend performance; there is no public capacity knob or hidden retry.
-- `TargetLost`, `SessionClosed`, or `SchedulerClosed`: create a new discovery/session/query chain only after the owning target or engine state is valid again. A terminal query cannot be revived.
-- `Failed`: inspect the structured error at the application boundary while keeping sensitive native payloads out of retained diagnostics. MadoPilot does not switch backends or inject input as fallback.
-- A template works in the repository fixture but not in another application: treat that as an unqualified compatibility case. Validate the application's pixels, scale, region, occlusion, animation, and timing under its real topology before relying on it.
+- **macOS refuses discovery or open:** Grant Screen Recording to the host app in
+  System Settings and restart it.
+- **Discovery returns no usable target:** Run a fresh discovery pass after the
+  target window opens; never reuse a `TargetId` from an older target lifetime or
+  another engine.
+- **`DeadlineExceeded` vs caller wait timeout:** Inspect the query's terminal
+  outcome, as `wait` timeouts end only that wait call.
+- **`Overloaded(QueueExpired)`:** Eligible work waited more than `30 s` for an
+  analysis slot; reduce capture/analysis rate, shrink the ROI, or adjust the
+  deadline.
+- **`TargetLost`, `SessionClosed`, or `SchedulerClosed`:** Open a new discovery,
+  session, and query chain after the target is available again.
 
 ## Explicit limitations
 
-Native Rust WGC/ScreenCaptureKit watcher support is qualified on the named release targets and included in the source-only `v0.4.0` boundary. Qualification does not promote OCR predicates, callbacks/subscriptions, C ABI/C++, automatic input, target activation, arbitrary application/template/ROI compatibility or timing, real-time behavior, installable packaging, or crates.io/static artifacts. Existing C and C++ compilation, ownership, diagnostics, and frozen-prefix checks remain regression proof only; they are not watcher API checks.
+Qualification covers the Rust `Session::start_template_watch` workflow over
+replay/OpenCV, Windows WGC, and macOS ScreenCaptureKit on the supported OS
+floors. It does not include OCR predicates, callbacks, async futures, C/C++
+watcher APIs, automatic input, or installable binary packages.

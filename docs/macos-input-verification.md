@@ -1,89 +1,67 @@
 # macOS Input Adapter and Verification
 
-The macOS platform package implements input at the Adapter boundary, and
-`mado_pilot::macos_engine` wires it into the runtime and public Rust facade.
-C and C++ consume that same engine directly through the C ABI. Release acceptance
-uses the explicit native checks below; ordinary checks do not send desktop input
-or open the opt-in fixture window.
+`mado-pilot-platform-macos` implements macOS input at the adapter boundary,
+wired into the runtime and public Rust facade via `mado_pilot::macos_engine` and
+exposed to C and C++ through the C ABI (`madopilot.h` / `MadoPilot::C`).
 
-Current candidate release status: **14 qualified, 0 rejected, and 0 unexecuted
-controlled pairs**. Final candidate
-`dec43d7b6c91d415f2028e188e89fa289cb9c1c9` passed the controlled AppKit,
-game-like, and native input/public-language profiles. The three-display
-`mixed-scale` native rows, deterministic one-read proofs, sanitizer, and
-ABI/C++/CMake checks apply through the reviewed source chain. Hosted CI passed
-on source/test commit `7ce1602` with pushed evidence head `705c713`.
+**Current candidate release status:** **14 qualified, 0 rejected, and 0 unexecuted
+controlled pairs.** Final measured candidate
+`dec43d7b6c91d415f2028e188e89fa289cb9c1c9` (tree
+`109f77df9ef9f40b515245ab60a6036822ee7d78`) passed the controlled AppKit,
+game-like, and native input/public-language profiles, deterministic one-read
+proofs, sanitizer, and ABI/C++/CMake checks (hosted CI passed on `7ce1602` with
+evidence head `705c713`), plus independent disconnected `single`, exact
+two-display non-mirrored `same-scale`, and three-display `mixed-scale` native
+matrices. The opt-in `AppKitBackground` pointer mode has one separately
+authorized consumer workflow observation at
+`acc5d98ae8cfc4958970be826a28011bc12185c9`
+([below](#revision-bound-consumer-observation)). These controlled results do not
+claim arbitrary application/game compatibility, exact-window delivery, or
+application consumption, and the [bounded regression rows](#bounded-focus-and-raw-geometry-regressions)
+require separate native execution bindings.
 
-Independent disconnected `single` and exact two-display non-mirrored
-`same-scale` supplements each passed all 14 interactive rows and their
-applicable display scenarios. No topology result was substituted for another.
-Nothing here qualifies arbitrary applications, arbitrary games, exact-window
-delivery, or application consumption.
-The opt-in `AppKitBackground` pointer construction has one separately authorized
-full-workflow result at `acc5d98ae8cfc4958970be826a28011bc12185c9`, described below.
-Neither that case nor the historical results qualify it for arbitrary targets.
+**Shared verification preconditions across all native macOS checks below:**
 
-Current-source final-focus ordering, `System` raw-geometry checks, and retained
-cached mapping require separately bound native results. The
-[bounded regression rows](#bounded-focus-and-raw-geometry-regressions) describe
-procedures; this public document does not qualify their execution. They do not
-refresh the source, hashes, support decisions, or performance measurements above.
+- **Ordinary `cargo test` sends no live input:** All posting checks are `--ignored`
+  and require explicit opt-in (`--features private-fixture` and/or
+  `MADO_PILOT_MACOS_FIXTURE_EXECUTABLE`).
+- **Non-prompting permissions:** Live capture requires **Screen Recording** and
+  live input requires **event-post access** (`CGPreflightPostEventAccess`, listed
+  under System Settings ▸ Privacy & Security ▸ Accessibility) granted to the
+  terminal or runner launching `cargo test`. MadoPilot never calls
+  permission-request APIs, opens System Settings, or forces window activation to
+  make a check pass.
+- **No implicit fallback and separate visual oracles:** `System` is never
+  substituted for `ProcessDirected` unless explicitly ordered in `DeliveryPlan`
+  after a zero-effect preflight refusal. Receipt completion (`InvocationOnly`)
+  and newer-frame visual postconditions are verified as independent facts.
 
 ## Capability boundary
 
-Capabilities are operation-and-route pairs. macOS publishes two routes with
-different address scopes: `System` posts `CGEvent` at the HID tap and reaches
-whatever is focused, and `ProcessDirected` posts `CGEventPostToPid` to the
-process that owns the retained window without focusing it.
+macOS publishes two input routes with distinct address scopes: `System` posts
+`CGEvent` at the HID tap to the focused target, and `ProcessDirected` posts
+`CGEventPostToPid` to the owning process of the retained window without focusing
+it:
 
 | Discovered target | `System` | `WindowMessage` | `ProcessDirected` |
 |---|---|---|---|
-| Top-level window | Pointer, keyboard, text; focus required; invocation-only evidence | Unsupported | Qualified pointer, keyboard, and text; foreground-preserving; honours a caller-selected `RequireFocused` predicate without activation; owning-process scope; `Unknown` compatibility; invocation-only evidence |
-| Additional same-process windows | Same target contract | Unsupported | Do not revoke process scope; no exact-window or responder-selection guarantee |
-| Display | Pointer only; no focusable target is implied; invocation-only evidence | Unsupported | Unsupported |
+| Top-level window | Pointer, keyboard, text; focus required; `InvocationOnly` evidence | Unsupported | Qualified pointer, keyboard, text; foreground-preserving; honors `RequireFocused` without activation; `OwningProcess` scope; `Unknown` compatibility; `InvocationOnly` evidence |
+| Additional same-process windows | Same target contract | Unsupported | Preserve process scope; no exact-window or responder-selection guarantee |
+| Display | Pointer only; no focus requirement; `InvocationOnly` evidence | Unsupported | Unsupported |
 
-There is still no exact-window input channel, and no request may obtain one: a
-caller that requires `WindowMessage` fails admission with
-`UnsupportedCombination` before any event. `ProcessDirected` is explicit
-caller opt-in — selecting it authorizes posting to the owning process, and the
-descriptor never upgrades that to an exact-window claim. A fallback plan may try
-`System` only after a preceding route was refused without possible native
-effect. The Adapter never substitutes system input on its own: doing so would
-focus a window the caller asked not to disturb.
-
-`ProcessDirected` release publication is gated per operation pair: a source may
-call a pair qualified only when its mandatory revision-bound native rows in the
-process-directed qualification matrix pass.
-`CapabilitySupport::Unknown` is the strongest publishable compatibility claim,
-and a failed or unexecuted route-wide row blocks every dependent pair. The
-negotiated target descriptor remains the runtime admission authority, but its
-implemented mapping is not evidence that the current source passed the release
-gate. The pre-optimization source qualified fourteen pairs. Final candidate
-`dec43d7` now has independently passing `single`, exact two-display
-non-mirrored `same-scale`, and `mixed-scale` matrices. All fourteen current
-release decisions are `qualified`.
-
-Every target names `PermissionKind::InputControl` as the authorization input
-needs, separately from the Screen Recording that capture needs. `InputControl`
-is the MadoPilot contract name; on macOS its authority is the public,
-non-prompting `CGPreflightPostEventAccess` decision. macOS may group that grant
-under an Accessibility-labelled Privacy & Security pane, but the legacy
-`AXIsProcessTrusted` result is not the input-post authorization source. Naming
-the permission is not a claim that it is held.
-
-Every refused or undetermined permission report names two independent execution
-axes. Bundle launch is `bundled`, `unbundled`, or `unknown`; signature mode is
-`unsigned`, `invalid`, structurally valid `ad-hoc`, structurally valid
-`certificate-backed`, or `platform-failure`. The Adapter reads signature state
-through dynamically loaded public Security.framework code-signing APIs.
-Structured diagnostic records contain only reviewed enums, numbers, identifiers,
-counts, and flags. They never carry the signing identifier; the dedicated
-fixture prints that identifier only on its explicit evidence line.
+Because macOS provides no exact-window channel, requesting `WindowMessage` fails
+admission with `UnsupportedCombination` before any event. Every target names
+`PermissionKind::InputControl` (`CGPreflightPostEventAccess`), distinct from
+Screen Recording (`PermissionKind::ScreenCapture`). Refused or undetermined
+permission reports carry two independent axes inspected via dynamically loaded
+public `Security.framework` APIs: bundle launch (`bundled`, `unbundled`,
+`unknown`) and signature validity (`unsigned`, `invalid`, structurally valid
+`ad-hoc`, structurally valid `certificate-backed`, `platform-failure`).
 
 ## Opt-in AppKit background pointer construction
 
-Rust callers select the policy before engine construction, without a permission
-probe or native operation:
+Rust callers may opt into `MacosProcessPointerMode::AppKitBackground` before
+engine construction (`CoreGraphics` remains the default, including for C/C++):
 
 ```rust
 use mado_pilot::{MacosConfig, MacosProcessPointerMode, NativeEngineRequest};
@@ -94,377 +72,141 @@ let request = NativeEngineRequest::new().with_macos_config(
 );
 ```
 
-`CoreGraphics` remains the default. The selection affects only mouse moves,
-drags, presses, and releases sent through `ProcessDirected`. System events,
-keyboard, text, and scroll keep their existing construction. It is a Rust-only
-macOS option: no public C layout, function table, or foreign default changes.
+This mode affects only `ProcessDirected` mouse moves, drags, presses, and
+releases:
 
-**Every selected pointer event carries Command in addition to the sequence's
-held modifiers.** No Command key is synthesized. Applications may interpret this
-as a modified click or drag, so callers must opt in deliberately.
-The NSEvent factory supplies the authorized window number, bounded unique event
-number, click count, and pressure; its retained CGEvent is explicitly assigned
-the sequence-private source and activity tag. Global coordinates are preserved;
-the runtime-resolved private `CGEventSetWindowLocation` receives the point
-relative to the final authorized current window bounds, including signed and
-fractional desktop positions.
-
-Ordinary pointer events refuse with `UnsupportedCombination` if the target is
-observed frontmost, background state cannot be established, or the construction
-capability is unavailable. This selection never falls back to another
-construction or route. The observation is a pre-post guard, not an atomic OS
-focus guarantee. A foreground transition after a press does not block bounded
-release of state owned by that sequence: cleanup uses its retained pointer
-position and last authorized bounds without needing a visible window or a
-background predicate. Original-process lifetime, post authorization, cancellation
-and deadline checks still apply; a failed release remains truthfully owed.
-
-The transport remains one `CGEventPostToPid` invocation per native unit.
-Receipts prove invocation, not queue admission or consumption. Non-posting
-construction/refusal/ownership regressions run with
-`cargo test --locked -p mado-pilot-platform-macos --lib appkit_pointer`.
-These tests do not qualify application compatibility, physical noninterference,
-concurrent typing, or macOS 27. Real effects require a separately authorized,
-revision-bound background workload with independent visual postconditions.
+- **Construction and `Command` modifier flag:** `NSEvent` supplies the authorized
+  window number, bounded event number, click count, and pressure; the resulting
+  `CGEvent` receives the sequence-private source, activity tag, and
+  window-relative location via runtime-resolved `CGEventSetWindowLocation`.
+  **Every pointer event ORs `Command` into its modifier flags** alongside
+  sequence-held modifiers without posting a Command key, which can alter click or
+  drag behavior in the target app.
+- **Refusal and cleanup:** Ordinary pointer events refuse with
+  `UnsupportedCombination` (without fallback) if the target is frontmost,
+  background state is unobservable, or the construction symbol is unavailable.
+  Bounded cleanup releases owned buttons using the retained pointer position and
+  last authorized bounds even if the window later became frontmost or hidden.
+  Non-posting unit tests run via
+  `cargo test --locked -p mado-pilot-platform-macos --lib appkit_pointer`.
 
 ### Revision-bound consumer observation
 
-On macOS 27.0 arm64, MadoMata's unchanged private character-guide workflow passed
-once using published Git revision `acc5d98ae8cfc4958970be826a28011bc12185c9`,
-Rust 1.98.1, explicit `AppKitBackground`, and a 50 ms press/release hold.
-Independent OCR and image-template postconditions verified character selection,
-switch on/off transitions, and return navigation within one retained session and
-process lifetime. No compiler shim, sibling dependency, activation, System
-fallback, game modification, or retry was used.
-
-The invocation completed in 30.867 seconds with ten logical clicks and forty SDK
-events, including ten delays. Cleanup reported no outstanding sequence state,
-no remaining script handles or queued work, and a closed session. Across 2,498
-available passive samples, the target stayed background, foreground identity and
-cursor position were unchanged, and no activation or Space-change notification
-was recorded. Sampling is not atomic continuous evidence; concurrent ordinary
-typing was not exercised.
-
-This is one application's observed workflow, not the process-directed qualification
-matrix, generic macOS 27 support, or repeated-run reliability. Route compatibility
-remains `Unknown`; receipts remain `InvocationOnly`. Windows and foreign-language
-native scenarios were not rerun. Private target identity, images, plans, and raw
-execution evidence remain in the separately owned consumer's private storage.
+On macOS `27.0` arm64, MadoMata's unchanged character-guide workflow passed once
+using published revision `acc5d98ae8cfc4958970be826a28011bc12185c9`, Rust
+`1.98.1`, explicit `AppKitBackground`, and a 50 ms press/release hold (30.867 s,
+10 logical clicks, 40 SDK events including 10 delays, complete cleanup, and
+unchanged foreground and physical cursor across 2,498 passive samples, with
+independent OCR and template postconditions). This single-application workflow
+observation does not replace the 14-pair controlled qualification matrix or
+upgrade route compatibility from `Unknown`.
 
 ## Coordinates
 
-All five shared pointer spaces are advertised, because macOS capture publishes an
-authoritative per-frame placement. The macOS desktop plane is one continuous space
-of points with a top-left origin on the main display and signed coordinates for
-anything above or to the left of it — the same plane `CGEvent` accepts, so a
-resolved coordinate is posted without rounding. A Retina target's capture pixels
-convert through its backing scale, and a point outside the target's own half-open
-rectangle is refused rather than clamped into whatever is next to it.
+macOS capture publishes placement in the top-left-origin Core Graphics global
+point plane (with signed coordinates above/left of the main display), matching
+`CGEvent` directly:
 
-A request still fails when its geometry policy cannot resolve the named frame:
+- `ReprojectCurrent`: Reads live bounds and backing scale in Rust (1 read) and
+  re-verifies at the final native commit gate (2 reads total).
+- `RequireUnchanged`: Projects from the source-frame transform and verifies
+  `NativeBounds::capture_equivalent_to` against the source frame's raw
+  `SCStreamFrameInfoScreenRect` origin, raw backing scale, and quantized
+  backing-pixel extent (preserving fractional raw bounds even on downscaled
+  effective-1/raw-2 frames). On a terminal no-fallback single-event route with
+  default focus policy, this executes in **one** final native inventory read.
+- `UseFrameSnapshot`: Projects from the retained 64-revision per-stream geometry
+  ledger (`UnsupportedCoordinate` if evicted) and revalidates window/process
+  authority at the final gate while tolerating window movement (1 read on the
+  terminal no-fallback path).
 
-- `ReprojectCurrent` reads the target's live rectangle and backing scale in Rust,
-  maps from that geometry, and asks the final native gate to confirm the same
-  fingerprint before posting.
-- `RequireUnchanged` maps from the exact source-frame transform and carries that
-  frame's raw screen rectangle and backing scale to the final native gate. Both
-  early and final `System` checks use raw `NativeBounds::capture_equivalent_to`:
-  exact origin and raw scale, with point sizes compared after backing-pixel
-  quantization. Fractional raw bounds are preserved; neither an effective
-  downscaled transform nor its normalized logical extent substitutes for them.
-- `UseFrameSnapshot` uses the retained source transform. A revision that is no
-  longer retained is unsupported rather than reconstructed from current
-  geometry; the final gate still checks exact retained-window authority but does
-  not reject movement.
-
-The pre-optimization terminal `RequireUnchanged` pointer path made four fresh
-ScreenCaptureKit inventory reads: route preflight, Rust live geometry, native
-preparation, and native final authority. The optimized one-event terminal path
-with `RequireUnchanged` or `UseFrameSnapshot`, default no-focus behavior, and no
-later fallback makes one authoritative final read. A fallback-eligible route
-makes one early zero-effect read plus its final read, while terminal
-`ReprojectCurrent` makes one Rust live-geometry read plus the final native read.
-Those are separate two-read cases; combining stronger policies can require more.
-A delay-only sequence makes one early authority read because it has no native
-commit gate. `RequireFocused`, fallback, `ReprojectCurrent`, cleanup, and
-multi-unit sequences are outside the one-read latency claim.
-
-At the final observation, `ReprojectCurrent` and `RequireUnchanged` refuse a
-mismatch with `GeometryChanged` rather than posting into changed geometry.
-`RequireUnchanged` does not remember transient movement: geometry restored to
-the source-frame value before the final observation passes. `UseFrameSnapshot`
-stays deliverable across movement by design while target and process authority
-are still revalidated.
+Fallback-eligible routes perform one early zero-effect authority read plus the
+final native read; delay-only sequences perform one early read.
 
 ## Authorization, focus, and submission evidence
 
-macOS does not fail a synthesized event from an unauthorized process; it
-discards it, and neither `CGEventPost` nor `CGEventPostToPid` reports anything
-either way. The Adapter therefore reads the public non-prompting
-`CGPreflightPostEventAccess` decision before every irreversible event on both
-routes, not once at open. A revocation observed mid-sequence stops submission
-and the receipt carries the count already invoked. Nothing here calls a
-permission-request API, opens System Settings, or presents any interface; an
-unavailable or unreadable state is treated as unauthorized rather than as
-permission.
-
-The legacy `AXIsProcessTrusted` observation is no longer an authorization
-input. The migration probe reads it beside the event-post preflight so
-qualification evidence records both, and it can neither grant nor demote the
-direct preflight; a disagreement between the two is an evidence fact to
-investigate, never an admission input. On the qualified host, 100 quiet
-pre-implementation samples observed both granted with zero disagreements.
-Deterministic denial, revocation, symbol-unavailability, and disagreement rows
-then passed fail-closed without prompting or implicit fallback.
-
-Window liveness comes from a fresh, bounded shareable-content snapshot. PID and
-window number only narrow that snapshot; the resulting logical `SCWindow` must
-equal the object retained by the discovery `SCContentFilter`, and its current
-frame supplies the geometry. This matters because the retained object's
-`isOnScreen` and `frame` values remain unchanged after the source window closes.
-
-Focus is a `System`-route precondition and an optional caller predicate on
-`ProcessDirected`. Both use public, read-only Accessibility attributes: the
-owning application must be active, its focused window must appear in its public
-window list, and exactly one Accessibility window's top-left global position
-and size must equal the freshly verified frame. The final retained-window
-inventory precedes the final frontmost, focused-window, and focused-window-bounds
-observations. Its returned bounds are reused for geometry without another
-blocking inventory read after accepted focus. Missing required attributes make
-focus unobservable; a complete unequal or ambiguous observation establishes that
-the retained window is not focused. Both outcomes deliver nothing. This is a
-last observation, not an OS-atomic focus/post guarantee: the final retained-window
-inventory precedes the final frontmost, focused-window and focused-window-bounds
-observations, and no further blocking read follows accepted focus.
-Titles and private Accessibility window identifiers are not read, and a same-PID
-replacement that recycles numeric metadata still makes the old `TargetId`
-report `TargetLost`. Every native observation is bounded by the caller's
-remaining operation budget.
-
-- `Preserve` cannot satisfy a focus-requiring system path, so a window request
-  using it fails admission. It is the default meaningful policy for
-  `ProcessDirected`, which imposes no route-level focus requirement and does not
-  consult Accessibility under this policy.
-- `RequireFocused` never activates anything. On either window route it performs
-  the exact focus read above. A complete observation of an unfocused retained
-  window returns `FocusRequired`; withheld Accessibility authorization returns
-  `NotAuthorized`; and missing or inconsistent required Accessibility data
-  returns `SubmissionFailed`. All refuse before any event is posted. On
-  `ProcessDirected` the requirement travels with the request and is read again
-  inside the same bounded native operation that revalidates retained-window
-  authority, geometry, event-post access, and process lifetime, so a foreground
-  change during those queries refuses instead of posting. A sequence-owned
-  release never carries the predicate, because a target that lost the foreground
-  is exactly when a held key or button most needs releasing.
-- `ActivateIfRequired` asks macOS to activate the owning application only for
-  `System`, then repeats the exact public focus read-back for a bounded period. A
-  complete observation that remains unfocused reports `FocusRefused`; an
-  authorization or platform observation failure retains its typed fault. It
-  never claims to have raised one particular window, never passes
-  `NSApplicationActivateIgnoringOtherApps`, and never uses Accessibility to move
-  another application's windows. `ProcessDirected` does not activate: callers
-  that need a focus predicate select `RequireFocused`.
-
-A display target has no focus requirement, because nothing about a display is
-focusable.
-
-`submitted` counts complete logical events whose posting invocation returned.
-Their evidence is `InvocationOnly` on both routes: it proves neither
-operating-system admission nor application consumption. A text event that may
-have had partial native effect before a later chunk failed is `Partial` even
-when no logical event completed, never `Unexecuted`, and no fallback route is
-tried after possible effect. Receipt evidence and a later visual observation stay
-separate because a returned invocation cannot observe an application effect.
+- **Per-event `CGPreflightPostEventAccess`:** Because macOS silently drops
+  unauthorized `CGEvent` posts, the adapter re-reads `CGPreflightPostEventAccess`
+  before every irreversible event on both routes. Revocation mid-sequence stops
+  submission and reports the count already invoked. Legacy `AXIsProcessTrusted`
+  is read beside preflight only as paired qualification evidence (100 quiet
+  samples on the qualified host showed zero disagreements).
+- **Focus policies:**
+  - `Preserve`: Default for `ProcessDirected` (no Accessibility query); rejected
+    at admission for `System` window targets.
+  - `RequireFocused`: Never activates. Uses public Accessibility
+    (`kAXPositionAttribute` / `kAXSizeAttribute`) to verify that the owning app
+    is active and its focused window matches the freshly verified retained
+    `SCWindow` 1-to-1 (`FocusRequired` if unfocused, `NotAuthorized` if
+    Accessibility is withheld, `SubmissionFailed` if attributes are missing).
+  - `ActivateIfRequired`: Supported on `System` only; activates the owning app
+    (without `NSApplicationActivateIgnoringOtherApps`) and repeats the bounded
+    Accessibility read-back (`FocusRefused` if still unfocused).
+- **Submission evidence:** Both routes report `InvocationOnly` (`submitted`
+  counts complete logical events whose post call returned; partial text chunks
+  report `Partial` and close fallback).
 
 ## Process-directed delivery
 
-`ProcessDirected` addresses the retained window's owning process. Additional
-windows, responders, queues, or handlers in that process do not revoke the
-route and may receive or otherwise react to the event. The descriptor and
-receipt therefore report owning-process scope and never exact-window delivery;
-a caller that requires one exact consumer rejects the pair before input.
+`ProcessDirected` addresses the retained window's owning process
+(`InputAddressScope::OwningProcess`). For each ordinary native unit, the
+contained Objective-C shim entry executes in order:
 
-The route controller requests an early retained-window authority observation
-only when a later caller-ordered route could still be selected or when a
-delay-only sequence has no native commit gate. That observation is a zero-effect
-fallback prerequisite. A terminal route containing a native event defers mutable
-window authority to the final gate; target loss can therefore surface after
-route selection, and that refusal does not reopen fallback.
+1. Preflights `CGPreflightPostEventAccess`, original `NSRunningApplication`
+   lifetime/PID, and early `RequireFocused` when selected.
+2. Constructs the `CGEvent`.
+3. Performs one bounded shareable-content read and verifies the retained logical
+   `SCWindow` is present, equal, open, unminimized, on-screen, layer-zero, and
+   finite.
+4. Re-verifies `RequireFocused` against the returned bounds when selected.
+5. Applies `RequireUnchanged`, `ReprojectCurrent`, or `UseFrameSnapshot` geometry
+   validation.
+6. Re-checks authorization, process lifetime, deadline, and cancellation.
+7. Invokes `CGEventPostToPid` (releasing unposted events in `@finally` on any
+   prior refusal).
 
-Each ordinary native unit then stays inside one contained shim entry. In order,
-the shim:
-
-1. checks reversible prerequisites: current non-prompting event-post access,
-   original process lifetime and PID relationship, and the caller-selected focus
-   predicate when `RequireFocused` applies;
-2. constructs one `CGEvent`;
-3. performs one authoritative shareable-content inventory read and proves that
-   the exact retained logical `SCWindow` is still present, equal, open,
-   unminimized, on screen, at window layer zero, and finite;
-4. repeats the caller-selected focus predicate when `RequireFocused` applies;
-   its final inventory precedes the final Accessibility observations, and the
-   returned bounds require no subsequent inventory wait;
-5. applies the selected geometry policy to the latest authoritative bounds —
-   compares them with the source frame for `RequireUnchanged`, compares them
-   with the Rust live mapping for `ReprojectCurrent`, or retains snapshot
-   mapping while still checking target authority for `UseFrameSnapshot`;
-6. repeats authorization and original process lifetime/PID checks, then checks
-   the deadline and cancellation immediately before the irreversible call;
-7. enters `CGEventPostToPid`.
-
-An event constructed before a final refusal is released in the shim's
-`@finally` path and is never posted. Entering the void post call is the
-possible-effect boundary; normal return increments the invoked-native-unit
-count but still proves only invocation. A missing, duplicate, replaced,
-minimized, off-screen, or unavailable retained target produces a typed refusal
-before ordinary posting. Unrelated additional windows in the same process are
-not ambiguity: they are part of the process scope the caller explicitly chose.
-
-Release-only cleanup revalidates the original process lifetime, current PID,
-route, authorization, deadline, and its independent bound before each post. It
-performs no ordinary retained-window inventory, focus, visibility, or pointer
-geometry check, because cleanup must still release only state this sequence
-pressed after those facts change. It never posts to a replacement process.
-
-The route never activates or raises the target application or window, posts
-through the system event stream, moves the physical cursor, installs an event
-tap, injects a helper, or uses a private Accessibility identifier. A press,
-release, or scroll with no sequence-resolved pointer reads the current physical
-cursor location, retains it only when it lies inside the target rectangle
-selected by the active geometry policy, and otherwise refuses with
-`UnsupportedCoordinate`.
-Application effect is evaluated only by caller-selected searches on frames from
-the retained capture stream whose identity is strictly newer than the source
-observation; a complete receipt can coexist with no visual change, and the
-caller owns its retry-or-fail policy.
+Non-move pointer events without a prior sequence pointer position read the
+current physical cursor and refuse with `UnsupportedCoordinate` unless it lies
+inside the active target bounds.
 
 ## Keys, modifiers, and text
 
-Everything but a printable character is a fixed hardware key code, transcribed
-from the `kVK_` map. macOS defines no key code for F21 through F24, so those are
-reported unsupported rather than posted as an undefined code. A `Key::Character`
-is resolved through the active keyboard layout with `UCKeyTranslate`, and a
-character the layout produces only with modifiers is unsupported: pressing the key
-the caller named would deliver a different character. Callers use explicit modifier
-events or `InputEvent::Text` instead.
-
-A synthesized event carries exactly the modifiers *this sequence* is holding.
-Modifier state is not merged with what the user happens to be holding, so a
-sequence asking for a plain keystroke gets one. A release clears its own modifier
-on the event that releases it.
-
-Text is posted as `CGEventKeyboardSetUnicodeString` on a key event with code zero,
-in chunks of at most sixteen UTF-16 units, and a chunk boundary never splits a
-surrogate pair. The shared 4,096-character bound applies.
-
-Scroll uses line units. The platform-neutral convention is positive down and
-positive right; Core Graphics counts the opposite way on both axes, and the two
-are reconciled in exactly one place inside the shim.
+Hardware keys map to `kVK_*` codes (`F21`–`F24` return `Unsupported`).
+`Key::Character` resolves via `UCKeyTranslate` on the active layout and refuses
+characters that require modifier chords (use explicit modifiers or
+`InputEvent::Text` instead). Synthesized events carry only the modifiers held by
+the current sequence. `InputEvent::Text` posts `CGEventKeyboardSetUnicodeString`
+on key code `0` in surrogate-safe chunks of at most `16` UTF-16 units (up to
+`4,096` scalars). Scroll deltas convert positive-down/right into Core Graphics
+line units inside the shim.
 
 ## Sequence-owned state and cleanup
 
-Pressed buttons and keys belong only to the sequence that successfully or
-possibly pressed them. On a partial stop they are released newest first under the
-independent cleanup bound: at most 256 releases and no new release after 250 milliseconds.
-Cleanup runs under a fresh context derived from the request's clock with no
-cancellation, because the request's own interruption is usually why cleanup is
-running.
-
-`System` cleanup deliberately does **not** revalidate focus or geometry. A
-window that stopped being frontmost is exactly when a held button matters most.
-A `ProcessDirected` release performs zero retained-window inventory reads. It
-revalidates the original retained process lifetime, current PID relationship,
-route, authorization, deadline, cancellation, and bounded release state, but
-does not require ordinary target visibility, focus, or pointer geometry. Those
-states may be why cleanup is required, and release purpose still refuses a
-replacement process. Cleanup never claims that external keyboard or pointer
-state was restored: a receipt reports `Incomplete` for a release the platform
-refused and `Exhausted` for one that was never attempted, and the two leave a
-caller with different options.
-
-Both routes retain a move's destination after successful posting or a failure
-that may have taken effect. A definite pre-effect failure keeps the previous
-position. Owned-button cleanup uses that retained position rather than rolling
-an ambiguous drag back to its last confirmed point; it still does not prove
-where the application observed the pointer or that a release undid the gesture.
+Pressed keys and buttons are released newest-first under the sequence's
+`CleanupBudget` (`256` releases, `250 ms` fresh clock context without
+cancellation). Neither `System` nor `ProcessDirected` cleanup re-checks focus,
+visibility, or window inventory (`ProcessDirected` revalidates only the original
+process lifetime, PID, route, authorization, and cleanup budget), ensuring held
+state releases even if the target window moved, minimized, or closed.
 
 ## Dedicated fixture
 
-`mado-pilot-macos-input-fixture` creates one controlled window with:
-
-- the exact title `MadoPilot Input Fixture [<pid>]`;
-- one fixed fill colour and no other content, so a captured frame of it contains
-  nothing from the user's desktop;
-- an opt-in replacement mode that destroys that exact window on AppKit's main
-  thread and creates a same-process, same-title successor with a deliberately
-  distinct flat colour;
-- a bounded report of at most 1,024 observed events, each printed as its kind and
-  UTF-16 unit count and never its characters;
-- the stable bundle identifier `dev.mado-pilot.macos-input-fixture` when it is run
-  from a bundle;
-- an opt-in `--game-like` mode that renders the same deterministic fills through
-  OpenGL, dynamically loaded from the absolute system framework path, instead of
-  the default AppKit background. The ready record reports the running mode as an
-  explicit fact — `mode=default renderer=appkit-background` or
-  `mode=game-like renderer=opengl` — and there is no silent fallback: a host
-  that cannot resolve the required OpenGL symbols fails startup as unsupported
-  rather than substituting the AppKit renderer.
-
-The fixture accepts no input packet — everything its recorder observes arrived
-as ordinary macOS input — but it is driven by a private, versioned control
-protocol over a controller-owned socket, so capture evidence never depends on
-focus, ambient redraws, or product input. Version 11 of that newline protocol
-carries one bounded command at a time, identified by a per-run nonce and a
-monotonic nonzero command nonce, and an explicit result record echoing the same
-identity, a bounded status, the before/after native window numbers, and a
-bounded process-wide event-count summary — per-kind counts, a bounded UTF-16
-unit total, and a saturation flag, never characters. Approved payload-free
-commands are `transition` (fill change), `replace`, `minimize`, `restore`,
-`yield-foreground`, `move`, `resize`, `open-auxiliary`, `close-auxiliary`,
-`move-to-next-display` (unsupported with fewer than two displays),
-`move-offscreen`, `restore-onscreen`, `reset-events`,
-`prepare-language-flow`, `read-events`, `close`, and `stop`;
-`prepare-language-flow` alone restores the declared base fill while it zeroes
-the recorder, so animated language samples start from one deterministic visual
-precondition without changing ordinary native qualification state. Every window
-transition executes on the fixture's AppKit main queue.
-Lines are bounded, unknown or
-reordered records are rejected, and EOF, repeated close, and controller
-cleanup are idempotent. The protocol and event recorder are
-fixture/test-only: no production artifact links them, and no fixture
-acknowledgement ever counts as a product receipt or a visual result.
-
-The controller loads AppKit only from its absolute system framework path, asks
-`NSWorkspace` for a new application instance, and retains the exact returned
-`NSRunningApplication` and PID. It accepts a control peer only when kernel
-socket credentials report that PID, the harness effective user, the canonical
-executable, and an audit token that still names that process lifetime. Before
-trusting a ready record, the controller requires the audit-token-selected
-running code identity to equal the validity-checked static identity recorded
-beside the artifact SHA-256. It retains that identity through teardown. A
-same-user second copy at the same path therefore cannot become the oracle merely
-by learning the socket path or run nonce.
-
-Selection is the fail-closed step. `select_unique_fixture` requires a window
-target, the exact process-qualified title, all three operations `Supported`
-over `System`, `WindowMessage` unsupported, the advertised `ProcessDirected`
-contract (`Unknown` support, owning-process scope, invocation-only evidence),
-and exactly one match. Zero matches and several matches both stop before input.
-A check then confirms selection against the window's deterministic content —
-`frame_is_fixture_content` requires the sampled region to be one flat colour
-within a per-platform tolerance of the declared fill — 24 channel values on
-macOS, where the current ScreenCaptureKit path was observed to convert the
-fixture's fill, and 8 on Windows — because an arbitrary application window is
-not one flat colour.
+`mado-pilot-macos-input-fixture` (`dev.mado-pilot.macos-input-fixture`) creates a
+deterministic window (`MadoPilot Input Fixture [<pid>]`) with a flat fill color,
+an optional `--game-like` OpenGL renderer (`mode=game-like renderer=opengl`), an
+owned-window replacement mode, and a bounded 1,024-event recorder reporting only
+event kinds and UTF-16 unit counts (never characters). A private version-11
+socket control protocol (authenticated by kernel peer PID, UID, canonical path,
+audit token, and `SecCode` identity) drives window transitions (`transition`,
+`replace`, `minimize`, `restore`, `move`, `resize`, `open-auxiliary`,
+`move-to-next-display`, `move-offscreen`, `prepare-language-flow`, etc.).
+`select_unique_fixture` requires an exact single match and verifies flat-fill
+pixels within a 24-channel tolerance on macOS.
 
 ### Bundling, ad-hoc signing, and structurally verifying the fixture
 
-Running the bare executable is supported and reports itself as unbundled, which is
-what the evidence should then say. The reproducible OSS fixture mode below creates
-only a generated artifact under `target/`, supplies the stable code-signing
-identifier, and uses identity `-`. For `codesign`, `-` means ad-hoc signing: the
-seal has no certificate identity and does not consult a named identity in the
-user's keychain.
+Build and ad-hoc sign (`--sign -`) both the target and foreground fixture
+bundles under `target/mado-pilot-fixtures/`:
 
 ```sh
 cargo build --locked -p mado-pilot-platform-macos --features private-fixture \
@@ -474,39 +216,24 @@ FOREGROUND_APP=target/mado-pilot-fixtures/MadoPilotForegroundFixture.app
 mkdir -p "$APP/Contents/MacOS" "$FOREGROUND_APP/Contents/MacOS"
 cp crates/platform/macos/bundle/Info.plist "$APP/Contents/Info.plist"
 cp crates/platform/macos/bundle/Info.plist "$FOREGROUND_APP/Contents/Info.plist"
-TARGET_BUNDLE_ID="$(
-  xcrun plutil -extract CFBundleIdentifier raw "$APP/Contents/Info.plist"
-)"
+TARGET_BUNDLE_ID="$(xcrun plutil -extract CFBundleIdentifier raw "$APP/Contents/Info.plist")"
 FOREGROUND_BUNDLE_ID="${TARGET_BUNDLE_ID}.foreground"
-xcrun plutil -replace CFBundleIdentifier \
-  -string "$FOREGROUND_BUNDLE_ID" \
-  "$FOREGROUND_APP/Contents/Info.plist"
+xcrun plutil -replace CFBundleIdentifier -string "$FOREGROUND_BUNDLE_ID" "$FOREGROUND_APP/Contents/Info.plist"
 cp target/debug/mado-pilot-macos-input-fixture "$APP/Contents/MacOS/"
 cp target/debug/mado-pilot-macos-input-fixture "$FOREGROUND_APP/Contents/MacOS/"
-xcrun codesign --force --sign - \
-  --identifier "$TARGET_BUNDLE_ID" \
-  --timestamp=none "$APP"
-xcrun codesign --force --sign - \
-  --identifier "$FOREGROUND_BUNDLE_ID" \
-  --timestamp=none "$FOREGROUND_APP"
+xcrun codesign --force --sign - --identifier "$TARGET_BUNDLE_ID" --timestamp=none "$APP"
+xcrun codesign --force --sign - --identifier "$FOREGROUND_BUNDLE_ID" --timestamp=none "$FOREGROUND_APP"
 xcrun codesign --verify --strict --verbose=2 "$APP"
 xcrun codesign --verify --strict --verbose=2 "$FOREGROUND_APP"
-"$APP/Contents/MacOS/mado-pilot-macos-input-fixture" \
-  --report-execution-context
+"$APP/Contents/MacOS/mado-pilot-macos-input-fixture" --report-execution-context
 ```
 
-The last command must report `launch=bundled`, `signature=ad-hoc`, and a
-`signing-identifier` equal to `$TARGET_BUNDLE_ID`. This verification proves
-the generated bundle's structural code-signature validity and the running code's
-classification. It does not prove that Gatekeeper would accept a distributed
-artifact, that macOS made or reused any TCC decision, that a native input route
-accepted an event, or that the target application consumed one. A
-certificate-backed build is a different signature mode and needs evidence from
-that exact artifact rather than inheriting the ad-hoc result.
+The final command must print `launch=bundled`, `signature=ad-hoc`, and
+`signing-identifier=dev.mado-pilot.macos-input-fixture`.
 
 ## Automated macOS checks
 
-Run the focused checks from the repository root:
+Run the non-posting deterministic suite from the repository root:
 
 ```sh
 cargo check --locked -p mado-pilot-platform-macos --all-targets
@@ -517,53 +244,23 @@ cargo test --locked -p mado-pilot-platform-macos --test fixture_signing
 cargo test --locked -p mado-pilot-platform-macos --test linkage
 ```
 
-Deterministic tests cover the route capability matrix for both routes,
-retained-object descriptor gating, focus outcomes, Retina and signed
-multi-display mapping, invocation-only evidence, exact retained-target
-authority scripts (missing, one, duplicate metadata, replacement, PID reuse,
-owner restart and exit), additional same-process windows that preserve process
-scope, preflight revocation and disagreement representation, partial sequences,
-fallback closure, cleanup completeness and exhaustion, target loss,
-cancellation and deadline races, close, bounded diagnostic
-loss/ordering/privacy, control protocol parsing and bounds, all five signature
-classifications, identifier redaction, and separation of bundle launch from
-signature mode. The fixture-signing integration check constructs and ad-hoc
-signs a generated temporary bundle, runs structural verification, and exercises
-only the fixture's metadata-reporting mode. The linkage check proves the eager
-framework list is unchanged and that no fixture control or event-recording
-symbol enters a production shim consumer. The submission cases run against the
-driver seam rather than the desktop, because a live host cannot be made to
-revoke an authorization or refuse a release on cue.
-
-For the final inventory/focus boundary, run
-`system_required_focus_observes_changes_during_the_final_inventory` and
-`process_required_focus_observes_changes_during_the_final_inventory` through the
-library suite. The raw-geometry cases
-`system_unchanged_downscaled_geometry_uses_raw_bounds_at_both_gates` and
-`system_unchanged_raw_changes_refuse_at_early_and_final_gates` cover fractional
-effective-1/raw-2 sources and real origin, size, or scale changes.
-`a_cached_mapping_commits_with_its_mutex_released` checks cached allocation reuse
-with caller-clock observations outside the mapping mutex. These procedures
-require no native input and do not qualify the ignored native rows.
-
-The native integration test **submits nothing**. It exercises discovery, the
-input provider surface, and refusals that precede any event. Starting the
-fixture window takes focus and needs the fixture binary, which only the
-explicit `private-fixture` feature builds, so it is doubly opt-in:
+To also launch the fixture window for non-posting provider/refusal checks:
 
 ```sh
 MADO_PILOT_MACOS_FIXTURE=1 cargo test --locked \
   -p mado-pilot-platform-macos --features private-fixture --test native_input
 ```
 
-An explicitly configured `MADO_PILOT_MACOS_FIXTURE_EXECUTABLE` selects an
-already built bundle and needs no feature flag.
-
 ## Explicit owned-window replacement check
 
-Build and verify the generated signed bundle above, then run this on the
-permissioned qualified host. It sends no input and needs Screen Recording, but
-no input authorization:
+Requires Screen Recording (sends no input). Verifies that destroying the
+retained fixture window and creating a same-process, same-title successor never
+retargets the old `SCContentFilter` and that retained mappings stay unchanged
+(accepted record at `a1faf04505c8471deb4de8c136fddcc7f76105e7` in
+[`evidence/g-001/macos-owned-window-replacement.md`](evidence/g-001/macos-owned-window-replacement.md);
+the current test also maps the retained original frame after capture close and
+compares its bytes with the earlier mapping, an added assertion that is not
+attributed to or qualified by `a1faf04505c8471deb4de8c136fddcc7f76105e7`):
 
 ```sh
 MADO_PILOT_MACOS_FIXTURE_EXECUTABLE="$APP/Contents/MacOS/mado-pilot-macos-input-fixture" \
@@ -572,28 +269,11 @@ MADO_PILOT_MACOS_FIXTURE_EXECUTABLE="$APP/Contents/MacOS/mado-pilot-macos-input-
   --ignored --exact --nocapture --test-threads=1
 ```
 
-The old retained filter may report explicit `TargetLost` or remain quiescent;
-individual frame-request timeouts do not establish loss. The check rejects any
-successor-colour frame from that filter, independently captures the successor as
-a negative control, and verifies that the retained original mapping did not
-change. The accepted result was rerun at commit
-`a1faf04505c8471deb4de8c136fddcc7f76105e7` and is retained in
-[`evidence/g-001/macos-owned-window-replacement.md`](evidence/g-001/macos-owned-window-replacement.md).
-
-The current procedure also maps the retained original frame again after capture
-close and compares its bytes with the earlier mapping. Cached mapping remains
-legal after close; that added assertion is not attributed to the historical
-result above. This public document does not qualify that added assertion.
-
 ## Explicit system-input check
 
-Run this only on an interactive Apple Silicon desktop with Screen Recording and
-event-post access granted to the process that launches `cargo test`. macOS may
-surface the latter grant in an Accessibility-labelled privacy pane; that UI
-grouping does not make `AXIsProcessTrusted` the Adapter's authorization source.
-The non-prompting probe output, not the pane label, is the execution truth.
-Build and verify the generated signed bundle above first, then deliberately
-select that exact executable:
+Requires Screen Recording, event-post access, and clicking the fixture window
+within the 15-second prompt while ScreenCaptureKit streaming is active (sends
+Escape up, Enter down/up, and `system-probe` with no click or pointer move):
 
 ```sh
 MADO_PILOT_MACOS_FIXTURE_EXECUTABLE="$APP/Contents/MacOS/mado-pilot-macos-input-fixture" \
@@ -602,69 +282,18 @@ MADO_PILOT_MACOS_FIXTURE_EXECUTABLE="$APP/Contents/MacOS/mado-pilot-macos-input-
   --ignored --exact --nocapture --test-threads=1
 ```
 
-The check starts the fixture and requires its ready line to report a bundled,
-structurally valid signature with the stable signing identifier before selecting
-it exactly once. Before it opens an input controller, it opens capture for that
-exact `TargetId`, waits for one frame, maps it to BGRA8, and passes the mapped bytes
-through `frame_is_fixture_content`. It deliberately keeps capture open through
-the input sequence: ScreenCaptureKit adds a same-owner auxiliary window while
-streaming, and the regression proves that read-only focus authority still names
-the exact retained fixture. Launch/signature, capture, mapping, or predicate
-failure stops before the first `RequireFocused` probe.
-It then waits 15 seconds: click that exact fixture window when prompted. The probe
-activates nothing, and every attempt before the exact retained window is focused
-submits zero events. Only then does it send Escape up, Enter down and up, and the
-fixed text `system-probe`. These are four logical events; it sends no click and
-no pointer movement, and closes capture after input verification. The fixture
-event queue is deliberately delimited after focus is established, so ordinary
-mouse-enter or operator focus events are not attributed to that later submission
-sequence.
-
-If the fixture is not focused in time, selection is ambiguous, deterministic
-content cannot be captured and mapped, the pixels do not match, or event-post
-access is absent, the check stops before further system input. Do not replace
-any failure with a permission request, a settings prompt, or an activation
-intended to take focus from the user.
-
 ## Bounded focus and raw-geometry regressions
 
-These three ignored rows require separate native acceptance; their presence is
-not a qualification result. Run them only with authorized owned-fixture input,
-existing Screen Recording and event-post grants, and the signed bundles above.
-The process-focus row requires both `MADO_PILOT_MACOS_FIXTURE_EXECUTABLE` and
-`MADO_PILOT_MACOS_FOREGROUND_FIXTURE_EXECUTABLE`; the System rows require the
-target executable. Each capture, control, and input operation is bounded by
-`CONTENT_WAIT` (five seconds). Fixture launch deliberately takes foreground
-ownership; input requests themselves use `RequireFocused`, never activation.
-
-The rows have distinct effects and acceptance conditions:
-
-- `process_directed_require_focused_accepts_only_the_focused_fixture` submits one
-  balanced Enter pair to the owned active fixture. It then uses a separately
-  owned foreground fixture and requires zero-post `FocusRequired` from the
-  inactive target, with foreground and cursor preservation.
-- `system_require_unchanged_accepts_raw_geometry_and_refuses_real_changes`
-  submits one System pointer move using the exact source-frame transform. Owned
-  `Move` and `Resize` transitions must then refuse stale-frame requests with
-  `GeometryChanged`, zero fixture events, and no additional cursor movement.
-- `system_require_unchanged_accepts_effective_one_raw_two_frame` applies that
-  same pointer/refusal procedure only after observing an effective-1/raw-2 frame.
-  It requires `MADO_PILOT_MACOS_QUALIFICATION_TOPOLOGY=mixed-scale` and the existing
-  signed-origin mixed-scale predicate over `2..=16` live displays. The fixture
-  first reaches and is rediscovered on a 1x display before fresh capture opens.
-  After each preparatory move, bounded rediscovery waits for a changed origin
-  and a position/scale match against the frozen displays before another move.
-  Command acknowledgement alone does not establish refreshed capture metadata.
-  The first frame must have effective scale 1. One bounded `topology.len()`
-  display circuit then seeks effective scale 1 with raw scale 2 recorded for the
-  same source frame. The `private-fixture` observation reads the existing bounded
-  geometry ledger; it does not query another window description or replace the
-  retained capture target. Missing that frame is explicitly not-qualified with
-  no input; an ordinary-scale frame cannot substitute.
-
-After establishing those prerequisites, invoke each row explicitly:
+These three ignored rows test `ProcessDirected` `RequireFocused` (requiring both
+`MADO_PILOT_MACOS_FIXTURE_EXECUTABLE` and
+`MADO_PILOT_MACOS_FOREGROUND_FIXTURE_EXECUTABLE`), `System` `RequireUnchanged`
+raw-geometry refusal across `Move`/`Resize` (requiring the target executable),
+and `effective-1/raw-2` frame handling on a `mixed-scale` topology
+(`CONTENT_WAIT = 5s`; separate native execution authority required):
 
 ```sh
+export MADO_PILOT_MACOS_FIXTURE_EXECUTABLE="$APP/Contents/MacOS/mado-pilot-macos-input-fixture"
+export MADO_PILOT_MACOS_FOREGROUND_FIXTURE_EXECUTABLE="$FOREGROUND_APP/Contents/MacOS/mado-pilot-macos-input-fixture"
 cargo test --locked -p mado-pilot-platform-macos --features private-fixture --test native_input \
   process_directed_require_focused_accepts_only_the_focused_fixture -- \
   --ignored --exact --nocapture --test-threads=1
@@ -677,207 +306,63 @@ MADO_PILOT_MACOS_QUALIFICATION_TOPOLOGY=mixed-scale \
   --ignored --exact --nocapture --test-threads=1
 ```
 
-Record the exact source, executable identities, host, permissions, topology, and
-bounded outcomes for any authorized run. These rows neither replace the
-historical fourteen-pair matrix nor broaden its exact two-display `same-scale`
-requirement, and they establish no statistical performance result.
-
 ## Explicit process-directed checks
 
-Seven ignored native tests qualify the process route against the owned fixture.
-All need Screen Recording and event-post access granted to the process that
-launches `cargo test`, an interactive desktop, the `private-fixture` feature,
-the structurally verified signed target bundle, and the separately identified
-foreground bundle. Each renderer matrix first launches its target alone, proves
-`RequireFocused` succeeds while the retained window is already focused without
-the input request changing foreground, and terminates that process. It then
-launches the independent foreground bundle before an inactive target; the
-refusal subrow proves `RequireFocused` returns zero-effect `FocusRequired`.
-Ordinary posting rows keep that unrelated bundle frontmost. Export both
-executable paths before running the rows:
+Seven ignored tests qualify `ProcessDirected` while `MadoPilotForegroundFixture`
+remains frontmost, and one additional ignored test
+(`owned_fixture_control_is_versioned_idempotent_and_identity_bound`) verifies
+the versioned, identity-bound fixture control channel
+(`MADO_PILOT_MACOS_QUALIFICATION_TOPOLOGY` selects `single` 1×2x display,
+`same-scale` 2×2x displays, or `mixed-scale` 2x/1x signed-origin seam, and
+`kCGEventSourceUserData` correlates row tokens):
 
 ```sh
 export MADO_PILOT_MACOS_FIXTURE_EXECUTABLE="$APP/Contents/MacOS/mado-pilot-macos-input-fixture"
 export MADO_PILOT_MACOS_FOREGROUND_FIXTURE_EXECUTABLE="$FOREGROUND_APP/Contents/MacOS/mado-pilot-macos-input-fixture"
 export MADO_PILOT_MACOS_QUALIFICATION_TOPOLOGY="<single|same-scale|mixed-scale>"
-cargo test --locked -p mado-pilot-platform-macos --features private-fixture \
-  --test native_input process_directed_delivery_qualifies_appkit_renderer -- \
-  --ignored --exact --nocapture --test-threads=1
-cargo test --locked -p mado-pilot-platform-macos --features private-fixture \
-  --test native_input process_directed_delivery_qualifies_game_like_renderer -- \
-  --ignored --exact --nocapture --test-threads=1
-```
-
-These two tests run the positive production-route matrix independently against
-the default AppKit renderer and the `mode=game-like renderer=opengl` fixture.
-Each keeps desktop-independent capture active for the frozen dwell, opens an
-additional ordinary same-process window, and proves that the
-owning-process capability remains advertised. It independently exercises
-pointer move, press, drag, release, and scroll in every public pointer coordinate
-space; current and retained geometry across move, resize, and each live display;
-printable, modifier-chord, Enter, F1, and arrow keys; BMP, surrogate-pair,
-native-chunk-boundary, and maximum-length Unicode text; cancellation after a
-pressed modifier with bounded release; repeated input/capture close; foreground
-and physical-cursor preservation; target-process observation; unrelated-process
-non-observation; and strictly newer controlled visual transitions. Receipts,
-fixture observations, and visual results remain separate facts.
-The scroll oracle fingerprints the resolved global desktop location together
-with both wheel deltas. A row therefore fails if Core Graphics inherits a stale
-or ambient cursor location instead of the sequence's last pointer position.
-
-The topology selector is mandatory and fail-closed. `single` accepts exactly one
-2× display; `same-scale` accepts exactly two horizontally adjacent 2× displays;
-`mixed-scale` accepts a horizontally adjacent 2×/1× seam with a signed desktop
-origin. The test opens every live display long enough to compare authoritative
-logical size, backing extent, scale, placement, and frame identity, then requires
-the retained fixture window to visit the selected topology. A passing row under
-one selector cannot be reported for another.
-
-The controlled unrelated-activity row brackets a private redraw and one real
-`System` keyboard action to the owned frontmost fixture with identical
-process-directed target sequences:
-
-```sh
-cargo test --locked -p mado-pilot-platform-macos --features private-fixture \
-  --test native_input \
-  controlled_unrelated_activity_remains_outside_appkit_process_evidence -- \
-  --ignored --exact --nocapture --test-threads=1
-cargo test --locked -p mado-pilot-platform-macos --features private-fixture \
-  --test native_input \
-  controlled_unrelated_activity_remains_outside_game_like_process_evidence -- \
-  --ignored --exact --nocapture --test-threads=1
-```
-
-The two rows require exact target/foreground event separation, rejection of an
-untagged same-payload post to the target process, unchanged process receipts,
-unchanged target pixels for unrelated activity, one separately observed
-foreground transition, foreground preservation, and physical-cursor invariance
-in each process-directed posting window.
-
-The bounded soak keeps each renderer's capture stream active for at least 60
-seconds while two spaced process-directed sequences run under the unrelated
-foreground fixture:
-
-```sh
-MADO_PILOT_MACOS_FIXTURE_EXECUTABLE="$APP/Contents/MacOS/mado-pilot-macos-input-fixture" \
+for test in \
+  process_directed_delivery_qualifies_appkit_renderer \
+  process_directed_delivery_qualifies_game_like_renderer \
+  controlled_unrelated_activity_remains_outside_appkit_process_evidence \
+  controlled_unrelated_activity_remains_outside_game_like_process_evidence \
+  sustained_capture_soak_keeps_process_route_isolated \
+  process_directed_pointer_refuses_offscreen_and_closed_targets \
+  process_directed_delivery_uses_process_authority_and_revalidates_window_state \
+  owned_fixture_control_is_versioned_idempotent_and_identity_bound
+do
   cargo test --locked -p mado-pilot-platform-macos --features private-fixture \
-  --test native_input \
-  sustained_capture_soak_keeps_process_route_isolated -- \
-  --ignored --exact --nocapture --test-threads=1
+    --test native_input "$test" -- \
+    --ignored --exact --nocapture --test-threads=1
+done
 ```
 
-The retained-authority row exercises additional-window, minimize/restore,
-movement, resize, replacement, and terminal target-loss transitions:
+Revision lineage for the qualification record in
+[`evidence/phase-2-native/macos-owning-process-qualification.md`](evidence/phase-2-native/macos-owning-process-qualification.md):
 
-```sh
-MADO_PILOT_MACOS_FIXTURE_EXECUTABLE="$APP/Contents/MacOS/mado-pilot-macos-input-fixture" \
-  cargo test --locked -p mado-pilot-platform-macos --features private-fixture \
-  --test native_input \
-  process_directed_delivery_uses_process_authority_and_revalidates_window_state -- \
-  --ignored --exact --nocapture --test-threads=1
-```
-
-This test keeps capture active with an additional ordinary same-process window
-and proves that process scope still admits input. It then closes that window,
-minimizes and restores the retained target, moves and resizes it, and replaces
-the retained logical window. Minimized and replacement states produce typed
-zero-effect refusals; restore, move, and resize re-establish authority without
-activating the target; the stale retained identity never retargets the
-replacement process/window. Foreground identity, physical cursor, bounded event
-summaries, and repeated close are checked throughout.
-
-The off-screen cleanup row moves each retained renderer target outside every
-display after a process-directed key press, proves the matching release still
-uses the original process/source without ordinary visibility admission, and
-then proves a new pointer event refuses both the off-screen and closed target
-before posting:
-
-```sh
-cargo test --locked -p mado-pilot-platform-macos --features private-fixture \
-  --test native_input process_directed_pointer_refuses_offscreen_and_closed_targets -- \
-  --ignored --exact --nocapture --test-threads=1
-```
-
-The fixture-control lifecycle row independently proves protocol version,
-run/command nonce binding, rejection of stale or reordered commands, identity
-continuity across replacement, and idempotent teardown:
-
-```sh
-MADO_PILOT_MACOS_FIXTURE_EXECUTABLE="$APP/Contents/MacOS/mado-pilot-macos-input-fixture" \
-  cargo test --locked -p mado-pilot-platform-macos --features private-fixture \
-  --test native_input \
-  owned_fixture_control_is_versioned_idempotent_and_identity_bound -- \
-  --ignored --exact --nocapture --test-threads=1
-```
-
-Each run binds its evidence to the exact source revision and tree, fixture hash,
-host, authorization state, and live display topology recorded with the Change.
-
-For correlated process rows, the fixture reads `kCGEventSourceUserData` from
-each observed `CGEvent` and accepts event, payload-digest, or visual credit only
-when that nonzero value exactly matches the row token installed over the
-authenticated private control channel. The unrelated-source row posts the same
-keyboard payload to the same process without that tag and proves it receives no
-event or visual credit before the production sequence runs.
-
-The historical complete qualification ran at source commit
-`8309a05c3e7696f3081c5afef6dd6979ea1bb084` (tree
-`27fe879e0c4bb55fe4850d9a50737b568936cc10`) under fixture protocol version 9.
-Its rows are superseded.
-
-The corrected pre-optimization source commit
-`a1eee9c14a0bd9a1ba92a5ceeff53d378c33f426` (tree
-`f4a707501748303adcec577df5f18fcd18f13f45`) uses internal shim surface
-version 14 and fixture protocol version 10. Its route-wide and complete
-`single`, `same-scale`, and `mixed-scale` AppKit/OpenGL rows passed, qualifying
-fourteen controlled pairs on that revision only.
-
-Review invalidated the first optimized candidate `28ceb2e`: its final
-`RequireUnchanged` check compared the source transform's normalized logical
-size with raw `SCWindow.frame` size. A deterministic native seam reproduced an
-unchanged 320.4-point Retina window whose 641-pixel capture normalizes to 320.5
-points and proved the raw rectangle equality rejected it. Source commit
-`a471c2d51428a25dd11e42572b73cf5e86ef7478` (tree
-`3f5ada8d116b527a8644be4d804f91341bc1e296`) instead compared exact desktop
-origin and backing scale plus integral capture extent and redacted fixture
-process identities. Its native rows remain historical; its retained benchmark
-bodies are source/oracle-misbound because their commanded-transition oracle is
-absent from that tree.
-
-Candidate `9e3e77d4021b792f4c4835390658aaac98e76826` (tree
-`ea7881c4416ca2a330fa3097d4fa271f9a547f96`) passed its own earlier
-exact-source `mixed-scale` rows and controlled profiles; later review-driven
-source, fixture, and harness corrections invalidated that evidence and it is
-historical. Predecessor `df1c45d` then passed the signed-release
-`mixed-scale` matrix — 34 permission-independent rows, all 14 ignored
-interactive rows, and three topology scenarios. Final measured candidate
-`dec43d7b6c91d415f2028e188e89fa289cb9c1c9` (tree
-`109f77df9ef9f40b515245ab60a6036822ee7d78`) carries same-frame raw screen
-bounds and backing scale, uses private shim surface version 19 and fixture
-protocol version 11, and differs from `df1c45d` only in
-`crates/mado-pilot/benches/native-phase2.rs`, so the `df1c45d` native matrix
-applies to it. Independent `single` and exact two-display non-mirrored
-`same-scale` supplements also pass. Together with `mixed-scale`, every
-mandatory topology row passes and every release pair is `qualified`.
-
-The privacy-reviewed
-[repository evidence](evidence/phase-2-native/macos-owning-process-qualification.md)
-keeps immutable historical records separate from the current decision and
-records artifact hashes, bounded outcomes, stopped pre-sample attempts, and
-raw-log exclusion. The
-[benchmark commands](#current-native-input-performance-evidence) are available
-in this guide without separate planning storage.
+- Historical superseded runs: `8309a05c3e7696f3081c5afef6dd6979ea1bb084` (tree
+  `27fe879e0c4bb55fe4850d9a50737b568936cc10`, protocol v9), pre-optimization
+  `a1eee9c14a0bd9a1ba92a5ceeff53d378c33f426` (tree `f4a707501748303adcec577df5f18fcd18f13f45`,
+  shim v14 / protocol v10), invalidated `28ceb2e` (fractional Retina point
+  mismatch), `a471c2d` (`a471c2d51428a25dd11e42572b73cf5e86ef7478`, tree
+  `3f5ada8d116b527a8644be4d804f91341bc1e296`, benchmark bodies oracle-misbound),
+  and `9e3e77d4021b792f4c4835390658aaac98e76826` (tree
+  `ea7881c4416ca2a330fa3097d4fa271f9a547f96`).
+- Current accepted candidate: `df1c45d` and benchmark-harness-only successor
+  `dec43d7` (`dec43d7b6c91d415f2028e188e89fa289cb9c1c9`, tree
+  `109f77df9ef9f40b515245ab60a6036822ee7d78`, shim v19 / protocol v11), with
+  subsequent test-only commit `5f1fdb6`
+  (`5f1fdb6177d7ec02d2f8eb841f0786432299b0c2`) tightening and passing the
+  minimized/off-screen refusal row without relabeling the `dec43d7`-bound
+  profiles, and passing `single`, `same-scale`, and `mixed-scale` matrices
+  qualifying all 14 controlled pairs; see
+  [current native input performance evidence](#current-native-input-performance-evidence)
+  for the reproduction commands.
 
 ## Explicit facade check
 
-The checks above exercise the Adapter directly. The same route through the
-public Rust facade — engine construction with bounded `Debug` diagnostics,
-non-prompting authorization reads, discovery, capture, mapping, a frame-bound
-explicit `ProcessDirected` sequence under a shared activity tag, immutable
-invocation-only receipt inspection, a strictly newer expected-condition search,
-diagnostic drain, and explicit close — is
-`crates/mado-pilot/examples/macos-native-input.rs`. Start the fixture with its
-opt-in animation, then name its exact window title:
+Exercises `mado_pilot::macos_engine` (`Debug` diagnostics, permission preflights,
+discovery, capture, mapping, `ProcessDirected` with `FocusPolicy::Preserve` and
+activity tag, receipt check, strictly newer changed-fill search, and close):
 
 ```sh
 cargo run --locked --package mado-pilot-platform-macos \
@@ -887,97 +372,49 @@ cargo run --locked --package mado-pilot --example macos-native-input -- \
   "MadoPilot Input Fixture [<pid>]"
 ```
 
-It matches the title exactly, refuses zero or more than one match, and refuses
-before discovery when either authorization is missing. It requires
-`ProcessDirected` with `FocusPolicy::Preserve`, asserts the advertised contract
-(`Unknown` support, owning-process scope, invocation-only evidence), and never
-activates or focuses the selected window; the fixture's input-driven animation
-is what turns a received event into new pixels. Point it only at the fixture —
-it posts real input to the owning process of whatever window carries that exact
-title. A complete receipt is not treated as success until an independent
-strictly newer frame has the expected changed fill. Drained records carry only
-the documented metadata for the shared activity tag.
-
 ## Explicit C ABI boundary checks
 
-The ABI checker runs the small direct C/C++ samples without native operations.
-Its C native verifier uses `--check`: it creates the macOS engine, verifies input,
-permission and diagnostic records without prompting, and stops before discovery
-or input:
+Non-input C ABI check (`--check`, default on macOS; build the `mado-pilot-capi`
+shared library in the active target directory first):
 
 ```sh
-cargo run --locked --package mado-pilot-capi --example c-abi-check -- \
-  --label "<host>"
+python3 tools/setup-native.py -- cargo build --locked --package mado-pilot-capi
+python3 tools/setup-native.py -- cargo run --locked --package mado-pilot-capi --example c-abi-check -- --label "<host>"
 ```
 
-After starting the dedicated fixture in `--animate-on-input` mode, the C verifier
-exercises engine construction, both permission reads, exact discovery, capture,
-mapping, a frame-bound process-directed request, immutable receipt/attempt
-inspection, a strictly newer expected-condition search, diagnostic drain and
-explicit close. Run the default and extended sequences against separately
-prepared fixture state:
+Run the 4-event default and 5-event `--extended-sequence` C consumers against
+separately prepared fixture state (restarting `mado-pilot-macos-input-fixture`
+in `--animate-on-input` mode before each run because the first sequence
+transitions the fixture window to its target fill):
 
 ```sh
-target/debug/c-abi-check/macos-native-input \
-  "MadoPilot Input Fixture [<pid>]"
-target/debug/c-abi-check/macos-native-input --extended-sequence \
-  "MadoPilot Input Fixture [<pid>]"
+target/debug/c-abi-check/macos-native-input "MadoPilot Input Fixture [<pid>]"
+target/debug/c-abi-check/macos-native-input --extended-sequence "MadoPilot Input Fixture [<pid>]"
 ```
-
-The four-event default selects pointer and keyboard explicitly;
-`--extended-sequence` adds text for five events and checks the twenty-millisecond
-delay. Both assert process scope, `Unknown` compatibility and invocation-only
-evidence, permit no other route, and never activate the
-fixture, then independently evaluate a newer frame. Apply the same Screen
-Recording, event-post-access, exact-title, and owned-window restrictions as the
-Rust facade check. `--check` remains the only mode run unattended.
 
 ## Redaction review
 
-Production input and diagnostic code emits no event, key, text, window title,
-signing identifier, desktop content, captured bytes, native free-form message,
-platform namespace, or backend name. Process-directed records additionally
-never carry a PID, a native window number, a raw authorization value, or a
-per-process window inventory beyond the bounded eligible-candidate count.
-Permission records select only reviewed static launch/signature
-classifications. The fixture prints only its own deterministic title, its
-process and window numbers, its separate launch/signature modes, its mode and
-renderer facts, its signing identifier, and per-event kind and unit counts. The
-Objective-C fixture reads an event's characters solely to take their length and
-never copies them out of that block. Interactive evidence may record
-capability, route, submission counts and evidence, typed faults, cleanup
-counts, and diagnostic loss counts; it must not record input text or unrelated
-desktop payload.
+Production input and diagnostic records exclude event payloads, keys, text,
+window titles, signing identifiers, PIDs, native window numbers, raw
+authorization values, and captured pixels (see
+[Bounded diagnostic observation](architecture.md#bounded-diagnostic-observation)).
+The fixture prints its signing identifier and bounded per-kind / UTF-16 unit
+counts only on its own test stdout and never retains typed characters.
 
 ## Current native input performance evidence
 
-The revision-bound native input and public-language profile at
-[`benchmarks/phase-2-native-input-aarch64-apple-darwin.toml`](benchmarks/phase-2-native-input-aarch64-apple-darwin.toml)
-was measured at final candidate `dec43d7`. Its six workloads retain 300 correct samples
-with maximum allocation growth 64 bytes under the 4,096-byte hard gate and
-exact frame-mapping and fixture-event oracles. The harness provisions each C
-and C++ sample's fresh approved fixture outside its timed span and retains
-controller-owned mode-0500 executable/library pins per workload, so one
-sample cannot change the next sample's identity, lifecycle, or visual
-precondition.
-
-This profile requalifies input and public-language performance only. It does not
-replace the full current-display, shared-display, retained-frame, or
-AddressSanitizer acceptance matrices named below.
-
-The process-directed route, fixture-controlled capture stimulus, and their
-targets form a separate profile lineage whose ceilings were frozen before
-measurement. Controlled capture, controlled transitions, and process diagnostics
-remain bound to their named pre-optimization revision. The two
-authority-timing-sensitive current profiles were measured at source
-`dec43d7b6c91d415f2028e188e89fa289cb9c1c9` (tree
+Measured at final candidate `dec43d7b6c91d415f2028e188e89fa289cb9c1c9` (tree
 `109f77df9ef9f40b515245ab60a6036822ee7d78`):
 
-- [`phase-2-2-process-directed-appkit`](benchmarks/phase-2-2-process-directed-appkit-aarch64-apple-darwin.toml);
-- [`phase-2-2-process-directed-game-like`](benchmarks/phase-2-2-process-directed-game-like-aarch64-apple-darwin.toml).
+- [`benchmarks/phase-2-native-input-aarch64-apple-darwin.toml`](benchmarks/phase-2-native-input-aarch64-apple-darwin.toml):
+  6 workloads, 300 samples, max allocation growth `64 B` (`<= 4,096 B` hard gate).
+- [`benchmarks/phase-2-2-process-directed-appkit-aarch64-apple-darwin.toml`](benchmarks/phase-2-2-process-directed-appkit-aarch64-apple-darwin.toml)
+  and [`benchmarks/phase-2-2-process-directed-game-like-aarch64-apple-darwin.toml`](benchmarks/phase-2-2-process-directed-game-like-aarch64-apple-darwin.toml):
+  50 samples after 5 warm-ups per workload; AppKit terminal p95 `56.466375 ms`
+  (budget `106.34 ms`), OpenGL game-like p95 `56.699333 ms` (budget `112.18 ms`),
+  zero oracle failures, and `0 B` post-warm-up allocation growth.
 
-After setting `MADO_PILOT_MACOS_FIXTURE_EXECUTABLE` to the exact signed release
-fixture, reproduce either profile with:
+Reproduce either `phase-2-2` profile with:
 
 ```sh
 for workload in process-directed process-directed-game-like
@@ -997,58 +434,30 @@ do
 done
 ```
 
-Each current profile retained 50 samples after five warm-ups per workload and
-recorded fixture source, signed fixture executable, and benchmark executable
-digests. AppKit terminal p95 was `56.466375 ms` under `106.34 ms`; controlled
-game-like p95 was `56.699333 ms` under `112.18 ms`. Both recorded zero
-correctness failures, one matching fixture event per terminal sequence,
-unchanged foreground and physical cursor, and zero post-warm-up allocation
-growth in every workload.
-
-The one-read gate is the revision-bound conjunction of controller,
-geometry-source, and native seam tests with those exact-source rows. It applies
-to the terminal `RequireUnchanged`, default-focus-policy, one-pointer-event
-path. `RequireFocused`, `ReprojectCurrent`, ordered fallback, cleanup, and
-multi-unit sequences retain distinct observation shapes.
-
-The benchmark bodies formerly attributed to `a471c2d` are source/oracle-
-misbound and supply no result. Current performance plus independently passing
-`single`, exact two-display `same-scale`, and `mixed-scale` matrices support the
-fourteen controlled release pairs. These are controlled regression ceilings,
-not user-facing latency promises or evidence of general game or anti-cheat
-compatibility.
-
 ## Historical Phase 2 evidence
 
 The one-display qualified-host matrix for commit
-`a1faf04505c8471deb4de8c136fddcc7f76105e7`, including the AddressSanitizer
-run and full Rust, C, and C++ flows, is retained in
+`a1faf04505c8471deb4de8c136fddcc7f76105e7` (including the AddressSanitizer run
+and full Rust, C, and C++ flows) is retained in
 [`evidence/phase-2-native/macos-current-display.md`](evidence/phase-2-native/macos-current-display.md).
 Its former acceptance status was invalidated after source, oracle, profile, and
-toolchain drift. It is historical evidence, not authorization for the
-current release candidate. The exact owned-window replacement oracle remains
-retained separately in
+toolchain drift; it is historical evidence, not authorization for the current
+release candidate. The exact owned-window replacement oracle remains retained
+separately in
 [`evidence/g-001/macos-owned-window-replacement.md`](evidence/g-001/macos-owned-window-replacement.md).
-Revision-bound current-display and shared-display matrices remain release gaps.
+Revision-bound Phase 2 current-display and shared-display release matrices
+(requiring on macOS exactly two online non-mirrored displays with different
+effective scales on the qualified Apple Silicon macOS 26.6.2 host, covering
+signed placement, movement, capture, mapping, pointer-input, target-loss, Rust,
+C, and C++ cases regardless of physical connection method) remain open release
+gaps.
 
 ## Frameworks
 
-Input adds no crate and no eager framework. `CGEvent`, `CGWindowList`, and the
-legacy Accessibility observation come from frameworks the build script already
-declares. The process route's `CGEventPostToPid`,
-`CGPreflightPostEventAccess`, and selected pointer mode's private
-`CGEventSetWindowLocation` entry points are resolved by symbol from the
-absolute CoreGraphics framework path on first use, so missing capability
-reports a typed unsupported result instead of failing a load. AppKit — for
-application activation and explicitly selected NSEvent construction —
-HIToolbox — for the keyboard-layout lookup — and
-Security.framework — for public code-signature inspection — are opened from
-their absolute system paths on first use, exactly as ScreenCaptureKit is, so a
-headless library adds a load command for none and the operation that needed one
-reports an explicit unavailable/platform result where it cannot run.
-`crates/platform/macos/tests/linkage.rs` asserts the eager list is unchanged
-and that no fixture control or event-recording symbol reaches a production shim
-consumer. The fixture's window, control protocol, event recorder, and game-like
-OpenGL renderer are compiled into a separate archive that no released artifact
-links; the fixture alone loads OpenGL, from the absolute system framework path,
-and only in `--game-like` mode.
+macOS input adds no Cargo dependency and no eager framework link:
+`CGEventPostToPid`, `CGPreflightPostEventAccess`, and `CGEventSetWindowLocation`
+resolve by symbol from `CoreGraphics.framework`, while `AppKit`, `HIToolbox`
+(`Carbon.framework`), and `Security.framework` open from absolute system paths on
+first use (`crates/platform/macos/tests/linkage.rs` verifies the eager link list
+and absence of fixture symbols in production artifacts). Only the opt-in fixture
+binary loads `OpenGL.framework` when `--game-like` is selected.

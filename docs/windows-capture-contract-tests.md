@@ -1,189 +1,91 @@
 # Windows capture ownership contract tests
 
-This plan translates the Windows capture ownership contract settled under gate
-[`G-002`](validation-gates.md#g-002) and stated in
-[Windows native capture ownership](architecture.md#windows-native-capture-ownership)
-into tests for
-`mado-pilot-platform-windows`. The production Adapter, controlled tests, and
-approved interactive Windows host matrix now exist; this document distinguishes
-their revision-bound evidence from Windows exact-candidate Phase 1 checks, Apple
-Silicon Phase 1 reviewed applicability, repository checks, and release checks.
-
-The implementation uses both layers below:
-
-- deterministic Adapter-independent tests that exercise ownership, queue,
-  lifecycle, and publication through controllable fakes;
-- native WGC/D3D11 tests on the named Windows verification host for behavior a
-  fake producer cannot establish.
-
-The common public capture contract remains platform-neutral. Test-only
-instrumentation may expose producer-slot, detached-texture, lease, callback, and
-drop counters, but Windows or D3D11 types must not enter `mado-pilot-core`,
-`mado-pilot-capture`, the facade, or the C ABI.
+This suite verifies the Windows Graphics Capture (`WGC`) and Direct3D 11 (`D3D11`)
+ownership contract settled under [`G-002`](validation-gates.md#g-002) and defined
+in [Windows native capture ownership](architecture.md#windows-native-capture-ownership)
+for `mado-pilot-platform-windows`. It combines deterministic adapter-independent
+contract tests over controllable doubles with native WGC/D3D11 tests on the
+Windows verification host while keeping `mado-pilot-core`, `mado-pilot-capture`,
+the facade, and the C ABI platform-neutral.
 
 ## Current implementation coverage
 
-| Concern | Controlled evidence |
+| Concern | Verifying tests and modules |
 |---|---|
-| Picker-free discovery, staged final arbitration, deterministic concurrent commit order, provider identity, required format | `r1_1_deadline_at_final_arbitration_leaves_all_registry_state_unchanged`, `discovery_snapshots_commit_in_query_order`, other `crates/platform/windows/src/provider.rs` unit tests, and `crates/platform/windows/tests/native_capture.rs` |
+| Picker-free discovery, staged final arbitration, deterministic query-order commit, provider identity, required format | `r1_1_deadline_at_final_arbitration_leaves_all_registry_state_unchanged`, `discovery_snapshots_commit_in_query_order`, `crates/platform/windows/src/provider.rs` unit tests, and `crates/platform/windows/tests/native_capture.rs` |
 | Retained-result commitment after native loss | `retained_commit_rechecks_native_key_without_closed_callback` and `retained_commit_liveness_preserves_completed_close` |
 | Replacement identity and bounded current/previous generations | `r1_4_identical_raw_identity_with_a_fresh_lifetime_never_retargets_the_old_id`, `an_absent_identity_accepted_by_this_provider_is_conservatively_lost`, and the synthetic replacement-window path |
 | Producer detachment, finite pressure, lease-safe reuse, resize retirement | `crates/automation/capture/tests/native_storage.rs` and `crates/platform/windows/src/storage.rs` unit tests |
-| Checked surface and retained-byte bounds | `r1_2_surface_axes_and_bytes_accept_the_exact_boundary_and_reject_one_over`, `r1_2_surface_and_mapping_multiplication_overflow_is_typed_before_allocation`, `r1_2_production_limits_admit_the_exact_4k_retention_and_mapping_workload`, `r1_2_reported_capacity_is_truthful_for_4k_and_reduced_for_8k`, `r1_2_derived_4k_capacity_admits_first_and_fortieth_then_refuses_forty_one`, `r1_2_derived_8k_capacity_admits_the_first_and_twelfth_then_refuses_thirteen`, `r1_2_production_session_and_global_limits_are_exact_and_shared`, `r1_2_production_multi_session_description_matches_shared_pressure_and_resume`, `r1_2_mapping_budget_follows_pixels_that_outlive_the_session_owner`, `r1_2_process_shared_mapping_stays_charged_after_session_close_until_pixels_release`, and the resize budget-release assertion |
-| Pressure/discontinuity precedence | `finite_path_drop_debt_survives_discontinuities_until_a_gap_can_represent_it` preserves two drops through two `FIRST` epochs, `unrepresentable_drop_debt_neither_wraps_nor_disappears_at_a_discontinuity` proves checked refusal retains debt, and `r1_2_production_multi_session_description_matches_shared_pressure_and_resume` covers production shared-budget refusal, resize/release, the new epoch's `FIRST`, and the next legal pressure-visible publication |
-| Producer reservation and native teardown lifetime | `r1_2_producer_reservation_stays_with_queued_native_ownership_until_close`, `r1_2_producer_reservation_stays_charged_in_quarantine`, and `r1_2_resize_replaces_producer_reservation_only_after_native_success` use the production native-owner seam to hold queue/quarantine ownership and exercise failed/successful replacement |
-| Capacity-one latest-wins handoff | `r1_3_declared_latest_wins_matches_two_publications_before_observation` publishes twice before observation and checks the returned bytes, sequence, and absence of an invented producer-drop gap |
-| Aliasing negative control | `the_retained_byte_oracle_rejects_an_overwriting_two_slot_ring` intentionally overwrites a two-slot ring and proves the retained-byte oracle rejects it |
+| Checked surface (`16,384` px, `128 MiB`) and retained-byte (`2 GiB` session / `4 GiB` process, `<= 40` frames) bounds | `r1_2_surface_axes_and_bytes_accept_the_exact_boundary_and_reject_one_over`, `r1_2_surface_and_mapping_multiplication_overflow_is_typed_before_allocation`, `r1_2_production_limits_admit_the_exact_4k_retention_and_mapping_workload`, `r1_2_reported_capacity_is_truthful_for_4k_and_reduced_for_8k`, `r1_2_derived_4k_capacity_admits_first_and_fortieth_then_refuses_forty_one`, `r1_2_derived_8k_capacity_admits_the_first_and_twelfth_then_refuses_thirteen`, `r1_2_production_session_and_global_limits_are_exact_and_shared`, `r1_2_production_multi_session_description_matches_shared_pressure_and_resume`, `r1_2_mapping_budget_follows_pixels_that_outlive_the_session_owner`, and `r1_2_process_shared_mapping_stays_charged_after_session_close_until_pixels_drop` |
+| Pressure/discontinuity precedence | `finite_path_drop_debt_survives_discontinuities_until_a_gap_can_represent_it`, `unrepresentable_drop_debt_neither_wraps_nor_disappears_at_a_discontinuity`, and `r1_2_production_multi_session_description_matches_shared_pressure_and_resume` |
+| Producer reservation and native teardown lifetime | `r1_2_producer_reservation_stays_with_queued_native_ownership_until_close`, `r1_2_producer_reservation_stays_charged_in_quarantine`, and `r1_2_resize_replaces_producer_reservation_only_after_native_success` |
+| Capacity-one `LatestWins` handoff & aliasing negative control | `r1_3_declared_latest_wins_matches_two_publications_before_observation` and `the_retained_byte_oracle_rejects_an_overwriting_two_slot_ring` |
 | Callback admission fence, post-drain native-end decision, and retry after cancellation | `callback_fence_is_retryable_after_cancelled_drain`, `native_end_state_is_sampled_after_the_admitted_callback_drain`, and `authoritative_native_end_latches_after_owner_admission_stops` |
-| Bounded implicit teardown and initialized cross-thread apartment | `teardown_executor_starts_only_the_fixed_worker_count`, `cancelled_waiters_share_one_in_flight_teardown_generation`, `teardown_queue_is_finite_and_non_blocking`, `teardown_permits_bound_live_and_queued_session_ownership`, `teardown_start_observes_operation_cancellation_before_spawning`, `uninterruptible_drop_drain_waits_for_an_admitted_callback`, both injected startup-failure tests, and native cross-thread close and implicit-drop paths |
-| Lazy mapping, exact byte length, retained byte lease, device-terminal commit fence, retained lifetime | `r1_2_mapping_budget_follows_pixels_that_outlive_the_session_owner`, `device_terminal_cancels_a_cache_assignment_before_it_becomes_visible`, `crates/automation/capture/tests/native_storage.rs`, and the synthetic-window native test |
-| Resize identity and old-storage survival | `a_native_frame_correlates_to_the_geometry_it_was_captured_under` plus the synthetic-window native test |
-| Precalibrated WGC time and signed mixed-DPI geometry | `native_frame_times_use_the_precalibrated_project_clock`, `signed_mixed_dpi_placement_preserves_virtual_screen_coordinates`, `differently_scaled_adjacent_monitors_share_one_desktop_seam`, and the synthetic-window movement case |
-| Access, capture-item close, disconnect, removal, and reset classification | `native_target_faults_are_normalized_by_target_kind`, `native_device_and_lifecycle_errors_are_typed`, and the controlled target-close path |
-| Idempotent native close and post-close mapping | `native_close_absorbs_an_already_closed_result` and `synthetic_window_exercises_retention_resize_loss_and_close` |
-| Optional-export System32 loader boundary | `optional_modules_resolve_only_from_the_system_directory` verifies module paths, while `optional_windows_exports_are_absent_from_the_pe_import_table` parses the built test executable's PE imports |
-
-These tests are deterministic except for the explicitly native synthetic-window
-case, which skips with a reason only when WGC is unavailable. On a supported
-host, failure to discover the test-owned target is a test failure. The tests do
-not capture an unrelated desktop or application.
-
-The revision-bound 120-warm-up/600-frame 1280×720 production matrix and the
-exact two-display mixed-DPI dual-4K matrix keep their resource-zeroing
-observations in the
-[1280×720](benchmarks/phase-2-production-capture-1280x720-x86_64-pc-windows-msvc.toml)
-and [dual-4K](benchmarks/phase-2-production-capture-dual-4k-x86_64-pc-windows-msvc.toml)
-profiles; a skip remains ineligible as support evidence.
+| Bounded implicit teardown and initialized cross-thread WinRT apartment | `teardown_executor_starts_only_the_fixed_worker_count`, `cancelled_waiters_share_one_in_flight_teardown_generation`, `teardown_queue_is_finite_and_non_blocking`, `teardown_permits_bound_live_and_queued_session_ownership`, `teardown_start_observes_operation_cancellation_before_spawning`, `uninterruptible_drop_drain_waits_for_an_admitted_callback`, startup-failure tests, and native cross-thread close/drop paths |
+| Lazy mapping, retained byte lease, and device-terminal commit fence | `r1_2_mapping_budget_follows_pixels_that_outlive_the_session_owner`, `device_terminal_cancels_a_cache_assignment_before_it_becomes_visible`, `crates/automation/capture/tests/native_storage.rs`, and the synthetic-window native test |
+| Resize identity, precalibrated WGC clock, and signed mixed-DPI geometry | `a_native_frame_correlates_to_the_geometry_it_was_captured_under`, `native_frame_times_use_the_precalibrated_project_clock`, `signed_mixed_dpi_placement_preserves_virtual_screen_coordinates`, `differently_scaled_adjacent_monitors_share_one_desktop_seam`, and synthetic-window movement/resize tests |
+| Target/device fault classification and idempotent close | `native_target_faults_are_normalized_by_target_kind`, `native_device_and_lifecycle_errors_are_typed`, `native_close_absorbs_an_already_closed_result`, and `synthetic_window_exercises_retention_resize_loss_and_close` |
+| Optional-export `SYSTEM32` loader boundary | `optional_modules_resolve_only_from_the_system_directory` and `optional_windows_exports_are_absent_from_the_pe_import_table` |
 
 ## Privacy review
 
-Production code emits no target, frame, or pixel logs. Public discovery returns
-the window title or display name because it is caller-visible selection
-metadata, but debug output for the provider, target records, sessions, storage,
-and refusals excludes titles, native handles, process paths, pixel bytes,
-captured hashes, and native serial identifiers. Native test skip messages and
-assertions name only the test-owned fixture and typed outcomes.
+Production capture code emits no target, frame, or pixel logs, and `Debug`
+implementations exclude window titles, native handles, process paths, pixel
+bytes, hashes, and monitor serial identifiers (see
+[Bounded diagnostic observation](architecture.md#bounded-diagnostic-observation)).
+Native tests capture only their own synthetic Win32 fixture window.
 
 ## Adapter-independent contract cases
 
 | Case | Required observable result |
 |---|---|
-| Producer slots are returned before publication | Retaining more public frames than the producer-pool size does not retain a producer token or prevent the fake producer from delivering the complete sample |
-| Detached owner is authoritative | A published frame owns private detached storage and contains no WGC-frame or producer-surface owner |
-| Lease-safe reuse | A texture is never selected for a copy while a public frame, mapping, or backend lease owns it |
-| Finite pressure | Holding every detached texture makes the next candidate an observable queue/capture drop; it does not block, overwrite, or allocate beyond the configured bound |
-| Resume after release | Releasing one old lease makes capacity available and producer progress resumes without reopening the session |
-| Lazy mapping boundary | Mapping begins outside the producer callback, uses the frame's own descriptor and geometry revision, and preserves exact row pitch and bytes |
-| Backend lifetime | Backend work admitted before close observes the complete original frame after session and pool closure |
-| Callback boundary | Test hooks prove the callback performs only acquire, validate, copy, account, enqueue, and release; mapping, waits, backends, and host callbacks fail the test if invoked there |
-| Resize transition | The first changed-content-size frame is not published; the new pool uses the new size and advances geometry revision once |
-| Old resize generation | Retained old-size frames and mappings complete under their old revision while unused incompatible textures retire |
-| Pressure before resize | A discontinuous publication starts its new epoch at `FIRST` and therefore preserves all pending pressure debt; repeated discontinuities preserve it, and the first later non-discontinuous publication consumes it only by committing the checked same-epoch sequence gap |
-| Close admission fence | Both native handlers use lifetime-independent shared state; owner detachment and admission are synchronized; no callback is admitted to the owner after the fence; a delegate deliberately paused before admission is rejected safely after close |
-| Idempotent close | Concurrent and repeated close calls converge on one terminal state without double release or a host callback under a lock; native teardown runs on a fixed shared worker pool whose apartments and global ownership permits are established before open, startup failures are typed and retryable, and explicit close remains bounded by its operation deadline |
-| Target loss | Loss stops admission and reports the typed terminal outcome. Retained-frame commitment rechecks native identity without waiting for `Closed`; historical frames remain unchanged |
-| Device removal/reset | Admission stops, the typed device outcome terminates the session, no late callback publishes or mapping state commits, and teardown remains bounded |
-| Resource bound | WGC frames never exceed two; a surface stays within 16,384 per axis and 128 MiB; detached, staging, and mapped ownership stays within 2 GiB per session and 4 GiB process-wide; the extent-derived retained count is enforced as a session-local maximum capped at 40 and is publicly marked process-shared; global contention may refuse earlier and every byte lease returns after final release |
-| Diagnostic redaction | Drop, close, reset, and mapping failures exclude pixel bytes, captured hashes, recognized text, titles, process paths, and native serial identifiers |
-
-The finite-pressure test must include an unsafe test Adapter that overwrites a
-two-texture ring. The retained digest oracle must fail against that Adapter so a
-test that can no longer detect aliasing cannot silently pass the production
-implementation.
+| Producer slots returned before publication | Retaining more public frames than the 2-frame producer pool never stalls delivery |
+| Detached owner is authoritative | Published frames own private detached storage with no `Direct3D11CaptureFrame` or producer-surface reference |
+| Lease-safe reuse & aliasing negative control | Textures are reused only after all public-frame, mapping, and backend leases drop; an overwriting 2-slot ring double is rejected by the retained-digest oracle |
+| Finite pressure & resume after release | Exhausting all detached textures records an observable sequence drop without blocking or allocating past the bound, and releasing one lease resumes delivery |
+| Lazy mapping & backend lifetime | Mapping runs outside the WGC callback under the frame's descriptor/revision, and backend work admitted before close reads the intact original frame |
+| Callback boundary | The callback performs only acquire, validate, copy, account, enqueue, and release |
+| Resize transition & pressure debt | Clipped transition frames are dropped; the recreated pool advances geometry revision once, retained old-size frames stay readable, and pre-resize drop debt survives `FIRST` epochs until the next non-discontinuous publication commits the sequence gap |
+| Close admission fence & idempotent close | `FrameArrived` and `Closed` handlers use lifetime-independent state; close detaches the owner, drains callbacks, and runs teardown on the fixed WinRT worker pool without double release or host callbacks under locks |
+| Target loss & device removal/reset | Target loss and device reset stop admission and publish typed terminal faults without committing late mappings |
+| Resource bounds | 2 WGC producer frames, `<= 16,384` px/axis, `<= 128 MiB`/surface, `<= 2 GiB`/session, `<= 4 GiB`/process (`ProcessShared`, capped at `40` frames), with all byte leases returned on final drop |
 
 ## Native Windows contract cases
 
-Native tests use a test-owned synthetic Win32 target and a free-threaded WGC
-frame pool. They never capture an unrelated desktop or application window.
+On an interactive Windows host, the native suite exercises a test-owned synthetic
+Win32 target:
 
-The retained-frame case matches the G-002 evidence:
-
-1. Create a two-frame WGC pool and a finite detached-texture pool.
-2. Discard 120 delivered warm-up frames.
-3. Require 600 delivered frames within 20 seconds after warm-up, with no
-   post-warm-up arrival gap above 500 ms.
-4. Retain every third frame, delay validation by 90 delivered frames, alternate
-   mapping and backend leases, and cap retained work at 40.
-5. Validate BGRA8 format, dimensions, `RowPitch >= width * 4`, deterministic
-   marker coherence, wrap-aware sequence progress with no regression or
-   greater-than-500 ms stall, and identical immediate and delayed digests.
-6. Stop admission, unregister both handlers, drain admitted callbacks, publish
-   the fence, close WGC, complete in-flight work, and require every resource
-   counter to reach zero.
-
-The native lifecycle suite adds:
-
-- resize through 1280×720, 960×540, 1920×1080, and back to 1280×720;
-- 100 close races at 0, 1, 5, 15, and 30 milliseconds after callback
-  admission, 20 repetitions each;
-- close with mapping and backend leases in flight;
-- a deterministic pre-admission barrier that holds one queued delegate while
-  close detaches the owner and publishes the fence, then proves safe rejection;
-- close from a fresh thread whose WinRT apartment is initialized by the Adapter;
-- retention past the two-frame producer-pool depth and finite 40-texture
-  pressure, followed by release and resumed production; if resize intervenes,
-  its `FIRST` preserves the debt and the next non-discontinuous publication
-  exposes the gap;
-- several successfully admitted sessions contending under the production 4 GiB
-  shared budget, with each description reporting a process-shared local maximum,
-  exact refusal, release/resume, and the first legal non-discontinuous sequence
-  gap;
-- movement of the synthetic target followed by a stable frame with a newer
-  geometry revision and no spurious stream-epoch reset;
-- repeated stale-target `TargetLost` under the finite generation lease, and a
-  same-title replacement receiving a new `TargetId` without old-item retargeting;
-- a real controlled-target close and an idempotent second close;
-- injected device-loss admission stop followed by a typed terminal outcome, no
-  late callback publication or mapping-state commit, and bounded teardown.
-
-Injected device loss verifies state-machine ownership only. A physical device
-removal, TDR, or driver upgrade is not claimed unless a separately reviewed
-native run actually performs it.
-
-Outside 08:00–19:00 local time, the named host also runs 600 frames on each of
-its two 3840×2160 displays and 300 frames while moving the controlled target
-across their signed-coordinate seam. The record includes Windows build, GPU and
-driver, MSVC, SDK, DPI, scale, signed rectangles, and hashed display
-identifiers, with no captured payload.
+1. **Retained-frame stress (`G-002` baseline):** 2-frame WGC pool + finite
+   detached pool, 120 warm-up frames discarded, 600 frames delivered within 20 s
+   (no gap `> 500 ms`), every 3rd frame retained for 90 frames across alternating
+   mapping and backend leases (up to 40 retained), verifying `BGRA8`,
+   `RowPitch >= width * 4`, marker coherence, identical immediate/delayed
+   digests, and zeroed resource counters after close.
+2. **Lifecycle and contention:** Resize across `1280×720 -> 960×540 -> 1920×1080 -> 1280×720`;
+   100 close races (`0`, `1`, `5`, `15`, `30 ms` × 20); close with in-flight
+   leases and pre-admission barriers; cross-thread close; multi-session contention
+   under the `4 GiB` shared budget; target movement across signed seams; stale
+   `TargetId` refusal and replacement isolation; and injected device-loss
+   teardown.
+3. **Dual-4K stationary and cross-seam movement:** 600 frames on each of two
+   `3840×2160` displays plus 300 frames while moving the synthetic target across
+   their signed-coordinate seam.
 
 ## Performance obligations
 
-G-002 chooses correctness and ownership, not numeric product targets. The
-1280×720 production workload profiles measure:
-
-- capture arrival and callback-copy p50/p95 latency;
-- full-frame copied bytes and lazy mapped bytes;
-- detached-texture, staging, process-resident, and total GPU-resource peaks;
-- producer progress, stale/coalesced work, and recovery after pressure;
-- session startup, resize recreation, callback drain, complete close, and
-  target-loss replacement recovery.
-
-The dual-4K profile measures the same applicable capture, mapping, resource, progress, and
-cleanup facts for the exact two-display 4K topology. It requires one shared
-600-sample stationary pass per display plus 300 retained frame pairs while the
-fixture moves across the signed seam. Both requested-position markers and each
-frame's coherent post-baseline stream/epoch/sequence callback record must match.
-
-Every timed sample keeps its correctness oracle. A throughput improvement that
-changes retained pixels, pins producer slots, exceeds a bound, or hides a drop
-fails before latency is considered.
+Every timed sample enforces its correctness and zero-leak oracles first. The
+[`1280×720`](benchmarks/phase-2-production-capture-1280x720-x86_64-pc-windows-msvc.toml)
+and [`dual-4K`](benchmarks/phase-2-production-capture-dual-4k-x86_64-pc-windows-msvc.toml)
+profiles record capture arrival and callback-copy p50/p95 latency, copied/mapped
+bytes, detached/staging/resident/GPU peaks, producer progress, and
+startup/resize/close latencies.
 
 ## Execution and evidence
 
-Adapter-independent cases run in ordinary workspace tests. Native WGC cases may
-require an interactive Windows session and therefore may not be available on a
-headless pull-request runner. A skipped native case must report why it did not
-run; a skip is not support evidence.
+Adapter-independent cases run in every workspace `cargo test`. Native WGC cases
+skip with an explicit reason when WGC or an interactive session is unavailable
+(a skip is never support evidence). The accepted revision-bound Windows
+production capture records live in:
 
-Windows native production-capture acceptance is complete on repaired source.
-The revision-bound reports link every applicable case above to its test, retain
-accepted and rejected attempts, bind exact source/artifact identities and
-approved metadata, enforce the affected `G-013` budgets, and pass the shared and
-native matrices:
-
-- [`windows-production-capture.md`](evidence/phase-2-native/windows-production-capture.md);
-- [`windows-dual-4k-production-capture.md`](evidence/phase-2-native/windows-dual-4k-production-capture.md).
-
-[docs/architecture.md](architecture.md) records both accepted production
-lineages separately from Windows exact-candidate Phase 1 evidence, Apple Silicon
-Phase 1 reviewed applicability, and release evidence.
+- [`evidence/phase-2-native/windows-production-capture.md`](evidence/phase-2-native/windows-production-capture.md)
+- [`evidence/phase-2-native/windows-dual-4k-production-capture.md`](evidence/phase-2-native/windows-dual-4k-production-capture.md)
