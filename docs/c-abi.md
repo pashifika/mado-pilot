@@ -239,6 +239,8 @@ Key status and geometry rules:
 request/zone views, and operation record for the synchronous call, committing an
 independent immutable `madopilot_ocr_result_t` or
 `madopilot_ocr_zone_scan_result_t` on success.
+See [OCR recognition](architecture.md#ocr-recognition) for shared validation,
+normalization, bounds, interruption authority, and result-ownership rules.
 
 Engine construction options remain separated in dedicated structs so frozen
 records never change size:
@@ -291,9 +293,11 @@ Published C ABI input ceilings:
 | Cleanup budget | `256` releases and `250,000,000` ns |
 
 Pre-admission refusals return `MADOPILOT_STATUS_INPUT_FAILED` with no receipt.
-Once admitted, `session_send_input` returns `MADOPILOT_STATUS_OK` with one
-immutable `madopilot_input_receipt_t` (`COMPLETE`, `PARTIAL`, or `UNEXECUTED`)
-inspected via `input_receipt_info` and `input_receipt_attempt_at`. Only
+On a normal return after admission, `session_send_input` returns
+`MADOPILOT_STATUS_OK` with one immutable `madopilot_input_receipt_t`
+(`COMPLETE`, `PARTIAL`, or `UNEXECUTED`) inspected via `input_receipt_info`
+and `input_receipt_attempt_at`. See [Panic containment](#panic-containment) for
+the side-effecting panic exception. Only
 `NOT_NEEDED` and `COMPLETE` cleanup states prove no sequence-pressed state
 remains held. See [Windows input verification](windows-input-verification.md#capability-boundary)
 and [macOS input verification](macos-input-verification.md#capability-boundary)
@@ -316,6 +320,10 @@ Every exported entry point catches Rust panics before crossing into C, returning
 states. `mado-pilot-capi` enforces an unwinding profile at compile time with
 `#[cfg(panic = "abort")] compile_error!`; do not build this crate with
 `-C panic=abort` or `-Z build-std` `panic_immediate_abort`.
+
+A contained panic leaves the receipt null but does not prove that no native
+input took effect. Callers must not automatically retry a side-effecting call
+after a contained panic.
 
 ## What ABI 1.2 does not contain
 

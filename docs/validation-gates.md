@@ -94,13 +94,16 @@ with an explicit due phase, blocking scope, and resolution rule.
 - **Decision:** Default template-watcher change detection uses `exact-rgba-v1` over compatible mapped RGBA8 regions with `analysis-always-v1` as the explicit fail-safe; threshold and grid-sampling candidates remain offline evaluation-only.
 - **Due / Blocks:** Before Phase 4 watcher implementation; blocks default watcher policy.
 - **Status & canonical contract:** Resolved. See [Bounded template-presence queries](architecture.md#bounded-template-presence-queries) for watcher semantics and [native template watching](native-template-watch.md#qualification-v2-protocol-and-migration) for native qualification rules.
+  A future false skip or behavior-affecting fixture, report, or policy drift
+  removes current authority until an affected-host rerun or reviewed complete-diff
+  applicability restores it.
 - **Evidence & history:** [evidence/g-005/](evidence/g-005/) (zero false skips across nine transitions, reproduced byte-for-byte on both targets at `3bb191d`); historical [ADR 0050](https://github.com/pashifika/mado-pilot/blob/646369fad6c922ac7b064367817337a18e572d8c/docs/adr/0050-change-detection-default.md).
 
 ## G-006
 
 - **Decision:** Existing and automatic OCR constructors default to CPU on both targets. Explicit Windows CUDA is supported for its qualified boundary; CoreML is not release-qualified. `Preferred` policy may fall back to a fresh CPU pair only during engine initialization; `Required` policy fails closed; runtime inference never switches providers.
 - **Due / Blocks:** Before Phase 5 implementation; blocks acceleration defaults and accelerator support claims.
-- **Status & canonical contract:** Resolved for v0.3.1 OCR providers in [OCR recognition](architecture.md#ocr-recognition); remains open for future accelerators, graphs, targets, or automatic defaults (which require an ADR and target-native correctness, memory, cancellation, and performance evidence).
+- **Status & canonical contract:** Resolved for v0.3.1 OCR providers in [OCR recognition](architecture.md#ocr-recognition); remains open for future accelerators, graphs, targets, or automatic defaults (which require an ADR and target-native correctness, placement, memory, cancellation, cleanup, and fallback evidence, plus performance evidence appropriate to any claimed benefit).
 - **Evidence & history:** Historical ADRs [0046](https://github.com/pashifika/mado-pilot/blob/646369fad6c922ac7b064367817337a18e572d8c/docs/adr/0046-onnx-accelerator-provider-policy.md)–[0049](https://github.com/pashifika/mado-pilot/blob/646369fad6c922ac7b064367817337a18e572d8c/docs/adr/0049-cuda-ocr-memory-remediation.md).
 
 ## G-007
@@ -117,7 +120,7 @@ with an explicit due phase, blocking scope, and resolution rule.
 
 ## G-009
 
-- **Decision:** Reviewed `0.x` public Rust names in `mado-pilot` allow additive extensions while treating renames, removals, or semantic changes as breaking changes requiring a version bump and ADR; full API stability begins at 1.0.
+- **Decision:** Reviewed `0.x` public Rust names in `mado-pilot` allow additive extensions; renames or removals are breaking changes requiring a version bump and ADR. Changing what an existing name means while keeping it is refused; full API stability begins at 1.0.
 - **Due / Blocks:** Before Phase 1 exit; blocks Rust API stability promises.
 - **Status & canonical contract:** Resolved in [Public naming baseline](architecture.md#public-naming-baseline); historical [ADR 0006](https://github.com/pashifika/mado-pilot/blob/646369fad6c922ac7b064367817337a18e572d8c/docs/adr/0006-public-rust-names-and-compatibility-policy.md).
 
