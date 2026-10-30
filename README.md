@@ -60,11 +60,13 @@ The examples below run against repository fixtures without desktop permissions o
 | Rust | Depend on [`mado-pilot`](crates/mado-pilot) and import `mado_pilot` ([crate overview](crates/mado-pilot/src/lib.rs)). Template and OCR watchers are currently Rust-only; API stability begins at 1.0. |
 | C / C++ | Include [`madopilot.h`](crates/bindings/capi/include/madopilot/madopilot.h) and link `MadoPilot::C`. See the [C ABI guide](docs/c-abi.md) for handle ownership, `struct_size` prefix negotiation, and C/C++ samples. |
 
-Generate and open the local Rust API reference:
+Generate the local Rust API reference:
 
 ```bash
 python3 tools/setup-native.py -- cargo doc --locked --package mado-pilot --no-deps
 ```
+
+Open `target/doc/mado_pilot/index.html`.
 
 ## Documentation
 
