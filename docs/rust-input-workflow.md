@@ -36,7 +36,9 @@ without opening capture or sending input.
 
 To build manually from a copied consumer directory (or when switching `Cargo.toml`
 to a pinned `git = "https://github.com/pashifika/mado-pilot", rev = "<full-sha>"`
-dependency and regenerating the consumer's `Cargo.lock`):
+dependency and regenerating the consumer's `Cargo.lock`; the `git`/`rev` route is
+unexercised and not covered by the path-route `tools/check-external-rust-consumer.py`
+proof):
 
 ```sh
 python3 /absolute/path/to/mado-pilot/tools/setup-native.py -- \
@@ -151,6 +153,8 @@ window titles, and model paths.
 Both native CI jobs run `tools/check-external-rust-consumer.py` (path build and
 `--smoke`). In a separate operator-authorized attended exercise on Apple Silicon
 macOS `27`, the consumer drove `SSR.app 1.0.461` across three click actions
-(menu reveal, control selection, and return under renewed wait authority, with
-`3/3` complete receipts, `0/0` cleanup owed/released, and strictly newer
-postcondition observation). Windows remains build- and model-free-smoke verified.
+(menu reveal and control selection in a first invocation that stopped when the
+host decision wait expired, followed by the return click in a second invocation
+under renewed wait authority, with `3/3` complete receipts, `0/0` cleanup
+owed/released, `2/2` session closes, and strictly newer postcondition
+observation). Windows remains build- and model-free-smoke verified.

@@ -56,13 +56,22 @@ flowchart LR
   change/rate admission, coalescing, saturation, fairness, stale-generation
   rejection, diagnostics, and bounded allocation growth.
 - **Required `Lane B` (compact native contract on Windows WGC and macOS
-  ScreenCaptureKit):** Built with `--features native-template-watch-qualification`
-  and invoked once per approved host with `--native-contract` (schema
+  ScreenCaptureKit):** Built once per approved host through `tools/setup-native.py`
+  and invoked through `tools/setup-native.py --` (because the build step does
+  not configure the parent shell's loader environment; use the Windows setup
+  options from [native development prerequisites](../CONTRIBUTING.md#native-development-prerequisites)
+  on Windows):
+  ```sh
+  python3 tools/setup-native.py -- cargo bench --locked --package mado-pilot \
+    --bench native-template-watch --features native-template-watch-qualification --no-run
+  python3 tools/setup-native.py -- /absolute/emitted-executable --native-contract
+  ```
+  Emits a single JSON report (`<= 64 KiB`, schema
   `mado-pilot.native-template-watch-contract.v2`; exit `0` = `PASS`, `1` =
-  product `FAIL`, `2` = `INFRA`, `3` = `UNSUPPORTED`). Exercises 8 compact
-  scenarios driven by an acknowledged 10×9 visual token grid outside the
-  template ROI (asymmetric sentinels, 32 token bits + inverse, marker bit, 5-bit
-  checksum):
+  product `FAIL`, `2` = `INFRA`, `3` = `UNSUPPORTED`, preserved even when red)
+  and exercises 8 compact scenarios driven by an acknowledged 10×9 visual token
+  grid outside the template ROI (asymmetric sentinels, 32 token bits + inverse,
+  marker bit, 5-bit checksum):
   1. Target and non-prompting permission admission.
   2. Post-open absent-token synchronization (startup interval).
   3. Correlated watcher match after visible-token acknowledgement (watch interval).
@@ -74,8 +83,10 @@ flowchart LR
      reap + reader join; macOS authenticated launch `Live` -> `Stop` -> `Lost`,
      containment, output drain, and zero cleanup debt).
 - **Optional `Lane C` (`--lane-c-evidence`, optionally `--enforce-budgets`):**
-  Collects statistical latency, topology, resource, and 24-workload endurance
-  evidence without replacing `Lane B`.
+  Invokes the replay or native benchmark executable with `--lane-c-evidence`
+  (and its exact source, tree, executable, fixture, process, host, toolchain,
+  and backend arguments) to collect statistical latency, topology, resource, and
+  24-workload endurance evidence without replacing `Lane B`.
 
 ## Prerequisites
 
