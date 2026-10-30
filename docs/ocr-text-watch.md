@@ -1,62 +1,50 @@
 # Rust OCR text-presence queries
 
-`Session::start_ocr_text_watch` waits for a literal in one explicit region of a
-maintained session. This is an additive Rust implementation. The controlled
-public-API smoke, model-free normalization proof, and historical source-bound
-CPU replay on both release targets have run. Current CPU-option checks use
-Apple Silicon/macOS 27.0.1; they do not inherit earlier target qualification.
-Windows WGC and Apple ScreenCaptureKit qualification remain open. Numerical
-workload outcomes inform optimization and caller choice; they do not block model
-availability or continued implementation. No new C/C++ surface is provided.
+`Session::start_ocr_text_watch` waits for literal text inside a coordinate-qualified
+region of a maintained capture session. It is a Rust-only surface (C ABI 1.5 is
+unchanged).
 
-Earlier Windows 11 and macOS 26.6.2 host records remain bound to their original
-sources and runs. Missing native coverage does not itself classify a host as
-unsupported; see the [OS support policy](architecture.md#os-support-policy).
+**Current verification scope:**
+
+- **Deterministic contracts and real-CPU replay:** Controlled API smoke,
+  Unicode 17.0.0 normalization bounds, and fixed real-CPU replay on both
+  `x86_64-pc-windows-msvc` and `aarch64-apple-darwin` are verified.
+- **Owned-fixture native capture procedures:** Fixed-cohort native capture
+  procedures have recorded passes on Windows WGC and Apple ScreenCaptureKit; see
+  the [Windows OCR text-watch procedure](ocr-text-watch-windows.md) and
+  [Apple OCR text-watch procedure](ocr-text-watch-macos.md) for their exact
+  cohort bindings and scenarios. General native capture qualification across
+  broader workloads and unexecuted candidate-authority steps remains open.
+- **Model choice and OS support:** Per-model quality and timing results inform
+  caller selection and tuning without filtering available profiles or altering OS
+  support floors; see the [OS support policy](architecture.md#os-support-policy).
 
 ## Selection and request
 
-Initialize OCR once using the existing constructors:
+Initialize an engine with an OCR backend using the existing facade constructors:
 
-- `replay_engine_with_ocr_profile`, `windows_engine_with_ocr_profile` or
-  `macos_engine_with_ocr_profile` accepts `OcrProfileConfig::from_id` with a choice
-  from `ocr_profiles()` / `ocr_profile(id)`. `OcrProfile::BoundedDetector` remains
-  an explicit bounded-v2 selection; native G-004 and the other implemented
-  catalog profiles are not excluded from watching.
-- `replay_engine_with_ocr_provider`, `windows_engine_with_ocr_provider` or
-  `macos_engine_with_ocr_provider` accepts `OcrProviderConfig::new` with the
-  existing `OcrProviderProfile` and `OcrExecutionProviderPolicy`. These constructors,
-  not the watcher, determine which model/provider combinations initialize on
-  the target. This change adds no provider or accelerator support.
+- `replay_engine_with_ocr_profile`, `windows_engine_with_ocr_profile`, or
+  `macos_engine_with_ocr_profile`: Accepts `OcrProfileConfig::from_id` with any
+  profile from `ocr_profiles()` / `ocr_profile(id)` (including the `G-004`
+  default, `OcrProfile::BoundedDetector` / bounded-v2, and the PP-OCRv6
+  tiny/small profile; see the [OCR model catalog](ocr-model-catalog.md)).
+- `replay_engine_with_ocr_provider`, `windows_engine_with_ocr_provider`, or
+  `macos_engine_with_ocr_provider`: Accepts `OcrProviderConfig::new` with an
+  `OcrProviderProfile` and `OcrExecutionProviderPolicy`.
 
-Supply the selected constructor's controlled model/runtime prerequisites.
-Nothing is acquired, bundled or searched for implicitly. Existing defaults,
-initialization-time preferred-provider fallback and required-provider failures
-remain unchanged; a query never changes selection or falls back.
-
-Start binds the complete initialized backend/model/profile/provider descriptors
-and requires a BGRA OCR backend with provider metadata. Missing OCR is
-unavailable; missing provider metadata or non-BGRA input is unsupported. There
-is no watcher whitelist for model, CPU, backend/version or runtime name. Before
-each analysis or change skip, the selected provider and prepared backend
-descriptors are rechecked against the captured identities; drift fails instead
-of substituting another selection.
-
-Watching follows the same caller-choice rule as one-shot OCR and the
-[model catalog](ocr-model-catalog.md): model-quality and timing results inform
-the caller, independently of enforced runtime safety. Earlier native failures and
-qualification gates remain source-bound evidence, not selection filters or
-accelerator qualification.
+`start_ocr_text_watch` requires an initialized BGRA OCR backend with provider
+metadata, captures the complete backend/model/profile/provider/CPU-option
+identity at start, and re-verifies that exact identity before every analysis or
+change skip without switching profiles or falling back.
 
 ### CPU execution options
 
-Rust explicit-profile constructors accept `OcrProfileConfig::with_cpu_options`.
-`OcrCpuOptions::new(intra_threads)` accepts every count in `1..=8` and returns
-an error outside that range; `with_spinning(bool)` controls native CPU worker
-spinning. The getters are `intra_threads()` and `allow_spinning()`;
-`OcrProfileConfig::cpu_options()` returns the selected options.
-The default remains one intra-op thread with spinning enabled.
-
-This is an explicit measured-host example, not a default recommendation:
+Explicit Rust profile configurations accept `OcrProfileConfig::with_cpu_options`:
+`OcrCpuOptions::new(intra_threads)` admits `1..=8` intra-op threads, and
+`with_spinning(bool)` controls worker spinning (default is `1` thread with
+spinning enabled; `DefaultOcrConfig` and provider-policy constructors keep that
+default). Each `(intra_threads, allow_spinning)` pair produces a distinct
+runtime profile identity:
 
 ```rust
 use mado_pilot::{OcrCpuOptions, OcrProfileConfig};
@@ -71,309 +59,134 @@ fn selection() -> Result<OcrProfileConfig, mado_pilot::Error> {
 }
 ```
 
-Pass the configuration to `replay_engine_with_ocr_profile`,
-`windows_engine_with_ocr_profile` or `macos_engine_with_ocr_profile`.
-The options apply at initialization to both detector and recognizer; each
-thread-count/spinning pair has a distinct runtime profile identity.
-`DefaultOcrConfig` and provider-policy constructors retain one thread and
-spinning enabled. The backend also offers `open_profile_with_cpu_options`.
-No environment/global override, query-time tuning or C ABI option is added.
-
-The [Apple Silicon comparison](benchmarks/ocr-models/cpu-options-aarch64-apple-darwin-20261022.md)
-records the same final executable at default and eight-thread/nonspinning
-settings across11 images and both call modes. It includes stage timings,
-whole-process memory, startup and recognition findings—not a universal optimum
-or native qualification. Counts three, five, six and seven remain available but
-unmeasured. The cap of eight is a finite native-worker bound, not a performance
-gate. More workers can change contention and memory; spinning can trade idle
-CPU for wake-up latency.
-
-One inter-op thread, sequential native execution, disabled memory patterns and
-one physical OCR analysis remain unchanged.
+One inter-op thread, sequential execution, disabled memory patterns, and one
+physical OCR analysis lease remain fixed. See the
+[Apple Silicon CPU-options comparison](benchmarks/ocr-models/cpu-options-aarch64-apple-darwin-20261022.md)
+for measured stage timings, whole-process memory, and recognition trade-offs
+between default (`1` thread, spinning) and `8` threads / non-spinning across 11
+images.
 
 ### Model-specific trade-offs
 
-Choose a profile for the application's recognition needs and resource envelope,
-not from a blanket fastest-model recommendation. Each model may have a different
-best measured configuration. Tune only where measurements support the change;
-successful initialization or a replay smoke does not establish a latency,
-memory or recognition advantage.
-
-Comparisons must name the exact model/profile/provider, configuration, target,
-source/runtime identities, input/ROI and workload. Report observed latency
-(including startup separately), memory with its measurement scope, recognition
-outcomes against a fixed oracle, and each numerical/quality rule outcome.
-Compare like workloads or state why they differ. Missing platform or
-configuration rows remain unmeasured, not zero, pass or an inherited result.
-The comparison reports per-model differences separately from the public watcher
-smoke; neither establishes native capture-to-notification performance.
-
-Failed empirical quality or performance rules remain visible without hiding the
-initialized choice. Safety is separate: hashes and descriptor consistency,
-source identity, output validity, finite memory/process bounds, cancellation,
-permissions and physical cleanup remain required. Contract or lifecycle failures
-are defects, not acceptable latency/quality trade-offs. Watching never sends
-input or requests permissions implicitly.
+Select a profile and CPU configuration based on measured latency, memory, and
+recognition accuracy for the target workload. Comparisons must record the exact
+profile, provider, CPU options, target, source/runtime digests, and ROI against a
+fixed oracle while keeping enforced runtime safety checks (hashes, identity
+consistency, finite memory/process bounds, cancellation, and cleanup) mandatory.
 
 ### Request options
 
-`OcrTextWatchRequest::new` explicitly names:
+`OcrTextWatchRequest::new` requires:
 
-- A nonempty coordinate-qualified `Rect`, `ClipPolicy`, and result coordinate space.
-- A borrowed literal, normalized during construction, and finite confidence in `0.0..=1.0`.
-- `OcrTextAnalysisRate::from_minimum_interval` with a positive interval.
-- `OcrTextStability::immediate()` or `OcrTextStability::consecutive` with a positive count.
-- The closed `ChangeDetectionPolicy` and a query-lifetime `OperationContext`.
+- A non-empty coordinate-qualified `Rect`, `ClipPolicy`, and output coordinate space.
+- A borrowed search literal (normalized at construction) and finite minimum
+  confidence in `0.0..=1.0`.
+- `OcrTextAnalysisRate::from_minimum_interval` (positive interval).
+- `OcrTextStability::immediate()` or `OcrTextStability::consecutive(count)` (`count >= 1`).
+- A closed `ChangeDetectionPolicy` and query-lifetime `OperationContext`.
 
-No deadline means a deliberately deadline-free query. Start performs neither
-inference nor a blocking capture to manufacture an initial transform. Intrinsic
-region, fixed capture-origin, capability and option errors fail before
-publication. The open-time extent is not current geometry after resize; mutable
-upper bounds and transforms resolve against the first exact maintained frame.
-A native source may supply no initial pixel-bearing frame for an unchanged window.
+Start performs no inference or blocking capture; mutable bounds and transforms
+resolve against the first maintained frame.
 
 ## Literal and result semantics
 
-The literal uses NFC followed by Unicode edge-whitespace trimming. Only the
-normalized `1..=4096` UTF-8 bytes are retained. Arbitrarily long edge whitespace
-is accepted without allocating proportional text; processing is linear in input
-and checks cancellation/deadline while scanning.
-
-The Unicode 17.0.0 derivation examines all 1,112,064 scalars, including all
-11,172 Hangul syllables. Its maximum canonical decomposition is four scalars;
-preflighting at most 16,384 decomposed scalars cannot exclude a valid literal.
-It also proves borrowed edge trim commutes with NFC for the pinned tables.
-The fixed bounds describe requested working allocation, not allocator metadata,
-RSS or recoverable out-of-memory behavior of pinned NFC internals and `Arc`.
-
-After complete OCR output validation, presence means a case-sensitive substring
-inside one normalized region at or above the requested confidence. Threshold
-equality is accepted; regions are never concatenated and no case/width folding,
-regex, fuzzy comparison or whitespace collapsing is added. Empty output or a
-valid nonmatch resets confirmation and remains pending. Malformed output fails
-the whole analysis, even after an earlier candidate would have matched.
-
-A success retains the exact target, frame/stamp/transform, effective ROI, output
-coordinates, immutable `OcrResult`, complete initialized descriptors, normalized
-predicate, confirmation facts and checked `u16` satisfying-region indexes. Text
-is not copied into another result array. Explicit accessors expose it;
-`Debug`, errors and diagnostics do not. Results, frame clones and mappings remain
-readable after query/session/engine teardown and never substitute a newer frame.
+- **Unicode 17.0.0 NFC + edge-trim normalization:** Search literals are NFC-normalized
+  and Unicode edge-whitespace trimmed, retaining `1..=4,096` UTF-8 bytes.
+  Preflight bounds working storage at `16,384` decomposed scalars (proven
+  sufficient across all `1,112,064` Unicode 17.0.0 scalars, whose maximum
+  canonical decomposition is `4` scalars, with edge-trim commuting with NFC).
+- **Substring matching and result ownership:** Presence requires a case-sensitive
+  substring match within a single normalized OCR region at `confidence >= minimum_confidence`
+  (no cross-region concatenation, case/width folding, or fuzzy matching). A
+  matched `OcrTextWatchResult` retains the exact target, frame, transform,
+  effective ROI, immutable `OcrResult`, descriptors, predicate, confirmation
+  count, and `u16` satisfying-region indices independently of query, session, and
+  engine teardown. `Debug`, errors, and diagnostics redact recognized text and
+  search literals.
 
 ## Progress, authority and finite scheduling
 
-`poll` is nonblocking. `wait` takes an independent caller-wait context: its
-interruption ends only that wait, checked before a terminal observation.
-`cancel` is idempotent; dropping the sole query owner cancels pending work.
-A committed terminal is immutable. Already latched source/session authority
-precedes scheduler shutdown; for an otherwise open query, cancellation precedes
-deadline, and both precede a competing overload, backend failure or success.
-
-Only distinct accepted positive analyses confirm. Re-observation, elapsed time,
-rate deferral and a change skip never confirm. Epoch or geometry revision changes
-invalidate incompatible generations and reset confirmation. A newer compatible
-pending frame alone does not invalidate an in-flight result. Normal source end
-drains acquired final work, then closes an unsatisfied query; explicit close,
-target loss or interruption can preempt the drain.
-
-Both query classes share the existing limits: 256 live engine queries, 64 per
-session, 16 sessions holding work reservations, two analysis workers, one latest
-pending frame per query, a 64 MiB/256-entry mapping cache and 30-second eligible
-queue residence. OCR occupies at most one physical lease from claim through
-completion. It never creates another backend pair or retries one-shot `Busy`.
-Ready classes and OCR sessions/queries rotate; a continuously eligible OCR query
-receives a claim within `S * Q` successful OCR turns for `S` ready sessions and at
-most `Q` ready queries per session, conditional on actual work return.
-
-A mapping admission barrier prevents a template worker from entering a native
-conversion held by OCR. Existing template mapping reservations drain first;
-OCR inference releases that barrier so the second worker can run templates.
-A held conversion leaves later work pending and subject to queue expiry, not
-blocked inside native mapping. Source acquisition continues considering newer
-frames. Replacement preserves eligible age; intentional rate deferral does not
-consume eligible residence. OCR analyses are not coalesced; template coalescing
-and template-only scheduling remain unchanged.
-
-OCR reuses one BGRA mapping for exact visible-row comparison and inference.
-BGRA and RGBA differ only by a channel permutation, so exact BGRA row equality is
-exactly the RGBA equality the change policy defines; row padding is ignored and
-confirmation forces
-new analysis even for unchanged pixels. A full source envelope and returned
-mapping are checked against the 256 MiB OCR-watch safety limit.
-
-`Engine::ocr_text_scheduler` reports fixed policy; `ocr_text_observation` and
-query progress distinguish logical work from the physical OCR lease. Retention
-counters sum live result-owned source/text/index extents. They are not
-unique native allocation/RSS counts and do not include arbitrary separately
-retained frame clones. Native retention must be measured independently.
-
-Detector tensor limits depend on the selected profile. The unreleased
-`OcrTextSchedulerDescriptor::max_detector_input_tensor_bytes` accessor is removed:
-its bounded-v2 constant was not a watcher-wide limit. ONNX callers can read
-`OnnxOcrBackend::facts().max_detector_tensor_bytes()` from the initialized adapter.
+- **Query handles and terminal precedence:** `poll` is non-blocking, `wait` uses
+  an independent caller-wait `OperationContext`, and `cancel` (or dropping the
+  sole handle) is idempotent. Latched source/session authority precedes
+  scheduler shutdown; for open queries, `Cancelled` > `DeadlineExceeded` >
+  competing overload, backend failure, or match. Only distinct accepted positive
+  analyses advance consecutive stability; epoch or geometry changes reset
+  confirmation.
+- **Shared watcher bounds and OCR mapping barrier:** Shares the `WatchRuntime`
+  bounds (`256` engine queries, `64`/session, `16` sessions, `2` analysis workers,
+  `1` latest pending frame/query, `64 MiB`/`256`-entry mapping cache, `30 s`
+  eligible queue residence, and `256 MiB` OCR mapping ceiling). At most one
+  physical OCR lease runs at a time. A mapping admission barrier drains active
+  template mappings before OCR native conversion starts and releases once OCR
+  inference begins so the second worker can continue running template queries.
+  Compatible BGRA rows use direct byte-equality change detection without an RGBA
+  conversion copy. Callers inspect profile detector tensor bounds via
+  `OnnxOcrBackend::facts().max_detector_tensor_bytes()`.
 
 ## Logical close is not physical quiescence
 
-Cancellation and logical close seal OCR admission, cancel generation authority
-and wake waits without joining an unreturned OCR call. After dispatch is sealed,
-only the worker still owning the physical OCR lease may outlive final Rust owner
-release. Template and acquisition joins keep their existing behavior; the
-mapping barrier prevents an indirect template join behind that OCR conversion.
-Late completion cannot revive a query or emit success after shutdown.
-
-The detached call still owns its frame, mapping, recognizer and physical lease.
-Do not unload executing code or controlled native dependencies while it remains
-outstanding. No forced thread termination, replacement worker or recovery retry
-is provided. A permanently blocked call can retain one bounded execution until
-process exit. Logical success or close alone does not prove native allocations
-were freed; native evidence must establish physical return and cleanup.
+Cancellation and logical close seal dispatch and wake waiters immediately without
+blocking on an in-flight native ONNX inference call. Only the worker holding the
+active physical OCR lease may outlive final Rust handle drop until the native
+call returns; callers must keep executing code and loaded native dependencies
+alive until physical completion.
 
 ## Fixed real-replay procedure
 
-This qualification procedure deliberately keeps its CPU bounded-v2 profile,
-fixed inputs and source/artifact bindings. Caller choice does not generalize
-this procedure or the native qualification procedures below.
+[`crates/mado-pilot/examples/ocr-text-watch.rs`](../crates/mado-pilot/examples/ocr-text-watch.rs)
+exercises the explicit CPU bounded-v2 profile across three fixed replay
+scenarios: blank-to-positive (`sequence 1`, `epoch/geometry 0`), negative
+final-source drain, and 2× target-logical projection.
 
-The [complete example](../crates/mado-pilot/examples/ocr-text-watch.rs) constructs
-one real CPU engine, starts/polls a query, demonstrates an independently cancelled
-wait, reads the terminal and retains exact pixels after all parents close.
-It has no fake-backend fallback. The three fixed scenarios are blank-to-positive
-(sequence 1 in epoch/geometry 0), negative final-source drain, and fixed 2x
-target-logical projection. Replay identities begin at zero.
-
-Generate fresh replay bytes using an explicitly prepared Python environment with
-Pillow 12.3.0. The script verifies the existing repository-owned HUD PNG; it
-performs no inference or capture and refuses to overwrite an output directory:
-
-```sh
-: "${OCR_REPLAY_CORPUS:?choose a new corpus directory}"
-python tools/ocr-text-watch/replay_corpus.py --output "$OCR_REPLAY_CORPUS"
-```
-
-The HUD content is Apache-2.0 repository artwork with OFL-1.1 Noto Sans JP rendered
-text; no font bytes are bundled. The input, normalized region order, satisfying
-index and geometry oracle are fixed before execution, not learned from output.
-The corpus conversion uses Pillow's MIT-CMU-licensed developer tooling only.
-
-Build with a new dedicated `CARGO_TARGET_DIR` and the ordinary native setup
-wrapper. After fresh real-model execution authority, set
-`MADO_PILOT_G004_MODEL_ROOT` and `MADO_PILOT_ONNX_RUNTIME`, then run:
-
-```sh
-: "${OCR_REPLAY_EXAMPLE:?exact built example required}"
-: "${OCR_REPLAY_CORPUS:?fixed generated corpus required}"
-: "${OCR_NATIVE_IMAGES:?prospectively approved native image manifest required}"
-: "${OCR_REPLAY_EVIDENCE:?new private evidence directory required}"
-python tools/setup-native.py -- python tools/ocr-text-watch/run_replay.py \
-  --executable "$OCR_REPLAY_EXAMPLE" --corpus "$OCR_REPLAY_CORPUS" \
-  --native-images "$OCR_NATIVE_IMAGES" --output "$OCR_REPLAY_EVIDENCE" --execute
-```
-
-The procedure requires a committed clean candidate, pins the executable,
-controlled dependencies and fixed corpus, and runs exactly three fresh processes
-with no warmups/retry. Each gets 90 seconds plus 10 seconds of cleanup and 64 KiB
-of combined output. It retains the first failure, leaves later rows unrun and
-checks identities again. Private records include paths and complete process
-output and are not automatically publishable. Process return is not a new
-workload-budget or native-capture qualification.
-
-The native image manifest is a reviewed map of canonical absolute paths to
-SHA-256 values, with at most 256 entries. It includes the executable and real
-ONNX Runtime. Windows observes every module, including system DLLs; macOS
-observes every non-system image, with shared-cache images bound to the OS build.
-The approved and observed maps must agree except for the Windows presence-only
-rule below. This binds OpenCV as well as ONNX. Windows records a bounded
-current-process module snapshot; macOS collects a dedicated diagnostic pipe into
-an exclusive private file bounded at1MiB. Ordinary stdout/stderr keep their
-separate budget. Inherited OS file limits are unchanged, without imposing a new
-limit on unrelated writes. Whole-process timing includes the collector; Rust
-memory rows describe the native candidate, excluding the Python collector.
-System shared-cache paths are removed before applying the256-entry Apple bound.
-Neither an unchanged executable nor a version string replaces actual identity.
-Diagnostic loader images go through the dedicated bounded pipe rather than a
-process-wide output limit, because a global limit also stopped unrelated writes;
-earlier failed runs under the global limit are not promoted.
-Windows snapshots do not establish the history of transient unloaded images;
-the required OpenCV and ORT dependencies remain loaded for this procedure.
-
-Windows identity keys use the resolved extended-length spelling: `\\?\D:\...`
-or `\\?\UNC\server\share\...`, matching the native consumer convention.
-Literal trailing dots/spaces remain distinct names. Use the recorded identity
-keys rather than constructing aliases; manifest validation accepts only that
-canonical spelling. A path-key correction does not promote a failed binding.
-
-Windows OS-managed `apphelp.dll` presence or absence alone does not reject an
-otherwise successful execution. The sole exception is the canonical
-`apphelp.dll` path within the actual OS system directory obtained read-only
-through `GetSystemDirectoryW`, using the existing path canonicalization.
-A hardcoded `C:\Windows`, an environment-derived directory or a basename match
-cannot establish that identity. Failure to identify the path is a fail-closed
-apparatus failure.
-
-Exclude only that key from symmetric missing/extra-image equality, not from
-observed image/hash evidence. Hashes of all common images must match, including
-`apphelp.dll`; every declared file identity and hash fence still applies even
-when the declared system `apphelp.dll` was not observed. Every other missing or
-extra image remains a failure. Private observation metadata retains the full
-`observed` map and report identity and adds `os_managed_presence_exclusions`:
-the sole identified key on Windows and an empty list on Darwin. No DLL loading,
-pinning, injection or OS/configuration change is part of this policy; Darwin
-acceptance is unchanged.
-
-Process success, semantics, physical cleanup, deadlines, output limits and
-source/executable/runtime/model/fixture/input identity gates remain mandatory.
-
-When the reviewed image map is not yet available, a separately authorized
-binding-only run may execute the qualification-feature transition example **once**:
-
-```sh
-: "${OCR_BINDING_EVIDENCE:?new private binding evidence directory required}"
-python tools/setup-native.py -- python tools/ocr-text-watch/bind_replay.py --mode real-cpu \
-  --executable "$OCR_REPLAY_EXAMPLE" --corpus "$OCR_REPLAY_CORPUS" \
-  --output "$OCR_BINDING_EVIDENCE" --execute-binding
-```
-
-It has the same90-second process,10-second cleanup and64-KiB output bounds.
-The separate native-image report is bounded at1MiB; saturation remains nonpass.
-It records exact source/inputs, complete output, required executable/runtime
-membership and observed image hashes. Additional images are observed and hashed
-after execution, not preapproved or proven unchanged throughout this binding run.
-The resulting `observed-native-images.json` must be independently reviewed before
-it becomes an approved input to the later three-process replay cohort. Binding
-success is neither image approval nor replay/numeric/native qualification.
-Failure retains the first attempt and authorizes no retry.
-
-For the controlled executable's own image set, use a separate model-free binding:
-
-```sh
-: "${OCR_CONTROLLED_EXAMPLE:?exact controlled workload executable required}"
-: "${OCR_CONTROLLED_BINDING_EVIDENCE:?new private binding directory required}"
-python tools/setup-native.py -- python tools/ocr-text-watch/bind_replay.py --mode controlled \
-  --executable "$OCR_CONTROLLED_EXAMPLE" --output "$OCR_CONTROLLED_BINDING_EVIDENCE" \
-  --execute-binding
-```
-
-This runs one fixed `--semantic` workload process with300 seconds,15 seconds of
-cleanup and1MiB ordinary output. It accepts no corpus or model initialization.
-The canonical workload profile, harness and executable identities are fixed
-before execution. Its observed image set needs independent approval; this
-discovery run is not one of the three subsequent precursor samples. A static
-import closure or another executable's observed set is not a substitute.
-
-Metadata reads are limited to 1 MiB, identity files to 1 GiB, and non-regular or
-changing files are refused. Metadata is parsed and hashed from the same bytes.
-Injected-library environment variables and ambient Git repository selectors are
-refused. Python 3.13+ creates private evidence directories; reports are exclusive
-and never overwrite an earlier attempt. A standalone Windows dependency-report
-environment setting also requires a caller-selected private parent directory.
+1. **Generate the deterministic replay corpus** (requires Python 3.13+ with
+   Pillow 12.3.0; converts the Apache-2.0 / OFL-1.1 repository HUD PNG without
+   inference or overwriting):
+   ```sh
+   : "${OCR_REPLAY_CORPUS:?choose a new corpus directory}"
+   python tools/ocr-text-watch/replay_corpus.py --output "$OCR_REPLAY_CORPUS"
+   ```
+2. **Execute the three-process real-CPU replay cohort** (with a dedicated
+   `CARGO_TARGET_DIR`, `MADO_PILOT_G004_MODEL_ROOT`, `MADO_PILOT_ONNX_RUNTIME`,
+   and a prospectively approved native-image manifest of `<= 256` canonical
+   path-to-SHA-256 entries; 90 s process + 10 s cleanup + 64 KiB output bounds):
+   ```sh
+   : "${OCR_REPLAY_EXAMPLE:?exact built example required}"
+   : "${OCR_REPLAY_CORPUS:?fixed generated corpus required}"
+   : "${OCR_NATIVE_IMAGES:?prospectively approved native image manifest required}"
+   : "${OCR_REPLAY_EVIDENCE:?new private evidence directory required}"
+   python tools/setup-native.py -- python tools/ocr-text-watch/run_replay.py \
+     --executable "$OCR_REPLAY_EXAMPLE" --corpus "$OCR_REPLAY_CORPUS" \
+     --native-images "$OCR_NATIVE_IMAGES" --output "$OCR_REPLAY_EVIDENCE" --execute
+   ```
+   On Windows, identity keys use resolved extended-length paths (`\\?\...`), and
+   presence or absence of the canonical OS-system `apphelp.dll` (resolved via
+   `GetSystemDirectoryW`) is recorded in `os_managed_presence_exclusions` without
+   failing symmetric image-set equality (all common image SHA-256 digests must
+   still match).
+3. **One-shot image-binding discovery (when creating a new image manifest for
+   independent review):**
+   ```sh
+   : "${OCR_BINDING_EVIDENCE:?new private binding evidence directory required}"
+   python tools/setup-native.py -- python tools/ocr-text-watch/bind_replay.py --mode real-cpu \
+     --executable "$OCR_REPLAY_EXAMPLE" --corpus "$OCR_REPLAY_CORPUS" \
+     --output "$OCR_BINDING_EVIDENCE" --execute-binding
+   ```
+   For the model-free controlled benchmark executable (`300 s` process, `15 s`
+   cleanup, `1 MiB` output):
+   ```sh
+   : "${OCR_CONTROLLED_EXAMPLE:?exact controlled workload executable required}"
+   : "${OCR_CONTROLLED_BINDING_EVIDENCE:?new private binding directory required}"
+   python tools/setup-native.py -- python tools/ocr-text-watch/bind_replay.py --mode controlled \
+     --executable "$OCR_CONTROLLED_EXAMPLE" --output "$OCR_CONTROLLED_BINDING_EVIDENCE" \
+     --execute-binding
+   ```
 
 ## Model-free workload apparatus
 
-`ocr-text-watch-query` runs six controlled workloads with two warmups and twenty
-samples each, plus one controlled startup sample. It uses generated solid BGRA
-frames and scripted OCR, not the HUD model. Query clocks advance under explicit
-handshakes; driver wall time is not real OCR latency or 16 ms capture throughput.
-Every warmup/sample must satisfy its semantic oracle.
+`ocr-text-watch-query` runs 6 controlled workloads (2 warm-ups, 20 samples each)
+plus 1 controlled startup sample over generated solid BGRA frames and scripted
+OCR (`300 s` watchdog):
 
 ```sh
 : "${CARGO_TARGET_DIR:?set a new semantic-check target root}"
@@ -381,134 +194,46 @@ python tools/setup-native.py -- cargo test --locked --package mado-pilot \
   --bench ocr-text-watch-query -- --test
 ```
 
-The process watchdog is 300 seconds. Held-work tests distinguish original
-pending age from the last replacement, leave both classes ready when checking
-the next template turn, and account for missing resource reads after teardown.
-Structured per-invocation rows keep backend-input view traffic, caller-accessor
-mapping traffic, logical cache/result extents and OS memory separate. They do
-not claim unique allocations or a total opaque native-mapping ledger.
-The [OCR-watch measurement method](performance/methods/ocr-watch.md) defines the
-scopes.
+`tools/ocr-text-watch/workloads.py` runs 3 controlled processes (or 5 fresh
+`real-cpu-cold-startup` processes built with `--features ocr-text-watch-qualification`)
+and emits **Report schema 5**, defined in full in the
+[OCR-watch measurement method](performance/methods/ocr-watch.md):
 
-`tools/ocr-text-watch/workloads.py` requires a clean committed candidate, a
-reviewed native image manifest under the presence policy above and a private host
-record. It runs three controlled processes or, only in explicit
-`real-cpu-cold-startup` mode after separate authority, five fresh runs of the real
-transition example. Host declarations
-are separated from observations; only the named host and release target are
-verified by this runner. Unobserved CPU/memory facts remain unverified.
-Real startup requires an example built with the nondefault
-`ocr-text-watch-qualification` feature. It reuses the existing public constructor,
-ONNX initialization hooks and native memory sampler to record twelve ordered
-process-local stages through physical OCR zero and retained-owner release.
-Observed detector/recognizer creation counts are not live-session counts.
-The supervisor's whole-process cleanup remains separate from internal timestamps
-and ORT process-global residency. Ambient `MADO_PILOT_ORT_PROFILE_DIR` is refused.
-
-Report schema 5 separates execution outcome, descriptive observations and any
-explicitly requested numerical enforcement. Every controlled invocation retains
-its exact ordered endpoint durations, including the mapping/inference
-cancellation pair. Missing, duplicate or malformed records stop later processes;
-no missing value becomes zero. An optional OS memory value (RSS, peak, footprint
-or private bytes) that the platform reports as unavailable is retained as `null`
-without failing ordinary observation, and the run's other safe observations are
-kept; malformed, miscounted, misordered or logically inconsistent values, and an
-invalid zero, still fail. Binding and replay parsing stay strict. A numeric miss
-does not erase otherwise complete
-measurement facts, and semantic, identity, dependency or cleanup failure is never
-downgraded to an observation.
-
-- `execution_passed` judges the nonempty prefix of processes actually attempted:
-  admission and unchanged identities held, and every attempted row passed its
-  semantic, cleanup, dependency and required-measurement checks with no
-  non-budget failure. It does not require the full planned cohort.
-- `semantic_cohort_passed` and `required_measurements_complete` stay `false`
-  until every planned row has run. `required_measurements_complete` covers the
-  mandatory semantic, stage and logical records only; optional OS memory gaps do
-  not make it `false`. `observation_completed` is `true` only when a run without
-  `--enforce-budgets` completed every planned row with its required measurements.
-- `measurement_gaps` lists every unavailable value independently of any profile:
-  each process row carries its parser's list, and the result repeats the entries
-  with their process. An entry names `target`, `field`, the zero-based
-  `record_index` of the parsed record and `reason`, plus the workload, phase and
-  iteration for controlled runs or the stage for real startup. The list is
-  bounded at 399 entries per controlled process and 36 per real-startup process,
-  including entries for invalid extra-stage input. Only fields that apply to the
-  release target appear, so the other platform's memory fields are never
-  reported as gaps. Raw `null` values stay in the rows.
-- Top-level `passed` and `numeric_budgets` describe enforcement only: `passed` is
-  `true` only for a complete `--enforce-budgets` cohort with every budget met;
-  without the flag `numeric_budgets` is `not-enforced` and `passed` is `false`.
-- `stopped_by_enforcement` is `true` only when `--enforce-budgets` ended the run
-  early because a selected budget was exceeded or its metric was unavailable.
-- `empirical_targets.requested` is `true` whenever `--profile` was supplied, even
-  if that input is malformed or a historical format. `empirical_targets.misses`
-  lists every known miss, and `empirical_targets.unavailable` lists each
-  comparison that could not be made, with its process, workload, measure and
-  reason. `empirical_targets.passed` is `false` when any known miss exists, even
-  beside unavailable comparisons or in an incomplete run; `null` when a required
-  comparison is unavailable and no miss is known; and `true` only when every
-  comparison is complete and passing.
-
-Ordinary observation needs no profile: omit `--profile` to measure a new
-candidate on a new host with the fixed bounded settings and the run's own strict
-identity bindings. Current target-specific
-[Apple](benchmarks/ocr-text-watch-v3-aarch64-apple-darwin.toml) and
-[Windows](benchmarks/ocr-text-watch-v3-x86_64-pc-windows-msvc.toml) profiles use
-`format_version = 3`. Their `[bindings]` name the exact `host_id` and controlled
-and real executable SHA-256 values; their `[review].tuning_record` is a reference
-for human review, never opened or parsed. A supplied profile always enforces its
-host and executable scope, and its numerical misses are reported descriptively.
-`--enforce-budgets` requires `--profile`, compares each process independently,
-and stops with non-success at the first exceeded or unavailable selected metric
-(`budget-exceeded` or `budget-unavailable`). `execution_passed` can still be
-`true` for the safe attempted prefix.
-Native capture and whole-Change acceptance are never inferred from a single
-cohort result.
-
-Format-2 profiles are read-only history. Supplying one for execution refuses with
-a migration diagnostic; inspect it without executing:
-
-```sh
-python3 tools/ocr-text-watch/workloads.py --inspect-profile docs/benchmarks/ocr-text-watch-aarch64-apple-darwin.toml
-```
-
-Admission under the Windows presence-only policy requires a new, separately
-authorized three-process controlled cohort. Diagnostic rows are not precursor
-samples, and a failed or interrupted cohort is not resumed under the new policy.
-Every prior `NONPASS` and sealed artifact remains bound to its original run.
+- **Execution vs enforcement fields:** `execution_passed` judges whether all
+  attempted rows passed semantic, cleanup, dependency, and required-measurement
+  checks; `semantic_cohort_passed` and `required_measurements_complete` require
+  all planned rows to finish; `observation_completed` is `true` when a
+  non-enforcing run completes all planned rows; `measurement_gaps` records
+  unavailable target-applicable OS memory fields (`<= 399` entries/controlled
+  process, `<= 36`/real-startup process) as `null` without failing ordinary
+  observation; `empirical_targets` (`requested`, `misses`, `unavailable`,
+  `passed`) and top-level `passed` / `numeric_budgets` / `stopped_by_enforcement`
+  track optional `--profile` and `--enforce-budgets` grading.
+- **Format-3 vs historical format-2 profiles:** Current target-specific profiles
+  ([`ocr-text-watch-v3-aarch64-apple-darwin.toml`](benchmarks/ocr-text-watch-v3-aarch64-apple-darwin.toml)
+  and [`ocr-text-watch-v3-x86_64-pc-windows-msvc.toml`](benchmarks/ocr-text-watch-v3-x86_64-pc-windows-msvc.toml))
+  use `format_version = 3` ([tuning record](performance/tuning/2026-10-26-ocr-watch-profile-authority.md)).
+  Historical `format_version = 2` profiles are read-only and inspected with:
+  ```sh
+  python3 tools/ocr-text-watch/workloads.py --inspect-profile docs/benchmarks/ocr-text-watch-aarch64-apple-darwin.toml
+  ```
 
 ## Native qualification and numerical outcomes
 
-The independent [Windows procedure](ocr-text-watch-windows.md) and
-[Apple procedure](ocr-text-watch-macos.md) use new owned fixtures and acknowledged
-text transitions, not frozen foreign controllers. Windows adds no permission
-probe or elevation. Apple requires an already granted non-prompting Screen
-Recording decision, never Accessibility. Permission refusal, unsupported-system
-refusal and absence of an acknowledged matching frame are distinct non-passes.
-Compilation in hosted CI is not evidence that either capture path ran.
+Target-owned native OCR watcher procedures use dedicated fixtures and
+acknowledged text transitions:
 
-The format-2 [Apple workload](benchmarks/ocr-text-watch-aarch64-apple-darwin.toml)
-and [Windows workload](benchmarks/ocr-text-watch-x86_64-pc-windows-msvc.toml)
-profiles record complete controlled3 and real-startup5 precursors and the
-target-specific ceilings derived from them for these fixed CPU bounded-v2
-workloads. All eight workload blocks use process-local observations, not pooled
-samples or substituted diagnostic rows. Their format-3 successors carry the same
-targets prospectively; see
-[the profile-authority tuning record](performance/tuning/2026-10-26-ocr-watch-profile-authority.md).
-
-Historical final enforcement recorded Apple controlled3/real5 and Windows
-controlled3 passes, but Windows real process1 measured 1.4887 ms against the
-1.0 ms logical-close-to-physical-zero interval ceiling. That cohort remains
-`NONPASS`; real2–5 remain unexecuted. These are source-bound qualification
-verdicts, not current-source measurements or reasons to stop development.
-The fixed runner's first-numerical-failure stop rule remains part of that
-procedure; it is not a watcher admission rule. Earlier OCR/template budgets and
-historical passes or failures are not regraded.
-
-Current development separates implemented behavior, exercised safety contracts,
-pending native coverage and per-model measurement/tuning. Numerical nonpass is
-reported for optimization and user choice, without requiring every model to meet
-one universal threshold. New observations need their own exact configuration and
-artifact bindings; native permission or cleanup coverage cannot be waived by a
-favorable timing result.
+- **Windows WGC procedure:** See [ocr-text-watch-windows.md](ocr-text-watch-windows.md)
+  for the fixed 5-endpoint WGC procedure and its recorded cohort pass at
+  `fd98dba`.
+- **Apple ScreenCaptureKit procedure:** See [ocr-text-watch-macos.md](ocr-text-watch-macos.md)
+  for the v3 9-row ScreenCaptureKit procedure (including window-loss and
+  process-reap rediscovery) and its recorded cohort pass at `86a482d`.
+- **Historical format-2 workload enforcement:** In the historical format-2
+  profiles ([Apple](benchmarks/ocr-text-watch-aarch64-apple-darwin.toml),
+  [Windows](benchmarks/ocr-text-watch-x86_64-pc-windows-msvc.toml)), Apple
+  `controlled3`/`real5` and Windows `controlled3` passed, while Windows `real`
+  process 1 measured `1.4887 ms` against the `1.0 ms`
+  logical-close-to-physical-zero ceiling (`NONPASS`, leaving `real` 2–5
+  unexecuted). Those historical verdicts remain unchanged while current
+  development uses format-3 profiles and descriptive observations.

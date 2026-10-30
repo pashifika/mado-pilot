@@ -1,17 +1,16 @@
 # Native capture pacing and completion-paced OCR
 
-Rust callers can select an engine default, override it per session, and inspect
-what native configuration was established. The separate caller-side OCR example
-waits a full cooldown after recognition and interpretation finish.
-
-Both native adapters and the caller flow are implemented. Separately authorized
-owned-fixture native semantics and all five comparison cases passed on Windows
-and Apple Silicon; see [the scoped results](#accepted-owned-workload-qualification).
-Existing OS support, deployment floors and historical qualification are unchanged.
+Rust callers can configure a default native capture interval on the engine,
+override it per session, and inspect the applied native outcome via
+`session.description().capture_pacing()`. The companion
+[`completion-paced-ocr.rs`](../crates/mado-pilot/examples/completion-paced-ocr.rs)
+example demonstrates waiting a full caller-owned cooldown after one-shot OCR and
+result interpretation complete.
 
 ## Engine and session configuration
 
-Inside a function returning `mado_pilot::Result<()>`, select the interval and policy together:
+Configure pacing intervals and policy (`required` or `preferred`) before opening
+a session:
 
 ```rust
 use std::time::Duration;
@@ -34,97 +33,61 @@ let request = request.with_macos_config(
     ),
 );
 
-// Pass request to the target's existing native engine constructor.
-// An explicit session value replaces the entire engine default.
 let open = OpenRequest::new().with_capture_pacing(
     CapturePacingRequest::preferred(Duration::from_millis(60))?,
 );
 ```
 
-Resolution is **session > selected OS block > common engine > source default**.
-The interval and required/preferred policy never merge across layers. These are
-defaults, not hard limits: a session preference can replace an engine requirement.
+Resolution rules:
 
-- `CapturePacingRequest::inherit()` removes that layer's decision.
-- `CapturePacingRequest::source_default()` explicitly bypasses lower layers and
-  leaves native cadence untouched. It does not mean unlimited FPS.
-- Repeating a setter replaces its previous value. Replacing an OS configuration
-  replaces the whole block; a fresh inheriting block exposes the common default.
-- Setter order across different layers does not change precedence.
-
-All four Windows and all four macOS engine constructors use this selection,
-including default OCR, explicit OCR profile and provider-policy variants.
-Configuration performs no discovery, permission probe, capture or input opening.
-Providers retain immutable defaults; an override or close in one session does not
-change another session or engine. Existing constructors and omitted options keep
-source-default behavior. `OpenRequest` remains a `Copy` value with const construction.
-
-Zero is `InvalidArgument`. Only the selected duration receives native range
-validation; an overridden large common value cannot invalidate a smaller OS value.
-Selected engine overflow fails before backend initialization, and selected session
-overflow fails before native capture allocation. A preference does not excuse an
-invalid duration. Existing interruption admission still takes precedence.
+- **Precedence:** `session > selected OS block (WindowsConfig / MacosConfig) > common engine > source default`.
+  Interval and policy (`required` vs `preferred`) resolve as one whole unit and
+  never merge across layers.
+- **Reset and inheritance:** `CapturePacingRequest::inherit()` clears that
+  layer's override; `CapturePacingRequest::source_default()` explicitly leaves
+  native cadence untouched.
+- **Validation:** Zero duration returns `InvalidArgument`. Only the winning
+  layer's duration is range-checked against the target platform's native
+  representation (engine defaults before backend initialization; session
+  overrides before native session allocation).
 
 ## Inspect the configured outcome
 
-After a successful open, `session.description().capture_pacing()` returns an
-immutable `CapturePacingReport`. Use `request()`, `configured_interval()` and
-`outcome()` rather than estimating a default FPS.
+`session.description().capture_pacing()` returns an immutable
+`CapturePacingReport` (`request()`, `configured_interval()`, `outcome()`):
 
 | `CapturePacingOutcome` | Meaning |
 |---|---|
-| `SourceDefault` | Native cadence was left untouched; no numerical interval is claimed. |
-| `Applied` | Native configuration established the resolved request. The configured interval includes any upward representation adjustment. |
-| `PreferredUnapplied(reason)` | Only a preference may open unpaced after verified capability absence. The request is retained and the configured interval is absent. |
+| `SourceDefault` | Native cadence was left untouched. |
+| `Applied` | Native pacing was applied; `configured_interval()` includes any upward platform tick rounding. |
+| `PreferredUnapplied(reason)` | Preferred pacing opened unpaced because the source or OS lacks pacing support (`PacingUnsupportedReason::SourceCannotPace` or `NativeControlUnavailable`). |
 
-`PacingUnsupportedReason` distinguishes `SourceCannotPace` from
-`NativeControlUnavailable`. Required unavailable control returns `Unsupported`,
-not a successful unapplied report. Permission, target, device, configuration,
-exception, start, cancellation and deadline failures are not preferred fallback.
-A readback shorter than the requested minimum is a configuration failure.
-Success is published only after native start and operation commit.
+Required pacing fails with `Unsupported` when native control is unavailable.
+Platform application boundaries:
 
-Platform behavior is explicit:
-
-| Source | Explicit minimum interval |
+| Source | Native representation and range |
 |---|---|
-| Windows WGC | Runtime interface/property negotiation; `ceil(nanoseconds / 100)` positive signed 64-bit `TimeSpan` ticks. The last representable interval is `922337203685s + 477580700ns`. Configuration/readback precede callback registration and start. Pool recreation retains the capture session. |
-| macOS ScreenCaptureKit | Dynamic getter/setter negotiation; exact positive signed 64-bit nanoseconds at `CMTime` timescale `1000000000`. The maximum is `9223372036s + 854775807ns`. Configuration/readback precede stream creation/start; retained configuration preserves the interval through dimension updates. |
-| Replay / ControlledCapture | Required pacing is unsupported; preferred pacing is reported unapplied. Replay stays pull-driven and controlled publication stays caller-driven. |
+| Windows WGC | Negotiates `IGraphicsCaptureSession5`, configures `ceil(ns / 100)` positive signed 64-bit `TimeSpan` ticks (max `922,337,203,685 s + 477,580,700 ns`), and reads back before callback registration and start. Retained across pool recreation. |
+| macOS ScreenCaptureKit | Negotiates dynamic getter/setter over internal shim ABI 26, configures exact positive signed 64-bit nanoseconds at `CMTime` timescale `1_000_000_000` (max `9,223,372,036 s + 854,775,807 ns`), and reads back before stream start. Retained across dimension updates. |
+| Replay / `ControlledCapture` | Required pacing returns `Unsupported`; preferred pacing reports `PreferredUnapplied(SourceCannotPace)`. |
 
-The macOS scalar handshake is private ABI26; it is not the released C ABI. Public
-C/C++ structures, table prefixes and default projections do not gain pacing options.
-No sleep, software drop gate, queue-depth change or producer-buffer retention is
-used to imitate native pacing.
+Public C/C++ ABI 1.5 structures and function tables are unchanged, and no
+callback sleep or software frame-drop gate is used to imitate native pacing.
 
 ## Run the caller-owned OCR flow
 
-The complete program is
-[`completion-paced-ocr.rs`](../crates/mado-pilot/examples/completion-paced-ocr.rs).
-Its real flow uses only the public facade; private support drives the model-free
-smoke and tests through the same consumption function.
-
-A safe deterministic run opens no desktop capture, loads no model, and sends no input:
+Run the deterministic model-free smoke check (opens no desktop capture, loads no
+model, and sends no input; see
+[native development prerequisites](../CONTRIBUTING.md#native-development-prerequisites)
+for the Windows setup wrapper):
 
 ```sh
 python3 tools/setup-native.py -- cargo run --locked -p mado-pilot \
   --example completion-paced-ocr -- --controlled-smoke
 ```
 
-For Windows, use the documented x64 MSVC setup form with explicit OpenCV/libclang
-roots around the same Cargo command. See [native setup](../CONTRIBUTING.md#native-development-prerequisites).
-Set `CARGO_TARGET_DIR` to a fresh example-only root, separate from native and
-other hash-pinned qualification builds.
-
-Native execution is a separate, explicit action. After authorizing the target and
-reviewing the G-004 model/runtime paths, the argument order is:
-
-```text
-completion-paced-ocr --native <window|display> <exact-target-name> <model-root> <runtime-file> <source-default|required:MS|preferred:MS> <cooldown-ms> <operation-ms> <exact-stop-text>
-```
-
-For a separately authorized macOS invocation, use a fresh `CARGO_TARGET_DIR`
-distinct from the deterministic example's root:
+For an authorized live target with reviewed `G-004` model and ONNX Runtime paths
+(using a dedicated `CARGO_TARGET_DIR`):
 
 ```sh
 python3 tools/setup-native.py -- cargo run --locked -p mado-pilot \
@@ -132,311 +95,87 @@ python3 tools/setup-native.py -- cargo run --locked -p mado-pilot \
   /reviewed/models /reviewed/libonnxruntime.dylib required:100 250 60000 READY
 ```
 
-Windows uses its reviewed runtime DLL path. Selection must match exactly one
-kind/name in discovery; there is no first-target, substring or foreground fallback.
-The issued target identity governs subsequent operations. Nothing runs without an
-explicit mode. Input and permission requests are absent. Ordinary output contains
-no target name, recognized text, pixels or model paths.
+Under one shared `OperationContext` (plus an independent 5-second cleanup budget),
+each iteration:
 
-One absolute operation context covers setup and every iteration:
-
-1. Acquire the initial latest frame without a preliminary cooldown.
-2. Recognize that exact frame and finish bounded caller interpretation.
-3. If interpretation stops, return without another cooldown or acquisition.
-4. Otherwise release unnecessary result/frame/view/mapping owners, retaining the
-   complete checked stamp, then wait the full additional cooldown.
-5. Acquire `FrameRequest::newer_than(last_checked)` and repeat.
-
-A long OCR or interpretation step never consumes the additional cooldown. The
-local helper uses the operation clock and at most 2ms requested sleep slices,
-clipped by the cooldown and remaining deadline. It checks interruption before
-waiting and at completion; cancellation retains precedence over deadline expiry.
-Polling is cooperative: OS wakeup delay is additional, and arbitrary caller code
-or native OCR cannot be physically preempted by this helper. Callers embedding the
-loop can attach their cancellation token to the same `OperationContext`.
-
-Cleanup uses an independent, bounded five-second authority in the same clock
-domain. Work and cleanup failures are both retained. Logical close does not prove
-physical termination of native backend work.
+1. Acquires the initial latest frame (or `FrameRequest::newer_than(last_checked)`
+   on subsequent iterations).
+2. Runs one-shot OCR on that exact frame and completes caller interpretation.
+3. Returns immediately if the stop literal matched; otherwise drops frame/result
+   owners and waits the full post-completion cooldown (`<= 2 ms` cooperative
+   polling slices) before step 1 repeats.
 
 ## Freshness, geometry and terminal limits
 
-A publication received during OCR or cooldown remains eligible when the live
-source then stays idle. Its capture time need not follow cooldown completion.
-Bursts collapse to the newest eligible observation, not a FIFO backlog. Sequence
-gaps and identical pixels under a newer same-stream stamp are valid. An unchanged
-stamp waits under the operation deadline instead of triggering repeated OCR.
-
-Ordering uses the complete same-stream epoch/sequence contract. Recognition uses
-each successor frame's own transform; an old invalid pixel ROI receives the
-existing typed geometry failure. These are complete pixel observations, not codec
-I-frames.
-
-Actual terminal state precedes retained latest state during acquisition. `Closed`
-and `TargetLost` are preserved; there is no post-terminal final-frame drain or
-parsing of diagnostic text to distinguish closed causes. Capture loss before
-one-shot OCR commitment rejects the result as `TargetLost`; interpretation and
-cooldown do not run. Capture termination and explicit session close both fence
-publication. Results committed before termination remain historical values, not
-evidence of continued target liveness.
+Frames published during OCR or cooldown remain eligible if the source then stays
+idle; bursts collapse to the newest frame (`LatestWins`), and unchanged stamps
+wait under the operation deadline without re-running OCR. Terminal capture states
+(`Closed`, `TargetLost`) take precedence over retained latest frames and abort
+in-flight one-shot OCR commitment before interpretation or cooldown runs.
 
 ## Performance and verification boundary
 
-Native capture pacing, caller completion cooldown and watcher backend-admission
-rate are three distinct controls. Neither this example nor this configuration
-changes `OcrTextAnalysisRate` or template-watcher scheduling.
-
-Longer intervals can miss transient visual states and increase detection latency.
-A configured interval is not measured FPS, manufactured periodic output,
-proportional CPU/GPU savings or a promise of unchanged application frame times.
-
-Before a native comparison, bind the exact owned workload, hosts, source/binaries,
-native dependencies, intervals, duration, cleanup bounds, metric acquisition and
-pass/fail budgets under a separate execution grant. Compare capture-off,
-source-default, cooldown-only, native-only and combined cases. Separate callback/
-copy work, OCR admissions/time, frame age/detection latency, scoped memory,
-CPU/GPU and application frame times. Unavailable metrics are unavailable, not zero.
-No historical ceiling or failed campaign is rewritten by this feature.
-
-Local deterministic checks cover precedence/report invariants, replay/controlled
-behavior, completion timing/freshness/ownership/interruption, and the actual
-call-local macOS configuration/start/resize/close seam plus C/Rust layout
-agreement. Windows cross-compilation checks types and cfg, not native execution.
-Both hosted target jobs run the deterministic example. Native pacing qualification
-and the five-case comparison were exercised separately on the two bound hosts below.
+Native capture pacing (producer cadence), caller completion cooldown (post-OCR
+wait), and `OcrTextAnalysisRate` (watcher scheduler admission) are independent
+controls. Configured intervals do not guarantee observed FPS or application
+frame-time reductions.
 
 ## Owned native verification apparatus
 
-[`capture-pacing-native.rs`](../crates/mado-pilot/examples/capture-pacing-native.rs)
-and [`tools/capture-pacing/run.py`](../tools/capture-pacing/run.py) are private
-verification tools, not a second application API. They reuse the caller example's
-exact-frame recognition and full-cooldown helper. Hosted CI runs only model-free
-checks and compiles the GDI/AppKit fixtures; it does not launch this campaign.
-
-Prepare new consumer/fixture binaries in separate `.rasen/` build directories.
-Never rebuild a hash-bound candidate in place. The run supervisor never builds,
-downloads, changes permissions, injects input, activates a window or retries.
-Its six fixed cases are `semantic`, `capture-off`, `baseline`, `cooldown-only`,
-`native-only`, and `combined`; `baseline` uses native source-default pacing.
-
-Offline analysis keeps an unexecuted case `not-run` when validated native
-diagnostics contain zero sessions and no other observations exist. A session
-record or unreleased native owner still invalidates that claim.
-
-Before approving a run:
-
-- Obtain `python3 -B tools/capture-pacing/run.py --host-snapshot` on that host.
-  This reads OS/build, architecture, CPU, memory, processor count and a hashed
-  machine identity; it performs no discovery, capture or model initialization.
-- Bind source commit/tree and canonical project root, that exact host object,
-  consumer, fixture, CPU runtime, G-004 detector/recognizer, and fixture image.
-  Each file binding has `path`, `bytes`, and `sha256`. Windows uses the verified
-  raw BGRA conversion of G-004 `hud.png`; macOS uses the PNG.
-- Bind `native_inspector` (`dumpbin` or `otool`) and `native_inputs`, including
-  transitive non-OS imports. Use explicit canonical `loader_directories` with
-  only bound DLL/dylib candidates. The supervisor also checks candidates beside
-  the executables/runtime and, on Windows, in the working directory.
-  This is static import and lookup-path evidence, **not actual loaded-image
-  enumeration**.
-- Set authority schema1, purpose `capture-pacing-native`, `approved: true`,
-  target, `attempts: 1`, the exact ordered `cases`, a `nonces` object mapping
-  those six cases to distinct nonzero 16-digit hexadecimal strings, and a
-  nonexistent `.rasen/` `output_root`. A non-object nonce field is refused with
-  payload-free JSON before host observation.
-  Set `native_interval_ns: 100000000`, `cooldown_ns: 250000000`,
-  `warmup_seconds: 2`, `measurement_seconds: 6`, `model_root`,
-  `input_authorized: false`, and `permission_changes_authorized: false`.
-
-Run only the reviewed authority:
+[`crates/mado-pilot/examples/capture-pacing-native.rs`](../crates/mado-pilot/examples/capture-pacing-native.rs)
+and [`tools/capture-pacing/run.py`](../tools/capture-pacing/run.py) execute the
+private 6-case verification suite (`semantic`, `capture-off`, `baseline`,
+`cooldown-only`, `native-only`, `combined`) against an owned non-activating
+fixture (`100 ms` native pacing, `250 ms` cooldown, `2 s` warm-up, `6 s` nominal
+measurement; `180 s` semantic / `120 s` comparison deadlines + `10 s` cleanup;
+`<= 60 s` startup, `<= 2 GiB` consumer peak RSS, `<= 256 MiB` fixture peak RSS,
+`<= 5 s` OCR p95, `<= 8 MiB` padded mapping):
 
 ```sh
+python3 -B tools/capture-pacing/run.py --host-snapshot
 python3 -B tools/capture-pacing/run.py --authority .rasen/approved-pacing-run.json
-```
-
-The fixture is an owned nonactivating child identified by exact title, PID and
-nonce pixels outside the OCR ROI. Every captured marker bit is checked before
-OCR. Windows requires the fixture's physical geometry to fit the work area;
-macOS requires a 2x main screen. Unsupported geometry or changed foreground
-state fails rather than moving focus or changing display settings.
-macOS probes current Screen Recording access before starting the fixture or
-CPU model; denial is `not-run`, not successful zero-resource measurement.
-
-The native idle/burst oracle authenticates the final publication, releases its
-frame/mapping owners, waits the full cooldown, then validates the **first**
-acquisition against that witness. It cannot drain old frames until a desired
-answer appears. Publication specifically during OCR/cooldown and coalescing
-remain deterministic controlled-source proof. Native static comparison preserves
-the OCR ROI, not the whole frame: the private footer marker changes.
-
-Every comparison initializes the same CPU model, including capture-off. After
-two seconds of warmup, measurement admits work for nominally six seconds and
-finishes the admitted OCR/interpretation/full cooldown. Rates use actual elapsed
-time. Consumer deadlines are 180 seconds for semantic and 120 for comparison,
-with a separate ten-second outer cleanup allowance and a 1MiB output cap.
-Startup is limited to 60 seconds, process peak RSS to 2GiB, fixture peak RSS to
-256MiB, and OCR p95 to five seconds. A padded mapping is limited to 8MiB;
-distinct retained logical layouts to 24MiB in semantic and 8MiB in comparison.
-Sample capacities are 1024 consumer / 2048 process sampler / 4096 fixture.
-Capacity failures and fixture render-sample loss prevent qualification.
-Capturing comparisons require three committed OCR samples; capture-off admits none.
-
-`records.json` retains actual process, consumer, fixture and cleanup evidence.
-`run.json` distinguishes observed failure, incomplete evidence, unexecuted work
-and success. First non-pass stops later cases without fabricating samples.
-Missing optional CPU/GPU/copy metrics withhold those savings claims; missing
-hard-gate memory evidence cannot establish qualification. macOS callback counts
-cover closed-session lifetimes, not just the measurement window. Fixture draw
-intervals are application-requested work, not display FPS or general game
-performance. Source, host and bound native inputs are checked again after the run.
-
-New runner receipts and derived reports use schema 3. `run.json` binds the exact
-`records.json` byte length and SHA-256, records the authority identity, and retains
-the final source, input, host and native-binding checks. Offline qualification
-requires an explicit receipt; it never discovers one beside the input:
-
-```sh
 python3 -B tools/capture-pacing/report.py \
   --input .rasen/approved-pacing-run/records.json \
   --run-receipt .rasen/approved-pacing-run/run.json \
   --output .rasen/approved-pacing-report.json
 ```
 
-Use the authority's actual `output_root` for both input paths and a distinct
-derived output. The reporter reconciles exact records bytes, per-case statuses,
-the five-case `comparison_status` before adding the semantic case, and the exact
-final aggregate status, including `incomplete` versus `not-run`. The recorded
-target must match the recorded host system and architecture and every observed
-semantic/comparison process platform. These checks use only recorded evidence,
-not today's host or the availability of historical binaries.
-Only complete passing observations and a verified passing receipt produce
-`pass`. Consistent partial, placeholder and permission-refused receipts retain
-their non-pass outcomes. Changed final bindings, mismatched bytes or platforms,
-contradictory statuses or an explicit failed receipt prevent qualification;
-individual observations remain visible.
-
-Omitting `--run-receipt` or supplying a schema-2 receipt produces
-`view: "legacy-inspection"`: otherwise passing observations are `incomplete`,
-not qualified. `observation_status` retains the independently derived case result;
-observed failures still fail. This inspection does not revise an archived verdict.
-A specified receipt that cannot be read is an input refusal, not legacy inspection.
-
-Publication protects the input, receipt and every safely declared evidence,
-records and authority path, including canonical, symlink and hard-link aliases.
-Declarations are collected before receipt qualification, so an otherwise invalid
-receipt still protects its evidence. Unreadable or unparseable input/receipt bytes,
-or a missing or unsafe declaration set, refuse publication. An invalid receipt
-with safe declarations may publish a failed report only at a distinct path.
-The reporter stages at most 1 MiB of JSON in an owner-only (`0600`) sibling
-temporary file, flushes and `fsync`s it, then atomically replaces the derived
-output. Publication failure preserves existing output and evidence; cleanup
-targets only the reporter's own temporary file.
-
-Reporter exit `0` means `pass`; `1` means a published non-pass report, including
-raw-only incomplete inspection; `2` means input, alias or publication refusal
-without replacing the output. These are offline reporter exits, not native
-consumer or supervisor exit meanings.
-
-Consumer report schema 2 retains `missed_poll_deadlines` for process polls delayed
-across their nominal 100ms deadlines. The count and maximum gap
-remain visible. A delayed poll is not a dropped stored observation: cumulative
-CPU, OS peak RSS and coherent copy intervals retain their own validity checks.
-Do not infer ideal polling coverage or continuous instantaneous peaks from
-sampled maxima. Required memory evidence and all other hard gates still apply.
-The authority and fixture-stat schemas remain version 1.
-
-Schema-one reports and their failures are immutable and are not rescored: the
-schema-two analyzer rejects schema-one evidence rather than applying the
-corrected interpretation retroactively. The renamed counter exists because
-scheduler delay after a successful aggregated observation is not a lost sample;
-calling it one incorrectly invalidated available evidence. Schema-2 campaign
-receipts and accepted results likewise retain their original source, bytes and
-verdicts. New runner receipts and derived reports use schema 3, with consumer
-schema 2 and authority schema 1 unchanged: an explicit `--run-receipt` binds the
-exact records bytes and final source/input/host/native checks, and a passing
-report requires complete passing observations plus a verified passing receipt.
-Raw-only or schema-2-receipt inspection cannot qualify and keeps its case result
-as `observation_status`. Schema 3 records no new native campaign or performance
-result.
-
-Protocol revision 3 also keeps the macOS fixture's preexisting `Prohibited`
-activation policy rather than promoting a CLI process to `Accessory`. Marker
-decoding requires a 96-channel blue/yellow dominance margin, not exact primary
-colors, and still checks all ownership bits. On Windows, resize acknowledges the
-last of four bounded renders, with at least 125ms between each completion and the
-next render, so capture can pass through pool recreation. The resize case does not claim a solitary final repaint remains
-available when no subsequent publication occurs.
-
-Native macOS status diagnostics are a rolling 16-transition tail. Truncation is
-reported and withholds a complete-status-history claim; it does not invalidate
-the independently retained closed-session counters and ownership fences.
-Missing session/retained-transition records or failed teardown still fail.
+Runner receipts and derived reports use schema 3 (with consumer schema 2
+recording `missed_poll_deadlines` separately from dropped samples, and authority
+schema 1 binding exact source, host, binary, model/runtime, and static loader
+inputs; offline reporter exit codes are `0` = `pass`, `1` = published non-pass
+or `legacy-inspection`, `2` = input/alias/publication refusal).
 
 ## Accepted owned-workload qualification
 
-Both hosts passed the semantic case and `capture-off`, `baseline` (source default),
-`cooldown-only`, `native-only` and `combined`. Every child exited successfully,
-cleanup passed, and pre/post source and native-input bindings matched. These are
-single, predeclared owned-fixture cohorts, not general application performance
-guarantees or new OS-floor qualification.
+Both release targets passed the `semantic` case and all five comparison cases on
+owned fixtures without input injection or permission changes:
 
-- Windows: Windows 11 Pro 25H2, build `26200.9445`, Intel Core i7-12700KF;
-  native binaries and supervisor at `2db68d000c595ed7deb37153424579ab23b363f9`,
-  protocol revision 3.
-- macOS: macOS `26.6.2` (`25G83`), Apple M1 Pro, 2x display; native binaries at
-  the same `2db68d0` source, supervisor/reporting at
-  `01adac8387e80e0471200ec2ea93377491093fd9`, protocol revision 4.
-  The later source changes only reporting/tests/docs, not native executable inputs.
-- Each comparison initializes the same CPU G004 models, including capture-off,
-  then uses a two-second warmup and nominal six-second measurement. Admitted OCR
-  and its full cooldown finish before measurement ends; rates use actual elapsed
-  time. Native pacing is 100 ms; completion cooldown is 250 ms.
-
-Observed consumer-process measurements follow. CPU cores means process CPU time
-divided by elapsed time, not whole-host utilization. RSS is the process high-water
-mark; OCR p95 uses that case's bounded samples. Copy rate is Windows callback-copy
-bytes over coherent measurement intervals, not caller mapping or macOS native work.
+- **Windows (`x86_64-pc-windows-msvc`):** Windows 11 Pro 25H2 (`26200.9445`),
+  Core i7-12700KF; binaries and supervisor at
+  `2db68d000c595ed7deb37153424579ab23b363f9` (protocol rev 3; raw archive SHA-256
+  `a375ef9c77b7e6fe82309d32b45d6a9efbd315d2b35acd445dcb009d4463e025`).
+- **macOS (`aarch64-apple-darwin`):** macOS `26.6.2` (`25G83`), Apple M1 Pro, 2×
+  display; binaries at `2db68d000c595ed7deb37153424579ab23b363f9`,
+  supervisor/reporting at `01adac8387e80e0471200ec2ea93377491093fd9` (protocol
+  rev 4; raw archive SHA-256
+  `91708052834e432dae32f9126f1cc0d66c16231c9f415165677f8f5cc7a60510`).
 
 | Host | Case | CPU cores | Peak RSS MiB | OCR/s | OCR p95 ms | Native copy MiB/s |
 |---|---|---:|---:|---:|---:|---:|
-| Windows | capture-off | 0.0286 | 104.68 | 0 | — | — |
-| Windows | baseline | 1.0629 | 254.54 | 1.417 | 724.622 | 124.231 |
-| Windows | cooldown-only | 0.7756 | 254.04 | 1.043 | 709.617 | 124.514 |
-| Windows | native-only | 1.0565 | 253.59 | 1.428 | 711.985 | 20.757 |
-| Windows | combined | 0.7595 | 254.05 | 1.037 | 723.182 | 20.943 |
-| macOS | capture-off | 0.0029 | 114.39 | 0 | — | — |
-| macOS | baseline | 1.0161 | 366.52 | 2.032 | 494.077 | — |
-| macOS | cooldown-only | 0.6839 | 360.02 | 1.342 | 497.526 | — |
-| macOS | native-only | 1.0049 | 366.95 | 2.034 | 494.145 | — |
-| macOS | combined | 0.6664 | 364.28 | 1.337 | 502.000 | — |
+| Windows | `capture-off` | 0.0286 | 104.68 | 0 | — | — |
+| Windows | `baseline` | 1.0629 | 254.54 | 1.417 | 724.622 | 124.231 |
+| Windows | `cooldown-only` | 0.7756 | 254.04 | 1.043 | 709.617 | 124.514 |
+| Windows | `native-only` | 1.0565 | 253.59 | 1.428 | 711.985 | 20.757 |
+| Windows | `combined` | 0.7595 | 254.05 | 1.037 | 723.182 | 20.943 |
+| macOS | `capture-off` | 0.0029 | 114.39 | 0 | — | — |
+| macOS | `baseline` | 1.0161 | 366.52 | 2.032 | 494.077 | — |
+| macOS | `cooldown-only` | 0.6839 | 360.02 | 1.342 | 497.526 | — |
+| macOS | `native-only` | 1.0049 | 366.95 | 2.034 | 494.145 | — |
+| macOS | `combined` | 0.6664 | 364.28 | 1.337 | 502.000 | — |
 
-Relative to each host's baseline, combined CPU usage was 0.7145x on Windows and
-0.6558x on macOS; Windows callback-copy rate was 0.1686x. Native-only pacing barely
-changed CPU usage in this OCR-heavy workload. Cooldown reduced OCR admissions:
-it does not make recognition faster or preserve every transient state.
-
-The native semantic case covered applied/default/preferred reports, final-update
-then idle, newest owned publication, resize with retained mapping, interruption
-and close. Windows target closure reported `target-lost`; macOS reached the bounded
-`quiescent-deadline`, not a claimed `TargetLost` notification. Resize proof uses
-the bounded repaints described above. During-OCR coalescing timing remains separately
-proved by deterministic tests, not inferred from these native observations.
-
-Unavailable or narrower measurements remain explicit:
-
-- macOS native copy bytes and GPU measurements are unavailable. ScreenCaptureKit
-  callback totals cover closed-session lifetime, including warmup/teardown, not
-  the measurement interval. A rolling status tail is not complete transition history.
-- Windows GPU counters describe the consumer's own GPU engines, not device-wide
-  utilization or instantaneous peaks. Neither host establishes continuous private/
-  footprint peaks or ideal 100 ms sampling coverage.
-- Fixture render intervals/durations describe application drawing requests, not
-  compositor/display FPS or a general game frame-time improvement. Render-interval
-  p95 ranged from 16.218–16.572 ms on Windows and 19.348–20.880 ms on macOS.
-- Native dependencies have pre/post static import/lookup bindings; a complete
-  runtime loaded-image inventory was not observed.
-
-The immutable raw result archives are retained with the Change's private evidence:
-Windows SHA-256 `a375ef9c77b7e6fe82309d32b45d6a9efbd315d2b35acd445dcb009d4463e025`;
-macOS SHA-256 `91708052834e432dae32f9126f1cc0d66c16231c9f415165677f8f5cc7a60510`.
-Earlier failed attempts, protocol files and qualified binaries remain unchanged.
-No input injection, activation or permission/settings changes were performed.
+Relative to `baseline`, `combined` reduced process CPU cores to `0.7145×` on
+Windows and `0.6558×` on macOS, and reduced Windows callback-copy throughput to
+`0.1686×` (macOS native copy bytes and GPU metrics are unavailable; fixture
+render-interval p95 was `16.218–16.572 ms` on Windows and `19.348–20.880 ms` on
+macOS).
